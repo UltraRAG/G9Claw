@@ -17,10 +17,25 @@ Agent 子进程会继承 Node 进程里的 **`ANTHROPIC_*`**。在 `claudecodeui
 - **Node.js 22+** 与 **npm**：运行 `claudecodeui`
 - 一条可用的 **OpenAI 兼容 API**（示例为 OpenRouter，可换成你的网关）
 
+## Clone 之后：被 Git 忽略内容的「再生」
+
+根目录 `.gitignore` 里不提交的东西，在本机可以这样恢复：
+
+| 忽略项 | 如何再生 |
+|--------|----------|
+| **`node_modules/`** | `claude-code-main`：`cd claude-code-main && bun install`（使用仓库内 `bun.lock`）。`claudecodeui`：`cd claudecodeui && npm install`。 |
+| **`.env`** | 两处各执行：`cp .env.example .env`，再按下文填写密钥与模型。 |
+| **`dist/`、`build/`** | 仅在你需要生产构建时：`cd claudecodeui && npm run build`（开发模式 `npm run dev` 不依赖已存在的 `dist/`）。 |
+| **`.cache/`** | 工具缓存（如 Vite）；一般不用管。若前端异常可删 `claudecodeui/node_modules/.vite` 后重新 `npm run dev`。 |
+| **`*.log`、`.proxy.log`** | 运行日志；可删。下次 `./start.sh` 后台起代理时会再生成 `.proxy.log`。 |
+
+CloudCLI 的本地数据库（默认 `~/.cloudcli/auth.db`等）也不在仓库里；首次启动后端会自动建库，无需从 Git 恢复。
+
 ## 第一步：配置 `claude-code-main/.env`
 
 ```bash
 cd claude-code-main
+bun install
 cp .env.example .env
 ```
 
