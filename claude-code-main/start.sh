@@ -3,6 +3,7 @@
 # Usage:
 #   ./start.sh                    # interactive TUI mode (requires real terminal)
 #   ./start.sh -p "your prompt"   # non-interactive (print & exit)
+#   ./start.sh --gateway          # gateway-only mode (飞书/Telegram/etc, no CLI)
 #   ./start.sh --help             # show help
 #   ./start.sh --version          # show version
 #
@@ -32,12 +33,20 @@ if ! command -v bun &>/dev/null; then
   fi
 fi
 
-# ── Check if interactive mode is possible ──
+# ── Check for --gateway flag ──
+GATEWAY_ONLY=false
 HAS_PRINT=false
+REMAINING_ARGS=()
 for arg in "$@"; do
-  case "$arg" in -p|--print|--help|--version|-v|-V) HAS_PRINT=true ;; esac
+  case "$arg" in
+    --gateway) GATEWAY_ONLY=true ;;
+    -p|--print|--help|--version|-v|-V) HAS_PRINT=true; REMAINING_ARGS+=("$arg") ;;
+    *) REMAINING_ARGS+=("$arg") ;;
+  esac
 done
-if [ "$HAS_PRINT" = false ] && [ ! -t 1 ]; then
+set -- "${REMAINING_ARGS[@]}"
+
+if [ "$GATEWAY_ONLY" = false ] && [ "$HAS_PRINT" = false ] && [ ! -t 1 ]; then
   cat >&2 <<'EOF'
 Error: stdout is not a TTY — interactive UI needs a real terminal.
 
@@ -46,6 +55,9 @@ Error: stdout is not a TTY — interactive UI needs a real terminal.
   Non-interactive:
     echo "your prompt" | ./start.sh -p --bare
     ./start.sh -p "your prompt" --bare
+
+  Gateway-only (飞书/Telegram etc):
+    ./start.sh --gateway
 EOF
   exit 1
 fi
@@ -71,10 +83,10 @@ if ! curl -s "http://127.0.0.1:$PROXY_PORT/health" >/dev/null 2>&1; then
     fi
     sleep 0.2
   done
-  trap "kill $PROXY_PID 2>/dev/null" EXIT
+  trap "kill $PROXY_PID 2>/dev/null; [ -n \"\$GATEWAY_PID\" ] && kill \$GATEWAY_PID 2>/dev/null" EXIT
 fi
 
-# ── Claude Code: point at local proxy ──
+# ── Claude Code env ──
 unset ANTHROPIC_AUTH_TOKEN
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$OPENAI_API_KEY}"
 export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://127.0.0.1:$PROXY_PORT}"
@@ -86,4 +98,27 @@ if [ -z "$ANTHROPIC_MODEL" ]; then
 fi
 export ANTHROPIC_MODEL
 
+# ── Gateway-only mode: start gateway in foreground, no CLI ──
+if [ "$GATEWAY_ONLY" = true ]; then
+  export GATEWAY_ALLOW_ALL_USERS="${GATEWAY_ALLOW_ALL_USERS:-true}"
+  echo "[start] ═══════════════════════════════════════════"
+  echo "[start]  Gateway-only mode"
+  echo "[start]  Proxy: http://127.0.0.1:$PROXY_PORT"
+  echo "[start]  Model: $ANTHROPIC_MODEL"
+  echo "[start]  Log:   tail -f $DIR/.gateway.log"
+  echo "[start] ═══════════════════════════════════════════"
+  exec bun run "$DIR/gateway/index.ts"
+fi
+
+# ── Start messaging gateway in background (if enabled) ──
+GATEWAY_ENABLED="${GATEWAY_ENABLED:-false}"
+if [ "$GATEWAY_ENABLED" = "true" ] || [ "$GATEWAY_ENABLED" = "1" ]; then
+  echo "[start] Starting messaging gateway in background..."
+  bun run "$DIR/gateway/index.ts" > "$DIR/.gateway.log" 2>&1 &
+  GATEWAY_PID=$!
+  sleep 1
+  echo "[start] Gateway started (PID $GATEWAY_PID, log: .gateway.log)"
+fi
+
+# ── Claude Code interactive CLI ──
 exec bun run --preload="$DIR/preload.ts" "$DIR/src/entrypoints/cli.tsx" "$@"
