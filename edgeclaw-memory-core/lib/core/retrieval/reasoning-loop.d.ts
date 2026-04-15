@@ -21,16 +21,11 @@ export interface RetrievalRuntimeStats {
 export declare class ReasoningRetriever {
     private readonly repository;
     private readonly extractor;
-    private readonly runtime;
-    private readonly cache;
+    private readonly options;
+    private readonly recallCache;
     private runtimeStats;
-    constructor(repository: MemoryRepository, extractor: LlmMemoryExtractor, runtime?: RetrievalRuntimeOptions);
+    constructor(repository: MemoryRepository, extractor: LlmMemoryExtractor, options?: RetrievalRuntimeOptions);
     getRuntimeStats(): RetrievalRuntimeStats;
     resetTransientState(): void;
-    private currentSettings;
-    private buildCacheKey;
-    private getCachedResult;
-    private saveCache;
-    private updateRuntimeStats;
     retrieve(query: string, options?: RetrievalOptions): Promise<RetrievalResult>;
 }

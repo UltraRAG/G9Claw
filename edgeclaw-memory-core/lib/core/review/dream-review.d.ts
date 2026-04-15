@@ -29,7 +29,7 @@ export interface DreamRunResult extends DreamRewriteOutcome {
 export declare class DreamRewriteRunner {
     private readonly repository;
     private readonly extractor;
-    private readonly options;
+    private readonly logger?;
     constructor(repository: MemoryRepository, extractor: LlmMemoryExtractor, options?: DreamReviewRunnerOptions);
     run(trigger?: DreamTraceRecord["trigger"]): Promise<DreamRewriteOutcome>;
 }

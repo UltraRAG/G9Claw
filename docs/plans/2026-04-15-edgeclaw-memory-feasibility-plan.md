@@ -1,5 +1,18 @@
 # EdgeClaw Memory Integration Implementation Plan
 
+> **2026-04-15 当前有效口径（以此为准）**
+>
+> - `当前打开的 EdgeClaw workspace = 唯一顶层 project`。
+> - 这个 current project 下本来就应该有多条 `Project/*.md` 和 `Feedback/*.md` 记忆文件；多条文件是正确设计，不是异常。
+> - 当前有效布局是 `current-project-v2/memory/` 下的：
+>   - `project.meta.md`
+>   - `Project/*.md`
+>   - `Feedback/*.md`
+>   - `MEMORY.md`
+>   - `global/User/user-profile.md`
+> - `tmp`、多 project shortlist、`Project Clarification Required`、`projects/_tmp/*`、`projects/project_*/project.meta.md` 都已经退出当前 runtime 主流程。
+> - 本文中凡是提到旧 `tmp/formal project` 流程、`single-workspace-v1` 或“把同一 project 收敛成单条 `Project/*.md`”的内容，都属于历史中间方案，已被本次 current-project 重新校准取代。
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 将 `ClawXMemory-main` 的记忆能力从 OpenClaw 插件形态改为 EdgeClaw 内建能力，替换现有旧记忆路径，并在 `claudecodeui` 中提供一级 `memory` 主 Tab 与看板入口。
@@ -502,3 +515,209 @@
   - 当前机器没有 `bun`，因此无法直接执行 `claude-code-main` 的既有验证链。
   - 在补装依赖并用 `npx tsc --noEmit -p tsconfig.json --ignoreDeprecations 6.0` 验证后，`claude-code-main` 暴露出大量仓库既有类型问题，主要集中在 feature-gated 模块缺失、`MACRO` 全局、SDK 类型漂移等，与本次 memory 集成不是一一对应关系。
   - `claudecodeui` 构建已通过，但 Vite 仍输出仓库现有的 CSS minify warning 和 chunk size warning；当前未在本轮继续处理这类与 memory 集成无关的问题。
+
+### 2026-04-15 单工作区模型中间方案记录（已被 current-project 重新校准取代）
+
+- 本轮已落地的架构变更：
+  - `edgeclaw-memory-core` 已切换到单工作区数据目录：
+    - `~/.edgeclaw/memory/workspaces/<workspace-hash>/single-workspace-v1/memory/`
+  - 新布局已生效：
+    - `memory/MEMORY.md`
+    - `memory/Project/*.md`
+    - `memory/Feedback/*.md`
+    - `memory/global/User/user-profile.md`
+  - 旧的 `projects/_tmp/*`、`projects/project_*/project.meta.md` 不再进入新 runtime 主流程。
+
+- 本轮已完成的行为改造：
+  - `flush` 现在直接写当前 workspace 的 `Project/` / `Feedback/`，不再经过 `_tmp` 暂存层。
+  - `retrieveContext` 已改为只在当前 workspace 内召回项目记忆，不再做：
+    - project shortlist
+    - tmp fallback
+    - formal project selection
+    - `Project Clarification Required`
+  - `dream` 已改为单工作区整理模式：
+    - 不再创建 formal project
+    - 不再生成或注入 `project.meta.md`
+    - 当前版本只做当前 workspace 记忆的重复项整理、文件合并与 manifest 修复
+  - `memory_list` 已移除 `projectId`
+  - `memory_search` 已移除：
+    - `selectedProjectId`
+    - `disambiguationRequired`
+    - “No formal project was selected...” warning
+  - `memory_actions` 主流程已移除：
+    - `archive_tmp`
+    - `edit_project_meta`
+  - `claudecodeui` memory API 主流程已移除：
+    - `GET /api/memory/projects`
+    - `GET /api/memory/tmp`
+  - `claudecodeui` 新增：
+    - `GET /api/memory/workspace`
+  - dashboard 已重写为单 workspace 页面，不再显示：
+    - project list
+    - tmp 视图
+    - archive tmp
+    - edit project meta
+
+- 新一轮验证结果：
+  - `edgeclaw-memory-core`：
+    - 通过：`npm run build`
+  - `claudecodeui`：
+    - 通过：`npm run typecheck`
+    - 通过：`npm run build`
+    - 观察：构建仍带仓库既有 CSS minify warning 和 chunk size warning，未在本轮处理
+  - 单工作区服务级黑盒：
+    - 通过：`capture -> flush -> retrieve -> dream -> retrieve`
+    - 通过：写盘文件仅出现：
+      - `MEMORY.md`
+      - `Project/*.md`
+      - `global/User/user-profile.md`
+    - 通过：未再出现：
+      - `projects/_tmp/...`
+      - `projects/project_*/project.meta.md`
+    - 通过：`dream` 前提问“这个项目一期要保留哪些 memory tools？”可直接召回当前 workspace 项目记忆
+    - 通过：`dream` 前提问“这个项目当前最大的风险是什么？”可直接召回当前 workspace 项目记忆
+    - 通过：以上两类问题在 `dream` 后继续可用，且无 `Project Clarification Required`
+
+- 当前已记录的实现观察：
+  - 观察：在单工作区模型下，抽取器仍可能生成多个不同标题的项目记忆文件，例如：
+    - `Project/记忆模块一期重构-*.md`
+    - `Project/当前打开项目-*.md`
+  - 说明：这些文件现在都属于同一个 workspace 记忆空间，不再代表多个内部 project，也不会触发第二层 project 选择。
+  - 结论：这属于“同一 workspace 内的多个项目记忆条目”，不是旧模型里的“多个 formal/tmp project”。当前不阻塞单工作区主链路。
+
+### 2026-04-15 小红书文案场景黑盒结果
+
+- 场景输入：
+  - 项目背景：小红书账号孵化，一期主题是“初夏通勤穿搭”，目标是产出 10 篇可复用爆文模板
+  - 项目阶段：当前处于选题和标题模板设计阶段，下一步整理 20 个对标标题
+  - 项目风险：内容太像广告会降低收藏率
+  - 交付规则：先给 5 个标题，再给正文，再给封面文案，语气不要太像硬广
+  - 用户偏好：默认中文、先给结论再给细节、不要改 `.gitignore`
+
+- 通过项：
+  - `flush` 后写盘路径仍然只落在：
+    - `MEMORY.md`
+    - `Project/*.md`
+    - `Feedback/*.md`
+    - `global/User/user-profile.md`
+  - 未出现：
+    - `projects/_tmp/...`
+    - `projects/project_*/project.meta.md`
+  - 项目问题召回：
+    - “这个小红书项目当前最大的风险是什么？” 能直接命中 workspace 项目记忆
+    - “这个小红书项目现在处于什么阶段，下一步做什么？” 在 `dream` 前后都能直接命中
+  - 协作规则召回：
+    - “你之后给我这个项目文案时应该怎么组织输出？” 能单独命中 `Feedback/delivery-rule-*.md`
+    - “给这个项目写文案时要避免什么语气？” 能命中交付规则和项目风险约束
+  - 用户偏好召回：
+    - “之后默认用什么语言回复？回答结构怎么安排？有什么文件不能乱动？” 正确走 `route=user`
+
+- 新增观察：
+  - 观察 1：`route=user` 当前会把 `global/User/user-profile.md` 注入两次
+    - 现象：召回上下文中既有 user base block，又再次把同一文件作为 selected file 注入
+    - 影响：不会导致错误答案，但会造成 context 冗余
+    - 后续状态：该问题已在 current-project 重新校准中修复，现状是 `global/User/user-profile.md` 只注入 1 次
+  - 观察 2：同一 current project 下出现多条 `Project/*.md`
+    - 现象：本轮生成了多条项目进展记忆，例如：
+      - `Project/小红书账号孵化-*.md`
+      - `Project/选题和标题模板设计项目-*.md`
+    - 重新校准结论：这不是“被拆成两个 project”，而是“同一个 current project 下记录了多条项目进展记忆”，符合 ClawXMemory 原始设计。
+    - 后续关注点：只需要继续提升这些条目的整理质量，不需要把它们强行收敛成单个 `Project/*.md` 文件。
+
+- 改动范围核对：
+  - 本轮代码改动仍然集中在 memory 相关区域：
+    - `edgeclaw-memory-core/*`
+    - `claudecodeui/server/routes/memory.js`
+    - `claude-code-main/src/tools/Memory*`
+    - 实施报告文档
+  - 未触碰 `chat / files / shell / git / tasks` 主流程代码。
+
+### 2026-04-15 Current-Project 重新校准落地结果（当前有效）
+
+- 已完成的 current-project 校准：
+  - 已恢复 `project.meta.md`，并重新纳入当前 runtime 主流程。
+  - 已恢复当前 project 元数据编辑能力：
+    - `EdgeClawMemoryService.getProjectMeta()`
+    - `EdgeClawMemoryService.updateProjectMeta()`
+    - `memory_actions -> edit_project_meta`
+    - `/api/memory/project-meta`
+  - 当前有效数据目录为：
+    - `~/.edgeclaw/memory/workspaces/<workspace-hash>/current-project-v2/memory/`
+  - 当前有效文件布局为：
+    - `project.meta.md`
+    - `Project/*.md`
+    - `Feedback/*.md`
+    - `MEMORY.md`
+    - `global/User/user-profile.md`
+  - `flush` 直接写当前 project 的 `Project/` / `Feedback/`，不再经过 tmp。
+  - `recall` 保留 `none / user / project_memory` 三路 gate，但 `project_memory` 只面向当前 project：
+    - 不再做 project shortlist
+    - 不再做 tmp fallback
+    - 不再做 formal project selection
+    - 不再返回 `Project Clarification Required`
+  - `recall` 现在会把 `project.meta.md` 与 `global/User/user-profile.md` 一起注入上下文，并修复了 `user-profile.md` 重复注入。
+  - `dream` 现在只整理当前 project 的多条 `Project/Feedback` 记忆，并更新 `project.meta.md` 与 `user-profile.md`；不会创建第二层 project，也不会生成 tmp/formal promotion。
+  - dashboard 已改成单 current-project 视图，显示并可编辑：
+    - Current Project Meta
+    - Project Memory
+    - Feedback Memory
+    - User Profile
+    - Trace
+    - Settings
+
+- 本轮补充修复：
+  - 已修复：Dream / extractor 提示词里的旧 `tmp/formal project` 语义，已统一改为 current-project 语义。
+  - 已修复：`project.meta.md` 不再吸收 `current-stage`、`reporting-rule` 这类单条记忆文件名作为 alias。
+  - 已修复：`buildProjectMetaSeed()` 与 `upsertCandidate()` 现在只保留真正的 project alias，不再把 `Project/*.md` 条目名回填到 project meta。
+
+- 最新验证结果：
+  - `edgeclaw-memory-core`
+    - 通过：`npm run typecheck`
+    - 通过：`npm run build`
+  - `claudecodeui`
+    - 通过：`npm run typecheck`
+    - 通过：`npm run build`
+    - 说明：仍有仓库既有 CSS minify warning 和 chunk size warning，本轮未处理
+  - 服务级真实黑盒：
+    - 输入样本覆盖：
+      - current project 定义
+      - current project 阶段 / 风险 / 下一步
+      - current project 反馈规则
+      - global user 偏好
+    - `flush` 结果：
+      - `capturedSessions: 4`
+      - `writtenFiles: 3`
+      - `writtenProjectFiles: 2`
+      - `writtenFeedbackFiles: 1`
+      - `userProfilesUpdated: 1`
+    - `dream` 结果：
+      - `reviewedFiles: 3`
+      - `rewrittenProjects: 1`
+      - `deletedFiles: 3`
+      - `status: success`
+    - `project.meta.md`：
+      - 已稳定生成
+      - `projectName = EdgeClaw Memory Integration`
+      - `aliases` 不再混入 `current-stage`
+    - recall：
+      - `这个项目当前最大的风险是什么？`：
+        - `route = project_memory`
+        - `project.meta.md` 已注入
+        - `dream` 前后都能召回当前 project 风险
+      - `默认用什么语言回复？还有什么文件不能乱动？`：
+        - `route = user`
+        - `global/User/user-profile.md` 只注入 1 次
+        - `默认使用中文回复` 与 `.gitignore` 边界都能召回
+    - 写盘隔离：
+      - 未再出现 `projects/_tmp/...`
+      - 未再出现 `projects/project_*/project.meta.md`
+
+- 当前结论：
+  - current-project 重新校准已经落地完成。
+  - 现在的 memory 结构和语义已经重新对齐到你最初描述的 ClawXMemory 模型：
+    - 一个当前 project
+    - 一个 `project.meta.md`
+    - 多条 `Project/*.md`
+    - 多条 `Feedback/*.md`
+    - 一个 global user profile
+  - 当前改动仍然限定在 memory 相关模块，没有扩散到 `chat / files / shell / git / tasks` 主流程。

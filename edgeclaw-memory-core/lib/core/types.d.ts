@@ -146,10 +146,9 @@ export interface IndexingSettings {
     autoIndexIntervalMinutes: number;
     autoDreamIntervalMinutes: number;
 }
-export type MemoryActionType = "edit_project_meta" | "edit_entry" | "delete_entries" | "deprecate_entries" | "restore_entries" | "archive_tmp";
+export type MemoryActionType = "edit_project_meta" | "edit_entry" | "delete_entries" | "deprecate_entries" | "restore_entries";
 export interface EditProjectMetaActionRequest {
     action: "edit_project_meta";
-    projectId: string;
     projectName: string;
     description: string;
     aliases: string[];
@@ -186,14 +185,8 @@ export interface RestoreEntriesActionRequest {
     action: "restore_entries";
     ids: string[];
 }
-export interface ArchiveTmpActionRequest {
-    action: "archive_tmp";
-    ids: string[];
-    targetProjectId?: string;
-    newProjectName?: string;
-}
-export type MemoryActionRequest = EditProjectMetaActionRequest | EditEntryActionRequest | DeleteEntriesActionRequest | DeprecateEntriesActionRequest | RestoreEntriesActionRequest | ArchiveTmpActionRequest;
-export declare const MEMORY_EXPORT_FORMAT_VERSION: "clawxmemory-memory-snapshot.v3";
+export type MemoryActionRequest = EditProjectMetaActionRequest | EditEntryActionRequest | DeleteEntriesActionRequest | DeprecateEntriesActionRequest | RestoreEntriesActionRequest;
+export declare const MEMORY_EXPORT_FORMAT_VERSION: "clawxmemory-memory-snapshot.v4";
 export interface MemoryFileExportRecord extends MemoryFileFrontmatter {
     file: string;
     relativePath: string;
@@ -294,7 +287,7 @@ export interface RetrievalPromptDebug {
 }
 export type IndexTraceTrigger = "explicit_remember" | "manual_sync" | "scheduled";
 export type IndexTraceStatus = "running" | "completed" | "error";
-export type IndexTraceStorageKind = "global_user" | "tmp_project" | "tmp_feedback" | "formal_project" | "formal_feedback";
+export type IndexTraceStorageKind = "global_user" | "project" | "feedback";
 export interface IndexTraceBatchSummary {
     l0Ids: string[];
     segmentCount: number;
@@ -338,11 +331,9 @@ export type DreamTraceTrigger = "manual" | "scheduled";
 export type DreamTraceStatus = "running" | "completed" | "skipped" | "error";
 export type DreamTraceMutationAction = "write" | "delete" | "delete_project" | "rewrite_user_profile";
 export interface DreamTraceSnapshotSummary {
-    formalProjectCount: number;
-    tmpProjectCount: number;
-    tmpFeedbackCount: number;
-    formalProjectFileCount: number;
-    formalFeedbackFileCount: number;
+    projectMetaPresent: boolean;
+    projectFileCount: number;
+    feedbackFileCount: number;
     hasUserProfile: boolean;
 }
 export interface DreamTraceMutation {
@@ -470,9 +461,11 @@ export interface DashboardDiagnostics {
 }
 export interface DashboardOverview {
     pendingSessions: number;
-    formalProjectCount?: number;
+    projectMetaPresent?: boolean;
+    projectMemoryCount?: number;
+    feedbackMemoryCount?: number;
+    currentProjectCount?: number;
     userProfileCount?: number;
-    tmpTotalFiles?: number;
     recentRecallTraceCount?: number;
     recentIndexTraceCount?: number;
     recentDreamTraceCount?: number;

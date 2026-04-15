@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { DreamRewriteRunner, HeartbeatIndexer, LlmMemoryExtractor, MemoryRepository, ReasoningRetriever, hashText, nowIso, } from "./core/index.js";
 import { normalizeMessages, inspectTranscriptMessage, } from "./message-utils.js";
 const OPENCLAW_CONFIG_PATH = join(homedir(), ".openclaw", "openclaw.json");
@@ -62,7 +62,7 @@ function resolveDefaultRootDir(rootDir) {
 function resolveWorkspaceDataDir(workspaceDir, rootDir) {
     const seed = resolve(workspaceDir);
     const slug = hashText(seed);
-    return join(rootDir, slug);
+    return join(rootDir, slug, "current-project-v2");
 }
 function resolveOpenClawModelConfig() {
     if (cachedOpenClawModelConfig !== undefined) {
@@ -295,6 +295,15 @@ export class EdgeClawMemoryService {
     source;
     maintenancePromise = null;
     maintenanceQueued = false;
+    projectMetaSeed() {
+        const projectName = basename(this.workspaceDir) || "Current Project";
+        return {
+            projectName,
+            description: `${projectName} workspace memory`,
+            aliases: [projectName],
+            status: "in_progress",
+        };
+    }
     constructor(options) {
         this.workspaceDir = resolve(options.workspaceDir);
         const rootDir = resolveDefaultRootDir(options.rootDir);
@@ -310,6 +319,7 @@ export class EdgeClawMemoryService {
         this.repository = new MemoryRepository(this.dbPath, {
             memoryDir: this.memoryDir,
         });
+        this.repository.ensureProjectMeta(this.projectMetaSeed());
         this.extractor = new LlmMemoryExtractor(buildLlmConfig(options.llm), options.runtime, this.logger);
         this.indexer = new HeartbeatIndexer(this.repository, this.extractor, {
             settings: this.repository.getIndexingSettings(this.defaultIndexingSettings),
@@ -448,14 +458,11 @@ export class EdgeClawMemoryService {
     getUserSummary() {
         return this.repository.getFileMemoryStore().getUserSummary();
     }
-    listProjectMetas(options = {}) {
-        return this.repository.getFileMemoryStore().listProjectMetas(options);
+    getProjectMeta() {
+        return this.repository.getProjectMeta();
     }
-    getProjectMeta(projectId) {
-        return this.repository.getFileMemoryStore().getProjectMeta(projectId);
-    }
-    listTmpEntries(limit = 500) {
-        return this.repository.getFileMemoryStore().listTmpEntries(limit);
+    updateProjectMeta(input) {
+        return this.repository.editProjectMeta(input);
     }
     getSnapshotVersion() {
         return this.repository.getSnapshotVersion();
@@ -489,6 +496,7 @@ export class EdgeClawMemoryService {
     }
     clear() {
         const result = this.repository.clearAllMemoryData();
+        this.repository.ensureProjectMeta(this.projectMetaSeed());
         this.retriever.resetTransientState();
         return result;
     }
@@ -497,15 +505,14 @@ export class EdgeClawMemoryService {
         let mutatedIds = [];
         let deletedProjectIds = [];
         if (input.action === "edit_project_meta") {
-            const project = this.repository.editProjectMeta({
-                projectId: input.projectId,
+            const meta = this.repository.editProjectMeta({
                 projectName: input.projectName,
                 description: input.description,
                 aliases: input.aliases,
                 status: input.status,
             });
-            mutatedIds = [project.relativePath];
-            messages.push(`Updated project meta for ${project.projectName}.`);
+            mutatedIds = [meta.relativePath];
+            messages.push(`Updated current project metadata for ${meta.projectName}.`);
         }
         else if (input.action === "edit_entry") {
             const record = this.repository.editMemoryEntry({
@@ -537,17 +544,6 @@ export class EdgeClawMemoryService {
             mutatedIds = result.mutatedIds;
             deletedProjectIds = result.deletedProjectIds;
             messages.push(`Restored ${result.mutatedIds.length} memory file${result.mutatedIds.length === 1 ? "" : "s"}.`);
-        }
-        else {
-            const result = this.repository.archiveTmpEntries({
-                ids: input.ids,
-                ...(input.targetProjectId ? { targetProjectId: input.targetProjectId } : {}),
-                ...(input.newProjectName ? { newProjectName: input.newProjectName } : {}),
-            });
-            mutatedIds = result.mutatedIds;
-            messages.push(result.createdProjectId
-                ? `Archived ${result.mutatedIds.length} tmp file${result.mutatedIds.length === 1 ? "" : "s"} into new project ${result.targetProjectId}.`
-                : `Archived ${result.mutatedIds.length} tmp file${result.mutatedIds.length === 1 ? "" : "s"} into ${result.targetProjectId}.`);
         }
         this.retriever.resetTransientState();
         return {

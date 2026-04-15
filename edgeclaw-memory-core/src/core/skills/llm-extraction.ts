@@ -334,36 +334,28 @@ const STABLE_FORMAL_PROJECT_ID_PATTERN = /^project_[a-z0-9]+$/;
 const DREAM_FILE_GLOBAL_PLAN_SYSTEM_PROMPT = `
 You are the Dream global audit planner for a file-memory system.
 
-Your job is to inspect existing formal and temporary project memory files, then produce a single executable reorganization plan.
+Your job is to inspect the current project's metadata and memory files, then produce a single executable reorganization plan for that current project.
 
 Rules:
-- Use only the supplied project meta files and memory file snapshots as evidence.
+- Use only the supplied current-project metadata and memory file snapshots as evidence.
 - Do not invent projects, files, facts, or merges that are not supported by the provided memory files.
-- Decide final project boundaries globally before any rewrite happens.
+- This runtime has exactly one top-level current project for the active workspace.
+- Do not create extra sibling projects, tmp projects, or umbrella projects.
+- Decide the final file-level organization for the current project before any rewrite happens.
 - Natural-language output fields must follow the dominant language already present in the supplied records and project metas.
 - If the supplied evidence is mainly Chinese, write summaries, project_name, description, aliases, and any other natural-language output in Chinese.
 - Keys and enums must remain in English.
-- Different explicit user-named projects must remain separate by default.
-- Similar project names, shared prefixes, or small wording differences do NOT imply the same project.
-- Shared domain, shared workflow, shared delivery rules, or the same user are NOT sufficient evidence for a merge.
-- Do not create a broader umbrella project that absorbs multiple more specific user-named projects.
-- If two explicit project names can both stand on their own as valid user projects, keep them separate unless the evidence explicitly shows rename, alias equivalence, or duplicate formal identity.
-- duplicate_formal_project is only for multiple already-existing formal project identities that are actually duplicates. Do not use duplicate_formal_project for two tmp-only project groups.
-- If two tmp project groups have different explicit project names, keep them separate unless the evidence explicitly proves rename or alias equivalence.
-- Example of keep-separate: "城市咖啡探店爆文" and "城市咖啡馆探店爆文" are two different projects unless the supplied files explicitly say one was renamed from the other or that they are aliases of the same project.
+- Multiple Project/*.md and Feedback/*.md files under the current project are expected and correct.
+- If two explicit project names appear in the memories, treat them as alternative names, phases, or topic labels inside the same current project unless the evidence clearly says they are unrelated noise that should be deleted.
 - You may:
-  - attach tmp files to an existing formal project
-  - merge two formal projects into one surviving formal project
-  - keep a tmp-only group as a brand-new formal project
-  - delete an old formal project only when its surviving content is fully absorbed elsewhere
-- If you merge entries from multiple distinct explicit project names into one final project, you must provide:
-  - merge_reason: one of rename, alias_equivalence, duplicate_formal_project
-  - evidence_entry_ids: retained entry ids that directly support the merge
-- evidence_entry_ids must point to explicit rename, alias, or duplicate-identity evidence, not merely overlapping topics, same domain, shared workflow, or shared feedback.
-- If you are not fully sure a merge is warranted, keep the projects separate.
+  - rewrite current-project metadata
+  - merge redundant files within the current project
+  - keep multiple files when they represent distinct durable memories within the current project
+  - delete old files only when their durable content is fully absorbed elsewhere
+- If you consolidate files that use different project labels inside the same current project, keep project_name user-recognizable and capture useful aliases.
 - Each retained entry id must appear in exactly one output project.
 - deleted_entry_ids should only include files that are redundant, superseded, or absorbed by other rewritten files.
-- deleted_project_ids should only include existing formal project ids that are fully absorbed.
+- deleted_project_ids should stay empty in current-project mode.
 - Keep project names user-recognizable and aliases concise.
 - Return valid JSON only.
 
@@ -375,18 +367,18 @@ Use this exact JSON shape:
   "projects": [
     {
       "plan_key": "stable planner-local key",
-      "target_project_id": "existing formal project id or empty string",
+      "target_project_id": "current_project",
       "project_name": "final project name",
       "description": "final project description",
       "aliases": ["alias 1", "alias 2"],
       "status": "active",
       "merge_reason": "",
-      "evidence_entry_ids": ["projects/project_x/Project/current-stage.md"],
-      "retained_entry_ids": ["projects/_tmp/Project/foo.md", "projects/project_x/Feedback/bar.md"]
+      "evidence_entry_ids": ["Project/current-stage.md"],
+      "retained_entry_ids": ["Project/foo.md", "Feedback/bar.md"]
     }
   ],
-  "deleted_project_ids": ["project_old"],
-  "deleted_entry_ids": ["projects/_tmp/Feedback/old.md"]
+  "deleted_project_ids": [],
+  "deleted_entry_ids": ["Feedback/old.md"]
 }
 `.trim();
 
@@ -424,7 +416,7 @@ Use this exact JSON shape:
       "type": "project",
       "name": "current-stage",
       "description": "current project state",
-      "source_entry_ids": ["projects/_tmp/Project/a.md"],
+      "source_entry_ids": ["Project/a.md"],
       "stage": "current stage",
       "decisions": ["decision"],
       "constraints": ["constraint"],
@@ -437,14 +429,14 @@ Use this exact JSON shape:
       "type": "feedback",
       "name": "delivery-rule",
       "description": "delivery preference",
-      "source_entry_ids": ["projects/_tmp/Feedback/b.md"],
+      "source_entry_ids": ["Feedback/b.md"],
       "rule": "the rule",
       "why": "why it matters",
       "how_to_apply": "when to apply it",
       "notes": ["note"]
     }
   ],
-  "deleted_entry_ids": ["projects/_tmp/Project/obsolete.md"]
+  "deleted_entry_ids": ["Project/obsolete.md"]
 }
 `.trim();
 
@@ -560,29 +552,30 @@ function buildUserProfileRewritePrompt(input: {
 }
 
 function buildDreamFileGlobalPlanPrompt(input: LlmDreamFileGlobalPlanInput): string {
-  const formalProjectNames = Array.from(new Set(
+  const currentProjectNames = Array.from(new Set(
     input.currentProjects
       .map((project) => normalizeWhitespace(project.projectName))
       .filter(Boolean),
   ));
-  const tmpProjectNames = Array.from(new Set(
+  const observedMemoryLabels = Array.from(new Set(
     input.records
-      .filter((record) => record.isTmp && record.type === "project")
+      .filter((record) => record.type === "project")
       .map((record) => normalizeWhitespace(record.name))
       .filter(Boolean),
   ));
   return JSON.stringify({
     governance_scope: {
       mode: "dream_file_global_plan",
+      workspace_mode: "current_project",
       primary_truth: "existing_file_memories_only",
       writable_targets: ["project.meta.md", "Project/*.md", "Feedback/*.md"],
       forbidden_outputs: ["new project-level summary file", "new summary layer"],
     },
     merge_constraints: {
-      formal_project_names: formalProjectNames,
-      tmp_project_names: tmpProjectNames,
-      duplicate_formal_project_requires_multiple_formal_identities: true,
-      distinct_tmp_project_names_remain_separate_by_default: true,
+      current_project_names: currentProjectNames,
+      observed_memory_labels: observedMemoryLabels,
+      keep_multiple_memory_files_within_current_project: true,
+      do_not_create_additional_top_level_projects: true,
     },
     current_projects: input.currentProjects.map((project) => ({
       project_id: project.projectId,
@@ -1074,12 +1067,12 @@ function extractUserConstraintHints(text: string): string[] {
 }
 
 function looksLikeConcreteProjectMemoryText(text: string): boolean {
-  return /(目标是|当前卡点|里程碑|要出可演示版本|要给团队试用|阶段|进展|deadline|blocker|next step|版本|试用|发布|第一版|只做|先做|不碰|约束|限制|一期范围|当前范围|保留|新增一级|memory tab|当前风险|跨会话召回|formal project|tmp 项目记忆)/i
+  return /(目标是|当前卡点|里程碑|要出可演示版本|要给团队试用|阶段|进展|deadline|blocker|next step|版本|试用|发布|第一版|只做|先做|不碰|约束|限制|一期范围|当前范围|保留|新增一级|memory tab|当前风险|跨会话召回|project\.meta|当前 project)/i
     .test(normalizeWhitespace(text));
 }
 
 function looksLikeProjectRiskText(text: string): boolean {
-  return /(当前风险|风险是|主要风险|核心风险|跨会话召回|formal project|tmp 项目记忆|召回[^。；;\n]*formal|召回[^。；;\n]*tmp)/i
+  return /(当前风险|风险是|主要风险|核心风险|跨会话召回|project\.meta|当前 project|召回[^。；;\n]*project|召回[^。；;\n]*当前项目)/i
     .test(normalizeWhitespace(text));
 }
 
@@ -1294,10 +1287,13 @@ function sanitizeFeedbackSectionText(value: string | undefined): string {
     /explicit project collaboration preference captured from the user/i,
     /project anchor is not formalized yet/i,
     /project-local collaboration instruction without a formal project id yet/i,
+    /project-local collaboration instruction for the current project/i,
     /project-local collaboration rule rather than a standalone project memory/i,
     /follow this collaboration rule in future project replies unless the user overrides it/i,
     /apply this rule only after dream attaches it to a formal project context/i,
     /keep it in temporary project memory until dream can attach it to the right project/i,
+    /apply this rule in the current project context/i,
+    /keep this as current-project feedback memory/i,
   ].some((pattern) => pattern.test(normalized))) {
     return "";
   }
@@ -2066,7 +2062,7 @@ export class LlmMemoryExtractor {
           "Allowed item.type values: user, feedback, project.",
           "Discard anything that is too transient or not useful across future sessions.",
           "Use the batch context to interpret ambiguous references in the focus turn, but only emit memories justified by the focus user turn itself.",
-          "known_projects contains durable project identities already seen in this workspace, including temporary project names when available.",
+          "known_projects contains the durable identity of the current workspace project.",
           "The assistant replies in the batch context are supporting context only. Never create a memory candidate from assistant wording alone.",
           "For user items only keep stable identity, preferences, constraints, or durable relationships. Never place project state or task details inside user memory.",
           "First-person statements about the user's own long-term taste or quality bar are user memory, not feedback. Example: '我做文案时很在意标题和封面文案的一致性。' => user.",
@@ -2077,17 +2073,17 @@ export class LlmMemoryExtractor {
           "For feedback items: why means why the user gave this feedback, usually a past incident, strong preference, or explicit dissatisfaction. Do not invent a reason if the transcript does not contain one.",
           "For feedback items: how_to_apply means when or where this guidance should be applied, such as during progress updates, reviews, or project replies. Do not restate the rule verbatim if the application context is unclear.",
           "If the transcript gives a rule but not enough evidence for why or how_to_apply, return an empty string for those fields.",
-          "Feedback belongs to a project workflow; if project_id is unclear you may omit it so the system can stage it in temporary project memory.",
-          "If the batch context contains exactly one matching project identity, attach project_id to the feedback item. Otherwise leave project_id empty.",
-          "For project items always prefer name plus description. project_id is optional and only for an already-known formal id such as project_xxx.",
+          "Feedback belongs to the current project workflow; if project_id is unclear you may omit it because the runtime already knows the current project.",
+          "If the batch context contains the current project identity, you may attach project_id to the feedback item; leaving it empty is also acceptable in current-project mode.",
+          "For project items always prefer name plus description. project_id is optional and only refers to the current project identity when supplied.",
           "If you only know the project's human-readable title, put it in name and leave project_id empty.",
           "Do not put a human-readable project title only inside project_id.",
           "For project items provide stage, decisions, constraints, next_steps, blockers, and absolute-date timeline entries when dates are mentioned. You may omit project_id when the project identity is still unclear.",
           "A project-definition turn is about project name, what the project is, its stage, goals, blockers, milestones, or timeline. A delivery rule alone is never a project item.",
           "Treat explicit project-definition statements as project memory even without a remember command. Examples: '这个项目先叫 Boreal', '它是一个本地知识库整理工具', '目前还在设计阶段'.",
           "Natural follow-up turns can still be project memory even when they do not repeat the project name.",
-          "If the batch context already contains exactly one project identity, and the focus turn says things like '这个项目接下来最该补的是...', '这个方向还差...', '先把镜头顺序模板化', or mentions stage, priorities, blockers, constraints, target audience, or content angle, emit a project item for that unique project.",
-          "If known_projects contains exactly one plausible project identity and the focus turn states current scope, retained tools, risks, blockers, or project follow-up facts without repeating the project name, attach the memory to that known project instead of inventing a new project name.",
+          "If the batch context already contains the current project identity, and the focus turn says things like '这个项目接下来最该补的是...', '这个方向还差...', '先把镜头顺序模板化', or mentions stage, priorities, blockers, constraints, target audience, or content angle, emit a project item for that current project.",
+          "If known_projects contains the current project identity and the focus turn states current scope, retained tools, risks, blockers, or project follow-up facts without repeating the project name, attach the memory to that current project instead of inventing a new top-level project.",
           "Do not require the focus turn to repeat the project name when the batch context already makes the project identity unique.",
           "Treat explicit collaboration instructions as feedback. Example: '在这个项目里，每次给我交付时都先给3个标题，再给正文，再给封面文案。'",
           "When a transcript names a project, describes what the project is, or states its current stage, emit a project item unless the content is obviously too transient.",

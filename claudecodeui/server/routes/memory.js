@@ -3,7 +3,6 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
-  TMP_PROJECT_ID,
   MemoryBundleValidationError,
 } from '../../../edgeclaw-memory-core/lib/index.js';
 import { getMemoryServiceForRequest } from '../services/memoryService.js';
@@ -39,81 +38,11 @@ function normalizeSearchText(value) {
   return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-function latestUpdatedAt(meta, entries) {
-  return [meta.updatedAt, ...entries.map((entry) => entry.updatedAt)]
-    .filter(Boolean)
-    .sort((left, right) => right.localeCompare(left))[0] || '';
-}
-
-function buildProjectGroups(repository, { query = '', limit = 50, offset = 0 } = {}) {
+function buildWorkspaceSnapshot(repository, { query = '', limit = 100, offset = 0 } = {}) {
   const store = repository.getFileMemoryStore();
-  const normalizedQuery = normalizeSearchText(query);
-  const groups = store.listProjectMetas().map((meta) => {
-    const entries = repository.listMemoryEntries({
-      scope: 'project',
-      projectId: meta.projectId,
-      limit: 500,
-      includeDeprecated: true,
-    });
-    const activeEntries = entries.filter((entry) => !entry.deprecated);
-    const deprecatedEntries = entries.filter((entry) => entry.deprecated);
-    const projectEntries = activeEntries.filter((entry) => entry.type === 'project');
-    const feedbackEntries = activeEntries.filter((entry) => entry.type === 'feedback');
-    const deprecatedProjectEntries = deprecatedEntries.filter((entry) => entry.type === 'project');
-    const deprecatedFeedbackEntries = deprecatedEntries.filter((entry) => entry.type === 'feedback');
-
-    return {
-      projectId: meta.projectId,
-      projectName: meta.projectName,
-      description: meta.description,
-      aliases: [...meta.aliases],
-      status: meta.status,
-      updatedAt: latestUpdatedAt(meta, activeEntries),
-      projectEntries,
-      feedbackEntries,
-      deprecatedProjectEntries,
-      deprecatedFeedbackEntries,
-      projectCount: projectEntries.length,
-      feedbackCount: feedbackEntries.length,
-    };
-  });
-
-  const visibleGroups = groups.filter(
-    (group) => group.projectCount + group.feedbackCount > 0,
-  );
-  const filtered = !normalizedQuery
-    ? visibleGroups
-    : visibleGroups.filter((group) =>
-        normalizeSearchText(
-          [
-            group.projectName,
-            group.description,
-            ...group.aliases,
-            ...group.projectEntries.flatMap((entry) => [
-              entry.name,
-              entry.description,
-              entry.relativePath,
-            ]),
-            ...group.feedbackEntries.flatMap((entry) => [
-              entry.name,
-              entry.description,
-              entry.relativePath,
-            ]),
-          ].join(' '),
-        ).includes(normalizedQuery),
-      );
-
-  return filtered
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .slice(offset, offset + limit);
-}
-
-function buildTmpSnapshot(repository, { query = '', limit = 100, offset = 0 } = {}) {
-  const store = repository.getFileMemoryStore();
+  const projectMeta = store.getProjectMeta() ?? null;
   const manifestEntries = repository.listMemoryEntries({
     scope: 'project',
-    projectId: TMP_PROJECT_ID,
-    includeTmp: true,
     includeDeprecated: true,
     limit: 1000,
   });
@@ -139,10 +68,12 @@ function buildTmpSnapshot(repository, { query = '', limit = 100, offset = 0 } = 
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(offset, offset + limit);
   const activeFiltered = filtered.filter((record) => !record.deprecated);
-  const manifestPath = path.join(store.getRootDir(), 'projects', TMP_PROJECT_ID, 'MEMORY.md');
+  const manifestPath = path.join(store.getRootDir(), 'MEMORY.md');
 
   return {
-    manifestPath: `projects/${TMP_PROJECT_ID}/MEMORY.md`,
+    projectMetaPath: projectMeta ? 'project.meta.md' : null,
+    projectMeta,
+    manifestPath: 'MEMORY.md',
     manifestContent: (() => {
       try {
         return fs.readFileSync(manifestPath, 'utf-8');
@@ -211,14 +142,12 @@ router.get('/snapshot', async (req, res) =>
 router.get('/memory/list', async (req, res) =>
   withMemoryService(req, res, async ({ service }) => {
     const kind = parseMemoryKind(req.query.kind);
-    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId.trim() : '';
     const query = typeof req.query.query === 'string' ? req.query.query.trim() : '';
     const limit = parseLimit(req.query.limit, 10);
     const offset = parseOffset(req.query.offset, 0);
     const items = service.list({
       ...(kind !== 'all' ? { kinds: [kind] } : {}),
       ...(query ? { query } : {}),
-      ...(projectId ? { projectId } : {}),
       limit,
       offset,
     });
@@ -257,24 +186,28 @@ router.get('/memory/user-summary', async (req, res) =>
   }),
 );
 
-router.get('/projects', async (req, res) =>
+router.route('/project-meta')
+  .get(async (req, res) =>
+    withMemoryService(req, res, async ({ service }) => {
+      res.json(service.getProjectMeta());
+    }))
+  .post(async (req, res) =>
+    withMemoryService(req, res, async ({ service }) => {
+      try {
+        res.json(service.updateProjectMeta(req.body ?? {}));
+      } catch (error) {
+        res.status(400).json({
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }));
+
+router.get('/workspace', async (req, res) =>
   withMemoryService(req, res, async ({ repository }) => {
     res.json(
-      buildProjectGroups(repository, {
+      buildWorkspaceSnapshot(repository, {
         query: getQuery(req),
         limit: parseLimit(req.query.limit, 100),
-        offset: parseOffset(req.query.offset, 0),
-      }),
-    );
-  }),
-);
-
-router.get('/tmp', async (req, res) =>
-  withMemoryService(req, res, async ({ repository }) => {
-    res.json(
-      buildTmpSnapshot(repository, {
-        query: getQuery(req),
-        limit: parseLimit(req.query.limit, 200),
         offset: parseOffset(req.query.offset, 0),
       }),
     );

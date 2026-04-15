@@ -31,7 +31,6 @@ export const memoryListParameters = lazySchema(() =>
       .optional()
       .describe('Memory kind to browse.'),
     query: z.string().optional().describe('Optional search string for browsing memory.'),
-    projectId: z.string().optional().describe('Optional project id to filter project memories.'),
     limit: z.number().int().min(1).max(50).optional().describe('Maximum items to return.'),
     offset: z.number().int().min(0).optional().describe('Skip this many results before returning items.'),
   }),
@@ -73,7 +72,6 @@ export function buildListItem(item: {
   relativePath: string
   type: string
   scope: string
-  projectId?: string | null
   name: string
   description: string
   updatedAt: string
@@ -83,7 +81,6 @@ export function buildListItem(item: {
     id: item.relativePath,
     type: item.type,
     scope: item.scope,
-    projectId: item.projectId ?? null,
     name: item.name,
     description: item.description,
     updatedAt: item.updatedAt,

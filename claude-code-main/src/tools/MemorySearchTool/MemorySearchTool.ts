@@ -37,23 +37,12 @@ export const MemorySearchTool = buildTool({
   },
   async call({ query }) {
     const result = await getMemoryService().search(query)
-    const selectedProjectId = result.debug?.resolvedProjectId ?? null
-    const disambiguationRequired =
-      result.intent === 'project_memory' && !selectedProjectId
     return {
       data: {
         ok: true,
         query: result.query,
         route: result.intent,
         context: result.context,
-        selectedProjectId,
-        disambiguationRequired,
-        ...(disambiguationRequired
-          ? {
-              warning:
-                'No formal project was selected from memory. Ask the user to clarify which project they mean.',
-            }
-          : {}),
         refs: {
           files: result.debug?.selectedFileIds ?? [],
         },

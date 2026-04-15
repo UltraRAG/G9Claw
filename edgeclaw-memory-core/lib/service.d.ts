@@ -44,8 +44,6 @@ export interface MemoryListOptions {
     limit?: number;
     offset?: number;
     scope?: "global" | "project";
-    projectId?: string;
-    includeTmp?: boolean;
     includeDeprecated?: boolean;
 }
 export declare function buildMemoryRecallSystemContext(evidenceBlock: string): string;
@@ -71,6 +69,7 @@ export declare class EdgeClawMemoryService {
     private readonly source;
     private maintenancePromise;
     private maintenanceQueued;
+    private projectMetaSeed;
     constructor(options: EdgeClawMemoryServiceOptions);
     close(): void;
     getSettings(): IndexingSettings;
@@ -107,11 +106,13 @@ export declare class EdgeClawMemoryService {
     list(options?: MemoryListOptions): import("./core/types.js").MemoryManifestEntry[];
     get(ids: string[], maxLines?: number): import("./core/types.js").MemoryFileRecord[];
     getUserSummary(): import("./core/types.js").MemoryUserSummary;
-    listProjectMetas(options?: {
-        includeTmp?: boolean;
-    }): import("./core/types.js").ProjectMetaRecord[];
-    getProjectMeta(projectId: string): import("./core/types.js").ProjectMetaRecord | undefined;
-    listTmpEntries(limit?: number): import("./core/types.js").MemoryManifestEntry[];
+    getProjectMeta(): import("./core/types.js").ProjectMetaRecord | undefined;
+    updateProjectMeta(input: {
+        projectName: string;
+        description: string;
+        aliases?: string[];
+        status: string;
+    }): import("./core/types.js").ProjectMetaRecord;
     getSnapshotVersion(): string;
     listCaseTraces(limit?: number): import("./core/types.js").CaseTraceRecord[];
     getCaseTrace(caseId: string): import("./core/types.js").CaseTraceRecord | undefined;

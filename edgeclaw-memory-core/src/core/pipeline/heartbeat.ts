@@ -13,7 +13,6 @@ import type {
 } from "../types.js";
 import { LlmMemoryExtractor, type FileMemoryExtractionDebug } from "../skills/llm-extraction.js";
 import { MemoryRepository } from "../storage/sqlite.js";
-import { TMP_PROJECT_ID } from "../file-memory.js";
 import { traceI18n } from "../trace-i18n.js";
 import { buildL0IndexId, hashText, nowIso } from "../utils/id.js";
 import { decodeEscapedUnicodeText, decodeEscapedUnicodeValue } from "../utils/text.js";
@@ -158,34 +157,19 @@ function describeCandidate(candidate: MemoryCandidate): string {
 
 function inferStorageKind(record: MemoryFileRecord): IndexTraceStoredResult["storageKind"] {
   if (record.type === "user") return "global_user";
-  if (record.projectId === TMP_PROJECT_ID) {
-    return record.type === "feedback" ? "tmp_feedback" : "tmp_project";
-  }
-  return record.type === "feedback" ? "formal_feedback" : "formal_project";
+  return record.type === "feedback" ? "feedback" : "project";
 }
 
 function inferGroupingLabel(
-  repository: MemoryRepository,
+  _repository: MemoryRepository,
   candidate: MemoryCandidate,
 ): { projectId?: string; storageKind: IndexTraceStoredResult["storageKind"]; label: string } {
   if (candidate.type === "user") {
     return { storageKind: "global_user", label: "global user profile" };
   }
-  const store = repository.getFileMemoryStore();
-  const formalProjectId = candidate.projectId?.trim() && store.getProjectMeta(candidate.projectId)
-    ? candidate.projectId.trim()
-    : "";
-  if (formalProjectId) {
-    return {
-      projectId: formalProjectId,
-      storageKind: candidate.type === "feedback" ? "formal_feedback" : "formal_project",
-      label: `formal:${formalProjectId}`,
-    };
-  }
   return {
-    projectId: TMP_PROJECT_ID,
-    storageKind: candidate.type === "feedback" ? "tmp_feedback" : "tmp_project",
-    label: candidate.type === "feedback" ? "tmp feedback (no unique project anchor)" : "tmp project",
+    storageKind: candidate.type === "feedback" ? "feedback" : "project",
+    label: candidate.type === "feedback" ? "current project feedback" : "current project memory",
   };
 }
 

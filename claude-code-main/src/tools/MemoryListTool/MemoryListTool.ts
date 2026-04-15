@@ -39,7 +39,6 @@ export const MemoryListTool = buildTool({
   async call({
     kind = 'all',
     query = '',
-    projectId = '',
     limit = 10,
     offset = 0,
   }) {
@@ -49,7 +48,6 @@ export const MemoryListTool = buildTool({
           ? { kinds: [kind] as Array<'user' | 'feedback' | 'project'> }
           : {}),
         ...(query ? { query } : {}),
-        ...(projectId ? { projectId } : {}),
         limit,
         offset,
       })
@@ -60,7 +58,6 @@ export const MemoryListTool = buildTool({
         ok: true,
         kind,
         query,
-        projectId,
         limit,
         offset,
         count: items.length,

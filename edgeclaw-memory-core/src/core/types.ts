@@ -171,12 +171,10 @@ export type MemoryActionType =
   | "edit_entry"
   | "delete_entries"
   | "deprecate_entries"
-  | "restore_entries"
-  | "archive_tmp";
+  | "restore_entries";
 
 export interface EditProjectMetaActionRequest {
   action: "edit_project_meta";
-  projectId: string;
   projectName: string;
   description: string;
   aliases: string[];
@@ -219,21 +217,13 @@ export interface RestoreEntriesActionRequest {
   ids: string[];
 }
 
-export interface ArchiveTmpActionRequest {
-  action: "archive_tmp";
-  ids: string[];
-  targetProjectId?: string;
-  newProjectName?: string;
-}
-
 export type MemoryActionRequest =
   | EditProjectMetaActionRequest
   | EditEntryActionRequest
   | DeleteEntriesActionRequest
   | DeprecateEntriesActionRequest
-  | RestoreEntriesActionRequest
-  | ArchiveTmpActionRequest;
-export const MEMORY_EXPORT_FORMAT_VERSION = "clawxmemory-memory-snapshot.v3" as const;
+  | RestoreEntriesActionRequest;
+export const MEMORY_EXPORT_FORMAT_VERSION = "clawxmemory-memory-snapshot.v4" as const;
 
 export interface MemoryFileExportRecord extends MemoryFileFrontmatter {
   file: string;
@@ -355,10 +345,8 @@ export type IndexTraceTrigger = "explicit_remember" | "manual_sync" | "scheduled
 export type IndexTraceStatus = "running" | "completed" | "error";
 export type IndexTraceStorageKind =
   | "global_user"
-  | "tmp_project"
-  | "tmp_feedback"
-  | "formal_project"
-  | "formal_feedback";
+  | "project"
+  | "feedback";
 
 export interface IndexTraceBatchSummary {
   l0Ids: string[];
@@ -418,11 +406,9 @@ export type DreamTraceStatus = "running" | "completed" | "skipped" | "error";
 export type DreamTraceMutationAction = "write" | "delete" | "delete_project" | "rewrite_user_profile";
 
 export interface DreamTraceSnapshotSummary {
-  formalProjectCount: number;
-  tmpProjectCount: number;
-  tmpFeedbackCount: number;
-  formalProjectFileCount: number;
-  formalFeedbackFileCount: number;
+  projectMetaPresent: boolean;
+  projectFileCount: number;
+  feedbackFileCount: number;
   hasUserProfile: boolean;
 }
 
@@ -586,9 +572,11 @@ export interface DashboardDiagnostics {
 
 export interface DashboardOverview {
   pendingSessions: number;
-  formalProjectCount?: number;
+  projectMetaPresent?: boolean;
+  projectMemoryCount?: number;
+  feedbackMemoryCount?: number;
+  currentProjectCount?: number;
   userProfileCount?: number;
-  tmpTotalFiles?: number;
   recentRecallTraceCount?: number;
   recentIndexTraceCount?: number;
   recentDreamTraceCount?: number;

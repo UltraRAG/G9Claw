@@ -1,36 +1,25 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync, } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { hashText, nowIso } from "./utils/id.js";
-import { truncate } from "./utils/text.js";
-const GLOBAL_DIR = "global";
-const USER_DIR = "User";
-const FEEDBACK_DIR = "Feedback";
-const PROJECTS_DIR = "projects";
-const PROJECT_DIR = "Project";
-const ARCHIVE_DIR = "Archive";
 const MANIFEST_FILE = "MEMORY.md";
 const PROJECT_META_FILE = "project.meta.md";
+const GLOBAL_DIR = "global";
+const USER_DIR = "User";
+const PROJECT_DIR = "Project";
+const FEEDBACK_DIR = "Feedback";
+const USER_PROFILE_RELATIVE_PATH = join(GLOBAL_DIR, USER_DIR, "user-profile.md");
+const DEFAULT_PROJECT_NAME = "Current Project";
+const DEFAULT_PROJECT_STATUS = "in_progress";
 export const TMP_PROJECT_ID = "_tmp";
-const STABLE_FORMAL_PROJECT_ID_PATTERN = /^project_[a-z0-9]+$/;
-const RECALL_HEADER_SCAN_LINE_LIMIT = 30;
-const RECALL_HEADER_SCAN_BYTE_LIMIT = 16_384;
+export const CURRENT_PROJECT_ID = "current_project";
 function ensureDir(path) {
     mkdirSync(path, { recursive: true });
 }
 function normalizeWhitespace(value) {
-    return value.replace(/\s+/g, " ").trim();
+    return (value ?? "").replace(/\s+/g, " ").trim();
 }
-function normalizeProjectId(value) {
-    const trimmed = normalizeWhitespace(value ?? "");
-    if (!trimmed)
-        return "";
-    if (trimmed === TMP_PROJECT_ID)
-        return TMP_PROJECT_ID;
-    return trimmed.toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "";
-}
-function isStableFormalProjectId(value) {
-    const normalized = normalizeProjectId(value);
-    return Boolean(normalized && normalized !== TMP_PROJECT_ID && STABLE_FORMAL_PROJECT_ID_PATTERN.test(normalized));
+function normalizeDescription(value, fallback = "") {
+    return normalizeWhitespace(value) || normalizeWhitespace(fallback);
 }
 function slugify(value) {
     const normalized = normalizeWhitespace(value)
@@ -39,83 +28,102 @@ function slugify(value) {
         .replace(/^-+|-+$/g, "");
     return normalized || "memory-item";
 }
-function normalizeIdentityText(value) {
-    return normalizeWhitespace(value ?? "").toLowerCase();
-}
-function isProjectAliasCandidate(value) {
-    const normalized = normalizeWhitespace(value ?? "");
-    if (!normalized)
-        return false;
-    if (normalized.length > 80)
-        return false;
-    if (/[。！？!?]/.test(normalized))
-        return false;
-    if (/(先给|再给|封面文案|正文|标题|汇报时|同步进展|怎么协作|怎么交付|怎么汇报)/i.test(normalized)) {
-        return false;
-    }
-    return true;
-}
-function sanitizeProjectAliases(items, fallbackProjectName) {
-    const aliases = [
-        ...(items ?? []),
-        ...(fallbackProjectName ? [fallbackProjectName] : []),
-    ].filter((item) => typeof item === "string");
-    return uniqueItems(aliases.filter((item) => isProjectAliasCandidate(item)), 50);
-}
-function uniqueItems(items, maxItems = 12) {
-    return Array.from(new Set((items ?? [])
-        .filter((item) => typeof item === "string")
-        .map((item) => normalizeWhitespace(item))
-        .filter(Boolean))).slice(0, maxItems);
-}
-function parseFlatFrontmatter(raw) {
-    if (!raw.startsWith("---\n")) {
-        return { values: {}, body: raw.trim() };
-    }
-    const end = raw.indexOf("\n---\n", 4);
-    if (end < 0) {
-        return { values: {}, body: raw.trim() };
-    }
-    const header = raw.slice(4, end);
-    const body = raw.slice(end + 5).trim();
-    const values = {};
-    for (const line of header.split("\n")) {
-        const colon = line.indexOf(":");
-        if (colon < 0)
+function uniqueStrings(values, max = 50) {
+    const seen = new Set();
+    const next = [];
+    for (const value of values) {
+        const normalized = normalizeWhitespace(value);
+        if (!normalized || seen.has(normalized))
             continue;
-        const key = line.slice(0, colon).trim();
-        const value = line.slice(colon + 1).trim();
-        values[key] = value;
+        seen.add(normalized);
+        next.push(normalized);
+        if (next.length >= max)
+            break;
     }
-    return { values, body };
+    return next;
 }
-function parseFrontmatter(raw) {
-    const fallback = {
-        name: "memory-item",
-        description: "",
-        type: "user",
-        scope: "global",
-        updatedAt: nowIso(),
-    };
-    const { values, body } = parseFlatFrontmatter(raw);
-    if (Object.keys(values).length === 0) {
-        return { frontmatter: fallback, body };
+function splitLines(value) {
+    return value.replace(/\r\n/g, "\n").split("\n");
+}
+function trimContentLines(content, maxLines) {
+    if (maxLines <= 0)
+        return "";
+    const lines = splitLines(content);
+    if (lines.length <= maxLines)
+        return content;
+    return `${lines.slice(0, maxLines).join("\n")}\n...`;
+}
+function previewContent(content, maxChars = 220) {
+    const normalized = normalizeWhitespace(content.replace(/^#+\s+/gm, ""));
+    if (normalized.length <= maxChars)
+        return normalized;
+    return `${normalized.slice(0, maxChars)}...`;
+}
+function parseBoolean(value) {
+    if (value === "true")
+        return true;
+    if (value === "false")
+        return false;
+    return undefined;
+}
+function parseInteger(value) {
+    const parsed = Number.parseInt(String(value ?? ""), 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+function parseStringArray(value) {
+    const raw = normalizeWhitespace(value);
+    if (!raw)
+        return [];
+    if (raw.startsWith("[") && raw.endsWith("]")) {
+        try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+                return uniqueStrings(parsed.filter((item) => typeof item === "string"));
+            }
+        }
+        catch {
+            // Fall through.
+        }
     }
-    const type = values.type === "feedback" || values.type === "project" ? values.type : "user";
-    const scope = values.scope === "project" ? "project" : "global";
-    const dreamAttempts = Number.parseInt(values.dream_attempts ?? "", 10);
+    return uniqueStrings(raw.split("|"));
+}
+function parseFrontmatterBlock(raw) {
+    if (!raw.startsWith("---\n"))
+        return undefined;
+    const endIndex = raw.indexOf("\n---\n", 4);
+    if (endIndex === -1)
+        return undefined;
+    const header = raw.slice(4, endIndex);
+    const body = raw.slice(endIndex + 5).replace(/^\n+/, "");
+    const values = new Map();
+    for (const line of splitLines(header)) {
+        const separator = line.indexOf(":");
+        if (separator <= 0)
+            continue;
+        values.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
+    }
+    const type = values.get("type");
+    const scope = values.get("scope");
+    if ((type !== "user" && type !== "project" && type !== "feedback")
+        || (scope !== "global" && scope !== "project")) {
+        return undefined;
+    }
     return {
         frontmatter: {
-            name: values.name || fallback.name,
-            description: values.description || "",
+            name: values.get("name") ?? "",
+            description: values.get("description") ?? "",
             type,
             scope,
-            ...(values.project_id ? { projectId: values.project_id } : {}),
-            updatedAt: values.updated_at || fallback.updatedAt,
-            ...(values.captured_at ? { capturedAt: values.captured_at } : {}),
-            ...(values.source_session_key ? { sourceSessionKey: values.source_session_key } : {}),
-            ...(values.deprecated === "true" ? { deprecated: true } : {}),
-            ...(Number.isFinite(dreamAttempts) && dreamAttempts > 0 ? { dreamAttempts } : {}),
+            ...(values.get("project_id") ? { projectId: values.get("project_id") } : {}),
+            updatedAt: values.get("updated_at") ?? nowIso(),
+            ...(values.get("captured_at") ? { capturedAt: values.get("captured_at") } : {}),
+            ...(values.get("source_session_key") ? { sourceSessionKey: values.get("source_session_key") } : {}),
+            ...(parseBoolean(values.get("deprecated")) !== undefined
+                ? { deprecated: parseBoolean(values.get("deprecated")) }
+                : {}),
+            ...(parseInteger(values.get("dream_attempts")) !== undefined
+                ? { dreamAttempts: parseInteger(values.get("dream_attempts")) }
+                : {}),
         },
         body,
     };
@@ -123,273 +131,221 @@ function parseFrontmatter(raw) {
 function renderFrontmatter(frontmatter) {
     const lines = [
         "---",
-        `name: ${frontmatter.name.replace(/\n/g, " ")}`,
-        `description: ${frontmatter.description.replace(/\n/g, " ")}`,
+        `name: ${normalizeWhitespace(frontmatter.name)}`,
+        `description: ${normalizeDescription(frontmatter.description, frontmatter.name)}`,
         `type: ${frontmatter.type}`,
         `scope: ${frontmatter.scope}`,
         ...(frontmatter.projectId ? [`project_id: ${frontmatter.projectId}`] : []),
         `updated_at: ${frontmatter.updatedAt}`,
         ...(frontmatter.capturedAt ? [`captured_at: ${frontmatter.capturedAt}`] : []),
         ...(frontmatter.sourceSessionKey ? [`source_session_key: ${frontmatter.sourceSessionKey}`] : []),
-        `deprecated: ${frontmatter.deprecated ? "true" : "false"}`,
-        ...(typeof frontmatter.dreamAttempts === "number" && frontmatter.dreamAttempts > 0
-            ? [`dream_attempts: ${frontmatter.dreamAttempts}`]
-            : []),
+        ...(typeof frontmatter.deprecated === "boolean" ? [`deprecated: ${frontmatter.deprecated ? "true" : "false"}`] : []),
+        ...(typeof frontmatter.dreamAttempts === "number" ? [`dream_attempts: ${frontmatter.dreamAttempts}`] : []),
         "---",
         "",
     ];
-    return lines.join("\n");
+    return `${lines.join("\n")}`;
 }
-function parseStringArray(value) {
-    const raw = normalizeWhitespace(value ?? "");
-    if (!raw)
-        return [];
-    if (raw.startsWith("[") && raw.endsWith("]")) {
-        try {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) {
-                return uniqueItems(parsed.filter((item) => typeof item === "string"), 50);
-            }
-        }
-        catch {
-            // Fall through to string splitting.
-        }
-    }
-    return uniqueItems(raw.split("|"), 50);
-}
-function parseSections(body) {
+function parseMarkdownSections(body) {
     const sections = new Map();
     let current = "";
-    for (const line of body.split("\n")) {
-        const heading = /^##\s+(.+?)\s*$/.exec(line.trim());
+    let bucket = [];
+    for (const line of splitLines(body.trim())) {
+        const heading = /^##\s+(.+?)\s*$/.exec(line);
         if (heading) {
-            current = heading[1].trim();
-            sections.set(current, []);
+            if (current)
+                sections.set(current, bucket);
+            current = heading[1].trim().toLowerCase();
+            bucket = [];
             continue;
         }
-        const bucket = sections.get(current) ?? [];
+        if (!current)
+            continue;
         bucket.push(line);
-        sections.set(current, bucket);
     }
+    if (current)
+        sections.set(current, bucket);
     return sections;
 }
-function normalizeListSection(lines) {
-    return uniqueItems((lines ?? [])
-        .map((line) => line.replace(/^- /, "").trim())
-        .filter(Boolean), 50);
+function parseListSection(lines) {
+    if (!lines)
+        return [];
+    return uniqueStrings(lines
+        .map((line) => line.replace(/^\s*-\s*/, "").trim())
+        .filter(Boolean));
 }
-function normalizeTextSection(lines) {
-    return normalizeWhitespace((lines ?? []).join("\n"));
-}
-function pickLongest(left, right) {
-    const a = normalizeWhitespace(left);
-    const b = normalizeWhitespace(right);
-    if (!a)
-        return b;
-    if (!b)
-        return a;
-    return b.length >= a.length ? b : a;
-}
-function mergeSectionText(existing, incoming) {
-    const left = normalizeWhitespace(existing);
-    const right = normalizeWhitespace(incoming);
-    if (!left)
-        return right;
-    if (!right)
-        return left;
-    if (left.includes(right))
-        return left;
-    if (right.includes(left))
-        return right;
-    return `${left}\n${right}`;
-}
-function renderListSection(title, items) {
-    const normalized = uniqueItems(items, 50);
-    if (normalized.length === 0)
+function parseParagraphSection(lines) {
+    if (!lines)
         return "";
-    return [`## ${title}`, ...normalized.map((item) => `- ${item}`), ""].join("\n");
+    return normalizeWhitespace(lines.join(" ").trim());
 }
-function renderTextSection(title, value) {
-    const normalized = normalizeWhitespace(value ?? "");
-    if (!normalized)
-        return "";
-    return [`## ${title}`, normalized, ""].join("\n");
+function buildUserBody(candidate) {
+    const lines = [
+        "## Profile",
+        normalizeWhitespace(candidate.profile || candidate.description || candidate.summary || "No stable user profile yet."),
+        "",
+    ];
+    const preferences = uniqueStrings(candidate.preferences ?? []);
+    const constraints = uniqueStrings(candidate.constraints ?? []);
+    const relationships = uniqueStrings(candidate.relationships ?? []);
+    if (preferences.length > 0)
+        lines.push("## Preferences", ...preferences.map((item) => `- ${item}`), "");
+    if (constraints.length > 0)
+        lines.push("## Constraints", ...constraints.map((item) => `- ${item}`), "");
+    if (relationships.length > 0)
+        lines.push("## Relationships", ...relationships.map((item) => `- ${item}`), "");
+    return `${lines.join("\n").trim()}\n`;
 }
-function renderFixedTextSection(title, value) {
-    const normalized = normalizeWhitespace(value ?? "");
-    return [`## ${title}`, normalized, ""].join("\n");
-}
-function renderProjectMemoryBody(input) {
-    return [
-        renderTextSection("Current Stage", input.stage),
-        renderListSection("Decisions", input.decisions),
-        renderListSection("Constraints", input.constraints),
-        renderListSection("Next Steps", input.nextSteps),
-        renderListSection("Blockers", input.blockers),
-        renderListSection("Timeline", input.timeline),
-        renderListSection("Notes", input.notes),
-    ].filter(Boolean).join("\n").trim();
-}
-function renderFeedbackMemoryBody(input) {
-    return [
-        renderTextSection("Rule", input.rule),
-        renderFixedTextSection("Why", input.why),
-        renderFixedTextSection("How to apply", input.howToApply),
-        renderListSection("Notes", input.notes),
-    ].filter(Boolean).join("\n").trim();
-}
-function renderFixedListSection(title, items) {
-    const normalized = uniqueItems(items, 50);
-    return [`## ${title}`, ...normalized.map((item) => `- ${item}`), ""].join("\n");
-}
-function sanitizeFeedbackSectionText(value) {
-    const normalized = normalizeWhitespace(value ?? "");
-    if (!normalized)
-        return "";
-    if ([
-        /explicit project collaboration preference captured from the user/i,
-        /project anchor is not formalized yet/i,
-        /project-local collaboration instruction without a formal project id yet/i,
-        /project-local collaboration rule rather than a standalone project memory/i,
-        /follow this collaboration rule in future project replies unless the user overrides it/i,
-        /apply this rule only after dream attaches it to a formal project context/i,
-        /keep it in temporary project memory until dream can attach it to the right project/i,
-    ].some((pattern) => pattern.test(normalized))) {
-        return "";
+function buildProjectBody(candidate) {
+    const lines = [];
+    if (normalizeWhitespace(candidate.stage)) {
+        lines.push("## Current Stage", normalizeWhitespace(candidate.stage), "");
     }
-    return normalized;
+    const sections = [
+        ["Decisions", candidate.decisions],
+        ["Constraints", candidate.constraints],
+        ["Next Steps", candidate.nextSteps],
+        ["Blockers", candidate.blockers],
+        ["Timeline", candidate.timeline],
+        ["Notes", candidate.notes],
+    ];
+    for (const [title, values] of sections) {
+        const normalized = uniqueStrings(values ?? []);
+        if (normalized.length === 0)
+            continue;
+        lines.push(`## ${title}`, ...normalized.map((item) => `- ${item}`), "");
+    }
+    if (normalizeWhitespace(candidate.summary)) {
+        lines.push("## Summary", normalizeWhitespace(candidate.summary), "");
+    }
+    if (candidate.aliases && uniqueStrings(candidate.aliases).length > 0) {
+        lines.push("## Aliases", ...uniqueStrings(candidate.aliases).map((item) => `- ${item}`), "");
+    }
+    return `${lines.join("\n").trim()}\n`;
 }
-function normalizeIdentityName(value) {
-    const normalized = normalizeWhitespace(value ?? "");
-    if (!normalized)
-        return "";
-    return normalizeWhitespace(normalized.replace(/^[`"'“”‘’「」『』《》〈〉]+|[`"'“”‘’「」『』《》〈〉]+$/g, ""));
+function buildFeedbackBody(candidate) {
+    const lines = [
+        "## Rule",
+        normalizeWhitespace(candidate.rule || candidate.description || candidate.summary || candidate.name),
+        "",
+    ];
+    if (normalizeWhitespace(candidate.why))
+        lines.push("## Why", normalizeWhitespace(candidate.why), "");
+    if (normalizeWhitespace(candidate.howToApply)) {
+        lines.push("## How To Apply", normalizeWhitespace(candidate.howToApply), "");
+    }
+    const notes = uniqueStrings(candidate.notes ?? []);
+    if (notes.length > 0)
+        lines.push("## Notes", ...notes.map((item) => `- ${item}`), "");
+    return `${lines.join("\n").trim()}\n`;
 }
-function selectTypeDirectory(type) {
-    if (type === "user")
-        return USER_DIR;
-    if (type === "feedback")
-        return FEEDBACK_DIR;
-    return PROJECT_DIR;
+function buildRecordBody(candidate) {
+    if (candidate.type === "user")
+        return buildUserBody(candidate);
+    if (candidate.type === "feedback")
+        return buildFeedbackBody(candidate);
+    return buildProjectBody(candidate);
 }
-function buildTmpCandidateFileName(candidate) {
-    const baseName = candidate.type === "project"
-        ? normalizeIdentityName(candidate.name || candidate.description || candidate.stage || "project-item") || "project-item"
-        : normalizeIdentityName(candidate.name || "feedback-item") || "feedback-item";
-    const fingerprint = hashText(JSON.stringify({
+function candidateDescription(candidate) {
+    if (candidate.type === "user") {
+        return normalizeDescription(candidate.description, candidate.profile || candidate.summary || candidate.name);
+    }
+    if (candidate.type === "feedback") {
+        return normalizeDescription(candidate.description, candidate.rule || candidate.summary || candidate.name);
+    }
+    return normalizeDescription(candidate.description, candidate.summary
+        || candidate.stage
+        || uniqueStrings(candidate.blockers ?? [])[0]
+        || uniqueStrings(candidate.decisions ?? [])[0]
+        || candidate.name);
+}
+function buildFrontmatter(candidate, existing) {
+    const scope = candidate.type === "user" ? "global" : "project";
+    return {
+        name: normalizeWhitespace(candidate.name) || normalizeWhitespace(existing?.name) || "memory-item",
+        description: candidateDescription(candidate) || normalizeWhitespace(existing?.description) || "memory-item",
         type: candidate.type,
-        name: normalizeIdentityName(candidate.name ?? ""),
-        description: candidate.description,
-        summary: candidate.summary,
-        preferences: candidate.preferences ?? [],
-        constraints: candidate.constraints ?? [],
-        relationships: candidate.relationships ?? [],
-        rule: candidate.rule,
-        why: candidate.why,
-        howToApply: candidate.howToApply,
-        stage: candidate.stage,
-        decisions: candidate.decisions ?? [],
-        nextSteps: candidate.nextSteps ?? [],
-        blockers: candidate.blockers ?? [],
-        timeline: candidate.timeline ?? [],
-        notes: candidate.notes ?? [],
-    }));
-    return `${slugify(baseName)}-${fingerprint}.md`;
+        scope,
+        ...(scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+        updatedAt: nowIso(),
+        ...(candidate.capturedAt || existing?.capturedAt ? { capturedAt: candidate.capturedAt || existing?.capturedAt } : {}),
+        ...(candidate.sourceSessionKey || existing?.sourceSessionKey
+            ? { sourceSessionKey: candidate.sourceSessionKey || existing?.sourceSessionKey }
+            : {}),
+        ...(typeof existing?.deprecated === "boolean" ? { deprecated: existing.deprecated } : {}),
+        ...(typeof existing?.dreamAttempts === "number" ? { dreamAttempts: existing.dreamAttempts } : {}),
+    };
 }
-function sameTmpCandidateIdentity(record, candidate, normalizedName) {
-    return record.projectId === TMP_PROJECT_ID
-        && record.type === candidate.type
-        && normalizeIdentityName(record.name) === normalizeIdentityName(normalizedName)
-        && (record.sourceSessionKey ?? "") === (candidate.sourceSessionKey ?? "")
-        && (record.capturedAt ?? "") === (candidate.capturedAt ?? "");
+function mergeCandidates(primary, incoming) {
+    if (primary.type !== incoming.type)
+        return primary;
+    if (primary.type === "user") {
+        return {
+            ...primary,
+            profile: normalizeWhitespace(incoming.profile || primary.profile || primary.description || incoming.description),
+            preferences: uniqueStrings([...(primary.preferences ?? []), ...(incoming.preferences ?? [])]),
+            constraints: uniqueStrings([...(primary.constraints ?? []), ...(incoming.constraints ?? [])]),
+            relationships: uniqueStrings([...(primary.relationships ?? []), ...(incoming.relationships ?? [])]),
+            description: normalizeDescription(incoming.description, primary.description),
+        };
+    }
+    if (primary.type === "feedback") {
+        return {
+            ...primary,
+            name: normalizeWhitespace(incoming.name || primary.name),
+            description: normalizeDescription(incoming.description, primary.description),
+            rule: normalizeWhitespace(incoming.rule || primary.rule || incoming.description || primary.description),
+            why: normalizeWhitespace(incoming.why || primary.why),
+            howToApply: normalizeWhitespace(incoming.howToApply || primary.howToApply),
+            notes: uniqueStrings([...(primary.notes ?? []), ...(incoming.notes ?? [])]),
+        };
+    }
+    return {
+        ...primary,
+        name: normalizeWhitespace(incoming.name || primary.name),
+        description: normalizeDescription(incoming.description, primary.description),
+        summary: normalizeWhitespace(incoming.summary || primary.summary),
+        stage: normalizeWhitespace(incoming.stage || primary.stage),
+        aliases: uniqueStrings([...(primary.aliases ?? []), ...(incoming.aliases ?? [])]),
+        decisions: uniqueStrings([...(primary.decisions ?? []), ...(incoming.decisions ?? [])]),
+        constraints: uniqueStrings([...(primary.constraints ?? []), ...(incoming.constraints ?? [])]),
+        nextSteps: uniqueStrings([...(primary.nextSteps ?? []), ...(incoming.nextSteps ?? [])]),
+        blockers: uniqueStrings([...(primary.blockers ?? []), ...(incoming.blockers ?? [])]),
+        timeline: uniqueStrings([...(primary.timeline ?? []), ...(incoming.timeline ?? [])]),
+        notes: uniqueStrings([...(primary.notes ?? []), ...(incoming.notes ?? [])]),
+    };
 }
-function sortEntriesByUpdatedAt(entries) {
-    return [...entries].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+function sameOrigin(record, candidate) {
+    return Boolean(candidate.capturedAt
+        && candidate.sourceSessionKey
+        && record.capturedAt === candidate.capturedAt
+        && record.sourceSessionKey === candidate.sourceSessionKey
+        && record.type === candidate.type);
 }
-function buildManifestLine(entry, rootDir) {
-    return `- [${entry.type}] ${relative(rootDir, entry.absolutePath)} (${entry.updatedAt}): ${entry.description}`;
+function sortEntries(entries) {
+    return [...entries].sort((left, right) => {
+        if (right.updatedAt !== left.updatedAt)
+            return right.updatedAt.localeCompare(left.updatedAt);
+        return left.relativePath.localeCompare(right.relativePath);
+    });
 }
-function findMarkdownFiles(dir) {
-    if (!existsSync(dir))
+function renderManifestSection(title, entries) {
+    if (entries.length === 0)
         return [];
-    const entries = readdirSync(dir, { withFileTypes: true });
-    const files = [];
-    for (const entry of entries) {
-        if (entry.isDirectory())
-            continue;
-        if (!entry.name.endsWith(".md"))
-            continue;
-        if (entry.name === MANIFEST_FILE || entry.name === PROJECT_META_FILE)
-            continue;
-        files.push(join(dir, entry.name));
-    }
-    return files.sort();
-}
-function findAllFiles(dir) {
-    if (!existsSync(dir))
-        return [];
-    const entries = readdirSync(dir, { withFileTypes: true });
-    const files = [];
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-        const fullPath = join(dir, entry.name);
-        if (entry.isDirectory()) {
-            files.push(...findAllFiles(fullPath));
-            continue;
-        }
-        if (!entry.isFile())
-            continue;
-        files.push(fullPath);
-    }
-    return files;
-}
-function sanitizeFileName(value, fallback) {
-    const trimmed = normalizeWhitespace(value ?? "").split(/[\\/]/).pop() ?? "";
-    const safe = trimmed.replace(/[^a-zA-Z0-9._-\u4e00-\u9fff]+/g, "-").replace(/^-+|-+$/g, "");
-    const candidate = safe || fallback;
-    const withExtension = candidate.endsWith(".md") ? candidate : `${candidate}.md`;
-    if (withExtension === MANIFEST_FILE || withExtension === PROJECT_META_FILE) {
-        return `${slugify(fallback)}.md`;
-    }
-    return withExtension;
-}
-function previewText(body) {
-    return truncate(body
-        .split("\n")
-        .map((line) => normalizeWhitespace(line))
-        .filter(Boolean)
-        .join(" "), 220);
-}
-function readFileHeadLines(absolutePath, maxLines = RECALL_HEADER_SCAN_LINE_LIMIT, maxBytes = RECALL_HEADER_SCAN_BYTE_LIMIT) {
-    const fd = openSync(absolutePath, "r");
-    try {
-        const chunks = [];
-        let bytesReadTotal = 0;
-        let newlineCount = 0;
-        const buffer = Buffer.alloc(2048);
-        while (bytesReadTotal < maxBytes && newlineCount < maxLines) {
-            const remaining = Math.min(buffer.length, maxBytes - bytesReadTotal);
-            const bytesRead = readSync(fd, buffer, 0, remaining, bytesReadTotal);
-            if (bytesRead <= 0)
-                break;
-            const chunk = Buffer.from(buffer.subarray(0, bytesRead));
-            chunks.push(chunk);
-            bytesReadTotal += bytesRead;
-            newlineCount += chunk.toString("utf-8").split("\n").length - 1;
-        }
-        return Buffer.concat(chunks).toString("utf-8").split("\n").slice(0, Math.max(1, maxLines)).join("\n");
-    }
-    finally {
-        closeSync(fd);
-    }
+    return [
+        `## ${title}`,
+        ...entries.map((entry) => `- [${entry.name}](${entry.relativePath}) — ${entry.description}`),
+        "",
+    ];
 }
 function renderProjectMeta(record) {
-    const lines = [
+    return [
         "---",
         `project_id: ${record.projectId}`,
-        `project_name: ${record.projectName.replace(/\n/g, " ")}`,
-        `description: ${record.description.replace(/\n/g, " ")}`,
-        `aliases: ${JSON.stringify(uniqueItems(record.aliases, 50))}`,
-        `status: ${record.status.replace(/\n/g, " ")}`,
+        `project_name: ${record.projectName}`,
+        `description: ${record.description}`,
+        `aliases: ${JSON.stringify(uniqueStrings(record.aliases, 50))}`,
+        `status: ${record.status}`,
         `created_at: ${record.createdAt}`,
         `updated_at: ${record.updatedAt}`,
         ...(record.dreamUpdatedAt ? [`dream_updated_at: ${record.dreamUpdatedAt}`] : []),
@@ -398,37 +354,51 @@ function renderProjectMeta(record) {
         "## Summary",
         record.description,
         "",
-    ];
-    return lines.join("\n");
+    ].join("\n");
 }
 function parseProjectMeta(absolutePath) {
     if (!existsSync(absolutePath))
         return undefined;
-    const raw = readFileSync(absolutePath, "utf-8");
-    const { values } = parseFlatFrontmatter(raw);
-    const projectId = normalizeProjectId(values.project_id);
-    if (!projectId || projectId === TMP_PROJECT_ID)
-        return undefined;
-    const projectName = normalizeWhitespace(values.project_name || "");
+    const raw = readFileSync(absolutePath, "utf8");
+    const parsed = parseFrontmatterBlock(raw);
+    const values = new Map();
+    if (raw.startsWith("---\n")) {
+        const endIndex = raw.indexOf("\n---\n", 4);
+        if (endIndex !== -1) {
+            for (const line of splitLines(raw.slice(4, endIndex))) {
+                const separator = line.indexOf(":");
+                if (separator <= 0)
+                    continue;
+                values.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
+            }
+        }
+    }
+    const projectName = normalizeWhitespace(values.get("project_name"));
     if (!projectName)
         return undefined;
-    const description = normalizeWhitespace(values.description || "");
+    const description = normalizeDescription(values.get("description"), projectName);
     return {
-        projectId,
+        projectId: CURRENT_PROJECT_ID,
         projectName,
         description,
-        aliases: sanitizeProjectAliases(parseStringArray(values.aliases), projectName),
-        status: normalizeWhitespace(values.status || "active") || "active",
-        createdAt: values.created_at || nowIso(),
-        updatedAt: values.updated_at || nowIso(),
-        ...(values.dream_updated_at ? { dreamUpdatedAt: values.dream_updated_at } : {}),
-        relativePath: "",
+        aliases: uniqueStrings([
+            ...parseStringArray(values.get("aliases")),
+            projectName,
+        ], 50),
+        status: normalizeWhitespace(values.get("status")) || DEFAULT_PROJECT_STATUS,
+        createdAt: values.get("created_at") ?? parsed?.frontmatter.updatedAt ?? nowIso(),
+        updatedAt: values.get("updated_at") ?? parsed?.frontmatter.updatedAt ?? nowIso(),
+        ...(values.get("dream_updated_at") ? { dreamUpdatedAt: values.get("dream_updated_at") } : {}),
+        relativePath: PROJECT_META_FILE,
         absolutePath,
     };
 }
+function normalizeProjectStatus(value) {
+    const normalized = normalizeWhitespace(value);
+    return normalized || DEFAULT_PROJECT_STATUS;
+}
 export class FileMemoryStore {
     rootDir;
-    repairingFormalProjectLayout = false;
     constructor(rootDir) {
         this.rootDir = rootDir;
         this.ensureLayout();
@@ -436,333 +406,234 @@ export class FileMemoryStore {
     getRootDir() {
         return this.rootDir;
     }
+    projectMetaPath() {
+        return this.resolveRelativePath(PROJECT_META_FILE);
+    }
     ensureLayout() {
         ensureDir(this.rootDir);
-        ensureDir(join(this.rootDir, GLOBAL_DIR));
         ensureDir(join(this.rootDir, GLOBAL_DIR, USER_DIR));
-        ensureDir(join(this.rootDir, PROJECTS_DIR));
-        ensureDir(this.projectRoot(TMP_PROJECT_ID));
-        ensureDir(join(this.projectRoot(TMP_PROJECT_ID), PROJECT_DIR));
-        ensureDir(join(this.projectRoot(TMP_PROJECT_ID), FEEDBACK_DIR));
-        this.ensureFormalProjectLayout();
+        ensureDir(join(this.rootDir, PROJECT_DIR));
+        ensureDir(join(this.rootDir, FEEDBACK_DIR));
     }
-    globalManifestPath() {
-        return join(this.rootDir, GLOBAL_DIR, MANIFEST_FILE);
+    resolveRelativePath(relativePath) {
+        return resolve(this.rootDir, relativePath);
     }
-    projectRoot(projectId) {
-        return join(this.rootDir, PROJECTS_DIR, normalizeProjectId(projectId) || TMP_PROJECT_ID);
+    isPathWithinRoot(relativePath) {
+        const absolutePath = this.resolveRelativePath(relativePath);
+        const rel = relative(this.rootDir, absolutePath);
+        return rel === relativePath || (!rel.startsWith("..") && !rel.includes(".."));
     }
-    projectManifestPath(projectId) {
-        return join(this.projectRoot(projectId), MANIFEST_FILE);
+    readMarkdownFile(relativePath) {
+        if (!this.isPathWithinRoot(relativePath))
+            return undefined;
+        const absolutePath = this.resolveRelativePath(relativePath);
+        if (!existsSync(absolutePath))
+            return undefined;
+        return parseFrontmatterBlock(readFileSync(absolutePath, "utf8"));
     }
-    projectMetaPath(projectId) {
-        return join(this.projectRoot(projectId), PROJECT_META_FILE);
-    }
-    scanProjectDirs() {
-        const dir = join(this.rootDir, PROJECTS_DIR);
-        if (!existsSync(dir))
-            return [];
-        return readdirSync(dir, { withFileTypes: true })
-            .filter((entry) => entry.isDirectory())
-            .map((entry) => entry.name)
-            .sort();
-    }
-    listProjectMarkdownFiles(projectId) {
-        const root = this.projectRoot(projectId);
-        return [
-            ...findMarkdownFiles(join(root, PROJECT_DIR)),
-            ...findMarkdownFiles(join(root, FEEDBACK_DIR)),
-        ];
-    }
-    projectSeedFromDir(projectId) {
-        const meta = parseProjectMeta(this.projectMetaPath(projectId));
-        if (meta) {
-            return {
-                projectName: meta.projectName,
-                description: meta.description,
-                aliases: meta.aliases,
-                createdAt: meta.createdAt,
-                updatedAt: meta.updatedAt,
-            };
-        }
-        const files = this.listProjectMarkdownFiles(projectId);
-        const record = files.length > 0 ? this.readRecordFromPath(files[0]) : undefined;
-        if (!record)
+    buildManifestEntry(relativePath) {
+        const parsed = this.readMarkdownFile(relativePath);
+        if (!parsed)
             return undefined;
         return {
-            projectName: normalizeWhitespace(record.name || projectId) || projectId,
-            description: normalizeWhitespace(record.description || record.preview || record.name || projectId) || projectId,
-            aliases: sanitizeProjectAliases([record.name, projectId], normalizeWhitespace(record.name || projectId) || projectId),
-            createdAt: record.capturedAt || record.updatedAt,
-            updatedAt: record.updatedAt,
+            ...parsed.frontmatter,
+            ...(parsed.frontmatter.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+            file: relativePath.split("/").pop() ?? relativePath,
+            relativePath,
+            absolutePath: this.resolveRelativePath(relativePath),
         };
     }
-    rewriteProjectRecordId(absolutePath, projectId) {
-        const raw = readFileSync(absolutePath, "utf-8");
-        const { frontmatter, body } = parseFrontmatter(raw);
-        const nextFrontmatter = {
-            ...frontmatter,
-            scope: "project",
-            projectId,
-            updatedAt: frontmatter.updatedAt || nowIso(),
-        };
-        writeFileSync(absolutePath, `${renderFrontmatter(nextFrontmatter)}${body}\n`, "utf-8");
+    writeRecord(input) {
+        const absolutePath = this.resolveRelativePath(input.relativePath);
+        ensureDir(dirname(absolutePath));
+        const rendered = `${renderFrontmatter(input.frontmatter)}${input.body.trim()}\n`;
+        writeFileSync(absolutePath, rendered, "utf8");
+        this.repairManifests();
+        return this.getMemoryRecordsByIds([input.relativePath], 5000)[0];
     }
-    ensureFormalProjectLayout() {
-        if (this.repairingFormalProjectLayout)
-            return;
-        this.repairingFormalProjectLayout = true;
-        try {
-            for (const rawProjectId of this.scanProjectDirs()) {
-                if (rawProjectId === TMP_PROJECT_ID)
-                    continue;
-                const seed = this.projectSeedFromDir(rawProjectId);
-                if (!seed)
-                    continue;
-                const canonicalProjectId = isStableFormalProjectId(rawProjectId)
-                    ? rawProjectId
-                    : this.createStableProjectId([
-                        seed.projectName,
-                        seed.description,
-                        seed.createdAt || seed.updatedAt || rawProjectId,
-                    ].join("|"));
-                const sourceRoot = this.projectRoot(rawProjectId);
-                const targetRoot = this.projectRoot(canonicalProjectId);
-                if (rawProjectId !== canonicalProjectId) {
-                    if (!existsSync(targetRoot)) {
-                        renameSync(sourceRoot, targetRoot);
-                    }
-                    else {
-                        this.upsertProjectMeta({
-                            projectId: canonicalProjectId,
-                            projectName: seed.projectName,
-                            description: seed.description,
-                            aliases: seed.aliases,
-                        });
-                        ensureDir(join(targetRoot, PROJECT_DIR));
-                        ensureDir(join(targetRoot, FEEDBACK_DIR));
-                        for (const file of this.listProjectMarkdownFiles(rawProjectId)) {
-                            const record = this.readRecordFromPath(file);
-                            const targetFile = join(targetRoot, selectTypeDirectory(record.type), sanitizeFileName(record.file, slugify(record.name || record.type)));
-                            if (!existsSync(targetFile)) {
-                                renameSync(file, targetFile);
-                            }
-                            else {
-                                const candidate = this.toCandidate(record);
-                                this.upsertCandidate({
-                                    ...candidate,
-                                    scope: "project",
-                                    projectId: canonicalProjectId,
-                                });
-                                unlinkSync(file);
-                            }
-                        }
-                        rmSync(sourceRoot, { recursive: true, force: true });
-                    }
-                }
-                this.upsertProjectMeta({
-                    projectId: canonicalProjectId,
-                    projectName: seed.projectName,
-                    description: seed.description,
-                    aliases: seed.aliases,
-                });
-                for (const file of this.listProjectMarkdownFiles(canonicalProjectId)) {
-                    this.rewriteProjectRecordId(file, canonicalProjectId);
-                }
-                this.rebuildManifest("project", canonicalProjectId);
-            }
-        }
-        finally {
-            this.repairingFormalProjectLayout = false;
-        }
-    }
-    readRecordFromPath(absolutePath) {
-        const raw = readFileSync(absolutePath, "utf-8");
-        const { frontmatter, body } = parseFrontmatter(raw);
-        return {
-            ...frontmatter,
-            file: absolutePath.split("/").pop() ?? "unknown.md",
-            relativePath: relative(this.rootDir, absolutePath),
-            absolutePath,
-            content: body,
-            preview: previewText(body),
-        };
-    }
-    readRecallHeaderEntryFromPath(absolutePath, maxLines = RECALL_HEADER_SCAN_LINE_LIMIT) {
-        const raw = readFileHeadLines(absolutePath, maxLines);
-        const { frontmatter, body } = parseFrontmatter(raw);
-        return {
-            name: frontmatter.name,
-            description: frontmatter.description,
-            type: frontmatter.type,
-            scope: frontmatter.scope,
-            ...(frontmatter.projectId ? { projectId: frontmatter.projectId } : {}),
-            updatedAt: frontmatter.updatedAt,
-            ...(frontmatter.deprecated ? { deprecated: true } : {}),
-            file: absolutePath.split("/").pop() ?? "unknown.md",
-            relativePath: relative(this.rootDir, absolutePath),
-            absolutePath,
-        };
-    }
-    buildManifestEntriesForScope(scope, projectId) {
-        const baseDir = scope === "global"
-            ? join(this.rootDir, GLOBAL_DIR)
-            : projectId
-                ? this.projectRoot(projectId)
-                : "";
-        if (!baseDir)
+    collectDirectoryRecords(relativeDir) {
+        const directory = join(this.rootDir, relativeDir);
+        if (!existsSync(directory))
             return [];
-        const candidateDirs = scope === "global"
-            ? [join(baseDir, USER_DIR)]
-            : [join(baseDir, PROJECT_DIR), join(baseDir, FEEDBACK_DIR)];
-        const entries = [];
-        for (const dir of candidateDirs) {
-            for (const file of findMarkdownFiles(dir)) {
-                const record = this.readRecordFromPath(file);
-                entries.push({
-                    name: record.name,
-                    description: record.description,
-                    type: record.type,
-                    scope: record.scope,
-                    ...(record.projectId ? { projectId: record.projectId } : {}),
-                    updatedAt: record.updatedAt,
-                    ...(record.deprecated ? { deprecated: true } : {}),
-                    file: record.file,
-                    relativePath: record.relativePath,
-                    absolutePath: record.absolutePath,
-                    ...(typeof record.dreamAttempts === "number" ? { dreamAttempts: record.dreamAttempts } : {}),
-                });
-            }
-        }
-        return sortEntriesByUpdatedAt(entries);
+        return readdirSync(directory, { withFileTypes: true })
+            .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+            .filter((entry) => entry.name !== MANIFEST_FILE && entry.name !== PROJECT_META_FILE)
+            .map((entry) => this.buildManifestEntry(join(relativeDir, entry.name)))
+            .filter((entry) => Boolean(entry));
     }
-    rebuildManifest(scope, projectId) {
-        this.ensureLayout();
-        const normalizedProjectId = scope === "project" ? normalizeProjectId(projectId) || TMP_PROJECT_ID : undefined;
-        const entries = this.buildManifestEntriesForScope(scope, normalizedProjectId);
-        const manifestPath = scope === "global"
-            ? this.globalManifestPath()
-            : normalizedProjectId
-                ? this.projectManifestPath(normalizedProjectId)
-                : "";
-        if (!manifestPath)
-            return [];
-        ensureDir(dirname(manifestPath));
-        const title = scope === "global"
-            ? "Global Memory"
-            : normalizedProjectId === TMP_PROJECT_ID
-                ? "Temporary Project Memory"
-                : `Project Memory: ${normalizedProjectId ?? "unknown"}`;
+    collectAllEntries() {
+        return sortEntries([
+            ...this.collectDirectoryRecords(PROJECT_DIR),
+            ...this.collectDirectoryRecords(FEEDBACK_DIR),
+            ...this.collectDirectoryRecords(join(GLOBAL_DIR, USER_DIR)),
+        ]);
+    }
+    readProjectMetaFile() {
+        return parseProjectMeta(this.projectMetaPath());
+    }
+    buildProjectMetaSeed() {
+        const entries = this.collectAllEntries().filter((entry) => entry.scope === "project" && !entry.deprecated);
+        const firstProject = entries.find((entry) => entry.type === "project");
+        const firstFeedback = entries.find((entry) => entry.type === "feedback");
+        const first = firstProject ?? firstFeedback;
+        if (!first) {
+            return {
+                projectName: DEFAULT_PROJECT_NAME,
+                description: "Current project memory.",
+                aliases: [DEFAULT_PROJECT_NAME],
+                status: DEFAULT_PROJECT_STATUS,
+            };
+        }
+        return {
+            projectName: firstProject?.name || DEFAULT_PROJECT_NAME,
+            description: firstProject?.description || first.description || DEFAULT_PROJECT_NAME,
+            aliases: uniqueStrings([
+                ...(firstProject?.type === "project"
+                    ? (this.getMemoryRecordsByIds([firstProject.relativePath], 5000)[0]
+                        ? this.toCandidate(this.getMemoryRecordsByIds([firstProject.relativePath], 5000)[0]).aliases ?? []
+                        : [])
+                    : []),
+            ], 20),
+            status: DEFAULT_PROJECT_STATUS,
+        };
+    }
+    upsertProjectMeta(input = {}) {
+        const existing = this.readProjectMetaFile();
+        const seed = this.buildProjectMetaSeed();
+        const projectName = normalizeWhitespace(input.projectName)
+            || existing?.projectName
+            || seed.projectName;
+        const description = normalizeDescription(input.description, existing?.description || seed.description || projectName);
+        const next = {
+            projectId: CURRENT_PROJECT_ID,
+            projectName,
+            description,
+            aliases: uniqueStrings([
+                ...(existing?.aliases ?? []),
+                ...(input.aliases ?? []),
+                ...(seed.aliases ?? []),
+                projectName,
+            ], 50),
+            status: normalizeProjectStatus(input.status || existing?.status || seed.status),
+            createdAt: existing?.createdAt ?? nowIso(),
+            updatedAt: nowIso(),
+            ...(normalizeWhitespace(input.dreamUpdatedAt || existing?.dreamUpdatedAt)
+                ? { dreamUpdatedAt: normalizeWhitespace(input.dreamUpdatedAt || existing?.dreamUpdatedAt) }
+                : {}),
+            relativePath: PROJECT_META_FILE,
+            absolutePath: this.projectMetaPath(),
+        };
+        writeFileSync(next.absolutePath, `${renderProjectMeta(next).trim()}\n`, "utf8");
+        this.repairManifests();
+        return next;
+    }
+    ensureProjectMeta(input = {}) {
+        return this.readProjectMetaFile() ?? this.upsertProjectMeta(input);
+    }
+    findExistingRecordForCandidate(candidate) {
+        const allEntries = this.collectAllEntries();
+        const sameSource = allEntries.find((entry) => sameOrigin(entry, candidate));
+        if (sameSource)
+            return sameSource;
+        if (candidate.type === "user") {
+            return allEntries.find((entry) => entry.relativePath === USER_PROFILE_RELATIVE_PATH);
+        }
+        return undefined;
+    }
+    nextRecordRelativePath(candidate) {
+        if (candidate.type === "user")
+            return USER_PROFILE_RELATIVE_PATH;
+        const directory = candidate.type === "feedback" ? FEEDBACK_DIR : PROJECT_DIR;
+        const seed = `${candidate.type}:${candidate.name}:${candidate.description}:${candidate.capturedAt ?? ""}:${candidate.sourceSessionKey ?? nowIso()}`;
+        return join(directory, `${slugify(candidate.name)}-${hashText(seed).slice(0, 10)}.md`);
+    }
+    buildManifest() {
+        const projectMeta = this.readProjectMetaFile();
+        const allEntries = this.collectAllEntries();
+        const active = allEntries.filter((entry) => !entry.deprecated);
+        const deprecated = allEntries.filter((entry) => entry.deprecated);
+        const projectEntries = active.filter((entry) => entry.type === "project");
+        const feedbackEntries = active.filter((entry) => entry.type === "feedback");
+        const userEntries = active.filter((entry) => entry.type === "user");
         const lines = [
-            `# ${title}`,
+            "# EdgeClaw Memory",
             "",
-            ...entries.map((entry) => buildManifestLine(entry, this.rootDir)),
+            `Updated: ${nowIso()}`,
             "",
+            ...(projectMeta
+                ? [
+                    "## Current Project Meta",
+                    `- [${projectMeta.projectName}](${PROJECT_META_FILE}) — ${projectMeta.description}`,
+                    "",
+                ]
+                : []),
+            ...renderManifestSection("Project Memory", projectEntries),
+            ...renderManifestSection("Feedback Memory", feedbackEntries),
+            ...renderManifestSection("User Memory", userEntries),
+            ...renderManifestSection("Deprecated", deprecated),
         ];
-        writeFileSync(manifestPath, lines.join("\n"), "utf-8");
-        return entries;
+        return `${lines.join("\n").trim()}\n`;
     }
-    rebuildAllManifests(options = {}) {
-        const all = [...this.rebuildManifest("global")];
-        for (const projectId of this.listProjectIds(options.includeTmp ? { includeTmp: true } : {})) {
-            all.push(...this.rebuildManifest("project", projectId));
-        }
-        return sortEntriesByUpdatedAt(all);
-    }
-    collectMemoryEntries(options = {}) {
+    repairManifests() {
         this.ensureLayout();
-        const includeTmp = Boolean(options.includeTmp);
-        const includeDeprecated = Boolean(options.includeDeprecated);
-        let entries = [];
-        const projectId = normalizeProjectId(options.projectId);
-        if (options.scope === "global") {
-            entries = this.rebuildManifest("global");
+        const manifestPath = this.resolveRelativePath(MANIFEST_FILE);
+        const nextContent = this.buildManifest();
+        const previousContent = existsSync(manifestPath) ? readFileSync(manifestPath, "utf8") : "";
+        if (previousContent !== nextContent) {
+            writeFileSync(manifestPath, nextContent, "utf8");
+            return {
+                changed: 1,
+                summary: "Rebuilt workspace memory manifest.",
+                memoryFileCount: this.collectAllEntries().length,
+            };
         }
-        else if (projectId) {
-            if (projectId === TMP_PROJECT_ID && !includeTmp)
-                return [];
-            entries = this.rebuildManifest("project", projectId);
-        }
-        else {
-            entries = options.scope === "project" ? [] : this.rebuildManifest("global");
-            for (const id of this.listProjectIds(includeTmp ? { includeTmp: true } : {})) {
-                entries.push(...this.rebuildManifest("project", id));
-            }
-        }
-        if (!includeTmp) {
-            entries = entries.filter((entry) => entry.projectId !== TMP_PROJECT_ID);
-        }
-        if (!includeDeprecated) {
-            entries = entries.filter((entry) => !entry.deprecated);
-        }
-        if (options.scope === "project") {
-            entries = entries.filter((entry) => entry.scope === "project");
-        }
-        if (projectId) {
-            entries = entries.filter((entry) => entry.projectId === projectId);
-        }
-        if (options.kinds?.length) {
-            const allowed = new Set(options.kinds);
-            entries = entries.filter((entry) => allowed.has(entry.type));
-        }
-        if (options.query?.trim()) {
-            const tokens = normalizeWhitespace(options.query).toLowerCase().split(" ").filter(Boolean);
-            entries = entries
-                .map((entry) => {
-                const haystack = [entry.name, entry.description, entry.relativePath, entry.projectId ?? ""]
-                    .join(" ")
-                    .toLowerCase();
-                const score = tokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0);
-                return { entry, score };
-            })
-                .filter((item) => item.score > 0)
-                .sort((left, right) => right.score - left.score || right.entry.updatedAt.localeCompare(left.entry.updatedAt))
-                .map((item) => item.entry);
-        }
-        else {
-            entries = sortEntriesByUpdatedAt(entries);
-        }
-        return entries;
+        return {
+            changed: 0,
+            summary: "Workspace memory manifest already up to date.",
+            memoryFileCount: this.collectAllEntries().length,
+        };
     }
     listMemoryEntries(options = {}) {
-        const entries = this.collectMemoryEntries(options);
+        const normalizedProjectId = normalizeWhitespace(options.projectId);
+        if (normalizedProjectId && normalizedProjectId !== CURRENT_PROJECT_ID)
+            return [];
+        const kinds = new Set(options.kinds ?? ["user", "feedback", "project"]);
+        const normalizedQuery = normalizeWhitespace(options.query).toLowerCase();
+        const filtered = this.collectAllEntries()
+            .filter((entry) => kinds.has(entry.type))
+            .filter((entry) => !options.scope || entry.scope === options.scope)
+            .filter((entry) => options.includeDeprecated || !entry.deprecated)
+            .filter((entry) => {
+            if (!normalizedQuery)
+                return true;
+            const haystack = [entry.name, entry.description, entry.relativePath].join(" ").toLowerCase();
+            return haystack.includes(normalizedQuery);
+        });
         const offset = Math.max(0, options.offset ?? 0);
-        const limit = Math.max(1, Math.min(1000, options.limit ?? 50));
-        return entries.slice(offset, offset + limit);
+        const limit = Math.max(1, options.limit ?? (filtered.length || 1));
+        return filtered.slice(offset, offset + limit);
     }
     countMemoryEntries(options = {}) {
-        return this.collectMemoryEntries(options).length;
+        return this.listMemoryEntries(options).length;
     }
     getMemoryRecordsByIds(ids, maxLines = 80) {
         return ids
-            .map((id) => this.getMemoryRecord(id, maxLines))
-            .filter((item) => Boolean(item));
-    }
-    getFullMemoryRecordsByIds(ids) {
-        return ids
             .map((id) => {
-            const absolutePath = join(this.rootDir, id);
-            if (!existsSync(absolutePath))
+            const entry = this.buildManifestEntry(id);
+            const parsed = entry ? this.readMarkdownFile(entry.relativePath) : undefined;
+            if (!entry || !parsed)
                 return undefined;
-            return this.readRecordFromPath(absolutePath);
+            const content = trimContentLines(parsed.body.trim(), maxLines);
+            return {
+                ...entry,
+                content,
+                preview: previewContent(parsed.body),
+            };
         })
-            .filter((item) => Boolean(item));
-    }
-    getMemoryRecord(id, maxLines = 80) {
-        const absolutePath = join(this.rootDir, id);
-        if (!existsSync(absolutePath))
-            return undefined;
-        const record = this.readRecordFromPath(absolutePath);
-        const lines = record.content.split("\n").slice(0, Math.max(1, maxLines));
-        return {
-            ...record,
-            content: lines.join("\n").trim(),
-            preview: previewText(lines.join("\n")),
-        };
+            .filter((record) => Boolean(record));
     }
     getUserSummary() {
-        const relativePath = join(GLOBAL_DIR, USER_DIR, "user-profile.md");
-        const record = this.getMemoryRecord(relativePath, 5000);
+        const record = this.getMemoryRecordsByIds([USER_PROFILE_RELATIVE_PATH], 5000)[0];
         if (!record) {
             return {
                 profile: "",
@@ -772,1128 +643,375 @@ export class FileMemoryStore {
                 files: [],
             };
         }
-        const sections = parseSections(record.content);
+        const sections = parseMarkdownSections(record.content);
         return {
-            profile: normalizeTextSection(sections.get("Profile")) || normalizeTextSection(sections.get("Summary")) || record.description || record.preview,
-            preferences: normalizeListSection(sections.get("Preferences")),
-            constraints: normalizeListSection(sections.get("Constraints")),
-            relationships: normalizeListSection(sections.get("Relationships")),
-            files: [{
-                    name: record.name,
-                    description: record.description,
-                    type: record.type,
-                    scope: record.scope,
-                    updatedAt: record.updatedAt,
-                    file: record.file,
-                    relativePath: record.relativePath,
-                    absolutePath: record.absolutePath,
-                }],
-        };
-    }
-    scanRecallHeaderEntries(options) {
-        this.ensureLayout();
-        const projectId = normalizeProjectId(options.projectId);
-        if (!projectId || projectId === TMP_PROJECT_ID)
-            return [];
-        const kinds = new Set(options.kinds?.length ? options.kinds : ["project", "feedback"]);
-        const dirs = [];
-        if (kinds.has("project"))
-            dirs.push(join(this.projectRoot(projectId), PROJECT_DIR));
-        if (kinds.has("feedback"))
-            dirs.push(join(this.projectRoot(projectId), FEEDBACK_DIR));
-        const entries = dirs
-            .flatMap((dir) => findMarkdownFiles(dir))
-            .map((file) => this.readRecallHeaderEntryFromPath(file, options.maxLines))
-            .filter((entry) => !entry.deprecated)
-            .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)
-            || left.relativePath.localeCompare(right.relativePath));
-        return entries.slice(0, Math.max(1, Math.min(1000, options.limit ?? 200)));
-    }
-    listProjectIds(options = {}) {
-        this.ensureLayout();
-        return this.scanProjectDirs()
-            .filter((projectId) => options.includeTmp || projectId !== TMP_PROJECT_ID)
-            .filter((projectId) => projectId === TMP_PROJECT_ID || Boolean(parseProjectMeta(this.projectMetaPath(projectId))))
-            .sort();
-    }
-    listProjectMetas(options = {}) {
-        const metas = [];
-        for (const projectId of this.listProjectIds(options.includeTmp ? { includeTmp: true } : {})) {
-            const meta = this.getProjectMeta(projectId);
-            if (!meta)
-                continue;
-            metas.push(meta);
-        }
-        return metas.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-    }
-    listProjectIdentityHints(options = {}) {
-        const hints = this.listProjectMetas()
-            .filter((meta) => this.hasVisibleProjectMemory(meta.projectId))
-            .map((meta) => ({
-            identityKey: meta.projectId,
-            projectId: meta.projectId,
-            projectName: meta.projectName,
-            aliases: sanitizeProjectAliases(meta.aliases, meta.projectName),
-            description: meta.description,
-            updatedAt: meta.updatedAt,
-            scope: "formal",
-        }));
-        if (options.includeTmp) {
-            const tmpProjectGroups = new Map();
-            const tmpProjectEntries = this.listMemoryEntries({
-                kinds: ["project"],
-                scope: "project",
-                projectId: TMP_PROJECT_ID,
-                includeTmp: true,
-                includeDeprecated: false,
-                limit: 500,
-            });
-            for (const entry of tmpProjectEntries) {
-                const record = this.readRecordFromPath(entry.absolutePath);
-                const candidate = this.toCandidate(record);
-                const normalizedName = normalizeIdentityText(record.name);
-                if (!normalizedName)
-                    continue;
-                const existing = tmpProjectGroups.get(normalizedName);
-                const aliases = sanitizeProjectAliases([
-                    record.name,
-                    ...(candidate.aliases ?? []),
-                    ...(existing?.aliases ?? []),
-                ], record.name);
-                const nextHint = {
-                    identityKey: `tmp:${normalizedName}`,
-                    projectName: record.name,
-                    aliases,
-                    description: record.description,
-                    updatedAt: record.updatedAt,
-                    scope: "tmp",
-                };
-                if (!existing
-                    || nextHint.updatedAt > existing.updatedAt
-                    || nextHint.description.length > existing.description.length) {
-                    tmpProjectGroups.set(normalizedName, nextHint);
-                    continue;
-                }
-                tmpProjectGroups.set(normalizedName, {
-                    ...existing,
-                    aliases: sanitizeProjectAliases([...existing.aliases, ...aliases], existing.projectName),
-                });
-            }
-            hints.push(...tmpProjectGroups.values());
-        }
-        return hints
-            .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-            .slice(0, Math.max(1, Math.min(100, options.limit ?? 30)));
-    }
-    getProjectMeta(projectId) {
-        const normalized = normalizeProjectId(projectId);
-        if (!normalized || normalized === TMP_PROJECT_ID)
-            return undefined;
-        const meta = parseProjectMeta(this.projectMetaPath(normalized));
-        if (!meta)
-            return undefined;
-        return {
-            ...meta,
-            relativePath: relative(this.rootDir, meta.absolutePath),
-        };
-    }
-    hasVisibleProjectMemory(projectId) {
-        return this.countMemoryEntries({
-            scope: "project",
-            projectId,
-        }) > 0;
-    }
-    hasAnyProjectMemoryFiles(projectId) {
-        const normalized = normalizeProjectId(projectId);
-        if (!normalized || normalized === TMP_PROJECT_ID)
-            return false;
-        return this.listProjectMarkdownFiles(normalized).length > 0;
-    }
-    cleanupFormalProjectAfterMutation(projectId) {
-        const normalized = normalizeProjectId(projectId);
-        if (!normalized || normalized === TMP_PROJECT_ID)
-            return false;
-        const hasAnyFiles = this.hasAnyProjectMemoryFiles(normalized);
-        if (!hasAnyFiles) {
-            rmSync(this.projectRoot(normalized), { recursive: true, force: true });
-            return true;
-        }
-        this.rebuildManifest("project", normalized);
-        return false;
-    }
-    editProjectMeta(input) {
-        const normalized = normalizeProjectId(input.projectId);
-        const nextName = normalizeWhitespace(input.projectName);
-        const nextDescription = normalizeWhitespace(input.description);
-        const nextStatus = normalizeWhitespace(input.status);
-        const nextAliases = uniqueItems(input.aliases, 50);
-        if (!normalized || normalized === TMP_PROJECT_ID) {
-            throw new Error("projectId must be a stable project id");
-        }
-        if (!nextName) {
-            throw new Error("projectName is required");
-        }
-        if (!nextDescription) {
-            throw new Error("description is required");
-        }
-        if (!nextStatus) {
-            throw new Error("status is required");
-        }
-        const existing = this.getProjectMeta(normalized);
-        if (!existing) {
-            throw new Error(`Project not found: ${input.projectId}`);
-        }
-        return this.upsertProjectMeta({
-            projectId: normalized,
-            projectName: nextName,
-            description: nextDescription,
-            aliases: [existing.projectName, ...existing.aliases, ...nextAliases],
-            status: nextStatus,
-            ...(existing.dreamUpdatedAt ? { dreamUpdatedAt: existing.dreamUpdatedAt } : {}),
-        });
-    }
-    rewriteRecord(relativePath, transform) {
-        const absolutePath = join(this.rootDir, relativePath);
-        if (!existsSync(absolutePath)) {
-            throw new Error(`Memory file not found: ${relativePath}`);
-        }
-        const raw = readFileSync(absolutePath, "utf-8");
-        const { frontmatter, body } = parseFrontmatter(raw);
-        const next = transform(frontmatter, body);
-        const nextBody = next.body.trim();
-        writeFileSync(absolutePath, `${renderFrontmatter(next.frontmatter)}${nextBody}${nextBody ? "\n" : ""}`, "utf-8");
-        if (next.frontmatter.scope === "global") {
-            this.rebuildManifest("global");
-        }
-        else if (next.frontmatter.projectId) {
-            this.rebuildManifest("project", next.frontmatter.projectId);
-        }
-        return this.getMemoryRecord(relativePath, 5000);
-    }
-    rewriteRecordFrontmatter(relativePath, transform) {
-        return this.rewriteRecord(relativePath, (frontmatter, body) => ({
-            frontmatter: transform(frontmatter),
-            body,
-        }));
-    }
-    editEntry(input) {
-        const relativePath = normalizeWhitespace(input.relativePath);
-        const nextName = normalizeWhitespace(input.name);
-        const nextDescription = normalizeWhitespace(input.description);
-        if (!relativePath) {
-            throw new Error("id is required");
-        }
-        if (!nextName) {
-            throw new Error("name is required");
-        }
-        const record = this.getMemoryRecord(relativePath, 5000);
-        if (!record) {
-            throw new Error(`Memory file not found: ${relativePath}`);
-        }
-        if (record.type === "user") {
-            throw new Error("User profile cannot be edited from manual maintenance");
-        }
-        if (record.relativePath.endsWith(PROJECT_META_FILE)) {
-            throw new Error("project.meta.md cannot be edited with edit_entry");
-        }
-        if (record.deprecated) {
-            throw new Error("Deprecated memory must be restored before editing");
-        }
-        const fields = input.fields ?? {};
-        const candidate = this.toCandidate(record);
-        const nextFrontmatter = {
-            name: nextName,
-            description: nextDescription,
-            type: record.type,
-            scope: record.scope,
-            ...(record.projectId ? { projectId: record.projectId } : {}),
-            updatedAt: nowIso(),
-            ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
-            ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
-            ...(record.deprecated ? { deprecated: true } : {}),
-            ...(typeof record.dreamAttempts === "number" ? { dreamAttempts: record.dreamAttempts } : {}),
-        };
-        const nextBody = record.type === "feedback"
-            ? renderFeedbackMemoryBody({
-                rule: normalizeWhitespace(fields.rule ?? candidate.rule ?? record.description),
-                why: normalizeWhitespace(fields.why ?? candidate.why ?? ""),
-                howToApply: normalizeWhitespace(fields.howToApply ?? candidate.howToApply ?? ""),
-                notes: uniqueItems(fields.notes ?? candidate.notes ?? [], 50),
-            })
-            : renderProjectMemoryBody({
-                stage: normalizeWhitespace(fields.stage ?? candidate.stage ?? record.description),
-                decisions: uniqueItems(fields.decisions ?? candidate.decisions ?? [], 50),
-                constraints: uniqueItems(fields.constraints ?? candidate.constraints ?? [], 50),
-                nextSteps: uniqueItems(fields.nextSteps ?? candidate.nextSteps ?? [], 50),
-                blockers: uniqueItems(fields.blockers ?? candidate.blockers ?? [], 50),
-                timeline: uniqueItems(fields.timeline ?? candidate.timeline ?? [], 50),
-                notes: uniqueItems(fields.notes ?? candidate.notes ?? [], 50),
-            });
-        return this.rewriteRecord(relativePath, () => ({
-            frontmatter: nextFrontmatter,
-            body: nextBody,
-        }));
-    }
-    markEntriesDeprecated(relativePaths) {
-        const mutatedIds = [];
-        const touchedProjectIds = new Set();
-        for (const relativePath of Array.from(new Set(relativePaths))) {
-            const record = this.getMemoryRecord(relativePath, 5);
-            if (!record)
-                continue;
-            if (record.type === "user") {
-                throw new Error("User profile cannot be deprecated");
-            }
-            if (record.relativePath.endsWith(PROJECT_META_FILE)) {
-                throw new Error("project.meta.md cannot be deprecated");
-            }
-            if (record.deprecated)
-                continue;
-            this.rewriteRecordFrontmatter(relativePath, (frontmatter) => ({
-                ...frontmatter,
-                deprecated: true,
-                updatedAt: nowIso(),
-            }));
-            mutatedIds.push(relativePath);
-            if (record.projectId && record.projectId !== TMP_PROJECT_ID) {
-                touchedProjectIds.add(record.projectId);
-            }
-        }
-        const deletedProjectIds = Array.from(touchedProjectIds).filter((projectId) => this.cleanupFormalProjectAfterMutation(projectId));
-        return { mutatedIds, deletedProjectIds };
-    }
-    restoreEntries(relativePaths) {
-        const mutatedIds = [];
-        for (const relativePath of Array.from(new Set(relativePaths))) {
-            const record = this.getMemoryRecord(relativePath, 5);
-            if (!record)
-                continue;
-            if (record.type === "user") {
-                throw new Error("User profile cannot be restored from manual maintenance");
-            }
-            if (record.relativePath.endsWith(PROJECT_META_FILE)) {
-                throw new Error("project.meta.md cannot be restored");
-            }
-            if (!record.deprecated) {
-                throw new Error("Only deprecated memory can be restored");
-            }
-            this.rewriteRecordFrontmatter(relativePath, (frontmatter) => ({
-                ...frontmatter,
-                deprecated: false,
-                updatedAt: nowIso(),
-            }));
-            mutatedIds.push(relativePath);
-        }
-        return { mutatedIds, deletedProjectIds: [] };
-    }
-    deleteEntries(relativePaths) {
-        const mutatedIds = [];
-        const touchedProjectIds = new Set();
-        for (const relativePath of Array.from(new Set(relativePaths))) {
-            if (relativePath.endsWith(PROJECT_META_FILE)) {
-                throw new Error("project.meta.md cannot be deleted directly");
-            }
-            const record = this.getMemoryRecord(relativePath, 5);
-            if (!record)
-                continue;
-            if (record.type === "user") {
-                throw new Error("User profile cannot be deleted from manual maintenance");
-            }
-            if (!record.deprecated) {
-                throw new Error("Only deprecated memory can be deleted");
-            }
-            this.deleteRecord(record);
-            mutatedIds.push(relativePath);
-            if (record.projectId && record.projectId !== TMP_PROJECT_ID) {
-                touchedProjectIds.add(record.projectId);
-            }
-        }
-        const deletedProjectIds = Array.from(touchedProjectIds).filter((projectId) => this.cleanupFormalProjectAfterMutation(projectId));
-        return { mutatedIds, deletedProjectIds };
-    }
-    archiveTmpEntries(input) {
-        const relativePaths = Array.from(new Set(input.relativePaths.map((item) => normalizeWhitespace(item)).filter(Boolean)));
-        if (!relativePaths.length) {
-            throw new Error("ids is required");
-        }
-        const targetProjectId = normalizeProjectId(input.targetProjectId);
-        const newProjectName = normalizeWhitespace(input.newProjectName || "");
-        if (targetProjectId && newProjectName) {
-            throw new Error("Provide either targetProjectId or newProjectName, not both");
-        }
-        const records = relativePaths.map((relativePath) => this.getMemoryRecord(relativePath, 5)).filter((item) => Boolean(item));
-        if (records.length !== relativePaths.length) {
-            throw new Error("One or more tmp memory files were not found");
-        }
-        if (records.some((record) => record.projectId !== TMP_PROJECT_ID)) {
-            throw new Error("archive_tmp only accepts tmp memory files");
-        }
-        if (records.some((record) => record.deprecated)) {
-            throw new Error("Deprecated tmp memory must be restored before archiving");
-        }
-        let destinationProjectId = targetProjectId;
-        let createdProjectId;
-        if (!destinationProjectId) {
-            if (!newProjectName) {
-                throw new Error("archive_tmp requires targetProjectId or newProjectName");
-            }
-            if (records.some((record) => record.type !== "project")) {
-                throw new Error("tmp feedback can only be archived to an existing formal project");
-            }
-            destinationProjectId = this.createStableProjectId(`${newProjectName}|${nowIso()}`);
-            this.upsertProjectMeta({
-                projectId: destinationProjectId,
-                projectName: newProjectName,
-                description: records[0]?.description || newProjectName,
-                aliases: records.map((record) => record.name).filter(Boolean),
-            });
-            createdProjectId = destinationProjectId;
-        }
-        else {
-            const meta = this.getProjectMeta(destinationProjectId);
-            if (!meta) {
-                throw new Error(`Target project not found: ${input.targetProjectId}`);
-            }
-        }
-        const mutatedIds = [];
-        for (const relativePath of relativePaths) {
-            const promoted = this.promoteTmpRecord(relativePath, destinationProjectId);
-            if (!promoted) {
-                throw new Error(`Failed to archive tmp memory: ${relativePath}`);
-            }
-            mutatedIds.push(relativePath);
-        }
-        return {
-            mutatedIds,
-            targetProjectId: destinationProjectId,
-            ...(createdProjectId ? { createdProjectId } : {}),
-        };
-    }
-    exportBundleRecords(options = {}) {
-        const projectMetas = this.listProjectMetas()
-            .map((meta) => ({
-            projectId: meta.projectId,
-            projectName: meta.projectName,
-            description: meta.description,
-            aliases: [...meta.aliases],
-            status: meta.status,
-            createdAt: meta.createdAt,
-            updatedAt: meta.updatedAt,
-            ...(meta.dreamUpdatedAt ? { dreamUpdatedAt: meta.dreamUpdatedAt } : {}),
-            relativePath: meta.relativePath,
-        }));
-        const memoryFiles = this.rebuildAllManifests(options.includeTmp ? { includeTmp: true } : {})
-            .map((entry) => this.readRecordFromPath(entry.absolutePath))
-            .map((record) => ({
-            name: record.name,
-            description: record.description,
-            type: record.type,
-            scope: record.scope,
-            ...(record.projectId ? { projectId: record.projectId } : {}),
-            updatedAt: record.updatedAt,
-            ...(record.deprecated ? { deprecated: true } : {}),
-            ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
-            ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
-            ...(typeof record.dreamAttempts === "number" ? { dreamAttempts: record.dreamAttempts } : {}),
-            file: record.file,
-            relativePath: record.relativePath,
-            content: record.content,
-        }));
-        return { projectMetas, memoryFiles };
-    }
-    exportSnapshotFiles() {
-        return findAllFiles(this.rootDir).map((absolutePath) => ({
-            relativePath: relative(this.rootDir, absolutePath).replace(/\\/g, "/"),
-            content: readFileSync(absolutePath, "utf-8"),
-        }));
-    }
-    clearAllData() {
-        if (existsSync(this.rootDir)) {
-            for (const entry of readdirSync(this.rootDir)) {
-                rmSync(join(this.rootDir, entry), { recursive: true, force: true });
-            }
-        }
-        this.ensureLayout();
-        this.rebuildManifest("global");
-        this.rebuildManifest("project", TMP_PROJECT_ID);
-    }
-    writeImportedProjectMeta(record) {
-        const projectId = normalizeProjectId(record.projectId);
-        if (!projectId || projectId === TMP_PROJECT_ID) {
-            throw new Error("Imported project meta requires a stable projectId");
-        }
-        ensureDir(this.projectRoot(projectId));
-        const metaPath = this.projectMetaPath(projectId);
-        const next = {
-            projectId,
-            projectName: normalizeWhitespace(record.projectName) || projectId,
-            description: normalizeWhitespace(record.description || record.projectName || projectId),
-            aliases: sanitizeProjectAliases(record.aliases, normalizeWhitespace(record.projectName) || projectId),
-            status: normalizeWhitespace(record.status || "active") || "active",
-            createdAt: record.createdAt || nowIso(),
-            updatedAt: record.updatedAt || nowIso(),
-            ...(record.dreamUpdatedAt ? { dreamUpdatedAt: record.dreamUpdatedAt } : {}),
-            relativePath: relative(this.rootDir, metaPath),
-            absolutePath: metaPath,
-        };
-        writeFileSync(metaPath, renderProjectMeta(next), "utf-8");
-        return next;
-    }
-    writeImportedMemoryFile(record) {
-        if (record.type === "user") {
-            const absolutePath = join(this.rootDir, GLOBAL_DIR, USER_DIR, "user-profile.md");
-            ensureDir(dirname(absolutePath));
-            writeFileSync(absolutePath, `${renderFrontmatter({
-                name: "user-profile",
-                description: normalizeWhitespace(record.description || record.name || "User profile"),
-                type: "user",
-                scope: "global",
-                updatedAt: record.updatedAt || nowIso(),
-                ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
-                ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
-                ...(record.deprecated ? { deprecated: true } : {}),
-            })}${record.content.trim()}\n`, "utf-8");
-            return this.readRecordFromPath(absolutePath);
-        }
-        const projectId = normalizeProjectId(record.projectId);
-        if (!projectId) {
-            throw new Error(`Imported ${record.type} memory is missing projectId`);
-        }
-        const typeDir = selectTypeDirectory(record.type);
-        const baseDir = join(this.projectRoot(projectId), typeDir);
-        ensureDir(baseDir);
-        const absolutePath = join(baseDir, sanitizeFileName(record.file, slugify(record.name || record.type)));
-        writeFileSync(absolutePath, `${renderFrontmatter({
-            name: normalizeWhitespace(record.name || record.file || record.type),
-            description: normalizeWhitespace(record.description || record.name || ""),
-            type: record.type,
-            scope: "project",
-            projectId,
-            updatedAt: record.updatedAt || nowIso(),
-            ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
-            ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
-            ...(record.deprecated ? { deprecated: true } : {}),
-            ...(typeof record.dreamAttempts === "number" ? { dreamAttempts: record.dreamAttempts } : {}),
-        })}${record.content.trim()}\n`, "utf-8");
-        return this.readRecordFromPath(absolutePath);
-    }
-    replaceFromBundle(bundle) {
-        this.clearAllData();
-        const seenProjectMetas = new Set();
-        for (const meta of bundle.projectMetas) {
-            const projectId = normalizeProjectId(meta.projectId);
-            if (!projectId || projectId === TMP_PROJECT_ID) {
-                throw new Error("Imported project meta contains invalid projectId");
-            }
-            if (seenProjectMetas.has(projectId)) {
-                throw new Error(`Duplicate project meta for ${projectId}`);
-            }
-            seenProjectMetas.add(projectId);
-            this.writeImportedProjectMeta(meta);
-        }
-        const seenPaths = new Set();
-        const importedMemoryFiles = bundle.memoryFiles.map((record) => {
-            const projectId = record.type === "user" ? undefined : normalizeProjectId(record.projectId);
-            const baseDir = record.type === "user"
-                ? join(GLOBAL_DIR, USER_DIR)
-                : join(PROJECTS_DIR, projectId || TMP_PROJECT_ID, selectTypeDirectory(record.type));
-            const relativePath = join(baseDir, sanitizeFileName(record.file, slugify(record.name || record.type)));
-            if (seenPaths.has(relativePath)) {
-                throw new Error(`Duplicate imported memory file path: ${relativePath}`);
-            }
-            seenPaths.add(relativePath);
-            return this.writeImportedMemoryFile(record);
-        });
-        const missingMetaByProject = new Map();
-        for (const record of importedMemoryFiles) {
-            if (record.type === "user" || !record.projectId || record.projectId === TMP_PROJECT_ID)
-                continue;
-            if (seenProjectMetas.has(record.projectId))
-                continue;
-            if (!missingMetaByProject.has(record.projectId)) {
-                missingMetaByProject.set(record.projectId, record);
-            }
-        }
-        for (const [projectId, record] of missingMetaByProject) {
-            this.upsertProjectMeta({
-                projectId,
-                projectName: record.name || projectId,
-                description: record.description || record.name || projectId,
-                aliases: [record.name].filter(Boolean),
-            });
-        }
-        this.rebuildManifest("global");
-        this.rebuildManifest("project", TMP_PROJECT_ID);
-        for (const projectId of this.listProjectIds()) {
-            this.rebuildManifest("project", projectId);
-        }
-        return {
-            projectMetas: this.listProjectMetas({ includeTmp: true }),
-            memoryFiles: this.rebuildAllManifests({ includeTmp: true }).map((entry) => this.readRecordFromPath(entry.absolutePath)),
-        };
-    }
-    upsertProjectMeta(input) {
-        const projectId = normalizeProjectId(input.projectId);
-        if (!projectId || projectId === TMP_PROJECT_ID) {
-            throw new Error("projectId must be a stable project id");
-        }
-        ensureDir(this.projectRoot(projectId));
-        const metaPath = this.projectMetaPath(projectId);
-        const existing = this.getProjectMeta(projectId);
-        const createdAt = existing?.createdAt ?? nowIso();
-        const next = {
-            projectId,
-            projectName: normalizeWhitespace(input.projectName) || existing?.projectName || projectId,
-            description: normalizeWhitespace(input.description || "") || existing?.description || input.projectName || projectId,
-            aliases: sanitizeProjectAliases([
-                ...(existing?.aliases ?? []),
-                ...(input.aliases ?? []),
-                input.projectName,
-            ], normalizeWhitespace(input.projectName) || existing?.projectName || projectId),
-            status: normalizeWhitespace(input.status || existing?.status || "active") || "active",
-            createdAt,
-            updatedAt: nowIso(),
-            ...(normalizeWhitespace(input.dreamUpdatedAt || existing?.dreamUpdatedAt || "")
-                ? { dreamUpdatedAt: normalizeWhitespace(input.dreamUpdatedAt || existing?.dreamUpdatedAt || "") }
-                : {}),
-            relativePath: relative(this.rootDir, metaPath),
-            absolutePath: metaPath,
-        };
-        writeFileSync(metaPath, renderProjectMeta(next), "utf-8");
-        return next;
-    }
-    createStableProjectId(seed) {
-        const normalized = normalizeWhitespace(seed) || nowIso();
-        let candidate = `project_${hashText(normalized)}`;
-        let counter = 1;
-        while (existsSync(this.projectRoot(candidate))) {
-            candidate = `project_${hashText(`${normalized}:${counter}`)}`;
-            counter += 1;
-        }
-        return candidate;
-    }
-    listTmpEntries(limit = 500) {
-        return this.listMemoryEntries({
-            scope: "project",
-            projectId: TMP_PROJECT_ID,
-            includeTmp: true,
-            limit,
-        });
-    }
-    renderCandidateBody(candidate, existing) {
-        const sections = existing ? parseSections(existing.content) : new Map();
-        if (candidate.type === "user") {
-            const existingProfile = truncate(normalizeTextSection(sections.get("Profile")) || normalizeTextSection(sections.get("Summary")), 400);
-            const existingPreferences = (sections.get("Preferences") ?? []).map((line) => line.replace(/^- /, "").trim());
-            const existingConstraints = (sections.get("Constraints") ?? []).map((line) => line.replace(/^- /, "").trim());
-            const existingRelationships = (sections.get("Relationships") ?? []).map((line) => line.replace(/^- /, "").trim());
-            return [
-                renderFixedTextSection("Profile", truncate(pickLongest(existingProfile, candidate.profile ?? candidate.summary ?? ""), 400)),
-                renderFixedListSection("Preferences", uniqueItems([...existingPreferences, ...(candidate.preferences ?? [])], 20)),
-                renderFixedListSection("Constraints", uniqueItems([...existingConstraints, ...(candidate.constraints ?? [])], 20)),
-                renderFixedListSection("Relationships", uniqueItems([...existingRelationships, ...(candidate.relationships ?? [])], 20)),
-            ].join("\n").trim();
-        }
-        if (candidate.type === "feedback") {
-            const existingRule = (sections.get("Rule") ?? []).join("\n");
-            const existingWhy = sanitizeFeedbackSectionText((sections.get("Why") ?? []).join("\n"));
-            const existingHow = sanitizeFeedbackSectionText((sections.get("How to apply") ?? []).join("\n"));
-            const existingNotes = (sections.get("Notes") ?? []).map((line) => line.replace(/^- /, "").trim());
-            const nextWhy = mergeSectionText(existingWhy, sanitizeFeedbackSectionText(candidate.why ?? ""));
-            const nextHow = mergeSectionText(existingHow, sanitizeFeedbackSectionText(candidate.howToApply ?? ""));
-            return [
-                renderTextSection("Rule", pickLongest(existingRule, candidate.rule ?? candidate.summary ?? "")),
-                renderFixedTextSection("Why", nextWhy),
-                renderFixedTextSection("How to apply", nextHow),
-                renderListSection("Notes", uniqueItems([...existingNotes, ...(candidate.notes ?? [])], 20)),
-            ].filter(Boolean).join("\n").trim();
-        }
-        const existingStage = (sections.get("Current Stage") ?? []).join("\n");
-        const existingDecisions = (sections.get("Decisions") ?? []).map((line) => line.replace(/^- /, "").trim());
-        const existingConstraints = (sections.get("Constraints") ?? []).map((line) => line.replace(/^- /, "").trim());
-        const existingNextSteps = (sections.get("Next Steps") ?? []).map((line) => line.replace(/^- /, "").trim());
-        const existingBlockers = (sections.get("Blockers") ?? []).map((line) => line.replace(/^- /, "").trim());
-        const existingTimeline = (sections.get("Timeline") ?? []).map((line) => line.replace(/^- /, "").trim());
-        const existingAliases = (sections.get("Aliases") ?? []).map((line) => line.replace(/^- /, "").trim());
-        const existingNotes = (sections.get("Notes") ?? []).map((line) => line.replace(/^- /, "").trim());
-        return [
-            renderTextSection("Current Stage", pickLongest(existingStage, candidate.stage ?? candidate.summary ?? "")),
-            renderListSection("Decisions", uniqueItems([...existingDecisions, ...(candidate.decisions ?? [])], 20)),
-            renderListSection("Constraints", uniqueItems([...existingConstraints, ...(candidate.constraints ?? [])], 20)),
-            renderListSection("Next Steps", uniqueItems([...existingNextSteps, ...(candidate.nextSteps ?? [])], 20)),
-            renderListSection("Blockers", uniqueItems([...existingBlockers, ...(candidate.blockers ?? [])], 20)),
-            renderListSection("Timeline", uniqueItems([...existingTimeline, ...(candidate.timeline ?? [])], 20)),
-            renderListSection("Aliases", uniqueItems([...existingAliases, ...(candidate.aliases ?? [])], 20)),
-            renderListSection("Notes", uniqueItems([...existingNotes, ...(candidate.notes ?? [])], 20)),
-        ].filter(Boolean).join("\n").trim();
-    }
-    buildCandidateLocation(candidate) {
-        if (candidate.type === "user") {
-            const absolutePath = join(this.rootDir, GLOBAL_DIR, USER_DIR, "user-profile.md");
-            return {
-                scope: "global",
-                absolutePath,
-                frontmatter: {
-                    name: "user-profile",
-                    description: normalizeWhitespace(candidate.description || candidate.profile || candidate.summary || "User profile"),
-                    type: "user",
-                    scope: "global",
-                    updatedAt: nowIso(),
-                    ...(candidate.capturedAt ? { capturedAt: candidate.capturedAt } : {}),
-                    ...(candidate.sourceSessionKey ? { sourceSessionKey: candidate.sourceSessionKey } : {}),
-                },
-            };
-        }
-        const explicitProjectId = normalizeProjectId(candidate.projectId);
-        const projectId = isStableFormalProjectId(explicitProjectId) && this.getProjectMeta(explicitProjectId)
-            ? explicitProjectId
-            : TMP_PROJECT_ID;
-        const typeDir = selectTypeDirectory(candidate.type);
-        const baseDir = join(this.projectRoot(projectId), typeDir);
-        ensureDir(baseDir);
-        const normalizedName = candidate.type === "project"
-            ? normalizeIdentityName(candidate.name || candidate.description || candidate.stage || "project-note") || "project-note"
-            : normalizeIdentityName(candidate.name || "memory-item") || "memory-item";
-        const existingTmpRecord = projectId === TMP_PROJECT_ID && candidate.capturedAt && candidate.sourceSessionKey
-            ? this.listTmpEntries(500)
-                .map((entry) => this.readRecordFromPath(entry.absolutePath))
-                .find((record) => sameTmpCandidateIdentity(record, candidate, normalizedName))
-            : undefined;
-        const absolutePath = join(baseDir, existingTmpRecord
-            ? existingTmpRecord.file
-            : projectId === TMP_PROJECT_ID
-                ? buildTmpCandidateFileName(candidate)
-                : `${slugify(normalizedName)}.md`);
-        return {
-            scope: "project",
-            projectId,
-            absolutePath,
-            frontmatter: {
-                name: normalizedName,
-                description: normalizeWhitespace(candidate.description || candidate.summary || candidate.rule || candidate.stage || ""),
-                type: candidate.type,
-                scope: "project",
-                projectId,
-                updatedAt: nowIso(),
-                ...(candidate.capturedAt ? { capturedAt: candidate.capturedAt } : {}),
-                ...(candidate.sourceSessionKey ? { sourceSessionKey: candidate.sourceSessionKey } : {}),
-            },
+            profile: parseParagraphSection(sections.get("profile")),
+            preferences: parseListSection(sections.get("preferences")),
+            constraints: parseListSection(sections.get("constraints")),
+            relationships: parseListSection(sections.get("relationships")),
+            files: [record],
         };
     }
     upsertCandidate(candidate) {
-        this.ensureLayout();
-        const location = this.buildCandidateLocation(candidate);
-        const existing = existsSync(location.absolutePath) ? this.readRecordFromPath(location.absolutePath) : undefined;
-        const frontmatter = {
-            ...location.frontmatter,
-            ...(existing?.deprecated ? { deprecated: true } : {}),
-            ...(location.projectId === TMP_PROJECT_ID && typeof existing?.dreamAttempts === "number"
-                ? { dreamAttempts: existing.dreamAttempts }
-                : {}),
-        };
-        const body = this.renderCandidateBody(candidate, existing);
-        const serialized = `${renderFrontmatter(frontmatter)}${body}\n`;
-        writeFileSync(location.absolutePath, serialized, "utf-8");
-        if (location.scope === "global") {
-            this.rebuildManifest("global");
+        if (candidate.type !== "user") {
+            this.ensureProjectMeta({
+                ...(candidate.type === "project" ? { projectName: candidate.name } : {}),
+                description: candidate.description,
+                ...(candidate.type === "project" && candidate.aliases?.length ? { aliases: candidate.aliases } : {}),
+            });
         }
-        else if (location.projectId) {
-            if (location.projectId !== TMP_PROJECT_ID) {
-                const existingMeta = this.getProjectMeta(location.projectId);
-                if (candidate.type === "project") {
-                    this.upsertProjectMeta({
-                        projectId: location.projectId,
-                        projectName: existingMeta?.projectName || candidate.name || location.projectId,
-                        description: existingMeta?.description || candidate.description || candidate.summary || candidate.stage || location.projectId,
-                        aliases: uniqueItems([...(existingMeta?.aliases ?? []), candidate.name, ...(candidate.aliases ?? [])].filter(Boolean), 20),
-                        ...(existingMeta?.status ? { status: existingMeta.status } : {}),
-                        ...(existingMeta?.dreamUpdatedAt ? { dreamUpdatedAt: existingMeta.dreamUpdatedAt } : {}),
-                    });
-                }
-                else if (!existingMeta) {
-                    this.upsertProjectMeta({
-                        projectId: location.projectId,
-                        projectName: location.projectId,
-                        description: candidate.description || candidate.rule || location.projectId,
-                        aliases: [candidate.name].filter(Boolean),
-                    });
-                }
+        const existing = this.findExistingRecordForCandidate(candidate);
+        const frontmatter = buildFrontmatter(candidate, existing);
+        const relativePath = existing?.relativePath ?? this.nextRecordRelativePath(candidate);
+        const record = this.writeRecord({
+            relativePath,
+            frontmatter,
+            body: buildRecordBody(candidate),
+        });
+        if (candidate.type === "project") {
+            const projectMeta = this.readProjectMetaFile();
+            if (projectMeta) {
+                const autoSeedLike = normalizeWhitespace(projectMeta.projectName).toLowerCase() === DEFAULT_PROJECT_NAME.toLowerCase()
+                    || /workspace memory$/i.test(projectMeta.description)
+                    || normalizeWhitespace(projectMeta.description).toLowerCase() === "current project memory.";
+                this.upsertProjectMeta({
+                    ...(autoSeedLike ? { projectName: candidate.name } : {}),
+                    ...(autoSeedLike && candidate.description ? { description: candidate.description } : {}),
+                    aliases: uniqueStrings([
+                        ...(autoSeedLike ? [candidate.name] : []),
+                        ...(candidate.aliases ?? []),
+                    ], 20),
+                    status: projectMeta.status,
+                });
             }
-            this.rebuildManifest("project", location.projectId);
         }
-        return this.getMemoryRecord(relative(this.rootDir, location.absolutePath));
+        return record;
     }
     toCandidate(record) {
-        const sections = parseSections(record.content);
+        const sections = parseMarkdownSections(record.content);
         if (record.type === "user") {
             return {
                 type: "user",
                 scope: "global",
-                name: "user-profile",
+                name: record.name,
                 description: record.description,
                 ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
                 ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
-                profile: normalizeTextSection(sections.get("Profile")) || normalizeTextSection(sections.get("Summary")) || record.description,
-                preferences: normalizeListSection(sections.get("Preferences")),
-                constraints: normalizeListSection(sections.get("Constraints")),
-                relationships: normalizeListSection(sections.get("Relationships")),
+                profile: parseParagraphSection(sections.get("profile")),
+                preferences: parseListSection(sections.get("preferences")),
+                constraints: parseListSection(sections.get("constraints")),
+                relationships: parseListSection(sections.get("relationships")),
             };
         }
         if (record.type === "feedback") {
             return {
                 type: "feedback",
                 scope: "project",
-                ...(record.projectId ? { projectId: record.projectId } : {}),
                 name: record.name,
                 description: record.description,
                 ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
                 ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
-                rule: normalizeTextSection(sections.get("Rule")) || record.description,
-                why: normalizeTextSection(sections.get("Why")),
-                howToApply: normalizeTextSection(sections.get("How to apply")),
-                notes: normalizeListSection(sections.get("Notes")),
+                rule: parseParagraphSection(sections.get("rule")),
+                why: parseParagraphSection(sections.get("why")),
+                howToApply: parseParagraphSection(sections.get("how to apply")),
+                notes: parseListSection(sections.get("notes")),
             };
         }
         return {
             type: "project",
             scope: "project",
-            ...(record.projectId ? { projectId: record.projectId } : {}),
             name: record.name,
             description: record.description,
             ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
             ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
-            stage: normalizeTextSection(sections.get("Current Stage")) || record.description,
-            decisions: normalizeListSection(sections.get("Decisions")),
-            constraints: normalizeListSection(sections.get("Constraints")),
-            nextSteps: normalizeListSection(sections.get("Next Steps")),
-            blockers: normalizeListSection(sections.get("Blockers")),
-            timeline: normalizeListSection(sections.get("Timeline")),
-            aliases: normalizeListSection(sections.get("Aliases")),
-            notes: normalizeListSection(sections.get("Notes")),
+            stage: parseParagraphSection(sections.get("current stage")),
+            decisions: parseListSection(sections.get("decisions")),
+            constraints: parseListSection(sections.get("constraints")),
+            nextSteps: parseListSection(sections.get("next steps")),
+            blockers: parseListSection(sections.get("blockers")),
+            timeline: parseListSection(sections.get("timeline")),
+            notes: parseListSection(sections.get("notes")),
+            aliases: parseListSection(sections.get("aliases")),
+            summary: parseParagraphSection(sections.get("summary")),
         };
     }
-    promoteTmpRecord(relativePath, projectId) {
-        const record = this.getMemoryRecord(relativePath, 5000);
-        if (!record || record.projectId !== TMP_PROJECT_ID)
-            return undefined;
-        const candidate = this.toCandidate(record);
-        const promoted = this.upsertCandidate({
+    editEntry(input) {
+        const existing = this.getMemoryRecordsByIds([input.relativePath], 5000)[0];
+        if (!existing)
+            throw new Error(`Memory entry not found: ${input.relativePath}`);
+        const candidate = this.toCandidate(existing);
+        const next = {
             ...candidate,
-            scope: "project",
-            projectId,
-        });
-        this.deleteRecord({
-            name: record.name,
-            description: record.description,
-            type: record.type,
-            scope: "project",
-            projectId: TMP_PROJECT_ID,
-            updatedAt: record.updatedAt,
-            file: record.file,
-            relativePath: record.relativePath,
-            absolutePath: record.absolutePath,
-            ...(typeof record.dreamAttempts === "number" ? { dreamAttempts: record.dreamAttempts } : {}),
-        });
-        return promoted;
-    }
-    incrementDreamAttempts(relativePath) {
-        const absolutePath = join(this.rootDir, relativePath);
-        if (!existsSync(absolutePath))
-            return undefined;
-        const record = this.readRecordFromPath(absolutePath);
-        if (record.projectId !== TMP_PROJECT_ID)
-            return undefined;
-        const nextFrontmatter = {
-            name: record.name,
-            description: record.description,
-            type: record.type,
-            scope: record.scope,
-            ...(record.projectId ? { projectId: record.projectId } : {}),
-            updatedAt: record.updatedAt,
-            ...(record.deprecated ? { deprecated: true } : {}),
-            dreamAttempts: (record.dreamAttempts ?? 0) + 1,
+            name: normalizeWhitespace(input.name) || candidate.name,
+            description: normalizeDescription(input.description, candidate.description),
         };
-        writeFileSync(absolutePath, `${renderFrontmatter(nextFrontmatter)}${record.content}\n`, "utf-8");
-        this.rebuildManifest("project", TMP_PROJECT_ID);
-        return this.getMemoryRecord(relativePath, 5000);
-    }
-    buildFormalCandidateRelativePath(projectId, candidate) {
-        const normalizedProjectId = normalizeProjectId(projectId);
-        if (!normalizedProjectId || normalizedProjectId === TMP_PROJECT_ID) {
-            throw new Error("Formal candidate paths require a stable projectId");
+        if (input.fields) {
+            if (typeof input.fields.stage === "string")
+                next.stage = normalizeWhitespace(input.fields.stage);
+            if (input.fields.decisions)
+                next.decisions = uniqueStrings(input.fields.decisions);
+            if (input.fields.constraints)
+                next.constraints = uniqueStrings(input.fields.constraints);
+            if (input.fields.nextSteps)
+                next.nextSteps = uniqueStrings(input.fields.nextSteps);
+            if (input.fields.blockers)
+                next.blockers = uniqueStrings(input.fields.blockers);
+            if (input.fields.timeline)
+                next.timeline = uniqueStrings(input.fields.timeline);
+            if (input.fields.notes)
+                next.notes = uniqueStrings(input.fields.notes);
+            if (typeof input.fields.rule === "string")
+                next.rule = normalizeWhitespace(input.fields.rule);
+            if (typeof input.fields.why === "string")
+                next.why = normalizeWhitespace(input.fields.why);
+            if (typeof input.fields.howToApply === "string")
+                next.howToApply = normalizeWhitespace(input.fields.howToApply);
         }
-        const typeDir = selectTypeDirectory(candidate.type);
-        const baseDir = join(PROJECTS_DIR, normalizedProjectId, typeDir);
-        const baseName = candidate.type === "project"
-            ? normalizeWhitespace(candidate.name || candidate.description || candidate.stage || "project-note")
-            : normalizeWhitespace(candidate.name || "feedback-item");
-        const preferred = join(baseDir, `${slugify(baseName)}.md`);
-        if (!existsSync(join(this.rootDir, preferred)))
-            return preferred;
-        const suffix = hashText(JSON.stringify({
-            type: candidate.type,
-            name: candidate.name,
-            description: candidate.description,
-            projectId: normalizedProjectId,
-            rule: candidate.rule,
-            stage: candidate.stage,
+        return this.writeRecord({
+            relativePath: input.relativePath,
+            frontmatter: {
+                ...existing,
+                ...(existing.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+                name: next.name,
+                description: candidateDescription(next),
+                updatedAt: nowIso(),
+            },
+            body: buildRecordBody(next),
+        });
+    }
+    markEntriesDeprecated(relativePaths) {
+        const mutatedIds = [];
+        for (const relativePath of relativePaths) {
+            const record = this.getMemoryRecordsByIds([relativePath], 5000)[0];
+            if (!record)
+                continue;
+            this.writeRecord({
+                relativePath,
+                frontmatter: {
+                    ...record,
+                    ...(record.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+                    updatedAt: nowIso(),
+                    deprecated: true,
+                },
+                body: record.content,
+            });
+            mutatedIds.push(relativePath);
+        }
+        return { mutatedIds, deletedProjectIds: [] };
+    }
+    restoreEntries(relativePaths) {
+        const mutatedIds = [];
+        for (const relativePath of relativePaths) {
+            const record = this.getMemoryRecordsByIds([relativePath], 5000)[0];
+            if (!record)
+                continue;
+            this.writeRecord({
+                relativePath,
+                frontmatter: {
+                    ...record,
+                    ...(record.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+                    updatedAt: nowIso(),
+                    deprecated: false,
+                },
+                body: record.content,
+            });
+            mutatedIds.push(relativePath);
+        }
+        return { mutatedIds, deletedProjectIds: [] };
+    }
+    deleteEntries(relativePaths) {
+        const mutatedIds = [];
+        for (const relativePath of relativePaths) {
+            if (!this.isPathWithinRoot(relativePath))
+                continue;
+            const absolutePath = this.resolveRelativePath(relativePath);
+            if (!existsSync(absolutePath))
+                continue;
+            unlinkSync(absolutePath);
+            mutatedIds.push(relativePath);
+        }
+        this.repairManifests();
+        return { mutatedIds, deletedProjectIds: [] };
+    }
+    archiveTmpEntries(_) {
+        throw new Error("archive_tmp is not supported in EdgeClaw current-project memory mode");
+    }
+    listProjectMetas(_options = {}) {
+        const meta = this.readProjectMetaFile();
+        if (meta)
+            return [meta];
+        return this.hasVisibleProjectMemory(CURRENT_PROJECT_ID)
+            ? [this.ensureProjectMeta()]
+            : [];
+    }
+    listProjectIdentityHints(_options = {}) {
+        const meta = this.readProjectMetaFile();
+        if (!meta && !this.hasVisibleProjectMemory(CURRENT_PROJECT_ID))
+            return [];
+        const projectMeta = meta ?? this.ensureProjectMeta();
+        return [{
+                identityKey: CURRENT_PROJECT_ID,
+                projectId: CURRENT_PROJECT_ID,
+                projectName: projectMeta.projectName,
+                aliases: projectMeta.aliases,
+                description: projectMeta.description,
+                updatedAt: projectMeta.updatedAt,
+                scope: "formal",
+            }];
+    }
+    getProjectMeta(projectId = CURRENT_PROJECT_ID) {
+        const normalized = normalizeWhitespace(projectId);
+        if (normalized && normalized !== CURRENT_PROJECT_ID)
+            return undefined;
+        return this.readProjectMetaFile();
+    }
+    hasVisibleProjectMemory(projectId = CURRENT_PROJECT_ID) {
+        const normalized = normalizeWhitespace(projectId);
+        if (normalized && normalized !== CURRENT_PROJECT_ID)
+            return false;
+        return this.collectAllEntries().some((entry) => entry.scope === "project" && !entry.deprecated);
+    }
+    listTmpEntries(_limit = 500) {
+        return [];
+    }
+    editProjectMeta(input) {
+        const normalizedProjectId = normalizeWhitespace(input.projectId);
+        if (normalizedProjectId && normalizedProjectId !== CURRENT_PROJECT_ID) {
+            throw new Error(`Unknown projectId: ${input.projectId}`);
+        }
+        return this.upsertProjectMeta({
+            projectName: input.projectName,
+            description: input.description,
+            aliases: input.aliases ?? [],
+            status: input.status,
+        });
+    }
+    exportBundleRecords(_options = {}) {
+        const projectMeta = this.readProjectMetaFile();
+        return {
+            memoryFiles: this.getMemoryRecordsByIds(this.collectAllEntries().map((entry) => entry.relativePath), 5000).map((record) => ({
+                name: record.name,
+                description: record.description,
+                type: record.type,
+                scope: record.scope,
+                ...(record.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+                updatedAt: record.updatedAt,
+                ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
+                ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
+                ...(typeof record.deprecated === "boolean" ? { deprecated: record.deprecated } : {}),
+                ...(typeof record.dreamAttempts === "number" ? { dreamAttempts: record.dreamAttempts } : {}),
+                file: record.file,
+                relativePath: record.relativePath,
+                content: record.content,
+            })),
+            projectMetas: projectMeta
+                ? [{
+                        projectId: projectMeta.projectId,
+                        projectName: projectMeta.projectName,
+                        description: projectMeta.description,
+                        aliases: projectMeta.aliases,
+                        status: projectMeta.status,
+                        createdAt: projectMeta.createdAt,
+                        updatedAt: projectMeta.updatedAt,
+                        ...(projectMeta.dreamUpdatedAt ? { dreamUpdatedAt: projectMeta.dreamUpdatedAt } : {}),
+                        relativePath: PROJECT_META_FILE,
+                    }]
+                : [],
+        };
+    }
+    exportSnapshotFiles() {
+        this.repairManifests();
+        const files = [
+            MANIFEST_FILE,
+            ...(this.readProjectMetaFile() ? [PROJECT_META_FILE] : []),
+            ...this.collectAllEntries().map((entry) => entry.relativePath),
+        ];
+        return files.map((relativePath) => ({
+            relativePath,
+            content: readFileSync(this.resolveRelativePath(relativePath), "utf8"),
         }));
-        return join(baseDir, `${slugify(baseName)}-${suffix}.md`);
     }
-    writeCandidateToRelativePath(relativePath, candidate) {
+    clearAllData() {
+        rmSync(this.rootDir, { recursive: true, force: true });
         this.ensureLayout();
-        const absolutePath = join(this.rootDir, relativePath);
-        ensureDir(dirname(absolutePath));
-        const existing = existsSync(absolutePath) ? this.readRecordFromPath(absolutePath) : undefined;
-        const normalizedProjectId = candidate.type === "user" ? undefined : normalizeProjectId(candidate.projectId);
-        const scope = candidate.type === "user" ? "global" : "project";
-        const frontmatter = {
-            name: normalizeWhitespace(candidate.name || existing?.name || candidate.type || "memory-item") || "memory-item",
-            description: normalizeWhitespace(candidate.description
-                || candidate.profile
-                || candidate.summary
-                || candidate.rule
-                || candidate.stage
-                || existing?.description
-                || ""),
-            type: candidate.type,
-            scope,
-            ...(normalizedProjectId ? { projectId: normalizedProjectId } : {}),
-            updatedAt: nowIso(),
-            ...(candidate.capturedAt ? { capturedAt: candidate.capturedAt } : {}),
-            ...(candidate.sourceSessionKey ? { sourceSessionKey: candidate.sourceSessionKey } : {}),
-            ...(existing?.deprecated ? { deprecated: true } : {}),
-            ...(typeof existing?.dreamAttempts === "number" ? { dreamAttempts: existing.dreamAttempts } : {}),
-        };
-        const body = this.renderCandidateBody(candidate, existing);
-        writeFileSync(absolutePath, `${renderFrontmatter(frontmatter)}${body}\n`, "utf-8");
-        if (scope === "global") {
-            this.rebuildManifest("global");
-        }
-        else if (normalizedProjectId) {
-            this.rebuildManifest("project", normalizedProjectId);
-        }
-        return this.getMemoryRecord(relativePath, 5000);
-    }
-    deleteRecords(relativePaths) {
-        const deleted = [];
-        for (const relativePath of Array.from(new Set(relativePaths))) {
-            const record = this.getMemoryRecord(relativePath, 5);
-            if (!record)
-                continue;
-            this.deleteRecord(record);
-            deleted.push(relativePath);
-        }
-        return deleted;
-    }
-    deleteProject(projectId) {
-        const normalized = normalizeProjectId(projectId);
-        if (!normalized || normalized === TMP_PROJECT_ID)
-            return false;
-        const root = this.projectRoot(normalized);
-        if (!existsSync(root))
-            return false;
-        rmSync(root, { recursive: true, force: true });
-        return true;
-    }
-    cleanupTmpEntries(options = {}) {
-        const maxDreamAttempts = Math.max(1, options.maxDreamAttempts ?? 3);
-        const olderThanMs = Math.max(1, options.olderThanMs ?? 7 * 24 * 60 * 60 * 1000);
-        const archive = options.archive !== false;
-        const now = Date.now();
-        let archived = 0;
-        let deleted = 0;
-        let kept = 0;
-        const changedFiles = [];
-        for (const entry of this.listTmpEntries(1000)) {
-            const record = this.getMemoryRecord(entry.relativePath, 5000);
-            if (!record)
-                continue;
-            const updatedAt = Date.parse(record.updatedAt);
-            const tooOld = Number.isFinite(updatedAt) ? now - updatedAt >= olderThanMs : false;
-            const tooManyAttempts = (record.dreamAttempts ?? 0) >= maxDreamAttempts;
-            if (!tooOld && !tooManyAttempts) {
-                kept += 1;
-                continue;
-            }
-            if (archive) {
-                this.archiveRecord(entry);
-                archived += 1;
-            }
-            else {
-                this.deleteRecord(entry);
-                deleted += 1;
-            }
-            changedFiles.push(entry.relativePath);
-        }
-        return { archived, deleted, kept, changedFiles };
-    }
-    archiveRecord(entry) {
-        if (!existsSync(entry.absolutePath))
-            return;
-        const archiveDir = join(dirname(entry.absolutePath), ARCHIVE_DIR);
-        ensureDir(archiveDir);
-        renameSync(entry.absolutePath, join(archiveDir, entry.file));
-        if (entry.scope === "global") {
-            this.rebuildManifest("global");
-        }
-        else {
-            this.rebuildManifest("project", entry.projectId ?? TMP_PROJECT_ID);
-        }
-    }
-    deleteRecord(entry) {
-        if (!existsSync(entry.absolutePath))
-            return;
-        unlinkSync(entry.absolutePath);
-        if (entry.scope === "global") {
-            this.rebuildManifest("global");
-        }
-        else {
-            this.rebuildManifest("project", entry.projectId ?? TMP_PROJECT_ID);
-        }
+        this.repairManifests();
     }
     getOverview(lastDreamAt) {
-        const formalEntries = [
-            ...this.collectMemoryEntries({ scope: "global", includeDeprecated: false }),
-            ...this.listProjectIds().flatMap((projectId) => this.collectMemoryEntries({
-                scope: "project",
-                projectId,
-                includeDeprecated: false,
-            })),
-        ];
-        const tmpEntries = this.collectMemoryEntries({
-            scope: "project",
-            projectId: TMP_PROJECT_ID,
-            includeTmp: true,
-            includeDeprecated: false,
-        });
-        const changedEntries = [
-            ...this.collectMemoryEntries({ scope: "global", includeDeprecated: true }),
-            ...this.scanProjectDirs()
-                .filter((projectId) => projectId === TMP_PROJECT_ID || Boolean(this.projectSeedFromDir(projectId)))
-                .flatMap((projectId) => this.collectMemoryEntries({
-                scope: "project",
-                projectId,
-                includeTmp: true,
-                includeDeprecated: true,
-            })),
-        ];
-        const totalUserMemories = formalEntries.filter((entry) => entry.type === "user").length;
-        const totalFeedbackMemories = formalEntries.filter((entry) => entry.type === "feedback").length;
-        const totalProjectMemories = formalEntries.filter((entry) => entry.type === "project").length;
-        const tmpFeedbackMemories = tmpEntries.filter((entry) => entry.type === "feedback").length;
-        const tmpProjectMemories = tmpEntries.filter((entry) => entry.type === "project").length;
+        const entries = this.collectAllEntries();
+        const activeEntries = entries.filter((entry) => !entry.deprecated);
+        const changedFilesSinceLastDream = !lastDreamAt
+            ? activeEntries.length
+            : activeEntries.filter((entry) => entry.updatedAt > lastDreamAt).length;
         return {
-            totalMemoryFiles: formalEntries.length,
-            totalUserMemories,
-            totalFeedbackMemories,
-            totalProjectMemories,
-            tmpTotalFiles: tmpEntries.length,
-            tmpFeedbackMemories,
-            tmpProjectMemories,
-            changedFilesSinceLastDream: lastDreamAt
-                ? changedEntries.filter((entry) => entry.updatedAt > lastDreamAt).length
-                : changedEntries.length,
+            totalFiles: activeEntries.length,
+            projectMemories: activeEntries.filter((entry) => entry.type === "project").length,
+            feedbackMemories: activeEntries.filter((entry) => entry.type === "feedback").length,
+            userProfiles: activeEntries.filter((entry) => entry.type === "user").length,
+            changedFilesSinceLastDream,
+            tmpTotalFiles: 0,
+            tmpFeedbackMemories: 0,
+            tmpProjectMemories: 0,
+            projectMetaCount: this.readProjectMetaFile() ? 1 : 0,
+            ...(activeEntries[0]?.updatedAt ? { latestMemoryAt: activeEntries[0].updatedAt } : {}),
         };
     }
     getSnapshotVersion(lastDreamAt) {
-        const overview = this.getOverview(lastDreamAt);
-        const latest = this.listMemoryEntries({ limit: 1 })[0]?.updatedAt ?? "";
-        const latestProjectMeta = this.listProjectMetas()[0]?.updatedAt ?? "";
-        return JSON.stringify({
-            totalMemoryFiles: overview.totalMemoryFiles,
-            totalUserMemories: overview.totalUserMemories,
-            totalFeedbackMemories: overview.totalFeedbackMemories,
-            totalProjectMemories: overview.totalProjectMemories,
-            tmpTotalFiles: overview.tmpTotalFiles,
-            tmpFeedbackMemories: overview.tmpFeedbackMemories,
-            tmpProjectMemories: overview.tmpProjectMemories,
-            projectMetaCount: this.listProjectMetas().length,
-            latest,
-            latestProjectMeta,
+        const payload = JSON.stringify({
+            lastDreamAt: lastDreamAt ?? "",
+            files: this.exportSnapshotFiles(),
         });
-    }
-    repairManifests() {
-        const before = this.listMemoryEntries({ limit: 1000, includeTmp: true });
-        const after = this.rebuildAllManifests({ includeTmp: true });
-        const changed = Math.abs(after.length - before.length);
-        return {
-            changed,
-            memoryFileCount: after.length,
-            summary: `Rebuilt manifests for ${after.length} memory files.`,
-        };
+        return hashText(payload);
     }
     mergeDuplicateEntries(entries) {
         const groups = new Map();
-        for (const entry of entries) {
-            const key = `${entry.scope}:${entry.projectId ?? "global"}:${entry.type}:${slugify(normalizeIdentityName(entry.name) || entry.name)}`;
+        for (const entry of entries.filter((item) => !item.deprecated && item.type !== "user")) {
+            const key = `${entry.type}:${slugify(entry.name)}`;
             const bucket = groups.get(key) ?? [];
             bucket.push(entry);
             groups.set(key, bucket);
         }
         let merged = 0;
         const changedFiles = [];
+        const deletedFiles = [];
         for (const bucket of groups.values()) {
             if (bucket.length < 2)
                 continue;
-            const [primary, ...duplicates] = sortEntriesByUpdatedAt(bucket);
+            const records = this.getMemoryRecordsByIds(bucket.map((entry) => entry.relativePath), 5000).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+            const primary = records[0];
             if (!primary)
                 continue;
-            const primaryRecord = this.getMemoryRecord(primary.relativePath, 5000);
-            if (!primaryRecord)
-                continue;
-            let mergedCandidate = this.toCandidate(primaryRecord);
-            for (const duplicate of duplicates) {
-                const duplicateRecord = this.getMemoryRecord(duplicate.relativePath, 5000);
-                if (!duplicateRecord)
-                    continue;
-                const incoming = this.toCandidate(duplicateRecord);
-                if (mergedCandidate.type === "user" && incoming.type === "user") {
-                    mergedCandidate = {
-                        ...mergedCandidate,
-                        summary: pickLongest(mergedCandidate.summary ?? "", incoming.summary ?? ""),
-                        preferences: uniqueItems([...(mergedCandidate.preferences ?? []), ...(incoming.preferences ?? [])], 20),
-                        constraints: uniqueItems([...(mergedCandidate.constraints ?? []), ...(incoming.constraints ?? [])], 20),
-                        relationships: uniqueItems([...(mergedCandidate.relationships ?? []), ...(incoming.relationships ?? [])], 20),
-                        notes: uniqueItems([...(mergedCandidate.notes ?? []), ...(incoming.notes ?? [])], 20),
-                    };
-                }
-                else if (mergedCandidate.type === "feedback" && incoming.type === "feedback") {
-                    mergedCandidate = {
-                        ...mergedCandidate,
-                        description: pickLongest(mergedCandidate.description, incoming.description),
-                        rule: pickLongest(mergedCandidate.rule ?? "", incoming.rule ?? ""),
-                        why: mergeSectionText(mergedCandidate.why ?? "", incoming.why ?? ""),
-                        howToApply: mergeSectionText(mergedCandidate.howToApply ?? "", incoming.howToApply ?? ""),
-                        notes: uniqueItems([...(mergedCandidate.notes ?? []), ...(incoming.notes ?? []), duplicate.relativePath], 20),
-                    };
-                }
-                else if (mergedCandidate.type === "project" && incoming.type === "project") {
-                    mergedCandidate = {
-                        ...mergedCandidate,
-                        description: pickLongest(mergedCandidate.description, incoming.description),
-                        stage: pickLongest(mergedCandidate.stage ?? "", incoming.stage ?? ""),
-                        decisions: uniqueItems([...(mergedCandidate.decisions ?? []), ...(incoming.decisions ?? [])], 20),
-                        constraints: uniqueItems([...(mergedCandidate.constraints ?? []), ...(incoming.constraints ?? [])], 20),
-                        nextSteps: uniqueItems([...(mergedCandidate.nextSteps ?? []), ...(incoming.nextSteps ?? [])], 20),
-                        blockers: uniqueItems([...(mergedCandidate.blockers ?? []), ...(incoming.blockers ?? [])], 20),
-                        timeline: uniqueItems([...(mergedCandidate.timeline ?? []), ...(incoming.timeline ?? [])], 20),
-                        notes: uniqueItems([...(mergedCandidate.notes ?? []), ...(incoming.notes ?? []), duplicate.relativePath], 20),
-                    };
-                }
-                this.archiveRecord(duplicate);
-                merged += 1;
-                changedFiles.push(primary.relativePath, duplicate.relativePath);
+            let mergedCandidate = this.toCandidate(primary);
+            for (const record of records.slice(1)) {
+                mergedCandidate = mergeCandidates(mergedCandidate, this.toCandidate(record));
             }
-            this.upsertCandidate(mergedCandidate);
+            this.writeRecord({
+                relativePath: primary.relativePath,
+                frontmatter: {
+                    ...primary,
+                    ...(primary.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+                    updatedAt: nowIso(),
+                    description: candidateDescription(mergedCandidate),
+                    dreamAttempts: typeof primary.dreamAttempts === "number" ? primary.dreamAttempts + 1 : 1,
+                },
+                body: buildRecordBody(mergedCandidate),
+            });
+            changedFiles.push(primary.relativePath);
+            for (const duplicate of records.slice(1)) {
+                const absolutePath = this.resolveRelativePath(duplicate.relativePath);
+                if (existsSync(absolutePath)) {
+                    unlinkSync(absolutePath);
+                    deletedFiles.push(duplicate.relativePath);
+                }
+            }
+            merged += 1;
         }
-        return { merged, changedFiles: Array.from(new Set(changedFiles)) };
-    }
-    getFileUpdatedAt(relativePath) {
-        const absolutePath = join(this.rootDir, relativePath);
-        if (!existsSync(absolutePath))
-            return undefined;
-        const stats = statSync(absolutePath);
-        return stats.mtime.toISOString();
+        if (merged > 0 || deletedFiles.length > 0) {
+            this.repairManifests();
+        }
+        return {
+            merged,
+            changedFiles,
+            deletedFiles,
+        };
     }
 }

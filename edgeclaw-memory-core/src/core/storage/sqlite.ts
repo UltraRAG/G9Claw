@@ -180,6 +180,11 @@ function normalizeSnapshotFileRecord(value: unknown, index: number): MemorySnaps
   };
 }
 
+function hasLegacyMultiProjectPath(relativePath: string): boolean {
+  return relativePath.startsWith("projects/")
+    || relativePath.includes("/project.meta.md");
+}
+
 function normalizeMemoryBundle(value: unknown): MemoryImportableBundle {
   if (!isRecord(value)) throw new MemoryBundleValidationError("Invalid memory bundle");
   const metadata = {
@@ -211,6 +216,11 @@ function normalizeMemoryBundle(value: unknown): MemoryImportableBundle {
         throw new MemoryBundleValidationError(`Duplicate imported snapshot file path: ${record.relativePath}`);
       }
       seenPaths.add(record.relativePath);
+      if (hasLegacyMultiProjectPath(record.relativePath)) {
+        throw new MemoryBundleValidationError(
+          "Legacy multi-project memory bundles are not supported in current-project memory mode",
+        );
+      }
     }
     return {
       formatVersion: MEMORY_EXPORT_FORMAT_VERSION,
@@ -218,7 +228,9 @@ function normalizeMemoryBundle(value: unknown): MemoryImportableBundle {
       files,
     };
   }
-  throw new MemoryBundleValidationError("Unsupported memory bundle formatVersion");
+  throw new MemoryBundleValidationError(
+    `Unsupported memory bundle formatVersion. Expected ${MEMORY_EXPORT_FORMAT_VERSION}.`,
+  );
 }
 
 function isPathWithinRoot(rootDir: string, targetPath: string): boolean {
@@ -545,10 +557,10 @@ export class MemoryRepository {
     return {
       managedFiles: store.exportSnapshotFiles().length,
       memoryFiles: imported.memoryFiles.length,
-      project: imported.memoryFiles.filter((item) => item.type === "project" && item.projectId && item.projectId !== "_tmp").length,
-      feedback: imported.memoryFiles.filter((item) => item.type === "feedback" && item.projectId && item.projectId !== "_tmp").length,
+      project: imported.memoryFiles.filter((item) => item.type === "project").length,
+      feedback: imported.memoryFiles.filter((item) => item.type === "feedback").length,
       user: imported.memoryFiles.filter((item) => item.type === "user").length,
-      tmp: imported.memoryFiles.filter((item) => item.projectId === "_tmp").length,
+      tmp: 0,
       projectMetas: imported.projectMetas.length,
     };
   }
@@ -685,9 +697,7 @@ export class MemoryRepository {
     const recentRecallTraceCount = this.listRecentCaseTraces(12).length;
     const recentIndexTraceCount = this.listRecentIndexTraces(30).length;
     const recentDreamTraceCount = this.listRecentDreamTraces(30).length;
-    const formalProjectCount = this.fileMemory.listProjectMetas()
-      .filter((meta) => this.fileMemory.hasVisibleProjectMemory(meta.projectId))
-      .length;
+    const workspaceHasProjectMemory = fileOverview.projectMemories + fileOverview.feedbackMemories > 0;
     const userProfileCount = this.fileMemory.listMemoryEntries({
       kinds: ["user"],
       scope: "global",
@@ -697,9 +707,11 @@ export class MemoryRepository {
       : 0;
     return {
       pendingSessions,
-      formalProjectCount,
+      currentProjectCount: workspaceHasProjectMemory || fileOverview.projectMetaCount > 0 ? 1 : 0,
+      projectMetaPresent: fileOverview.projectMetaCount > 0,
+      projectMemoryCount: fileOverview.projectMemories,
+      feedbackMemoryCount: fileOverview.feedbackMemories,
       userProfileCount,
-      tmpTotalFiles: fileOverview.tmpTotalFiles,
       recentRecallTraceCount,
       recentIndexTraceCount,
       recentDreamTraceCount,
@@ -724,7 +736,7 @@ export class MemoryRepository {
         autoIndexIntervalMinutes: 60,
         autoDreamIntervalMinutes: 360,
       }),
-      recentMemoryFiles: this.fileMemory.listMemoryEntries({ includeTmp: true, limit }),
+      recentMemoryFiles: this.fileMemory.listMemoryEntries({ limit }),
     };
   }
 
@@ -757,13 +769,26 @@ export class MemoryRepository {
   }
 
   editProjectMeta(input: {
-    projectId: string;
+    projectId?: string;
     projectName: string;
     description: string;
     aliases?: string[];
     status: string;
   }) {
     return this.fileMemory.editProjectMeta(input);
+  }
+
+  ensureProjectMeta(input: {
+    projectName?: string;
+    description?: string;
+    aliases?: string[];
+    status?: string;
+  } = {}) {
+    return this.fileMemory.ensureProjectMeta(input);
+  }
+
+  getProjectMeta() {
+    return this.fileMemory.getProjectMeta();
   }
 
   editMemoryEntry(input: {

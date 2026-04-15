@@ -81,12 +81,19 @@ export declare class MemoryRepository {
     }): number;
     getMemoryRecordsByIds(ids: string[], maxLines?: number): MemoryFileRecord[];
     editProjectMeta(input: {
-        projectId: string;
+        projectId?: string;
         projectName: string;
         description: string;
         aliases?: string[];
         status: string;
     }): import("../types.js").ProjectMetaRecord;
+    ensureProjectMeta(input?: {
+        projectName?: string;
+        description?: string;
+        aliases?: string[];
+        status?: string;
+    }): import("../types.js").ProjectMetaRecord;
+    getProjectMeta(): import("../types.js").ProjectMetaRecord | undefined;
     editMemoryEntry(input: {
         id: string;
         name: string;
@@ -111,7 +118,7 @@ export declare class MemoryRepository {
         newProjectName?: string;
     }): {
         mutatedIds: string[];
-        targetProjectId: string;
+        targetProjectId?: string;
         createdProjectId?: string;
     };
     getSnapshotVersion(): string;
