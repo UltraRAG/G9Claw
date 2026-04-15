@@ -397,10 +397,17 @@ export class GatewayRunner {
       const sdkOptions: Record<string, unknown> = {
         permissionMode: 'bypassPermissions',
         tools: { type: 'preset', preset: 'claude_code' },
+        disallowedTools: ['AskUserQuestion', 'EnterPlanMode'],
         includePartialMessages: true,
         persistSession: true,
         cwd: projectCwd,
         env: { ...process.env },
+        appendSystemPrompt: [
+          'You are running inside a messaging gateway (Feishu, Telegram, etc), not an interactive terminal.',
+          'Ask clarifying questions directly in your text response — do NOT attempt to use structured question tools.',
+          'You cannot enter plan mode. Provide plans inline in your response text.',
+          'Complete multi-step operations in a single turn when possible — do not pause mid-task.',
+        ].join('\n'),
       }
 
       if (savedSessionId) {
