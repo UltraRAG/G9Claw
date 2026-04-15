@@ -19,6 +19,26 @@ const validateApiKey = (req, res, next) => {
   next();
 };
 
+function extractDashboardRefererToken(req) {
+  const refererHeader = req.headers.referer || req.headers.referrer;
+  if (!refererHeader || Array.isArray(refererHeader)) {
+    return null;
+  }
+
+  try {
+    const refererUrl = new URL(
+      refererHeader,
+      `${req.protocol}://${req.get('host')}`,
+    );
+    if (!refererUrl.pathname.startsWith('/memory-dashboard')) {
+      return null;
+    }
+    return refererUrl.searchParams.get('token');
+  } catch {
+    return null;
+  }
+}
+
 // JWT authentication middleware
 const authenticateToken = async (req, res, next) => {
   // Platform mode:  use single database user
@@ -43,6 +63,11 @@ const authenticateToken = async (req, res, next) => {
   // Also check query param for SSE endpoints (EventSource can't set headers)
   if (!token && req.query.token) {
     token = req.query.token;
+  }
+  // Memory dashboard static assets inherit the iframe document URL as Referer,
+  // but do not inherit the query string onto app.js/app.css requests.
+  if (!token) {
+    token = extractDashboardRefererToken(req);
   }
 
   if (!token) {

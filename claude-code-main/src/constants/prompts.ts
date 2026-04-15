@@ -58,6 +58,10 @@ import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
 import { loadMemoryPrompt } from '../memdir/memdir.js'
+import {
+  getEdgeClawMemoryPromptSection,
+  isEdgeClawMemoryEnabled,
+} from '../services/edgeclawMemory/index.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 
@@ -131,6 +135,13 @@ function getHooksSection(): string {
 function getSystemRemindersSection(): string {
   return `- Tool results and user messages may include <system-reminder> tags. <system-reminder> tags contain useful information and reminders. They are automatically added by the system, and bear no direct relation to the specific tool results or user messages in which they appear.
 - The conversation has unlimited context through automatic summarization.`
+}
+
+async function loadConfiguredMemoryPrompt(tools: Tools): Promise<string | null> {
+  if (isEdgeClawMemoryEnabled()) {
+    return getEdgeClawMemoryPromptSection(tools.map(tool => tool.name))
+  }
+  return loadMemoryPrompt()
 }
 
 function getAntModelOverrideSection(): string | null {
@@ -473,7 +484,7 @@ export async function getSystemPrompt(
 
 ${CYBER_RISK_INSTRUCTION}`,
       getSystemRemindersSection(),
-      await loadMemoryPrompt(),
+      await loadConfiguredMemoryPrompt(tools),
       envInfo,
       getLanguageSection(settings.language),
       // When delta enabled, instructions are announced via persisted
@@ -492,7 +503,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     systemPromptSection('session_guidance', () =>
       getSessionSpecificGuidanceSection(enabledTools, skillToolCommands),
     ),
-    systemPromptSection('memory', () => loadMemoryPrompt()),
+    systemPromptSection('memory', () => loadConfiguredMemoryPrompt(tools)),
     systemPromptSection('ant_model_override', () =>
       getAntModelOverrideSection(),
     ),

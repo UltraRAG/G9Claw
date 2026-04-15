@@ -1,0 +1,182 @@
+import type { MemoryCandidate, MemoryMessage, MemoryRoute, MemoryUserSummary, ProjectIdentityHint, ProjectMetaRecord, ProjectShortlistCandidate, RecallHeaderEntry, RetrievalPromptDebug } from "../types.js";
+type LoggerLike = {
+    info?: (...args: unknown[]) => void;
+    warn?: (...args: unknown[]) => void;
+    error?: (...args: unknown[]) => void;
+};
+type PromptDebugSink = (debug: RetrievalPromptDebug) => void;
+export interface FileMemoryExtractionDiscardedCandidate {
+    reason: string;
+    candidateType?: "user" | "feedback" | "project";
+    candidateName?: string;
+    summary?: string;
+}
+export interface FileMemoryExtractionDebug {
+    parsedItems: unknown[];
+    normalizedCandidates: MemoryCandidate[];
+    discarded: FileMemoryExtractionDiscardedCandidate[];
+    finalCandidates: MemoryCandidate[];
+    fallbackApplied?: string;
+}
+export interface LlmDreamFileProjectMetaInput {
+    projectId: string;
+    projectName: string;
+    description: string;
+    aliases: string[];
+    status: string;
+    updatedAt: string;
+    dreamUpdatedAt?: string;
+}
+export interface LlmDreamFileRecordInput {
+    entryId: string;
+    relativePath: string;
+    type: "project" | "feedback";
+    scope: "project";
+    projectId?: string;
+    isTmp: boolean;
+    name: string;
+    description: string;
+    updatedAt: string;
+    capturedAt?: string;
+    sourceSessionKey?: string;
+    content: string;
+    project?: {
+        stage: string;
+        decisions: string[];
+        constraints: string[];
+        nextSteps: string[];
+        blockers: string[];
+        timeline: string[];
+        notes: string[];
+    };
+    feedback?: {
+        rule: string;
+        why: string;
+        howToApply: string;
+        notes: string[];
+    };
+}
+export interface LlmDreamFileGlobalPlanInput {
+    currentProjects: LlmDreamFileProjectMetaInput[];
+    records: LlmDreamFileRecordInput[];
+    agentId?: string;
+    timeoutMs?: number;
+    debugTrace?: PromptDebugSink;
+}
+export interface LlmDreamFileGlobalPlanProject {
+    planKey: string;
+    targetProjectId?: string;
+    projectName: string;
+    description: string;
+    aliases: string[];
+    status: string;
+    mergeReason?: "rename" | "alias_equivalence" | "duplicate_formal_project";
+    evidenceEntryIds: string[];
+    retainedEntryIds: string[];
+}
+export interface LlmDreamFileGlobalPlanOutput {
+    summary: string;
+    duplicateTopicCount: number;
+    conflictTopicCount: number;
+    projects: LlmDreamFileGlobalPlanProject[];
+    deletedProjectIds: string[];
+    deletedEntryIds: string[];
+}
+export interface LlmDreamFileProjectRewriteInput {
+    project: LlmDreamFileGlobalPlanProject & {
+        projectId: string;
+    };
+    currentMeta: LlmDreamFileProjectMetaInput | null;
+    records: LlmDreamFileRecordInput[];
+    agentId?: string;
+    timeoutMs?: number;
+    debugTrace?: PromptDebugSink;
+}
+export interface LlmDreamFileProjectRewriteOutputFile {
+    type: "project" | "feedback";
+    name: string;
+    description: string;
+    sourceEntryIds: string[];
+    stage?: string;
+    decisions?: string[];
+    constraints?: string[];
+    nextSteps?: string[];
+    blockers?: string[];
+    timeline?: string[];
+    notes?: string[];
+    rule?: string;
+    why?: string;
+    howToApply?: string;
+}
+export interface LlmDreamFileProjectRewriteOutput {
+    summary: string;
+    projectMeta: {
+        projectName: string;
+        description: string;
+        aliases: string[];
+        status: string;
+    };
+    files: LlmDreamFileProjectRewriteOutputFile[];
+    deletedEntryIds: string[];
+}
+export declare class LlmMemoryExtractor {
+    private readonly config;
+    private readonly runtime;
+    private readonly logger?;
+    constructor(config: Record<string, unknown>, runtime: Record<string, unknown> | undefined, logger?: LoggerLike | undefined);
+    private resolveSelection;
+    private resolveApiKey;
+    private callStructuredJson;
+    private callStructuredJsonWithDebug;
+    rewriteUserProfile(input: {
+        existingProfile: MemoryUserSummary | null;
+        candidates: MemoryCandidate[];
+        agentId?: string;
+        timeoutMs?: number;
+        debugTrace?: PromptDebugSink;
+    }): Promise<MemoryCandidate | null>;
+    planDreamFileMemory(input: LlmDreamFileGlobalPlanInput): Promise<LlmDreamFileGlobalPlanOutput>;
+    rewriteDreamFileProject(input: LlmDreamFileProjectRewriteInput): Promise<LlmDreamFileProjectRewriteOutput>;
+    decideFileMemoryRoute(input: {
+        query: string;
+        recentMessages?: MemoryMessage[];
+        agentId?: string;
+        timeoutMs?: number;
+        debugTrace?: PromptDebugSink;
+    }): Promise<MemoryRoute>;
+    selectRecallProject(input: {
+        query: string;
+        recentUserMessages?: MemoryMessage[];
+        shortlist: ProjectShortlistCandidate[];
+        agentId?: string;
+        timeoutMs?: number;
+        debugTrace?: PromptDebugSink;
+    }): Promise<{
+        projectId?: string;
+        reason?: string;
+    }>;
+    selectFileManifestEntries(input: {
+        query: string;
+        route: MemoryRoute;
+        recentUserMessages?: MemoryMessage[];
+        projectMeta?: ProjectMetaRecord;
+        manifest: RecallHeaderEntry[];
+        limit?: number;
+        agentId?: string;
+        timeoutMs?: number;
+        debugTrace?: PromptDebugSink;
+    }): Promise<string[]>;
+    extractFileMemoryCandidates(input: {
+        timestamp: string;
+        sessionKey?: string;
+        messages: MemoryMessage[];
+        batchContextMessages?: MemoryMessage[];
+        knownProjects?: ProjectIdentityHint[];
+        explicitRemember?: boolean;
+        agentId?: string;
+        timeoutMs?: number;
+        debugTrace?: PromptDebugSink;
+        decisionTrace?: (debug: FileMemoryExtractionDebug) => void;
+    }): Promise<MemoryCandidate[]>;
+}
+export {};

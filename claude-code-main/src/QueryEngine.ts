@@ -34,6 +34,13 @@ import { loadMemoryPrompt } from './memdir/memdir.js'
 import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
+import {
+  buildEdgeClawMemoryQuery,
+  buildEdgeClawRecentMessages,
+  getEdgeClawMemoryPromptSection,
+  getEdgeClawMemoryService,
+  isEdgeClawMemoryEnabled,
+} from './services/edgeclawMemory/index.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
@@ -58,6 +65,7 @@ import {
 } from './utils/fileStateCache.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
+import { logForDebugging } from './utils/debug.js'
 import { getInMemoryErrors } from './utils/log.js'
 import { countToolCalls, SYNTHETIC_MESSAGES } from './utils/messages.js'
 import {
@@ -314,8 +322,10 @@ export class QueryEngine {
     // Write/Edit tools to call, MEMORY.md filename, loading semantics).
     // The caller can layer their own policy text via appendSystemPrompt.
     const memoryMechanicsPrompt =
-      customPrompt !== undefined && hasAutoMemPathOverride()
-        ? await loadMemoryPrompt()
+      customPrompt !== undefined && isEdgeClawMemoryEnabled()
+        ? getEdgeClawMemoryPromptSection(tools.map(tool => tool.name))
+        : customPrompt !== undefined && hasAutoMemPathOverride()
+          ? await loadMemoryPrompt()
         : null
 
     const systemPrompt = asSystemPrompt([
@@ -427,11 +437,37 @@ export class QueryEngine {
       querySource: 'sdk',
     })
 
+    const turnStartIndex = this.mutableMessages.length
+
     // Push new messages, including user input and any attachments
     this.mutableMessages.push(...messagesFromUserInput)
 
     // Update params to reflect updates from processing /slash commands
     const messages = [...this.mutableMessages]
+    const edgeClawMemoryService = isEdgeClawMemoryEnabled()
+      ? getEdgeClawMemoryService(cwd)
+      : null
+    const captureEdgeClawMemoryTurn = () => {
+      if (!edgeClawMemoryService) {
+        return
+      }
+      try {
+        const captureResult = edgeClawMemoryService.captureTurn(
+          this.mutableMessages.slice(turnStartIndex),
+          {
+            sessionKey: getSessionId(),
+          },
+        )
+        if (captureResult.captured) {
+          edgeClawMemoryService.scheduleMaintenance('turn_capture')
+        }
+      } catch (error) {
+        logForDebugging(
+          `[edgeclaw-memory] capture failed: ${String(error)}`,
+          { level: 'debug' },
+        )
+      }
+    }
 
     // Persist the user's message(s) to transcript BEFORE entering the query
     // loop. The for-await below only calls recordTranscript when ask() yields
@@ -526,6 +562,34 @@ export class QueryEngine {
       setSDKStatus,
     }
 
+    let effectiveSystemPrompt = systemPrompt
+    if (edgeClawMemoryService && shouldQuery) {
+      try {
+        const memoryQuery = buildEdgeClawMemoryQuery(messagesFromUserInput)
+        if (memoryQuery) {
+          const memoryRecall = await edgeClawMemoryService.retrieveContext(
+            memoryQuery,
+            {
+              recentMessages: buildEdgeClawRecentMessages(messages),
+              workspaceHint: cwd,
+              retrievalMode: 'auto',
+            },
+          )
+          if (memoryRecall.systemContext) {
+            effectiveSystemPrompt = asSystemPrompt([
+              ...systemPrompt,
+              memoryRecall.systemContext,
+            ])
+          }
+        }
+      } catch (error) {
+        logForDebugging(
+          `[edgeclaw-memory] retrieve failed: ${String(error)}`,
+          { level: 'debug' },
+        )
+      }
+    }
+
     headlessProfilerCheckpoint('before_skills_plugins')
     // Cache-only: headless/SDK/CCR startup must not block on network for
     // ref-tracked plugins. CCR populates the cache via CLAUDE_CODE_SYNC_PLUGIN_INSTALL
@@ -553,106 +617,107 @@ export class QueryEngine {
     // Record when system message is yielded for headless latency tracking
     headlessProfilerCheckpoint('system_message_yielded')
 
-    if (!shouldQuery) {
-      // Return the results of local slash commands.
-      // Use messagesFromUserInput (not replayableMessages) for command output
-      // because selectableUserMessagesFilter excludes local-command-stdout tags.
-      for (const msg of messagesFromUserInput) {
-        if (
-          msg.type === 'user' &&
-          typeof msg.message.content === 'string' &&
-          (msg.message.content.includes(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
-            msg.message.content.includes(`<${LOCAL_COMMAND_STDERR_TAG}>`) ||
-            msg.isCompactSummary)
-        ) {
-          yield {
-            type: 'user',
-            message: {
-              ...msg.message,
-              content: stripAnsi(msg.message.content),
-            },
-            session_id: getSessionId(),
-            parent_tool_use_id: null,
-            uuid: msg.uuid,
-            timestamp: msg.timestamp,
-            isReplay: !msg.isCompactSummary,
-            isSynthetic: msg.isMeta || msg.isVisibleInTranscriptOnly,
-          } as SDKUserMessageReplay
+    try {
+      if (!shouldQuery) {
+        // Return the results of local slash commands.
+        // Use messagesFromUserInput (not replayableMessages) for command output
+        // because selectableUserMessagesFilter excludes local-command-stdout tags.
+        for (const msg of messagesFromUserInput) {
+          if (
+            msg.type === 'user' &&
+            typeof msg.message.content === 'string' &&
+            (msg.message.content.includes(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
+              msg.message.content.includes(`<${LOCAL_COMMAND_STDERR_TAG}>`) ||
+              msg.isCompactSummary)
+          ) {
+            yield {
+              type: 'user',
+              message: {
+                ...msg.message,
+                content: stripAnsi(msg.message.content),
+              },
+              session_id: getSessionId(),
+              parent_tool_use_id: null,
+              uuid: msg.uuid,
+              timestamp: msg.timestamp,
+              isReplay: !msg.isCompactSummary,
+              isSynthetic: msg.isMeta || msg.isVisibleInTranscriptOnly,
+            } as SDKUserMessageReplay
+          }
+
+          // Local command output — yield as a synthetic assistant message so
+          // RC renders it as assistant-style text rather than a user bubble.
+          // Emitted as assistant (not the dedicated SDKLocalCommandOutputMessage
+          // system subtype) so mobile clients + session-ingress can parse it.
+          if (
+            msg.type === 'system' &&
+            msg.subtype === 'local_command' &&
+            typeof msg.content === 'string' &&
+            (msg.content.includes(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
+              msg.content.includes(`<${LOCAL_COMMAND_STDERR_TAG}>`))
+          ) {
+            yield localCommandOutputToSDKAssistantMessage(msg.content, msg.uuid)
+          }
+
+          if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
+            yield {
+              type: 'system',
+              subtype: 'compact_boundary' as const,
+              session_id: getSessionId(),
+              uuid: msg.uuid,
+              compact_metadata: toSDKCompactMetadata(msg.compactMetadata),
+            } as SDKCompactBoundaryMessage
+          }
         }
 
-        // Local command output — yield as a synthetic assistant message so
-        // RC renders it as assistant-style text rather than a user bubble.
-        // Emitted as assistant (not the dedicated SDKLocalCommandOutputMessage
-        // system subtype) so mobile clients + session-ingress can parse it.
-        if (
-          msg.type === 'system' &&
-          msg.subtype === 'local_command' &&
-          typeof msg.content === 'string' &&
-          (msg.content.includes(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
-            msg.content.includes(`<${LOCAL_COMMAND_STDERR_TAG}>`))
-        ) {
-          yield localCommandOutputToSDKAssistantMessage(msg.content, msg.uuid)
+        if (persistSession) {
+          await recordTranscript(messages)
+          if (
+            isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
+            isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK)
+          ) {
+            await flushSessionStorage()
+          }
         }
 
-        if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
-          yield {
-            type: 'system',
-            subtype: 'compact_boundary' as const,
-            session_id: getSessionId(),
-            uuid: msg.uuid,
-            compact_metadata: toSDKCompactMetadata(msg.compactMetadata),
-          } as SDKCompactBoundaryMessage
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          duration_ms: Date.now() - startTime,
+          duration_api_ms: getTotalAPIDuration(),
+          num_turns: messages.length - 1,
+          result: resultText ?? '',
+          stop_reason: null,
+          session_id: getSessionId(),
+          total_cost_usd: getTotalCost(),
+          usage: this.totalUsage,
+          modelUsage: getModelUsage(),
+          permission_denials: this.permissionDenials,
+          fast_mode_state: getFastModeState(
+            mainLoopModel,
+            initialAppState.fastMode,
+          ),
+          uuid: randomUUID(),
         }
+        return
       }
 
-      if (persistSession) {
-        await recordTranscript(messages)
-        if (
-          isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
-          isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK)
-        ) {
-          await flushSessionStorage()
-        }
+      if (fileHistoryEnabled() && persistSession) {
+        messagesFromUserInput
+          .filter(messageSelector().selectableUserMessagesFilter)
+          .forEach(message => {
+            void fileHistoryMakeSnapshot(
+              (updater: (prev: FileHistoryState) => FileHistoryState) => {
+                setAppState(prev => ({
+                  ...prev,
+                  fileHistory: updater(prev.fileHistory),
+                }))
+              },
+              message.uuid,
+            )
+          })
       }
-
-      yield {
-        type: 'result',
-        subtype: 'success',
-        is_error: false,
-        duration_ms: Date.now() - startTime,
-        duration_api_ms: getTotalAPIDuration(),
-        num_turns: messages.length - 1,
-        result: resultText ?? '',
-        stop_reason: null,
-        session_id: getSessionId(),
-        total_cost_usd: getTotalCost(),
-        usage: this.totalUsage,
-        modelUsage: getModelUsage(),
-        permission_denials: this.permissionDenials,
-        fast_mode_state: getFastModeState(
-          mainLoopModel,
-          initialAppState.fastMode,
-        ),
-        uuid: randomUUID(),
-      }
-      return
-    }
-
-    if (fileHistoryEnabled() && persistSession) {
-      messagesFromUserInput
-        .filter(messageSelector().selectableUserMessagesFilter)
-        .forEach(message => {
-          void fileHistoryMakeSnapshot(
-            (updater: (prev: FileHistoryState) => FileHistoryState) => {
-              setAppState(prev => ({
-                ...prev,
-                fileHistory: updater(prev.fileHistory),
-              }))
-            },
-            message.uuid,
-          )
-        })
-    }
 
     // Track current message usage (reset on each message_start)
     let currentMessageUsage: NonNullableUsage = EMPTY_USAGE
@@ -674,7 +739,7 @@ export class QueryEngine {
 
     for await (const message of query({
       messages,
-      systemPrompt,
+      systemPrompt: effectiveSystemPrompt,
       userContext,
       systemContext,
       canUseTool: wrappedCanUseTool,
@@ -1163,6 +1228,9 @@ export class QueryEngine {
         initialAppState.fastMode,
       ),
       uuid: randomUUID(),
+    }
+    } finally {
+      captureEdgeClawMemoryTurn()
     }
   }
 

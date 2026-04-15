@@ -4,6 +4,7 @@ import FileTree from '../../file-tree/view/FileTree';
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import GitPanel from '../../git-panel/view/GitPanel';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
+import MemoryPanel from './memory/MemoryPanel';
 import type { MainContentProps } from '../types/types';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
@@ -162,6 +163,12 @@ function MainContent({
           )}
 
           {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
+
+          {activeTab === 'memory' && (
+            <div className="h-full overflow-hidden">
+              <MemoryPanel selectedProject={selectedProject} />
+            </div>
+          )}
 
           <div className={`h-full overflow-hidden ${activeTab === 'preview' ? 'block' : 'hidden'}`} />
 

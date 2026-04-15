@@ -57,6 +57,7 @@ import authRoutes from './routes/auth.js';
 import mcpRoutes from './routes/mcp.js';
 import cursorRoutes from './routes/cursor.js';
 import taskmasterRoutes from './routes/taskmaster.js';
+import memoryRoutes, { MEMORY_DASHBOARD_DIR } from './routes/memory.js';
 import mcpUtilsRoutes from './routes/mcp-utils.js';
 import commandsRoutes from './routes/commands.js';
 import settingsRoutes from './routes/settings.js';
@@ -68,6 +69,7 @@ import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import messagesRoutes from './routes/messages.js';
+import { closeMemoryServices } from './services/memoryService.js';
 import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, userDb } from './database/db.js';
@@ -376,6 +378,9 @@ app.use('/api/cursor', authenticateToken, cursorRoutes);
 // TaskMaster API Routes (protected)
 app.use('/api/taskmaster', authenticateToken, taskmasterRoutes);
 
+// Memory API Routes (protected)
+app.use('/api/memory', authenticateToken, memoryRoutes);
+
 // MCP utilities
 app.use('/api/mcp-utils', authenticateToken, mcpUtilsRoutes);
 
@@ -405,6 +410,20 @@ app.use('/api/sessions', authenticateToken, messagesRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
+
+app.get('/memory-dashboard', authenticateToken, (req, res) => {
+    res.sendFile(path.join(MEMORY_DASHBOARD_DIR, 'index.html'));
+});
+
+app.use('/memory-dashboard', authenticateToken, express.static(MEMORY_DASHBOARD_DIR, {
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+        }
+    }
+}));
 
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(__dirname, '../public')));
@@ -2430,6 +2449,7 @@ async function startServer() {
 
         // Clean up plugin processes on shutdown
         const shutdownPlugins = async () => {
+            closeMemoryServices();
             await stopAllPlugins();
             process.exit(0);
         };
