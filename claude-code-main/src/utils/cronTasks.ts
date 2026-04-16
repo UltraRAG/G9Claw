@@ -7,7 +7,12 @@
 //     a configurable limit (DEFAULT_CRON_JITTER_CONFIG.recurringMaxAgeMs).
 //
 // File format:
-//   { "tasks": [{ id, cron, prompt, createdAt, recurring?, permanent? }] }
+//   {
+//     "tasks": [{
+//       id, cron, prompt, createdAt, recurring?, permanent?,
+//       transcriptKey?, originSessionId?
+//     }]
+//   }
 
 import { randomUUID } from 'crypto'
 import { readFileSync } from 'fs'
@@ -16,8 +21,10 @@ import { join } from 'path'
 import {
   addSessionCronTask,
   getProjectRoot,
+  getSessionId,
   getSessionCronTasks,
   removeSessionCronTasks,
+  updateSessionCronTask,
 } from '../bootstrap/state.js'
 import { computeNextCronRun, parseCronExpression } from './cron.js'
 import { logForDebugging } from './debug.js'
@@ -58,9 +65,26 @@ export type CronTask = {
   /**
    * Runtime-only flag. false → session-scoped (never written to disk).
    * File-backed tasks leave this undefined; writeCronTasks strips it so
-   * the on-disk shape stays { id, cron, prompt, createdAt, lastFiredAt?, recurring?, permanent? }.
+   * the on-disk shape stays
+   * { id, cron, prompt, createdAt, lastFiredAt?, recurring?, permanent?, transcriptKey?, originSessionId? }.
    */
   durable?: boolean
+  /**
+   * Stable sidechain transcript key for recurring Cron runs. One-shot tasks
+   * intentionally do not persist this because each fire gets a fresh transcript.
+   */
+  transcriptKey?: string
+  /**
+   * Session that owns the recurring sidechain transcript. This lets recurring
+   * tasks keep appending to the same sidechain JSONL even after the foreground
+   * session id changes (for example after /clear or a later restart).
+   */
+  originSessionId?: string
+  /**
+   * Runtime-only: the currently active or most recent background task instance.
+   * Useful for diagnostics and TUI foregrounding, but not persisted to disk.
+   */
+  lastRunTaskId?: string
   /**
    * Runtime-only. When set, the task was created by an in-process teammate.
    * The scheduler routes fires to that teammate's queue instead of the main
@@ -134,6 +158,12 @@ export async function readCronTasks(dir?: string): Promise<CronTask[]> {
         : {}),
       ...(t.recurring ? { recurring: true } : {}),
       ...(t.permanent ? { permanent: true } : {}),
+      ...(typeof t.transcriptKey === 'string'
+        ? { transcriptKey: t.transcriptKey }
+        : {}),
+      ...(typeof t.originSessionId === 'string'
+        ? { originSessionId: t.originSessionId }
+        : {}),
     })
   }
   return out
@@ -169,10 +199,12 @@ export async function writeCronTasks(
   const root = dir ?? getProjectRoot()
   await mkdir(join(root, '.claude'), { recursive: true })
   // Strip the runtime-only `durable` flag — everything on disk is durable
-  // by definition, and keeping the flag out means readCronTasks() naturally
-  // yields durable: undefined without having to set it explicitly.
+  // by definition. `lastRunTaskId` is also runtime-only: runtime task ids are
+  // per-execution and should not be revived from disk.
   const body: CronFile = {
-    tasks: tasks.map(({ durable: _durable, ...rest }) => rest),
+    tasks: tasks.map(
+      ({ durable: _durable, lastRunTaskId: _lastRunTaskId, ...rest }) => rest,
+    ),
   }
   await writeFile(
     getCronFilePath(root),
@@ -206,6 +238,7 @@ export async function addCronTask(
     cron,
     prompt,
     createdAt: Date.now(),
+    originSessionId: getSessionId(),
     ...(recurring ? { recurring: true } : {}),
   }
   if (!durable) {
@@ -245,6 +278,30 @@ export async function removeCronTasks(
   const remaining = tasks.filter(t => !idSet.has(t.id))
   if (remaining.length === tasks.length) return
   await writeCronTasks(remaining, dir)
+}
+
+export async function updateCronTask(
+  id: string,
+  updater: (task: CronTask) => CronTask,
+  dir?: string,
+): Promise<CronTask | null> {
+  if (dir === undefined) {
+    const updated = updateSessionCronTask(id, task => updater(task))
+    if (updated) {
+      return updated
+    }
+  }
+
+  const tasks = await readCronTasks(dir)
+  let updatedTask: CronTask | null = null
+  const nextTasks = tasks.map(task => {
+    if (task.id !== id) return task
+    updatedTask = updater(task)
+    return updatedTask
+  })
+  if (!updatedTask) return null
+  await writeCronTasks(nextTasks, dir)
+  return updatedTask
 }
 
 /**

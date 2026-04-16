@@ -232,6 +232,10 @@ export const MAX_TRANSCRIPT_READ_BYTES = 50 * 1024 * 1024
 // transcripts (e.g. workflow runs write to subagents/workflows/<runId>/).
 // Populated before the agent runs; consulted by getAgentTranscriptPath.
 const agentTranscriptSubdirs = new Map<string, string>()
+// Optional agentId → sessionId override for sidechains that must keep writing
+// into a transcript owned by an earlier session (for example recurring Cron
+// runs that survive /clear or a later restart).
+const agentTranscriptSessions = new Map<string, string>()
 
 export function setAgentTranscriptSubdir(
   agentId: string,
@@ -244,12 +248,29 @@ export function clearAgentTranscriptSubdir(agentId: string): void {
   agentTranscriptSubdirs.delete(agentId)
 }
 
+export function setAgentTranscriptSession(
+  agentId: string,
+  sessionId: string,
+): void {
+  agentTranscriptSessions.set(agentId, sessionId)
+}
+
+export function clearAgentTranscriptSession(agentId: string): void {
+  agentTranscriptSessions.delete(agentId)
+}
+
 export function getAgentTranscriptPath(agentId: AgentId): string {
-  // Same sessionProjectDir consistency as getTranscriptPathForSession —
-  // subagent transcripts live under the session dir, so if the session
-  // transcript is at sessionProjectDir, subagent transcripts are too.
-  const projectDir = getSessionProjectDir() ?? getProjectDir(getOriginalCwd())
-  const sessionId = getSessionId()
+  const mappedSessionId = agentTranscriptSessions.get(agentId)
+  const currentSessionId = getSessionId()
+  // Same sessionProjectDir consistency as getTranscriptPathForSession when the
+  // sidechain belongs to the active session. For an older session id we can
+  // only resolve via originalCwd because we do not track a sessionId→projectDir
+  // map.
+  const projectDir =
+    mappedSessionId && mappedSessionId !== currentSessionId
+      ? getProjectDir(getOriginalCwd())
+      : (getSessionProjectDir() ?? getProjectDir(getOriginalCwd()))
+  const sessionId = mappedSessionId ?? currentSessionId
   const subdir = agentTranscriptSubdirs.get(agentId)
   const base = subdir
     ? join(projectDir, sessionId, 'subagents', subdir)

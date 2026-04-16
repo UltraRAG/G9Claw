@@ -346,6 +346,14 @@ import { removeTeammateFromTeamFile } from '../utils/swarm/teamHelpers.js'
 import { unassignTeammateTasks } from '../utils/tasks.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
+import { isMainSessionTask } from '../tasks/LocalMainSessionTask.js'
+import { startCronBackgroundTask } from '../tasks/CronBackgroundTask.js'
+import { isTerminalTaskStatus } from '../Task.js'
+import {
+  findTeammateTaskByAgentId,
+  injectUserMessageToTeammate,
+} from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import { type CronTask, removeCronTasks } from '../utils/cronTasks.js'
 import { stopTask } from '../tasks/stopTask.js'
 import { drainSdkEvents } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
@@ -2223,6 +2231,7 @@ function runHeadlessStreaming(
                     t =>
                       (t.type === 'local_agent' ||
                         t.type === 'local_workflow') &&
+                      !(t.type === 'local_agent' && isMainSessionTask(t)) &&
                       isBackgroundTask(t),
                   )
                 ) {
@@ -2387,7 +2396,10 @@ function runHeadlessStreaming(
         {
           const state = getAppState()
           const hasRunningBg = getRunningTasks(state).some(
-            t => isBackgroundTask(t) && t.type !== 'in_process_teammate',
+            t =>
+              isBackgroundTask(t) &&
+              t.type !== 'in_process_teammate' &&
+              !(t.type === 'local_agent' && isMainSessionTask(t)),
           )
           const hasMainThreadQueued = peek(isMainThread) !== undefined
           if (hasRunningBg || hasMainThreadQueued) {
@@ -2691,11 +2703,81 @@ function runHeadlessStreaming(
   }
 
   // Cron scheduler: runs scheduled_tasks.json tasks in SDK/-p mode.
-  // Mirrors REPL's useScheduledTasks hook. Fired prompts enqueue + kick
-  // off run() directly — unlike REPL, there's no queue subscriber here
-  // that drains on enqueue while idle. The run() mutex makes this safe
-  // during an active turn: the call no-ops and the post-run recheck at
-  // the end of run() picks up the queued command.
+  // Missed-task prompts still route through the main queue so the model can
+  // decide how to handle them. Actual cron executions now run in isolated
+  // background sessions with their own sidechain transcripts.
+  const runLeadCronTask = (task: CronTask) =>
+    startCronBackgroundTask({
+      task,
+      setAppState,
+      createQueryParams: async ({
+        messages,
+        abortController,
+        querySource,
+      }) => {
+        const appState = getAppState()
+        const allMcpClients = [
+          ...appState.mcp.clients,
+          ...sdkClients,
+          ...dynamicMcpState.clients,
+        ]
+        const allTools = buildAllTools(appState)
+        const fallback = await buildSideQuestionFallbackParams({
+          tools: allTools,
+          commands: uniqBy(
+            [...currentCommands, ...appState.mcp.commands],
+            'name',
+          ),
+          mcpClients: allMcpClients,
+          messages,
+          readFileState,
+          getAppState,
+          setAppState,
+          customSystemPrompt: options.systemPrompt,
+          appendSystemPrompt: options.appendSystemPrompt,
+          thinkingConfig: options.thinkingConfig,
+          agents: appState.agentDefinitions.activeAgents,
+        })
+        return {
+          systemPrompt: fallback.systemPrompt,
+          userContext: fallback.userContext,
+          systemContext: fallback.systemContext,
+          canUseTool,
+          querySource,
+          toolUseContext: {
+            ...fallback.toolUseContext,
+            abortController,
+            messages,
+            handleElicitation: (serverName, params, elicitSignal) =>
+              structuredIO.handleElicitation(
+                serverName,
+                params.message,
+                undefined,
+                elicitSignal,
+                params.mode,
+                params.url,
+                'elicitationId' in params ? params.elicitationId : undefined,
+              ),
+            setSDKStatus: status => {
+              output.enqueue({
+                type: 'system',
+                subtype: 'status',
+                status,
+                session_id: getSessionId(),
+                uuid: randomUUID(),
+              })
+            },
+            options: {
+              ...fallback.toolUseContext.options,
+              verbose: options.verbose ?? false,
+              mcpResources: appState.mcp.resources,
+              querySource,
+              refreshTools: () => buildAllTools(getAppState()),
+            },
+          },
+        }
+      },
+    })
   let cronScheduler: import('../utils/cronScheduler.js').CronScheduler | null =
     null
   if (cronGate.isKairosCronEnabled()) {
@@ -2718,6 +2800,33 @@ function runHeadlessStreaming(
           workload: WORKLOAD_CRON,
         })
         void run()
+      },
+      onFireTask: task => {
+        if (inputClosed) return
+        if (task.agentId) {
+          const teammate = findTeammateTaskByAgentId(
+            task.agentId,
+            getAppState().tasks,
+          )
+          if (teammate && !isTerminalTaskStatus(teammate.status)) {
+            injectUserMessageToTeammate(teammate.id, task.prompt, setAppState)
+            return
+          }
+          logForDebugging(
+            `[print.ts] teammate ${task.agentId} gone, removing orphaned cron ${task.id}`,
+          )
+          void removeCronTasks([task.id]).catch(error =>
+            logForDebugging(
+              `[print.ts] failed to remove orphaned teammate cron ${task.id}: ${String(error)}`,
+            ),
+          )
+          return
+        }
+        void runLeadCronTask(task).catch(error =>
+          logForDebugging(
+            `[print.ts] failed to start cron background task ${task.id}: ${String(error)}`,
+          ),
+        )
       },
       isLoading: () => running || inputClosed,
       getJitterConfig: cronJitterConfigModule.getCronJitterConfig,

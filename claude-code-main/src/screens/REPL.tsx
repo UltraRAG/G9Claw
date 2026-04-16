@@ -210,6 +210,7 @@ import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQ
 import { useCommandQueue } from '../hooks/useCommandQueue.js';
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js';
+import { CRON_BACKGROUND_AGENT_TYPE, startCronBackgroundTask } from '../tasks/CronBackgroundTask.js';
 import { useSessionBackgrounding } from '../hooks/useSessionBackgrounding.js';
 import { diagnosticTracker } from '../services/diagnosticTracking.js';
 import { handleSpeculationAccept, type ActiveSpeculationState } from '../services/PromptSuggestion/speculation.js';
@@ -217,6 +218,7 @@ import { IdeOnboardingDialog } from '../components/IdeOnboardingDialog.js';
 import { EffortCallout, shouldShowEffortCallout } from '../components/EffortCallout.js';
 import type { EffortValue } from '../utils/effort.js';
 import { RemoteCallout } from '../components/RemoteCallout.js';
+import type { QuerySource } from '../constants/querySource.js';
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const AntModelSwitchCallout = "external" === 'ant' ? require('../components/AntModelSwitchCallout.js').AntModelSwitchCallout : null;
 const shouldShowAntModelSwitch = "external" === 'ant' ? require('../components/AntModelSwitchCallout.js').shouldShowModelSwitchCallout : (): boolean => false;
@@ -2522,6 +2524,52 @@ export function REPL({
     };
   }, [commands, combinedInitialTools, mainThreadAgentDefinition, debug, initialMcpClients, ideInstallationStatus, dynamicMcpConfig, theme, allowedAgentTypes, store, setAppState, reverify, addNotification, setMessages, onChangeDynamicMcpConfig, resume, requestPrompt, disabled, customSystemPrompt, appendSystemPrompt, setConversationId]);
 
+  const buildDetachedQueryParams = useCallback(async ({
+    messages,
+    abortController,
+    querySource,
+    agentId,
+    agentType
+  }: {
+    messages: MessageType[];
+    abortController: AbortController;
+    querySource: QuerySource;
+    agentId?: string;
+    agentType?: string;
+  }) => {
+    const baseToolUseContext = getToolUseContext(messages, [], abortController, mainLoopModel);
+    const toolUseContext = {
+      ...baseToolUseContext,
+      abortController,
+      messages,
+      ...(agentId ? {
+        agentId: asAgentId(agentId),
+        agentType
+      } : {}),
+      options: {
+        ...baseToolUseContext.options,
+        querySource
+      }
+    };
+    const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([getSystemPrompt(toolUseContext.options.tools, mainLoopModel, Array.from(toolPermissionContext.additionalWorkingDirectories.keys()), toolUseContext.options.mcpClients), getUserContext(), getSystemContext()]);
+    const systemPrompt = buildEffectiveSystemPrompt({
+      mainThreadAgentDefinition,
+      toolUseContext,
+      customSystemPrompt,
+      defaultSystemPrompt,
+      appendSystemPrompt
+    });
+    toolUseContext.renderedSystemPrompt = systemPrompt;
+    return {
+      systemPrompt,
+      userContext,
+      systemContext,
+      canUseTool,
+      toolUseContext,
+      querySource
+    };
+  }, [mainLoopModel, getToolUseContext, toolPermissionContext, mainThreadAgentDefinition, customSystemPrompt, appendSystemPrompt, canUseTool]);
+
   // Session backgrounding (Ctrl+B to background/foreground)
   const handleBackgroundQuery = useCallback(() => {
     // Stop the foreground query so the background one takes over
@@ -2531,16 +2579,6 @@ export function REPL({
     // start a new foreground query; forward them to the background session.
     const removedNotifications = removeByFilter(cmd => cmd.mode === 'task-notification');
     void (async () => {
-      const toolUseContext = getToolUseContext(messagesRef.current, [], new AbortController(), mainLoopModel);
-      const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([getSystemPrompt(toolUseContext.options.tools, mainLoopModel, Array.from(toolPermissionContext.additionalWorkingDirectories.keys()), toolUseContext.options.mcpClients), getUserContext(), getSystemContext()]);
-      const systemPrompt = buildEffectiveSystemPrompt({
-        mainThreadAgentDefinition,
-        toolUseContext,
-        customSystemPrompt,
-        defaultSystemPrompt,
-        appendSystemPrompt
-      });
-      toolUseContext.renderedSystemPrompt = systemPrompt;
       const notificationAttachments = await getQueuedCommandAttachments(removedNotifications).catch(() => []);
       const notificationMessages = notificationAttachments.map(createAttachmentMessage);
 
@@ -2556,22 +2594,37 @@ export function REPL({
         }
       }
       const uniqueNotifications = notificationMessages.filter(m => m.attachment.type === 'queued_command' && (typeof m.attachment.prompt !== 'string' || !existingPrompts.has(m.attachment.prompt)));
+      const detachedMessages = [...messagesRef.current, ...uniqueNotifications];
+      const queryParams = await buildDetachedQueryParams({
+        messages: detachedMessages,
+        abortController: new AbortController(),
+        querySource: getQuerySourceForREPL()
+      });
       startBackgroundSession({
-        messages: [...messagesRef.current, ...uniqueNotifications],
-        queryParams: {
-          systemPrompt,
-          userContext,
-          systemContext,
-          canUseTool,
-          toolUseContext,
-          querySource: getQuerySourceForREPL()
-        },
+        messages: detachedMessages,
+        queryParams,
         description: terminalTitle,
         setAppState,
         agentDefinition: mainThreadAgentDefinition
       });
     })();
-  }, [abortController, mainLoopModel, toolPermissionContext, mainThreadAgentDefinition, getToolUseContext, customSystemPrompt, appendSystemPrompt, canUseTool, setAppState]);
+  }, [abortController, buildDetachedQueryParams, setAppState]);
+  const runLeadCronTask = useCallback((task: import('../utils/cronTasks.js').CronTask) => startCronBackgroundTask({
+    task,
+    setAppState,
+    createQueryParams: ({
+      messages,
+      abortController,
+      transcriptKey,
+      querySource
+    }) => buildDetachedQueryParams({
+      messages,
+      abortController,
+      querySource,
+      agentId: transcriptKey,
+      agentType: CRON_BACKGROUND_AGENT_TYPE
+    })
+  }), [buildDetachedQueryParams, setAppState]);
   const {
     handleBackgroundSession
   } = useSessionBackgrounding({
@@ -4049,7 +4102,7 @@ export function REPL({
   useScheduledTasks({
     isLoading,
     assistantMode,
-    setMessages
+    runLeadCronTask
   });
 
   // Note: Permission polling is now handled by useInboxPoller

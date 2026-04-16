@@ -6,13 +6,11 @@ import {
   injectUserMessageToTeammate,
 } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import { isKairosCronEnabled } from '../tools/ScheduleCronTool/prompt.js'
-import type { Message } from '../types/message.js'
 import { getCronJitterConfig } from '../utils/cronJitterConfig.js'
 import { createCronScheduler } from '../utils/cronScheduler.js'
-import { removeCronTasks } from '../utils/cronTasks.js'
+import { type CronTask, removeCronTasks } from '../utils/cronTasks.js'
 import { logForDebugging } from '../utils/debug.js'
 import { enqueuePendingNotification } from '../utils/messageQueueManager.js'
-import { createScheduledTaskFireMessage } from '../utils/messages.js'
 import { WORKLOAD_CRON } from '../utils/workloadContext.js'
 
 type Props = {
@@ -23,10 +21,11 @@ type Props = {
    * after the turn ends. Assistant mode no longer forces --proactive
    * (#20425) so isLoading drops between turns like a normal REPL — this
    * bypass is now a latency nicety, not a starvation fix. The prompt is
-   * enqueued at 'later' priority either way and drains between turns.
+   * still scheduled promptly even though Cron now runs in a separate background
+   * query instead of the main command queue.
    */
   assistantMode?: boolean
-  setMessages: React.Dispatch<React.SetStateAction<Message[]>>
+  runLeadCronTask: (task: CronTask) => void | Promise<void>
 }
 
 /**
@@ -40,7 +39,7 @@ type Props = {
 export function useScheduledTasks({
   isLoading,
   assistantMode = false,
-  setMessages,
+  runLeadCronTask,
 }: Props): void {
   // Latest-value ref so the scheduler's isLoading() getter doesn't capture
   // a stale closure. The effect mounts once; isLoading changes every turn.
@@ -107,11 +106,11 @@ export function useScheduledTasks({
           void removeCronTasks([task.id])
           return
         }
-        const msg = createScheduledTaskFireMessage(
-          `Running scheduled task (${formatCronFireTime(new Date())})`,
+        void Promise.resolve(runLeadCronTask(task)).catch(error =>
+          logForDebugging(
+            `[ScheduledTasks] failed to start cron background task ${task.id}: ${String(error)}`,
+          ),
         )
-        setMessages(prev => [...prev, msg])
-        enqueueForLead(task.prompt)
       },
       isLoading: () => isLoadingRef.current,
       assistantMode,
@@ -121,19 +120,7 @@ export function useScheduledTasks({
     scheduler.start()
     return () => scheduler.stop()
     // assistantMode is stable for the session lifetime; store/setAppState are
-    // stable refs from useSyncExternalStore; setMessages is a stable useCallback.
+    // stable refs from useSyncExternalStore; runLeadCronTask is a stable useCallback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assistantMode])
-}
-
-function formatCronFireTime(d: Date): string {
-  return d
-    .toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    })
-    .replace(/,? at |, /, ' ')
-    .replace(/ ([AP]M)/, (_, ampm) => ampm.toLowerCase())
 }
