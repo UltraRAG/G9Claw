@@ -31,6 +31,7 @@ export default defineConfig(({ mode }) => {
       port: parseInt(env.VITE_PORT) || 5173,
       proxy: {
         '/api': `http://${proxyHost}:${serverPort}`,
+        '/memory-dashboard': `http://${proxyHost}:${serverPort}`,
         '/ws': {
           target: `ws://${proxyHost}:${serverPort}`,
           ws: true

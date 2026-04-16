@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { MEMORY_EXPORT_FORMAT_VERSION, } from "../types.js";
 import { FileMemoryStore } from "../file-memory.js";
 import { nowIso } from "../utils/id.js";
@@ -181,6 +180,30 @@ function isPathWithinRoot(rootDir, targetPath) {
     const rel = relative(resolve(rootDir), resolve(targetPath));
     return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
+async function loadSqlDatabaseFactory() {
+    if (typeof globalThis.Bun !== "undefined") {
+        const bunSqliteModuleName = "bun:sqlite";
+        const bunSqlite = await import(bunSqliteModuleName);
+        return (dbPath) => {
+            const db = new bunSqlite.Database(dbPath, { create: true });
+            return {
+                exec: (sql) => db.exec(sql),
+                prepare: (sql) => db.query(sql),
+                close: () => db.close(),
+            };
+        };
+    }
+    const nodeSqlite = await import("node:sqlite");
+    return (dbPath) => {
+        const db = new nodeSqlite.DatabaseSync(dbPath);
+        return {
+            exec: (sql) => db.exec(sql),
+            prepare: (sql) => db.prepare(sql),
+            close: () => db.close(),
+        };
+    };
+}
+const createSqlDatabase = await loadSqlDatabaseFactory();
 function createSiblingTempPath(targetDir, label) {
     const parentDir = dirname(targetDir);
     return join(parentDir, `.${basename(targetDir)}.${label}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
@@ -192,7 +215,7 @@ export class MemoryRepository {
         mkdirSync(dirname(dbPath), { recursive: true });
         const memoryDir = options.memoryDir ?? join(dirname(dbPath), "memory");
         mkdirSync(memoryDir, { recursive: true });
-        this.db = new DatabaseSync(dbPath);
+        this.db = createSqlDatabase(dbPath);
         this.fileMemory = new FileMemoryStore(memoryDir);
         this.init();
     }

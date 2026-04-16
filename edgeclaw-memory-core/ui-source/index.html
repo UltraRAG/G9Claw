@@ -3,124 +3,234 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>EdgeClaw Memory</title>
+    <meta name="color-scheme" content="light" />
+    <title>ClawXMemory</title>
     <link rel="stylesheet" href="./app.css" />
   </head>
   <body>
-    <div class="shell">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">EdgeClaw Memory</p>
-          <h1>当前 Workspace 记忆</h1>
-          <p class="subtle" id="workspacePath"></p>
+    <div id="appScrim" class="app-scrim hidden"></div>
+
+    <div class="app-shell">
+      <aside class="nav-rail">
+        <div class="nav-header">
+          <div class="nav-brand">
+            <div class="brand-logo-wrap">
+              <div class="brand-logo-mark"></div>
+            </div>
+            <div class="brand-text">
+              <span class="brand-subtitle">控制</span>
+              <h1>ClawXMemory</h1>
+            </div>
+          </div>
         </div>
-        <div class="actions">
-          <button id="refreshBtn" class="ghost">刷新</button>
-          <button id="indexBtn">Index</button>
-          <button id="dreamBtn">Dream</button>
-          <button id="exportBtn" class="ghost">导出</button>
-          <button id="importBtn" class="ghost">导入</button>
-          <button id="clearBtn" class="danger">清空</button>
+
+        <nav id="boardNavTabs" class="nav-list">
+          <button class="nav-item active" data-page="project" type="button">
+            <span class="nav-label">项目记忆</span>
+            <span id="navProjectCount" class="nav-count">0</span>
+          </button>
+          <button class="nav-item" data-page="user" type="button">
+            <span class="nav-label">用户画像</span>
+            <span id="navUserCount" class="nav-count">0</span>
+          </button>
+          <button class="nav-item" data-page="trace" type="button">
+            <span class="nav-label">记忆追踪</span>
+            <span id="navTraceCount" class="nav-count">0</span>
+          </button>
+        </nav>
+
+        <div class="nav-spacer"></div>
+
+        <div class="nav-bottom">
+          <button id="settingsToggleBtn" class="nav-settings-trigger" type="button">
+            <span class="nav-settings-icon">⚙</span>
+            <span>设置</span>
+          </button>
+
+          <div id="settingsPopover" class="nav-popover hidden">
+            <button id="editProjectMetaBtn" class="popover-item" type="button">编辑项目元信息</button>
+            <button id="editSettingsBtn" class="popover-item" type="button">参数设置</button>
+            <button id="exportBtn" class="popover-item" type="button">导出记忆</button>
+            <button id="importBtn" class="popover-item" type="button">导入记忆</button>
+            <button id="clearBtn" class="popover-item popover-danger" type="button">清空记忆</button>
+          </div>
+
           <input id="importInput" type="file" accept="application/json" hidden />
         </div>
-      </header>
+      </aside>
 
-      <div id="statusBar" class="status hidden"></div>
-
-      <main class="grid">
-        <section class="panel">
-          <div class="panel-head">
-            <h2>概览</h2>
-          </div>
-          <div id="overviewCards" class="stat-grid"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>当前 Project</h2>
-            <button id="editProjectMetaBtn" class="ghost">编辑元信息</button>
-          </div>
-          <div id="projectMeta" class="stack"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>用户画像</h2>
-          </div>
-          <div id="userSummary" class="stack"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>设置</h2>
-            <button id="editSettingsBtn" class="ghost">编辑设置</button>
-          </div>
-          <div id="settingsSummary" class="stack"></div>
-        </section>
-
-        <section class="panel panel-wide">
-          <div class="panel-head">
+      <main class="workspace">
+        <header class="topbar">
+          <div class="topbar-leading">
             <div>
-              <h2>Workspace 记忆</h2>
-              <p class="subtle">当前打开的项目就是唯一顶层 project，上面承载多条项目进展和反馈记忆</p>
-            </div>
-            <input id="workspaceSearch" class="search" type="search" placeholder="搜索项目记忆或协作反馈" />
-          </div>
-          <div class="workspace-layout">
-            <div class="manifest-card">
-              <h3>MEMORY.md</h3>
-              <pre id="manifestContent" class="code-block"></pre>
-            </div>
-            <div class="stack">
-              <div>
-                <h3>项目记忆</h3>
-                <div id="projectEntries" class="entry-list"></div>
-              </div>
-              <div>
-                <h3>协作反馈</h3>
-                <div id="feedbackEntries" class="entry-list"></div>
-              </div>
-              <div>
-                <h3>已弃用</h3>
-                <div id="deprecatedEntries" class="entry-list"></div>
-              </div>
+              <h2>ClawXMemory</h2>
+              <p id="activityText" class="activity-text">已就绪</p>
             </div>
           </div>
-        </section>
 
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Index 追踪</h2>
+          <div class="toolbar">
+            <button id="refreshBtn" class="topbar-action-btn" type="button">刷新</button>
+            <button id="indexBtn" class="topbar-action-btn" type="button">索引同步</button>
+            <button id="dreamBtn" class="topbar-action-btn" type="button">记忆 Dream</button>
+            <span class="topbar-divider-v"></span>
+            <span class="topbar-index-info">
+              <span class="topbar-index-label">最近索引</span>
+              <span id="navLastIndexed" class="topbar-index-time">等待索引</span>
+            </span>
           </div>
-          <div id="indexTraceList" class="trace-list"></div>
-        </section>
+        </header>
 
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Dream 追踪</h2>
-          </div>
-          <div id="dreamTraceList" class="trace-list"></div>
-        </section>
+        <div id="statusBar" class="status hidden"></div>
 
-        <section class="panel panel-wide">
+        <section class="stream-panel">
           <div class="panel-head">
-            <h2>详情</h2>
-          </div>
-          <div id="detailEmpty" class="empty-state">选择一个记忆文件或追踪记录查看详情。</div>
-          <div id="detailView" class="detail hidden">
-            <div class="detail-head">
-              <div>
-                <p id="detailMeta" class="eyebrow"></p>
-                <h3 id="detailTitle"></h3>
-                <p id="detailDescription" class="subtle"></p>
-              </div>
-              <div id="detailActions" class="actions"></div>
+            <div class="panel-title-row">
+              <h3 id="browserTitle">项目记忆</h3>
+              <span id="browserMeta" class="panel-meta">0</span>
             </div>
-            <pre id="detailContent" class="code-block"></pre>
+
+            <div id="listSearchRow" class="search-row">
+              <input id="workspaceSearch" type="search" autocomplete="off" placeholder="搜索当前视图" />
+              <button id="workspaceSearchBtn" class="tool-btn" type="button">搜索</button>
+            </div>
+          </div>
+
+          <div class="board-scroll">
+            <div id="projectBoard" class="board-content board-active">
+              <section id="projectContextSection" class="project-context-card"></section>
+
+              <section id="projectEntriesSection" class="board-group">
+                <div class="board-group-header">
+                  <div>
+                    <h4>项目记忆</h4>
+                    <p class="board-group-subtitle">当前 project 的进展、事实和状态记录</p>
+                  </div>
+                  <span id="projectEntriesCount" class="board-group-count">0</span>
+                </div>
+                <div id="projectEntries" class="board-card-grid"></div>
+              </section>
+
+              <section id="feedbackEntriesSection" class="board-group">
+                <div class="board-group-header">
+                  <div>
+                    <h4>协作反馈</h4>
+                    <p class="board-group-subtitle">用户对当前 project 的偏好、约束和交付规则</p>
+                  </div>
+                  <span id="feedbackEntriesCount" class="board-group-count">0</span>
+                </div>
+                <div id="feedbackEntries" class="board-card-grid"></div>
+              </section>
+
+              <section id="deprecatedEntriesSection" class="board-group hidden">
+                <div class="board-group-header">
+                  <div>
+                    <h4>已弃用</h4>
+                    <p class="board-group-subtitle">已标记为弃用的项目记忆与协作反馈</p>
+                  </div>
+                  <span id="deprecatedEntriesCount" class="board-group-count">0</span>
+                </div>
+                <div id="deprecatedEntries" class="board-card-grid"></div>
+              </section>
+            </div>
+
+            <div id="userBoard" class="board-content">
+              <section class="board-group">
+                <div class="board-group-header">
+                  <div>
+                    <h4>用户画像</h4>
+                    <p class="board-group-subtitle">长期偏好、沟通要求、约束与关系信息</p>
+                  </div>
+                  <span id="userSummaryCount" class="board-group-count">0</span>
+                </div>
+                <div id="userSummary" class="stack"></div>
+              </section>
+
+              <section class="board-group">
+                <div class="board-group-header">
+                  <div>
+                    <h4>当前 Project</h4>
+                    <p class="board-group-subtitle">当前工作区对应的唯一顶层 project</p>
+                  </div>
+                </div>
+                <div id="projectMeta" class="stack"></div>
+              </section>
+
+              <section class="board-group">
+                <div class="board-group-header">
+                  <div>
+                    <h4>参数设置</h4>
+                    <p class="board-group-subtitle">Index / Dream 运行参数与数据管理入口</p>
+                  </div>
+                </div>
+                <div id="settingsSummary" class="stack"></div>
+              </section>
+
+              <section id="manifestSection" class="board-group hidden">
+                <div class="board-group-header">
+                  <div>
+                    <h4>MEMORY.md</h4>
+                    <p class="board-group-subtitle">当前 project 的聚合 manifest</p>
+                  </div>
+                </div>
+                <pre id="manifestContent" class="code-block"></pre>
+              </section>
+            </div>
+
+            <div id="traceBoard" class="board-content">
+              <section class="board-group">
+                <div class="board-group-header">
+                  <div>
+                    <h4>Index 追踪</h4>
+                    <p class="board-group-subtitle">记录索引判断、提取与写入过程</p>
+                  </div>
+                  <span id="indexTraceCount" class="board-group-count">0</span>
+                </div>
+                <div id="indexTraceList" class="trace-list"></div>
+              </section>
+
+              <section class="board-group">
+                <div class="board-group-header">
+                  <div>
+                    <h4>Dream 追踪</h4>
+                    <p class="board-group-subtitle">记录去重、重写和画像整理过程</p>
+                  </div>
+                  <span id="dreamTraceCount" class="board-group-count">0</span>
+                </div>
+                <div id="dreamTraceList" class="trace-list"></div>
+              </section>
+            </div>
           </div>
         </section>
       </main>
     </div>
+
+    <aside id="detailDrawer" class="detail-drawer hidden">
+      <div class="detail-drawer-head">
+        <div>
+          <p id="detailMeta" class="detail-eyebrow"></p>
+          <h3 id="detailTitle" class="detail-title">详情</h3>
+          <p id="detailDescription" class="detail-subtitle"></p>
+        </div>
+        <button id="detailCloseBtn" class="detail-close-btn" type="button">关闭</button>
+      </div>
+
+      <section class="drawer-section">
+        <div class="board-group-header board-group-header--tight">
+          <div>
+            <h4>当前 Project</h4>
+          </div>
+        </div>
+        <div id="drawerProjectMeta" class="stack"></div>
+      </section>
+
+      <section class="drawer-section drawer-section-fill">
+        <div id="detailEmpty" class="empty-state">选择一条记忆或一条追踪记录查看详情。</div>
+        <div id="detailView" class="detail hidden">
+          <div id="detailActions" class="detail-actions"></div>
+          <pre id="detailContent" class="code-block detail-code"></pre>
+        </div>
+      </section>
+    </aside>
 
     <script src="./app.js" type="module"></script>
   </body>

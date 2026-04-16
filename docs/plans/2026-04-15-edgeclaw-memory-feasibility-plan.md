@@ -721,3 +721,280 @@
     - 多条 `Feedback/*.md`
     - 一个 global user profile
   - 当前改动仍然限定在 memory 相关模块，没有扩散到 `chat / files / shell / git / tasks` 主流程。
+
+### 2026-04-16 Memory Dashboard 空状态修复
+
+- 问题复盘：
+  - `Memory` Tab 外层 `MemoryPanel` 之前把 `auth-token` 当成必需条件；如果本地 UI 处于 `CLOUDCLI_DISABLE_LOCAL_AUTH` 免登录模式，`localStorage` 里没有 token，iframe 就不会加载。
+  - dashboard 自身 `ui-source/app.js` 也把“缺少 token”当成致命错误，因此即使后端允许免登录，也只会看到 `Memory dashboard is unavailable...` 占位，不会进入真实 dashboard。
+
+- 本轮修复：
+  - `claudecodeui/src/components/main-content/view/memory/MemoryPanel.tsx`
+    - 改为：只要当前项目有 `projectPath` 就直接生成 iframe URL。
+    - `token` 变成可选参数；有 token 时附加 `token=...`，没有 token 也允许进入 dashboard。
+  - `edgeclaw-memory-core/ui-source/app.js`
+    - 改为：仅 `projectPath` 缺失才阻止初始化。
+    - `headers()` 只在 token 存在时附加 `Authorization`，避免发送空的 `Bearer `。
+    - `fetchJson()` / `fetchBlob()` 对 `401/403` 统一转成页内“需要登录后才能访问当前项目的 Memory Dashboard”提示。
+    - 初始加载前先渲染概览、Project Meta、Project / Feedback / User / Trace 的空状态，这样空仓或鉴权失败时也保留真实 dashboard 外壳。
+
+- 本轮影响范围：
+  - 只触达 memory UI 入口和 dashboard 前端静态资源。
+  - 未修改 memory 数据模型、recall/index/dream API、`chat / files / shell / git / tasks` 主流程。
+
+- 本轮验证：
+  - `claudecodeui`
+    - 通过：`npm run typecheck`
+    - 通过：`npm run build`
+  - `edgeclaw-memory-core`
+    - dashboard 静态脚本改动已通过 `claudecodeui` 构建链路验证
+  - 预期用户体验：
+    - 免登录模式下，即使 `localStorage.auth-token` 为空，选中项目后也会直接进入真实 dashboard。
+    - 空仓时显示 dashboard 内的空状态，而不是外层 “dashboard unavailable” 占位。
+
+### 2026-04-16 Memory Tab 白页补充修复
+
+- 现象：
+  - 在 `http://localhost:5173` 开发环境里，`Memory` Tab 不再显示外层占位，但 iframe 仍是一整块白页。
+
+- 原因：
+  - `claudecodeui` 的 Vite dev server 只代理了 `/api`、`/ws`、`/shell`，没有代理 `/memory-dashboard`。
+  - 因此 iframe 在 `5173` 下请求 `/memory-dashboard/index.html?...` 时，拿到的是 Vite 自己的前端壳或代理错误，而不是真正的 dashboard HTML。
+  - 同时，本地开发后端 `3001` 一度未运行，也会让 dev proxy 返回 `ECONNREFUSED`，表现成空白页面。
+
+- 修复：
+  - `claudecodeui/vite.config.js`
+    - 新增 `/memory-dashboard -> http://<serverPort>` 代理。
+  - 重启本地开发链路：
+    - `vite` 前端重新启动
+    - `node server/index.js` 后端重新启动
+
+- 验证：
+  - `http://127.0.0.1:5173/memory-dashboard/index.html?projectPath=...`
+    - 返回 `200`
+    - HTML 标题为 `EdgeClaw Memory`
+  - `http://127.0.0.1:5173/api/memory/overview?projectPath=...`
+    - 返回 `200`
+    - 返回正常 overview JSON，而不是代理错误或白页
+
+### 2026-04-16 Memory Dashboard 视觉回归到旧版 ClawXMemory 风格
+
+- 背景：
+  - 现有 current-project dashboard 的功能可用，但视觉语言过于临时化，和旧版 ClawXMemory 的导航层级、信息密度、卡片风格差距较大。
+  - 第一轮仅做“风格参考”仍然和旧版差距较大；这次改为直接对齐旧版的布局结构和交互层级。
+  - 目标不是改 memory 逻辑，而是把 dashboard 外壳尽量收敛回旧版 ClawXMemory 的视觉框架。
+
+- 本轮改动：
+  - `edgeclaw-memory-core/ui-source/index.html`
+    - 进一步重做为更贴近旧版截图的结构：
+      - 左侧窄导航 `nav-rail`
+      - 顶部 `ClawXMemory + activity` 头部
+      - 顶部右侧操作按钮 `刷新 / 索引同步 / 记忆 Dream / 最近索引`
+      - 左下角 `设置` 触发器与弹层
+      - 主内容区单列看板
+      - 右侧详情改为默认隐藏的抽屉，而不是常驻侧栏
+    - 保留 current-project 模型下的三个一级视图：
+      - 项目记忆
+      - 用户画像
+      - 记忆追踪
+  - `edgeclaw-memory-core/ui-source/app.css`
+    - 视觉基调继续收敛到旧版 ClawXMemory 的浅灰蓝系统、细边框、轻阴影、紧凑导航和扁平操作按钮。
+    - 移除了上一版过重的当前 project 侧栏、概览卡常驻区和过大的标题层级。
+    - 项目卡片、反馈卡片、trace 卡片统一改成接近旧版的轻量卡片语言。
+  - `edgeclaw-memory-core/ui-source/app.js`
+    - 新增当前页面状态切换：`project / user / trace`
+    - 调整为旧版交互模式：
+      - info 状态写到顶部 activity text，而不是常驻横幅
+      - 设置入口改为左下角弹层
+      - 详情改为右侧抽屉，默认隐藏
+      - `feedback / deprecated / manifest` 这些附加区块在无内容时不再强占主视觉
+    - 现有 `Project / Feedback / Deprecated / User / Trace / Detail` 数据逻辑保持不变，只调整承载容器和默认显隐
+
+- 保持不变：
+  - 不改 memory API
+  - 不改 recall / index / dream 行为
+  - 不改 current-project 数据模型
+  - 不改 `chat / files / shell / git / tasks`
+
+- 验证：
+  - `node --check edgeclaw-memory-core/ui-source/app.js` 通过
+  - `claudecodeui: npm run build` 通过
+  - `/memory-dashboard/index.html` 返回的新 HTML 已包含：
+    - `ClawXMemory`
+    - `nav-rail`
+    - `settingsToggleBtn`
+    - `detailDrawer`
+    - `项目记忆 / 用户画像 / 记忆追踪`
+
+### 2026-04-16 Claude 自定义模型支持
+
+- 背景：
+  - 当前 memory 逻辑只接在 `Claude Code -> claude-code-main -> QueryEngine` 这条链上。
+  - 但 UI 的 Claude 模型列表写死为 `sonnet / opus / haiku ...`，新会话默认会发 `sonnet`。
+  - 同时 `claude-code-main/proxy.ts` 会把未知模型也改写成 `anthropic/...`，导致自部署模型 `qwen3.5-35b` 无法被 Claude 链路使用，表现为会话发送后长时间无响应。
+
+- 本轮改动：
+  - `claudecodeui/server/utils/claude-runtime-config.js`
+    - 新增 Claude 运行时模型解析器，读取服务端 `ANTHROPIC_MODEL`，生成：
+      - `defaultModel`
+      - `availableModels`
+    - 内置 Claude 模型保留不变；若环境变量模型不在内置列表中，则追加为一个自定义可选项。
+  - `claudecodeui/server/index.js`
+    - 新增只读接口：
+      - `GET /api/agents/runtime-config`
+    - 返回当前运行时 Claude 默认模型和可选模型列表。
+  - `claudecodeui/server/claude-sdk.js`
+    - Claude SDK 默认模型改为读取运行时配置，不再硬编码回退到 `sonnet`。
+  - `claudecodeui/server/routes/commands.js`
+    - `/model` 命令输出的 Claude 可用模型和默认模型改为使用运行时配置，避免和 UI 不一致。
+  - `claudecodeui/src/components/chat/hooks/useChatProviderState.ts`
+    - 前端启动时读取 `/api/agents/runtime-config`
+    - Claude 模型下拉来源改为运行时配置
+    - 若服务端配置了自定义默认模型，则会覆盖旧的 `localStorage.claude-model=sonnet`，避免新会话继续发错模型
+  - `claudecodeui/src/components/chat/view/ChatInterface.tsx`
+  - `claudecodeui/src/components/chat/view/subcomponents/ChatMessagesPane.tsx`
+  - `claudecodeui/src/components/chat/view/subcomponents/ProviderSelectionEmptyState.tsx`
+    - 将 Claude 下拉改为消费运行时模型列表
+  - `claude-code-main/proxy.ts`
+    - 模型映射规则调整为：
+      - 已知 Claude 别名继续映射到 `anthropic/...`
+      - 显式上游模型名保持不变
+      - 未知模型名原样透传给上游
+
+- 验证：
+  - `claudecodeui: npm run build` 通过
+  - `claudecodeui: npm run typecheck` 通过
+  - `GET /api/agents/runtime-config`
+    - 返回：
+      - `defaultModel = qwen3.5-35b`
+      - `availableModels` 包含内置 Claude 模型和自定义 `qwen3.5-35b`
+  - `POST http://127.0.0.1:18080/v1/messages` with `model=qwen3.5-35b`
+    - 返回 `200`
+    - Anthropic 兼容响应中的 `model` 为 `qwen3.5-35b`
+  - `POST http://127.0.0.1:18080/v1/messages` with `model=sonnet`
+    - 仍返回上游 `404`
+    - 说明 proxy 不再把未知模型改写成 `anthropic/<unknown>`，错误可见性符合预期
+
+- 当前结论：
+  - Claude 链路已经具备使用自定义模型的能力，`qwen3.5-35b` 可以作为 `Claude Code` 的实际执行模型。
+  - 下一步可直接回到黑盒测试：
+    - 新建 `Claude Code` 会话
+    - 发送真实对话样本
+    - 验证 `QueryEngine -> capture -> flush/index -> dashboard` 是否真正打通
+
+### 2026-04-16 Claude Code 无响应修复
+
+- 背景：
+  - 在 `Claude Code + qwen3.5-35b` 已能识别模型后，前端仍表现为“消息发出后无回复”。
+  - 这轮排查确认不是 memory 逻辑问题，而是 Claude 执行链本身存在两个 Bun / 本地源码兼容问题。
+
+- 实际根因：
+  - `claude-code-main/src/tools.ts`
+    - 非 bare 模式初始化工具表时，会调用 `getSendMessageTool()`
+    - 该函数使用 `require()` 加载 `SendMessageTool`
+    - Bun 将 `SendMessageTool` 视为 async module，导致本地 `claude-code-main` 在工具初始化阶段直接中断
+    - 结果表现为：
+      - `Claude Code` 会话无回复
+      - `QueryEngine` 实际没有进入正常对话轮次
+  - `claudecodeui/server/claude-sdk.js`
+    - SDK 子进程需要显式继承 `ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / ANTHROPIC_MODEL`
+    - 同时需要清掉冲突的 OAuth token 环境变量
+    - 否则本地源码链可能回退到错误的认证分支
+
+- 本轮改动：
+  - `claude-code-main/src/tools.ts`
+    - 将 `SendMessageTool` 从 `require()` 改为静态 `import`
+    - 保留 `TeamCreateTool / TeamDeleteTool` 的 lazy require，不扩大改动范围
+  - `claudecodeui/server/claude-sdk.js`
+    - 继续使用运行时 `ANTHROPIC_*` 配置构建 Claude 子进程环境
+    - 设置 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1`
+    - 当存在 API Key / Base URL 时，移除：
+      - `ANTHROPIC_AUTH_TOKEN`
+      - `CLAUDE_CODE_OAUTH_TOKEN`
+    - 对本地 `claude-code-main` 子进程附加 `--print`
+  - `claude-code-main/src/main.tsx`
+    - 为 `stream-json` 输入增加 `PassThrough` 桥接，避免后续初始化阶段直接依赖原始 stdin 对象
+    - 这不是最终根因，但保留为 SDK 输入路径的稳健性修正
+
+- 验证：
+  - `bun --eval import { getAllBaseTools } ...`
+    - 现在可正常返回 built-in tools 列表，不再报：
+      - `require() async module ... SendMessageTool`
+  - 非 bare 本地 CLI：
+    - `bun run ... cli.tsx -p --output-format stream-json --verbose --model qwen3.5-35b '你好，请只回复测试成功。'`
+    - 返回：
+      - `system:init`
+      - `assistant`
+      - `result: success`
+  - 非 bare `stream-json` 控制流：
+    - `initialize` 能正常返回 `control_response`
+    - `initialize + user` 能正常返回 `assistant/result`
+  - `claudecodeui/server/claude-sdk.js`
+    - 在加载 `server/load-env.js` 的真实服务端环境下，`queryClaudeSDK()` 已能跑通
+    - 事件序列为：
+      - `session_created`
+      - `text`
+      - `status`
+      - `complete`
+  - 本地服务：
+    - 已重启 `claudecodeui` server，当前监听：
+      - `http://localhost:3001`
+    - `5173` 前端和 `18080` Claude proxy 保持在线
+
+- 当前结论：
+  - `Claude Code -> 本地 claude-code-main -> QueryEngine -> qwen3.5-35b` 主聊天链路已恢复可用。
+  - 之前“无法对话”不是 memory 没接上，而是本地 Claude 执行链在工具初始化阶段被 Bun 兼容问题提前打断。
+  - 下一步可以重新回到真实黑盒：
+    - 在 UI 新建 `Claude Code` 会话
+    - 发送可记忆样本
+    - 验证 `capture -> 手动索引 -> recall -> dashboard`
+
+### 2026-04-16 Claude 用户消息重复显示修复
+
+- 背景：
+  - Claude 会话恢复可用后，前端聊天区出现“同一条用户输入显示两次”。
+  - 典型现象：
+    - 新会话发送 `你好`，右侧出现两条 `你好`
+    - 已有会话发送 `北京今天天气如何`，右侧出现两条相同气泡
+
+- 实际根因：
+  - 前端 `useChatComposerState` 在发送时会先做一次 optimistic append，本地立即插入用户消息。
+  - 同时 `claudecodeui/server/claude-sdk.js` 会把 Claude SDK 实时流里回放的 `role=user` 消息继续经 `claudeAdapter.normalizeMessage()` 转发给前端。
+  - 结果就是：
+    - 本地 optimistic 一条
+    - Claude 实时回放再来一条
+    - 两者时间戳不同、id 不同，因此不会被 session store 按 id 去重
+
+- 本轮改动：
+  - `claudecodeui/server/providers/claude/adapter.js`
+    - 为 `normalizeMessage()` 增加 `includeUserText` 选项
+    - 默认仍为 `true`
+    - 这样历史消息加载、session 回放仍会保留用户消息
+  - `claudecodeui/server/claude-sdk.js`
+    - Claude 实时 WebSocket 流调用 adapter 时改为：
+      - `includeUserText: false`
+    - 只屏蔽 Claude 实时流里的用户文本回放
+    - 不影响：
+      - assistant 文本
+      - tool_use / tool_result
+      - status / complete / permission 事件
+      - session 历史加载
+
+- 验证：
+  - 服务级 `queryClaudeSDK()` 回归：
+    - 事件序列变为：
+      - `session_created`
+      - `text(role=assistant)`
+      - `status`
+      - `complete`
+    - `userTextCount=0`
+    - `assistantTextCount=1`
+  - `claudecodeui`：
+    - `npm run typecheck` 通过
+
+- 当前结论：
+  - Claude 聊天区重复显示问题根因已明确，是“前端 optimistic append + Claude 实时 user replay”叠加，不是 session store 或 memory 捕获导致。
+  - 修复后：
+    - 历史消息仍完整保留用户气泡
+    - 实时对话只保留前端本地那一条用户气泡
+    - 不会再因为 Claude SDK 回放而出现第二条重复用户消息

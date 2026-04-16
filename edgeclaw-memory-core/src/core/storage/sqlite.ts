@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import {
   type CaseTraceRecord,
   type DashboardOverview,
@@ -23,6 +22,18 @@ import {
 } from "../types.js";
 import { FileMemoryStore } from "../file-memory.js";
 import { nowIso } from "../utils/id.js";
+
+interface SqlStatement {
+  all(...params: unknown[]): unknown[];
+  get(...params: unknown[]): unknown;
+  run(...params: unknown[]): unknown;
+}
+
+interface SqlDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): SqlStatement;
+  close(): void;
+}
 
 type DbRow = Record<string, unknown>;
 
@@ -238,6 +249,39 @@ function isPathWithinRoot(rootDir: string, targetPath: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+async function loadSqlDatabaseFactory(): Promise<(dbPath: string) => SqlDatabase> {
+  if (typeof (globalThis as { Bun?: unknown }).Bun !== "undefined") {
+    const bunSqliteModuleName = "bun:sqlite";
+    const bunSqlite = await import(bunSqliteModuleName) as {
+      Database: new (path: string, options?: { create?: boolean }) => {
+        exec(sql: string): void;
+        query(sql: string): SqlStatement;
+        close(): void;
+      };
+    };
+    return (dbPath: string) => {
+      const db = new bunSqlite.Database(dbPath, { create: true });
+      return {
+        exec: (sql: string) => db.exec(sql),
+        prepare: (sql: string) => db.query(sql),
+        close: () => db.close(),
+      };
+    };
+  }
+
+  const nodeSqlite = await import("node:sqlite");
+  return (dbPath: string) => {
+    const db = new nodeSqlite.DatabaseSync(dbPath);
+    return {
+      exec: (sql: string) => db.exec(sql),
+      prepare: (sql: string) => db.prepare(sql),
+      close: () => db.close(),
+    };
+  };
+}
+
+const createSqlDatabase = await loadSqlDatabaseFactory();
+
 function createSiblingTempPath(targetDir: string, label: string): string {
   const parentDir = dirname(targetDir);
   return join(
@@ -247,7 +291,7 @@ function createSiblingTempPath(targetDir: string, label: string): string {
 }
 
 export class MemoryRepository {
-  private readonly db: DatabaseSync;
+  private readonly db: SqlDatabase;
   private readonly fileMemory: FileMemoryStore;
 
   constructor(
@@ -259,7 +303,7 @@ export class MemoryRepository {
     mkdirSync(dirname(dbPath), { recursive: true });
     const memoryDir = options.memoryDir ?? join(dirname(dbPath), "memory");
     mkdirSync(memoryDir, { recursive: true });
-    this.db = new DatabaseSync(dbPath);
+    this.db = createSqlDatabase(dbPath);
     this.fileMemory = new FileMemoryStore(memoryDir);
     this.init();
   }

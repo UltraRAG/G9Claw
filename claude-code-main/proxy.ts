@@ -222,10 +222,14 @@ const MODEL_MAP: Record<string, string> = {
 }
 
 function toOpenRouterModel(model: string): string {
-  if (model.startsWith('anthropic/')) return model
-  const stripped = model.replace(/-\d{8}$/, '')
+  const normalized = model.trim()
+  if (!normalized) return normalized
+  if (normalized.includes('/')) return normalized
+
+  const stripped = normalized.replace(/-\d{8}$/, '')
+  if (MODEL_MAP[normalized]) return MODEL_MAP[normalized]
   if (MODEL_MAP[stripped]) return MODEL_MAP[stripped]
-  return `anthropic/${stripped}`
+  return normalized
 }
 
 function buildOpenAIRequest(body: AnthropicRequest): Record<string, unknown> {

@@ -17,9 +17,11 @@ const PROVIDER = 'claude';
  * realtime streaming events (`content_block_delta`, `content_block_stop`, etc.).
  * @param {object} raw - A single entry from JSONL or a live SDK event
  * @param {string} sessionId
+ * @param {{ includeUserText?: boolean }} [options]
  * @returns {import('../types.js').NormalizedMessage[]}
  */
-export function normalizeMessage(raw, sessionId) {
+export function normalizeMessage(raw, sessionId, options = {}) {
+  const { includeUserText = true } = options;
   // ── Streaming events (realtime) ──────────────────────────────────────────
   if (raw.type === 'content_block_delta' && raw.delta?.text) {
     return [createNormalizedMessage({ kind: 'stream_delta', content: raw.delta.text, sessionId, provider: PROVIDER })];
@@ -54,7 +56,7 @@ export function normalizeMessage(raw, sessionId) {
         } else if (part.type === 'text') {
           // Regular text parts from user
           const text = part.text || '';
-          if (text && !isInternalContent(text)) {
+          if (includeUserText && text && !isInternalContent(text)) {
             messages.push(createNormalizedMessage({
               id: `${baseId}_text`,
               sessionId,
@@ -75,7 +77,7 @@ export function normalizeMessage(raw, sessionId) {
           .map(p => p.text)
           .filter(Boolean)
           .join('\n');
-        if (textParts && !isInternalContent(textParts)) {
+        if (includeUserText && textParts && !isInternalContent(textParts)) {
           messages.push(createNormalizedMessage({
             id: `${baseId}_text`,
             sessionId,
@@ -89,7 +91,7 @@ export function normalizeMessage(raw, sessionId) {
       }
     } else if (typeof raw.message.content === 'string') {
       const text = raw.message.content;
-      if (text && !isInternalContent(text)) {
+      if (includeUserText && text && !isInternalContent(text)) {
         messages.push(createNormalizedMessage({
           id: baseId,
           sessionId,

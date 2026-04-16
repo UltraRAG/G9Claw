@@ -72,6 +72,7 @@ import messagesRoutes from './routes/messages.js';
 import { closeMemoryServices } from './services/memoryService.js';
 import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
+import { getClaudeRuntimeModelConfig } from './utils/claude-runtime-config.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, userDb } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
@@ -410,6 +411,12 @@ app.use('/api/sessions', authenticateToken, messagesRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
+
+app.get('/api/agents/runtime-config', authenticateToken, (_req, res) => {
+    res.json({
+        claude: getClaudeRuntimeModelConfig(),
+    });
+});
 
 app.get('/memory-dashboard', authenticateToken, (req, res) => {
     res.sendFile(path.join(MEMORY_DASHBOARD_DIR, 'index.html'));
