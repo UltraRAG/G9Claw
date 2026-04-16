@@ -3,8 +3,8 @@
 //
 // Lifecycle: poll getScheduledTasksEnabled() until true (flag flips when
 // CronCreate runs or a skill on: trigger fires) → load tasks + watch the
-// file + start a 1s check timer → on fire, call onFire(prompt). stop()
-// tears everything down.
+// file + start a 1s check timer → on fire, call onFire(prompt) or
+// onFireTask(task). stop() tears everything down.
 
 import type { FSWatcher } from 'chokidar'
 import {
@@ -62,15 +62,18 @@ export function isRecurringTaskAged(
 type CronSchedulerOptions = {
   /** Called when a task fires (regular or missed-on-startup). */
   onFire: (prompt: string) => void
-  /** While true, firing is deferred to the next tick. */
-  isLoading: () => boolean
   /**
-   * When true, bypasses the isLoading gate in check() and auto-enables the
-   * scheduler without waiting for setScheduledTasksEnabled(). The
-   * auto-enable is the load-bearing part — assistant mode has tasks in
-   * scheduled_tasks.json at install time and shouldn't wait on a loader
-   * skill to flip the flag. The isLoading bypass is minor post-#20425
-   * (assistant mode now idles between turns like a normal REPL).
+   * Optional call-site-specific fire defer gate. When this returns true,
+   * check() does no firing work and retries next tick. Use this for states
+   * like a closed input stream; do not pass normal foreground query activity
+   * when cron should launch isolated background sidechains concurrently.
+   */
+  shouldDeferFire?: () => boolean
+  /**
+   * When true, auto-enables the scheduler without waiting for
+   * setScheduledTasksEnabled(). Assistant mode can have tasks in
+   * scheduled_tasks.json at startup and shouldn't wait on a loader skill to
+   * flip the session flag first.
    */
   assistantMode?: boolean
   /**
@@ -144,7 +147,7 @@ export function createCronScheduler(
 ): CronScheduler {
   const {
     onFire,
-    isLoading,
+    shouldDeferFire,
     assistantMode = false,
     onFireTask,
     onMissed,
@@ -229,7 +232,7 @@ export function createCronScheduler(
 
   function check() {
     if (isKilled?.()) return
-    if (isLoading() && !assistantMode) return
+    if (shouldDeferFire?.()) return
     const now = Date.now()
     const seen = new Set<string>()
     // File-backed recurring tasks that fired this tick. Batched into one
@@ -253,8 +256,8 @@ export function createCronScheduler(
       let next = nextFireAt.get(t.id)
       if (next === undefined) {
         // First sight — anchor from lastFiredAt (recurring) or createdAt.
-        // Never-fired recurring tasks use createdAt: if isLoading delayed
-        // this tick past the fire time, anchoring from `now` would compute
+        // Never-fired recurring tasks use createdAt: if firing was deferred
+        // past the fire time, anchoring from `now` would compute
         // next-year for pinned crons (`30 14 27 2 *`). Fired-before tasks
         // use lastFiredAt: the reschedule below writes `now` back to disk,
         // so on next process spawn first-sight computes the SAME newNext we

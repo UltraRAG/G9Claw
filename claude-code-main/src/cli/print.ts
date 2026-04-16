@@ -2828,7 +2828,10 @@ function runHeadlessStreaming(
           ),
         )
       },
-      isLoading: () => running || inputClosed,
+      // Keep firing while the foreground turn is running so cron can launch
+      // isolated sidechains concurrently. A closed input stream is different:
+      // in that state new cron work should stay deferred.
+      shouldDeferFire: () => inputClosed,
       getJitterConfig: cronJitterConfigModule.getCronJitterConfig,
       isKilled: () => !cronGate.isKairosCronEnabled(),
     })

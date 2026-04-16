@@ -4100,7 +4100,6 @@ export function REPL({
   // enabled, so every entrypoint shares the same gate.
   const assistantMode = store.getState().kairosEnabled;
   useScheduledTasks({
-    isLoading,
     assistantMode,
     runLeadCronTask
   });

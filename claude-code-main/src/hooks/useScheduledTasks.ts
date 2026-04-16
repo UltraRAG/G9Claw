@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { useAppStateStore, useSetAppState } from '../state/AppState.js'
 import { isTerminalTaskStatus } from '../Task.js'
 import {
@@ -14,15 +14,10 @@ import { enqueuePendingNotification } from '../utils/messageQueueManager.js'
 import { WORKLOAD_CRON } from '../utils/workloadContext.js'
 
 type Props = {
-  isLoading: boolean
   /**
-   * When true, bypasses the isLoading gate so tasks can enqueue while a
-   * query is streaming rather than deferring to the next 1s check tick
-   * after the turn ends. Assistant mode no longer forces --proactive
-   * (#20425) so isLoading drops between turns like a normal REPL — this
-   * bypass is now a latency nicety, not a starvation fix. The prompt is
-   * still scheduled promptly even though Cron now runs in a separate background
-   * query instead of the main command queue.
+   * When true, auto-enable the scheduler on startup before CronCreate flips
+   * the session flag. Assistant mode can start with durable tasks already on
+   * disk.
    */
   assistantMode?: boolean
   runLeadCronTask: (task: CronTask) => void | Promise<void>
@@ -30,22 +25,17 @@ type Props = {
 
 /**
  * REPL wrapper for the cron scheduler. Mounts the scheduler once and tears
- * it down on unmount. Fired prompts go into the command queue as 'later'
- * priority, which the REPL drains via useCommandQueue between turns.
+ * it down on unmount. Missed one-shot prompts still go into the command queue
+ * as 'later' priority; normal fires route through onFireTask into the caller's
+ * background runner.
  *
  * Scheduler core (timer, file watcher, fire logic) lives in cronScheduler.ts
  * so SDK/-p mode can share it — see print.ts for the headless wiring.
  */
 export function useScheduledTasks({
-  isLoading,
   assistantMode = false,
   runLeadCronTask,
 }: Props): void {
-  // Latest-value ref so the scheduler's isLoading() getter doesn't capture
-  // a stale closure. The effect mounts once; isLoading changes every turn.
-  const isLoadingRef = useRef(isLoading)
-  isLoadingRef.current = isLoading
-
   const store = useAppStateStore()
   const setAppState = useSetAppState()
 
@@ -112,7 +102,9 @@ export function useScheduledTasks({
           ),
         )
       },
-      isLoading: () => isLoadingRef.current,
+      // Deliberately no shouldDeferFire gate here: lead cron fires should
+      // dispatch immediately into isolated background sidechains, even while
+      // the foreground turn is still streaming.
       assistantMode,
       getJitterConfig: getCronJitterConfig,
       isKilled: () => !isKairosCronEnabled(),
