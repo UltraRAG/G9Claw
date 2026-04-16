@@ -23,6 +23,18 @@ fi
 
 PROXY_PORT="${PROXY_PORT:-18080}"
 
+# ── Ensure peekaboo is installed (macOS only, for computer-use MCP) ──
+if [[ "$(uname)" == "Darwin" ]]; then
+  if ! command -v peekaboo &>/dev/null; then
+    echo "[start] Installing peekaboo (macOS UI automation)..."
+    if command -v brew &>/dev/null; then
+      brew install steipete/tap/peekaboo 2>/dev/null || echo "[start] Warning: peekaboo install failed (computer-use will be unavailable)"
+    else
+      echo "[start] Warning: brew not found, skipping peekaboo install (computer-use will be unavailable)"
+    fi
+  fi
+fi
+
 # Ensure bun is on PATH
 if ! command -v bun &>/dev/null; then
   if [ -f "$HOME/.bun/bin/bun" ]; then
