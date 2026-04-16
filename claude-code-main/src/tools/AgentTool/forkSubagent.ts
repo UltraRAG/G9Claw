@@ -22,8 +22,8 @@ import type { BuiltInAgentDefinition } from './loadAgentsDir.js'
  * - `subagent_type` becomes optional on the Agent tool schema
  * - Omitting `subagent_type` triggers an implicit fork: the child inherits
  *   the parent's full conversation context and system prompt
- * - All agent spawns run in the background (async) for a unified
- *   `<task-notification>` interaction model
+ * - Forks run as background tasks with the unified `<task-notification>`
+ *   interaction model
  * - `/fork <directive>` slash command is available
  *
  * Mutually exclusive with coordinator mode — coordinator already owns the

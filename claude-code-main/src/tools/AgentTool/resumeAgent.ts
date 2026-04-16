@@ -28,8 +28,9 @@ import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { getParentSessionId } from '../../utils/teammate.js'
 import { reconstructForSubagentResume } from '../../utils/toolResultStorage.js'
 import { runAsyncAgentLifecycle } from './agentToolUtils.js'
+import { shouldForceMainAgentAsyncSpawn } from './asyncSpawnPolicy.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
-import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
+import { FORK_AGENT } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
 import { runAgent } from './runAgent.js'
@@ -249,7 +250,8 @@ export async function resumeAgentBackground({
         agentIdForCleanup: agentId,
         enableSummarization:
           isCoordinatorMode() ||
-          isForkSubagentEnabled() ||
+          isResumedFork ||
+          shouldForceMainAgentAsyncSpawn() ||
           getSdkAgentProgressSummariesEnabled(),
         getWorktreeResult: async () =>
           resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {},
