@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_WITH_REFRESH } from '../../services/analytics/growthbook.js'
 import { DEFAULT_CRON_JITTER_CONFIG } from '../../utils/cronTasks.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -9,14 +8,13 @@ export const DEFAULT_MAX_AGE_DAYS =
   DEFAULT_CRON_JITTER_CONFIG.recurringMaxAgeMs / (24 * 60 * 60 * 1000)
 
 /**
- * Unified gate for the cron scheduling system. Combines the build-time
- * `feature('AGENT_TRIGGERS')` flag (dead code elimination) with the runtime
- * `tengu_kairos_cron` GrowthBook gate on a 5-minute refresh window.
+ * Unified gate for the cron scheduling system. Cron tooling is now always
+ * compiled into repo builds, and this runtime gate decides whether the tools,
+ * scheduler, and /loop skill are actually enabled.
  *
- * AGENT_TRIGGERS is independently shippable from KAIROS — the cron module
- * graph (cronScheduler/cronTasks/cronTasksLock/cron.ts + the three tools +
- * /loop skill) has zero imports into src/assistant/ and no feature('KAIROS')
- * calls. The REPL.tsx kairosEnabled read is safe:
+ * The cron module graph (cronScheduler/cronTasks/cronTasksLock/cron.ts + the
+ * three tools + /loop skill) has zero imports into src/assistant/ and no
+ * feature('KAIROS') calls. The REPL.tsx kairosEnabled read is safe:
  * kairosEnabled is unconditionally in AppStateStore with default false, so
  * when KAIROS is off the scheduler just gets assistantMode: false.
  *
@@ -34,14 +32,14 @@ export const DEFAULT_MAX_AGE_DAYS =
  * `CLAUDE_CODE_DISABLE_CRON` is a local override that wins over GB.
  */
 export function isKairosCronEnabled(): boolean {
-  return feature('AGENT_TRIGGERS')
-    ? !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON) &&
-        getFeatureValue_CACHED_WITH_REFRESH(
-          'tengu_kairos_cron',
-          true,
-          KAIROS_CRON_REFRESH_MS,
-        )
-    : false
+  return (
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON) &&
+    getFeatureValue_CACHED_WITH_REFRESH(
+      'tengu_kairos_cron',
+      true,
+      KAIROS_CRON_REFRESH_MS,
+    )
+  )
 }
 
 /**
