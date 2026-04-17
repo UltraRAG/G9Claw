@@ -9,6 +9,7 @@ import type {
   ProjectSession,
   ProjectsUpdatedMessage,
 } from '../types/app';
+import { isBackgroundTaskSession } from '../types/app';
 
 type UseProjectsStateArgs = {
   sessionId?: string;
@@ -239,18 +240,24 @@ export function useProjectsState({
 
     if (projectsMessage.changedFile && selectedSession && selectedProject) {
       const normalized = projectsMessage.changedFile.replace(/\\/g, '/');
-      const changedFileParts = normalized.split('/');
+      const projectPrefix = `${selectedProject.name}/`;
+      const projectRelativeChanged = normalized.startsWith(projectPrefix)
+        ? normalized.slice(projectPrefix.length)
+        : '';
+      const isSelectedBackgroundTranscriptChange =
+        selectedSession.__provider === 'claude' &&
+        isBackgroundTaskSession(selectedSession) &&
+        projectRelativeChanged === selectedSession.relativeTranscriptPath;
+      const isMainSessionChange =
+        selectedSession.__provider === 'claude' &&
+        !isBackgroundTaskSession(selectedSession) &&
+        projectRelativeChanged === `${selectedSession.id}.jsonl`;
 
-      if (changedFileParts.length >= 2) {
-        const filename = changedFileParts[changedFileParts.length - 1];
-        const changedSessionId = filename.replace('.jsonl', '');
+      if (isMainSessionChange || isSelectedBackgroundTranscriptChange) {
+        const isSessionActive = activeSessions.has(selectedSession.id);
 
-        if (changedSessionId === selectedSession.id) {
-          const isSessionActive = activeSessions.has(selectedSession.id);
-
-          if (!isSessionActive) {
-            setExternalMessageUpdate((prev) => prev + 1);
-          }
+        if (!isSessionActive) {
+          setExternalMessageUpdate((prev) => prev + 1);
         }
       }
     }
@@ -296,6 +303,16 @@ export function useProjectsState({
 
     if (!updatedSelectedSession) {
       setSelectedSession(null);
+      return;
+    }
+
+    const normalizedUpdatedSelectedSession =
+      updatedSelectedSession.__provider || !selectedSession.__provider
+        ? updatedSelectedSession
+        : { ...updatedSelectedSession, __provider: selectedSession.__provider };
+
+    if (serialize(normalizedUpdatedSelectedSession) !== serialize(selectedSession)) {
+      setSelectedSession(normalizedUpdatedSelectedSession);
     }
   }, [latestMessage, selectedProject, selectedSession, activeSessions, projects]);
 

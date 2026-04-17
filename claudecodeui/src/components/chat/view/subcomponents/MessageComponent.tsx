@@ -148,11 +148,31 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
           )}
         </div>
       ) : message.isTaskNotification ? (
-        /* Compact task notification on the left */
         <div className="w-full">
-          <div className="flex items-center gap-2 py-0.5">
-            <span className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${message.taskStatus === 'completed' ? 'bg-green-400 dark:bg-green-500' : 'bg-amber-400 dark:bg-amber-500'}`} />
-            <span className="text-xs text-gray-500 dark:text-gray-400">{message.content}</span>
+          <div className="rounded-xl border border-border/50 bg-muted/20 px-3 py-2 text-sm">
+            <div className="flex items-start gap-2">
+              <span
+                className={`mt-1 inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${
+                  message.taskStatus === 'completed'
+                    ? 'bg-green-500'
+                    : 'bg-amber-500'
+                }`}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="break-words text-foreground">{message.content}</div>
+                {(message.taskStatus || message.taskId) && (
+                  <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-muted-foreground">
+                    {message.taskStatus && (
+                      <span className="rounded bg-background/80 px-1.5 py-0.5">{message.taskStatus}</span>
+                    )}
+                    {message.taskId && (
+                      <span className="rounded bg-background/80 px-1.5 py-0.5">{message.taskId}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+              <span className="flex-shrink-0 text-xs text-muted-foreground">{formattedTime}</span>
+            </div>
           </div>
         </div>
       ) : (

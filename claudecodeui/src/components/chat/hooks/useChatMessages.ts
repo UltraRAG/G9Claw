@@ -7,14 +7,7 @@ import type { NormalizedMessage } from '../../../stores/useSessionStore';
 import type { ChatMessage, SubagentChildTool } from '../types/types';
 import { decodeHtmlEntities, unescapeWithMathProtection, formatUsageLimitText } from '../utils/chatFormatting';
 
-/**
- * Convert NormalizedMessage[] from the session store into ChatMessage[]
- * that the existing UI components expect.
- *
- * Internal/system content (e.g. <system-reminder>, <command-name>) is already
- * filtered server-side by the Claude adapter (server/providers/utils.js).
- */
-export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMessage[] {
+function convertNormalizedMessages(messages: NormalizedMessage[]): ChatMessage[] {
   const converted: ChatMessage[] = [];
 
   // First pass: collect tool results for attachment
@@ -32,29 +25,18 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
         if (!content.trim()) continue;
 
         if (msg.role === 'user') {
-          // Parse task notifications
-          const taskNotifRegex = /<task-notification>\s*<task-id>[^<]*<\/task-id>\s*<output-file>[^<]*<\/output-file>\s*<status>([^<]*)<\/status>\s*<summary>([^<]*)<\/summary>\s*<\/task-notification>/g;
-          const taskNotifMatch = taskNotifRegex.exec(content);
-          if (taskNotifMatch) {
-            converted.push({
-              type: 'assistant',
-              content: taskNotifMatch[2]?.trim() || 'Background task finished',
-              timestamp: msg.timestamp,
-              isTaskNotification: true,
-              taskStatus: taskNotifMatch[1]?.trim() || 'completed',
-            });
-          } else {
-            converted.push({
-              type: 'user',
-              content: unescapeWithMathProtection(decodeHtmlEntities(content)),
-              timestamp: msg.timestamp,
-            });
-          }
+          converted.push({
+            id: msg.id,
+            type: 'user',
+            content: unescapeWithMathProtection(decodeHtmlEntities(content)),
+            timestamp: msg.timestamp,
+          });
         } else {
           let text = decodeHtmlEntities(content);
           text = unescapeWithMathProtection(text);
           text = formatUsageLimitText(text);
           converted.push({
+            id: msg.id,
             type: 'assistant',
             content: text,
             timestamp: msg.timestamp,
@@ -90,6 +72,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           : null;
 
         converted.push({
+          id: msg.id,
           type: 'assistant',
           content: '',
           timestamp: msg.timestamp,
@@ -113,6 +96,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
       case 'thinking':
         if (msg.content?.trim()) {
           converted.push({
+            id: msg.id,
             type: 'assistant',
             content: unescapeWithMathProtection(msg.content),
             timestamp: msg.timestamp,
@@ -123,6 +107,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
       case 'error':
         converted.push({
+          id: msg.id,
           type: 'error',
           content: msg.content || 'Unknown error',
           timestamp: msg.timestamp,
@@ -131,6 +116,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
       case 'interactive_prompt':
         converted.push({
+          id: msg.id,
           type: 'assistant',
           content: msg.content || '',
           timestamp: msg.timestamp,
@@ -140,17 +126,21 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
       case 'task_notification':
         converted.push({
+          id: msg.id,
           type: 'assistant',
           content: msg.summary || 'Background task update',
           timestamp: msg.timestamp,
           isTaskNotification: true,
           taskStatus: msg.status || 'completed',
+          taskId: msg.taskId || '',
+          outputFile: msg.outputFile || '',
         });
         break;
 
       case 'stream_delta':
         if (msg.content) {
           converted.push({
+            id: msg.id,
             type: 'assistant',
             content: msg.content,
             timestamp: msg.timestamp,
@@ -180,4 +170,15 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
   }
 
   return converted;
+}
+
+/**
+ * Convert NormalizedMessage[] from the session store into ChatMessage[]
+ * that the existing UI components expect.
+ *
+ * Internal/system content (e.g. <system-reminder>, <command-name>) is already
+ * filtered server-side by the Claude adapter (server/providers/utils.js).
+ */
+export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMessage[] {
+  return convertNormalizedMessages(messages);
 }

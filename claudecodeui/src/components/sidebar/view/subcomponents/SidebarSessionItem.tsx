@@ -3,7 +3,7 @@ import type { TFunction } from 'i18next';
 import { Badge, Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import { formatTimeAgo } from '../../../../utils/dateUtils';
-import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
+import { isBackgroundTaskSession, type Project, type ProjectSession, type SessionProvider } from '../../../../types/app';
 import type { SessionWithProvider } from '../../types/types';
 import { createSessionViewModel } from '../../utils/utils';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
@@ -48,6 +48,7 @@ export default function SidebarSessionItem({
 }: SidebarSessionItemProps) {
   const sessionView = createSessionViewModel(session, currentTime, t);
   const isSelected = selectedSession?.id === session.id;
+  const isReadOnlySession = isBackgroundTaskSession(session) || Boolean(session.isReadOnly);
 
   const selectMobileSession = () => {
     onProjectSelect(project);
@@ -109,7 +110,7 @@ export default function SidebarSessionItem({
               </div>
             </div>
 
-            {!sessionView.isCursorSession && (
+            {!sessionView.isCursorSession && !isReadOnlySession && (
               <button
                 className="ml-1 flex h-5 w-5 items-center justify-center rounded-md bg-red-50 opacity-70 transition-transform active:scale-95 dark:bg-red-900/20"
                 onClick={(event) => {
@@ -200,17 +201,19 @@ export default function SidebarSessionItem({
               </>
             ) : (
               <>
-                <button
-                  className="flex h-6 w-6 items-center justify-center rounded bg-gray-50 hover:bg-gray-100 dark:bg-gray-900/20 dark:hover:bg-gray-900/40"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onStartEditingSession(session.id, sessionView.sessionName);
-                  }}
-                  title={t('tooltips.editSessionName')}
-                >
-                  <Edit2 className="h-3 w-3 text-gray-600 dark:text-gray-400" />
-                </button>
-                {!sessionView.isCursorSession && (
+                {!isReadOnlySession && (
+                  <button
+                    className="flex h-6 w-6 items-center justify-center rounded bg-gray-50 hover:bg-gray-100 dark:bg-gray-900/20 dark:hover:bg-gray-900/40"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onStartEditingSession(session.id, sessionView.sessionName);
+                    }}
+                    title={t('tooltips.editSessionName')}
+                  >
+                    <Edit2 className="h-3 w-3 text-gray-600 dark:text-gray-400" />
+                  </button>
+                )}
+                {!sessionView.isCursorSession && !isReadOnlySession && (
                   <button
                     className="flex h-6 w-6 items-center justify-center rounded bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40"
                     onClick={(event) => {

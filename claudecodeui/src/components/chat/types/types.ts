@@ -26,6 +26,7 @@ export interface SubagentChildTool {
 }
 
 export interface ChatMessage {
+  id?: string;
   type: string;
   content?: string;
   timestamp: string | number | Date;
@@ -40,7 +41,11 @@ export interface ChatMessage {
   toolResult?: ToolResult | null;
   toolId?: string;
   toolCallId?: string;
+  taskStatus?: string;
+  taskId?: string;
+  outputFile?: string;
   isSubagentContainer?: boolean;
+  isTaskNotification?: boolean;
   subagentState?: {
     childTools: SubagentChildTool[];
     currentToolIndex: number;

@@ -59,6 +59,8 @@ export interface NormalizedMessage {
   actualSessionId?: string;
   parentToolUseId?: string;
   subagentTools?: unknown[];
+  taskId?: string;
+  outputFile?: string;
   isFinal?: boolean;
   // Cursor-specific ordering
   sequence?: number;
@@ -172,6 +174,9 @@ export function useSessionStore() {
       provider?: SessionProvider;
       projectName?: string;
       projectPath?: string;
+      sessionKind?: string;
+      parentSessionId?: string;
+      relativeTranscriptPath?: string;
       limit?: number | null;
       offset?: number;
     } = {},
@@ -185,6 +190,11 @@ export function useSessionStore() {
       if (opts.provider) params.append('provider', opts.provider);
       if (opts.projectName) params.append('projectName', opts.projectName);
       if (opts.projectPath) params.append('projectPath', opts.projectPath);
+      if (opts.sessionKind) params.append('sessionKind', opts.sessionKind);
+      if (opts.parentSessionId) params.append('parentSessionId', opts.parentSessionId);
+      if (opts.relativeTranscriptPath) {
+        params.append('relativeTranscriptPath', opts.relativeTranscriptPath);
+      }
       if (opts.limit !== null && opts.limit !== undefined) {
         params.append('limit', String(opts.limit));
         params.append('offset', String(opts.offset ?? 0));
@@ -231,6 +241,9 @@ export function useSessionStore() {
       provider?: SessionProvider;
       projectName?: string;
       projectPath?: string;
+      sessionKind?: string;
+      parentSessionId?: string;
+      relativeTranscriptPath?: string;
       limit?: number;
     } = {},
   ) => {
@@ -241,6 +254,11 @@ export function useSessionStore() {
     if (opts.provider) params.append('provider', opts.provider);
     if (opts.projectName) params.append('projectName', opts.projectName);
     if (opts.projectPath) params.append('projectPath', opts.projectPath);
+    if (opts.sessionKind) params.append('sessionKind', opts.sessionKind);
+    if (opts.parentSessionId) params.append('parentSessionId', opts.parentSessionId);
+    if (opts.relativeTranscriptPath) {
+      params.append('relativeTranscriptPath', opts.relativeTranscriptPath);
+    }
     const limit = opts.limit ?? 20;
     params.append('limit', String(limit));
     params.append('offset', String(slot.offset));
@@ -306,6 +324,9 @@ export function useSessionStore() {
       provider?: SessionProvider;
       projectName?: string;
       projectPath?: string;
+      sessionKind?: string;
+      parentSessionId?: string;
+      relativeTranscriptPath?: string;
     } = {},
   ) => {
     const slot = getSlot(sessionId);
@@ -314,6 +335,11 @@ export function useSessionStore() {
       if (opts.provider) params.append('provider', opts.provider);
       if (opts.projectName) params.append('projectName', opts.projectName);
       if (opts.projectPath) params.append('projectPath', opts.projectPath);
+      if (opts.sessionKind) params.append('sessionKind', opts.sessionKind);
+      if (opts.parentSessionId) params.append('parentSessionId', opts.parentSessionId);
+      if (opts.relativeTranscriptPath) {
+        params.append('relativeTranscriptPath', opts.relativeTranscriptPath);
+      }
 
       const qs = params.toString();
       const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;

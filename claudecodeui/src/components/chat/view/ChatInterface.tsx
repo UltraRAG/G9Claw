@@ -3,7 +3,11 @@ import { useTranslation } from 'react-i18next';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
 import type { ChatInterfaceProps, Provider  } from '../types/types';
-import type { SessionProvider } from '../../../types/app';
+import {
+  getSessionRequestParams,
+  isBackgroundTaskSession,
+  type SessionProvider,
+} from '../../../types/app';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
@@ -44,6 +48,11 @@ function ChatInterface({
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { t } = useTranslation('chat');
+  const isReadOnlyBackgroundSession = isBackgroundTaskSession(selectedSession);
+  const sessionRequestParams = React.useMemo(
+    () => getSessionRequestParams(selectedSession),
+    [selectedSession],
+  );
 
   const sessionStore = useSessionStore();
   const streamBufferRef = useRef('');
@@ -211,10 +220,18 @@ function ChatInterface({
       provider: (selectedSession.__provider || providerVal) as SessionProvider,
       projectName: selectedProject.name,
       projectPath: selectedProject.fullPath || selectedProject.path || '',
+      ...sessionRequestParams,
     });
     setIsLoading(false);
     setCanAbortSession(false);
-  }, [selectedProject, selectedSession, sessionStore, setIsLoading, setCanAbortSession]);
+  }, [
+    selectedProject,
+    selectedSession,
+    sessionRequestParams,
+    sessionStore,
+    setIsLoading,
+    setCanAbortSession,
+  ]);
 
   useChatRealtimeHandlers({
     latestMessage,
@@ -339,74 +356,82 @@ function ChatInterface({
           selectedProject={selectedProject}
         />
 
-        <ChatComposer
-          pendingPermissionRequests={pendingPermissionRequests}
-          handlePermissionDecision={handlePermissionDecision}
-          handleGrantToolPermission={handleGrantToolPermission}
-          claudeStatus={claudeStatus}
-          isLoading={isLoading}
-          onAbortSession={handleAbortSession}
-          provider={provider}
-          permissionMode={permissionMode}
-          onModeSwitch={cyclePermissionMode}
-          thinkingMode={thinkingMode}
-          setThinkingMode={setThinkingMode}
-          tokenBudget={tokenBudget}
-          slashCommandsCount={slashCommandsCount}
-          onToggleCommandMenu={handleToggleCommandMenu}
-          hasInput={Boolean(input.trim())}
-          onClearInput={handleClearInput}
-          isUserScrolledUp={isUserScrolledUp}
-          hasMessages={chatMessages.length > 0}
-          onScrollToBottom={scrollToBottomAndReset}
-          onSubmit={handleSubmit}
-          isDragActive={isDragActive}
-          attachedImages={attachedImages}
-          onRemoveImage={(index) =>
-            setAttachedImages((previous) =>
-              previous.filter((_, currentIndex) => currentIndex !== index),
-            )
-          }
-          uploadingImages={uploadingImages}
-          imageErrors={imageErrors}
-          showFileDropdown={showFileDropdown}
-          filteredFiles={filteredFiles}
-          selectedFileIndex={selectedFileIndex}
-          onSelectFile={selectFile}
-          filteredCommands={filteredCommands}
-          selectedCommandIndex={selectedCommandIndex}
-          onCommandSelect={handleCommandSelect}
-          onCloseCommandMenu={resetCommandMenuState}
-          isCommandMenuOpen={showCommandMenu}
-          frequentCommands={commandQuery ? [] : frequentCommands}
-          getRootProps={getRootProps as (...args: unknown[]) => Record<string, unknown>}
-          getInputProps={getInputProps as (...args: unknown[]) => Record<string, unknown>}
-          openImagePicker={openImagePicker}
-          inputHighlightRef={inputHighlightRef}
-          renderInputWithMentions={renderInputWithMentions}
-          textareaRef={textareaRef}
-          input={input}
-          onInputChange={handleInputChange}
-          onTextareaClick={handleTextareaClick}
-          onTextareaKeyDown={handleKeyDown}
-          onTextareaPaste={handlePaste}
-          onTextareaScrollSync={syncInputOverlayScroll}
-          onTextareaInput={handleTextareaInput}
-          onInputFocusChange={handleInputFocusChange}
-          isInputFocused={isInputFocused}
-          placeholder={t('input.placeholder', {
-            provider:
-              provider === 'cursor'
-                ? t('messageTypes.cursor')
-                : provider === 'codex'
-                  ? t('messageTypes.codex')
-                  : provider === 'gemini'
-                    ? t('messageTypes.gemini')
-                    : t('messageTypes.claude'),
-          })}
-          isTextareaExpanded={isTextareaExpanded}
-          sendByCtrlEnter={sendByCtrlEnter}
-        />
+        {isReadOnlyBackgroundSession ? (
+          <div className="mx-auto w-full max-w-4xl px-3 pb-4 sm:px-4">
+            <div className="rounded-xl border border-border/50 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+              This background task transcript is read-only.
+            </div>
+          </div>
+        ) : (
+          <ChatComposer
+            pendingPermissionRequests={pendingPermissionRequests}
+            handlePermissionDecision={handlePermissionDecision}
+            handleGrantToolPermission={handleGrantToolPermission}
+            claudeStatus={claudeStatus}
+            isLoading={isLoading}
+            onAbortSession={handleAbortSession}
+            provider={provider}
+            permissionMode={permissionMode}
+            onModeSwitch={cyclePermissionMode}
+            thinkingMode={thinkingMode}
+            setThinkingMode={setThinkingMode}
+            tokenBudget={tokenBudget}
+            slashCommandsCount={slashCommandsCount}
+            onToggleCommandMenu={handleToggleCommandMenu}
+            hasInput={Boolean(input.trim())}
+            onClearInput={handleClearInput}
+            isUserScrolledUp={isUserScrolledUp}
+            hasMessages={chatMessages.length > 0}
+            onScrollToBottom={scrollToBottomAndReset}
+            onSubmit={handleSubmit}
+            isDragActive={isDragActive}
+            attachedImages={attachedImages}
+            onRemoveImage={(index) =>
+              setAttachedImages((previous) =>
+                previous.filter((_, currentIndex) => currentIndex !== index),
+              )
+            }
+            uploadingImages={uploadingImages}
+            imageErrors={imageErrors}
+            showFileDropdown={showFileDropdown}
+            filteredFiles={filteredFiles}
+            selectedFileIndex={selectedFileIndex}
+            onSelectFile={selectFile}
+            filteredCommands={filteredCommands}
+            selectedCommandIndex={selectedCommandIndex}
+            onCommandSelect={handleCommandSelect}
+            onCloseCommandMenu={resetCommandMenuState}
+            isCommandMenuOpen={showCommandMenu}
+            frequentCommands={commandQuery ? [] : frequentCommands}
+            getRootProps={getRootProps as (...args: unknown[]) => Record<string, unknown>}
+            getInputProps={getInputProps as (...args: unknown[]) => Record<string, unknown>}
+            openImagePicker={openImagePicker}
+            inputHighlightRef={inputHighlightRef}
+            renderInputWithMentions={renderInputWithMentions}
+            textareaRef={textareaRef}
+            input={input}
+            onInputChange={handleInputChange}
+            onTextareaClick={handleTextareaClick}
+            onTextareaKeyDown={handleKeyDown}
+            onTextareaPaste={handlePaste}
+            onTextareaScrollSync={syncInputOverlayScroll}
+            onTextareaInput={handleTextareaInput}
+            onInputFocusChange={handleInputFocusChange}
+            isInputFocused={isInputFocused}
+            placeholder={t('input.placeholder', {
+              provider:
+                provider === 'cursor'
+                  ? t('messageTypes.cursor')
+                  : provider === 'codex'
+                    ? t('messageTypes.codex')
+                    : provider === 'gemini'
+                      ? t('messageTypes.gemini')
+                      : t('messageTypes.claude'),
+            })}
+            isTextareaExpanded={isTextareaExpanded}
+            sendByCtrlEnter={sendByCtrlEnter}
+          />
+        )}
       </div>
 
       <QuickSettingsPanel />

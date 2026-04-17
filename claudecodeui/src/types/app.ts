@@ -1,4 +1,5 @@
 export type SessionProvider = 'claude' | 'cursor' | 'codex' | 'gemini';
+export type ProjectSessionKind = 'background_task';
 
 export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'preview' | `plugin:${string}`;
 
@@ -12,9 +13,53 @@ export interface ProjectSession {
   updated_at?: string;
   lastActivity?: string;
   messageCount?: number;
+  sessionKind?: ProjectSessionKind;
+  parentSessionId?: string;
+  relativeTranscriptPath?: string;
+  transcriptKey?: string;
+  taskId?: string;
+  taskStatus?: string;
+  outputFile?: string;
+  isReadOnly?: boolean;
   __provider?: SessionProvider;
   __projectName?: string;
   [key: string]: unknown;
+}
+
+export type SessionRequestParams = {
+  sessionKind?: ProjectSessionKind;
+  parentSessionId?: string;
+  relativeTranscriptPath?: string;
+};
+
+export function isBackgroundTaskSession(
+  session: ProjectSession | null | undefined,
+): session is ProjectSession & {
+  sessionKind: 'background_task';
+  parentSessionId: string;
+  relativeTranscriptPath: string;
+} {
+  return (
+    session?.sessionKind === 'background_task' &&
+    typeof session.parentSessionId === 'string' &&
+    session.parentSessionId.length > 0 &&
+    typeof session.relativeTranscriptPath === 'string' &&
+    session.relativeTranscriptPath.length > 0
+  );
+}
+
+export function getSessionRequestParams(
+  session: ProjectSession | null | undefined,
+): SessionRequestParams {
+  if (!isBackgroundTaskSession(session)) {
+    return {};
+  }
+
+  return {
+    sessionKind: session.sessionKind,
+    parentSessionId: session.parentSessionId,
+    relativeTranscriptPath: session.relativeTranscriptPath,
+  };
 }
 
 export interface ProjectSessionMeta {
