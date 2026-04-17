@@ -37,6 +37,8 @@ function createDreamTrace(trigger) {
         trigger,
         startedAt,
         status: "running",
+        isNoOp: false,
+        displayStatus: "Running",
         snapshotSummary: {
             projectMetaPresent: false,
             projectFileCount: 0,
@@ -168,6 +170,14 @@ export class DreamRewriteRunner {
         });
         const projectMeta = store.getProjectMeta() ?? null;
         const userSummary = this.repository.getUserSummary();
+        const userNoteEntries = this.repository.listMemoryEntries({
+            kinds: ["user"],
+            scope: "global",
+            includeDeprecated: false,
+            limit: 2000,
+        }).filter((entry) => entry.relativePath !== "global/User/user-profile.md");
+        const userNoteRecords = this.repository.getMemoryRecordsByIds(userNoteEntries.map((entry) => entry.relativePath), 5000);
+        const userNoteCandidates = userNoteRecords.map((record) => this.repository.getGlobalUserStore().toCandidate(record));
         trace.snapshotSummary = {
             projectMetaPresent: Boolean(projectMeta),
             projectFileCount: workspaceEntries.filter((entry) => entry.type === "project").length,
@@ -177,7 +187,7 @@ export class DreamRewriteRunner {
         pushStep(trace, "dream_start", "Dream Start", "info", `${trigger} dream run started.`, "Dream loaded the current project memory snapshot.", {
             titleI18n: traceI18n("trace.step.dream_start", "Dream Start"),
         });
-        pushStep(trace, "snapshot_loaded", "Snapshot Loaded", workspaceEntries.length > 0 || userSummary.files.length > 0 || Boolean(projectMeta) ? "success" : "warning", `${workspaceEntries.length} current project memory files`, workspaceEntries.length > 0 || userSummary.files.length > 0 || Boolean(projectMeta)
+        pushStep(trace, "snapshot_loaded", "Snapshot Loaded", workspaceEntries.length > 0 || userSummary.files.length > 0 || userNoteRecords.length > 0 || Boolean(projectMeta) ? "success" : "warning", `${workspaceEntries.length} current project memory files`, workspaceEntries.length > 0 || userSummary.files.length > 0 || userNoteRecords.length > 0 || Boolean(projectMeta)
             ? "Current project memory is ready for Dream rewrite."
             : "No file-based memory exists yet, so Dream had nothing to organize.", {
             titleI18n: traceI18n("trace.step.snapshot_loaded", "Snapshot Loaded"),
@@ -187,18 +197,24 @@ export class DreamRewriteRunner {
                     { label: "projectFiles", value: trace.snapshotSummary.projectFileCount },
                     { label: "feedbackFiles", value: trace.snapshotSummary.feedbackFileCount },
                     { label: "hasUserProfile", value: trace.snapshotSummary.hasUserProfile ? "yes" : "no" },
+                    { label: "userNotes", value: userNoteRecords.length },
                 ], traceI18n("trace.detail.snapshot_summary", "Snapshot Summary")),
                 ...(projectMeta
                     ? [jsonDetail("project-meta", "Project Meta", projectMeta, traceI18n("trace.detail.project_meta", "Project Meta"))]
                     : []),
                 listDetail("snapshot-files", "Current Project Files", workspaceEntries.map((entry) => `${entry.relativePath} | ${entry.updatedAt}`), traceI18n("trace.detail.loaded_files", "Loaded Files")),
+                ...(userNoteEntries.length > 0
+                    ? [listDetail("snapshot-user-notes", "User Notes", userNoteEntries.map((entry) => `${entry.relativePath} | ${entry.updatedAt}`))]
+                    : []),
             ],
         });
-        if (workspaceEntries.length === 0 && userSummary.files.length === 0) {
+        if (workspaceEntries.length === 0 && userSummary.files.length === 0 && userNoteRecords.length === 0) {
             const finishedAt = nowIso();
             const summary = "No file-based memory exists yet, so Dream had nothing to organize.";
             trace.finishedAt = finishedAt;
             trace.status = "completed";
+            trace.isNoOp = true;
+            trace.displayStatus = "No-op";
             trace.outcome = {
                 rewrittenProjects: 0,
                 deletedProjects: 0,
@@ -312,21 +328,12 @@ export class DreamRewriteRunner {
         }
         let profileUpdated = false;
         let rewrittenProfilePath;
-        if (userSummary.files.length > 0) {
+        if (userSummary.files.length > 0 || userNoteCandidates.length > 0) {
             let userRewriteDebug;
             try {
                 const rewrittenUser = await this.extractor.rewriteUserProfile({
                     existingProfile: userSummary,
-                    candidates: [{
-                            type: "user",
-                            scope: "global",
-                            name: "user-profile",
-                            description: userSummary.profile || userSummary.preferences[0] || "User profile",
-                            profile: userSummary.profile,
-                            preferences: userSummary.preferences,
-                            constraints: userSummary.constraints,
-                            relationships: userSummary.relationships,
-                        }],
+                    candidates: userNoteCandidates,
                     debugTrace: (debug) => {
                         userRewriteDebug = debug;
                     },
@@ -345,7 +352,7 @@ export class DreamRewriteRunner {
                         relationships: userSummary.relationships,
                     };
                     if (!sameUserSummary(previousSummary, nextSummary)) {
-                        this.repository.getGlobalUserStore().upsertCandidate(rewrittenUser);
+                        this.repository.getGlobalUserStore().upsertUserProfile(rewrittenUser);
                         this.repository.repairWorkspaceManifest();
                         rewrittenProfilePath = "global/User/user-profile.md";
                         profileUpdated = true;
@@ -360,7 +367,7 @@ export class DreamRewriteRunner {
             catch (error) {
                 this.logger?.warn?.(`[clawxmemory] current-project dream user-profile rewrite failed: ${String(error)}`);
             }
-            pushStep(trace, "user_profile_rewritten", "User Profile Rewritten", profileUpdated ? "success" : "skipped", `${userSummary.files.length} existing user profile file`, profileUpdated
+            pushStep(trace, "user_profile_rewritten", "User Profile Rewritten", profileUpdated ? "success" : "skipped", `${userSummary.files.length} profile files, ${userNoteCandidates.length} user notes`, profileUpdated
                 ? `Updated user profile at ${rewrittenProfilePath}.`
                 : "Dream kept the current user profile unchanged.", {
                 titleI18n: traceI18n("trace.step.user_profile_rewritten", "User Profile Rewritten"),
@@ -395,8 +402,9 @@ export class DreamRewriteRunner {
         const finishedAt = nowIso();
         const summary = rewrite.summary
             || `Dream reorganized the current project memory into ${writtenRecords.length} files.`;
+        const rewrittenProjects = fullRecords.length > 0 || writtenRecords.length > 0 || deletedIds.length > 0 ? 1 : 0;
         const outcome = {
-            rewrittenProjects: 1,
+            rewrittenProjects,
             deletedProjects: 0,
             deletedFiles: deletedIds.length,
             profileUpdated,
@@ -404,6 +412,8 @@ export class DreamRewriteRunner {
         };
         trace.finishedAt = finishedAt;
         trace.status = "completed";
+        trace.isNoOp = deletedIds.length === 0 && writtenRecords.length === 0 && !profileUpdated;
+        trace.displayStatus = trace.isNoOp ? "No-op" : "Completed";
         trace.outcome = outcome;
         pushStep(trace, "dream_finished", "Dream Finished", "success", `${fullRecords.length} current project files`, summary, {
             titleI18n: traceI18n("trace.step.dream_finished", "Dream Finished"),
@@ -415,7 +425,7 @@ export class DreamRewriteRunner {
         this.logger?.info?.(`[clawxmemory] current-project dream finished: ${summary}`);
         return {
             reviewedFiles: fullRecords.length,
-            rewrittenProjects: 1,
+            rewrittenProjects,
             deletedProjects: 0,
             deletedFiles: deletedIds.length,
             profileUpdated,

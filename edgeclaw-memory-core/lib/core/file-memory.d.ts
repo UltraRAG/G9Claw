@@ -6,6 +6,8 @@ export interface FileMemoryStoreOptions {
     manageProjectFiles?: boolean;
     manageUserProfile?: boolean;
     userProfileRelativePath?: string | null;
+    userNotesRelativeDir?: string | null;
+    appendOnlyUserEntries?: boolean;
     enableManifest?: boolean;
     manifestUserEntriesProvider?: () => MemoryManifestEntry[];
 }
@@ -27,6 +29,8 @@ export declare class FileMemoryStore {
     private readonly manageProjectFiles;
     private readonly manageUserProfile;
     private readonly userProfileRelativePath;
+    private readonly userNotesRelativeDir;
+    private readonly appendOnlyUserEntries;
     private readonly enableManifest;
     private readonly manifestUserEntriesProvider?;
     constructor(rootDir: string, options?: FileMemoryStoreOptions);
@@ -85,6 +89,7 @@ export declare class FileMemoryStore {
     }): number;
     getMemoryRecordsByIds(ids: string[], maxLines?: number): MemoryFileRecord[];
     getUserSummary(): MemoryUserSummary;
+    upsertUserProfile(candidate: MemoryCandidate): MemoryFileRecord;
     upsertCandidate(candidate: MemoryCandidate): MemoryFileRecord;
     toCandidate(record: MemoryFileRecord): MemoryCandidate;
     editEntry(input: {

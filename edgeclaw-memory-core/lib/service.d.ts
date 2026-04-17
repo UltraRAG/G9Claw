@@ -67,21 +67,22 @@ export declare class EdgeClawMemoryService {
     private readonly includeAssistant;
     private readonly maxMessageChars;
     private readonly source;
-    private maintenancePromise;
-    private maintenanceQueued;
     private projectMetaSeed;
     constructor(options: EdgeClawMemoryServiceOptions);
     close(): void;
     getSettings(): IndexingSettings;
     saveSettings(partial: Partial<IndexingSettings>): IndexingSettings;
     overview(): import("./core/types.js").DashboardOverview;
+    private getPipelineTimestamp;
+    private setPipelineTimestamp;
+    private reconcileAutoIndexAnchor;
+    private reconcileAutoDreamAnchor;
     snapshot(limit?: number): MemoryUiSnapshot;
     captureTurn(rawMessages: readonly unknown[], input: {
         sessionKey: string;
         timestamp?: string;
         source?: string;
     }): CaptureTurnResult;
-    scheduleMaintenance(reason?: string): void;
     flush(options?: {
         batchSize?: number;
         sessionKeys?: string[];
@@ -98,7 +99,12 @@ export declare class EdgeClawMemoryService {
         workspaceHint?: string;
         retrievalMode?: "auto" | "explicit";
     }): Promise<RetrieveContextResult>;
-    private runScheduledMaintenance;
+    runDueScheduledMaintenance(reason?: string): Promise<{
+        indexRan: boolean;
+        dreamRan: boolean;
+        indexStats?: HeartbeatStats;
+        dreamResult?: DreamRunResult;
+    }>;
     search(query: string, options?: {
         recentMessages?: MemoryMessage[];
         workspaceHint?: string;

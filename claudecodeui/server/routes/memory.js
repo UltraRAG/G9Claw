@@ -5,7 +5,11 @@ import { fileURLToPath } from 'url';
 import {
   MemoryBundleValidationError,
 } from '../../../edgeclaw-memory-core/lib/index.js';
-import { getMemoryServiceForRequest } from '../services/memoryService.js';
+import {
+  getMemoryServiceForRequest,
+  runManualMemoryDream,
+  runManualMemoryFlush,
+} from '../services/memoryService.js';
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
@@ -97,8 +101,8 @@ function getQuery(req) {
 
 async function withMemoryService(req, res, fn) {
   try {
-    const { projectPath, service } = await getMemoryServiceForRequest(req);
-    return await fn({ projectPath, service, repository: service.repository });
+    const { projectPath, dataDir, service } = await getMemoryServiceForRequest(req);
+    return await fn({ projectPath, dataDir, service, repository: service.repository });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return res.status(400).json({ error: message });
@@ -122,14 +126,14 @@ router.route('/settings')
     }));
 
 router.post('/index/run', async (req, res) =>
-  withMemoryService(req, res, async ({ service }) => {
-    res.json(await service.flush({ reason: 'manual' }));
+  withMemoryService(req, res, async ({ dataDir, service }) => {
+    res.json(await runManualMemoryFlush(service, dataDir, { reason: 'manual' }));
   }),
 );
 
 router.post('/dream/run', async (req, res) =>
-  withMemoryService(req, res, async ({ service }) => {
-    res.json(await service.dream('manual'));
+  withMemoryService(req, res, async ({ dataDir, service }) => {
+    res.json(await runManualMemoryDream(service, dataDir));
   }),
 );
 

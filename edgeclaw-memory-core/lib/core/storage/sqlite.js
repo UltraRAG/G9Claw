@@ -80,6 +80,47 @@ function sanitizeTraceArray(value, key, sortKey) {
     }
     return next;
 }
+function normalizeIndexTraceRecord(record) {
+    const isNoOp = typeof record.isNoOp === "boolean"
+        ? record.isNoOp
+        : record.status === "completed" && record.storedResults.length === 0;
+    const displayStatus = typeof record.displayStatus === "string" && record.displayStatus.trim()
+        ? record.displayStatus
+        : record.status === "error"
+            ? "Error"
+            : isNoOp
+                ? "No-op"
+                : record.status === "running"
+                    ? "Running"
+                    : "Completed";
+    return {
+        ...record,
+        isNoOp,
+        displayStatus,
+    };
+}
+function normalizeDreamTraceRecord(record) {
+    const isNoOp = typeof record.isNoOp === "boolean"
+        ? record.isNoOp
+        : record.status !== "error"
+            && record.outcome.deletedFiles === 0
+            && record.outcome.rewrittenProjects === 0
+            && !record.outcome.profileUpdated;
+    const displayStatus = typeof record.displayStatus === "string" && record.displayStatus.trim()
+        ? record.displayStatus
+        : record.status === "error"
+            ? "Error"
+            : isNoOp
+                ? "No-op"
+                : record.status === "running"
+                    ? "Running"
+                    : "Completed";
+    return {
+        ...record,
+        isNoOp,
+        displayStatus,
+    };
+}
 function sanitizeDreamStatus(value) {
     return value === "running" || value === "success" || value === "skipped" || value === "failed"
         ? value
@@ -250,6 +291,8 @@ export class MemoryRepository {
             manageProjectFiles: false,
             manageUserProfile: true,
             userProfileRelativePath: "User/user-profile.md",
+            userNotesRelativeDir: "UserNotes",
+            appendOnlyUserEntries: true,
             enableManifest: false,
         });
         this.workspaceMemory = new FileMemoryStore(memoryDir, {
@@ -422,6 +465,30 @@ export class MemoryRepository {
     `).all(Math.max(1, limit));
         return rows.map((row) => String(row.session_key));
     }
+    getEarliestPendingTimestamp(preferredSessionKeys) {
+        const normalizedPreferred = Array.isArray(preferredSessionKeys)
+            ? preferredSessionKeys.filter((item) => typeof item === "string" && item.trim().length > 0)
+            : [];
+        if (normalizedPreferred.length > 0) {
+            const placeholders = normalizedPreferred.map(() => "?").join(", ");
+            const row = this.db.prepare(`
+        SELECT MIN(timestamp) AS first_timestamp
+        FROM l0_sessions
+        WHERE indexed = 0 AND session_key IN (${placeholders})
+      `).get(...normalizedPreferred);
+            return typeof row?.first_timestamp === "string" && row.first_timestamp.trim()
+                ? row.first_timestamp
+                : undefined;
+        }
+        const row = this.db.prepare(`
+      SELECT MIN(timestamp) AS first_timestamp
+      FROM l0_sessions
+      WHERE indexed = 0
+    `).get();
+        return typeof row?.first_timestamp === "string" && row.first_timestamp.trim()
+            ? row.first_timestamp
+            : undefined;
+    }
     listUnindexedL0BySession(sessionKey) {
         const rows = this.db.prepare(`
       SELECT * FROM l0_sessions
@@ -506,21 +573,21 @@ export class MemoryRepository {
         return this.listRecentCaseTraces(200).find((item) => item.caseId === caseId);
     }
     saveIndexTrace(record, limit = 30) {
-        const next = sanitizeTraceArray([record, ...this.readPipelineState(RECENT_INDEX_TRACES_STATE_KEY, [])], "indexTraceId", "startedAt").slice(0, Math.max(1, limit));
+        const next = sanitizeTraceArray([record, ...this.readPipelineState(RECENT_INDEX_TRACES_STATE_KEY, [])], "indexTraceId", "startedAt").map((item) => normalizeIndexTraceRecord(item)).slice(0, Math.max(1, limit));
         this.setPipelineState(RECENT_INDEX_TRACES_STATE_KEY, next);
     }
     listRecentIndexTraces(limit = 30) {
-        return sanitizeTraceArray(this.readPipelineState(RECENT_INDEX_TRACES_STATE_KEY, []), "indexTraceId", "startedAt").slice(0, Math.max(1, limit));
+        return sanitizeTraceArray(this.readPipelineState(RECENT_INDEX_TRACES_STATE_KEY, []), "indexTraceId", "startedAt").map((item) => normalizeIndexTraceRecord(item)).slice(0, Math.max(1, limit));
     }
     getIndexTrace(indexTraceId) {
         return this.listRecentIndexTraces(200).find((item) => item.indexTraceId === indexTraceId);
     }
     saveDreamTrace(record, limit = 30) {
-        const next = sanitizeTraceArray([record, ...this.readPipelineState(RECENT_DREAM_TRACES_STATE_KEY, [])], "dreamTraceId", "startedAt").slice(0, Math.max(1, limit));
+        const next = sanitizeTraceArray([record, ...this.readPipelineState(RECENT_DREAM_TRACES_STATE_KEY, [])], "dreamTraceId", "startedAt").map((item) => normalizeDreamTraceRecord(item)).slice(0, Math.max(1, limit));
         this.setPipelineState(RECENT_DREAM_TRACES_STATE_KEY, next);
     }
     listRecentDreamTraces(limit = 30) {
-        return sanitizeTraceArray(this.readPipelineState(RECENT_DREAM_TRACES_STATE_KEY, []), "dreamTraceId", "startedAt").slice(0, Math.max(1, limit));
+        return sanitizeTraceArray(this.readPipelineState(RECENT_DREAM_TRACES_STATE_KEY, []), "dreamTraceId", "startedAt").map((item) => normalizeDreamTraceRecord(item)).slice(0, Math.max(1, limit));
     }
     getDreamTrace(dreamTraceId) {
         return this.listRecentDreamTraces(200).find((item) => item.dreamTraceId === dreamTraceId);
@@ -588,6 +655,8 @@ export class MemoryRepository {
                 manageProjectFiles: false,
                 manageUserProfile: true,
                 userProfileRelativePath: "User/user-profile.md",
+                userNotesRelativeDir: "UserNotes",
+                appendOnlyUserEntries: true,
                 enableManifest: false,
             });
             return {

@@ -1,7 +1,6 @@
 import { traceI18n } from "../trace-i18n.js";
 import { buildL0IndexId, hashText, nowIso } from "../utils/id.js";
 import { decodeEscapedUnicodeText, decodeEscapedUnicodeValue } from "../utils/text.js";
-import { hasExplicitRememberIntent } from "../../message-utils.js";
 const LAST_INDEXED_AT_STATE_KEY = "lastIndexedAt";
 function sameMessage(left, right) {
     if (!left || !right)
@@ -25,6 +24,7 @@ function emptyStats() {
     return {
         capturedSessions: 0,
         writtenFiles: 0,
+        writtenUserFiles: 0,
         writtenProjectFiles: 0,
         writtenFeedbackFiles: 0,
         userProfilesUpdated: 0,
@@ -80,8 +80,6 @@ function buildIndexTraceId(sessionKey, startedAt, l0Ids) {
 }
 function normalizeTrigger(reason) {
     const normalized = (reason ?? "").trim().toLowerCase();
-    if (normalized.includes("explicit_remember"))
-        return "explicit_remember";
     if (normalized.includes("scheduled"))
         return "scheduled";
     return "manual_sync";
@@ -92,22 +90,14 @@ function previewText(text, maxChars = 220) {
         return normalized;
     return `${normalized.slice(0, maxChars)}...`;
 }
-function describeCandidate(candidate) {
-    return `${candidate.type}:${candidate.name} — ${previewText(candidate.description, 120)}`;
-}
 function inferStorageKind(record) {
-    if (record.type === "user")
-        return "global_user";
+    if (record.type === "user") {
+        return /\/?UserNotes\//.test(record.relativePath) ? "global_user_note" : "global_user";
+    }
     return record.type === "feedback" ? "feedback" : "project";
 }
-function inferGroupingLabel(_repository, candidate) {
-    if (candidate.type === "user") {
-        return { storageKind: "global_user", label: "global user profile" };
-    }
-    return {
-        storageKind: candidate.type === "feedback" ? "feedback" : "project",
-        label: candidate.type === "feedback" ? "current project feedback" : "current project memory",
-    };
+function exposeStoredRelativePath(record) {
+    return record.scope === "global" ? `global/${record.relativePath}` : record.relativePath;
 }
 function textDetail(key, label, text, labelI18n) {
     return {
@@ -183,6 +173,8 @@ function createBatchTrace(sessionKey, sessions, trigger, focusUserTurnCount) {
         trigger,
         startedAt,
         status: "running",
+        isNoOp: false,
+        displayStatus: "Running",
         batchSummary: {
             l0Ids: sessions.map((session) => session.l0IndexId),
             segmentCount: sessions.length,
@@ -299,8 +291,6 @@ export class HeartbeatIndexer {
             });
             this.repository.saveIndexTrace(trace);
             const processedIds = [];
-            const userCandidates = [];
-            let userRewriteDebug;
             let sessionHadError = false;
             for (const session of sessions) {
                 try {
@@ -311,118 +301,137 @@ export class HeartbeatIndexer {
                         continue;
                     }
                     for (const focusTurn of focusUserTurns) {
-                        let extractionPromptDebug;
-                        let extractionDebug;
-                        const candidates = await this.extractor.extractFileMemoryCandidates({
+                        const currentProjectMeta = this.repository.getProjectMeta() ?? store.getProjectMeta() ?? null;
+                        let classificationPromptDebug;
+                        const classification = await this.extractor.classifyMemoryTurn({
                             timestamp: session.timestamp,
                             sessionKey: session.sessionKey,
-                            messages: [focusTurn],
+                            focusUserTurn: focusTurn,
                             batchContextMessages,
-                            knownProjects: store.listProjectIdentityHints({ includeTmp: true, limit: 30 }),
-                            explicitRemember: hasExplicitRememberIntent([focusTurn]),
+                            currentProjectMeta,
                             debugTrace: (debug) => {
-                                extractionPromptDebug = debug;
-                            },
-                            decisionTrace: (debug) => {
-                                extractionDebug = debug;
+                                classificationPromptDebug = debug;
                             },
                         });
-                        const finalCandidates = extractionDebug?.finalCandidates ?? candidates;
-                        const normalizedCandidates = extractionDebug?.normalizedCandidates ?? finalCandidates;
-                        const discarded = extractionDebug?.discarded ?? [];
-                        const candidateTypes = Array.from(new Set(finalCandidates.map((candidate) => candidate.type)));
-                        createStep(trace, "turn_classified", "Turn Classified", finalCandidates.length > 0 ? "success" : "warning", previewText(focusTurn.content, 220), finalCandidates.length > 0
-                            ? `classified=${candidateTypes.join(", ")}`
-                            : "classified=discarded", {
-                            titleI18n: traceI18n("trace.step.turn_classified", "Turn Classified"),
+                        const labels = classification.shouldStore ? classification.labels : [];
+                        createStep(trace, "classification", "Classification", labels.length > 0 ? "success" : "skipped", previewText(focusTurn.content, 220), labels.length > 0
+                            ? `classified=${labels.map((label) => label.type).join(", ")}`
+                            : "classified=none", {
                             refs: {
-                                classification: finalCandidates.length > 0 ? candidateTypes : ["discarded"],
+                                classification: labels.length > 0 ? labels.map((label) => label.type) : ["none"],
                             },
                             details: [
                                 textDetail(`focus-turn-text-${session.l0IndexId}`, "Focus User Turn", focusTurn.content, traceI18n("trace.detail.focus_user_turn", "Focus User Turn")),
                                 kvDetail(`classification-result-${session.l0IndexId}`, "Classification Result", [
                                     { label: "sessionKey", value: session.sessionKey },
                                     { label: "timestamp", value: session.timestamp },
-                                    { label: "result", value: finalCandidates.length > 0 ? candidateTypes.join(", ") : "discarded" },
+                                    { label: "result", value: labels.length > 0 ? labels.map((label) => label.type).join(", ") : "none" },
                                 ], traceI18n("trace.detail.classification_result", "Classification Result")),
-                                jsonDetail(`classification-candidates-${session.l0IndexId}`, "Classifier Candidates", finalCandidates, traceI18n("trace.detail.classifier_candidates", "Classifier Candidates")),
-                                ...(discarded.length > 0
-                                    ? [jsonDetail(`discarded-reasons-${session.l0IndexId}`, "Discarded Reasons", discarded, traceI18n("trace.detail.discarded_reasons", "Discarded Reasons"))]
-                                    : []),
+                                jsonDetail(`classification-labels-${session.l0IndexId}`, "Classification Labels", labels, traceI18n("trace.detail.classifier_candidates", "Classifier Candidates")),
                             ],
-                            ...(extractionPromptDebug ? { promptDebug: extractionPromptDebug } : {}),
+                            ...(classificationPromptDebug ? { promptDebug: classificationPromptDebug } : {}),
                         });
-                        createStep(trace, "candidate_validated", "Candidate Validated", normalizedCandidates.length > 0 || discarded.length === 0 ? "success" : "warning", `${normalizedCandidates.length} normalized candidates, ${discarded.length} discarded.`, finalCandidates.length > 0
-                            ? `${finalCandidates.length} candidates survived validation.`
-                            : "No candidates survived validation.", {
-                            titleI18n: traceI18n("trace.step.candidate_validated", "Candidate Validated"),
-                            inputSummaryI18n: traceI18n("trace.text.candidate_validated.input", "{0} normalized candidates, {1} discarded.", normalizedCandidates.length, discarded.length),
-                            outputSummaryI18n: finalCandidates.length > 0
-                                ? traceI18n("trace.text.candidate_validated.output.survived", "{0} candidates survived validation.", finalCandidates.length)
-                                : traceI18n("trace.text.candidate_validated.output.none_survived", "No candidates survived validation."),
-                            details: [
-                                jsonDetail(`raw-candidates-${session.l0IndexId}`, "Raw Candidates", finalCandidates, traceI18n("trace.detail.raw_candidates", "Raw Candidates")),
-                                listDetail(`normalized-candidates-${session.l0IndexId}`, "Normalized Candidates", normalizedCandidates.map((candidate) => describeCandidate(candidate)), traceI18n("trace.detail.normalized_candidates", "Normalized Candidates")),
-                                jsonDetail(`discarded-candidates-${session.l0IndexId}`, "Discarded Candidates", discarded, traceI18n("trace.detail.discarded_candidates", "Discarded Candidates")),
-                            ],
-                        });
-                        createStep(trace, "candidate_grouped", "Candidate Grouped", finalCandidates.length > 0 ? "success" : "skipped", `${finalCandidates.length} validated candidates ready for grouping.`, finalCandidates.length > 0
-                            ? "Resolved storage groups for validated candidates."
-                            : "No validated candidates to group.", {
-                            titleI18n: traceI18n("trace.step.candidate_grouped", "Candidate Grouped"),
-                            inputSummaryI18n: traceI18n("trace.text.candidate_grouped.input", "{0} validated candidates ready for grouping.", finalCandidates.length),
-                            outputSummaryI18n: finalCandidates.length > 0
-                                ? traceI18n("trace.text.candidate_grouped.output.grouped", "Resolved storage groups for validated candidates.")
-                                : traceI18n("trace.text.candidate_grouped.output.none", "No validated candidates to group."),
-                            details: [jsonDetail(`grouped-candidates-${session.l0IndexId}`, "Grouping Result", finalCandidates.map((candidate) => {
-                                    const grouping = inferGroupingLabel(this.repository, candidate);
-                                    return {
-                                        candidateType: candidate.type,
-                                        candidateName: candidate.name,
-                                        candidateDescription: candidate.description,
-                                        grouping: grouping.label,
-                                        projectId: grouping.projectId ?? null,
-                                        storageKind: grouping.storageKind,
-                                    };
-                                }), traceI18n("trace.detail.grouping_result", "Grouping Result"))],
-                        });
-                        const batchUserCandidates = finalCandidates.filter((candidate) => candidate.type === "user");
-                        const fileCandidates = finalCandidates.filter((candidate) => candidate.type !== "user");
+                        const createdCandidates = [];
+                        for (const label of labels) {
+                            let createPromptDebug;
+                            const candidate = label.type === "user"
+                                ? await this.extractor.createUserMemoryNote({
+                                    timestamp: session.timestamp,
+                                    sessionKey: session.sessionKey,
+                                    focusUserTurn: focusTurn,
+                                    batchContextMessages,
+                                    currentProjectMeta,
+                                    classification: label,
+                                    debugTrace: (debug) => {
+                                        createPromptDebug = debug;
+                                    },
+                                })
+                                : label.type === "project"
+                                    ? await this.extractor.createProjectMemoryNote({
+                                        timestamp: session.timestamp,
+                                        sessionKey: session.sessionKey,
+                                        focusUserTurn: focusTurn,
+                                        batchContextMessages,
+                                        currentProjectMeta,
+                                        classification: label,
+                                        debugTrace: (debug) => {
+                                            createPromptDebug = debug;
+                                        },
+                                    })
+                                    : await this.extractor.createFeedbackMemoryNote({
+                                        timestamp: session.timestamp,
+                                        sessionKey: session.sessionKey,
+                                        focusUserTurn: focusTurn,
+                                        batchContextMessages,
+                                        currentProjectMeta,
+                                        classification: label,
+                                        debugTrace: (debug) => {
+                                            createPromptDebug = debug;
+                                        },
+                                    });
+                            createdCandidates.push({ label, candidate });
+                            createStep(trace, label.type === "user" ? "user_create" : label.type === "project" ? "project_create" : "feedback_create", `${label.type} Create`, candidate ? "success" : "skipped", `${label.type} | ${label.reason || "no explicit reason"}`, candidate ? `created=${candidate.name}` : `skipped=${label.type}`, {
+                                refs: {
+                                    candidateType: label.type,
+                                },
+                                details: [
+                                    jsonDetail(`create-${label.type}-${session.l0IndexId}`, `${label.type} Create Result`, {
+                                        classification: label,
+                                        candidate: candidate
+                                            ? {
+                                                type: candidate.type,
+                                                name: candidate.name,
+                                                description: candidate.description,
+                                                body: candidate.body ?? "",
+                                            }
+                                            : null,
+                                    }),
+                                ],
+                                ...(createPromptDebug ? { promptDebug: createPromptDebug } : {}),
+                            });
+                        }
                         const persistedRecords = [];
-                        for (const candidate of fileCandidates) {
-                            const record = store.upsertCandidate(candidate);
+                        let wroteGlobalUserNote = false;
+                        for (const { candidate } of createdCandidates) {
+                            if (!candidate)
+                                continue;
+                            const targetStore = candidate.type === "user"
+                                ? this.repository.getGlobalUserStore()
+                                : store;
+                            const record = targetStore.upsertCandidate(candidate);
+                            if (candidate.type === "user")
+                                wroteGlobalUserNote = true;
                             persistedRecords.push(record);
                             trace.storedResults.push({
                                 candidateType: candidate.type,
                                 candidateName: candidate.name,
                                 scope: candidate.scope,
                                 ...(record.projectId ? { projectId: record.projectId } : {}),
-                                relativePath: record.relativePath,
+                                relativePath: exposeStoredRelativePath(record),
                                 storageKind: inferStorageKind(record),
                             });
                             stats.writtenFiles += 1;
+                            if (candidate.type === "user")
+                                stats.writtenUserFiles += 1;
                             if (candidate.type === "project")
                                 stats.writtenProjectFiles += 1;
                             if (candidate.type === "feedback")
                                 stats.writtenFeedbackFiles += 1;
                         }
-                        createStep(trace, "candidate_persisted", "Candidate Persisted", persistedRecords.length > 0 ? "success" : "skipped", `${fileCandidates.length} file candidates ready to persist.`, persistedRecords.length > 0
+                        if (wroteGlobalUserNote) {
+                            this.repository.repairWorkspaceManifest();
+                        }
+                        createStep(trace, "persist", "Persist", persistedRecords.length > 0 ? "success" : "skipped", `${createdCandidates.filter((entry) => entry.candidate).length} candidates ready to persist.`, persistedRecords.length > 0
                             ? `${persistedRecords.length} memory files written.`
-                            : "No project or feedback files were written for this turn.", {
-                            titleI18n: traceI18n("trace.step.candidate_persisted", "Candidate Persisted"),
-                            inputSummaryI18n: traceI18n("trace.text.candidate_persisted.input", "{0} file candidates ready to persist.", fileCandidates.length),
-                            outputSummaryI18n: persistedRecords.length > 0
-                                ? traceI18n("trace.text.candidate_persisted.output.written", "{0} memory files written.", persistedRecords.length)
-                                : traceI18n("trace.text.candidate_persisted.output.none_written", "No project or feedback files were written for this turn."),
+                            : "No memory files were written for this turn.", {
                             details: [jsonDetail(`persisted-files-${session.l0IndexId}`, "Persisted Files", persistedRecords.map((record) => ({
                                     type: record.type,
                                     name: record.name,
                                     projectId: record.projectId ?? null,
-                                    relativePath: record.relativePath,
+                                    relativePath: exposeStoredRelativePath(record),
                                     storageKind: inferStorageKind(record),
                                 })), traceI18n("trace.detail.persisted_files", "Persisted Files"))],
                         });
-                        userCandidates.push(...batchUserCandidates);
                     }
                     processedIds.push(session.l0IndexId);
                     stats.capturedSessions += 1;
@@ -439,67 +448,17 @@ export class HeartbeatIndexer {
                     this.logger?.warn?.(`[clawxmemory] heartbeat file-memory extraction failed for ${session.l0IndexId}: ${String(error)}`);
                 }
             }
-            if (userCandidates.length > 0) {
-                try {
-                    const existingUserProfile = this.repository.getUserSummary();
-                    const rewrittenUser = await this.extractor.rewriteUserProfile({
-                        existingProfile: existingUserProfile,
-                        candidates: userCandidates,
-                        debugTrace: (debug) => {
-                            userRewriteDebug = debug;
-                        },
-                    });
-                    if (rewrittenUser) {
-                        const record = this.repository.getGlobalUserStore().upsertCandidate(rewrittenUser);
-                        this.repository.repairWorkspaceManifest();
-                        trace.storedResults.push({
-                            candidateType: "user",
-                            candidateName: rewrittenUser.name,
-                            scope: rewrittenUser.scope,
-                            relativePath: "global/User/user-profile.md",
-                            storageKind: inferStorageKind(record),
-                        });
-                        stats.userProfilesUpdated += 1;
-                        createStep(trace, "user_profile_rewritten", "User Profile Rewritten", "success", `${userCandidates.length} user candidates merged.`, "Stored user profile at global/User/user-profile.md.", {
-                            titleI18n: traceI18n("trace.step.user_profile_rewritten", "User Profile Rewritten"),
-                            inputSummaryI18n: traceI18n("trace.text.user_profile_rewritten.input", "{0} user candidates merged.", userCandidates.length),
-                            outputSummaryI18n: traceI18n("trace.text.user_profile_rewritten.output.stored", "Stored user profile at {0}.", "global/User/user-profile.md"),
-                            details: [jsonDetail("user-profile-result", "User Profile Result", {
-                                    before: {
-                                        profile: existingUserProfile.profile,
-                                        preferences: existingUserProfile.preferences,
-                                        constraints: existingUserProfile.constraints,
-                                        relationships: existingUserProfile.relationships,
-                                    },
-                                    after: {
-                                        profile: rewrittenUser.profile ?? "",
-                                        preferences: rewrittenUser.preferences ?? [],
-                                        constraints: rewrittenUser.constraints ?? [],
-                                        relationships: rewrittenUser.relationships ?? [],
-                                    },
-                                    relativePath: "global/User/user-profile.md",
-                                }, traceI18n("trace.detail.user_profile_result", "User Profile Result"))],
-                            ...(userRewriteDebug ? { promptDebug: userRewriteDebug } : {}),
-                        });
-                    }
-                }
-                catch (error) {
-                    stats.failedSessions += 1;
-                    sessionHadError = true;
-                    createStep(trace, "user_profile_rewritten", "User Profile Rewritten", "error", `${userCandidates.length} user candidates merged.`, error instanceof Error ? error.message : String(error), {
-                        titleI18n: traceI18n("trace.step.user_profile_rewritten", "User Profile Rewritten"),
-                        inputSummaryI18n: traceI18n("trace.text.user_profile_rewritten.input", "{0} user candidates merged.", userCandidates.length),
-                        details: [noteDetail("user-profile-error", "User Rewrite Error", error instanceof Error ? error.message : String(error), traceI18n("trace.detail.user_rewrite_error", "User Rewrite Error"))],
-                        ...(userRewriteDebug ? { promptDebug: userRewriteDebug } : {}),
-                    });
-                    this.logger?.warn?.(`[clawxmemory] heartbeat user-profile rewrite failed for ${sessionKey}: ${String(error)}`);
-                }
-            }
             if (processedIds.length > 0) {
                 this.repository.markL0Indexed(processedIds);
             }
             trace.finishedAt = nowIso();
             trace.status = sessionHadError ? "error" : "completed";
+            trace.isNoOp = trace.storedResults.length === 0;
+            trace.displayStatus = sessionHadError
+                ? "Error"
+                : trace.isNoOp
+                    ? "No-op"
+                    : "Completed";
             createStep(trace, "index_finished", "Index Finished", sessionHadError ? "warning" : "success", `segments=${trace.batchSummary.segmentCount}`, `stored=${trace.storedResults.length}, failed=${sessionHadError ? 1 : 0}`, {
                 titleI18n: traceI18n("trace.step.index_finished", "Index Finished"),
                 metrics: {

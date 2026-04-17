@@ -116,6 +116,38 @@ function setStatus(message, kind = "info") {
   statusBarEl.classList.add("hidden"); statusBarEl.textContent = ""; delete statusBarEl.dataset.kind; setActivity(message);
 }
 
+function formatTraceTrigger(trigger) {
+  return trigger === "scheduled" ? "自动" : "手动";
+}
+
+function formatTraceDisplayStatus(record) {
+  if (record?.isNoOp) return "空跑";
+  switch (record?.displayStatus) {
+    case "Completed":
+      return "已完成";
+    case "No-op":
+      return "空跑";
+    case "Error":
+      return "错误";
+    case "Running":
+      return "运行中";
+    default:
+      break;
+  }
+  switch (record?.status) {
+    case "completed":
+      return "已完成";
+    case "error":
+      return "错误";
+    case "running":
+      return "运行中";
+    case "skipped":
+      return "跳过";
+    default:
+      return "未知";
+  }
+}
+
 function headers(extra = {}) { return state.token ? { Authorization: `Bearer ${state.token}`, ...extra } : { ...extra }; }
 
 function withProjectPath(url) {
@@ -269,7 +301,7 @@ function renderUserSummary() {
   clearNode(userSummaryEl);
   const summary = state.userSummary;
   if (!summary || (!summary.profile && !summary.preferences?.length && !summary.constraints?.length && !summary.relationships?.length)) {
-    userSummaryEl.append(el("div", "empty-state", "当前没有用户画像。"));
+    userSummaryEl.append(el("div", "empty-state", "当前还没有汇总后的用户画像；User Notes 会在 Dream 后合并到这里。"));
     updateCounts(); applyPageChrome(); return;
   }
   if (summary.profile) {
@@ -563,7 +595,11 @@ function renderIndexTraceSelect() {
   clearNode(indexTraceSelectEl);
   const def = el("option", "", "选择一条 Index 追踪…"); def.value = ""; indexTraceSelectEl.append(def);
   state.indexTraces.forEach((t) => {
-    const opt = el("option", "", `${t.indexTraceId} · ${t.status} · ${formatDateTime(t.startedAt)}`);
+    const opt = el(
+      "option",
+      "",
+      `${t.indexTraceId} · ${formatTraceTrigger(t.trigger)} · ${formatTraceDisplayStatus(t)} · ${formatDateTime(t.startedAt)}`,
+    );
     opt.value = t.indexTraceId; indexTraceSelectEl.append(opt);
   });
   indexDetailEl.classList.add("hidden"); indexEmptyEl.classList.remove("hidden");
@@ -573,7 +609,11 @@ function renderDreamTraceSelect() {
   clearNode(dreamTraceSelectEl);
   const def = el("option", "", "选择一条 Dream 追踪…"); def.value = ""; dreamTraceSelectEl.append(def);
   state.dreamTraces.forEach((t) => {
-    const opt = el("option", "", `${t.dreamTraceId} · ${t.status} · ${formatDateTime(t.startedAt)}`);
+    const opt = el(
+      "option",
+      "",
+      `${t.dreamTraceId} · ${formatTraceTrigger(t.trigger)} · ${formatTraceDisplayStatus(t)} · ${formatDateTime(t.startedAt)}`,
+    );
     opt.value = t.dreamTraceId; dreamTraceSelectEl.append(opt);
   });
   dreamDetailEl.classList.add("hidden"); dreamEmptyEl.classList.remove("hidden");
@@ -585,6 +625,11 @@ async function loadIndexDetail(traceId) {
     const r = await fetchJson(`/api/memory/index-traces/${encodeURIComponent(traceId)}`);
     indexEmptyEl.classList.add("hidden"); indexDetailEl.classList.remove("hidden");
     renderTimeline(indexStepsEl, r.steps || []);
+    indexStepsEl.prepend(el(
+      "div",
+      "tl-summary",
+      `来源：${formatTraceTrigger(r.trigger)} · 状态：${formatTraceDisplayStatus(r)}。说明：Index 追踪展示的是 Dream 前的 append-only 产物；主视图展示的是当前文件状态，可能已经被 Dream 合并。`,
+    ));
   } catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
 }
 
@@ -594,6 +639,11 @@ async function loadDreamDetail(traceId) {
     const r = await fetchJson(`/api/memory/dream-traces/${encodeURIComponent(traceId)}`);
     dreamEmptyEl.classList.add("hidden"); dreamDetailEl.classList.remove("hidden");
     renderTimeline(dreamStepsEl, r.steps || []);
+    dreamStepsEl.prepend(el(
+      "div",
+      "tl-summary",
+      `来源：${formatTraceTrigger(r.trigger)} · 状态：${formatTraceDisplayStatus(r)}。说明：Dream 追踪展示的是合并、重写和删除过程；主视图展示的是 Dream 完成后的当前文件状态。`,
+    ));
   } catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
 }
 

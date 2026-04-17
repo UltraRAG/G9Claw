@@ -18,6 +18,16 @@ export interface FileMemoryExtractionDebug {
     finalCandidates: MemoryCandidate[];
     fallbackApplied?: string;
 }
+type MemoryCreateKind = "user" | "project" | "feedback";
+export interface MemoryClassificationLabel {
+    type: MemoryCreateKind;
+    reason: string;
+    evidence: string;
+}
+export interface FileMemoryClassificationResult {
+    shouldStore: boolean;
+    labels: MemoryClassificationLabel[];
+}
 export interface LlmDreamFileProjectMetaInput {
     projectId: string;
     projectName: string;
@@ -135,6 +145,50 @@ export declare class LlmMemoryExtractor {
         timeoutMs?: number;
         debugTrace?: PromptDebugSink;
     }): Promise<MemoryCandidate | null>;
+    classifyMemoryTurn(input: {
+        timestamp: string;
+        sessionKey?: string;
+        focusUserTurn: MemoryMessage;
+        batchContextMessages: MemoryMessage[];
+        currentProjectMeta?: ProjectMetaRecord | null;
+        agentId?: string;
+        timeoutMs?: number;
+        debugTrace?: PromptDebugSink;
+    }): Promise<FileMemoryClassificationResult>;
+    private createMemoryNote;
+    createUserMemoryNote(input: {
+        timestamp: string;
+        sessionKey?: string;
+        focusUserTurn: MemoryMessage;
+        batchContextMessages: MemoryMessage[];
+        currentProjectMeta?: ProjectMetaRecord | null;
+        classification: MemoryClassificationLabel;
+        agentId?: string;
+        timeoutMs?: number;
+        debugTrace?: PromptDebugSink;
+    }): Promise<MemoryCandidate | null>;
+    createProjectMemoryNote(input: {
+        timestamp: string;
+        sessionKey?: string;
+        focusUserTurn: MemoryMessage;
+        batchContextMessages: MemoryMessage[];
+        currentProjectMeta?: ProjectMetaRecord | null;
+        classification: MemoryClassificationLabel;
+        agentId?: string;
+        timeoutMs?: number;
+        debugTrace?: PromptDebugSink;
+    }): Promise<MemoryCandidate | null>;
+    createFeedbackMemoryNote(input: {
+        timestamp: string;
+        sessionKey?: string;
+        focusUserTurn: MemoryMessage;
+        batchContextMessages: MemoryMessage[];
+        currentProjectMeta?: ProjectMetaRecord | null;
+        classification: MemoryClassificationLabel;
+        agentId?: string;
+        timeoutMs?: number;
+        debugTrace?: PromptDebugSink;
+    }): Promise<MemoryCandidate | null>;
     planDreamFileMemory(input: LlmDreamFileGlobalPlanInput): Promise<LlmDreamFileGlobalPlanOutput>;
     rewriteDreamFileProject(input: LlmDreamFileProjectRewriteInput): Promise<LlmDreamFileProjectRewriteOutput>;
     decideFileMemoryRoute(input: {
@@ -172,7 +226,6 @@ export declare class LlmMemoryExtractor {
         messages: MemoryMessage[];
         batchContextMessages?: MemoryMessage[];
         knownProjects?: ProjectIdentityHint[];
-        explicitRemember?: boolean;
         agentId?: string;
         timeoutMs?: number;
         debugTrace?: PromptDebugSink;

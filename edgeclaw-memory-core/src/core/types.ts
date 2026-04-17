@@ -98,6 +98,7 @@ export interface MemoryCandidate {
   projectId?: string;
   name: string;
   description: string;
+  body?: string;
   aliases?: string[];
   capturedAt?: string;
   sourceSessionKey?: string;
@@ -341,10 +342,11 @@ export interface RetrievalPromptDebug {
   errorMessage?: string;
 }
 
-export type IndexTraceTrigger = "explicit_remember" | "manual_sync" | "scheduled";
+export type IndexTraceTrigger = "manual_sync" | "scheduled";
 export type IndexTraceStatus = "running" | "completed" | "error";
 export type IndexTraceStorageKind =
   | "global_user"
+  | "global_user_note"
   | "project"
   | "feedback";
 
@@ -369,6 +371,11 @@ export type IndexTraceStepKind =
   | "index_start"
   | "batch_loaded"
   | "focus_turns_selected"
+  | "classification"
+  | "user_create"
+  | "project_create"
+  | "feedback_create"
+  | "persist"
   | "turn_classified"
   | "candidate_validated"
   | "candidate_grouped"
@@ -396,6 +403,8 @@ export interface IndexTraceRecord {
   startedAt: string;
   finishedAt?: string;
   status: IndexTraceStatus;
+  isNoOp: boolean;
+  displayStatus: string;
   batchSummary: IndexTraceBatchSummary;
   steps: IndexTraceStep[];
   storedResults: IndexTraceStoredResult[];
@@ -463,6 +472,8 @@ export interface DreamTraceRecord {
   startedAt: string;
   finishedAt?: string;
   status: DreamTraceStatus;
+  isNoOp: boolean;
+  displayStatus: string;
   snapshotSummary: DreamTraceSnapshotSummary;
   steps: DreamTraceStep[];
   mutations: DreamTraceMutation[];

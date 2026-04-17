@@ -5,8 +5,6 @@ export interface TranscriptMessageInfo {
     content: string;
     hasToolCalls: boolean;
 }
-export declare function hasExplicitRememberIntentText(text: string): boolean;
-export declare function hasExplicitRememberIntent(messages: readonly MemoryMessage[]): boolean;
 export declare function isSessionStartupMarkerText(text: string): boolean;
 export declare function isCommandOnlyUserText(text: string): boolean;
 export declare function inspectTranscriptMessage(raw: unknown): TranscriptMessageInfo;

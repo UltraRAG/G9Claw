@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { DreamRewriteRunner, HeartbeatIndexer, LlmMemoryExtractor, MemoryRepository, ReasoningRetriever, hashText, nowIso, } from "./core/index.js";
 import { normalizeMessages, inspectTranscriptMessage, } from "./message-utils.js";
+const AUTO_INDEX_ANCHOR_AT_STATE_KEY = "autoIndexAnchorAt";
+const AUTO_DREAM_ANCHOR_AT_STATE_KEY = "autoDreamAnchorAt";
 const OPENCLAW_CONFIG_PATH = join(homedir(), ".openclaw", "openclaw.json");
 let cachedOpenClawModelConfig;
 function normalizeText(value) {
@@ -211,13 +213,13 @@ function parseTimestamp(value) {
     const parsed = Date.parse(value ?? "");
     return Number.isFinite(parsed) ? parsed : null;
 }
-function hasElapsedMinutes(lastRunAt, intervalMinutes, nowMs) {
+function hasElapsedMinutes(anchorAt, intervalMinutes, nowMs) {
     if (intervalMinutes <= 0)
         return false;
-    const lastRunMs = parseTimestamp(lastRunAt);
-    if (lastRunMs === null)
-        return true;
-    return nowMs - lastRunMs >= intervalMinutes * 60_000;
+    const anchorMs = parseTimestamp(anchorAt);
+    if (anchorMs === null)
+        return false;
+    return nowMs - anchorMs >= intervalMinutes * 60_000;
 }
 function toMessages(rawMessages, options) {
     return normalizeMessages([...rawMessages], options);
@@ -293,8 +295,6 @@ export class EdgeClawMemoryService {
     includeAssistant;
     maxMessageChars;
     source;
-    maintenancePromise = null;
-    maintenanceQueued = false;
     projectMetaSeed() {
         const projectName = basename(this.workspaceDir) || "Current Project";
         return {
@@ -320,6 +320,7 @@ export class EdgeClawMemoryService {
             memoryDir: this.memoryDir,
             globalRootDir: join(rootDir, "global"),
         });
+        this.repository.setPipelineState("workspaceDir", this.workspaceDir);
         this.repository.ensureProjectMeta(this.projectMetaSeed());
         this.extractor = new LlmMemoryExtractor(buildLlmConfig(options.llm), options.runtime, this.logger);
         this.indexer = new HeartbeatIndexer(this.repository, this.extractor, {
@@ -350,6 +351,55 @@ export class EdgeClawMemoryService {
     overview() {
         return this.repository.getOverview();
     }
+    getPipelineTimestamp(key) {
+        const value = this.repository.getPipelineState(key);
+        return typeof value === "string" && value.trim() ? value : undefined;
+    }
+    setPipelineTimestamp(key, value) {
+        if (typeof value === "string" && value.trim()) {
+            this.repository.setPipelineState(key, value);
+            return;
+        }
+        this.repository.deletePipelineState(key);
+    }
+    reconcileAutoIndexAnchor(options = {}) {
+        if (options.manualResetAt) {
+            this.setPipelineTimestamp(AUTO_INDEX_ANCHOR_AT_STATE_KEY, options.manualResetAt);
+            return options.manualResetAt;
+        }
+        const firstPendingAt = this.repository.getEarliestPendingTimestamp(options.sessionKeys);
+        if (!firstPendingAt) {
+            this.setPipelineTimestamp(AUTO_INDEX_ANCHOR_AT_STATE_KEY, undefined);
+            return undefined;
+        }
+        const existing = this.getPipelineTimestamp(AUTO_INDEX_ANCHOR_AT_STATE_KEY);
+        if (existing)
+            return existing;
+        this.setPipelineTimestamp(AUTO_INDEX_ANCHOR_AT_STATE_KEY, firstPendingAt);
+        return firstPendingAt;
+    }
+    reconcileAutoDreamAnchor(options = {}) {
+        const lastDreamAt = this.getPipelineTimestamp("lastDreamAt");
+        const lastIndexedAt = this.getPipelineTimestamp("lastIndexedAt");
+        const changedFilesSinceLastDream = this.repository
+            .getFileMemoryStore()
+            .getOverview(lastDreamAt)
+            .changedFilesSinceLastDream;
+        if (!lastIndexedAt || changedFilesSinceLastDream <= 0) {
+            this.setPipelineTimestamp(AUTO_DREAM_ANCHOR_AT_STATE_KEY, undefined);
+            return undefined;
+        }
+        if (options.manualResetAt) {
+            this.setPipelineTimestamp(AUTO_DREAM_ANCHOR_AT_STATE_KEY, options.manualResetAt);
+            return options.manualResetAt;
+        }
+        const existing = this.getPipelineTimestamp(AUTO_DREAM_ANCHOR_AT_STATE_KEY);
+        if (existing)
+            return existing;
+        const nextAnchor = options.fallbackAt ?? lastIndexedAt;
+        this.setPipelineTimestamp(AUTO_DREAM_ANCHOR_AT_STATE_KEY, nextAnchor);
+        return nextAnchor;
+    }
     snapshot(limit = 50) {
         return this.repository.getUiSnapshot(limit);
     }
@@ -378,33 +428,34 @@ export class EdgeClawMemoryService {
             sessionKey: input.sessionKey,
         };
     }
-    scheduleMaintenance(reason = "turn_capture") {
-        if (this.maintenancePromise) {
-            this.maintenanceQueued = true;
-            return;
-        }
-        this.maintenancePromise = this.runScheduledMaintenance(reason)
-            .catch((error) => {
-            this.logger?.warn?.(`[edgeclaw-memory] scheduled maintenance failed: ${String(error)}`);
-        })
-            .finally(() => {
-            this.maintenancePromise = null;
-            if (this.maintenanceQueued) {
-                this.maintenanceQueued = false;
-                this.scheduleMaintenance("queued_turn_capture");
-            }
-        });
-    }
     async flush(options = {}) {
+        const manualResetAt = options.reason === "manual" ? nowIso() : undefined;
+        if (manualResetAt) {
+            this.reconcileAutoIndexAnchor({
+                manualResetAt,
+                ...(options.sessionKeys ? { sessionKeys: options.sessionKeys } : {}),
+            });
+        }
         const stats = await this.indexer.runHeartbeat(options);
+        this.reconcileAutoIndexAnchor(options.sessionKeys ? { sessionKeys: options.sessionKeys } : {});
+        if (stats.writtenFiles > 0) {
+            this.reconcileAutoDreamAnchor({ fallbackAt: nowIso() });
+        }
+        else {
+            this.reconcileAutoDreamAnchor();
+        }
         this.retriever.resetTransientState();
         return stats;
     }
     async dream(trigger = "manual") {
+        if (trigger === "manual") {
+            this.reconcileAutoDreamAnchor({ manualResetAt: nowIso() });
+        }
         const prepFlush = await this.flush({
             reason: trigger === "manual" ? "manual_dream_prep" : "scheduled_dream_prep",
         });
         const outcome = await this.dreamRewriter.run(trigger);
+        this.reconcileAutoDreamAnchor();
         this.repository.getFileMemoryStore().repairManifests();
         this.retriever.resetTransientState();
         return {
@@ -424,14 +475,17 @@ export class EdgeClawMemoryService {
             systemContext: result.context ? buildMemoryRecallSystemContext(result.context) : "",
         };
     }
-    async runScheduledMaintenance(reason) {
+    async runDueScheduledMaintenance(reason = "scheduled") {
         const settings = this.getSettings();
         const nowMs = Date.now();
         let overview = this.overview();
+        let indexStats;
+        let dreamResult;
+        const indexAnchorAt = this.reconcileAutoIndexAnchor();
         if (overview.pendingSessions > 0
-            && hasElapsedMinutes(overview.lastIndexedAt, settings.autoIndexIntervalMinutes, nowMs)) {
-            await this.flush({
-                reason: `scheduled:${reason}`,
+            && hasElapsedMinutes(indexAnchorAt, settings.autoIndexIntervalMinutes, nowMs)) {
+            indexStats = await this.flush({
+                reason: reason.startsWith("scheduled") ? reason : `scheduled:${reason}`,
             });
             overview = this.overview();
         }
@@ -439,10 +493,17 @@ export class EdgeClawMemoryService {
             .getFileMemoryStore()
             .getOverview(overview.lastDreamAt)
             .changedFilesSinceLastDream;
+        const dreamAnchorAt = this.reconcileAutoDreamAnchor();
         if (changedFilesSinceLastDream > 0
-            && hasElapsedMinutes(overview.lastDreamAt, settings.autoDreamIntervalMinutes, nowMs)) {
-            await this.dream("scheduled");
+            && hasElapsedMinutes(dreamAnchorAt, settings.autoDreamIntervalMinutes, nowMs)) {
+            dreamResult = await this.dream("scheduled");
         }
+        return {
+            indexRan: Boolean(indexStats),
+            dreamRan: Boolean(dreamResult),
+            ...(indexStats ? { indexStats } : {}),
+            ...(dreamResult ? { dreamResult } : {}),
+        };
     }
     async search(query, options = {}) {
         return this.retrieve(query, {

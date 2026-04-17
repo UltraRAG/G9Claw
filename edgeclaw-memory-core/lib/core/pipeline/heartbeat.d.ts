@@ -18,6 +18,7 @@ export interface HeartbeatRunOptions {
 export interface HeartbeatStats {
     capturedSessions: number;
     writtenFiles: number;
+    writtenUserFiles: number;
     writtenProjectFiles: number;
     writtenFeedbackFiles: number;
     userProfilesUpdated: number;

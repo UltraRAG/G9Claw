@@ -4,12 +4,17 @@
 >
 > - `当前打开的 EdgeClaw workspace = 唯一顶层 project`。
 > - 这个 current project 下本来就应该有多条 `Project/*.md` 和 `Feedback/*.md` 记忆文件；多条文件是正确设计，不是异常。
-> - 当前有效布局是 `current-project-v2/memory/` 下的：
->   - `project.meta.md`
->   - `Project/*.md`
->   - `Feedback/*.md`
->   - `MEMORY.md`
->   - `global/User/user-profile.md`
+> - 当前有效布局是：
+>   - `~/.edgeclaw/memory/global/User/user-profile.md`
+>   - `~/.edgeclaw/memory/workspaces/<workspace-hash>/control.sqlite`
+>   - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/project.meta.md`
+>   - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/Project/*.md`
+>   - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/Feedback/*.md`
+>   - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/MEMORY.md`
+> - 当前有效索引触发时机只有两种：
+>   - 用户手动点击“索引同步”或调用 `memory_flush`
+>   - `claudecodeui/server` 后台 scheduler 到时后按 `autoIndexIntervalMinutes / autoDreamIntervalMinutes` 触发
+> - `请记住 / 帮我记住 / remember this` 不再是 regex / rule / 布尔字段触发器；它只是原始用户文本的一部分，由 extractor prompt 让模型自行判断其长期记忆重要性。
 > - `tmp`、多 project shortlist、`Project Clarification Required`、`projects/_tmp/*`、`projects/project_*/project.meta.md` 都已经退出当前 runtime 主流程。
 > - 本文中凡是提到旧 `tmp/formal project` 流程、`single-workspace-v1` 或“把同一 project 收敛成单条 `Project/*.md`”的内容，都属于历史中间方案，已被本次 current-project 重新校准取代。
 
@@ -339,7 +344,7 @@
   - 新增 `edgeclaw-memory-core/src/service.ts`，已封装 `EdgeClawMemoryService`，对外暴露 `captureTurn`、`retrieveContext`、`flush`、`dream`、`overview`、`list/get/search`、`act`、`export/import/clear`。
   - `claude-code-main` 已接入 `EDGECLAW_MEMORY_ENABLED` feature flag，并在 `claude-code-main/src/memdir/paths.ts` 中关闭旧 auto-memory owner。
   - `claude-code-main/src/constants/prompts.ts` 已切换为新 memory prompt section。
-  - `claude-code-main/src/QueryEngine.ts` 已接入回答前 recall 注入，以及回答后 turn capture；turn capture 成功后会 opportunistic 地按配置触发后台 flush/dream 检查。
+  - `claude-code-main/src/QueryEngine.ts` 已接入回答前 recall 注入，以及回答后 turn capture；turn capture 现在只负责把数据写入待索引 L0 队列。
   - `claude-code-main` 已新增 `memory_overview`、`memory_list`、`memory_search`、`memory_get`、`memory_flush`、`memory_dream` 六个工具，并加入工具注册。
   - `claudecodeui/server/routes/memory.js` 已新增 `/api/memory/*` 路由。
   - `claudecodeui/server/index.js` 已新增 `/memory-dashboard` 同域静态承载，并挂载 `/api/memory`。
@@ -349,8 +354,11 @@
 
 ### 已记录的实现调整
 
-- 调整：新系统当前实现为“L0 capture + 手动 flush/dream”。
-  说明：当前已完成回答后采集，并把数据写入待索引的 L0 队列；同时补了一个 opportunistic 的后台维护触发：在 turn capture 成功后，会按 `autoIndexIntervalMinutes / autoDreamIntervalMinutes` 与当前概览状态决定是否异步执行 flush/dream。这里不是独立常驻 scheduler，而是“有新 turn 时顺带触发”的最小实现。
+- 调整：新系统当前实现为“L0 capture + 手动 flush/dream + 服务端后台 scheduler”。
+  说明：当前已完成回答后采集，并把数据写入待索引的 L0 队列；自动索引和自动 dream 已从 `QueryEngine` 的 turn capture 链路中移除，改由 `claudecodeui/server` 常驻 scheduler 独立扫描 `~/.edgeclaw/memory/workspaces/*` 并按 `autoIndexIntervalMinutes / autoDreamIntervalMinutes` 触发。
+
+- 调整：`请记住 / 帮我记住 / remember this` 改为纯 prompt 语义。
+  说明：当前已删除 regex / rule / 布尔字段形式的 `explicitRemember` 预判和 trigger 分支；extractor prompt 直接要求模型从原始 focus user turn 文本中自行理解“请记住”是更强的长期记忆信号，但它不再改变控制流，也不会立即触发索引。
 
 - 调整：新 memory extractor 采用 OpenAI-compatible 配置输入，但已补齐 OpenClaw 配置回退。
   说明：当前 `edgeclaw-memory-core` 的模型解析优先级为：
@@ -642,13 +650,13 @@
     - `memory_actions -> edit_project_meta`
     - `/api/memory/project-meta`
   - 当前有效数据目录为：
-    - `~/.edgeclaw/memory/workspaces/<workspace-hash>/current-project-v2/memory/`
+    - `~/.edgeclaw/memory/workspaces/<workspace-hash>/`
   - 当前有效文件布局为：
-    - `project.meta.md`
-    - `Project/*.md`
-    - `Feedback/*.md`
-    - `MEMORY.md`
-    - `global/User/user-profile.md`
+    - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/project.meta.md`
+    - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/Project/*.md`
+    - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/Feedback/*.md`
+    - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/MEMORY.md`
+    - `~/.edgeclaw/memory/global/User/user-profile.md`
   - `flush` 直接写当前 project 的 `Project/` / `Feedback/`，不再经过 tmp。
   - `recall` 保留 `none / user / project_memory` 三路 gate，但 `project_memory` 只面向当前 project：
     - 不再做 project shortlist
@@ -1311,3 +1319,311 @@
   - `claudecodeui` `npm run typecheck` 通过
   - `claudecodeui` `npm run build` 通过
   - 本次修复不涉及 memory core、QueryEngine 或目录结构，仅限前端聊天 store 合并逻辑
+
+## 2026-04-17 索引触发与“记住”语义重构落地记录
+
+- 已完成的代码口径调整：
+  - `captureTurn()` 继续只写 L0 队列，不再在 `QueryEngine` 回答后顺手调度后台 flush/dream。
+  - `scheduleMaintenance('turn_capture') -> runScheduledMaintenance()` 这条 opportunistic 自动链路已移除。
+  - `claudecodeui/server` 已新增单例 memory scheduler：
+    - 启动时即开始运行
+    - 每 60 秒 tick 一次
+    - 扫描 `~/.edgeclaw/memory/workspaces/*`
+    - 对每个 workspace 做串行互斥，避免手动触发与后台调度重叠双写
+  - 自动索引与自动 dream 的责任已转移到后台 scheduler：
+    - `pendingSessions > 0` 且达到 `autoIndexIntervalMinutes` 时执行 `flush({ reason: 'scheduled:server_scheduler' })`
+    - 当前 project memory 文件有变化且达到 `autoDreamIntervalMinutes` 时执行 `dream('scheduled')`
+  - `IndexTraceTrigger` 已收敛为：
+    - `manual_sync`
+    - `scheduled`
+  - 与“请记住”相关的 rule-based 触发已删除：
+    - `hasExplicitRememberIntent*` helper 已移除
+    - extractor 输入里的 `explicitRemember` 布尔字段已移除
+    - `explicit_remember` trace trigger 已移除
+  - extractor prompt 已改成显式告诉模型：
+    - 如果用户原文中出现 `请记住 / 帮我记住 / remember this`
+    - 这是更强的长期记忆信号
+    - 但它只能从原始 transcript 文本理解，不能依赖隐藏 flag 或规则
+
+- 已完成验证：
+  - `cd edgeclaw-memory-core && npm run build`
+  - `cd claudecodeui && npm run typecheck`
+  - `cd claudecodeui && npm run build`
+
+- 已完成的行为验证：
+  - 源码搜索确认：
+    - `edgeclaw-memory-core/src`、`claudecodeui`、`claude-code-main` 中已无 `hasExplicitRememberIntent`、`explicitRemember`、`explicit_remember` 残留引用
+  - 手动索引链路：
+    - 新建测试项目：`/Users/meisen/Desktop/memory-trigger-manual-rich-20260417`
+    - 写入样本后，仅 `capture` 时：
+      - `pendingSessions=1`
+      - `projectMemoryCount=0`
+      - `feedbackMemoryCount=0`
+    - 通过 `POST /api/memory/index/run` 手动触发后：
+      - 生成 `Project/current-stage-*.md`
+      - 生成 `Feedback/delivery-rule-*.md`
+      - 全局 `user-profile.md` 保持可用
+  - 后台 scheduler 链路：
+    - 新建测试项目：`/Users/meisen/Desktop/memory-trigger-scheduled-rich-20260417`
+    - 设置：
+      - `autoIndexIntervalMinutes=1`
+      - `autoDreamIntervalMinutes=1`
+    - 仅 `capture` 时：
+      - `pendingSessions=1`
+      - `projectMemoryCount=0`
+      - `feedbackMemoryCount=0`
+    - 运行后台 scheduler 后：
+      - `pendingSessions=0`
+      - `recentIndexTraceCount=1`
+      - `recentDreamTraceCount=2`
+      - 生成当前阶段项目记忆和交付规则反馈记忆
+      - `project.meta.md` 中的项目名被正确更新为 `小红书足球号`，说明后台 scheduler 在服务重启后也能恢复真实 `workspaceDir`，不会退回哈希目录名
+  - “请记住”语义验证：
+    - 测试样本原文中包含 `请记住`
+    - 但在未手动触发、且未到自动时间前，并不会立即索引
+    - 一旦进入真正的 index 流程，extractor 仍能把这类内容稳定提取为 `project + feedback` 候选
+
+- 额外说明：
+  - 当前 `autoIndexIntervalMinutes=0` / `autoDreamIntervalMinutes=0` 的现有语义仍然是“关闭自动调度”，不是“立即执行”。
+  - 这轮没有改动 memory 文件结构；只改了：
+    - 何时触发 index / dream
+    - “请记住”语义如何传达给模型
+
+## 2026-04-17 Index 四段式重构落地记录
+
+- 本轮已按讨论口径把 `index` 从单一 extraction prompt 改成四段式：
+  - `classification`
+  - `user_create`
+  - `project_create`
+  - `feedback_create`
+  - `persist`
+- 当前实现口径：
+  - `classification prompt` 只负责判断一条 `focus user turn` 是否值得记忆，以及命中哪些类别
+  - `create prompt` 按类别分别生成 1 个 append-only Markdown 候选
+  - 同一条 turn 每个类别最多 1 个文件
+  - `project / feedback / user` 三类在 `index` 阶段都改成 append-only
+  - `user` 不再在 `index` 阶段直接改写 `global/User/user-profile.md`
+  - `user` 现在落到：
+    - `~/.edgeclaw/memory/global/UserNotes/*.md`
+  - `dream` 已做最小兼容：
+    - 会把 `global/UserNotes/*.md` 当成 `user-profile.md` 重写输入源之一
+    - dream 后继续产出单份：
+      - `~/.edgeclaw/memory/global/User/user-profile.md`
+  - `recall` 在 dream 前仍只读取：
+    - `global/User/user-profile.md`
+    - 不直接读取新产生的 `UserNotes`
+
+- 代码层已完成的核心改动：
+  - `edgeclaw-memory-core/src/core/skills/llm-extraction.ts`
+    - 新增 `classifyMemoryTurn()`
+    - 新增 `createUserMemoryNote()`
+    - 新增 `createProjectMemoryNote()`
+    - 新增 `createFeedbackMemoryNote()`
+    - 新增统一的邻近上下文窗口构造：
+      - focus turn
+      - 前两轮
+      - 后两轮
+      - current project meta
+  - `edgeclaw-memory-core/src/core/pipeline/heartbeat.ts`
+    - 移除旧单 prompt 提取主路径
+    - 改成：
+      - 分类
+      - 分类别 create
+      - 分类别 append-only 落盘
+    - `index trace` 新增显式阶段：
+      - `classification`
+      - `user_create`
+      - `project_create`
+      - `feedback_create`
+      - `persist`
+    - `HeartbeatStats` 新增：
+      - `writtenUserFiles`
+  - `edgeclaw-memory-core/src/core/file-memory.ts`
+    - 新增 `UserNotes` 目录支持
+    - 全局 store 支持 append-only user entries
+    - 新增 `upsertUserProfile()`，专供 dream 重写单份 profile
+    - `MemoryCandidate` 新增 `body`，允许 create prompt 直接产出 Markdown 正文
+  - `edgeclaw-memory-core/src/core/review/dream-review.ts`
+    - 新增读取 `global/UserNotes/*.md`
+    - dream 用户画像重写改成：
+      - `existingProfile = global/User/user-profile.md`
+      - `incoming candidates = UserNotes/*.md`
+    - profile 落盘改走 `upsertUserProfile()`
+  - `edgeclaw-memory-core/src/core/storage/sqlite.ts`
+    - 全局 user store 已切到：
+      - `userProfileRelativePath = User/user-profile.md`
+      - `userNotesRelativeDir = UserNotes`
+      - `appendOnlyUserEntries = true`
+
+- 已完成的验证：
+  - `cd edgeclaw-memory-core && npm run build`
+  - `cd claudecodeui && npm run typecheck`
+  - `cd claudecodeui && npm run build`
+
+- 服务级黑盒 1：`project + feedback`
+  - 测试项目：
+    - `/Users/meisen/Desktop/memory-four-stage-20260417`
+  - 输入为一条混合样本：
+    - 小红书足球文案项目定义
+    - 风险说明
+    - 项目内交付顺序
+    - 全局回复偏好
+  - 手动 `flush` 结果：
+    - `capturedSessions = 1`
+    - `writtenFiles = 2`
+    - `writtenProjectFiles = 1`
+    - `writtenFeedbackFiles = 1`
+    - `writtenUserFiles = 0`
+  - `index trace` 已变成：
+    - `index_start`
+    - `batch_loaded`
+    - `focus_turns_selected`
+    - `classification`
+    - `project_create`
+    - `feedback_create`
+    - `persist`
+    - `index_finished`
+  - `dream` 结果：
+    - `reviewedFiles = 2`
+    - `rewrittenProjects = 1`
+    - `deletedFiles = 2`
+    - `profileUpdated = false`
+
+- 服务级黑盒 2：`user note -> dream -> user-profile`
+  - 测试项目：
+    - `/Users/meisen/Desktop/memory-four-stage-user-20260417`
+  - 输入为全局回复偏好：
+    - `请记住：默认用中文回复我，而且先给结论再给细节。`
+  - 手动 `flush` 后：
+    - `writtenFiles = 1`
+    - `writtenUserFiles = 1`
+    - 生成：
+      - `global/UserNotes/communication-preferences-*.md`
+    - `getUserSummary()` 仍为空，符合“dream 前 recall 不读 UserNotes”的设计
+  - `dream` 后：
+    - 生成：
+      - `global/User/user-profile.md`
+    - `profileUpdated = true`
+    - `getUserSummary()` 可读取到：
+      - 默认中文
+      - 先给结论再给细节
+
+- 当前观察与后续可优化点：
+  - 四段式 `index` 主链路已经打通。
+  - `UserNotes -> dream -> user-profile` 这条链也已打通。
+  - 当前混合样本里，分类器更倾向于命中 `project + feedback`，而没有同时命中 `user`。
+  - 这不影响当前架构正确性，但如果希望“单条混合输入更积极地产出三类候选”，后续仍需要继续调 `classification prompt`。
+
+### 2026-04-17 收口复测
+
+- 为避免本机历史 `~/.edgeclaw/memory` 数据污染，本轮改用隔离 `rootDir` 复测。
+- 同时清理了一处旧 extractor 残留：
+  - `stripExplicitRememberLead()` 不再用 regex 裁剪 `请记住 / 帮我记住 / remember this`
+  - 现在“记住”语义只通过 prompt 让模型自行理解，不再有代码侧文本规则参与
+
+- 隔离黑盒 1：`user -> UserNotes -> dream`
+  - 测试项目：
+    - `/Users/meisen/Desktop/memory-four-stage-user-final-20260417`
+  - 隔离根目录：
+    - `/tmp/edgeclaw-memory-four-stage-user-final`
+  - `flush` 结果：
+    - `capturedSessions = 1`
+    - `writtenFiles = 1`
+    - `writtenUserFiles = 1`
+    - 仅生成：
+      - `global/UserNotes/communication-preferences-*.md`
+  - `dream` 前：
+    - `getUserSummary().preferences = []`
+  - `dream` 后：
+    - `rewrittenProjects = 0`
+    - `profileUpdated = true`
+    - `getUserSummary()` 已吸收：
+      - 默认中文回复
+      - 先给结论再给细节
+
+- 隔离黑盒 2：`project + feedback`
+  - 测试项目：
+    - `/Users/meisen/Desktop/memory-four-stage-multi-final-20260417`
+  - 隔离根目录：
+    - `/tmp/edgeclaw-memory-four-stage-multi-final`
+  - `flush` 结果：
+    - `capturedSessions = 1`
+    - `writtenFiles = 2`
+    - `writtenProjectFiles = 1`
+    - `writtenFeedbackFiles = 1`
+    - `writtenUserFiles = 0`
+  - `index trace` 分段确认：
+    - `classification`
+    - `project_create`
+    - `feedback_create`
+    - `persist`
+  - 说明四段式主链路已按设计执行：
+    - 先分类
+    - 再按类别分别生成 Markdown
+    - 最后独立落盘
+
+### 2026-04-17 Index/Dream 行为校准
+
+- 已落实：
+  - `user_create / project_create / feedback_create` 三个 create prompt 新增统一语言约束
+    - `name / description / markdown` 跟随 `focus user turn + 邻近 user turns` 的主语言
+    - 不新增语言检测 rule，也不做后处理修正
+  - 自动调度改成锚点计时：
+    - 新增 `autoIndexAnchorAt`
+    - 新增 `autoDreamAnchorAt`
+    - 没有用户手动点击时，自动计时从第一条 pending 对话或第一轮待 dream 变更开始
+    - 用户手动点击后，各自的自动计时从这次点击开始重算
+    - 手动 `index` 只影响 `index` 锚点
+    - 手动 `dream` 只影响 `dream` 锚点
+  - `hasElapsedMinutes()` 不再把“缺少 last*At”视为已到期
+    - 修掉了“第一次会立即自动 index / dream”的旧行为
+  - trace 结构新增：
+    - `isNoOp`
+    - `displayStatus`
+  - dashboard trace 展示新增：
+    - `手动 / 自动`
+    - `已完成 / 空跑 / 错误`
+    - `index pre-dream` 与 `dashboard current state` 的解释文案
+  - 用户画像空态文案已改成：
+    - 当前还没有汇总后的用户画像；`User Notes` 会在 `Dream` 后合并到这里
+
+- 隔离黑盒复测：
+  - 隔离根目录：
+    - `/var/folders/91/g01dm0h13rz44f8f4j7n53m80000gn/T/edgeclaw-memory-calibration-Pt3kAr`
+  - 场景 1：仅有 user note，未 dream
+    - 输入：
+      - `请记住：以后默认用中文回复，并且先给结论再给细节。`
+    - 立即执行 scheduler：
+      - `indexRan = false`
+      - `dreamRan = false`
+    - 手动 `flush` 后：
+      - `writtenFiles = 1`
+      - `writtenUserFiles = 1`
+      - 仅生成：
+        - `global/UserNotes/沟通偏好设置-*.md`
+      - `getUserSummary()` 仍为空
+    - 说明：
+      - `index` 不会因为首次缺少 `lastIndexedAt / lastDreamAt` 而自动触发
+      - 用户画像在 `dream` 前保持空态
+      - 中文对话生成的 `UserNote` 标题、描述与正文也保持为中文
+  - 场景 2：手动 `index` 之后再出现新的 pending
+    - 新增输入：
+      - `请记住：这个项目里封面文案不要超过 14 个字。`
+    - 紧接着执行 scheduler：
+      - `indexRan = false`
+      - `dreamRan = false`
+    - 说明：
+      - 新一轮自动 `index` 不会沿用更早的第一次对话时间，而会从新的锚点重新计时
+  - 场景 3：手动 `dream`
+    - 执行 `dream` 后：
+      - `profileUpdated = true`
+      - 生成：
+        - `global/User/user-profile.md`
+      - `getUserSummary()` 吸收：
+        - 默认中文回复
+        - 先给结论再给细节
+
+- 当前仍保留的设计结果：
+  - `index` trace 看到的是 `pre-dream append-only` 结果
+  - dashboard 主视图看到的是当前文件状态，可能已经被 `dream` 合并
+  - 两者不要求一一对应，这一点已经通过 trace 文案显式说明

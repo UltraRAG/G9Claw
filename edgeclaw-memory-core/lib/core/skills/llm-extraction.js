@@ -44,6 +44,108 @@ const DEFAULT_FILE_MEMORY_GATE_TIMEOUT_MS = 45_000;
 const DEFAULT_FILE_MEMORY_PROJECT_SELECTION_TIMEOUT_MS = 45_000;
 const DEFAULT_FILE_MEMORY_SELECTION_TIMEOUT_MS = 45_000;
 const DEFAULT_FILE_MEMORY_EXTRACTION_TIMEOUT_MS = 75_000;
+const MEMORY_CLASSIFICATION_SYSTEM_PROMPT = `
+You classify one focus user turn for a long-term memory indexing pipeline.
+
+You are only deciding categories. Do not generate the memory file yet.
+
+Rules:
+- Base the decision on the focus user turn first.
+- You may use the neighboring user/assistant turns only to disambiguate the focus turn.
+- Assistant text is context only. Never classify something that exists only in assistant wording.
+- A turn can match multiple categories, but at most once per category.
+- Allowed categories:
+  - user: cross-project durable user profile, long-term preferences, identity, stable constraints, stable communication habits.
+  - project: durable current-project facts such as what the project is, goals, scope, important progress, blockers, risks, key decisions.
+  - feedback: current-project collaboration rules, delivery rules, output structure, title/body template rules, confirmed style guidance.
+- Project memory should prefer stable facts. Do not classify short-lived time-flow updates, percentages, or fleeting scheduling notes as project memory unless they carry a durable blocker/risk/fact.
+- If the user explicitly says "请记住", "帮我记住", or "remember this", treat that as a stronger signal for durable memory. This is still inferred from the visible user text only.
+- If nothing durable should be remembered, return should_store=false and labels=[].
+- Return JSON only.
+
+Use this exact JSON shape:
+{
+  "should_store": true,
+  "labels": [
+    {
+      "type": "user | project | feedback",
+      "reason": "why this category applies",
+      "evidence": "short quote or evidence summary from the focus turn"
+    }
+  ]
+}
+`.trim();
+const USER_NOTE_CREATE_SYSTEM_PROMPT = `
+You create one append-only user memory note from a focus user turn.
+
+Rules:
+- Create at most one user note.
+- The note must capture only durable cross-project user information.
+- Do not include project-specific progress, current tasks, or current-project delivery rules.
+- The visible output language must follow the dominant user language in the focus user turn and neighboring user turns.
+- If the surrounding dialogue mixes languages, prefer the focus user turn language first, then the nearest neighboring user language.
+- Apply this language rule consistently to the title/name, description, markdown headings, and markdown body text.
+- Keep the note readable markdown.
+- Prefer meaningful headings when useful, especially: ## Profile, ## Preferences, ## Constraints, ## Relationships.
+- Return JSON only.
+
+Use this exact JSON shape:
+{
+  "skip": false,
+  "reason": "",
+  "name": "short user-memory title",
+  "description": "one-line description",
+  "markdown": "markdown body"
+}
+`.trim();
+const PROJECT_NOTE_CREATE_SYSTEM_PROMPT = `
+You create one append-only project memory note from a focus user turn.
+
+Rules:
+- Create at most one project note.
+- The note belongs to the current project only.
+- Capture durable project facts: what the project is, stable scope, goals, key progress, blockers, risks, important decisions, important next steps.
+- Do not reduce the note to a vague status line.
+- Do not focus on highly volatile percentages, fleeting schedules, or trivial short-term updates unless they reveal a durable blocker/risk/fact.
+- The visible output language must follow the dominant user language in the focus user turn and neighboring user turns.
+- If the surrounding dialogue mixes languages, prefer the focus user turn language first, then the nearest neighboring user language.
+- Apply this language rule consistently to the title/name, description, markdown headings, and markdown body text.
+- Keep the note readable markdown.
+- Prefer meaningful headings when useful, such as: ## Summary, ## Current Stage, ## Constraints, ## Blockers, ## Next Steps, ## Timeline, ## Notes.
+- Return JSON only.
+
+Use this exact JSON shape:
+{
+  "skip": false,
+  "reason": "",
+  "name": "short project-memory title",
+  "description": "one-line description",
+  "markdown": "markdown body"
+}
+`.trim();
+const FEEDBACK_NOTE_CREATE_SYSTEM_PROMPT = `
+You create one append-only feedback memory note from a focus user turn.
+
+Rules:
+- Create at most one feedback note.
+- The note belongs to the current project only.
+- Use feedback for collaboration rules, delivery order, style constraints, title/body template rules, and confirmed output expectations.
+- The visible output language must follow the dominant user language in the focus user turn and neighboring user turns.
+- If the surrounding dialogue mixes languages, prefer the focus user turn language first, then the nearest neighboring user language.
+- Apply this language rule consistently to the title/name, description, markdown headings, and markdown body text.
+- Keep the note readable markdown.
+- Prefer meaningful headings when useful, especially: ## Rule, ## Why, ## How To Apply, ## Notes.
+- Return JSON only.
+
+Use this exact JSON shape:
+{
+  "skip": false,
+  "reason": "",
+  "name": "short feedback-memory title",
+  "description": "one-line description",
+  "markdown": "markdown body"
+}
+`.trim();
 const EXTRACTION_SYSTEM_PROMPT = `
 You are a memory indexing engine for a conversational assistant.
 
@@ -317,6 +419,7 @@ function buildUserProfileRewritePrompt(input) {
         incoming_user_candidates: input.candidates.map((candidate) => ({
             description: truncateForPrompt(candidate.description, 180),
             profile: truncateForPrompt(candidate.profile || candidate.summary || candidate.description, 260),
+            markdown: truncateForPrompt(candidate.body || "", 900),
             preferences: (candidate.preferences ?? []).map((item) => truncateForPrompt(item, 120)).slice(0, 10),
             constraints: (candidate.constraints ?? []).map((item) => truncateForPrompt(item, 120)).slice(0, 10),
             relationships: (candidate.relationships ?? []).map((item) => truncateForPrompt(item, 120)).slice(0, 10),
@@ -324,6 +427,112 @@ function buildUserProfileRewritePrompt(input) {
             source_session_key: candidate.sourceSessionKey ?? "",
         })),
     }, null, 2);
+}
+function buildConversationTurns(messages) {
+    const turns = [];
+    let current = [];
+    for (const message of messages.filter((item) => item.role === "user" || item.role === "assistant")) {
+        if (message.role === "user") {
+            if (current.length > 0)
+                turns.push(current);
+            current = [message];
+            continue;
+        }
+        if (current.length > 0)
+            current.push(message);
+    }
+    if (current.length > 0)
+        turns.push(current);
+    return turns;
+}
+function findFocusTurnIndex(turns, focusMessage) {
+    const byReference = turns.findIndex((turn) => turn.some((message) => message === focusMessage));
+    if (byReference >= 0)
+        return byReference;
+    const byValue = turns.findIndex((turn) => turn.some((message) => message.role === focusMessage.role && message.content === focusMessage.content));
+    return byValue;
+}
+function serializeTurnsForPrompt(turns) {
+    return turns.map((turn, index) => ({
+        turn_index: index + 1,
+        messages: turn.map((message) => ({
+            role: message.role,
+            content: truncateForPrompt(message.content, 320),
+        })),
+    }));
+}
+function buildIndexPromptWindow(input) {
+    const turns = buildConversationTurns(input.batchContextMessages);
+    const focusTurnIndex = findFocusTurnIndex(turns, input.focusUserTurn);
+    const focusTurn = focusTurnIndex >= 0
+        ? turns[focusTurnIndex]
+        : [input.focusUserTurn];
+    const previousTurns = focusTurnIndex >= 0
+        ? turns.slice(Math.max(0, focusTurnIndex - 2), focusTurnIndex)
+        : [];
+    const nextTurns = focusTurnIndex >= 0
+        ? turns.slice(focusTurnIndex + 1, focusTurnIndex + 3)
+        : [];
+    return JSON.stringify({
+        current_project_meta: input.currentProjectMeta
+            ? {
+                project_id: input.currentProjectMeta.projectId,
+                project_name: input.currentProjectMeta.projectName,
+                description: truncateForPrompt(input.currentProjectMeta.description, 220),
+                aliases: input.currentProjectMeta.aliases.slice(0, 12),
+                status: input.currentProjectMeta.status,
+                updated_at: input.currentProjectMeta.updatedAt,
+            }
+            : null,
+        focus_user_turn: {
+            role: input.focusUserTurn.role,
+            content: truncateForPrompt(input.focusUserTurn.content, 400),
+        },
+        focus_turn_with_neighbor_assistant_context: serializeTurnsForPrompt([focusTurn])[0],
+        previous_turns: serializeTurnsForPrompt(previousTurns),
+        next_turns: serializeTurnsForPrompt(nextTurns),
+    }, null, 2);
+}
+function normalizeClassificationLabels(value) {
+    if (!Array.isArray(value))
+        return [];
+    const labels = [];
+    const seen = new Set();
+    for (const item of value) {
+        const record = isRecord(item) ? item : undefined;
+        const type = record?.type === "user" || record?.type === "project" || record?.type === "feedback"
+            ? record.type
+            : undefined;
+        if (!type || seen.has(type))
+            continue;
+        seen.add(type);
+        labels.push({
+            type,
+            reason: typeof record?.reason === "string" ? truncateForPrompt(record.reason, 220) : "",
+            evidence: typeof record?.evidence === "string" ? truncateForPrompt(record.evidence, 220) : "",
+        });
+    }
+    return labels;
+}
+function buildCandidateFromCreatePayload(input) {
+    const name = typeof input.payload.name === "string" ? truncateForPrompt(input.payload.name, 80) : "";
+    const description = typeof input.payload.description === "string"
+        ? truncateForPrompt(input.payload.description, 180)
+        : "";
+    const markdown = typeof input.payload.markdown === "string" ? input.payload.markdown.trim() : "";
+    if (!name || !description || !markdown)
+        return null;
+    if (input.kind === "project" && isGenericProjectCandidateName(name))
+        return null;
+    return {
+        type: input.kind,
+        scope: input.kind === "user" ? "global" : "project",
+        name,
+        description,
+        body: markdown,
+        capturedAt: input.timestamp,
+        ...(input.sessionKey ? { sourceSessionKey: input.sessionKey } : {}),
+    };
 }
 function buildDreamFileGlobalPlanPrompt(input) {
     const currentProjectNames = Array.from(new Set(input.currentProjects
@@ -654,7 +863,7 @@ function pickLongest(left, right) {
     return b.length >= a.length ? b : a;
 }
 function stripExplicitRememberLead(text) {
-    return normalizeWhitespace(text).replace(/^(?:记住(?:这些长期信息|这个长期信息|这件事|一下)?|帮我记住|请记住|另外记住|再记一个长期信息|再记一条长期信息|补充一个长期信息|补充一条长期信息)[，,:：]?\s*/i, "").trim();
+    return normalizeWhitespace(text);
 }
 function splitPreferenceHints(text) {
     const normalized = text
@@ -1338,7 +1547,7 @@ export class LlmMemoryExtractor {
         if (userCandidates.length === 0)
             return null;
         const latestCandidate = userCandidates[userCandidates.length - 1];
-        const fallbackProfile = truncate(pickLongest(input.existingProfile?.profile ?? "", uniqueStrings(userCandidates.map((candidate) => candidate.profile || candidate.summary || candidate.description), 6).join("；")), 400);
+        const fallbackProfile = truncate(pickLongest(input.existingProfile?.profile ?? "", uniqueStrings(userCandidates.map((candidate) => candidate.profile || candidate.summary || candidate.description || candidate.body || ""), 6).join("；")), 400);
         const fallbackPreferences = uniqueStrings([
             ...(input.existingProfile?.preferences ?? []),
             ...userCandidates.flatMap((candidate) => candidate.preferences ?? []),
@@ -1407,6 +1616,85 @@ export class LlmMemoryExtractor {
             constraints: fallbackConstraints,
             relationships: fallbackRelationships,
         }));
+    }
+    async classifyMemoryTurn(input) {
+        try {
+            const parsed = await this.callStructuredJsonWithDebug({
+                systemPrompt: MEMORY_CLASSIFICATION_SYSTEM_PROMPT,
+                userPrompt: buildIndexPromptWindow({
+                    batchContextMessages: input.batchContextMessages,
+                    focusUserTurn: input.focusUserTurn,
+                    currentProjectMeta: input.currentProjectMeta,
+                }),
+                requestLabel: "Memory turn classification",
+                timeoutMs: input.timeoutMs ?? DEFAULT_FILE_MEMORY_EXTRACTION_TIMEOUT_MS,
+                ...(input.agentId ? { agentId: input.agentId } : {}),
+                ...(input.debugTrace ? { debugTrace: input.debugTrace } : {}),
+                parse: (raw) => JSON.parse(extractFirstJsonObject(raw)),
+            });
+            const labels = normalizeClassificationLabels(parsed.labels);
+            const shouldStore = Boolean(parsed.should_store) && labels.length > 0;
+            return { shouldStore, labels };
+        }
+        catch (error) {
+            this.logger?.warn?.(`[clawxmemory] memory turn classification fallback: ${String(error)}`);
+            return { shouldStore: false, labels: [] };
+        }
+    }
+    async createMemoryNote(input) {
+        const requestLabel = input.kind === "user"
+            ? "User memory create"
+            : input.kind === "project"
+                ? "Project memory create"
+                : "Feedback memory create";
+        const systemPrompt = input.kind === "user"
+            ? USER_NOTE_CREATE_SYSTEM_PROMPT
+            : input.kind === "project"
+                ? PROJECT_NOTE_CREATE_SYSTEM_PROMPT
+                : FEEDBACK_NOTE_CREATE_SYSTEM_PROMPT;
+        try {
+            const parsed = await this.callStructuredJsonWithDebug({
+                systemPrompt,
+                userPrompt: JSON.stringify({
+                    classification: {
+                        type: input.classification.type,
+                        reason: input.classification.reason,
+                        evidence: input.classification.evidence,
+                    },
+                    context: JSON.parse(buildIndexPromptWindow({
+                        batchContextMessages: input.batchContextMessages,
+                        focusUserTurn: input.focusUserTurn,
+                        currentProjectMeta: input.currentProjectMeta,
+                    })),
+                }, null, 2),
+                requestLabel,
+                timeoutMs: input.timeoutMs ?? DEFAULT_FILE_MEMORY_EXTRACTION_TIMEOUT_MS,
+                ...(input.agentId ? { agentId: input.agentId } : {}),
+                ...(input.debugTrace ? { debugTrace: input.debugTrace } : {}),
+                parse: (raw) => JSON.parse(extractFirstJsonObject(raw)),
+            });
+            if (parsed.skip === true)
+                return null;
+            return buildCandidateFromCreatePayload({
+                kind: input.kind,
+                payload: parsed,
+                timestamp: input.timestamp,
+                ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
+            });
+        }
+        catch (error) {
+            this.logger?.warn?.(`[clawxmemory] ${requestLabel.toLowerCase()} fallback: ${String(error)}`);
+            return null;
+        }
+    }
+    async createUserMemoryNote(input) {
+        return this.createMemoryNote({ ...input, kind: "user" });
+    }
+    async createProjectMemoryNote(input) {
+        return this.createMemoryNote({ ...input, kind: "project" });
+    }
+    async createFeedbackMemoryNote(input) {
+        return this.createMemoryNote({ ...input, kind: "feedback" });
     }
     async planDreamFileMemory(input) {
         if (input.records.length === 0) {
@@ -1685,6 +1973,8 @@ export class LlmMemoryExtractor {
                     "If the transcript gives a rule but not enough evidence for why or how_to_apply, return an empty string for those fields.",
                     "Feedback belongs to the current project workflow; if project_id is unclear you may omit it because the runtime already knows the current project.",
                     "If the batch context contains the current project identity, you may attach project_id to the feedback item; leaving it empty is also acceptable in current-project mode.",
+                    "If the focus user turn explicitly asks the assistant to remember something long-term, such as '请记住', '帮我记住', or 'remember this', treat that as a stronger signal that durable memory should be extracted.",
+                    "That stronger signal is still based on the raw user text itself. Do not rely on any hidden remember flag or external rule; decide only from the visible transcript content.",
                     "For project items always prefer name plus description. project_id is optional and only refers to the current project identity when supplied.",
                     "If you only know the project's human-readable title, put it in name and leave project_id empty.",
                     "Do not put a human-readable project title only inside project_id.",
@@ -1703,7 +1993,6 @@ export class LlmMemoryExtractor {
                 ].join("\n"),
                 userPrompt: JSON.stringify({
                     timestamp: input.timestamp,
-                    explicit_remember: Boolean(input.explicitRemember),
                     known_projects: (input.knownProjects ?? []).slice(0, 20).map((project) => ({
                         identity_key: project.identityKey,
                         project_id: project.projectId ?? "",

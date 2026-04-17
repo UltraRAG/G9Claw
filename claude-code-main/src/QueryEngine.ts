@@ -452,9 +452,6 @@ export class QueryEngine {
             sessionKey: getSessionId(),
           },
         )
-        if (captureResult.captured) {
-          edgeClawMemoryService.scheduleMaintenance('turn_capture')
-        }
       } catch (error) {
         logForDebugging(
           `[edgeclaw-memory] capture failed: ${String(error)}`,

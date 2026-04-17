@@ -85,6 +85,9 @@ export interface MemoryListOptions {
   includeDeprecated?: boolean;
 }
 
+const AUTO_INDEX_ANCHOR_AT_STATE_KEY = "autoIndexAnchorAt" as const;
+const AUTO_DREAM_ANCHOR_AT_STATE_KEY = "autoDreamAnchorAt" as const;
+
 type JsonRecord = Record<string, unknown>;
 
 interface OpenClawResolvedModelConfig {
@@ -345,14 +348,14 @@ function parseTimestamp(value: string | undefined): number | null {
 }
 
 function hasElapsedMinutes(
-  lastRunAt: string | undefined,
+  anchorAt: string | undefined,
   intervalMinutes: number,
   nowMs: number,
 ): boolean {
   if (intervalMinutes <= 0) return false;
-  const lastRunMs = parseTimestamp(lastRunAt);
-  if (lastRunMs === null) return true;
-  return nowMs - lastRunMs >= intervalMinutes * 60_000;
+  const anchorMs = parseTimestamp(anchorAt);
+  if (anchorMs === null) return false;
+  return nowMs - anchorMs >= intervalMinutes * 60_000;
 }
 
 function toMessages(rawMessages: readonly unknown[], options: {
@@ -445,8 +448,6 @@ export class EdgeClawMemoryService {
   private readonly includeAssistant: boolean;
   private readonly maxMessageChars: number;
   private readonly source: string;
-  private maintenancePromise: Promise<void> | null = null;
-  private maintenanceQueued = false;
 
   private projectMetaSeed() {
     const projectName = basename(this.workspaceDir) || "Current Project";
@@ -478,6 +479,7 @@ export class EdgeClawMemoryService {
       memoryDir: this.memoryDir,
       globalRootDir: join(rootDir, "global"),
     });
+    this.repository.setPipelineState("workspaceDir", this.workspaceDir);
     this.repository.ensureProjectMeta(this.projectMetaSeed());
     this.extractor = new LlmMemoryExtractor(
       buildLlmConfig(options.llm),
@@ -515,6 +517,69 @@ export class EdgeClawMemoryService {
 
   overview() {
     return this.repository.getOverview();
+  }
+
+  private getPipelineTimestamp(key: string): string | undefined {
+    const value = this.repository.getPipelineState<string>(key);
+    return typeof value === "string" && value.trim() ? value : undefined;
+  }
+
+  private setPipelineTimestamp(key: string, value: string | undefined): void {
+    if (typeof value === "string" && value.trim()) {
+      this.repository.setPipelineState(key, value);
+      return;
+    }
+    this.repository.deletePipelineState(key);
+  }
+
+  private reconcileAutoIndexAnchor(options: {
+    manualResetAt?: string;
+    sessionKeys?: string[];
+  } = {}): string | undefined {
+    if (options.manualResetAt) {
+      this.setPipelineTimestamp(AUTO_INDEX_ANCHOR_AT_STATE_KEY, options.manualResetAt);
+      return options.manualResetAt;
+    }
+
+    const firstPendingAt = this.repository.getEarliestPendingTimestamp(options.sessionKeys);
+    if (!firstPendingAt) {
+      this.setPipelineTimestamp(AUTO_INDEX_ANCHOR_AT_STATE_KEY, undefined);
+      return undefined;
+    }
+
+    const existing = this.getPipelineTimestamp(AUTO_INDEX_ANCHOR_AT_STATE_KEY);
+    if (existing) return existing;
+    this.setPipelineTimestamp(AUTO_INDEX_ANCHOR_AT_STATE_KEY, firstPendingAt);
+    return firstPendingAt;
+  }
+
+  private reconcileAutoDreamAnchor(options: {
+    manualResetAt?: string;
+    fallbackAt?: string;
+  } = {}): string | undefined {
+    const lastDreamAt = this.getPipelineTimestamp("lastDreamAt");
+    const lastIndexedAt = this.getPipelineTimestamp("lastIndexedAt");
+    const changedFilesSinceLastDream = this.repository
+      .getFileMemoryStore()
+      .getOverview(lastDreamAt)
+      .changedFilesSinceLastDream;
+
+    if (!lastIndexedAt || changedFilesSinceLastDream <= 0) {
+      this.setPipelineTimestamp(AUTO_DREAM_ANCHOR_AT_STATE_KEY, undefined);
+      return undefined;
+    }
+
+    if (options.manualResetAt) {
+      this.setPipelineTimestamp(AUTO_DREAM_ANCHOR_AT_STATE_KEY, options.manualResetAt);
+      return options.manualResetAt;
+    }
+
+    const existing = this.getPipelineTimestamp(AUTO_DREAM_ANCHOR_AT_STATE_KEY);
+    if (existing) return existing;
+
+    const nextAnchor = options.fallbackAt ?? lastIndexedAt;
+    this.setPipelineTimestamp(AUTO_DREAM_ANCHOR_AT_STATE_KEY, nextAnchor);
+    return nextAnchor;
   }
 
   snapshot(limit = 50): MemoryUiSnapshot {
@@ -556,42 +621,38 @@ export class EdgeClawMemoryService {
     };
   }
 
-  scheduleMaintenance(reason = "turn_capture"): void {
-    if (this.maintenancePromise) {
-      this.maintenanceQueued = true;
-      return;
-    }
-
-    this.maintenancePromise = this.runScheduledMaintenance(reason)
-      .catch((error) => {
-        this.logger?.warn?.(
-          `[edgeclaw-memory] scheduled maintenance failed: ${String(error)}`,
-        );
-      })
-      .finally(() => {
-        this.maintenancePromise = null;
-        if (this.maintenanceQueued) {
-          this.maintenanceQueued = false;
-          this.scheduleMaintenance("queued_turn_capture");
-        }
-      });
-  }
-
   async flush(options: {
     batchSize?: number;
     sessionKeys?: string[];
     reason?: string;
   } = {}): Promise<HeartbeatStats> {
+    const manualResetAt = options.reason === "manual" ? nowIso() : undefined;
+    if (manualResetAt) {
+      this.reconcileAutoIndexAnchor({
+        manualResetAt,
+        ...(options.sessionKeys ? { sessionKeys: options.sessionKeys } : {}),
+      });
+    }
     const stats = await this.indexer.runHeartbeat(options);
+    this.reconcileAutoIndexAnchor(options.sessionKeys ? { sessionKeys: options.sessionKeys } : {});
+    if (stats.writtenFiles > 0) {
+      this.reconcileAutoDreamAnchor({ fallbackAt: nowIso() });
+    } else {
+      this.reconcileAutoDreamAnchor();
+    }
     this.retriever.resetTransientState();
     return stats;
   }
 
   async dream(trigger: "manual" | "scheduled" = "manual"): Promise<DreamRunResult> {
+    if (trigger === "manual") {
+      this.reconcileAutoDreamAnchor({ manualResetAt: nowIso() });
+    }
     const prepFlush = await this.flush({
       reason: trigger === "manual" ? "manual_dream_prep" : "scheduled_dream_prep",
     });
     const outcome = await this.dreamRewriter.run(trigger);
+    this.reconcileAutoDreamAnchor();
     this.repository.getFileMemoryStore().repairManifests();
     this.retriever.resetTransientState();
     return {
@@ -628,21 +689,29 @@ export class EdgeClawMemoryService {
     };
   }
 
-  private async runScheduledMaintenance(reason: string): Promise<void> {
+  async runDueScheduledMaintenance(reason = "scheduled"): Promise<{
+    indexRan: boolean;
+    dreamRan: boolean;
+    indexStats?: HeartbeatStats;
+    dreamResult?: DreamRunResult;
+  }> {
     const settings = this.getSettings();
     const nowMs = Date.now();
     let overview = this.overview();
+    let indexStats: HeartbeatStats | undefined;
+    let dreamResult: DreamRunResult | undefined;
+    const indexAnchorAt = this.reconcileAutoIndexAnchor();
 
     if (
       overview.pendingSessions > 0
       && hasElapsedMinutes(
-        overview.lastIndexedAt,
+        indexAnchorAt,
         settings.autoIndexIntervalMinutes,
         nowMs,
       )
     ) {
-      await this.flush({
-        reason: `scheduled:${reason}`,
+      indexStats = await this.flush({
+        reason: reason.startsWith("scheduled") ? reason : `scheduled:${reason}`,
       });
       overview = this.overview();
     }
@@ -651,17 +720,25 @@ export class EdgeClawMemoryService {
       .getFileMemoryStore()
       .getOverview(overview.lastDreamAt)
       .changedFilesSinceLastDream;
+    const dreamAnchorAt = this.reconcileAutoDreamAnchor();
 
     if (
       changedFilesSinceLastDream > 0
       && hasElapsedMinutes(
-        overview.lastDreamAt,
+        dreamAnchorAt,
         settings.autoDreamIntervalMinutes,
         nowMs,
       )
     ) {
-      await this.dream("scheduled");
+      dreamResult = await this.dream("scheduled");
     }
+
+    return {
+      indexRan: Boolean(indexStats),
+      dreamRan: Boolean(dreamResult),
+      ...(indexStats ? { indexStats } : {}),
+      ...(dreamResult ? { dreamResult } : {}),
+    };
   }
 
   async search(query: string, options: {

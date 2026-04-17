@@ -29,6 +29,7 @@ const MANIFEST_FILE = "MEMORY.md";
 const PROJECT_META_FILE = "project.meta.md";
 const GLOBAL_DIR = "global";
 const USER_DIR = "User";
+const USER_NOTES_DIR = "UserNotes";
 const PROJECT_DIR = "Project";
 const FEEDBACK_DIR = "Feedback";
 const DEFAULT_USER_PROFILE_RELATIVE_PATH = join(GLOBAL_DIR, USER_DIR, "user-profile.md");
@@ -43,6 +44,8 @@ export interface FileMemoryStoreOptions {
   manageProjectFiles?: boolean;
   manageUserProfile?: boolean;
   userProfileRelativePath?: string | null;
+  userNotesRelativeDir?: string | null;
+  appendOnlyUserEntries?: boolean;
   enableManifest?: boolean;
   manifestUserEntriesProvider?: () => MemoryManifestEntry[];
 }
@@ -297,6 +300,9 @@ function buildFeedbackBody(candidate: MemoryCandidate): string {
 }
 
 function buildRecordBody(candidate: MemoryCandidate): string {
+  if (normalizeWhitespace(candidate.body)) {
+    return `${candidate.body!.trim()}\n`;
+  }
   if (candidate.type === "user") return buildUserBody(candidate);
   if (candidate.type === "feedback") return buildFeedbackBody(candidate);
   return buildProjectBody(candidate);
@@ -470,6 +476,8 @@ export class FileMemoryStore {
   private readonly manageProjectFiles: boolean;
   private readonly manageUserProfile: boolean;
   private readonly userProfileRelativePath: string | null;
+  private readonly userNotesRelativeDir: string | null;
+  private readonly appendOnlyUserEntries: boolean;
   private readonly enableManifest: boolean;
   private readonly manifestUserEntriesProvider?: () => MemoryManifestEntry[];
 
@@ -485,6 +493,12 @@ export class FileMemoryStore {
         ? DEFAULT_USER_PROFILE_RELATIVE_PATH
         : options.userProfileRelativePath)
       : null;
+    this.userNotesRelativeDir = this.manageUserProfile
+      ? (options.userNotesRelativeDir === undefined ? null : options.userNotesRelativeDir)
+      : null;
+    this.appendOnlyUserEntries = this.manageUserProfile
+      ? Boolean(options.appendOnlyUserEntries)
+      : false;
     this.enableManifest = options.enableManifest ?? true;
     this.manifestUserEntriesProvider = options.manifestUserEntriesProvider;
     this.ensureLayout();
@@ -509,6 +523,9 @@ export class FileMemoryStore {
     ensureDir(this.rootDir);
     if (this.manageUserProfile && this.userProfileRelativePath) {
       ensureDir(dirname(this.resolveRelativePath(this.userProfileRelativePath)));
+    }
+    if (this.manageUserProfile && this.userNotesRelativeDir) {
+      ensureDir(this.resolveRelativePath(this.userNotesRelativeDir));
     }
     if (this.manageProjectFiles) {
       ensureDir(join(this.rootDir, PROJECT_DIR));
@@ -573,6 +590,9 @@ export class FileMemoryStore {
     if (this.manageUserProfile && this.userProfileRelativePath) {
       const userEntry = this.buildManifestEntry(this.userProfileRelativePath);
       if (userEntry) entries.push(userEntry);
+    }
+    if (this.manageUserProfile && this.userNotesRelativeDir) {
+      entries.push(...this.collectDirectoryRecords(this.userNotesRelativeDir));
     }
     return sortEntries(entries);
   }
@@ -671,6 +691,7 @@ export class FileMemoryStore {
     const sameSource = allEntries.find((entry) => sameOrigin(entry, candidate));
     if (sameSource) return sameSource;
     if (candidate.type === "user") {
+      if (this.appendOnlyUserEntries) return undefined;
       return this.manageUserProfile && this.userProfileRelativePath
         ? allEntries.find((entry) => entry.relativePath === this.userProfileRelativePath)
         : undefined;
@@ -679,7 +700,12 @@ export class FileMemoryStore {
   }
 
   private nextRecordRelativePath(candidate: MemoryCandidate): string {
-    if (candidate.type === "user") return this.requireUserProfileRelativePath();
+    if (candidate.type === "user") {
+      if (!this.appendOnlyUserEntries) return this.requireUserProfileRelativePath();
+      const directory = this.userNotesRelativeDir ?? USER_NOTES_DIR;
+      const seed = `${candidate.type}:${candidate.name}:${candidate.description}:${candidate.capturedAt ?? ""}:${candidate.sourceSessionKey ?? nowIso()}`;
+      return join(directory, `${slugify(candidate.name)}-${hashText(seed).slice(0, 10)}.md`);
+    }
     const directory = candidate.type === "feedback" ? FEEDBACK_DIR : PROJECT_DIR;
     const seed = `${candidate.type}:${candidate.name}:${candidate.description}:${candidate.capturedAt ?? ""}:${candidate.sourceSessionKey ?? nowIso()}`;
     return join(directory, `${slugify(candidate.name)}-${hashText(seed).slice(0, 10)}.md`);
@@ -833,6 +859,23 @@ export class FileMemoryStore {
     };
   }
 
+  upsertUserProfile(candidate: MemoryCandidate): MemoryFileRecord {
+    const relativePath = this.requireUserProfileRelativePath();
+    const existing = this.buildManifestEntry(relativePath);
+    const frontmatter = buildFrontmatter({
+      ...candidate,
+      type: "user",
+      scope: "global",
+      name: normalizeWhitespace(candidate.name) || "user-profile",
+      description: normalizeDescription(candidate.description, candidate.name || "User profile"),
+    }, existing);
+    return this.writeRecord({
+      relativePath,
+      frontmatter,
+      body: buildRecordBody(candidate),
+    });
+  }
+
   upsertCandidate(candidate: MemoryCandidate): MemoryFileRecord {
     if (candidate.type !== "user" && this.manageProjectMeta) {
       this.ensureProjectMeta({
@@ -872,14 +915,16 @@ export class FileMemoryStore {
   toCandidate(record: MemoryFileRecord): MemoryCandidate {
     const sections = parseMarkdownSections(record.content);
     if (record.type === "user") {
+      const profileSection = parseParagraphSection(sections.get("profile"));
       return {
         type: "user",
         scope: "global",
         name: record.name,
         description: record.description,
+        body: record.content,
         ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
         ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
-        profile: parseParagraphSection(sections.get("profile")),
+        profile: profileSection || normalizeWhitespace(record.content),
         preferences: parseListSection(sections.get("preferences")),
         constraints: parseListSection(sections.get("constraints")),
         relationships: parseListSection(sections.get("relationships")),
@@ -891,6 +936,7 @@ export class FileMemoryStore {
         scope: "project",
         name: record.name,
         description: record.description,
+        body: record.content,
         ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
         ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
         rule: parseParagraphSection(sections.get("rule")),
@@ -904,6 +950,7 @@ export class FileMemoryStore {
       scope: "project",
       name: record.name,
       description: record.description,
+      body: record.content,
       ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
       ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
       stage: parseParagraphSection(sections.get("current stage")),
@@ -933,6 +980,7 @@ export class FileMemoryStore {
       description: normalizeDescription(input.description, candidate.description),
     };
     if (input.fields) {
+      delete next.body;
       if (typeof input.fields.stage === "string") next.stage = normalizeWhitespace(input.fields.stage);
       if (input.fields.decisions) next.decisions = uniqueStrings(input.fields.decisions);
       if (input.fields.constraints) next.constraints = uniqueStrings(input.fields.constraints);

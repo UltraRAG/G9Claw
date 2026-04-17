@@ -85,6 +85,7 @@ export interface MemoryCandidate {
     projectId?: string;
     name: string;
     description: string;
+    body?: string;
     aliases?: string[];
     capturedAt?: string;
     sourceSessionKey?: string;
@@ -285,9 +286,9 @@ export interface RetrievalPromptDebug {
     errored?: boolean;
     errorMessage?: string;
 }
-export type IndexTraceTrigger = "explicit_remember" | "manual_sync" | "scheduled";
+export type IndexTraceTrigger = "manual_sync" | "scheduled";
 export type IndexTraceStatus = "running" | "completed" | "error";
-export type IndexTraceStorageKind = "global_user" | "project" | "feedback";
+export type IndexTraceStorageKind = "global_user" | "global_user_note" | "project" | "feedback";
 export interface IndexTraceBatchSummary {
     l0Ids: string[];
     segmentCount: number;
@@ -303,7 +304,7 @@ export interface IndexTraceStoredResult {
     relativePath: string;
     storageKind: IndexTraceStorageKind;
 }
-export type IndexTraceStepKind = "index_start" | "batch_loaded" | "focus_turns_selected" | "turn_classified" | "candidate_validated" | "candidate_grouped" | "candidate_persisted" | "user_profile_rewritten" | "index_finished";
+export type IndexTraceStepKind = "index_start" | "batch_loaded" | "focus_turns_selected" | "classification" | "user_create" | "project_create" | "feedback_create" | "persist" | "turn_classified" | "candidate_validated" | "candidate_grouped" | "candidate_persisted" | "user_profile_rewritten" | "index_finished";
 export interface IndexTraceStep extends TraceStepI18nFields {
     stepId: string;
     kind: IndexTraceStepKind;
@@ -323,6 +324,8 @@ export interface IndexTraceRecord {
     startedAt: string;
     finishedAt?: string;
     status: IndexTraceStatus;
+    isNoOp: boolean;
+    displayStatus: string;
     batchSummary: IndexTraceBatchSummary;
     steps: IndexTraceStep[];
     storedResults: IndexTraceStoredResult[];
@@ -374,6 +377,8 @@ export interface DreamTraceRecord {
     startedAt: string;
     finishedAt?: string;
     status: DreamTraceStatus;
+    isNoOp: boolean;
+    displayStatus: string;
     snapshotSummary: DreamTraceSnapshotSummary;
     steps: DreamTraceStep[];
     mutations: DreamTraceMutation[];

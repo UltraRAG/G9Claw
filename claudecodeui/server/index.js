@@ -69,7 +69,7 @@ import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import messagesRoutes from './routes/messages.js';
-import { closeMemoryServices } from './services/memoryService.js';
+import { closeMemoryServices, startMemoryScheduler, stopMemoryScheduler } from './services/memoryService.js';
 import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { getClaudeRuntimeModelConfig } from './utils/claude-runtime-config.js';
@@ -2448,6 +2448,9 @@ async function startServer() {
             // Start watching the projects folder for changes
             await setupProjectsWatcher();
 
+            // Start background memory scheduler for auto index/dream.
+            startMemoryScheduler();
+
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
                 console.error('[Plugins] Error during startup:', err.message);
@@ -2456,6 +2459,7 @@ async function startServer() {
 
         // Clean up plugin processes on shutdown
         const shutdownPlugins = async () => {
+            stopMemoryScheduler();
             closeMemoryServices();
             await stopAllPlugins();
             process.exit(0);

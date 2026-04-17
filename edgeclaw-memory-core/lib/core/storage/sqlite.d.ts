@@ -46,6 +46,7 @@ export declare class MemoryRepository {
     deletePipelineState(key: string): void;
     insertL0Session(record: L0SessionRecord): void;
     listPendingSessionKeys(limit?: number, preferredSessionKeys?: string[]): string[];
+    getEarliestPendingTimestamp(preferredSessionKeys?: string[]): string | undefined;
     listUnindexedL0BySession(sessionKey: string): L0SessionRecord[];
     getLatestL0Before(sessionKey: string, timestamp: string, createdAt: string): L0SessionRecord | undefined;
     markL0Indexed(ids: string[]): void;
