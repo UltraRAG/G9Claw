@@ -12,6 +12,8 @@ const RECENT_CASE_TRACES_STATE_KEY = "recentCaseTraces";
 const RECENT_INDEX_TRACES_STATE_KEY = "recentIndexTraces";
 const RECENT_DREAM_TRACES_STATE_KEY = "recentDreamTraces";
 const GLOBAL_MEMORY_PREFIX = "global/";
+const GLOBAL_USER_PROFILE_RELATIVE_PATH = "UserIdentity/user-profile.md";
+const GLOBAL_USER_NOTES_RELATIVE_DIR = "UserIdentityNotes";
 export class MemoryBundleValidationError extends Error {
     constructor(message) {
         super(message);
@@ -290,8 +292,8 @@ export class MemoryRepository {
             manageProjectMeta: false,
             manageProjectFiles: false,
             manageUserProfile: true,
-            userProfileRelativePath: "User/user-profile.md",
-            userNotesRelativeDir: "UserNotes",
+            userProfileRelativePath: GLOBAL_USER_PROFILE_RELATIVE_PATH,
+            userNotesRelativeDir: GLOBAL_USER_NOTES_RELATIVE_DIR,
             appendOnlyUserEntries: true,
             enableManifest: false,
         });
@@ -654,8 +656,8 @@ export class MemoryRepository {
                 manageProjectMeta: false,
                 manageProjectFiles: false,
                 manageUserProfile: true,
-                userProfileRelativePath: "User/user-profile.md",
-                userNotesRelativeDir: "UserNotes",
+                userProfileRelativePath: GLOBAL_USER_PROFILE_RELATIVE_PATH,
+                userNotesRelativeDir: GLOBAL_USER_NOTES_RELATIVE_DIR,
                 appendOnlyUserEntries: true,
                 enableManifest: false,
             });
@@ -787,7 +789,7 @@ export class MemoryRepository {
             kinds: ["user"],
             scope: "global",
             limit: 10,
-        }).some((entry) => entry.relativePath === "global/User/user-profile.md")
+        }).some((entry) => entry.relativePath === toExposedGlobalRelativePath(GLOBAL_USER_PROFILE_RELATIVE_PATH))
             ? 1
             : 0;
         return {

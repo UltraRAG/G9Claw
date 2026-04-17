@@ -53,10 +53,7 @@ export interface ProjectShortlistCandidate {
     matchedText: string;
 }
 export interface MemoryUserSummary {
-    profile: string;
-    preferences: string[];
-    constraints: string[];
-    relationships: string[];
+    identityBackground: string[];
     files: MemoryManifestEntry[];
 }
 export type ManagedWorkspaceFileName = "USER.md" | "MEMORY.md";
@@ -350,7 +347,7 @@ export interface DreamTraceMutation {
     description?: string;
     preview?: string;
 }
-export type DreamTraceStepKind = "dream_start" | "snapshot_loaded" | "global_plan_generated" | "global_plan_validated" | "project_rewrite_generated" | "project_mutations_applied" | "user_profile_rewritten" | "manifests_repaired" | "dream_finished";
+export type DreamTraceStepKind = "dream_start" | "snapshot_loaded" | "project_header_scan" | "project_cluster_plan" | "project_cluster_refine" | "feedback_header_scan" | "feedback_cluster_plan" | "feedback_cluster_refine" | "user_profile_rewritten" | "project_meta_review" | "manifests_repaired" | "dream_finished";
 export interface DreamTraceStep extends TraceStepI18nFields {
     stepId: string;
     kind: DreamTraceStepKind;

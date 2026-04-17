@@ -109,31 +109,21 @@ function jsonDetail(
 }
 
 function hasUserSummary(userSummary: MemoryUserSummary): boolean {
-  return Boolean(
-    userSummary.profile
-      || userSummary.preferences.length
-      || userSummary.constraints.length
-      || userSummary.relationships.length,
-  );
+  return Boolean(userSummary.identityBackground.length);
 }
 
 function renderUserSummaryBlock(userSummary: MemoryUserSummary): string[] {
   if (!hasUserSummary(userSummary)) return [];
   const updatedAt = userSummary.files[0]?.updatedAt ?? "";
+  const relativePath = userSummary.files[0]?.relativePath ?? "global/UserIdentity/user-profile.md";
   const lines = [
-    `### [user] global/User/user-profile.md${updatedAt ? ` (${updatedAt})` : ""}`,
-    "## Profile",
-    userSummary.profile || "No stable user profile yet.",
-    "",
+    `### [user] ${relativePath}${updatedAt ? ` (${updatedAt})` : ""}`,
+    "## 身份背景",
   ];
-  if (userSummary.preferences.length > 0) {
-    lines.push("## Preferences", ...userSummary.preferences.map((item) => `- ${item}`), "");
-  }
-  if (userSummary.constraints.length > 0) {
-    lines.push("## Constraints", ...userSummary.constraints.map((item) => `- ${item}`), "");
-  }
-  if (userSummary.relationships.length > 0) {
-    lines.push("## Relationships", ...userSummary.relationships.map((item) => `- ${item}`), "");
+  if (userSummary.identityBackground.length > 0) {
+    lines.push(...userSummary.identityBackground.map((item) => `- ${item}`), "");
+  } else {
+    lines.push("- 暂无稳定用户画像信息。", "");
   }
   return lines;
 }
@@ -384,10 +374,7 @@ export class ReasoningRetriever {
         titleI18n: traceI18n("trace.step.user_base_loaded", "User Base Loaded"),
         details: [
           kvDetail("user-summary", "User Profile", [
-            { label: "profile", value: userSummary.profile ? "present" : "missing" },
-            { label: "preferences", value: userSummary.preferences.length },
-            { label: "constraints", value: userSummary.constraints.length },
-            { label: "relationships", value: userSummary.relationships.length },
+            { label: "identityBackground", value: userSummary.identityBackground.length },
           ], traceI18n("trace.detail.user_profile", "User Profile")),
           ...(userSummary.files.length > 0
             ? [listDetail(
@@ -553,7 +540,9 @@ export class ReasoningRetriever {
                 "context-rendered-blocks",
                 "Injected Blocks",
                 [
-                  ...(hasUserSummary(userSummary) ? ["global/User/user-profile.md"] : []),
+                  ...(hasUserSummary(userSummary)
+                    ? userSummary.files.map((file) => file.relativePath)
+                    : []),
                   ...(projectMeta ? ["project.meta.md"] : []),
                   ...Array.from(new Set(records
                     .map((record) => record.relativePath)

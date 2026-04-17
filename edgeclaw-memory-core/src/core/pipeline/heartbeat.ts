@@ -155,7 +155,7 @@ function previewText(text: string, maxChars = 220): string {
 
 function inferStorageKind(record: MemoryFileRecord): IndexTraceStoredResult["storageKind"] {
   if (record.type === "user") {
-    return /\/?UserNotes\//.test(record.relativePath) ? "global_user_note" : "global_user";
+    return /\/?(UserNotes|UserIdentityNotes)\//.test(record.relativePath) ? "global_user_note" : "global_user";
   }
   return record.type === "feedback" ? "feedback" : "project";
 }

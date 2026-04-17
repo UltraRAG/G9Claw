@@ -1627,3 +1627,323 @@
   - `index` trace 看到的是 `pre-dream append-only` 结果
   - dashboard 主视图看到的是当前文件状态，可能已经被 `dream` 合并
   - 两者不要求一一对应，这一点已经通过 trace 文案显式说明
+
+### 2026-04-17 Dream 分阶段重构
+
+- 已落实：
+  - `dream` 从旧的“一次性 current-project 全量 rewrite”改成按类别独立执行：
+    - `Project Dream`
+    - `Feedback Dream`
+    - `User Dream`
+    - `Project Meta Review`
+  - `prepFlush` 行为保留：
+    - 手动 `dream` 和自动 `dream` 仍会先执行一次 `flush`
+  - `Project Dream / Feedback Dream` 改成两段式：
+    - 先扫描最多 `200` 条活跃文件头信息
+    - 再生成互斥 cluster 列表
+    - 最后只对命中的 cluster 单独 refine
+  - `cluster` 运行时约束已加：
+    - 每个文件最多属于一个 cluster
+    - 重叠 cluster 会在运行时丢弃并写 trace
+    - 单个 cluster 最多 `8` 个文件
+    - 单文件不进入 refine，保持不动
+  - `dream` 不再删除当前全部 `Project/*.md / Feedback/*.md` 后重写
+    - 现在只删除被 cluster 吸收的旧文件
+    - 未命中的文件保持不动
+  - `User Dream` 独立处理：
+    - 输入为 `global/User/user-profile.md + global/UserNotes/*.md`
+    - `UserNotes` 按 `updatedAt desc` 排序
+    - 最多吸收 `200` 个文件
+    - 同时受 `120k` 字符预算限制
+    - 只有本轮实际吸收的 notes 才删除
+    - 超出窗口或预算的 notes 保留到后续 dream
+  - `Project Meta Review` 已独立出来：
+    - 读取最新 `5` 个 `Project` 文件 + `5` 个 `Feedback` 文件
+    - 只保守判断 `projectName / description / aliases / status` 是否明显过时
+    - 没有明确变化时不重写
+  - `dream trace` 已改成分阶段结构：
+    - `dream_start`
+    - `snapshot_loaded`
+    - `project_header_scan`
+    - `project_cluster_plan`
+    - `project_cluster_refine`
+    - `feedback_header_scan`
+    - `feedback_cluster_plan`
+    - `feedback_cluster_refine`
+    - `project_meta_review`
+    - `user_profile_rewritten`
+    - `manifests_repaired`
+    - `dream_finished`
+
+- 定向黑盒验证：
+  - 先用 stub extractor 验证 staged dream 控制流，确认：
+    - `Project` 和 `Feedback` 只重写命中的 cluster
+    - 未命中的文件保留
+    - `UserNotes` 吸收后只删除被吸收的条目
+    - `project.meta.md` 可独立保守更新
+    - dream trace 已按新阶段落出
+  - stub 场景结果：
+    - 输入：
+      - `3` 条 `Project/*.md`
+      - `3` 条 `Feedback/*.md`
+      - `3` 条 `UserNotes/*.md`
+    - 输出：
+      - `Project` 从 `3` 条收敛为 `2` 条
+      - `Feedback` 从 `3` 条收敛为 `2` 条
+      - `UserNotes` 被吸收后只剩 `user-profile.md`
+      - `trace.stepKinds` 与新方案完全一致
+  - 用户画像窗口验证：
+    - 当较新的短 note 在窗口内、较旧超长 note 超出预算时：
+      - `dream` 会生成 `global/User/user-profile.md`
+      - 被吸收的短 note 会删除
+      - 超长旧 note 会继续保留在 `global/UserNotes/*.md`
+
+- 当前实现边界：
+  - `dream` 目前已完成 staged control flow、局部删写和 trace 改造
+  - 真实模型回归方面，`dream` 比 `index` 明显更慢；当前先以构建通过 + stub 黑盒确认控制流正确为主
+
+### 2026-04-17 Dream 二次校准
+
+- 已落实：
+  - `Project Dream / Feedback Dream` 的 cluster planner prompt 已收紧：
+    - 明确声明“同属一个 current project”不是合并理由
+    - 只有在文件之间存在语义重叠、事实冲突、规则重复或明显可统一整理时，才允许进入 cluster
+    - cluster `reason` 必须指向具体 overlap / conflict / duplication topic
+  - `Project Dream / Feedback Dream` 的 prompt 输入已收敛：
+    - planner 不再传 `current_project_meta`
+    - refine 不再传 `current_project_meta`
+    - planner 只看 header：`relativePath / name / description / updatedAt`
+    - refine 只看 cluster 内完整文件内容
+  - 运行时已新增低质量 cluster 兜底：
+    - 若 cluster `reason` 只表达“这些文件都属于同一个项目 / same project”
+    - 且没有任何具体 overlap / conflict 证据
+    - 则该 cluster 会被直接丢弃，并写入 trace warning
+  - `Project Meta Review` 口径保持不变：
+    - 继续在 project/feedback refine 之后运行
+    - 继续读取 refine 后当前文件集合里最近最多 `5 project + 5 feedback`
+    - 若当前文件不足 `5 + 5`，则按实际数量输入
+
+- 构建验证：
+  - `edgeclaw-memory-core`
+    - `npm run build` 通过
+  - `claudecodeui`
+    - `npm run typecheck` 通过
+    - `npm run build` 通过
+
+- UI 可见黑盒：`小红书婚礼策划文案-用户路径样例`
+  - 项目显示名：
+    - `小红书婚礼策划文案-用户路径样例`
+  - 项目实际路径：
+    - `/Users/meisen/Desktop/xhs-wedding-copy-userpath-20260417`
+  - UI 可见会话：
+    - `wedding-ui-visible-20260417`
+    - 共 `10` 轮 user/assistant 对话
+    - 同时覆盖：
+      - `project`：项目定位、风险、受众
+      - `feedback`：正文结构、交付顺序、风格约束
+      - `user`：默认中文、先结论后细节、禁用词偏好、短句偏好
+  - 手动回放到 memory 后的结果：
+    - `flush`
+      - `capturedSessions = 10`
+      - `writtenFiles = 9`
+      - `writtenProjectFiles = 3`
+      - `writtenFeedbackFiles = 3`
+      - `writtenUserFiles = 3`
+    - `dream`
+      - `reviewedFiles = 9`
+      - `rewrittenProjects = 1`
+      - `deletedFiles = 5`
+      - `profileUpdated = true`
+  - UI 中可查看的 trace：
+    - `index_trace_d803130329`
+    - `dream_trace_9c0b997669`
+  - 这轮 trace 观察：
+    - `project_cluster_plan` 不再依赖 `current_project_meta`
+    - `project_meta_review` 继续基于 dream 后当前文件集合运行
+    - `user_profile_rewritten` 能吸收本轮 `UserNotes`
+
+- 当前可见产物：
+  - 当前 project 文件收敛为：
+    - `Project/小红书婚礼策划文案项目-春末草坪婚礼样例-b64761117a.md`
+    - `Project/小红书婚礼策划文案项目-风险与质量约束-0e9aaba92f.md`
+  - 当前 feedback 文件为：
+    - `Feedback/正文结构固定模版-1cd4f945b3.md`
+    - `Feedback/回复结构-先结论后细节-9f1ebdeb89.md`
+    - `Feedback/项目语气与风格基线-温柔真实无销售感-8c945a60c9.md`
+  - 全局用户画像已更新：
+    - `global/User/user-profile.md`
+    - 吸收了本轮 durable user preferences
+
+### 2026-04-17 User Profile 泛化与 UserNote 提示清理
+- `user-profile.md` 已从旧的四段结构收敛为两段：
+  - `## 身份背景`
+  - `## 偏好与边界`
+- `UserNotes` 继续保持 append-only 原子记忆，不改成固定双段模板；`user_create` prompt 已移除对 `Profile / Preferences / Constraints / Relationships` 的旧结构暗示。
+- `User Dream` 的 rewrite prompt、清洗逻辑、Markdown 序列化、recall 注入和 dashboard 用户画像页已同步切到新两段结构。
+- 兼容读取已保留：
+  - 旧四段 `user-profile.md` 在下一次 dream 后会自动重写成新两段
+  - 过渡期解析层会把 `Profile + Relationships` 并入 `身份背景`
+  - 过渡期解析层会把 `Preferences + Constraints` 并入 `偏好与边界`
+- `User Dream` 的输入也做了去噪：
+  - `UserNotes` 会先去掉 Markdown 语法再参与 profile rewrite
+  - 清洗层会把误落到“身份背景”的回复偏好/格式要求/文件边界重新挪回“偏好与边界”
+
+- 最小隔离回归：
+  - 输入样本：
+    - `请记住：以后默认用中文回复，先给结论再给细节，不要改动我的 .gitignore 文件。`
+  - `index` 后：
+    - 只生成 `global/UserNotes/*.md`
+    - `getUserSummary()` 为空
+  - `dream` 后：
+    - 生成 `global/User/user-profile.md`
+    - `身份背景` 为空
+    - `偏好与边界` 持有本轮 durable preferences / boundaries
+
+### 2026-04-17 User Profile 去偏好化
+- `user` 语义已进一步收紧为 **仅保存用户个人身份背景**：
+  - `我叫张三`
+  - `我是婚礼策划师`
+  - `我长期在英国生活`
+  - 这类长期身份/角色/背景信息才允许进入全局 `user`
+- `feedback` 语义已扩展为 **当前项目内所有协作与输出规则的唯一承载位置**：
+  - 默认中文 / 默认英文
+  - 先给结论再给细节
+  - 标题长度、正文结构、语气风格
+  - 不要改 `.gitignore`
+  - 文件/工具边界
+  - 以上都必须进入当前项目 `feedback`，不再进入全局 `user`
+- 全局用户仓已做冷启动隔离：
+  - 旧路径：
+    - `global/User/user-profile.md`
+    - `global/UserNotes/*.md`
+  - 新路径：
+    - `global/UserIdentity/user-profile.md`
+    - `global/UserIdentityNotes/*.md`
+  - 新 runtime 不再读取旧的全局偏好/边界数据，避免跨项目污染
+- `user-profile.md` 现已收敛为单段：
+  - `## 身份背景`
+  - 不再生成 `偏好与边界`
+- `user_create` prompt 已同步收紧：
+  - `UserNotes` 只允许写 durable identity/background facts
+  - 不再允许语言偏好、回答结构、格式要求、风格约束、文件边界进入全局 `user`
+- `recall` 口径已同步：
+  - `route=user` 只注入身份背景
+  - 当前项目回答中的语言/结构/边界冲突一律由当前项目 `feedback` 解决
+  - 当前稳定优先级：
+    - 当前项目 `feedback`
+    - 当前项目 `project`
+    - 全局 `user` 身份背景
+
+- 隔离黑盒回归：
+  - 场景 A：仅协作规则
+    - 输入：
+      - `请记住：这个项目面向英国市场，所以标题和正文都用英文；先给结论再给细节；不要改动我的 .gitignore 文件。`
+    - `flush` 结果：
+      - `writtenFeedbackFiles = 1`
+      - `writtenUserFiles = 0`
+    - `overview`：
+      - `feedbackMemoryCount = 1`
+      - `userProfileCount = 0`
+    - `getUserSummary()`：
+      - `identityBackground = []`
+    - 结论：
+      - 协作规则已稳定落到当前项目 `feedback`
+      - 没有再污染全局 `user`
+  - 场景 B：仅身份背景
+    - 输入：
+      - `请记住：我叫张三，是婚礼策划师，长期在英国生活。`
+    - `flush` 后：
+      - 只生成：
+        - `global/UserIdentityNotes/用户基本信息-*.md`
+      - `getUserSummary()` 仍为空
+    - `dream` 后：
+      - 生成：
+        - `global/UserIdentity/user-profile.md`
+      - `profileUpdated = true`
+      - `getUserSummary().identityBackground` 已包含：
+        - `姓名：张三`
+        - `职业：婚礼策划师`
+        - `长期居住地：英国`
+    - 结论：
+      - `index` 只写 `UserIdentityNotes`
+      - `dream` 才汇总为全局单段身份背景画像
+
+### 2026-04-17 User 去规则化 + 全量冷启动
+- 已进一步去除 `user` 路径上的 user-specific 代码启发式：
+  - 删除了 `looksLikeDurableUserProfileText`
+  - 删除了 `looksLikeStableUserPreferenceInstruction`
+  - 删除了 `extractUserPreferenceHints`
+  - 删除了 `extractUserConstraintHints`
+  - 删除了 recall 路由中对 `user` / `project_memory` 的 user-specific 关键词硬编码回退
+  - legacy extractor 中不再把协作规则 recast 为 `user`
+- 当前 `user` 路径只保留：
+  - prompt 驱动的分类与生成
+  - 通用 schema / 空内容 / 路径安全校验
+  - 不再保留“因为像中文偏好/边界/结构要求所以判成 user”的专门代码兜底
+
+- 已按要求执行全量冷启动：
+  - 删除：
+    - `~/.edgeclaw/memory/global/*`
+    - `~/.edgeclaw/memory/workspaces/*`
+  - 冷启动后仅重新生成：
+    - `~/.edgeclaw/memory/global/UserIdentity/user-profile.md`
+    - `~/.edgeclaw/memory/global/UserIdentityNotes/`
+    - `~/.edgeclaw/memory/workspaces/f07a2b4542/*`
+  - 旧 legacy 目录：
+    - `global/User`
+    - `global/UserNotes`
+    - `current-project-v2`
+    已不再出现在新 runtime 数据根中
+
+- 新的 UI 可见黑盒样本：
+  - 项目：
+    - `小红书英国婚礼策划文案样例`
+    - 路径：`/Users/meisen/Desktop/小红书英国婚礼策划文案样例`
+  - 会话：
+    - `uk-wedding-ui-visible-20260417`
+  - 样本覆盖：
+    - `user`
+      - `我叫张三，是婚礼策划师，长期在英国生活，平时主要服务伦敦和曼城的华人婚礼客户。`
+    - `feedback`
+      - `这个项目面向英国市场，所以标题和正文都用英文`
+      - `先给结论，再给细节`
+      - `交付顺序固定：3 个标题 -> opening -> body -> cover line`
+      - `不要改动 .gitignore，也不要创建没必要的测试文件`
+    - `project`
+      - 项目定义、目标人群、范围、当前风险
+  - 自动行为：
+    - `autoIndexIntervalMinutes = 0`
+    - `autoDreamIntervalMinutes = 0`
+    - 未产生 scheduler trace
+  - 仅执行：
+    - 1 次手动 `index`
+    - 1 次手动 `dream`
+
+- 本轮 UI 可见 trace：
+  - `index_trace_ed6247d286`
+    - `trigger = manual_sync`
+    - `status = completed`
+  - `dream_trace_45f15ea6c6`
+    - `trigger = manual`
+    - `status = completed`
+
+- 本轮最终 memory 结果：
+  - `project.meta.projectName`
+    - `UK Wedding Planning Copy Samples for Xiaohongshu`
+  - `Project/*.md`
+    - 1 条
+  - `Feedback/*.md`
+    - 4 条
+      - `English Output Language Rule`
+      - `Response Structure: Conclusion First`
+      - `Fixed Delivery Order: Titles -> Opening -> Body -> Cover Line`
+      - `文件操作边界：禁止修改 .gitignore 与创建多余测试文件`
+  - `global/UserIdentity/user-profile.md`
+    - 已生成
+    - 当前只含单段 `## 身份背景`
+
+- 本轮验证结论：
+  - `user` 只落身份背景，不再吞入语言/结构/文件边界
+  - 当前项目的语言、结构、交付顺序、文件边界均稳定落入 `feedback`
+  - `project` 继续承载项目定义、目标人群与风险
+  - 冷启动后 UI 的 Memory trace 只剩本轮新的 1 条手动 `index` 和 1 条手动 `dream`

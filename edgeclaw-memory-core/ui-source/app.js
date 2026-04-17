@@ -190,7 +190,7 @@ function basename(v) { const s = String(v || "").replace(/[\\/]+$/, "").split(/[
 
 function countUserSummaryRecords(s) {
   if (!s) return 0;
-  return s.profile || s.preferences?.length || s.constraints?.length || s.relationships?.length ? 1 : 0;
+  return s.identityBackground?.length ? 1 : 0;
 }
 
 function getProjectCardCount() { return state.workspace?.projectEntries?.length || 0; }
@@ -300,25 +300,17 @@ function renderProjectContext() {
 function renderUserSummary() {
   clearNode(userSummaryEl);
   const summary = state.userSummary;
-  if (!summary || (!summary.profile && !summary.preferences?.length && !summary.constraints?.length && !summary.relationships?.length)) {
+  const identityBackground = summary?.identityBackground || [];
+  if (!summary || !identityBackground.length) {
     userSummaryEl.append(el("div", "empty-state", "当前还没有汇总后的用户画像；User Notes 会在 Dream 后合并到这里。"));
     updateCounts(); applyPageChrome(); return;
   }
-  if (summary.profile) {
-    const card = el("div", "entry-card"); card.dataset.kind = "feedback";
-    card.append(el("h4", "", "Profile"));
-    card.append(el("div", "", summary.profile));
-    userSummaryEl.append(card);
-  }
-  [["Preferences", summary.preferences || []], ["Constraints", summary.constraints || []], ["Relationships", summary.relationships || []]].forEach(([title, items]) => {
-    if (!items.length) return;
-    const card = el("div", "entry-card"); card.dataset.kind = "feedback";
-    card.append(el("h4", "", title));
-    const list = el("ul", "");
-    items.forEach((item) => list.append(el("li", "", item)));
-    card.append(list);
-    userSummaryEl.append(card);
-  });
+  const card = el("div", "entry-card"); card.dataset.kind = "feedback";
+  card.append(el("h4", "", "身份背景"));
+  const list = el("ul", "");
+  identityBackground.forEach((item) => list.append(el("li", "", item)));
+  card.append(list);
+  userSummaryEl.append(card);
   updateCounts(); applyPageChrome();
 }
 

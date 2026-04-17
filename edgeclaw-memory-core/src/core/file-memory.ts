@@ -28,8 +28,8 @@ import { hashText, nowIso } from "./utils/id.js";
 const MANIFEST_FILE = "MEMORY.md";
 const PROJECT_META_FILE = "project.meta.md";
 const GLOBAL_DIR = "global";
-const USER_DIR = "User";
-const USER_NOTES_DIR = "UserNotes";
+const USER_DIR = "UserIdentity";
+const USER_NOTES_DIR = "UserIdentityNotes";
 const PROJECT_DIR = "Project";
 const FEEDBACK_DIR = "Feedback";
 const DEFAULT_USER_PROFILE_RELATIVE_PATH = join(GLOBAL_DIR, USER_DIR, "user-profile.md");
@@ -242,18 +242,38 @@ function parseParagraphSection(lines: string[] | undefined): string {
   return normalizeWhitespace(lines.join(" ").trim());
 }
 
+function splitFactText(text: string): string[] {
+  return uniqueStrings(
+    text
+      .replace(/\r/g, "\n")
+      .split(/\n|[，,；;。.!?]/)
+      .map((line) => normalizeWhitespace(line))
+      .filter((line) => line.length >= 2),
+  );
+}
+
+function parseFactSection(lines: string[] | undefined): string[] {
+  if (!lines) return [];
+  const facts = lines.flatMap((line) => {
+    const stripped = line.replace(/^\s*-\s*/, "").trim();
+    if (!stripped) return [];
+    return /^\s*-\s*/.test(line) ? [stripped] : splitFactText(stripped);
+  });
+  return uniqueStrings(facts);
+}
+
 function buildUserBody(candidate: MemoryCandidate): string {
-  const lines = [
-    "## Profile",
-    normalizeWhitespace(candidate.profile || candidate.description || candidate.summary || "No stable user profile yet."),
-    "",
-  ];
-  const preferences = uniqueStrings(candidate.preferences ?? []);
-  const constraints = uniqueStrings(candidate.constraints ?? []);
-  const relationships = uniqueStrings(candidate.relationships ?? []);
-  if (preferences.length > 0) lines.push("## Preferences", ...preferences.map((item) => `- ${item}`), "");
-  if (constraints.length > 0) lines.push("## Constraints", ...constraints.map((item) => `- ${item}`), "");
-  if (relationships.length > 0) lines.push("## Relationships", ...relationships.map((item) => `- ${item}`), "");
+  const identityBackground = uniqueStrings([
+    ...splitFactText(candidate.profile || candidate.summary || candidate.description || ""),
+    ...(candidate.relationships ?? []).map((item) => normalizeWhitespace(item)),
+  ]);
+  const lines: string[] = [];
+  if (identityBackground.length > 0) {
+    lines.push("## 身份背景", ...identityBackground.map((item) => `- ${item}`), "");
+  }
+  if (lines.length === 0) {
+    lines.push("## 身份背景", "- 暂无稳定用户画像信息。", "");
+  }
   return `${lines.join("\n").trim()}\n`;
 }
 
@@ -506,6 +526,10 @@ export class FileMemoryStore {
 
   getRootDir(): string {
     return this.rootDir;
+  }
+
+  getUserProfileRelativePath(): string | null {
+    return this.userProfileRelativePath;
   }
 
   private projectMetaPath(): string {
@@ -832,29 +856,20 @@ export class FileMemoryStore {
   getUserSummary(): MemoryUserSummary {
     if (!this.manageUserProfile || !this.userProfileRelativePath) {
       return {
-        profile: "",
-        preferences: [],
-        constraints: [],
-        relationships: [],
+        identityBackground: [],
         files: [],
       };
     }
     const record = this.getMemoryRecordsByIds([this.userProfileRelativePath], 5000)[0];
     if (!record) {
       return {
-        profile: "",
-        preferences: [],
-        constraints: [],
-        relationships: [],
+        identityBackground: [],
         files: [],
       };
     }
     const sections = parseMarkdownSections(record.content);
     return {
-      profile: parseParagraphSection(sections.get("profile")),
-      preferences: parseListSection(sections.get("preferences")),
-      constraints: parseListSection(sections.get("constraints")),
-      relationships: parseListSection(sections.get("relationships")),
+      identityBackground: uniqueStrings(parseFactSection(sections.get("身份背景"))),
       files: [record],
     };
   }
@@ -915,7 +930,7 @@ export class FileMemoryStore {
   toCandidate(record: MemoryFileRecord): MemoryCandidate {
     const sections = parseMarkdownSections(record.content);
     if (record.type === "user") {
-      const profileSection = parseParagraphSection(sections.get("profile"));
+      const identityFacts = parseFactSection(sections.get("身份背景"));
       return {
         type: "user",
         scope: "global",
@@ -924,10 +939,8 @@ export class FileMemoryStore {
         body: record.content,
         ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
         ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
-        profile: profileSection || normalizeWhitespace(record.content),
-        preferences: parseListSection(sections.get("preferences")),
-        constraints: parseListSection(sections.get("constraints")),
-        relationships: parseListSection(sections.get("relationships")),
+        profile: identityFacts.join("；") || normalizeWhitespace(record.content),
+        relationships: identityFacts,
       };
     }
     if (record.type === "feedback") {

@@ -129,6 +129,60 @@ export interface LlmDreamFileProjectRewriteOutput {
     files: LlmDreamFileProjectRewriteOutputFile[];
     deletedEntryIds: string[];
 }
+export interface LlmDreamClusterHeaderInput {
+    relativePath: string;
+    name: string;
+    description: string;
+    updatedAt: string;
+}
+export interface LlmDreamCluster {
+    memberRelativePaths: string[];
+    reason: string;
+}
+export interface LlmDreamClusterPlanInput {
+    kind: "project" | "feedback";
+    headers: LlmDreamClusterHeaderInput[];
+    agentId?: string;
+    timeoutMs?: number;
+    debugTrace?: PromptDebugSink;
+}
+export interface LlmDreamClusterPlanOutput {
+    summary: string;
+    clusters: LlmDreamCluster[];
+}
+export interface LlmDreamClusterRefineInput {
+    kind: "project" | "feedback";
+    records: LlmDreamFileRecordInput[];
+    agentId?: string;
+    timeoutMs?: number;
+    debugTrace?: PromptDebugSink;
+}
+export interface LlmDreamClusterRefineOutput {
+    summary: string;
+    file: {
+        name: string;
+        description: string;
+        markdown: string;
+    } | null;
+}
+export interface LlmDreamProjectMetaReviewInput {
+    currentMeta: LlmDreamFileProjectMetaInput;
+    recentProjectRecords: LlmDreamFileRecordInput[];
+    recentFeedbackRecords: LlmDreamFileRecordInput[];
+    agentId?: string;
+    timeoutMs?: number;
+    debugTrace?: PromptDebugSink;
+}
+export interface LlmDreamProjectMetaReviewOutput {
+    shouldUpdate: boolean;
+    reason: string;
+    projectMeta: {
+        projectName: string;
+        description: string;
+        aliases: string[];
+        status: string;
+    };
+}
 export declare class LlmMemoryExtractor {
     private readonly config;
     private readonly runtime;
@@ -189,6 +243,9 @@ export declare class LlmMemoryExtractor {
         timeoutMs?: number;
         debugTrace?: PromptDebugSink;
     }): Promise<MemoryCandidate | null>;
+    planDreamClusters(input: LlmDreamClusterPlanInput): Promise<LlmDreamClusterPlanOutput>;
+    refineDreamCluster(input: LlmDreamClusterRefineInput): Promise<LlmDreamClusterRefineOutput>;
+    reviewDreamProjectMeta(input: LlmDreamProjectMetaReviewInput): Promise<LlmDreamProjectMetaReviewOutput>;
     planDreamFileMemory(input: LlmDreamFileGlobalPlanInput): Promise<LlmDreamFileGlobalPlanOutput>;
     rewriteDreamFileProject(input: LlmDreamFileProjectRewriteInput): Promise<LlmDreamFileProjectRewriteOutput>;
     decideFileMemoryRoute(input: {

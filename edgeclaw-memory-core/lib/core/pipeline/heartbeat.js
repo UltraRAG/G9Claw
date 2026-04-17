@@ -92,7 +92,7 @@ function previewText(text, maxChars = 220) {
 }
 function inferStorageKind(record) {
     if (record.type === "user") {
-        return /\/?UserNotes\//.test(record.relativePath) ? "global_user_note" : "global_user";
+        return /\/?(UserNotes|UserIdentityNotes)\//.test(record.relativePath) ? "global_user_note" : "global_user";
     }
     return record.type === "feedback" ? "feedback" : "project";
 }

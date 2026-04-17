@@ -35,6 +35,7 @@ export declare class FileMemoryStore {
     private readonly manifestUserEntriesProvider?;
     constructor(rootDir: string, options?: FileMemoryStoreOptions);
     getRootDir(): string;
+    getUserProfileRelativePath(): string | null;
     private projectMetaPath;
     private requireUserProfileRelativePath;
     private ensureLayout;

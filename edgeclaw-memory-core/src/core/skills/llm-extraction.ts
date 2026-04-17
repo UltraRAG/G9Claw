@@ -87,10 +87,7 @@ interface ModelSelection {
 }
 
 interface RawUserProfilePayload {
-  profile?: unknown;
-  preferences?: unknown;
-  constraints?: unknown;
-  relationships?: unknown;
+  identity_background?: unknown;
 }
 
 type MemoryCreateKind = "user" | "project" | "feedback";
@@ -170,8 +167,37 @@ interface RawDreamFileProjectRewritePayload {
   deleted_entry_ids?: unknown;
 }
 
+interface RawDreamClusterPayload {
+  member_relative_paths?: unknown;
+  reason?: unknown;
+}
+
+interface RawDreamClusterPlanPayload {
+  summary?: unknown;
+  clusters?: unknown;
+}
+
+interface RawDreamClusterRefinePayload {
+  summary?: unknown;
+  name?: unknown;
+  description?: unknown;
+  markdown?: unknown;
+}
+
+interface RawProjectMetaReviewPayload {
+  should_update?: unknown;
+  reason?: unknown;
+  project_name?: unknown;
+  description?: unknown;
+  aliases?: unknown;
+  status?: unknown;
+}
+
 const DEFAULT_DREAM_FILE_PLAN_TIMEOUT_MS = 600_000;
 const DEFAULT_DREAM_FILE_PROJECT_REWRITE_TIMEOUT_MS = 300_000;
+const DEFAULT_DREAM_CLUSTER_PLAN_TIMEOUT_MS = 180_000;
+const DEFAULT_DREAM_CLUSTER_REFINE_TIMEOUT_MS = 180_000;
+const DEFAULT_DREAM_PROJECT_META_REVIEW_TIMEOUT_MS = 120_000;
 const DEFAULT_USER_PROFILE_REWRITE_TIMEOUT_MS = 45_000;
 const DEFAULT_FILE_MEMORY_GATE_TIMEOUT_MS = 45_000;
 const DEFAULT_FILE_MEMORY_PROJECT_SELECTION_TIMEOUT_MS = 45_000;
@@ -189,9 +215,12 @@ Rules:
 - Assistant text is context only. Never classify something that exists only in assistant wording.
 - A turn can match multiple categories, but at most once per category.
 - Allowed categories:
-  - user: cross-project durable user profile, long-term preferences, identity, stable constraints, stable communication habits.
+  - user: cross-project durable personal identity/background facts about who the user is, such as name, profession, long-term role context, life background, or durable relationship context.
   - project: durable current-project facts such as what the project is, goals, scope, important progress, blockers, risks, key decisions.
-  - feedback: current-project collaboration rules, delivery rules, output structure, title/body template rules, confirmed style guidance.
+  - feedback: current-project collaboration rules, delivery rules, output structure, title/body template rules, confirmed style guidance, language rules, and file/tool boundaries.
+- Identity test: only use user when the focus turn is describing the user as a person.
+- Override test: if another project could reasonably override this rule or preference, it is not user; classify it as feedback.
+- Output test: if the turn is constraining how the assistant should reply, write, format, deliver, or touch files/tools, classify it as feedback.
 - Project memory should prefer stable facts. Do not classify short-lived time-flow updates, percentages, or fleeting scheduling notes as project memory unless they carry a durable blocker/risk/fact.
 - If the user explicitly says "请记住", "帮我记住", or "remember this", treat that as a stronger signal for durable memory. This is still inferred from the visible user text only.
 - If nothing durable should be remembered, return should_store=false and labels=[].
@@ -215,13 +244,15 @@ You create one append-only user memory note from a focus user turn.
 
 Rules:
 - Create at most one user note.
-- The note must capture only durable cross-project user information.
-- Do not include project-specific progress, current tasks, or current-project delivery rules.
+- The note must capture only durable cross-project personal identity/background information about who the user is.
+- Keep only long-lived identity facts such as name, profession, stable role context, life background, or durable relationship context.
+- Do not include language choices, answer structure, formatting habits, style preferences, file boundaries, tool boundaries, or project-specific collaboration rules.
+- One note should express one durable identity/background fact rather than a full profile rewrite.
 - The visible output language must follow the dominant user language in the focus user turn and neighboring user turns.
 - If the surrounding dialogue mixes languages, prefer the focus user turn language first, then the nearest neighboring user language.
 - Apply this language rule consistently to the title/name, description, markdown headings, and markdown body text.
 - Keep the note readable markdown.
-- Prefer meaningful headings when useful, especially: ## Profile, ## Preferences, ## Constraints, ## Relationships.
+- Do not force the note into a fixed profile template. Use headings only when they genuinely help readability.
 - Return JSON only.
 
 Use this exact JSON shape:
@@ -266,7 +297,7 @@ You create one append-only feedback memory note from a focus user turn.
 Rules:
 - Create at most one feedback note.
 - The note belongs to the current project only.
-- Use feedback for collaboration rules, delivery order, style constraints, title/body template rules, and confirmed output expectations.
+- Use feedback for collaboration rules, delivery order, style constraints, title/body template rules, confirmed output expectations, language rules, and file/tool boundaries.
 - The visible output language must follow the dominant user language in the focus user turn and neighboring user turns.
 - If the surrounding dialogue mixes languages, prefer the focus user turn language first, then the nearest neighboring user language.
 - Apply this language rule consistently to the title/name, description, markdown headings, and markdown body text.
@@ -391,6 +422,68 @@ export interface LlmDreamFileProjectRewriteOutput {
   deletedEntryIds: string[];
 }
 
+export interface LlmDreamClusterHeaderInput {
+  relativePath: string;
+  name: string;
+  description: string;
+  updatedAt: string;
+}
+
+export interface LlmDreamCluster {
+  memberRelativePaths: string[];
+  reason: string;
+}
+
+export interface LlmDreamClusterPlanInput {
+  kind: "project" | "feedback";
+  headers: LlmDreamClusterHeaderInput[];
+  agentId?: string;
+  timeoutMs?: number;
+  debugTrace?: PromptDebugSink;
+}
+
+export interface LlmDreamClusterPlanOutput {
+  summary: string;
+  clusters: LlmDreamCluster[];
+}
+
+export interface LlmDreamClusterRefineInput {
+  kind: "project" | "feedback";
+  records: LlmDreamFileRecordInput[];
+  agentId?: string;
+  timeoutMs?: number;
+  debugTrace?: PromptDebugSink;
+}
+
+export interface LlmDreamClusterRefineOutput {
+  summary: string;
+  file: {
+    name: string;
+    description: string;
+    markdown: string;
+  } | null;
+}
+
+export interface LlmDreamProjectMetaReviewInput {
+  currentMeta: LlmDreamFileProjectMetaInput;
+  recentProjectRecords: LlmDreamFileRecordInput[];
+  recentFeedbackRecords: LlmDreamFileRecordInput[];
+  agentId?: string;
+  timeoutMs?: number;
+  debugTrace?: PromptDebugSink;
+}
+
+export interface LlmDreamProjectMetaReviewOutput {
+  shouldUpdate: boolean;
+  reason: string;
+  projectMeta: {
+    projectName: string;
+    description: string;
+    aliases: string[];
+    status: string;
+  };
+}
+
 const EXTRACTION_SYSTEM_PROMPT = `
 You are a memory indexing engine for a conversational assistant.
 
@@ -446,24 +539,17 @@ You rewrite a global user profile for a conversational memory system.
 
 Rules:
 - Return JSON only.
-- Keep only durable user information that should persist across future sessions.
-- Preserve durable incoming facts. Do not drop a newly supplied stable preference, constraint, relationship, or identity detail unless it clearly conflicts with an older fact.
-- "profile" should be a compact paragraph about the user's stable identity/background.
-- "preferences" should contain long-lived personal preferences.
-- "constraints" should contain durable personal boundaries, objective limits, or stable context.
-- "relationships" should contain stable people/team relationships that matter later.
-- Stable reply preferences belong in user memory when they apply broadly across sessions. Examples: default language, answer structure such as "先给结论再给细节", or recurring update focus such as "优先关注进度、风险和阻塞点".
-- Personal tool/file boundaries belong in constraints. Example: "不要改动我的 .gitignore 文件".
+- Keep only durable personal identity/background information that should persist across future sessions.
+- Preserve durable incoming facts about who the user is. Do not drop a newly supplied stable identity, background, role detail, or durable relationship unless it clearly conflicts with older evidence.
+- "identity_background" should contain concise bullet-like facts about the user's stable identity, background, role context, or durable relationships.
+- If the incoming evidence only describes reply preferences, formatting habits, style choices, language choices, file/tool boundaries, or project collaboration rules, return an empty array.
 - Do not include project progress, project-specific collaboration rules, deadlines, blockers, or temporary tasks.
-- If a field has no durable content, return an empty string or empty array.
 - Keep the language aligned with the user's language in the incoming content.
+- Do not copy markdown syntax, heading markers, bullet markers, or code formatting into the output items. Normalize them into clean natural-language facts.
 
 Use this exact JSON shape:
 {
-  "profile": "compact user profile paragraph",
-  "preferences": ["..."],
-  "constraints": ["..."],
-  "relationships": ["..."]
+  "identity_background": ["..."]
 }
 `.trim();
 
@@ -578,6 +664,111 @@ Use this exact JSON shape:
 }
 `.trim();
 
+function buildDreamClusterPlanSystemPrompt(kind: "project" | "feedback"): string {
+  const kindLabel = kind === "project" ? "Project" : "Feedback";
+  const categoryDescription = kind === "project"
+    ? "Project memory files capture durable project facts such as project definition, scope, goals, blockers, risks, and important progress."
+    : "Feedback memory files capture durable collaboration rules, delivery rules, style rules, title/body template rules, and confirmed output constraints.";
+  return `
+You are the ${kindLabel} Dream cluster planner for a file-memory system.
+
+Your job is to inspect lightweight header information only and decide which files should be refined together.
+
+Rules:
+- Use only the supplied header metadata as evidence.
+- Do not assume full file contents beyond what the header says.
+- ${categoryDescription}
+- Return mutually exclusive candidate clusters only.
+- A file may appear in at most one cluster.
+- Only create a cluster when at least two files likely overlap, conflict, or should be merged into one cleaner memory file.
+- If files are distinct and should remain separate, leave them out of clusters.
+- Files belonging to the same current project is not, by itself, a merge reason.
+- Shared workspace, shared project membership, shared domain, or shared topic is not enough unless the headers show concrete semantic overlap, fact conflict, rule duplication, or obvious consolidation value.
+- Each cluster reason must name the specific overlap, conflict, repeated rule, repeated fact, or consolidation topic that justifies refinement.
+- Keep reasons concise and specific.
+- Natural-language output should follow the dominant language already visible in the supplied headers.
+- Return valid JSON only.
+
+Use this exact JSON shape:
+{
+  "summary": "short planning summary",
+  "clusters": [
+    {
+      "member_relative_paths": ["Project/a.md", "Project/b.md"],
+      "reason": "why these files should be refined together"
+    }
+  ]
+}
+`.trim();
+}
+
+function buildDreamClusterRefineSystemPrompt(kind: "project" | "feedback"): string {
+  const kindLabel = kind === "project" ? "Project" : "Feedback";
+  const categoryInstruction = kind === "project"
+    ? [
+        "Produce exactly one project memory file.",
+        "Keep durable project facts only: what the project is, stable scope, goals, important progress, blockers, risks, and important decisions.",
+        "Do not reduce the file to a vague status line.",
+        "Prefer readable markdown headings such as ## Summary, ## Current Stage, ## Constraints, ## Blockers, ## Next Steps, ## Timeline, ## Notes when useful.",
+      ].join("\n- ")
+    : [
+        "Produce exactly one feedback memory file.",
+        "Keep durable collaboration rules only: delivery order, output structure, style constraints, title/body template guidance, and confirmed review preferences.",
+        "Prefer readable markdown headings such as ## Rule, ## Why, ## How To Apply, ## Notes when useful.",
+      ].join("\n- ");
+  return `
+You are the ${kindLabel} Dream refine engine for a file-memory system.
+
+Your job is to merge one cluster of existing memory files into exactly one cleaner memory file.
+
+Rules:
+- Use only the supplied full file contents as evidence.
+- Resolve overlap, deduplicate repeated details, and keep the most useful durable facts.
+- Do not invent new facts.
+- Output exactly one refined file.
+- The visible output language must follow the dominant language already present in the supplied files. If the supplied files are mixed, prefer the dominant language of the cluster.
+- Apply this language rule consistently to the title/name, description, markdown headings, and markdown body text.
+- ${categoryInstruction}
+- Return valid JSON only.
+
+Use this exact JSON shape:
+{
+  "summary": "short refine summary",
+  "name": "refined file title",
+  "description": "one-line description",
+  "markdown": "full markdown body"
+}
+`.trim();
+}
+
+const DREAM_PROJECT_META_REVIEW_SYSTEM_PROMPT = `
+You are the Dream project metadata reviewer for a file-memory system.
+
+Your job is to decide whether the current project metadata is clearly incorrect or outdated after project/feedback refinement.
+
+Rules:
+- Use only the supplied current metadata and the recent project/feedback files as evidence.
+- Be conservative. Keep the current metadata unless the supplied evidence clearly supports a change.
+- You may update only:
+  - project_name
+  - description
+  - aliases
+  - status
+- Do not rewrite metadata just to paraphrase it.
+- Natural-language output fields must follow the dominant language already present in the supplied project/feedback files.
+- Return valid JSON only.
+
+Use this exact JSON shape:
+{
+  "should_update": false,
+  "reason": "why metadata should or should not change",
+  "project_name": "final project name",
+  "description": "final description",
+  "aliases": ["alias 1", "alias 2"],
+  "status": "in_progress"
+}
+`.trim();
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -671,22 +862,24 @@ function buildUserProfileRewritePrompt(input: {
   return JSON.stringify({
     existing_user_profile: input.existingProfile
       ? {
-          profile: truncateForPrompt(input.existingProfile.profile, 320),
-          preferences: input.existingProfile.preferences.map((item) => truncateForPrompt(item, 120)).slice(0, 20),
-          constraints: input.existingProfile.constraints.map((item) => truncateForPrompt(item, 120)).slice(0, 20),
-          relationships: input.existingProfile.relationships.map((item) => truncateForPrompt(item, 120)).slice(0, 20),
+          identity_background: input.existingProfile.identityBackground
+            .map((item) => truncateForPrompt(item, 120))
+            .slice(0, 20),
         }
       : null,
-    incoming_user_candidates: input.candidates.map((candidate) => ({
-      description: truncateForPrompt(candidate.description, 180),
-      profile: truncateForPrompt(candidate.profile || candidate.summary || candidate.description, 260),
-      markdown: truncateForPrompt(candidate.body || "", 900),
-      preferences: (candidate.preferences ?? []).map((item) => truncateForPrompt(item, 120)).slice(0, 10),
-      constraints: (candidate.constraints ?? []).map((item) => truncateForPrompt(item, 120)).slice(0, 10),
-      relationships: (candidate.relationships ?? []).map((item) => truncateForPrompt(item, 120)).slice(0, 10),
-      captured_at: candidate.capturedAt ?? "",
-      source_session_key: candidate.sourceSessionKey ?? "",
-    })),
+    incoming_user_candidates: input.candidates.map((candidate) => {
+      const plainText = stripMarkdownSyntax(candidate.body || candidate.profile || candidate.summary || candidate.description);
+      return {
+        description: truncateForPrompt(candidate.description, 180),
+        identity_background_hints: uniqueStrings([
+          ...splitProfileFacts(candidate.profile || candidate.summary || ""),
+          ...(candidate.relationships ?? []),
+        ], 12).map((item) => truncateForPrompt(item, 120)),
+        note_text: truncateForPrompt(plainText, 900),
+        captured_at: candidate.capturedAt ?? "",
+        source_session_key: candidate.sourceSessionKey ?? "",
+      };
+    }),
   }, null, 2);
 }
 
@@ -935,6 +1128,63 @@ function buildDreamFileProjectRewritePrompt(input: LlmDreamFileProjectRewriteInp
   }, null, 2);
 }
 
+function buildDreamClusterPlanPrompt(input: LlmDreamClusterPlanInput): string {
+  return JSON.stringify({
+    category: input.kind,
+    headers: input.headers.map((header) => ({
+      relative_path: header.relativePath,
+      name: truncateForPrompt(header.name, 120),
+      description: truncateForPrompt(header.description, 220),
+      updated_at: header.updatedAt,
+    })),
+  }, null, 2);
+}
+
+function buildDreamClusterRefinePrompt(input: LlmDreamClusterRefineInput): string {
+  return JSON.stringify({
+    category: input.kind,
+    records: input.records.map((record) => ({
+      entry_id: record.entryId,
+      relative_path: record.relativePath,
+      type: record.type,
+      name: record.name,
+      description: truncateForPrompt(record.description, 220),
+      updated_at: record.updatedAt,
+      captured_at: record.capturedAt ?? "",
+      source_session_key: record.sourceSessionKey ?? "",
+      content: record.content,
+    })),
+  }, null, 2);
+}
+
+function buildDreamProjectMetaReviewPrompt(input: LlmDreamProjectMetaReviewInput): string {
+  return JSON.stringify({
+    current_project_meta: {
+      project_id: input.currentMeta.projectId,
+      project_name: input.currentMeta.projectName,
+      description: truncateForPrompt(input.currentMeta.description, 220),
+      aliases: input.currentMeta.aliases.slice(0, 12),
+      status: input.currentMeta.status,
+      updated_at: input.currentMeta.updatedAt,
+      dream_updated_at: input.currentMeta.dreamUpdatedAt ?? "",
+    },
+    recent_project_files: input.recentProjectRecords.map((record) => ({
+      relative_path: record.relativePath,
+      name: record.name,
+      description: truncateForPrompt(record.description, 220),
+      updated_at: record.updatedAt,
+      content: record.content,
+    })),
+    recent_feedback_files: input.recentFeedbackRecords.map((record) => ({
+      relative_path: record.relativePath,
+      name: record.name,
+      description: truncateForPrompt(record.description, 220),
+      updated_at: record.updatedAt,
+      content: record.content,
+    })),
+  }, null, 2);
+}
+
 function extractFirstJsonObject(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("Empty extraction response");
@@ -1118,6 +1368,44 @@ function normalizeDreamFileProjectRewriteFile(
   };
 }
 
+function normalizeDreamCluster(
+  item: unknown,
+  allowedRelativePaths: ReadonlySet<string>,
+): LlmDreamCluster | null {
+  if (!isRecord(item)) return null;
+  const memberRelativePaths = normalizeDreamFileEntryIds(item.member_relative_paths, allowedRelativePaths, 32);
+  if (memberRelativePaths.length === 0) return null;
+  const reason = typeof item.reason === "string"
+    ? truncate(normalizeWhitespace(item.reason), 320)
+    : "";
+  return {
+    memberRelativePaths,
+    reason,
+  };
+}
+
+function normalizeDreamProjectMetaReview(
+  payload: RawProjectMetaReviewPayload,
+  fallback: { projectName: string; description: string; aliases: string[]; status: string },
+): LlmDreamProjectMetaReviewOutput {
+  return {
+    shouldUpdate: normalizeBoolean(payload.should_update, false),
+    reason: typeof payload.reason === "string"
+      ? truncate(normalizeWhitespace(payload.reason), 320)
+      : "",
+    projectMeta: {
+      projectName: typeof payload.project_name === "string"
+        ? truncate(normalizeWhitespace(payload.project_name), 120) || fallback.projectName
+        : fallback.projectName,
+      description: typeof payload.description === "string"
+        ? truncate(normalizeWhitespace(payload.description), 320) || fallback.description
+        : fallback.description,
+      aliases: uniqueStrings(normalizeStringArray(payload.aliases, 24), 24),
+      status: normalizeDreamFileProjectStatus(payload.status ?? fallback.status),
+    },
+  };
+}
+
 function truncateForPrompt(value: string, maxLength: number): string {
   return truncate(normalizeWhitespace(value), maxLength);
 }
@@ -1181,6 +1469,18 @@ function splitProfileFacts(text: string): string[] {
   );
 }
 
+function stripMarkdownSyntax(text: string): string {
+  return normalizeWhitespace(
+    text
+      .replace(/\r/g, "\n")
+      .replace(/^#{1,6}\s*/gm, "")
+      .replace(/^\s*[-*+]\s*/gm, "")
+      .replace(/`+/g, "")
+      .replace(/\*\*(.*?)\*\*/g, "$1")
+      .replace(/\*(.*?)\*/g, "$1"),
+  );
+}
+
 function isStableFormalProjectId(value: string | undefined): boolean {
   return STABLE_FORMAL_PROJECT_ID_PATTERN.test((value ?? "").trim());
 }
@@ -1198,23 +1498,6 @@ function canonicalizeUserFact(value: string): string {
     .replace(/\s+/g, "");
 }
 
-function looksLikeRelationshipFact(value: string): boolean {
-  return /(合作|同事|导师|朋友|家人|产品经理|团队|搭档|partner|manager)/i.test(normalizeWhitespace(value));
-}
-
-function looksLikeStrongConstraint(value: string): boolean {
-  return /(必须|只能|无法|不能|受限|限制|预算|截止|deadline|过敏|禁忌|不吃|不方便|设备限制|长期使用|只用)/i
-    .test(normalizeWhitespace(value));
-}
-
-function looksLikePreferenceFact(value: string): boolean {
-  const normalized = normalizeWhitespace(value);
-  if (!normalized || looksLikeRelationshipFact(normalized)) return false;
-  if (/(^| )(我是|从事|住在|居住在|来自|长期住)/i.test(normalized)) return false;
-  return /(喜欢|偏好|习惯|常用|主要使用|技术栈|语言|交流|设备|Mac|Windows|Linux|TypeScript|Node\.js|Python|JavaScript)/i
-    .test(normalized);
-}
-
 function dedupeFactsAgainstSection(items: string[], excluded: string[]): string[] {
   const excludedKeys = new Set(excluded.map((item) => canonicalizeUserFact(item)).filter(Boolean));
   const seen = new Set<string>();
@@ -1229,30 +1512,23 @@ function dedupeFactsAgainstSection(items: string[], excluded: string[]): string[
   return next;
 }
 
-function cleanUserProfileSections(input: {
-  profile: string;
-  preferences: string[];
-  constraints: string[];
-  relationships: string[];
+function normalizeUserSectionItems(value: unknown, maxItems: number): string[] {
+  if (typeof value === "string") {
+    return splitProfileFacts(stripMarkdownSyntax(value)).slice(0, maxItems);
+  }
+  return normalizeStringArray(value, maxItems);
+}
+
+function cleanUserIdentitySummary(input: {
+  identityBackground: string[];
 }): {
-  profile: string;
-  preferences: string[];
-  constraints: string[];
-  relationships: string[];
+  identityBackground: string[];
 } {
-  const profile = normalizeWhitespace(input.profile);
-  const profileFacts = splitProfileFacts(profile);
-  const relationships = dedupeFactsAgainstSection(uniqueStrings(input.relationships, 20), []);
-  const constraints = dedupeFactsAgainstSection(uniqueStrings(input.constraints, 20), relationships);
-  const preferences = dedupeFactsAgainstSection(
-    uniqueStrings(input.preferences, 20),
-    [...relationships, ...constraints, profile, ...profileFacts],
-  );
   return {
-    profile,
-    preferences,
-    constraints,
-    relationships,
+    identityBackground: uniqueStrings(
+      input.identityBackground.flatMap((item) => splitProfileFacts(stripMarkdownSyntax(item))),
+      20,
+    ),
   };
 }
 
@@ -1270,50 +1546,6 @@ function deriveFeedbackCandidateName(text: string): string {
   if (/(汇报|同步进展|风险|完成了什么)/i.test(normalized)) return "reporting-rule";
   if (/(格式|风格|写法|回复时|回答时)/i.test(normalized)) return "format-rule";
   return "collaboration-rule";
-}
-
-function looksLikeDurableUserProfileText(text: string): boolean {
-  return /(我是|我来自|我住在|我长期|我平时|我一般|我更喜欢|我偏好|我习惯|我(?:现在)?常用|我的身份|我的专业|我在做|我的技术栈|长期使用|我(?:做[^，。；;\n]+时)?很在意|我比较在意|我特别在意|我更关心|我不需要|我的长期偏好|默认使用|默认用)/i
-    .test(normalizeWhitespace(text));
-}
-
-function looksLikeStableUserPreferenceInstruction(text: string): boolean {
-  const normalized = normalizeWhitespace(stripExplicitRememberLead(text));
-  if (!normalized) return false;
-  return /(默认(?:使用|用)?中文输出|默认(?:使用|用)?英文输出|请用中文|请用英文|先给结论(?:再给细节)?|先说结论|先总结后展开|不要改动我的\s*\.gitignore|不能改动我的\s*\.gitignore|不能乱动的文件|更关心项目进度|更关心[^。；;\n]*风险|更关心[^。；;\n]*阻塞点|不需要泛泛而谈)/i
-    .test(normalized);
-}
-
-function extractUserPreferenceHints(text: string): string[] {
-  const normalized = normalizeWhitespace(stripExplicitRememberLead(text));
-  if (!normalized) return [];
-  const hints: string[] = [];
-  if (/(默认(?:使用|用)?中文输出|请用中文|用中文回复|中文输出)/i.test(normalized)) {
-    hints.push("默认使用中文输出");
-  }
-  if (/(默认(?:使用|用)?英文输出|请用英文|用英文回复|英文输出)/i.test(normalized)) {
-    hints.push("默认使用英文输出");
-  }
-  if (/(先给结论(?:再给细节)?|先说结论|先总结后展开)/i.test(normalized)) {
-    hints.push("如果有结论，先给结论再给细节");
-  }
-  if (/(更关心项目进度|更关心[^。；;\n]*风险|更关心[^。；;\n]*阻塞点)/i.test(normalized)) {
-    hints.push("更关注项目进度、风险和上线阻塞点");
-  }
-  if (/不需要泛泛而谈/i.test(normalized)) {
-    hints.push("不需要泛泛而谈，优先关注关键信息");
-  }
-  return uniqueStrings(hints, 10);
-}
-
-function extractUserConstraintHints(text: string): string[] {
-  const normalized = normalizeWhitespace(stripExplicitRememberLead(text));
-  if (!normalized) return [];
-  const hints: string[] = [];
-  if (/(不要改动我的\s*\.gitignore|不能改动我的\s*\.gitignore|不要动我的\s*\.gitignore)/i.test(normalized)) {
-    hints.push("不要改动我的 .gitignore 文件");
-  }
-  return uniqueStrings(hints, 10);
 }
 
 function looksLikeConcreteProjectMemoryText(text: string): boolean {
@@ -1450,26 +1682,10 @@ function selectKnownProjectHint(text: string, knownProjects: ProjectIdentityHint
     || looksLikeProjectRiskText(text)
     || looksLikeProjectScopeText(text)
   );
-  const globalUserPreferenceSignal = looksLikeDurableUserProfileText(text) || looksLikeStableUserPreferenceInstruction(text);
-  if (knownProjects.length === 1 && projectFollowUpSignal && !globalUserPreferenceSignal) {
+  if (knownProjects.length === 1 && projectFollowUpSignal) {
     return knownProjects[0];
   }
   return undefined;
-}
-
-function looksLikeUserMemoryQuery(text: string): boolean {
-  const normalized = normalizeWhitespace(text);
-  if (!normalized) return false;
-  const userSignals = /(我的|个人|长期偏好|偏好|习惯|默认|语言|中文|英文|先给结论|回答结构|回复结构|不要改动|不能改动|不能乱动|\.gitignore|边界|限制|风格)/i
-    .test(normalized);
-  const projectSignals = /(项目|一期|当前范围|进度|风险|阻塞|当前阶段|里程碑|edgeclaw-memory|memory integration|memory tools|top-level memory tab|memory tab)/i
-    .test(normalized);
-  return userSignals && !projectSignals;
-}
-
-function looksLikeProjectMemoryQuery(text: string): boolean {
-  return /(项目|一期|当前范围|进度|风险|阻塞|当前阶段|里程碑|edgeclaw-memory|memory integration|memory tools|memory_overview|memory_list|memory_search|memory_get|memory_flush|memory_dream|memory tab)/i
-    .test(normalizeWhitespace(text));
 }
 
 function isGenericProjectCandidateName(name: string): boolean {
@@ -1905,72 +2121,39 @@ export class LlmMemoryExtractor {
     if (userCandidates.length === 0) return null;
 
     const latestCandidate = userCandidates[userCandidates.length - 1];
-    const fallbackProfile = truncate(
-      pickLongest(
-        input.existingProfile?.profile ?? "",
-        uniqueStrings(
-          userCandidates.map((candidate) => candidate.profile || candidate.summary || candidate.description || candidate.body || ""),
-          6,
-        ).join("；"),
-      ),
-      400,
-    );
-    const fallbackPreferences = uniqueStrings([
-      ...(input.existingProfile?.preferences ?? []),
-      ...userCandidates.flatMap((candidate) => candidate.preferences ?? []),
-    ], 20);
-    const fallbackConstraints = uniqueStrings([
-      ...(input.existingProfile?.constraints ?? []),
-      ...userCandidates.flatMap((candidate) => candidate.constraints ?? []),
-    ], 20);
-    const fallbackRelationships = uniqueStrings([
-      ...(input.existingProfile?.relationships ?? []),
-      ...userCandidates.flatMap((candidate) => candidate.relationships ?? []),
+    const fallbackIdentityBackground = uniqueStrings([
+      ...(input.existingProfile?.identityBackground ?? []),
+      ...userCandidates.flatMap((candidate) => [
+        ...splitProfileFacts(candidate.profile || candidate.summary || candidate.description || ""),
+        ...(candidate.relationships ?? []),
+      ]),
     ], 20);
 
     const buildCandidate = (next: {
-      profile: string;
-      preferences: string[];
-      constraints: string[];
-      relationships: string[];
+      identityBackground: string[];
     }): MemoryCandidate | null => {
-      const cleaned = cleanUserProfileSections(next);
-      const profile = cleaned.profile;
-      const preferences = cleaned.preferences;
-      const constraints = cleaned.constraints;
-      const relationships = cleaned.relationships;
-      if (!profile && preferences.length === 0 && constraints.length === 0 && relationships.length === 0) {
+      const cleaned = cleanUserIdentitySummary(next);
+      const identityBackground = cleaned.identityBackground;
+      if (identityBackground.length === 0) {
         return null;
       }
       return {
         type: "user",
         scope: "global",
         name: "user-profile",
-        description: truncateForPrompt(profile || preferences[0] || constraints[0] || relationships[0] || "User profile", 120),
+        description: truncateForPrompt(identityBackground[0] || "User profile", 120),
         ...(latestCandidate?.capturedAt ? { capturedAt: latestCandidate.capturedAt } : {}),
         ...(latestCandidate?.sourceSessionKey ? { sourceSessionKey: latestCandidate.sourceSessionKey } : {}),
-        profile,
-        preferences,
-        constraints,
-      relationships,
+        profile: identityBackground.join("；"),
       };
     };
 
     const mergeWithFallback = (next: {
-      profile: string;
-      preferences: string[];
-      constraints: string[];
-      relationships: string[];
+      identityBackground: string[];
     }): {
-      profile: string;
-      preferences: string[];
-      constraints: string[];
-      relationships: string[];
-    } => cleanUserProfileSections({
-      profile: normalizeWhitespace(next.profile) || fallbackProfile,
-      preferences: uniqueStrings([...next.preferences, ...fallbackPreferences], 20),
-      constraints: uniqueStrings([...next.constraints, ...fallbackConstraints], 20),
-      relationships: uniqueStrings([...next.relationships, ...fallbackRelationships], 20),
+      identityBackground: string[];
+    } => cleanUserIdentitySummary({
+      identityBackground: uniqueStrings([...next.identityBackground, ...fallbackIdentityBackground], 20),
     });
 
     try {
@@ -1984,10 +2167,7 @@ export class LlmMemoryExtractor {
         parse: (raw) => JSON.parse(extractFirstJsonObject(raw)) as RawUserProfilePayload,
       });
       const rewritten = buildCandidate(mergeWithFallback({
-        profile: typeof parsed.profile === "string" ? truncateForPrompt(parsed.profile, 400) : "",
-        preferences: normalizeStringArray(parsed.preferences, 20),
-        constraints: normalizeStringArray(parsed.constraints, 20),
-        relationships: normalizeStringArray(parsed.relationships, 20),
+        identityBackground: normalizeUserSectionItems(parsed.identity_background, 20),
       }));
       if (rewritten) return rewritten;
     } catch (error) {
@@ -1995,10 +2175,7 @@ export class LlmMemoryExtractor {
     }
 
     return buildCandidate(mergeWithFallback({
-      profile: fallbackProfile,
-      preferences: fallbackPreferences,
-      constraints: fallbackConstraints,
-      relationships: fallbackRelationships,
+      identityBackground: fallbackIdentityBackground,
     }));
   }
 
@@ -2134,6 +2311,83 @@ export class LlmMemoryExtractor {
     return this.createMemoryNote({ ...input, kind: "feedback" });
   }
 
+  async planDreamClusters(input: LlmDreamClusterPlanInput): Promise<LlmDreamClusterPlanOutput> {
+    if (input.headers.length < 2) {
+      return {
+        summary: `Not enough ${input.kind} files to form Dream clusters.`,
+        clusters: [],
+      };
+    }
+    const allowedRelativePaths = new Set(input.headers.map((header) => header.relativePath));
+    const parsed = await this.callStructuredJsonWithDebug<RawDreamClusterPlanPayload>({
+      systemPrompt: buildDreamClusterPlanSystemPrompt(input.kind),
+      userPrompt: buildDreamClusterPlanPrompt(input),
+      requestLabel: input.kind === "project" ? "Dream project cluster plan" : "Dream feedback cluster plan",
+      timeoutMs: input.timeoutMs ?? DEFAULT_DREAM_CLUSTER_PLAN_TIMEOUT_MS,
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(input.debugTrace ? { debugTrace: input.debugTrace } : {}),
+      parse: (raw) => JSON.parse(extractFirstJsonObject(raw)) as RawDreamClusterPlanPayload,
+    });
+    return {
+      summary: typeof parsed.summary === "string"
+        ? truncate(normalizeWhitespace(parsed.summary), 320)
+        : `Dream ${input.kind} cluster plan completed.`,
+      clusters: Array.isArray(parsed.clusters)
+        ? parsed.clusters
+            .map((cluster) => normalizeDreamCluster(cluster, allowedRelativePaths))
+            .filter((cluster): cluster is LlmDreamCluster => Boolean(cluster))
+        : [],
+    };
+  }
+
+  async refineDreamCluster(input: LlmDreamClusterRefineInput): Promise<LlmDreamClusterRefineOutput> {
+    if (input.records.length === 0) {
+      return {
+        summary: `No ${input.kind} files were supplied for Dream refine.`,
+        file: null,
+      };
+    }
+    const parsed = await this.callStructuredJsonWithDebug<RawDreamClusterRefinePayload>({
+      systemPrompt: buildDreamClusterRefineSystemPrompt(input.kind),
+      userPrompt: buildDreamClusterRefinePrompt(input),
+      requestLabel: input.kind === "project" ? "Dream project cluster refine" : "Dream feedback cluster refine",
+      timeoutMs: input.timeoutMs ?? DEFAULT_DREAM_CLUSTER_REFINE_TIMEOUT_MS,
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(input.debugTrace ? { debugTrace: input.debugTrace } : {}),
+      parse: (raw) => JSON.parse(extractFirstJsonObject(raw)) as RawDreamClusterRefinePayload,
+    });
+    const name = typeof parsed.name === "string" ? truncate(normalizeWhitespace(parsed.name), 120) : "";
+    const description = typeof parsed.description === "string" ? truncate(normalizeWhitespace(parsed.description), 320) : "";
+    const markdown = typeof parsed.markdown === "string" ? parsed.markdown.trim() : "";
+    return {
+      summary: typeof parsed.summary === "string"
+        ? truncate(normalizeWhitespace(parsed.summary), 320)
+        : `Dream ${input.kind} cluster refine completed.`,
+      file: name && description && markdown
+        ? { name, description, markdown }
+        : null,
+    };
+  }
+
+  async reviewDreamProjectMeta(input: LlmDreamProjectMetaReviewInput): Promise<LlmDreamProjectMetaReviewOutput> {
+    const fallback = {
+      projectName: input.currentMeta.projectName,
+      description: input.currentMeta.description,
+      aliases: input.currentMeta.aliases,
+      status: input.currentMeta.status,
+    };
+    const parsed = await this.callStructuredJsonWithDebug<RawProjectMetaReviewPayload>({
+      systemPrompt: DREAM_PROJECT_META_REVIEW_SYSTEM_PROMPT,
+      userPrompt: buildDreamProjectMetaReviewPrompt(input),
+      requestLabel: "Dream project meta review",
+      timeoutMs: input.timeoutMs ?? DEFAULT_DREAM_PROJECT_META_REVIEW_TIMEOUT_MS,
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(input.debugTrace ? { debugTrace: input.debugTrace } : {}),
+      parse: (raw) => JSON.parse(extractFirstJsonObject(raw)) as RawProjectMetaReviewPayload,
+    });
+    return normalizeDreamProjectMetaReview(parsed, fallback);
+  }
+
   async planDreamFileMemory(input: LlmDreamFileGlobalPlanInput): Promise<LlmDreamFileGlobalPlanOutput> {
     if (input.records.length === 0) {
       return {
@@ -2228,11 +2482,6 @@ export class LlmMemoryExtractor {
     timeoutMs?: number;
     debugTrace?: PromptDebugSink;
   }): Promise<MemoryRoute> {
-    const heuristicUserRoute = looksLikeUserMemoryQuery(input.query);
-    const heuristicProjectRoute = !heuristicUserRoute && looksLikeProjectMemoryQuery(input.query);
-    if (heuristicUserRoute) {
-      return "user";
-    }
     try {
       const parsed = await this.callStructuredJsonWithDebug<{ route?: unknown }>({
         systemPrompt: [
@@ -2240,7 +2489,8 @@ export class LlmMemoryExtractor {
           "Return JSON only with a single field route.",
           "Valid route values: none, user, project_memory.",
           "Use none unless the query clearly needs long-term memory.",
-          "Use user when the query is only asking about stable user preferences, profile, constraints, or relationships.",
+          "Use user only when the query is asking about stable personal identity/background facts about who the user is, such as name, profession, long-term role context, life background, or durable relationships.",
+          "Do not use user for reply preferences, language choices, formatting rules, style guidance, file/tool boundaries, or delivery rules; those belong to project_memory.",
           "Use project_memory when the query needs any project memory at all, including project status, project facts, collaboration rules, delivery style, or both.",
         ].join("\n"),
         userPrompt: JSON.stringify({
@@ -2256,17 +2506,10 @@ export class LlmMemoryExtractor {
         ...(input.debugTrace ? { debugTrace: input.debugTrace } : {}),
         parse: (raw) => JSON.parse(extractFirstJsonObject(raw)) as { route?: unknown },
       });
-      const normalizedRoute = normalizeMemoryRoute(parsed.route) || "none";
-      if (normalizedRoute === "project_memory" && heuristicUserRoute) {
-        return "user";
-      }
-      if (normalizedRoute === "none" && heuristicProjectRoute) {
-        return "project_memory";
-      }
-      return normalizedRoute;
+      return normalizeMemoryRoute(parsed.route) || "none";
     } catch (error) {
       this.logger?.warn?.(`[clawxmemory] file memory gate fallback: ${String(error)}`);
-      return heuristicProjectRoute ? "project_memory" : "none";
+      return "none";
     }
   }
 
@@ -2420,8 +2663,6 @@ export class LlmMemoryExtractor {
     const projectFollowUpSignal = looksLikeProjectFollowUpText(focusText);
     const projectRiskSignal = looksLikeProjectRiskText(focusText);
     const projectScopeSignal = looksLikeProjectScopeText(focusText);
-    const stableUserPreferenceSignal = looksLikeDurableUserProfileText(focusText)
-      || looksLikeStableUserPreferenceInstruction(focusText);
     const projectDefinitionSignal = Boolean(
       explicitProjectName
       || explicitProjectDescriptor
@@ -2445,9 +2686,9 @@ export class LlmMemoryExtractor {
           "Use the batch context to interpret ambiguous references in the focus turn, but only emit memories justified by the focus user turn itself.",
           "known_projects contains the durable identity of the current workspace project.",
           "The assistant replies in the batch context are supporting context only. Never create a memory candidate from assistant wording alone.",
-          "For user items only keep stable identity, preferences, constraints, or durable relationships. Never place project state or task details inside user memory.",
-          "First-person statements about the user's own long-term taste or quality bar are user memory, not feedback. Example: '我做文案时很在意标题和封面文案的一致性。' => user.",
-          "Global reply preferences and personal boundaries are user memory even if they affect assistant behavior. Examples: '默认使用中文输出', '如果有结论先给结论再给细节', '不要改动我的 .gitignore 文件', '我更关心项目进度、风险和上线阻塞点'.",
+          "For user items only keep stable personal identity/background facts or durable relationships. Never place project state, collaboration rules, reply preferences, language choices, style rules, or file boundaries inside user memory.",
+          "If a first-person statement is really about how the assistant should collaborate, write, format, reply, or operate on files, it is feedback, not user.",
+          "Global-seeming reply preferences and personal file boundaries still belong to feedback in this runtime. Examples: '默认使用中文输出', '如果有结论先给结论再给细节', '不要改动我的 .gitignore 文件', '我更关心项目进度、风险和上线阻塞点'.",
           "If the focus turn tells the assistant how to collaborate, deliver, report, format, or structure outputs, that is feedback, not project.",
           "If the focus turn says how outputs should be delivered, such as title count, body order, cover copy, progress update order, or reply structure, you must classify it as feedback rather than project.",
           "For feedback items always provide rule, why, and how_to_apply.",
@@ -2552,8 +2793,6 @@ export class LlmMemoryExtractor {
           const timeline = normalizeStringArray(item.timeline, 10);
           const rawNotes = normalizeStringArray(item.notes, 10);
           const knownProjectAliases = selectedKnownProject?.aliases ?? [];
-          const inferredUserPreferences = extractUserPreferenceHints(focusText);
-          const inferredUserConstraints = extractUserConstraintHints(focusText);
           const structuredProjectSummary = truncateForPrompt(
             rawDecisions[0]
             || rawConstraints[0]
@@ -2573,11 +2812,7 @@ export class LlmMemoryExtractor {
             });
             return null;
           }
-          const recastFeedbackAsUser = type === "feedback"
-            && !projectDefinitionSignal
-            && !genericProjectAnchor
-            && stableUserPreferenceSignal;
-          const candidateType = recastFeedbackAsUser ? "user" : type;
+          const candidateType = type;
           const shouldPinToKnownProject = Boolean(selectedKnownProject && !explicitProjectName);
           const projectAliases = candidateType === "project"
             ? uniqueStrings([
@@ -2629,10 +2864,10 @@ export class LlmMemoryExtractor {
               ? truncateForPrompt(rawName || deriveFeedbackCandidateName(feedbackRule), 80)
               : projectNameFallback;
           const preferences = candidateType === "user"
-            ? uniqueStrings([...normalizeStringArray(item.preferences, 10), ...inferredUserPreferences], 10)
+            ? []
             : normalizeStringArray(item.preferences, 10);
           const constraints = candidateType === "user"
-            ? uniqueStrings([...rawConstraints, ...inferredUserConstraints], 10)
+            ? []
             : rawConstraints;
           const decisions = candidateType === "project" && projectScopeSignal
             ? uniqueStrings([...rawDecisions, normalizeWhitespace(stripExplicitRememberLead(focusText))], 10)
@@ -2650,8 +2885,6 @@ export class LlmMemoryExtractor {
             || rawContent
             || (typeof item.profile === "string" && normalizeWhitespace(item.profile))
             || (typeof item.summary === "string" && normalizeWhitespace(item.summary))
-            || preferences.length > 0
-            || constraints.length > 0
             || relationships.length > 0,
           );
           if (candidateType === "project" && (!name || !description)) {
@@ -2703,13 +2936,11 @@ export class LlmMemoryExtractor {
               ? { profile: truncateForPrompt(item.profile, 280) }
               : rawContent
                 ? { profile: rawContent }
-                : candidateType === "user" && feedbackRule
-                  ? { profile: feedbackRule }
                 : {}),
             ...(typeof item.summary === "string" ? { summary: truncateForPrompt(item.summary, 280) } : {}),
-            preferences,
-            constraints,
-            relationships,
+            ...(preferences.length > 0 ? { preferences } : {}),
+            ...(constraints.length > 0 ? { constraints } : {}),
+            ...(relationships.length > 0 ? { relationships } : {}),
             ...(candidateType === "feedback" && feedbackRule ? { rule: feedbackRule } : {}),
             ...(typeof item.why === "string" && sanitizeFeedbackSectionText(item.why)
               && candidateType === "feedback"
@@ -2751,18 +2982,7 @@ export class LlmMemoryExtractor {
           ...(item.timeline ?? []),
         ].join(" ");
         if (item.type === "user") {
-          const keep = !looksLikeCollaborationRuleText(text)
-            || looksLikeDurableUserProfileText(text)
-            || looksLikeStableUserPreferenceInstruction(text);
-          if (!keep) {
-            discarded.push({
-              reason: "violates_user_boundary",
-              candidateType: item.type,
-              candidateName: item.name,
-              summary: item.description,
-            });
-          }
-          return keep;
+          return true;
         }
         if (item.type === "project") {
           if (feedbackInstructionSignal && !projectDefinitionSignal) {
