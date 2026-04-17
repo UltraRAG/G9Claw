@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:f
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { MEMORY_EXPORT_FORMAT_VERSION, } from "../types.js";
 import { FileMemoryStore } from "../file-memory.js";
-import { nowIso } from "../utils/id.js";
+import { hashText, nowIso } from "../utils/id.js";
 const INDEXING_SETTINGS_STATE_KEY = "indexingSettings";
 const LAST_INDEXED_AT_STATE_KEY = "lastIndexedAt";
 const LAST_DREAM_AT_STATE_KEY = "lastDreamAt";
@@ -11,6 +11,7 @@ const LAST_DREAM_SUMMARY_STATE_KEY = "lastDreamSummary";
 const RECENT_CASE_TRACES_STATE_KEY = "recentCaseTraces";
 const RECENT_INDEX_TRACES_STATE_KEY = "recentIndexTraces";
 const RECENT_DREAM_TRACES_STATE_KEY = "recentDreamTraces";
+const GLOBAL_MEMORY_PREFIX = "global/";
 export class MemoryBundleValidationError extends Error {
     constructor(message) {
         super(message);
@@ -180,6 +181,31 @@ function isPathWithinRoot(rootDir, targetPath) {
     const rel = relative(resolve(rootDir), resolve(targetPath));
     return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
+function normalizeRelativePath(relativePath) {
+    return relativePath.replace(/\\/g, "/");
+}
+function isGlobalRelativePath(relativePath) {
+    return normalizeRelativePath(relativePath).startsWith(GLOBAL_MEMORY_PREFIX);
+}
+function toExposedGlobalRelativePath(relativePath) {
+    const normalized = normalizeRelativePath(relativePath);
+    return normalized.startsWith(GLOBAL_MEMORY_PREFIX)
+        ? normalized
+        : `${GLOBAL_MEMORY_PREFIX}${normalized}`;
+}
+function toInternalGlobalRelativePath(relativePath) {
+    const normalized = normalizeRelativePath(relativePath);
+    return normalized.startsWith(GLOBAL_MEMORY_PREFIX)
+        ? normalized.slice(GLOBAL_MEMORY_PREFIX.length)
+        : normalized;
+}
+function sortManifestEntries(entries) {
+    return [...entries].sort((left, right) => {
+        if (right.updatedAt !== left.updatedAt)
+            return right.updatedAt.localeCompare(left.updatedAt);
+        return left.relativePath.localeCompare(right.relativePath);
+    });
+}
 async function loadSqlDatabaseFactory() {
     if (typeof globalThis.Bun !== "undefined") {
         const bunSqliteModuleName = "bun:sqlite";
@@ -210,13 +236,29 @@ function createSiblingTempPath(targetDir, label) {
 }
 export class MemoryRepository {
     db;
-    fileMemory;
+    workspaceMemory;
+    globalUserMemory;
     constructor(dbPath, options = {}) {
         mkdirSync(dirname(dbPath), { recursive: true });
         const memoryDir = options.memoryDir ?? join(dirname(dbPath), "memory");
+        const globalRootDir = options.globalRootDir ?? join(dirname(dirname(memoryDir)), "global");
         mkdirSync(memoryDir, { recursive: true });
+        mkdirSync(globalRootDir, { recursive: true });
         this.db = createSqlDatabase(dbPath);
-        this.fileMemory = new FileMemoryStore(memoryDir);
+        this.globalUserMemory = new FileMemoryStore(globalRootDir, {
+            manageProjectMeta: false,
+            manageProjectFiles: false,
+            manageUserProfile: true,
+            userProfileRelativePath: "User/user-profile.md",
+            enableManifest: false,
+        });
+        this.workspaceMemory = new FileMemoryStore(memoryDir, {
+            manageProjectMeta: true,
+            manageProjectFiles: true,
+            manageUserProfile: false,
+            enableManifest: true,
+            manifestUserEntriesProvider: () => this.listGlobalMemoryEntries(),
+        });
         this.init();
     }
     init() {
@@ -270,7 +312,47 @@ export class MemoryRepository {
         this.db.close();
     }
     getFileMemoryStore() {
-        return this.fileMemory;
+        return this.workspaceMemory;
+    }
+    getGlobalUserStore() {
+        return this.globalUserMemory;
+    }
+    repairWorkspaceManifest() {
+        return this.workspaceMemory.repairManifests();
+    }
+    getUserSummary() {
+        const summary = this.globalUserMemory.getUserSummary();
+        return {
+            ...summary,
+            files: summary.files.map((entry) => this.mapGlobalManifestEntry(entry)),
+        };
+    }
+    mapGlobalManifestEntry(entry) {
+        return {
+            ...entry,
+            relativePath: toExposedGlobalRelativePath(entry.relativePath),
+        };
+    }
+    mapGlobalFileRecord(record) {
+        return {
+            ...record,
+            relativePath: toExposedGlobalRelativePath(record.relativePath),
+        };
+    }
+    listGlobalMemoryEntries(options = {}) {
+        const kinds = options.kinds?.filter((kind) => kind === "user");
+        if (options.scope === "project")
+            return [];
+        if (options.kinds && (!kinds || kinds.length === 0))
+            return [];
+        return this.globalUserMemory.listMemoryEntries({
+            ...(kinds ? { kinds } : { kinds: ["user"] }),
+            ...(options.query ? { query: options.query } : {}),
+            ...(typeof options.limit === "number" ? { limit: options.limit } : {}),
+            ...(typeof options.offset === "number" ? { offset: options.offset } : {}),
+            scope: "global",
+            includeDeprecated: options.includeDeprecated,
+        }).map((entry) => this.mapGlobalManifestEntry(entry));
     }
     readPipelineState(key, fallback) {
         const row = this.db.prepare("SELECT state_json FROM pipeline_state WHERE state_key = ?").get(key);
@@ -452,21 +534,23 @@ export class MemoryRepository {
         this.setPipelineState(INDEXING_SETTINGS_STATE_KEY, next);
         return next;
     }
-    buildTransferCounts(store) {
-        const imported = store.exportBundleRecords({ includeTmp: true });
+    buildTransferCounts(workspaceStore, globalStore) {
+        const workspaceImported = workspaceStore.exportBundleRecords({ includeTmp: true });
+        const globalImported = globalStore.exportBundleRecords({ includeTmp: true });
+        const memoryFiles = [...workspaceImported.memoryFiles, ...globalImported.memoryFiles];
         return {
-            managedFiles: store.exportSnapshotFiles().length,
-            memoryFiles: imported.memoryFiles.length,
-            project: imported.memoryFiles.filter((item) => item.type === "project").length,
-            feedback: imported.memoryFiles.filter((item) => item.type === "feedback").length,
-            user: imported.memoryFiles.filter((item) => item.type === "user").length,
+            managedFiles: workspaceStore.exportSnapshotFiles().length + globalStore.exportSnapshotFiles().length,
+            memoryFiles: memoryFiles.length,
+            project: memoryFiles.filter((item) => item.type === "project").length,
+            feedback: memoryFiles.filter((item) => item.type === "feedback").length,
+            user: memoryFiles.filter((item) => item.type === "user").length,
             tmp: 0,
-            projectMetas: imported.projectMetas.length,
+            projectMetas: workspaceImported.projectMetas.length,
         };
     }
-    materializeSnapshotBundle(rootDir, bundle) {
+    materializeSnapshotBundle(rootDir, files, options) {
         mkdirSync(rootDir, { recursive: true });
-        for (const record of bundle.files) {
+        for (const record of files) {
             const absolutePath = resolve(rootDir, record.relativePath);
             if (!isPathWithinRoot(rootDir, absolutePath) || absolutePath === resolve(rootDir)) {
                 throw new MemoryBundleValidationError(`Invalid imported snapshot file path: ${record.relativePath}`);
@@ -474,28 +558,51 @@ export class MemoryRepository {
             mkdirSync(dirname(absolutePath), { recursive: true });
             writeFileSync(absolutePath, record.content, "utf-8");
         }
-        const store = new FileMemoryStore(rootDir);
+        const store = new FileMemoryStore(rootDir, options);
         store.repairManifests();
         return store;
     }
     stageImportBundle(bundle) {
-        const liveRoot = this.fileMemory.getRootDir();
-        const stagedRoot = createSiblingTempPath(liveRoot, "import");
-        mkdirSync(stagedRoot, { recursive: true });
+        const workspaceFiles = bundle.files.filter((record) => !isGlobalRelativePath(record.relativePath));
+        const globalFiles = bundle.files
+            .filter((record) => isGlobalRelativePath(record.relativePath))
+            .map((record) => ({
+            ...record,
+            relativePath: toInternalGlobalRelativePath(record.relativePath),
+        }));
+        const liveWorkspaceRoot = this.workspaceMemory.getRootDir();
+        const liveGlobalRoot = this.globalUserMemory.getRootDir();
+        const stagedWorkspaceRoot = createSiblingTempPath(liveWorkspaceRoot, "import");
+        const stagedGlobalRoot = createSiblingTempPath(liveGlobalRoot, "import");
+        mkdirSync(stagedWorkspaceRoot, { recursive: true });
+        mkdirSync(stagedGlobalRoot, { recursive: true });
         try {
-            const stagedStore = this.materializeSnapshotBundle(stagedRoot, bundle);
+            const stagedWorkspaceStore = this.materializeSnapshotBundle(stagedWorkspaceRoot, workspaceFiles, {
+                manageProjectMeta: true,
+                manageProjectFiles: true,
+                manageUserProfile: false,
+                enableManifest: true,
+            });
+            const stagedGlobalStore = this.materializeSnapshotBundle(stagedGlobalRoot, globalFiles, {
+                manageProjectMeta: false,
+                manageProjectFiles: false,
+                manageUserProfile: true,
+                userProfileRelativePath: "User/user-profile.md",
+                enableManifest: false,
+            });
             return {
-                stagedRoot,
-                counts: this.buildTransferCounts(stagedStore),
+                stagedWorkspaceRoot,
+                stagedGlobalRoot,
+                counts: this.buildTransferCounts(stagedWorkspaceStore, stagedGlobalStore),
             };
         }
         catch (error) {
-            rmSync(stagedRoot, { recursive: true, force: true });
+            rmSync(stagedWorkspaceRoot, { recursive: true, force: true });
+            rmSync(stagedGlobalRoot, { recursive: true, force: true });
             throw error;
         }
     }
-    swapInStagedMemoryRoot(stagedRoot) {
-        const liveRoot = this.fileMemory.getRootDir();
+    swapInStagedMemoryRoot(liveRoot, stagedRoot) {
         const backupRoot = createSiblingTempPath(liveRoot, "backup");
         let movedLiveRoot = false;
         try {
@@ -570,13 +677,21 @@ export class MemoryRepository {
             ...(this.listRecentCaseTraces(200).length > 0 ? { recentCaseTraces: this.listRecentCaseTraces(200) } : {}),
             ...(this.listRecentIndexTraces(200).length > 0 ? { recentIndexTraces: this.listRecentIndexTraces(200) } : {}),
             ...(this.listRecentDreamTraces(200).length > 0 ? { recentDreamTraces: this.listRecentDreamTraces(200) } : {}),
-            files: this.fileMemory.exportSnapshotFiles(),
+            files: [
+                ...this.workspaceMemory.exportSnapshotFiles(),
+                ...this.globalUserMemory.exportSnapshotFiles().map((record) => ({
+                    ...record,
+                    relativePath: toExposedGlobalRelativePath(record.relativePath),
+                })),
+            ],
         };
     }
     importMemoryBundle(bundle) {
         const normalized = normalizeMemoryBundle(bundle);
         const staged = this.stageImportBundle(normalized);
-        this.swapInStagedMemoryRoot(staged.stagedRoot);
+        this.swapInStagedMemoryRoot(this.workspaceMemory.getRootDir(), staged.stagedWorkspaceRoot);
+        this.swapInStagedMemoryRoot(this.globalUserMemory.getRootDir(), staged.stagedGlobalRoot);
+        this.workspaceMemory.repairManifests();
         this.resetImportedRuntimeState(normalized);
         return {
             formatVersion: MEMORY_EXPORT_FORMAT_VERSION,
@@ -594,12 +709,12 @@ export class MemoryRepository {
     getOverview() {
         const pendingSessions = Number(this.db.prepare("SELECT COUNT(DISTINCT session_key) AS count FROM l0_sessions WHERE indexed = 0").get()?.count ?? 0);
         const lastDreamAt = this.getPipelineState(LAST_DREAM_AT_STATE_KEY);
-        const fileOverview = this.fileMemory.getOverview(typeof lastDreamAt === "string" ? lastDreamAt : undefined);
+        const fileOverview = this.workspaceMemory.getOverview(typeof lastDreamAt === "string" ? lastDreamAt : undefined);
         const recentRecallTraceCount = this.listRecentCaseTraces(12).length;
         const recentIndexTraceCount = this.listRecentIndexTraces(30).length;
         const recentDreamTraceCount = this.listRecentDreamTraces(30).length;
         const workspaceHasProjectMemory = fileOverview.projectMemories + fileOverview.feedbackMemories > 0;
-        const userProfileCount = this.fileMemory.listMemoryEntries({
+        const userProfileCount = this.listGlobalMemoryEntries({
             kinds: ["user"],
             scope: "global",
             limit: 10,
@@ -636,69 +751,167 @@ export class MemoryRepository {
                 autoIndexIntervalMinutes: 60,
                 autoDreamIntervalMinutes: 360,
             }),
-            recentMemoryFiles: this.fileMemory.listMemoryEntries({ limit }),
+            recentMemoryFiles: this.listMemoryEntries({ limit }),
         };
     }
     listMemoryEntries(options = {}) {
-        return this.fileMemory.listMemoryEntries(options);
+        const includeWorkspace = options.scope !== "global";
+        const includeGlobal = options.scope !== "project";
+        const workspaceEntries = includeWorkspace
+            ? this.workspaceMemory.listMemoryEntries({
+                ...options,
+                limit: 5000,
+                offset: 0,
+            })
+            : [];
+        const globalEntries = includeGlobal
+            ? this.listGlobalMemoryEntries({
+                ...options,
+                limit: 5000,
+                offset: 0,
+            })
+            : [];
+        const filtered = sortManifestEntries([...workspaceEntries, ...globalEntries]);
+        const offset = Math.max(0, options.offset ?? 0);
+        const limit = Math.max(1, options.limit ?? (filtered.length || 1));
+        return filtered.slice(offset, offset + limit);
     }
     countMemoryEntries(options = {}) {
-        return this.fileMemory.countMemoryEntries(options);
+        const workspaceEntries = options.scope === "global"
+            ? []
+            : this.workspaceMemory.listMemoryEntries({
+                ...options,
+                limit: 5000,
+                offset: 0,
+            });
+        const globalEntries = options.scope === "project"
+            ? []
+            : this.listGlobalMemoryEntries({
+                ...options,
+                limit: 5000,
+                offset: 0,
+            });
+        return [...workspaceEntries, ...globalEntries].length;
     }
     getMemoryRecordsByIds(ids, maxLines = 80) {
-        return this.fileMemory.getMemoryRecordsByIds(ids, maxLines);
+        const uniqueIds = Array.from(new Set(ids.filter((item) => typeof item === "string" && item.trim().length > 0)));
+        const workspaceIds = uniqueIds.filter((id) => !isGlobalRelativePath(id));
+        const globalIds = uniqueIds
+            .filter((id) => isGlobalRelativePath(id))
+            .map((id) => toInternalGlobalRelativePath(id));
+        const workspaceRecords = this.workspaceMemory.getMemoryRecordsByIds(workspaceIds, maxLines);
+        const globalRecords = this.globalUserMemory
+            .getMemoryRecordsByIds(globalIds, maxLines)
+            .map((record) => this.mapGlobalFileRecord(record));
+        const byId = new Map([
+            ...workspaceRecords.map((record) => [record.relativePath, record]),
+            ...globalRecords.map((record) => [record.relativePath, record]),
+        ]);
+        return ids
+            .map((id) => byId.get(id))
+            .filter((record) => Boolean(record));
     }
     editProjectMeta(input) {
-        return this.fileMemory.editProjectMeta(input);
+        return this.workspaceMemory.editProjectMeta(input);
     }
     ensureProjectMeta(input = {}) {
-        return this.fileMemory.ensureProjectMeta(input);
+        return this.workspaceMemory.ensureProjectMeta(input);
     }
     getProjectMeta() {
-        return this.fileMemory.getProjectMeta();
+        return this.workspaceMemory.getProjectMeta();
     }
     editMemoryEntry(input) {
-        return this.fileMemory.editEntry({
-            relativePath: input.id,
+        const store = isGlobalRelativePath(input.id) ? this.globalUserMemory : this.workspaceMemory;
+        const relativePath = isGlobalRelativePath(input.id)
+            ? toInternalGlobalRelativePath(input.id)
+            : input.id;
+        const record = store.editEntry({
+            relativePath,
             name: input.name,
             description: input.description,
             ...(input.fields ? { fields: input.fields } : {}),
         });
+        return isGlobalRelativePath(input.id) ? this.mapGlobalFileRecord(record) : record;
     }
     deleteMemoryEntries(ids) {
-        return this.fileMemory.deleteEntries(ids);
+        const workspaceIds = ids.filter((id) => !isGlobalRelativePath(id));
+        const globalIds = ids
+            .filter((id) => isGlobalRelativePath(id))
+            .map((id) => toInternalGlobalRelativePath(id));
+        const workspaceResult = this.workspaceMemory.deleteEntries(workspaceIds);
+        const globalResult = this.globalUserMemory.deleteEntries(globalIds);
+        this.workspaceMemory.repairManifests();
+        return {
+            mutatedIds: [
+                ...workspaceResult.mutatedIds,
+                ...globalResult.mutatedIds.map((id) => toExposedGlobalRelativePath(id)),
+            ],
+            deletedProjectIds: [...workspaceResult.deletedProjectIds, ...globalResult.deletedProjectIds],
+        };
     }
     deprecateMemoryEntries(ids) {
-        return this.fileMemory.markEntriesDeprecated(ids);
+        const workspaceIds = ids.filter((id) => !isGlobalRelativePath(id));
+        const globalIds = ids
+            .filter((id) => isGlobalRelativePath(id))
+            .map((id) => toInternalGlobalRelativePath(id));
+        const workspaceResult = this.workspaceMemory.markEntriesDeprecated(workspaceIds);
+        const globalResult = this.globalUserMemory.markEntriesDeprecated(globalIds);
+        this.workspaceMemory.repairManifests();
+        return {
+            mutatedIds: [
+                ...workspaceResult.mutatedIds,
+                ...globalResult.mutatedIds.map((id) => toExposedGlobalRelativePath(id)),
+            ],
+            deletedProjectIds: [...workspaceResult.deletedProjectIds, ...globalResult.deletedProjectIds],
+        };
     }
     restoreMemoryEntries(ids) {
-        return this.fileMemory.restoreEntries(ids);
+        const workspaceIds = ids.filter((id) => !isGlobalRelativePath(id));
+        const globalIds = ids
+            .filter((id) => isGlobalRelativePath(id))
+            .map((id) => toInternalGlobalRelativePath(id));
+        const workspaceResult = this.workspaceMemory.restoreEntries(workspaceIds);
+        const globalResult = this.globalUserMemory.restoreEntries(globalIds);
+        this.workspaceMemory.repairManifests();
+        return {
+            mutatedIds: [
+                ...workspaceResult.mutatedIds,
+                ...globalResult.mutatedIds.map((id) => toExposedGlobalRelativePath(id)),
+            ],
+            deletedProjectIds: [...workspaceResult.deletedProjectIds, ...globalResult.deletedProjectIds],
+        };
     }
     archiveTmpEntries(input) {
-        return this.fileMemory.archiveTmpEntries({
+        return this.workspaceMemory.archiveTmpEntries({
             relativePaths: input.ids,
             ...(input.targetProjectId ? { targetProjectId: input.targetProjectId } : {}),
             ...(input.newProjectName ? { newProjectName: input.newProjectName } : {}),
         });
     }
     getSnapshotVersion() {
-        return this.fileMemory.getSnapshotVersion(this.getPipelineState(LAST_DREAM_AT_STATE_KEY));
+        const payload = JSON.stringify({
+            lastDreamAt: this.getPipelineState(LAST_DREAM_AT_STATE_KEY) ?? "",
+            files: this.exportMemoryBundle().files,
+        });
+        return hashText(payload);
     }
     clearAllMemoryData() {
         const l0Sessions = Number(this.db.prepare("SELECT COUNT(*) AS count FROM l0_sessions").get()?.count ?? 0);
         const pipelineState = Number(this.db.prepare("SELECT COUNT(*) AS count FROM pipeline_state").get()?.count ?? 0);
-        const before = this.fileMemory.exportBundleRecords({ includeTmp: true });
+        const beforeWorkspace = this.workspaceMemory.exportBundleRecords({ includeTmp: true });
+        const beforeGlobal = this.globalUserMemory.exportBundleRecords({ includeTmp: true });
         this.db.exec(`
       DELETE FROM l0_sessions;
       DELETE FROM pipeline_state;
     `);
-        this.fileMemory.clearAllData();
+        this.workspaceMemory.clearAllData();
+        this.globalUserMemory.clearAllData();
         return {
             cleared: {
                 l0Sessions,
                 pipelineState,
-                memoryFiles: before.memoryFiles.length,
-                projectMetas: before.projectMetas.length,
+                memoryFiles: beforeWorkspace.memoryFiles.length + beforeGlobal.memoryFiles.length,
+                projectMetas: beforeWorkspace.projectMetas.length,
             },
             clearedAt: nowIso(),
         };

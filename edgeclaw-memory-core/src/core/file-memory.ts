@@ -31,12 +31,21 @@ const GLOBAL_DIR = "global";
 const USER_DIR = "User";
 const PROJECT_DIR = "Project";
 const FEEDBACK_DIR = "Feedback";
-const USER_PROFILE_RELATIVE_PATH = join(GLOBAL_DIR, USER_DIR, "user-profile.md");
+const DEFAULT_USER_PROFILE_RELATIVE_PATH = join(GLOBAL_DIR, USER_DIR, "user-profile.md");
 const DEFAULT_PROJECT_NAME = "Current Project";
 const DEFAULT_PROJECT_STATUS = "in_progress";
 
 export const TMP_PROJECT_ID = "_tmp";
 export const CURRENT_PROJECT_ID = "current_project";
+
+export interface FileMemoryStoreOptions {
+  manageProjectMeta?: boolean;
+  manageProjectFiles?: boolean;
+  manageUserProfile?: boolean;
+  userProfileRelativePath?: string | null;
+  enableManifest?: boolean;
+  manifestUserEntriesProvider?: () => MemoryManifestEntry[];
+}
 
 export interface FileMemoryOverview {
   totalFiles: number;
@@ -384,11 +393,15 @@ function sortEntries(entries: MemoryManifestEntry[]): MemoryManifestEntry[] {
   });
 }
 
-function renderManifestSection(title: string, entries: MemoryManifestEntry[]): string[] {
+function renderManifestSection(
+  title: string,
+  entries: MemoryManifestEntry[],
+  linkResolver?: (entry: MemoryManifestEntry) => string,
+): string[] {
   if (entries.length === 0) return [];
   return [
     `## ${title}`,
-    ...entries.map((entry) => `- [${entry.name}](${entry.relativePath}) — ${entry.description}`),
+    ...entries.map((entry) => `- [${entry.name}](${linkResolver?.(entry) ?? entry.relativePath}) — ${entry.description}`),
     "",
   ];
 }
@@ -453,7 +466,27 @@ function normalizeProjectStatus(value: string | undefined): string {
 }
 
 export class FileMemoryStore {
-  constructor(private readonly rootDir: string) {
+  private readonly manageProjectMeta: boolean;
+  private readonly manageProjectFiles: boolean;
+  private readonly manageUserProfile: boolean;
+  private readonly userProfileRelativePath: string | null;
+  private readonly enableManifest: boolean;
+  private readonly manifestUserEntriesProvider?: () => MemoryManifestEntry[];
+
+  constructor(
+    private readonly rootDir: string,
+    options: FileMemoryStoreOptions = {},
+  ) {
+    this.manageProjectMeta = options.manageProjectMeta ?? true;
+    this.manageProjectFiles = options.manageProjectFiles ?? true;
+    this.manageUserProfile = options.manageUserProfile ?? true;
+    this.userProfileRelativePath = this.manageUserProfile
+      ? (options.userProfileRelativePath === undefined
+        ? DEFAULT_USER_PROFILE_RELATIVE_PATH
+        : options.userProfileRelativePath)
+      : null;
+    this.enableManifest = options.enableManifest ?? true;
+    this.manifestUserEntriesProvider = options.manifestUserEntriesProvider;
     this.ensureLayout();
   }
 
@@ -465,11 +498,22 @@ export class FileMemoryStore {
     return this.resolveRelativePath(PROJECT_META_FILE);
   }
 
+  private requireUserProfileRelativePath(): string {
+    if (!this.manageUserProfile || !this.userProfileRelativePath) {
+      throw new Error("Global user profile storage is disabled for this store");
+    }
+    return this.userProfileRelativePath;
+  }
+
   private ensureLayout(): void {
     ensureDir(this.rootDir);
-    ensureDir(join(this.rootDir, GLOBAL_DIR, USER_DIR));
-    ensureDir(join(this.rootDir, PROJECT_DIR));
-    ensureDir(join(this.rootDir, FEEDBACK_DIR));
+    if (this.manageUserProfile && this.userProfileRelativePath) {
+      ensureDir(dirname(this.resolveRelativePath(this.userProfileRelativePath)));
+    }
+    if (this.manageProjectFiles) {
+      ensureDir(join(this.rootDir, PROJECT_DIR));
+      ensureDir(join(this.rootDir, FEEDBACK_DIR));
+    }
   }
 
   private resolveRelativePath(relativePath: string): string {
@@ -521,14 +565,20 @@ export class FileMemoryStore {
   }
 
   private collectAllEntries(): MemoryManifestEntry[] {
-    return sortEntries([
-      ...this.collectDirectoryRecords(PROJECT_DIR),
-      ...this.collectDirectoryRecords(FEEDBACK_DIR),
-      ...this.collectDirectoryRecords(join(GLOBAL_DIR, USER_DIR)),
-    ]);
+    const entries: MemoryManifestEntry[] = [];
+    if (this.manageProjectFiles) {
+      entries.push(...this.collectDirectoryRecords(PROJECT_DIR));
+      entries.push(...this.collectDirectoryRecords(FEEDBACK_DIR));
+    }
+    if (this.manageUserProfile && this.userProfileRelativePath) {
+      const userEntry = this.buildManifestEntry(this.userProfileRelativePath);
+      if (userEntry) entries.push(userEntry);
+    }
+    return sortEntries(entries);
   }
 
   private readProjectMetaFile(): ProjectMetaRecord | undefined {
+    if (!this.manageProjectMeta) return undefined;
     return parseProjectMeta(this.projectMetaPath());
   }
 
@@ -571,6 +621,9 @@ export class FileMemoryStore {
     status?: string;
     dreamUpdatedAt?: string;
   } = {}): ProjectMetaRecord {
+    if (!this.manageProjectMeta) {
+      throw new Error("Project metadata is disabled for this store");
+    }
     const existing = this.readProjectMetaFile();
     const seed = this.buildProjectMetaSeed();
     const projectName = normalizeWhitespace(input.projectName)
@@ -618,16 +671,24 @@ export class FileMemoryStore {
     const sameSource = allEntries.find((entry) => sameOrigin(entry, candidate));
     if (sameSource) return sameSource;
     if (candidate.type === "user") {
-      return allEntries.find((entry) => entry.relativePath === USER_PROFILE_RELATIVE_PATH);
+      return this.manageUserProfile && this.userProfileRelativePath
+        ? allEntries.find((entry) => entry.relativePath === this.userProfileRelativePath)
+        : undefined;
     }
     return undefined;
   }
 
   private nextRecordRelativePath(candidate: MemoryCandidate): string {
-    if (candidate.type === "user") return USER_PROFILE_RELATIVE_PATH;
+    if (candidate.type === "user") return this.requireUserProfileRelativePath();
     const directory = candidate.type === "feedback" ? FEEDBACK_DIR : PROJECT_DIR;
     const seed = `${candidate.type}:${candidate.name}:${candidate.description}:${candidate.capturedAt ?? ""}:${candidate.sourceSessionKey ?? nowIso()}`;
     return join(directory, `${slugify(candidate.name)}-${hashText(seed).slice(0, 10)}.md`);
+  }
+
+  private resolveManifestLinkPath(entry: MemoryManifestEntry): string {
+    const rel = relative(this.rootDir, entry.absolutePath).replace(/\\/g, "/");
+    if (!rel || rel.startsWith("..")) return rel || entry.relativePath;
+    return entry.relativePath;
   }
 
   private buildManifest(): string {
@@ -637,7 +698,9 @@ export class FileMemoryStore {
     const deprecated = allEntries.filter((entry) => entry.deprecated);
     const projectEntries = active.filter((entry) => entry.type === "project");
     const feedbackEntries = active.filter((entry) => entry.type === "feedback");
-    const userEntries = active.filter((entry) => entry.type === "user");
+    const userEntries = this.manageUserProfile
+      ? active.filter((entry) => entry.type === "user")
+      : sortEntries((this.manifestUserEntriesProvider?.() ?? []).filter((entry) => !entry.deprecated));
     const lines = [
       "# EdgeClaw Memory",
       "",
@@ -652,7 +715,7 @@ export class FileMemoryStore {
         : []),
       ...renderManifestSection("Project Memory", projectEntries),
       ...renderManifestSection("Feedback Memory", feedbackEntries),
-      ...renderManifestSection("User Memory", userEntries),
+      ...renderManifestSection("User Memory", userEntries, (entry) => this.resolveManifestLinkPath(entry)),
       ...renderManifestSection("Deprecated", deprecated),
     ];
     return `${lines.join("\n").trim()}\n`;
@@ -660,6 +723,13 @@ export class FileMemoryStore {
 
   repairManifests(): { changed: number; summary: string; memoryFileCount: number } {
     this.ensureLayout();
+    if (!this.enableManifest) {
+      return {
+        changed: 0,
+        summary: "Manifest management is disabled for this store.",
+        memoryFileCount: this.collectAllEntries().length,
+      };
+    }
     const manifestPath = this.resolveRelativePath(MANIFEST_FILE);
     const nextContent = this.buildManifest();
     const previousContent = existsSync(manifestPath) ? readFileSync(manifestPath, "utf8") : "";
@@ -734,7 +804,16 @@ export class FileMemoryStore {
   }
 
   getUserSummary(): MemoryUserSummary {
-    const record = this.getMemoryRecordsByIds([USER_PROFILE_RELATIVE_PATH], 5000)[0];
+    if (!this.manageUserProfile || !this.userProfileRelativePath) {
+      return {
+        profile: "",
+        preferences: [],
+        constraints: [],
+        relationships: [],
+        files: [],
+      };
+    }
+    const record = this.getMemoryRecordsByIds([this.userProfileRelativePath], 5000)[0];
     if (!record) {
       return {
         profile: "",
@@ -755,7 +834,7 @@ export class FileMemoryStore {
   }
 
   upsertCandidate(candidate: MemoryCandidate): MemoryFileRecord {
-    if (candidate.type !== "user") {
+    if (candidate.type !== "user" && this.manageProjectMeta) {
       this.ensureProjectMeta({
         ...(candidate.type === "project" ? { projectName: candidate.name } : {}),
         description: candidate.description,
@@ -940,6 +1019,7 @@ export class FileMemoryStore {
   }
 
   listProjectMetas(_options: { includeTmp?: boolean } = {}): ProjectMetaRecord[] {
+    if (!this.manageProjectMeta) return [];
     const meta = this.readProjectMetaFile();
     if (meta) return [meta];
     return this.hasVisibleProjectMemory(CURRENT_PROJECT_ID)
@@ -948,6 +1028,7 @@ export class FileMemoryStore {
   }
 
   listProjectIdentityHints(_options: { includeTmp?: boolean; limit?: number } = {}): ProjectIdentityHint[] {
+    if (!this.manageProjectMeta) return [];
     const meta = this.readProjectMetaFile();
     if (!meta && !this.hasVisibleProjectMemory(CURRENT_PROJECT_ID)) return [];
     const projectMeta = meta ?? this.ensureProjectMeta();
@@ -963,12 +1044,14 @@ export class FileMemoryStore {
   }
 
   getProjectMeta(projectId = CURRENT_PROJECT_ID): ProjectMetaRecord | undefined {
+    if (!this.manageProjectMeta) return undefined;
     const normalized = normalizeWhitespace(projectId);
     if (normalized && normalized !== CURRENT_PROJECT_ID) return undefined;
     return this.readProjectMetaFile();
   }
 
   hasVisibleProjectMemory(projectId = CURRENT_PROJECT_ID): boolean {
+    if (!this.manageProjectFiles) return false;
     const normalized = normalizeWhitespace(projectId);
     if (normalized && normalized !== CURRENT_PROJECT_ID) return false;
     return this.collectAllEntries().some((entry) => entry.scope === "project" && !entry.deprecated);
@@ -985,6 +1068,9 @@ export class FileMemoryStore {
     aliases?: string[];
     status: string;
   }): ProjectMetaRecord {
+    if (!this.manageProjectMeta) {
+      throw new Error("Project metadata is disabled for this store");
+    }
     const normalizedProjectId = normalizeWhitespace(input.projectId);
     if (normalizedProjectId && normalizedProjectId !== CURRENT_PROJECT_ID) {
       throw new Error(`Unknown projectId: ${input.projectId}`);
@@ -1038,9 +1124,11 @@ export class FileMemoryStore {
   }
 
   exportSnapshotFiles(): MemorySnapshotFileRecord[] {
-    this.repairManifests();
+    if (this.enableManifest) {
+      this.repairManifests();
+    }
     const files = [
-      MANIFEST_FILE,
+      ...(this.enableManifest ? [MANIFEST_FILE] : []),
       ...(this.readProjectMetaFile() ? [PROJECT_META_FILE] : []),
       ...this.collectAllEntries().map((entry) => entry.relativePath),
     ];

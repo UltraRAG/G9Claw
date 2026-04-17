@@ -154,13 +154,13 @@ function withEnvFallback(value: string | undefined, envKey: string): string {
 }
 
 function resolveDefaultRootDir(rootDir: string | undefined): string {
-  return resolve(rootDir ? rootDir : join(homedir(), ".edgeclaw", "memory", "workspaces"));
+  return resolve(rootDir ? rootDir : join(homedir(), ".edgeclaw", "memory"));
 }
 
 function resolveWorkspaceDataDir(workspaceDir: string, rootDir: string): string {
   const seed = resolve(workspaceDir);
   const slug = hashText(seed);
-  return join(rootDir, slug, "current-project-v2");
+  return join(rootDir, "workspaces", slug);
 }
 
 function resolveOpenClawModelConfig(): OpenClawResolvedModelConfig | null {
@@ -476,6 +476,7 @@ export class EdgeClawMemoryService {
 
     this.repository = new MemoryRepository(this.dbPath, {
       memoryDir: this.memoryDir,
+      globalRootDir: join(rootDir, "global"),
     });
     this.repository.ensureProjectMeta(this.projectMetaSeed());
     this.extractor = new LlmMemoryExtractor(
@@ -682,7 +683,7 @@ export class EdgeClawMemoryService {
   }
 
   getUserSummary() {
-    return this.repository.getFileMemoryStore().getUserSummary();
+    return this.repository.getUserSummary();
   }
 
   getProjectMeta() {

@@ -369,7 +369,7 @@ export class ReasoningRetriever {
       },
     );
 
-    const userSummary = this.repository.getFileMemoryStore().getUserSummary();
+    const userSummary = this.repository.getUserSummary();
     const projectMeta = route === "project_memory"
       ? (this.repository.getFileMemoryStore().getProjectMeta() ?? null)
       : null;

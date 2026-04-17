@@ -20,14 +20,26 @@ export interface RepairMemoryResult {
 }
 export declare class MemoryRepository {
     private readonly db;
-    private readonly fileMemory;
+    private readonly workspaceMemory;
+    private readonly globalUserMemory;
     constructor(dbPath: string, options?: {
         memoryDir?: string;
+        globalRootDir?: string;
     });
     private init;
     private migratePipelineStateTable;
     close(): void;
     getFileMemoryStore(): FileMemoryStore;
+    getGlobalUserStore(): FileMemoryStore;
+    repairWorkspaceManifest(): {
+        changed: number;
+        summary: string;
+        memoryFileCount: number;
+    };
+    getUserSummary(): ReturnType<FileMemoryStore["getUserSummary"]>;
+    private mapGlobalManifestEntry;
+    private mapGlobalFileRecord;
+    private listGlobalMemoryEntries;
     private readPipelineState;
     getPipelineState<T = unknown>(key: string): T | undefined;
     setPipelineState(key: string, value: unknown): void;

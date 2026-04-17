@@ -1123,3 +1123,191 @@
   - 这说明：
     - recall 功能本身是通的
     - 但 recall trace / case trace 的展示链路可能尚未接通或未写入
+
+## 2026-04-17 目录与全局用户画像重构落地记录
+
+- 已实现的新物理布局：
+  - `~/.edgeclaw/memory/global/User/user-profile.md`
+  - `~/.edgeclaw/memory/workspaces/<workspace-hash>/control.sqlite`
+  - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/project.meta.md`
+  - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/MEMORY.md`
+  - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/Project/*.md`
+  - `~/.edgeclaw/memory/workspaces/<workspace-hash>/memory/Feedback/*.md`
+- 已移除的新运行时依赖：
+  - workspace 根目录下不再使用 `current-project-v2`
+  - 新代码只认 `<workspace-hash>/` 直承 `control.sqlite + memory/`
+- 已实现的运行时口径：
+  - `project / feedback` 继续写当前 workspace
+  - `user-profile` 改为单份全局共享文件
+  - `overview` / `workspace` / `memory/user-summary` 已切到新布局读取
+  - workspace 内 `MEMORY.md` 的 `User Memory` 区块改为链接到全局画像语义路径
+
+## 2026-04-17 黑盒回归：当前真实状态
+
+- 新增了两个可在 UI 中查看的测试项目：
+  - `xhs-memory-global-20260417-a`
+  - `xhs-memory-global-20260417-b`
+- 这轮黑盒用真实小红书样本执行了：
+  - `capture -> flush/index -> dream`
+  - 并尝试继续做 `recall`
+
+- 已确认通过的部分：
+  - 新项目已按新目录布局初始化
+  - 磁盘上不再出现新的 `current-project-v2`
+  - `claudecodeui` 的 `/api/memory/overview`、`/api/memory/workspace` 已能读取新布局
+  - UI 里能看到这两个测试项目及其空仓 memory 状态
+
+- 已确认失败的主链路：
+  - 项目 `xhs-memory-global-20260417-a` 的 `index` 虽然执行完成，但 4 个 focus turn 全部被丢弃
+  - 直接证据来自 `recentIndexTraces`：
+    - 每条 turn 都是 `classified=discarded`
+    - `candidate_validated` 的 discarded reason 统一为：
+      - `extract_error`
+      - `summary: fetch failed`
+  - 结果：
+    - `storedResults=[]`
+    - `Project/*.md` 未生成
+    - `Feedback/*.md` 未生成
+    - 全局 `user-profile.md` 也未生成
+  - 随后 `dream` 只能看到：
+    - `project.meta.md` 存在
+    - `projectFileCount=0`
+    - `feedbackFileCount=0`
+    - `hasUserProfile=false`
+    - 最终 `dream` 为 no-op
+
+- 当前 UI 中你会实际看到的状态：
+  - `xhs-memory-global-20260417-a`
+    - `project.meta.md` 存在
+    - `Project` 为空
+    - `Feedback` 为空
+    - `User Profile` 为空
+  - `xhs-memory-global-20260417-b`
+    - 同样只有 `project.meta.md`
+    - 其余 memory 为空
+
+- 这轮黑盒的结论：
+  - 目录重构本身已生效
+  - 当前阻塞点不是目录或 UI 读取
+  - 当前真正的问题是 memory 提取阶段调用上游模型时失败，导致 `index` 全量 `discarded`
+  - 在这个问题修复前，`recall / dream` 无法基于真实记忆文件得到有效结果，因为前置文件根本没有产出
+
+## 2026-04-17 黑盒复跑：模型服务重启后主链路恢复
+
+- 用户确认模型服务已重启后，重新按真实链路跑了一轮完整黑盒：
+  - `Claude Code -> 本地 claude-code-main -> QueryEngine -> capture -> index -> recall -> dream -> recall`
+- 本轮新增并保留在 UI 中的测试项目：
+  - `xhs-memory-rerun-20260417032340`
+  - `xhs-global-a-20260417032532`
+  - `xhs-global-b-20260417032532`
+
+- `xhs-memory-rerun-20260417032340` 的真实小红书样本黑盒结果：
+  - 主会话写入成功，UI 可见的 3 个 Claude 会话：
+    - `76fa79e9-8499-4169-858d-8b5e3a7c55c1`
+    - `7d6fae78-8dd0-43a8-9c52-36a9fbbeb3d7`
+    - `31d74a18-7ee4-4752-b458-1e4fbc18ad76`
+  - 主会话内容包含：
+    - 项目范围：一期只做英超和欧冠热点比赛
+    - 项目风险：文案不能像广告或博彩引导
+    - 输出反馈：多个方案按 `爆款标题 / 正文 / 适用场景`
+    - 实际文案生成：`曼城 vs 阿森纳` 的 3 个标题 + 1 篇短文案
+
+- `index` 结果：
+  - `capturedSessions=4`
+  - `writtenFiles=4`
+  - `writtenProjectFiles=2`
+  - `writtenFeedbackFiles=2`
+  - `failedSessions=0`
+  - 说明之前的 `extract_error -> fetch failed` 已随模型服务恢复消失
+
+- `index` 后的 workspace 状态：
+  - `project.meta.md` 存在
+  - `Project/*.md` 生成 2 条：
+    - `Project/小红书足球文案项目-dc84706a77.md`
+    - `Project/小红书足球文案项目-63ba05c2d5.md`
+  - `Feedback/*.md` 生成 2 条：
+    - `Feedback/delivery-rule-743c1406f9.md`
+    - `Feedback/collaboration-rule-3e908e90aa.md`
+  - 此时 `user-profile.md` 仍为空，因为这一轮输入都被识别为当前 project 的项目/反馈记忆，而不是全局用户画像
+
+- `recall` 在 `dream` 前已通过：
+  - 新会话可正确回答：
+    - 最大风险是文案像广告或博彩引导
+    - 默认中文回复
+    - 多方案输出顺序是 `爆款标题 / 正文 / 适用场景`
+
+- `dream` 结果：
+  - `rewrittenProjects=1`
+  - `deletedFiles=4`
+  - `profileUpdated=false`
+  - `status=success`
+  - `summary` 显示：
+    - 两个项目状态文件被合并为一个当前阶段文件
+    - 两条反馈规则被保留并重写
+
+- `dream` 后的 workspace 状态：
+  - `Project/*.md` 收敛为 1 条：
+    - `Project/current-stage-99b8b81bd8.md`
+  - `Feedback/*.md` 保留 2 条：
+    - `Feedback/collaboration-rule-007f99fded.md`
+    - `Feedback/delivery-rule-45f1fb0feb.md`
+
+- `dream` 后 `recall` 再次通过：
+  - 新会话可以稳定回答：
+    - 下一步应制定文案规范、建立风险检查清单、开始首批创作
+    - 语气规则是普通球迷分享口吻、避免夸张承诺
+    - 风险控制规则是不出现广告/博彩引导和绝对化表述
+
+- 额外做了一轮全局用户画像验证：
+  - `xhs-global-a-20260417032532` 中输入：
+    - `以后无论在哪个项目里，都默认用中文回复，并且先给结论再给细节`
+  - 手动 `index` 后，生成了全局文件：
+    - `~/.edgeclaw/memory/global/User/user-profile.md`
+  - `xhs-global-b-20260417032532` 中新开会话提问：
+    - `以后回复我时，应该使用什么语言？答案结构应该怎么组织？`
+  - 成功跨项目召回：
+    - 使用中文回复
+    - 先给结论再给细节
+  - `/api/memory/memory/user-summary` 在两个项目下返回的是同一份全局画像，验证了新目录布局下的全局共享语义
+
+- 本轮结论更新：
+  - 之前的 `fetch failed` 不是目录重构引起的持久代码问题，而是模型服务当时不可用
+  - 模型服务恢复后，当前 memory 主链路已可正常工作：
+    - `capture` 正常
+    - `index` 正常
+    - `dream` 正常
+    - `project recall` 正常
+    - `global user recall` 正常
+  - 仍存在的残留展示问题：
+    - `overview.recentRecallTraceCount` 仍为 `0`
+    - `/api/memory/cases` 仍返回空数组
+    - 这说明 recall 功能已通过问答验证，但 recall trace / case trace 的写入或展示链路还未恢复
+
+## 2026-04-17 聊天重复用户消息问题修复
+
+- 用户再次反馈 `Claude Code` 会话中“发送一次消息，右侧出现两条相同 user bubble”。
+- 本次确认根因与之前的 Claude SDK 用户文本回放问题不同：
+  - 之前修的是服务端实时流里重复转发 `role=user`
+  - 这次的问题出在前端 store 合并层
+- 真实链路是：
+  - 用户发送消息后，前端先插入一条 optimistic `pendingUserMessage`
+  - 新 session 建立后，这条消息被转成 `local_*` 的 realtime message 写入 `sessionStore`
+  - 随后 `fetchFromServer()` 又把同一条已经持久化到历史里的 user message 拉回来
+  - `computeMerged()` 原本只按 `id` 去重
+  - 由于 optimistic 本地消息和服务端历史消息 `id` 不同，导致两条都被保留
+
+- 已实施修复：
+  - 在 `claudecodeui/src/stores/useSessionStore.ts` 中新增 optimistic user message 去重逻辑
+  - 规则是：
+    - 仅针对 `id` 以 `local_` 开头的本地 user 文本消息
+    - 如果服务端已经存在相同文本、且时间接近的持久化 user message
+    - 则在 `computeMerged()` 时自动丢弃该本地 optimistic 副本
+  - 这样不会影响：
+    - assistant 流式消息
+    - tool 消息
+    - 真正的多轮历史加载
+
+- 已验证：
+  - `claudecodeui` `npm run typecheck` 通过
+  - `claudecodeui` `npm run build` 通过
+  - 本次修复不涉及 memory core、QueryEngine 或目录结构，仅限前端聊天 store 合并逻辑

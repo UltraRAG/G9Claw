@@ -1,6 +1,14 @@
 import type { MemoryCandidate, MemoryEntryEditFields, MemoryFileExportRecord, MemoryFileRecord, MemoryManifestEntry, MemorySnapshotFileRecord, MemoryUserSummary, ProjectIdentityHint, ProjectMetaExportRecord, ProjectMetaRecord } from "./types.js";
 export declare const TMP_PROJECT_ID = "_tmp";
 export declare const CURRENT_PROJECT_ID = "current_project";
+export interface FileMemoryStoreOptions {
+    manageProjectMeta?: boolean;
+    manageProjectFiles?: boolean;
+    manageUserProfile?: boolean;
+    userProfileRelativePath?: string | null;
+    enableManifest?: boolean;
+    manifestUserEntriesProvider?: () => MemoryManifestEntry[];
+}
 export interface FileMemoryOverview {
     totalFiles: number;
     projectMemories: number;
@@ -15,9 +23,16 @@ export interface FileMemoryOverview {
 }
 export declare class FileMemoryStore {
     private readonly rootDir;
-    constructor(rootDir: string);
+    private readonly manageProjectMeta;
+    private readonly manageProjectFiles;
+    private readonly manageUserProfile;
+    private readonly userProfileRelativePath;
+    private readonly enableManifest;
+    private readonly manifestUserEntriesProvider?;
+    constructor(rootDir: string, options?: FileMemoryStoreOptions);
     getRootDir(): string;
     private projectMetaPath;
+    private requireUserProfileRelativePath;
     private ensureLayout;
     private resolveRelativePath;
     private isPathWithinRoot;
@@ -43,6 +58,7 @@ export declare class FileMemoryStore {
     }): ProjectMetaRecord;
     private findExistingRecordForCandidate;
     private nextRecordRelativePath;
+    private resolveManifestLinkPath;
     private buildManifest;
     repairManifests(): {
         changed: number;

@@ -167,7 +167,7 @@ export class DreamRewriteRunner {
             limit: 2000,
         });
         const projectMeta = store.getProjectMeta() ?? null;
-        const userSummary = store.getUserSummary();
+        const userSummary = this.repository.getUserSummary();
         trace.snapshotSummary = {
             projectMetaPresent: Boolean(projectMeta),
             projectFileCount: workspaceEntries.filter((entry) => entry.type === "project").length,
@@ -345,13 +345,14 @@ export class DreamRewriteRunner {
                         relationships: userSummary.relationships,
                     };
                     if (!sameUserSummary(previousSummary, nextSummary)) {
-                        const userRecord = store.upsertCandidate(rewrittenUser);
-                        rewrittenProfilePath = userRecord.relativePath;
+                        this.repository.getGlobalUserStore().upsertCandidate(rewrittenUser);
+                        this.repository.repairWorkspaceManifest();
+                        rewrittenProfilePath = "global/User/user-profile.md";
                         profileUpdated = true;
                         trace.mutations.push({
-                            mutationId: `mutation_${hashText(`rewrite_user_profile:${userRecord.relativePath}:${Date.now()}`)}`,
+                            mutationId: `mutation_${hashText(`rewrite_user_profile:global/User/user-profile.md:${Date.now()}`)}`,
                             action: "rewrite_user_profile",
-                            relativePath: userRecord.relativePath,
+                            relativePath: "global/User/user-profile.md",
                         });
                     }
                 }

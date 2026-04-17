@@ -441,7 +441,7 @@ export class HeartbeatIndexer {
             }
             if (userCandidates.length > 0) {
                 try {
-                    const existingUserProfile = store.getUserSummary();
+                    const existingUserProfile = this.repository.getUserSummary();
                     const rewrittenUser = await this.extractor.rewriteUserProfile({
                         existingProfile: existingUserProfile,
                         candidates: userCandidates,
@@ -450,19 +450,20 @@ export class HeartbeatIndexer {
                         },
                     });
                     if (rewrittenUser) {
-                        const record = store.upsertCandidate(rewrittenUser);
+                        const record = this.repository.getGlobalUserStore().upsertCandidate(rewrittenUser);
+                        this.repository.repairWorkspaceManifest();
                         trace.storedResults.push({
                             candidateType: "user",
                             candidateName: rewrittenUser.name,
                             scope: rewrittenUser.scope,
-                            relativePath: record.relativePath,
+                            relativePath: "global/User/user-profile.md",
                             storageKind: inferStorageKind(record),
                         });
                         stats.userProfilesUpdated += 1;
-                        createStep(trace, "user_profile_rewritten", "User Profile Rewritten", "success", `${userCandidates.length} user candidates merged.`, `Stored user profile at ${record.relativePath}.`, {
+                        createStep(trace, "user_profile_rewritten", "User Profile Rewritten", "success", `${userCandidates.length} user candidates merged.`, "Stored user profile at global/User/user-profile.md.", {
                             titleI18n: traceI18n("trace.step.user_profile_rewritten", "User Profile Rewritten"),
                             inputSummaryI18n: traceI18n("trace.text.user_profile_rewritten.input", "{0} user candidates merged.", userCandidates.length),
-                            outputSummaryI18n: traceI18n("trace.text.user_profile_rewritten.output.stored", "Stored user profile at {0}.", record.relativePath),
+                            outputSummaryI18n: traceI18n("trace.text.user_profile_rewritten.output.stored", "Stored user profile at {0}.", "global/User/user-profile.md"),
                             details: [jsonDetail("user-profile-result", "User Profile Result", {
                                     before: {
                                         profile: existingUserProfile.profile,
@@ -476,7 +477,7 @@ export class HeartbeatIndexer {
                                         constraints: rewrittenUser.constraints ?? [],
                                         relationships: rewrittenUser.relationships ?? [],
                                     },
-                                    relativePath: record.relativePath,
+                                    relativePath: "global/User/user-profile.md",
                                 }, traceI18n("trace.detail.user_profile_result", "User Profile Result"))],
                             ...(userRewriteDebug ? { promptDebug: userRewriteDebug } : {}),
                         });
