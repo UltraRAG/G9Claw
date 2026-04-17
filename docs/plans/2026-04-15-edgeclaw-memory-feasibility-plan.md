@@ -998,3 +998,128 @@
     - 历史消息仍完整保留用户气泡
     - 实时对话只保留前端本地那一条用户气泡
     - 不会再因为 Claude SDK 回放而出现第二条重复用户消息
+
+### 2026-04-16 小红书文案黑盒测试
+
+- 测试目标：
+  - 用真实 `Claude Code -> QueryEngine -> capture -> index -> dream -> recall` 链路验证 memory 是否可用
+  - 测试样本选为“小红书穿搭号”项目，覆盖：
+    - 项目定位
+    - 一期目标
+    - 风险
+    - 用户全局输出偏好
+    - project-level feedback rule
+
+- 测试项目：
+  - 项目路径：`/Users/meisen/Desktop/xhs-memory-blackbox-20260416`
+  - UI 项目名：`xhs-memory-blackbox-20260416`
+  - project key：`-Users-meisen-Desktop-xhs-memory-blackbox-20260416`
+
+- 实际对话样本：
+  - 初始内容生成：
+    - 生成 3 个“春夏通勤穿搭”爆款标题
+  - 记忆化样本：
+    - `请记住：这个项目定位是小红书穿搭号，受众是 22-30 岁一二线城市女生，语气要像真实分享，不要太硬广。`
+    - `请记住：当前一期目标是先产出 10 篇“春夏通勤穿搭”文案模板，当前最大风险是内容太像广告、缺少真实感。`
+    - `请记住：以后给我文案时默认用中文，先给结论再给细节，避免碰项目里的 .gitignore 文件。`
+  - 生成验证：
+    - 输出“周一通勤不费力穿搭”小红书正文示例
+
+- 创建的 Claude 会话：
+  - 主会话：`8e93a4c1-ceff-449b-865d-c32687b4515f`
+  - recall 测试会话：`e0330612-e6fd-4895-9d40-46a1176862af`
+  - dream 后 recall 测试会话：`4f045f10-f6f5-429b-9e5b-2762c091c890`
+
+- Index 前状态：
+  - `overview`
+    - `pendingSessions=1`
+    - `projectMemoryCount=0`
+    - `feedbackMemoryCount=0`
+    - `userProfileCount=0`
+  - 结论：
+    - 聊天轮次已 capture 到待索引队列
+    - 还未写入 `Project/*.md` / `Feedback/*.md`
+
+- 手动 Index 结果：
+  - 调用：`POST /api/memory/index/run`
+  - 返回：
+    - `capturedSessions=5`
+    - `writtenFiles=4`
+    - `writtenProjectFiles=4`
+    - `writtenFeedbackFiles=0`
+    - `userProfilesUpdated=1`
+  - Index 后状态：
+    - `projectMemoryCount=4`
+    - `feedbackMemoryCount=0`
+    - `userProfileCount=1`
+  - 实际写入：
+    - `project.meta.md` 已从 workspace 默认值更新为：
+      - 项目名：`小红书穿搭号`
+      - 描述：面向 22-30 岁一二线城市女生，聚焦“春夏通勤穿搭”
+    - `Project/*.md` 共 4 条
+    - `global/User/user-profile.md` 已写入
+  - 用户画像提取结果：
+    - `默认使用中文输出`
+    - `如果有结论先给结论再给细节`
+    - `不要改动项目里的 .gitignore 文件`
+
+- Recall 测试（dream 前）：
+  - 新开会话，不复用历史上下文
+  - 提问：
+    - `现在你不看前面对话，只根据你记住的内容回答：这个小红书项目的一期目标、最大风险、内容语气要求、默认输出语言和组织方式分别是什么？请先给结论，再给细节。`
+  - 实际回答命中：
+    - 一期目标：`产出 10 篇“春夏通勤穿搭”文案模板`
+    - 风险：`内容太像广告、缺少真实感`
+    - 语气要求：`自然真实，像真实分享，避免硬广感和过度营销`
+    - 默认语言：`中文`
+    - 组织方式：`先给结论，再给细节`
+  - 结论：
+    - dream 前 recall 已可用，memory 已参与回答
+
+- Dream 结果：
+  - 调用：`POST /api/memory/dream/run`
+  - 返回：
+    - `prepFlush.capturedSessions=1`
+    - `prepFlush.writtenFeedbackFiles=1`
+    - `reviewedFiles=5`
+    - `rewrittenProjects=1`
+    - `deletedFiles=5`
+    - `profileUpdated=true`
+    - `status=success`
+  - Dream 后状态：
+    - `projectMemoryCount=1`
+    - `feedbackMemoryCount=1`
+    - `userProfileCount=1`
+  - 实际整理结果：
+    - 原有 4 条 `Project/*.md` 被折叠整理为：
+      - `Project/current-stage-fc33632d12.md`
+    - 新增 1 条项目反馈规则：
+      - `Feedback/delivery-rule-9cefe89ccf.md`
+    - `user-profile.md` 被重写成更结构化的 profile/preferences/constraints
+
+- Recall 测试（dream 后）：
+  - 新开会话提问：
+    - `只根据你记住的项目内容回答：这个项目下一步要做什么？当前最大风险是什么？回复时应该遵循什么反馈规则？请先给结论。`
+  - 实际回答命中：
+    - 下一步：`产出 10 篇“春夏通勤穿搭”文案模板 + 生成 3 个爆款标题`
+    - 风险：`内容太像广告、缺少真实感`
+    - 反馈规则：`先给结论，再给细节`
+  - 结论：
+    - dream 后 recall 仍然正确，并且能命中 project + feedback 两类记忆
+
+- 可在 UI 直接查看的内容：
+  - 项目：`xhs-memory-blackbox-20260416`
+  - Memory 面板中应可看到：
+    - `project.meta.md`
+    - `Project/current-stage-fc33632d12.md`
+    - `Feedback/delivery-rule-9cefe89ccf.md`
+    - `global/User/user-profile.md`
+    - 3 个 Claude 会话
+
+- 本轮观察到的剩余问题：
+  - `overview.recentRecallTraceCount` 仍为 `0`
+  - `/api/memory/cases` 返回空数组
+  - 但 recall 实际行为已通过新会话问答验证为正确
+  - 这说明：
+    - recall 功能本身是通的
+    - 但 recall trace / case trace 的展示链路可能尚未接通或未写入
