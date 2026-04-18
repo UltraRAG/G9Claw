@@ -7,6 +7,7 @@ import { extractProjectDirectory } from '../projects.js';
 
 const MEMORY_ROOT_DIR = path.join(os.homedir(), '.edgeclaw', 'memory');
 const MEMORY_WORKSPACES_ROOT = path.join(MEMORY_ROOT_DIR, 'workspaces');
+const MEMORY_GLOBAL_ROOT = path.join(MEMORY_ROOT_DIR, 'global');
 const MEMORY_SCHEDULER_INTERVAL_MS = 60_000;
 
 const servicesByDataDir = new Map();
@@ -237,4 +238,31 @@ export function closeMemoryServices() {
   }
   servicesByDataDir.clear();
   workspaceTaskChains.clear();
+}
+
+export async function clearAllMemoryData() {
+  for (const service of servicesByDataDir.values()) {
+    try {
+      service.close();
+    } catch {
+      // ignore close failures during clear
+    }
+  }
+  servicesByDataDir.clear();
+  workspaceTaskChains.clear();
+
+  await fs.rm(MEMORY_ROOT_DIR, { recursive: true, force: true });
+  await fs.mkdir(MEMORY_WORKSPACES_ROOT, { recursive: true });
+  await fs.mkdir(MEMORY_GLOBAL_ROOT, { recursive: true });
+
+  return {
+    scope: 'all_memory',
+    clearedAt: new Date().toISOString(),
+    cleared: {
+      l0Sessions: 0,
+      pipelineState: 0,
+      memoryFiles: 0,
+      projectMetas: 0,
+    },
+  };
 }

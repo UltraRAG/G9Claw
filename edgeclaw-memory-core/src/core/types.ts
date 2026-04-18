@@ -6,7 +6,7 @@ export interface MemoryMessage {
   content: string;
 }
 
-export type MemoryRoute = "none" | "user" | "project_memory";
+export type MemoryRoute = "none" | "user" | "project" | "mix";
 export type MemoryRecordType = "user" | "feedback" | "project";
 export type MemoryScope = "global" | "project";
 
@@ -64,6 +64,8 @@ export interface MemoryUserSummary {
   identityBackground: string[];
   files: MemoryManifestEntry[];
 }
+
+export type ClearMemoryScope = "current_project" | "all_memory";
 
 export type ManagedWorkspaceFileName = "USER.md" | "MEMORY.md";
 export type ManagedWorkspaceFileStateStatus = "isolated" | "restored" | "conflict";
@@ -542,6 +544,7 @@ export interface CaseTraceRecord {
     intent?: MemoryRoute;
     injected: boolean;
     contextPreview: string;
+    preflightReason?: string;
     trace: RetrievalTrace | null;
   };
   toolEvents: CaseToolEvent[];
@@ -563,6 +566,7 @@ export interface RetrievalResult {
     route?: MemoryRoute;
     manifestCount?: number;
     selectedFileIds?: string[];
+    preflightReason?: string;
   };
 }
 

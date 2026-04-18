@@ -1,9 +1,10 @@
-import { type CaseTraceRecord, type DashboardOverview, type DreamTraceRecord, type IndexTraceRecord, type IndexingSettings, type L0SessionRecord, type MemoryExportBundle, type MemoryEntryEditFields, type MemoryFileRecord, type MemoryImportResult, type MemoryImportableBundle, type MemoryManifestEntry, type MemoryMessage, type MemoryUiSnapshot } from "../types.js";
+import { type CaseTraceRecord, type ClearMemoryScope, type DashboardOverview, type DreamTraceRecord, type IndexTraceRecord, type IndexingSettings, type L0SessionRecord, type MemoryExportBundle, type MemoryEntryEditFields, type MemoryFileRecord, type MemoryImportResult, type MemoryImportableBundle, type MemoryManifestEntry, type MemoryMessage, type MemoryUiSnapshot } from "../types.js";
 import { FileMemoryStore } from "../file-memory.js";
 export declare class MemoryBundleValidationError extends Error {
     constructor(message: string);
 }
 export interface ClearMemoryResult {
+    scope: ClearMemoryScope;
     cleared: {
         l0Sessions: number;
         pipelineState: number;
@@ -136,4 +137,5 @@ export declare class MemoryRepository {
     };
     getSnapshotVersion(): string;
     clearAllMemoryData(): ClearMemoryResult;
+    clearCurrentWorkspaceMemoryData(): ClearMemoryResult;
 }

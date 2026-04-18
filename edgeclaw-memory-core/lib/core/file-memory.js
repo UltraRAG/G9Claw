@@ -956,19 +956,15 @@ export class FileMemoryStore {
         if (!this.manageProjectMeta)
             return [];
         const meta = this.readProjectMetaFile();
-        if (meta)
-            return [meta];
-        return this.hasVisibleProjectMemory(CURRENT_PROJECT_ID)
-            ? [this.ensureProjectMeta()]
-            : [];
+        return meta ? [meta] : [];
     }
     listProjectIdentityHints(_options = {}) {
         if (!this.manageProjectMeta)
             return [];
         const meta = this.readProjectMetaFile();
-        if (!meta && !this.hasVisibleProjectMemory(CURRENT_PROJECT_ID))
+        if (!meta)
             return [];
-        const projectMeta = meta ?? this.ensureProjectMeta();
+        const projectMeta = meta;
         return [{
                 identityKey: CURRENT_PROJECT_ID,
                 projectId: CURRENT_PROJECT_ID,
@@ -1060,10 +1056,12 @@ export class FileMemoryStore {
             content: readFileSync(this.resolveRelativePath(relativePath), "utf8"),
         }));
     }
-    clearAllData() {
+    clearAllData(options = {}) {
         rmSync(this.rootDir, { recursive: true, force: true });
         this.ensureLayout();
-        this.repairManifests();
+        if (options.rebuildManifest ?? true) {
+            this.repairManifests();
+        }
     }
     getOverview(lastDreamAt) {
         const entries = this.collectAllEntries();

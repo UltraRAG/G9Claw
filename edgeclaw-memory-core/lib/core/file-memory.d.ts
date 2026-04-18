@@ -144,7 +144,9 @@ export declare class FileMemoryStore {
         projectMetas: ProjectMetaExportRecord[];
     };
     exportSnapshotFiles(): MemorySnapshotFileRecord[];
-    clearAllData(): void;
+    clearAllData(options?: {
+        rebuildManifest?: boolean;
+    }): void;
     getOverview(lastDreamAt?: string): FileMemoryOverview;
     getSnapshotVersion(lastDreamAt?: string): string;
     mergeDuplicateEntries(entries: MemoryManifestEntry[]): {

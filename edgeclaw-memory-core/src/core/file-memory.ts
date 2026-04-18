@@ -1082,17 +1082,14 @@ export class FileMemoryStore {
   listProjectMetas(_options: { includeTmp?: boolean } = {}): ProjectMetaRecord[] {
     if (!this.manageProjectMeta) return [];
     const meta = this.readProjectMetaFile();
-    if (meta) return [meta];
-    return this.hasVisibleProjectMemory(CURRENT_PROJECT_ID)
-      ? [this.ensureProjectMeta()]
-      : [];
+    return meta ? [meta] : [];
   }
 
   listProjectIdentityHints(_options: { includeTmp?: boolean; limit?: number } = {}): ProjectIdentityHint[] {
     if (!this.manageProjectMeta) return [];
     const meta = this.readProjectMetaFile();
-    if (!meta && !this.hasVisibleProjectMemory(CURRENT_PROJECT_ID)) return [];
-    const projectMeta = meta ?? this.ensureProjectMeta();
+    if (!meta) return [];
+    const projectMeta = meta;
     return [{
       identityKey: CURRENT_PROJECT_ID,
       projectId: CURRENT_PROJECT_ID,
@@ -1199,10 +1196,12 @@ export class FileMemoryStore {
     }));
   }
 
-  clearAllData(): void {
+  clearAllData(options: { rebuildManifest?: boolean } = {}): void {
     rmSync(this.rootDir, { recursive: true, force: true });
     this.ensureLayout();
-    this.repairManifests();
+    if (options.rebuildManifest ?? true) {
+      this.repairManifests();
+    }
   }
 
   getOverview(lastDreamAt?: string): FileMemoryOverview {

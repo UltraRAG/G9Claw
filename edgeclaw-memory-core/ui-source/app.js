@@ -40,7 +40,8 @@ const dreamBtn = document.getElementById("dreamBtn");
 const exportBtn = document.getElementById("exportBtn");
 const importBtn = document.getElementById("importBtn");
 const importInput = document.getElementById("importInput");
-const clearBtn = document.getElementById("clearBtn");
+const clearProjectBtn = document.getElementById("clearProjectBtn");
+const clearAllBtn = document.getElementById("clearAllBtn");
 const workspaceSearchEl = document.getElementById("workspaceSearch");
 const workspaceSearchBtn = document.getElementById("workspaceSearchBtn");
 const listSearchRowEl = document.getElementById("listSearchRow");
@@ -118,6 +119,23 @@ function setStatus(message, kind = "info") {
 
 function formatTraceTrigger(trigger) {
   return trigger === "scheduled" ? "自动" : "手动";
+}
+
+function formatRecallRoute(route) {
+  switch (route) {
+    case "user":
+      return "User";
+    case "project":
+      return "Project";
+    case "mix":
+      return "Project + User";
+    case "none":
+      return "None";
+    case "project_memory":
+      return "Project";
+    default:
+      return route || "none";
+  }
 }
 
 function formatTraceDisplayStatus(record) {
@@ -552,8 +570,8 @@ async function loadRecallDetail(caseId) {
     clearNode(recallMetaTableEl);
     recallMetaTableEl.append(buildKvCell("问题", r.query || "—"));
     recallMetaTableEl.append(buildKvCell("会话", r.sessionKey || "—"));
-    recallMetaTableEl.append(buildKvCell("模式", r.retrieval?.intent || "auto"));
-    recallMetaTableEl.append(buildKvCell("召回理由", r.retrieval?.intent || "none"));
+    recallMetaTableEl.append(buildKvCell("模式", formatRecallRoute(r.retrieval?.intent || "auto")));
+    recallMetaTableEl.append(buildKvCell("召回理由", formatRecallRoute(r.retrieval?.intent || "none")));
     recallMetaTableEl.append(buildKvCell("状态", r.status || "—"));
     recallMetaTableEl.append(buildKvCell("注入", r.retrieval?.injected ? "是" : "否"));
     recallMetaTableEl.append(buildKvCell("开始", formatDateTime(r.startedAt)));
@@ -663,9 +681,9 @@ async function loadDashboard() {
 
 /* ── Actions ── */
 
-async function runAction(label, path) {
+async function runAction(label, path, body = {}) {
   closeSettingsDrawer(); setStatus(`${label} 执行中…`);
-  try { const r = await fetchJson(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: {} }); setStatus(`${label} 完成`); await loadDashboard(); return r; }
+  try { const r = await fetchJson(path, { method: "POST", headers: { "Content-Type": "application/json" }, body }); setStatus(`${label} 完成`); await loadDashboard(); return r; }
   catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); throw err; }
 }
 
@@ -674,7 +692,15 @@ async function exportMemory() {
   catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
 }
 
-async function clearMemory() { if (!window.confirm("确认清空当前 workspace 的全部记忆吗？")) return; await runAction("清空", "/api/memory/clear"); }
+async function clearCurrentProjectMemory() {
+  if (!window.confirm("确认清空当前项目的全部记忆吗？这不会删除全局用户身份背景。")) return;
+  await runAction("清空当前项目记忆", "/api/memory/clear", { scope: "current_project" });
+}
+
+async function clearAllMemory() {
+  if (!window.confirm("确认清空所有记忆吗？这会删除所有项目记忆以及全局用户身份背景。")) return;
+  await runAction("清空所有记忆", "/api/memory/clear", { scope: "all_memory" });
+}
 
 async function editProjectMeta() {
   const c = state.workspace?.projectMeta || {};
@@ -712,7 +738,8 @@ indexBtn.addEventListener("click", () => void runAction("索引同步", "/api/me
 dreamBtn.addEventListener("click", () => void runAction("记忆 Dream", "/api/memory/dream/run"));
 exportBtn.addEventListener("click", () => void exportMemory());
 importBtn.addEventListener("click", () => importInput.click());
-clearBtn.addEventListener("click", () => void clearMemory());
+clearProjectBtn.addEventListener("click", () => void clearCurrentProjectMemory());
+clearAllBtn.addEventListener("click", () => void clearAllMemory());
 
 workspaceSearchEl.addEventListener("input", () => { state.workspaceQuery = workspaceSearchEl.value.trim(); if (state.activePage === "project") void loadWorkspace(); });
 workspaceSearchEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); state.workspaceQuery = workspaceSearchEl.value.trim(); void loadWorkspace(); } });

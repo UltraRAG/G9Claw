@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
+  type CaseTraceRecord,
+  type ClearMemoryScope,
   type ClearMemoryResult,
   type DreamRunResult,
   DreamRewriteRunner,
@@ -366,12 +368,125 @@ function toMessages(rawMessages: readonly unknown[], options: {
   return normalizeMessages([...rawMessages], options);
 }
 
+type CleanedRecallSections = {
+  userProfile: string[];
+  projectMeta: string[];
+  projectMemory: string[];
+  feedbackMemory: string[];
+};
+
+function parseRawRecallSections(value: string): CleanedRecallSections {
+  const sections: CleanedRecallSections = {
+    userProfile: [],
+    projectMeta: [],
+    projectMemory: [],
+    feedbackMemory: [],
+  };
+  let currentSection: keyof CleanedRecallSections | null = null;
+  let buffer: string[] = [];
+
+  const flush = () => {
+    if (!currentSection) {
+      buffer = [];
+      return;
+    }
+    const content = buffer.join("\n").trim();
+    if (content) sections[currentSection].push(content);
+    buffer = [];
+  };
+
+  for (const rawLine of value.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (/^### \[user\]/u.test(line)) {
+      flush();
+      currentSection = "userProfile";
+      continue;
+    }
+    if (/^### \[project_meta\]/u.test(line)) {
+      flush();
+      currentSection = "projectMeta";
+      continue;
+    }
+    if (/^### \[project\]/u.test(line)) {
+      flush();
+      currentSection = "projectMemory";
+      continue;
+    }
+    if (/^### \[feedback\]/u.test(line)) {
+      flush();
+      currentSection = "feedbackMemory";
+      continue;
+    }
+    if (!currentSection) continue;
+    if (!line) {
+      buffer.push("");
+      continue;
+    }
+    if (line === "## ClawXMemory Recall") continue;
+    if (/^route=/u.test(line)) continue;
+    if (line === "Treat these file memories as the authoritative long-term memory for this turn when relevant.") {
+      continue;
+    }
+    buffer.push(rawLine);
+  }
+
+  flush();
+  return sections;
+}
+
+function joinRecallBodies(bodies: string[]): string | null {
+  const normalizedBodies = bodies.map((body) => body.trim()).filter(Boolean);
+  if (normalizedBodies.length === 0) return null;
+  return normalizedBodies.join("\n\n---\n\n");
+}
+
+function looksLikeRawRecallContext(value: string | undefined): boolean {
+  const normalized = (value ?? "").trim();
+  if (!normalized) return false;
+  return /^route=/mu.test(normalized)
+    || /^### \[(user|project_meta|project|feedback)\]/mu.test(normalized);
+}
+
 export function buildMemoryRecallSystemContext(evidenceBlock: string): string {
+  const sections = parseRawRecallSections(evidenceBlock.trim());
+  const blocks = [
+    sections.userProfile.length > 0
+      ? ["## User Profile", joinRecallBodies(sections.userProfile)].filter(Boolean).join("\n\n")
+      : null,
+    sections.projectMeta.length > 0
+      ? ["## Project Meta", joinRecallBodies(sections.projectMeta)].filter(Boolean).join("\n\n")
+      : null,
+    sections.projectMemory.length > 0
+      ? ["## Project Memory", joinRecallBodies(sections.projectMemory)].filter(Boolean).join("\n\n")
+      : null,
+    sections.feedbackMemory.length > 0
+      ? ["## Feedback Memory", joinRecallBodies(sections.feedbackMemory)].filter(Boolean).join("\n\n")
+      : null,
+  ].filter((block): block is string => Boolean(block));
+
+  if (blocks.length === 0) return "";
+
   return [
     "## ClawXMemory Recall",
-    "Use the following retrieved ClawXMemory evidence for this turn.",
-    evidenceBlock.trim(),
-  ].filter(Boolean).join("\n\n");
+    "These are retrieved long-term memory references for the current turn.",
+    "Some content may be relevant while some may not be directly useful.",
+    "Use only the parts that are relevant to the current question.",
+    "If retrieved memory conflicts with explicit new user instructions in the current turn, follow the current-turn user instructions.",
+    ...blocks,
+  ].join("\n\n");
+}
+
+function normalizeCaseTraceContextPreview(record: CaseTraceRecord): CaseTraceRecord {
+  const retrieval = record.retrieval;
+  const preview = retrieval?.contextPreview;
+  if (!preview || !retrieval || !looksLikeRawRecallContext(preview)) return record;
+  return {
+    ...record,
+    retrieval: {
+      ...retrieval,
+      contextPreview: buildMemoryRecallSystemContext(preview),
+    },
+  };
 }
 
 export function buildEdgeClawMemoryPromptSection(options: {
@@ -449,16 +564,6 @@ export class EdgeClawMemoryService {
   private readonly maxMessageChars: number;
   private readonly source: string;
 
-  private projectMetaSeed() {
-    const projectName = basename(this.workspaceDir) || "Current Project";
-    return {
-      projectName,
-      description: `${projectName} workspace memory`,
-      aliases: [projectName],
-      status: "in_progress" as const,
-    };
-  }
-
   constructor(options: EdgeClawMemoryServiceOptions) {
     this.workspaceDir = resolve(options.workspaceDir);
     const rootDir = resolveDefaultRootDir(options.rootDir);
@@ -480,7 +585,6 @@ export class EdgeClawMemoryService {
       globalRootDir: join(rootDir, "global"),
     });
     this.repository.setPipelineState("workspaceDir", this.workspaceDir);
-    this.repository.ensureProjectMeta(this.projectMetaSeed());
     this.extractor = new LlmMemoryExtractor(
       buildLlmConfig(options.llm),
       options.runtime,
@@ -781,11 +885,27 @@ export class EdgeClawMemoryService {
   }
 
   listCaseTraces(limit = 30) {
-    return this.repository.listRecentCaseTraces(limit);
+    return this.repository.listRecentCaseTraces(limit).map((record) => normalizeCaseTraceContextPreview(record));
+  }
+
+  saveCaseTrace(record: Omit<CaseTraceRecord, "caseId"> & { caseId?: string }) {
+    const startedAt = record.startedAt || nowIso();
+    this.repository.saveCaseTrace({
+      caseId: record.caseId?.trim() || `case_trace_${hashText(`${record.sessionKey}:${record.query}:${startedAt}:${Math.random().toString(36).slice(2, 10)}`)}`,
+      sessionKey: record.sessionKey,
+      query: record.query,
+      startedAt,
+      finishedAt: record.finishedAt,
+      status: record.status,
+      retrieval: record.retrieval,
+      toolEvents: record.toolEvents,
+      assistantReply: record.assistantReply,
+    });
   }
 
   getCaseTrace(caseId: string) {
-    return this.repository.getCaseTrace(caseId);
+    const record = this.repository.getCaseTrace(caseId);
+    return record ? normalizeCaseTraceContextPreview(record) : undefined;
   }
 
   listIndexTraces(limit = 30) {
@@ -815,9 +935,10 @@ export class EdgeClawMemoryService {
     return result;
   }
 
-  clear(): ClearMemoryResult {
-    const result = this.repository.clearAllMemoryData();
-    this.repository.ensureProjectMeta(this.projectMetaSeed());
+  clear(scope: ClearMemoryScope = "current_project"): ClearMemoryResult {
+    const result = scope === "all_memory"
+      ? this.repository.clearAllMemoryData()
+      : this.repository.clearCurrentWorkspaceMemoryData();
     this.retriever.resetTransientState();
     return result;
   }

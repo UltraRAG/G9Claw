@@ -1383,7 +1383,7 @@ function buildSyntheticProjectFollowUpCandidate(input) {
     };
 }
 function normalizeMemoryRoute(value) {
-    if (value === "user" || value === "project_memory" || value === "none") {
+    if (value === "user" || value === "project" || value === "mix" || value === "none") {
         return value;
     }
     return "none";
@@ -1955,11 +1955,13 @@ export class LlmMemoryExtractor {
                 systemPrompt: [
                     "You decide whether the current query should trigger long-term memory recall.",
                     "Return JSON only with a single field route.",
-                    "Valid route values: none, user, project_memory.",
+                    "Valid route values: none, user, project, mix.",
                     "Use none unless the query clearly needs long-term memory.",
                     "Use user only when the query is asking about stable personal identity/background facts about who the user is, such as name, profession, long-term role context, life background, or durable relationships.",
-                    "Do not use user for reply preferences, language choices, formatting rules, style guidance, file/tool boundaries, or delivery rules; those belong to project_memory.",
-                    "Use project_memory when the query needs any project memory at all, including project status, project facts, collaboration rules, delivery style, or both.",
+                    "Do not use user for reply preferences, language choices, formatting rules, style guidance, file/tool boundaries, or delivery rules; those belong to project.",
+                    "Use project when the query only needs current project memory, including project facts, collaboration rules, delivery style, file boundaries, or project status.",
+                    "Use mix only when the query genuinely needs both current project memory and the user's stable identity/background at the same time.",
+                    "Do not use mix just because both could be helpful; choose mix only when both are actually necessary to answer well.",
                 ].join("\n"),
                 userPrompt: JSON.stringify({
                     query: input.query,

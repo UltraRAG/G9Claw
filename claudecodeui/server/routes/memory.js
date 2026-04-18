@@ -6,6 +6,7 @@ import {
   MemoryBundleValidationError,
 } from '../../../edgeclaw-memory-core/lib/index.js';
 import {
+  clearAllMemoryData,
   getMemoryServiceForRequest,
   runManualMemoryDream,
   runManualMemoryFlush,
@@ -294,10 +295,22 @@ router.post('/import', async (req, res) =>
   }),
 );
 
-router.post('/clear', async (req, res) =>
-  withMemoryService(req, res, async ({ service }) => {
-    res.json(service.clear());
-  }),
-);
+router.post('/clear', async (req, res) => {
+  const scope = req.body?.scope === 'all_memory' ? 'all_memory' : 'current_project';
+  if (scope === 'all_memory') {
+    try {
+      res.json(await clearAllMemoryData());
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
+
+  return withMemoryService(req, res, async ({ service }) => {
+    res.json(service.clear(scope));
+  });
+});
 
 export default router;

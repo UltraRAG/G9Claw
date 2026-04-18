@@ -431,23 +431,27 @@ export class QueryEngine {
       querySource: 'sdk',
     })
 
-    const turnStartIndex = this.mutableMessages.length
-
     // Push new messages, including user input and any attachments
     this.mutableMessages.push(...messagesFromUserInput)
+    const edgeClawTurnMessages: Message[] = [...messagesFromUserInput]
 
     // Update params to reflect updates from processing /slash commands
     const messages = [...this.mutableMessages]
     const edgeClawMemoryService = isEdgeClawMemoryEnabled()
       ? getEdgeClawMemoryService(cwd)
       : null
+    let edgeClawMemoryQueryForTrace: string | null = null
+    let edgeClawMemoryRecallForTrace: any = null
+    let edgeClawRecallTraceStatus: 'completed' | 'error' | 'interrupted' =
+      'error'
+    let edgeClawRecallAssistantReply = ''
     const captureEdgeClawMemoryTurn = () => {
       if (!edgeClawMemoryService) {
         return
       }
       try {
         const captureResult = edgeClawMemoryService.captureTurn(
-          this.mutableMessages.slice(turnStartIndex),
+          edgeClawTurnMessages,
           {
             sessionKey: getSessionId(),
           },
@@ -455,6 +459,47 @@ export class QueryEngine {
       } catch (error) {
         logForDebugging(
           `[edgeclaw-memory] capture failed: ${String(error)}`,
+          { level: 'debug' },
+        )
+      }
+    }
+    const persistEdgeClawRecallTrace = () => {
+      if (
+        !edgeClawMemoryService ||
+        !edgeClawMemoryQueryForTrace ||
+        !edgeClawMemoryRecallForTrace
+      ) {
+        return
+      }
+      try {
+        const traceStatus =
+          this.abortController.signal.aborted &&
+          edgeClawRecallTraceStatus === 'error'
+            ? 'interrupted'
+            : edgeClawRecallTraceStatus
+        edgeClawMemoryService.saveCaseTrace({
+          sessionKey: getSessionId(),
+          query: edgeClawMemoryQueryForTrace,
+          startedAt:
+            edgeClawMemoryRecallForTrace.trace?.startedAt ??
+            new Date(startTime).toISOString(),
+          finishedAt: new Date().toISOString(),
+          status: traceStatus,
+          retrieval: {
+            intent: edgeClawMemoryRecallForTrace.intent,
+            injected: Boolean(edgeClawMemoryRecallForTrace.systemContext),
+            contextPreview: edgeClawMemoryRecallForTrace.systemContext ?? '',
+            ...(edgeClawMemoryRecallForTrace.debug?.preflightReason
+              ? { preflightReason: edgeClawMemoryRecallForTrace.debug.preflightReason }
+              : {}),
+            trace: edgeClawMemoryRecallForTrace.trace ?? null,
+          },
+          toolEvents: [],
+          assistantReply: edgeClawRecallAssistantReply,
+        })
+      } catch (error) {
+        logForDebugging(
+          `[edgeclaw-memory] save case trace failed: ${String(error)}`,
           { level: 'debug' },
         )
       }
@@ -558,6 +603,7 @@ export class QueryEngine {
       try {
         const memoryQuery = buildEdgeClawMemoryQuery(messagesFromUserInput)
         if (memoryQuery) {
+          edgeClawMemoryQueryForTrace = memoryQuery
           const memoryRecall = await edgeClawMemoryService.retrieveContext(
             memoryQuery,
             {
@@ -566,6 +612,7 @@ export class QueryEngine {
               retrievalMode: 'auto',
             },
           )
+          edgeClawMemoryRecallForTrace = memoryRecall
           if (memoryRecall.systemContext) {
             effectiveSystemPrompt = asSystemPrompt([
               ...systemPrompt,
@@ -671,6 +718,8 @@ export class QueryEngine {
           }
         }
 
+        edgeClawRecallTraceStatus = 'completed'
+        edgeClawRecallAssistantReply = resultText ?? ''
         yield {
           type: 'result',
           subtype: 'success',
@@ -822,10 +871,12 @@ export class QueryEngine {
             lastStopReason = message.message.stop_reason
           }
           this.mutableMessages.push(message)
+          edgeClawTurnMessages.push(message)
           yield* normalizeMessage(message)
           break
         case 'progress':
           this.mutableMessages.push(message)
+          edgeClawTurnMessages.push(message)
           // Record inline so the dedup loop in the next ask() call sees it
           // as already-recorded. Without this, deferred progress interleaves
           // with already-recorded tool_results in mutableMessages, and the
@@ -839,6 +890,7 @@ export class QueryEngine {
           break
         case 'user':
           this.mutableMessages.push(message)
+          edgeClawTurnMessages.push(message)
           yield* normalizeMessage(message)
           break
         case 'stream_event':
@@ -895,6 +947,7 @@ export class QueryEngine {
           break
         case 'attachment':
           this.mutableMessages.push(message)
+          edgeClawTurnMessages.push(message)
           // Record inline (same reason as progress above).
           if (persistSession) {
             messages.push(message)
@@ -915,9 +968,10 @@ export class QueryEngine {
                 await flushSessionStorage()
               }
             }
-            yield {
-              type: 'result',
-              subtype: 'error_max_turns',
+          edgeClawRecallTraceStatus = 'error'
+          yield {
+            type: 'result',
+            subtype: 'error_max_turns',
               duration_ms: Date.now() - startTime,
               duration_api_ms: getTotalAPIDuration(),
               is_error: true,
@@ -934,11 +988,11 @@ export class QueryEngine {
               ),
               uuid: randomUUID(),
               errors: [
-                `Reached maximum number of turns (${message.attachment.maxTurns})`,
-              ],
-            }
-            return
+              `Reached maximum number of turns (${message.attachment.maxTurns})`,
+            ],
           }
+          return
+        }
           // Yield queued_command attachments as SDK user message replays
           else if (
             replayUserMessages &&
@@ -981,6 +1035,7 @@ export class QueryEngine {
             break
           }
           this.mutableMessages.push(message)
+          edgeClawTurnMessages.push(message)
           // Yield compact boundary messages to SDK
           if (
             message.subtype === 'compact_boundary' &&
@@ -1045,6 +1100,7 @@ export class QueryEngine {
             await flushSessionStorage()
           }
         }
+        edgeClawRecallTraceStatus = 'error'
         yield {
           type: 'result',
           subtype: 'error_max_budget_usd',
@@ -1063,10 +1119,10 @@ export class QueryEngine {
             initialAppState.fastMode,
           ),
           uuid: randomUUID(),
-          errors: [`Reached maximum budget ($${maxBudgetUsd})`],
+            errors: [`Reached maximum budget ($${maxBudgetUsd})`],
+          }
+          return
         }
-        return
-      }
 
       // Check if structured output retry limit exceeded (only on user messages)
       if (message.type === 'user' && jsonSchema) {
@@ -1088,6 +1144,7 @@ export class QueryEngine {
               await flushSessionStorage()
             }
           }
+          edgeClawRecallTraceStatus = 'error'
           yield {
             type: 'result',
             subtype: 'error_max_structured_output_retries',
@@ -1147,6 +1204,7 @@ export class QueryEngine {
     }
 
     if (!isResultSuccessful(result, lastStopReason)) {
+      edgeClawRecallTraceStatus = 'error'
       yield {
         type: 'result',
         subtype: 'error_during_execution',
@@ -1199,6 +1257,8 @@ export class QueryEngine {
       isApiError = Boolean(result.isApiErrorMessage)
     }
 
+    edgeClawRecallTraceStatus = isApiError ? 'error' : 'completed'
+    edgeClawRecallAssistantReply = textResult
     yield {
       type: 'result',
       subtype: 'success',
@@ -1221,6 +1281,7 @@ export class QueryEngine {
       uuid: randomUUID(),
     }
     } finally {
+      persistEdgeClawRecallTrace()
       captureEdgeClawMemoryTurn()
     }
   }

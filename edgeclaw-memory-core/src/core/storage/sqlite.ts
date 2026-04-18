@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:f
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   type CaseTraceRecord,
+  type ClearMemoryScope,
   type DashboardOverview,
   type DreamPipelineStatus,
   type DreamTraceRecord,
@@ -57,6 +58,7 @@ export class MemoryBundleValidationError extends Error {
 }
 
 export interface ClearMemoryResult {
+  scope: ClearMemoryScope;
   cleared: {
     l0Sessions: number;
     pipelineState: number;
@@ -1195,13 +1197,45 @@ export class MemoryRepository {
       DELETE FROM l0_sessions;
       DELETE FROM pipeline_state;
     `);
-    this.workspaceMemory.clearAllData();
-    this.globalUserMemory.clearAllData();
+    this.workspaceMemory.clearAllData({ rebuildManifest: false });
+    this.globalUserMemory.clearAllData({ rebuildManifest: false });
     return {
+      scope: "all_memory",
       cleared: {
         l0Sessions,
         pipelineState,
         memoryFiles: beforeWorkspace.memoryFiles.length + beforeGlobal.memoryFiles.length,
+        projectMetas: beforeWorkspace.projectMetas.length,
+      },
+      clearedAt: nowIso(),
+    };
+  }
+
+  clearCurrentWorkspaceMemoryData(): ClearMemoryResult {
+    const l0Sessions = Number((this.db.prepare("SELECT COUNT(*) AS count FROM l0_sessions").get() as DbRow | undefined)?.count ?? 0);
+    const pipelineState = Number((this.db.prepare("SELECT COUNT(*) AS count FROM pipeline_state").get() as DbRow | undefined)?.count ?? 0);
+    const beforeWorkspace = this.workspaceMemory.exportBundleRecords({ includeTmp: true });
+    const preservedIndexingSettings = this.getPipelineState(INDEXING_SETTINGS_STATE_KEY);
+    const preservedWorkspaceDir = this.getPipelineState("workspaceDir");
+
+    this.db.exec(`
+      DELETE FROM l0_sessions;
+      DELETE FROM pipeline_state;
+    `);
+    if (preservedIndexingSettings !== undefined) {
+      this.setPipelineState(INDEXING_SETTINGS_STATE_KEY, preservedIndexingSettings);
+    }
+    if (preservedWorkspaceDir !== undefined) {
+      this.setPipelineState("workspaceDir", preservedWorkspaceDir);
+    }
+    this.workspaceMemory.clearAllData({ rebuildManifest: false });
+
+    return {
+      scope: "current_project",
+      cleared: {
+        l0Sessions,
+        pipelineState,
+        memoryFiles: beforeWorkspace.memoryFiles.length,
         projectMetas: beforeWorkspace.projectMetas.length,
       },
       clearedAt: nowIso(),

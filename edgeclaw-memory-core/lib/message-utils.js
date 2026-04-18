@@ -443,7 +443,10 @@ function hasToolCallContent(content) {
         if (!block || typeof block !== "object")
             return false;
         const type = block.type;
-        return type === "toolCall" || type === "toolResult";
+        return type === "toolCall"
+            || type === "toolResult"
+            || type === "tool_use"
+            || type === "tool_result";
     });
 }
 function shouldSkipUserMessage(content) {
@@ -537,6 +540,14 @@ function normalizeSingleMessage(raw, options) {
         return undefined;
     const msg = raw;
     const nestedMessage = asRecord(msg.message);
+    if (msg.type === "user"
+        && (msg.toolUseResult !== undefined && msg.toolUseResult !== null
+            || Boolean(msg.isMeta)
+            || Boolean(msg.isVisibleInTranscriptOnly)
+            || Boolean(msg.isCompactSummary)
+            || Boolean(msg.isVirtual))) {
+        return undefined;
+    }
     const info = inspectTranscriptMessage(raw);
     const role = info.role ?? "";
     if (role !== "user" && role !== "assistant")
@@ -585,5 +596,7 @@ export function normalizeMessages(rawMessages, options) {
             break;
         }
     }
-    return lastUser >= 0 ? all.slice(lastUser) : all.slice(-2);
+    if (lastUser >= 0)
+        return all.slice(lastUser);
+    return all.some((message) => message.role === "user") ? [] : all.slice(-2);
 }

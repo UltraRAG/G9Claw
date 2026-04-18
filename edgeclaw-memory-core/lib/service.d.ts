@@ -1,4 +1,4 @@
-import { type ClearMemoryResult, type DreamRunResult, DreamRewriteRunner, type HeartbeatStats, HeartbeatIndexer, type IndexingSettings, LlmMemoryExtractor, type MemoryActionRequest, type MemoryActionResult, type MemoryExportBundle, type MemoryImportResult, type MemoryImportableBundle, type MemoryMessage, type MemoryRecordType, type MemoryUiSnapshot, MemoryRepository, type RetrievalResult, ReasoningRetriever } from "./core/index.js";
+import { type CaseTraceRecord, type ClearMemoryScope, type ClearMemoryResult, type DreamRunResult, DreamRewriteRunner, type HeartbeatStats, HeartbeatIndexer, type IndexingSettings, LlmMemoryExtractor, type MemoryActionRequest, type MemoryActionResult, type MemoryExportBundle, type MemoryImportResult, type MemoryImportableBundle, type MemoryMessage, type MemoryRecordType, type MemoryUiSnapshot, MemoryRepository, type RetrievalResult, ReasoningRetriever } from "./core/index.js";
 import { type TranscriptMessageInfo } from "./message-utils.js";
 type LoggerLike = {
     info?: (...args: unknown[]) => void;
@@ -67,7 +67,6 @@ export declare class EdgeClawMemoryService {
     private readonly includeAssistant;
     private readonly maxMessageChars;
     private readonly source;
-    private projectMetaSeed;
     constructor(options: EdgeClawMemoryServiceOptions);
     close(): void;
     getSettings(): IndexingSettings;
@@ -120,15 +119,18 @@ export declare class EdgeClawMemoryService {
         status: string;
     }): import("./core/types.js").ProjectMetaRecord;
     getSnapshotVersion(): string;
-    listCaseTraces(limit?: number): import("./core/types.js").CaseTraceRecord[];
-    getCaseTrace(caseId: string): import("./core/types.js").CaseTraceRecord | undefined;
+    listCaseTraces(limit?: number): CaseTraceRecord[];
+    saveCaseTrace(record: Omit<CaseTraceRecord, "caseId"> & {
+        caseId?: string;
+    }): void;
+    getCaseTrace(caseId: string): CaseTraceRecord | undefined;
     listIndexTraces(limit?: number): import("./core/types.js").IndexTraceRecord[];
     getIndexTrace(indexTraceId: string): import("./core/types.js").IndexTraceRecord | undefined;
     listDreamTraces(limit?: number): import("./core/types.js").DreamTraceRecord[];
     getDreamTrace(dreamTraceId: string): import("./core/types.js").DreamTraceRecord | undefined;
     exportBundle(): MemoryExportBundle;
     importBundle(bundle: MemoryImportableBundle): MemoryImportResult;
-    clear(): ClearMemoryResult;
+    clear(scope?: ClearMemoryScope): ClearMemoryResult;
     act(input: MemoryActionRequest): MemoryActionResult;
 }
 export declare function summarizeTranscriptMessage(raw: unknown): TranscriptMessageInfo;

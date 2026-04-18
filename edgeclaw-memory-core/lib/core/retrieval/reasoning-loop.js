@@ -84,22 +84,39 @@ function renderProjectMetaBlock(projectMeta) {
     }
     return lines;
 }
-function renderContext(route, userSummary, projectMeta, records) {
-    const userSummaryPaths = new Set(userSummary.files.map((file) => file.relativePath));
-    const uniqueRecords = records.filter((record) => !userSummaryPaths.has(record.relativePath));
-    if (!hasUserSummary(userSummary) && !projectMeta && uniqueRecords.length === 0)
-        return "";
-    const lines = [
-        "## ClawXMemory Recall",
-        `route=${route}`,
-        "",
-        ...renderUserSummaryBlock(userSummary),
-        ...renderProjectMetaBlock(projectMeta),
-    ];
-    for (const record of uniqueRecords) {
+function renderSelectedRecordsBlock(records) {
+    const lines = [];
+    for (const record of records) {
         lines.push(`### [${record.type}] ${record.relativePath} (${record.updatedAt})`);
         lines.push(record.content.trim());
         lines.push("");
+    }
+    return lines;
+}
+function renderContext(route, userSummary, projectMeta, records) {
+    const userSummaryPaths = new Set(userSummary.files.map((file) => file.relativePath));
+    const uniqueRecords = records.filter((record) => !userSummaryPaths.has(record.relativePath));
+    const lines = ["## ClawXMemory Recall", `route=${route}`, ""];
+    if (route === "user") {
+        if (!hasUserSummary(userSummary))
+            return "";
+        lines.push(...renderUserSummaryBlock(userSummary));
+    }
+    else if (route === "project") {
+        if (!projectMeta && uniqueRecords.length === 0)
+            return "";
+        lines.push(...renderProjectMetaBlock(projectMeta));
+        lines.push(...renderSelectedRecordsBlock(uniqueRecords));
+    }
+    else if (route === "mix") {
+        if (!hasUserSummary(userSummary) && !projectMeta && uniqueRecords.length === 0)
+            return "";
+        lines.push(...renderUserSummaryBlock(userSummary));
+        lines.push(...renderProjectMetaBlock(projectMeta));
+        lines.push(...renderSelectedRecordsBlock(uniqueRecords));
+    }
+    else {
+        return "";
     }
     lines.push("Treat these file memories as the authoritative long-term memory for this turn when relevant.");
     return lines.join("\n").trim();
@@ -244,14 +261,24 @@ export class ReasoningRetriever {
             ],
             ...(gateDebug ? { promptDebug: gateDebug } : {}),
         });
-        const userSummary = this.repository.getUserSummary();
-        const projectMeta = route === "project_memory"
+        const needsUserSummary = route === "user" || route === "mix";
+        const needsProjectMemory = route === "project" || route === "mix";
+        const userSummary = needsUserSummary
+            ? this.repository.getUserSummary()
+            : { identityBackground: [], files: [] };
+        const projectMeta = needsProjectMemory
             ? (this.repository.getFileMemoryStore().getProjectMeta() ?? null)
             : null;
-        pushStep(trace, "user_base_loaded", "User Base Loaded", hasUserSummary(userSummary) ? "success" : "skipped", "global user profile", hasUserSummary(userSummary) ? "Attached compact global user profile." : "No stable user profile was available.", {
+        pushStep(trace, "user_base_loaded", "User Base Loaded", !needsUserSummary ? "skipped" : hasUserSummary(userSummary) ? "success" : "warning", !needsUserSummary ? `route=${route}` : "global user profile", !needsUserSummary
+            ? "Current route does not require user identity background."
+            : hasUserSummary(userSummary)
+                ? "Attached compact global user profile."
+                : "No stable user profile was available.", {
             titleI18n: traceI18n("trace.step.user_base_loaded", "User Base Loaded"),
             details: [
                 kvDetail("user-summary", "User Profile", [
+                    { label: "route", value: route },
+                    { label: "required", value: needsUserSummary ? "yes" : "no" },
                     { label: "identityBackground", value: userSummary.identityBackground.length },
                 ], traceI18n("trace.detail.user_profile", "User Profile")),
                 ...(userSummary.files.length > 0
@@ -266,7 +293,7 @@ export class ReasoningRetriever {
                 limit: MANIFEST_LIMIT,
                 includeDeprecated: false,
             })
-            : route === "project_memory"
+            : needsProjectMemory
                 ? this.repository.listMemoryEntries({
                     kinds: ["project", "feedback"],
                     scope: "project",
@@ -274,13 +301,13 @@ export class ReasoningRetriever {
                     includeDeprecated: false,
                 })
                 : [];
-        pushStep(trace, "manifest_scanned", "Manifest Scanned", manifest.length > 0 ? "success" : route === "none" ? "skipped" : "warning", route === "project_memory" ? "current workspace project memory" : `route=${route}`, manifest.length > 0 ? `${manifest.length} recall header entries ready.` : "No matching workspace memory files were available.", {
+        pushStep(trace, "manifest_scanned", "Manifest Scanned", manifest.length > 0 ? "success" : route === "none" ? "skipped" : "warning", needsProjectMemory ? "current workspace project memory" : `route=${route}`, manifest.length > 0 ? `${manifest.length} recall header entries ready.` : "No matching workspace memory files were available.", {
             titleI18n: traceI18n("trace.step.manifest_scanned", "Manifest Scanned"),
             details: [
                 kvDetail("manifest-scan-summary", "Manifest Scan", [
                     { label: "count", value: manifest.length },
                     { label: "route", value: route },
-                    { label: "scope", value: route === "user" ? "global" : route === "project_memory" ? "workspace_project" : "none" },
+                    { label: "scope", value: route === "user" ? "global" : needsProjectMemory ? "workspace_project" : "none" },
                     { label: "limit", value: MANIFEST_LIMIT },
                     { label: "workspaceHint", value: options.workspaceHint ?? "" },
                 ], traceI18n("trace.detail.manifest_scan", "Manifest Scan")),

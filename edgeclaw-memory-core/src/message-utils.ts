@@ -473,7 +473,10 @@ function hasToolCallContent(content: unknown): boolean {
   return Array.isArray(content) && content.some((block) => {
     if (!block || typeof block !== "object") return false;
     const type = (block as Record<string, unknown>).type;
-    return type === "toolCall" || type === "toolResult";
+    return type === "toolCall"
+      || type === "toolResult"
+      || type === "tool_use"
+      || type === "tool_result";
   });
 }
 
@@ -571,6 +574,18 @@ function normalizeSingleMessage(
   if (!raw || typeof raw !== "object") return undefined;
   const msg = raw as Record<string, unknown>;
   const nestedMessage = asRecord(msg.message);
+  if (
+    msg.type === "user"
+    && (
+      msg.toolUseResult !== undefined && msg.toolUseResult !== null
+      || Boolean(msg.isMeta)
+      || Boolean(msg.isVisibleInTranscriptOnly)
+      || Boolean(msg.isCompactSummary)
+      || Boolean(msg.isVirtual)
+    )
+  ) {
+    return undefined;
+  }
   const info = inspectTranscriptMessage(raw);
   const role = info.role ?? "";
   if (role !== "user" && role !== "assistant") return undefined;
@@ -625,5 +640,6 @@ export function normalizeMessages(
       break;
     }
   }
-  return lastUser >= 0 ? all.slice(lastUser) : all.slice(-2);
+  if (lastUser >= 0) return all.slice(lastUser);
+  return all.some((message) => message.role === "user") ? [] : all.slice(-2);
 }
