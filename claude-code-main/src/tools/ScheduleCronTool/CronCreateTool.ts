@@ -1,17 +1,17 @@
 import { z } from 'zod/v4'
-import { setScheduledTasksEnabled } from '../../bootstrap/state.js'
+import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import type { ValidationResult } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { cronToHuman, parseCronExpression } from '../../utils/cron.js'
 import {
-  addCronTask,
   getCronFilePath,
-  listAllCronTasks,
   nextCronRunMs,
 } from '../../utils/cronTasks.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { getTeammateContext } from '../../utils/teammateContext.js'
+import { requestCronDaemon } from '../../daemon/client.js'
+import { assertCronDaemonOk } from '../../daemon/ipc.js'
 import {
   buildCronCreateDescription,
   buildCronCreatePrompt,
@@ -36,7 +36,7 @@ const inputSchema = lazySchema(() =>
       `true (default) = fire on every cron match until deleted or auto-expired after ${DEFAULT_MAX_AGE_DAYS} days. false = fire once at the next match, then auto-delete. Use false for "remind me at X" one-shot requests with pinned minute/hour/dom/month.`,
     ),
     durable: semanticBoolean(z.boolean().optional()).describe(
-      'true = persist to .claude/scheduled_tasks.json and survive restarts. false (default) = in-memory only, dies when this Claude session ends. Use true only when the user asks the task to survive across sessions.',
+      'true = persist to .claude/scheduled_tasks.json and survive restarts. false (default) = session-only in the Cron daemon, not written to disk, and lost if the daemon restarts. Use true only when the user asks the task to survive across sessions.',
     ),
   }),
 )
@@ -94,7 +94,16 @@ export const CronCreateTool = buildTool({
         errorCode: 2,
       }
     }
-    const tasks = await listAllCronTasks()
+    const listResponse = await requestCronDaemon({
+      type: 'list_tasks',
+      projectRoot: getProjectRoot(),
+      originSessionId: getSessionId(),
+    })
+    assertCronDaemonOk(listResponse)
+    if (listResponse.data.type !== 'list_tasks') {
+      throw new Error('Unexpected Cron daemon list response')
+    }
+    const tasks = listResponse.data.tasks
     if (tasks.length >= MAX_JOBS) {
       return {
         result: false,
@@ -118,22 +127,23 @@ export const CronCreateTool = buildTool({
     // Kill switch forces session-only; schema stays stable so the model sees
     // no validation errors when the gate flips mid-session.
     const effectiveDurable = durable && isDurableCronEnabled()
-    const id = await addCronTask(
+    const response = await requestCronDaemon({
+      type: 'create_task',
+      projectRoot: getProjectRoot(),
+      originSessionId: getSessionId(),
       cron,
       prompt,
       recurring,
-      effectiveDurable,
-      getTeammateContext()?.agentId,
-    )
-    // Enable the scheduler so the task fires in this session. The
-    // useScheduledTasks hook polls this flag and will start watching
-    // on the next tick. For durable: false tasks the file never changes
-    // — check() reads the session store directly — but the enable flag
-    // is still what starts the tick loop.
-    setScheduledTasksEnabled(true)
+      durable: effectiveDurable,
+      agentId: getTeammateContext()?.agentId,
+    })
+    assertCronDaemonOk(response)
+    if (response.data.type !== 'create_task') {
+      throw new Error('Unexpected Cron daemon create response')
+    }
     return {
       data: {
-        id,
+        id: response.data.task.id,
         humanSchedule: cronToHuman(cron),
         recurring,
         durable: effectiveDurable,
@@ -143,7 +153,7 @@ export const CronCreateTool = buildTool({
   mapToolResultToToolResultBlockParam(output, toolUseID) {
     const where = output.durable
       ? 'Persisted to .claude/scheduled_tasks.json'
-      : 'Session-only (not written to disk, dies when Claude exits)'
+      : 'Session-only in the Cron daemon (not written to scheduled_tasks.json; persists until deleted or daemon restart)'
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',

@@ -35,7 +35,7 @@ fi
 # ── Check if interactive mode is possible ──
 HAS_PRINT=false
 for arg in "$@"; do
-  case "$arg" in -p|--print|--help|--version|-v|-V) HAS_PRINT=true ;; esac
+  case "$arg" in -p|--print|--help|--version|-v|-V|daemon|--daemon-worker) HAS_PRINT=true ;; esac
 done
 if [ "$HAS_PRINT" = false ] && [ ! -t 1 ]; then
   cat >&2 <<'EOF'

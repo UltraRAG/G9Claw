@@ -1,0 +1,40 @@
+import { join } from 'path'
+import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+
+export function getCronDaemonDir(): string {
+  return join(getClaudeConfigHomeDir(), 'cron-daemon')
+}
+
+export function getCronDaemonSocketPath(): string {
+  return join(getClaudeConfigHomeDir(), 'cron-daemon.sock')
+}
+
+export function getCronDaemonProjectsPath(): string {
+  return join(getCronDaemonDir(), 'projects.json')
+}
+
+export function getCronDaemonWorkerPayloadDir(): string {
+  return join(getCronDaemonDir(), 'workers')
+}
+
+export function getCronDaemonWorkerPayloadPath(workerId: string): string {
+  return join(getCronDaemonWorkerPayloadDir(), `${workerId}.json`)
+}
+
+export function getCronDaemonNotificationDir(): string {
+  return join(getCronDaemonDir(), 'notifications')
+}
+
+export function getCronDaemonSessionNotificationDir(sessionId: string): string {
+  return join(getCronDaemonNotificationDir(), sessionId)
+}
+
+export function getCronDaemonSessionNotificationPath(
+  sessionId: string,
+  notificationId: string,
+): string {
+  return join(
+    getCronDaemonSessionNotificationDir(sessionId),
+    `${notificationId}.json`,
+  )
+}

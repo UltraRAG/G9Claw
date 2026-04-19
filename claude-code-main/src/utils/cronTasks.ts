@@ -97,6 +97,12 @@ type CronFile = { tasks: CronTask[] }
 
 const CRON_FILE_REL = join('.claude', 'scheduled_tasks.json')
 
+export type AddCronTaskOptions = {
+  dir?: string
+  originSessionId?: string
+  addSessionTask?: (task: CronTask) => void
+}
+
 /**
  * Path to the cron file. `dir` defaults to getProjectRoot() — pass it
  * explicitly from contexts that don't run through main.tsx (e.g. the Agent
@@ -217,11 +223,10 @@ export async function writeCronTasks(
  * Append a task. Returns the generated id. Caller is responsible for having
  * already validated the cron string (the tool does this via validateInput).
  *
- * When `durable` is false the task is held in process memory only
- * (bootstrap/state.ts) — it fires on schedule this session but is never
- * written to .claude/scheduled_tasks.json and dies with the process. The
- * scheduler merges session tasks into its tick loop directly, so no file
- * change event is needed.
+ * When `durable` is false the task is routed to a runtime-owned session store.
+ * The default REPL path uses bootstrap/state.ts in-process memory; the daemon
+ * path can inject its own store via `options.addSessionTask`. Session tasks are
+ * never written to .claude/scheduled_tasks.json.
  */
 export async function addCronTask(
   cron: string,
@@ -229,6 +234,7 @@ export async function addCronTask(
   recurring: boolean,
   durable: boolean,
   agentId?: string,
+  options?: AddCronTaskOptions,
 ): Promise<string> {
   // Short ID — 8 hex chars is plenty for MAX_JOBS=50, avoids slice/prefix
   // juggling between the tool layer (shows short IDs) and disk.
@@ -238,16 +244,25 @@ export async function addCronTask(
     cron,
     prompt,
     createdAt: Date.now(),
-    originSessionId: getSessionId(),
+    originSessionId: options?.originSessionId ?? getSessionId(),
     ...(recurring ? { recurring: true } : {}),
   }
   if (!durable) {
+    const sessionTask: CronTask = {
+      ...task,
+      ...(agentId ? { agentId } : {}),
+      durable: false,
+    }
+    if (options?.addSessionTask) {
+      options.addSessionTask(sessionTask)
+      return id
+    }
     addSessionCronTask({ ...task, ...(agentId ? { agentId } : {}) })
     return id
   }
-  const tasks = await readCronTasks()
+  const tasks = await readCronTasks(options?.dir)
   tasks.push(task)
-  await writeCronTasks(tasks)
+  await writeCronTasks(tasks, options?.dir)
   return id
 }
 

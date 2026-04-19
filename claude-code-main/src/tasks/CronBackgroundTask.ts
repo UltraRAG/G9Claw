@@ -40,7 +40,6 @@ import {
 } from '../utils/sessionStorage.js'
 import {
   evictTaskOutput,
-  getTaskOutputPath,
   initTaskOutputAsSymlink,
 } from '../utils/task/diskOutput.js'
 import { registerTask, updateTaskState } from '../utils/task/framework.js'
@@ -87,16 +86,25 @@ export type CreateCronQueryParams = (args: {
   querySource: typeof CRON_BACKGROUND_QUERY_SOURCE
 }) => Promise<Omit<QueryParams, 'messages'>>
 
+export type CronTaskUpdater = (
+  id: string,
+  updater: (task: CronTask) => CronTask,
+) => Promise<CronTask | null>
+
+export type CronNotificationSink = (message: string) => Promise<void>
+
 export type StartCronBackgroundTaskResult =
   | {
       status: 'started'
       runtimeTaskId: string
       transcriptKey: string
+      completion: Promise<void>
     }
   | {
       status: 'skipped'
       transcriptKey: string
       reason: 'already-running'
+      completion: Promise<void>
     }
 
 export async function startCronBackgroundTask({
@@ -104,11 +112,15 @@ export async function startCronBackgroundTask({
   setAppState,
   createQueryParams,
   dir,
+  updateTask,
+  notificationSink,
 }: {
   task: CronTask
   setAppState: SetAppState
   createQueryParams: CreateCronQueryParams
   dir?: string
+  updateTask?: CronTaskUpdater
+  notificationSink?: CronNotificationSink
 }): Promise<StartCronBackgroundTaskResult> {
   if (task.recurring && runningRecurringCrons.has(task.id)) {
     logForDebugging(
@@ -118,11 +130,12 @@ export async function startCronBackgroundTask({
       status: 'skipped',
       transcriptKey: task.transcriptKey ?? `cron-pending-${task.id}`,
       reason: 'already-running',
+      completion: Promise.resolve(),
     }
   }
 
   const recurringState = task.recurring
-    ? await ensureRecurringTranscript(task, dir)
+    ? await ensureRecurringTranscript(task, dir, updateTask)
     : {
         task,
         transcriptKey: generateCronId('cron-shot'),
@@ -148,7 +161,7 @@ export async function startCronBackgroundTask({
   const description = describeCronTask(task)
   const abortController = createAbortController()
 
-  void initTaskOutputAsSymlink(
+  const taskOutputPathPromise = initTaskOutputAsSymlink(
     runtimeTaskId,
     getAgentTranscriptPath(asAgentId(transcriptKey)),
   )
@@ -186,6 +199,13 @@ export async function startCronBackgroundTask({
   if (task.recurring) {
     runningRecurringCrons.add(task.id)
   }
+
+  let resolveCompletion: (() => void) | undefined
+  let rejectCompletion: ((error: unknown) => void) | undefined
+  const completion = new Promise<void>((resolve, reject) => {
+    resolveCompletion = resolve
+    rejectCompletion = reject
+  })
 
   void runWithAgentContext(
     {
@@ -313,16 +333,29 @@ export async function startCronBackgroundTask({
       } catch (error) {
         logError(error)
       } finally {
+        let completionError: unknown
         if (!wasAborted) {
-          finishCronBackgroundTask(
-            runtimeTaskId,
-            description,
-            success,
-            setAppState,
-          )
+          try {
+            await finishCronBackgroundTask(
+              runtimeTaskId,
+              description,
+              success,
+              setAppState,
+              taskOutputPathPromise,
+              notificationSink,
+            )
+          } catch (error) {
+            completionError = error
+            logError(error)
+          }
         }
         if (task.recurring) {
           runningRecurringCrons.delete(task.id)
+        }
+        if (completionError) {
+          rejectCompletion?.(completionError)
+        } else {
+          resolveCompletion?.()
         }
       }
     },
@@ -332,12 +365,14 @@ export async function startCronBackgroundTask({
     status: 'started',
     runtimeTaskId,
     transcriptKey,
+    completion,
   }
 }
 
 async function ensureRecurringTranscript(
   task: CronTask,
   dir?: string,
+  updateTask?: CronTaskUpdater,
 ): Promise<{
   task: CronTask
   transcriptKey: string
@@ -354,14 +389,13 @@ async function ensureRecurringTranscript(
 
   const transcriptKey = generateCronId('cron-thread')
   const updated =
-    (await updateCronTask(
+    (await (updateTask ?? ((id, updater) => updateCronTask(id, updater, dir)))(
       task.id,
       currentTask => ({
         ...currentTask,
         transcriptKey,
         originSessionId: currentTask.originSessionId ?? existingSessionId,
       }),
-      dir,
     )) ??
     ({
       ...task,
@@ -397,12 +431,14 @@ async function loadRecurringTranscript(transcriptKey: string): Promise<{
   }
 }
 
-function finishCronBackgroundTask(
+async function finishCronBackgroundTask(
   runtimeTaskId: string,
   description: string,
   success: boolean,
   setAppState: SetAppState,
-): void {
+  taskOutputPathPromise: Promise<string>,
+  notificationSink?: CronNotificationSink,
+): Promise<void> {
   let wasBackgrounded = true
 
   updateTaskState<CronBackgroundTaskState>(runtimeTaskId, setAppState, task => {
@@ -419,14 +455,17 @@ function finishCronBackgroundTask(
     }
   })
 
-  void evictTaskOutput(runtimeTaskId)
+  const outputPath = await taskOutputPathPromise
+  await evictTaskOutput(runtimeTaskId)
 
   if (wasBackgrounded) {
-    enqueueCronNotification(
+    await enqueueCronNotification(
       runtimeTaskId,
       description,
       success ? 'completed' : 'failed',
       setAppState,
+      outputPath,
+      notificationSink,
     )
   } else {
     updateTaskState<CronBackgroundTaskState>(runtimeTaskId, setAppState, task => ({
@@ -439,12 +478,14 @@ function finishCronBackgroundTask(
   }
 }
 
-function enqueueCronNotification(
+async function enqueueCronNotification(
   runtimeTaskId: string,
   description: string,
   status: 'completed' | 'failed',
   setAppState: SetAppState,
-): void {
+  outputPath: string,
+  notificationSink?: CronNotificationSink,
+): Promise<void> {
   let shouldEnqueue = false
   updateTaskState<CronBackgroundTaskState>(runtimeTaskId, setAppState, task => {
     if (task.notified) return task
@@ -462,10 +503,15 @@ function enqueueCronNotification(
 
   const message = `<${TASK_NOTIFICATION_TAG}>
 <${TASK_ID_TAG}>${runtimeTaskId}</${TASK_ID_TAG}>
-<${OUTPUT_FILE_TAG}>${getTaskOutputPath(runtimeTaskId)}</${OUTPUT_FILE_TAG}>
+<${OUTPUT_FILE_TAG}>${outputPath}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
 <${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>
 </${TASK_NOTIFICATION_TAG}>`
+
+  if (notificationSink) {
+    await notificationSink(message)
+    return
+  }
 
   enqueuePendingNotification({ value: message, mode: 'task-notification' })
 }
@@ -474,6 +520,6 @@ function describeCronTask(task: CronTask): string {
   return task.recurring ? `Recurring cron ${task.id}` : `One-shot cron ${task.id}`
 }
 
-function generateCronId(prefix: string): string {
+export function generateCronId(prefix: string): string {
   return `${prefix}-${randomUUID().replace(/-/g, '').slice(0, 16)}`
 }

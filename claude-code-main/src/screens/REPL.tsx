@@ -189,6 +189,7 @@ import { isBgSession, updateSessionName, updateSessionActivity } from '../utils/
 import { isInProcessTeammateTask, type InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js';
 import { restoreRemoteAgentTasks } from '../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { useInboxPoller } from '../hooks/useInboxPoller.js';
+import { useCronDaemonNotificationBridge } from '../hooks/useCronDaemonNotificationBridge.js';
 // Dead code elimination: proactive-only imports remain conditional.
 /* eslint-disable @typescript-eslint/no-require-imports */
 const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/index.js') : null;
@@ -2609,22 +2610,28 @@ export function REPL({
       });
     })();
   }, [abortController, buildDetachedQueryParams, setAppState]);
-  const runLeadCronTask = useCallback((task: import('../utils/cronTasks.js').CronTask) => startCronBackgroundTask({
-    task,
-    setAppState,
-    createQueryParams: ({
-      messages,
-      abortController,
-      transcriptKey,
-      querySource
-    }) => buildDetachedQueryParams({
-      messages,
-      abortController,
-      querySource,
-      agentId: transcriptKey,
-      agentType: CRON_BACKGROUND_AGENT_TYPE
-    })
-  }), [buildDetachedQueryParams, setAppState]);
+  const runLeadCronTask = useCallback(
+    async (task: import('../utils/cronTasks.js').CronTask) => {
+      await startCronBackgroundTask({
+        task,
+        setAppState,
+        createQueryParams: ({
+          messages,
+          abortController,
+          transcriptKey,
+          querySource,
+        }) =>
+          buildDetachedQueryParams({
+            messages,
+            abortController,
+            querySource,
+            agentId: transcriptKey,
+            agentType: CRON_BACKGROUND_AGENT_TYPE,
+          }),
+      })
+    },
+    [buildDetachedQueryParams, setAppState],
+  );
   const {
     handleBackgroundSession
   } = useSessionBackgrounding({
@@ -4094,6 +4101,7 @@ export function REPL({
     isLoading,
     onSubmitMessage: handleIncomingPrompt
   });
+  useCronDaemonNotificationBridge();
 
   // Scheduled tasks from .claude/scheduled_tasks.json (CronCreate/Delete/List)
   // are always wired up. The hook itself decides at runtime whether cron is

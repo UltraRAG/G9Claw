@@ -1,0 +1,197 @@
+import { randomUUID } from 'crypto'
+import { mkdir, writeFile } from 'fs/promises'
+import { spawn } from 'child_process'
+import { resolve } from 'path'
+import {
+  createCronScheduler,
+  type CronScheduler,
+  buildMissedTaskNotification,
+} from '../utils/cronScheduler.js'
+import { readCronTasks, updateCronTask, type CronTask } from '../utils/cronTasks.js'
+import { logForDebugging } from '../utils/debug.js'
+import { logError } from '../utils/log.js'
+import { jsonStringify } from '../utils/slowOperations.js'
+import { generateCronId } from '../tasks/CronBackgroundTask.js'
+import { getCronDaemonWorkerPayloadDir, getCronDaemonWorkerPayloadPath } from './paths.js'
+import { getDaemonWorkerCommandArgs } from './spawn.js'
+import { DaemonSessionTaskStore } from './sessionTaskStore.js'
+import type { CronWorkerPayload, DaemonCronTask, RuntimeSummary } from './types.js'
+
+export class ProjectRuntime {
+  readonly projectRoot: string
+  private readonly scheduler: CronScheduler
+  private readonly activeWorkers = new Map<string, ReturnType<typeof spawn>>()
+  private started = false
+
+  constructor(
+    projectRoot: string,
+    private readonly sessionTaskStore: DaemonSessionTaskStore,
+  ) {
+    this.projectRoot = resolve(projectRoot)
+    this.scheduler = createCronScheduler({
+      dir: this.projectRoot,
+      lockIdentity: `cron-daemon:${process.pid}:${this.projectRoot}`,
+      runtimeTaskSource: {
+        listTasks: () => this.sessionTaskStore.listProjectTasks(this.projectRoot),
+        removeTasks: ids => {
+          for (const id of ids) {
+            this.sessionTaskStore.deleteTask(this.projectRoot, id)
+          }
+        },
+      },
+      onFire: prompt => {
+        void this.handleMissedPrompt(prompt)
+      },
+      onMissed: tasks => {
+        void this.handleMissedTasks(tasks)
+      },
+      onFireTask: task => {
+        void this.handleScheduledTask({
+          ...task,
+          durable: true,
+        })
+      },
+    })
+  }
+
+  start(): void {
+    if (this.started) return
+    this.started = true
+    this.scheduler.start()
+  }
+
+  stop(): void {
+    if (!this.started) return
+    this.started = false
+    this.scheduler.stop()
+  }
+
+  async summarize(): Promise<RuntimeSummary> {
+    const durableCount = (await readCronTasks(this.projectRoot)).length
+    return {
+      projectRoot: this.projectRoot,
+      durableCount,
+      sessionOnlyCount: this.sessionTaskStore.countForProject(this.projectRoot),
+      activeWorkers: this.activeWorkers.size,
+    }
+  }
+
+  private async handleMissedTasks(tasks: CronTask[]): Promise<void> {
+    if (tasks.length === 0) return
+    await this.handleMissedPrompt(buildMissedTaskNotification(tasks), tasks[0])
+  }
+
+  private async handleMissedPrompt(
+    prompt: string,
+    exemplarTask?: Pick<CronTask, 'originSessionId'>,
+  ): Promise<void> {
+    const syntheticTask: DaemonCronTask = {
+      id: generateCronId('cron-missed'),
+      cron: '* * * * *',
+      prompt,
+      createdAt: Date.now(),
+      originSessionId: exemplarTask?.originSessionId ?? randomUUID(),
+      durable: false,
+    }
+    await this.spawnWorkerForTask(syntheticTask)
+  }
+
+  async launchSessionTask(task: DaemonCronTask): Promise<void> {
+    await this.spawnWorkerForTask(await this.prepareTask(task))
+  }
+
+  private async handleScheduledTask(task: DaemonCronTask): Promise<void> {
+    await this.spawnWorkerForTask(await this.prepareTask(task))
+  }
+
+  private async prepareTask(task: DaemonCronTask): Promise<DaemonCronTask> {
+    if (!task.recurring || task.transcriptKey) {
+      return task
+    }
+
+    const transcriptKey = generateCronId('cron-thread')
+    const originSessionId = task.originSessionId ?? randomUUID()
+
+    if (task.durable) {
+      const updated =
+        (await updateCronTask(
+          task.id,
+          currentTask => ({
+            ...currentTask,
+            transcriptKey,
+            originSessionId: currentTask.originSessionId ?? originSessionId,
+          }),
+          this.projectRoot,
+        )) ?? {
+          ...task,
+          transcriptKey,
+          originSessionId,
+        }
+
+      return {
+        ...updated,
+        durable: true,
+      }
+    }
+
+    const updated =
+      this.sessionTaskStore.updateTask(this.projectRoot, task.id, currentTask => ({
+        ...currentTask,
+        transcriptKey,
+        originSessionId: currentTask.originSessionId ?? originSessionId,
+      })) ?? {
+        ...task,
+        transcriptKey,
+        originSessionId,
+        durable: false,
+      }
+
+    return updated
+  }
+
+  private async spawnWorkerForTask(task: DaemonCronTask): Promise<void> {
+    if (this.activeWorkers.has(task.id)) {
+      logForDebugging(
+        `[CronDaemon] skipping ${task.id}: worker already active for ${this.projectRoot}`,
+      )
+      return
+    }
+
+    const workerId = randomUUID()
+    await mkdir(getCronDaemonWorkerPayloadDir(), { recursive: true })
+    const payloadPath = getCronDaemonWorkerPayloadPath(workerId)
+    const payload: CronWorkerPayload = {
+      projectRoot: this.projectRoot,
+      task,
+    }
+    await writeFile(payloadPath, jsonStringify(payload), 'utf-8')
+
+    const child = spawn(process.execPath, getDaemonWorkerCommandArgs(`cron:${payloadPath}`), {
+      cwd: this.projectRoot,
+      env: process.env,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+
+    this.activeWorkers.set(task.id, child)
+
+    child.stderr?.on('data', chunk => {
+      logForDebugging(
+        `[CronDaemonWorker:${task.id}] ${chunk.toString('utf-8').trim()}`,
+      )
+    })
+
+    child.on('error', error => {
+      this.activeWorkers.delete(task.id)
+      logError(error)
+    })
+
+    child.on('exit', code => {
+      this.activeWorkers.delete(task.id)
+      if (code !== 0) {
+        logForDebugging(
+          `[CronDaemon] worker for ${task.id} exited with code ${code ?? 'unknown'}`,
+        )
+      }
+    })
+  }
+}

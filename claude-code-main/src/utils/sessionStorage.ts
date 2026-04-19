@@ -990,6 +990,18 @@ class Project {
     )
   }
 
+  private isPersistableAgentSidechainEntry(entry: Entry): boolean {
+    if (entry.type === 'content-replacement') {
+      return entry.agentId !== undefined
+    }
+
+    return (
+      isTranscriptMessage(entry) &&
+      entry.isSidechain &&
+      entry.agentId !== undefined
+    )
+  }
+
   /**
    * Create the session file, write cached startup metadata, and flush
    * buffered entries. Called on the first user/assistant message.
@@ -1147,7 +1159,19 @@ class Project {
   }
 
   async appendEntry(entry: Entry, sessionId: UUID = getSessionId() as UUID) {
-    if (this.shouldSkipPersistence()) {
+    const isPersistableAgentSidechain = this.isPersistableAgentSidechainEntry(
+      entry,
+    )
+    if (this.shouldSkipPersistence() && !isPersistableAgentSidechain) {
+      return
+    }
+
+    if (isPersistableAgentSidechain) {
+      const targetFile =
+        entry.type === 'content-replacement'
+          ? getAgentTranscriptPath(entry.agentId)
+          : getAgentTranscriptPath(asAgentId(entry.agentId!))
+      void this.enqueueWrite(targetFile, entry)
       return
     }
 

@@ -44,6 +44,7 @@ import {
   dequeue,
   dequeueAllMatching,
   enqueue,
+  enqueuePendingNotification,
   hasCommandsInQueue,
   peek,
   subscribeToCommandQueue,
@@ -294,6 +295,7 @@ import {
   setAllowedChannels,
   type ChannelEntry,
 } from 'src/bootstrap/state.js'
+import { consumeCronDaemonNotifications } from 'src/daemon/notificationInbox.js'
 import { runWithWorkload, WORKLOAD_CRON } from 'src/utils/workloadContext.js'
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
@@ -2681,6 +2683,7 @@ function runHeadlessStreaming(
         suggestionState.abortController?.abort()
         suggestionState.abortController = null
         await finalizePendingAsyncHooks()
+        clearInterval(cronDaemonNotificationInterval)
         unsubscribeSkillChanges()
         unsubscribeAuthStatus?.()
         statusListeners.delete(rateLimitListener)
@@ -2688,6 +2691,48 @@ function runHeadlessStreaming(
       }
     }
   }
+
+  const cronDaemonNotificationSessionIds = new Set<string>()
+  let cronDaemonNotificationPollInFlight = false
+  const pollCronDaemonNotifications = async (): Promise<number> => {
+    if (cronDaemonNotificationPollInFlight) {
+      return 0
+    }
+
+    cronDaemonNotificationPollInFlight = true
+    cronDaemonNotificationSessionIds.add(getSessionId())
+    try {
+      return await consumeCronDaemonNotifications(
+        cronDaemonNotificationSessionIds,
+        notification => {
+          enqueuePendingNotification({
+            value: notification.message,
+            mode: 'task-notification',
+            uuid: notification.id,
+          })
+        },
+      )
+    } finally {
+      cronDaemonNotificationPollInFlight = false
+    }
+  }
+  const cronDaemonNotificationInterval = setInterval(() => {
+    if (inputClosed) {
+      return
+    }
+
+    void pollCronDaemonNotifications().then(delivered => {
+      if (delivered > 0 && !inputClosed) {
+        void run()
+      }
+    })
+  }, 500)
+  cronDaemonNotificationInterval.unref?.()
+  void pollCronDaemonNotifications().then(delivered => {
+    if (delivered > 0 && !inputClosed) {
+      void run()
+    }
+  })
 
   // Set up UDS inbox callback so the query loop is kicked off
   // when a message arrives via the UDS socket in headless mode.
@@ -2706,8 +2751,8 @@ function runHeadlessStreaming(
   // Missed-task prompts still route through the main queue so the model can
   // decide how to handle them. Actual cron executions now run in isolated
   // background sessions with their own sidechain transcripts.
-  const runLeadCronTask = (task: CronTask) =>
-    startCronBackgroundTask({
+  const runLeadCronTask = async (task: CronTask) =>
+    await startCronBackgroundTask({
       task,
       setAppState,
       createQueryParams: async ({
@@ -4237,6 +4282,7 @@ function runHeadlessStreaming(
       suggestionState.abortController?.abort()
       suggestionState.abortController = null
       await finalizePendingAsyncHooks()
+      clearInterval(cronDaemonNotificationInterval)
       unsubscribeSkillChanges()
       unsubscribeAuthStatus?.()
       statusListeners.delete(rateLimitListener)

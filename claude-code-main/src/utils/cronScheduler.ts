@@ -128,6 +128,15 @@ type CronSchedulerOptions = {
    * non-permanent tasks in the same scheduled_tasks.json are untouched.
    */
   filter?: (t: CronTask) => boolean
+  /**
+   * Additional runtime-owned tasks to merge into the tick loop. REPL callers
+   * leave this unset and use the legacy bootstrap session store. Daemon
+   * callers inject a project-local in-memory session-only store.
+   */
+  runtimeTaskSource?: {
+    listTasks: () => CronTask[]
+    removeTasks: (ids: readonly string[]) => void
+  }
 }
 
 export type CronScheduler = {
@@ -156,12 +165,22 @@ export function createCronScheduler(
     getJitterConfig,
     isKilled,
     filter,
+    runtimeTaskSource,
   } = options
   const lockOpts = dir || lockIdentity ? { dir, lockIdentity } : undefined
+  const mergedRuntimeTaskSource =
+    runtimeTaskSource ??
+    (dir === undefined
+      ? {
+          listTasks: getSessionCronTasks,
+          removeTasks: removeSessionCronTasks,
+        }
+      : undefined)
 
-  // File-backed tasks only. Session tasks (durable: false) are NOT loaded
-  // here — they can be added/removed mid-session with no file event, so
-  // check() reads them fresh from bootstrap state on every tick instead.
+    // File-backed tasks only. Runtime-owned session tasks (durable: false) are
+    // NOT loaded here — they can be added/removed mid-session with no file
+    // event, so check() reads them fresh from the runtime task source on every
+    // tick instead.
   let tasks: CronTask[] = []
   // Per-task next-fire times (epoch ms).
   const nextFireAt = new Map<string, number>()
@@ -326,10 +345,10 @@ export function createCronScheduler(
         // same newNext on first-sight. Session tasks skip — process-local.
         if (!isSession) firedFileRecurring.push(t.id)
       } else if (isSession) {
-        // One-shot (or aged-out recurring) session task: synchronous memory
-        // removal. No inFlight window — the next tick will read a session
-        // store without this id.
-        removeSessionCronTasks([t.id])
+        // One-shot (or aged-out recurring) runtime-owned task: synchronous
+        // removal. No inFlight window — the next tick will read a task source
+        // without this id.
+        mergedRuntimeTaskSource?.removeTasks([t.id])
         nextFireAt.delete(t.id)
       } else {
         // One-shot (or aged-out recurring) file task: delete from disk.
@@ -371,13 +390,11 @@ export function createCronScheduler(
           })
       }
     }
-    // Session-only tasks: process-private, the lock does not apply — the
-    // other session cannot see them and there is no double-fire risk. Read
-    // fresh from bootstrap state every tick (no chokidar, no load()). This
-    // is skipped on the daemon path (`dir !== undefined`) which never
-    // touches bootstrap state.
-    if (dir === undefined) {
-      for (const t of getSessionCronTasks()) process(t, true)
+    // Runtime-owned session tasks: process-private, the lock does not apply —
+    // other sessions cannot see them and there is no double-fire risk. Read
+    // fresh every tick (no chokidar, no load()).
+    if (mergedRuntimeTaskSource) {
+      for (const t of mergedRuntimeTaskSource.listTasks()) process(t, true)
     }
 
     if (seen.size === 0) {

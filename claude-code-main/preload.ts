@@ -1,13 +1,15 @@
 import { plugin } from 'bun';
 
 // Stub the bun:bundle module which is only available at build/bundle time.
-// feature() returns false for all flags so gated code paths are skipped at runtime.
+// feature() returns false for most flags so gated code paths are skipped at
+// runtime. Keep the daemon fast-path enabled in source mode so local dev can
+// exercise `claude daemon ...` without a bundled build.
 plugin({
   name: 'bun-bundle-stub',
   setup(build) {
     build.module('bun:bundle', () => ({
       exports: {
-        feature: (_name: string) => false,
+        feature: (name: string) => name === 'DAEMON',
       },
       loader: 'object',
     }));
