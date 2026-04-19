@@ -1575,11 +1575,9 @@ function handleChatConnection(ws, request) {
                 } else {
                     // Use Claude Agents SDK
                     isActive = isClaudeSDKSessionActive(sessionId);
-                    if (isActive) {
-                        // Reconnect the session's writer to the new WebSocket so
-                        // subsequent SDK output flows to the refreshed client.
-                        reconnectSessionWriter(sessionId, ws);
-                    }
+                    // Reconnect idle and active Claude session runtimes alike so
+                    // Cron inbox backfill can reach a refreshed browser tab.
+                    reconnectSessionWriter(sessionId, ws);
                 }
 
                 writer.send({

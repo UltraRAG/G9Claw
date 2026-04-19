@@ -27,8 +27,13 @@ import {
 import { claudeAdapter } from './providers/claude/adapter.js';
 import { createNormalizedMessage } from './providers/types.js';
 import { getLeakedClaudeSdkSpawnOptions } from './claude-code-main-path.js';
+import {
+  drainSessionCronNotifications,
+  registerCronSession
+} from './services/cron-session-bridge.js';
 
 const activeSessions = new Map();
+const sessionRuntimes = new Map();
 const pendingToolApprovals = new Map();
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
@@ -266,6 +271,224 @@ function getAllSessions() {
   return Array.from(activeSessions.keys());
 }
 
+function cloneToolsSettings(toolsSettings) {
+  if (!toolsSettings || typeof toolsSettings !== 'object') {
+    return {
+      allowedTools: [],
+      disallowedTools: [],
+      skipPermissions: false
+    };
+  }
+
+  return {
+    ...toolsSettings,
+    allowedTools: Array.isArray(toolsSettings.allowedTools)
+      ? [...toolsSettings.allowedTools]
+      : [],
+    disallowedTools: Array.isArray(toolsSettings.disallowedTools)
+      ? [...toolsSettings.disallowedTools]
+      : []
+  };
+}
+
+function buildStoredQueryOptions(options = {}, sessionId) {
+  return {
+    sessionId,
+    cwd: options.cwd,
+    permissionMode: options.permissionMode,
+    model: options.model,
+    sessionSummary: options.sessionSummary,
+    toolsSettings: cloneToolsSettings(options.toolsSettings)
+  };
+}
+
+function createSilentWriter(sessionId = null, userId = null) {
+  return {
+    userId,
+    send() {},
+    updateWebSocket() {},
+    setSessionId() {},
+    getSessionId() {
+      return sessionId;
+    }
+  };
+}
+
+function canWriteToSession(writer) {
+  if (!writer) {
+    return false;
+  }
+  if (writer.ws && typeof writer.ws.readyState === 'number') {
+    return writer.ws.readyState === 1;
+  }
+  return typeof writer.send === 'function';
+}
+
+function createSessionRuntime(sessionId) {
+  return {
+    sessionId,
+    writer: null,
+    userId: null,
+    sessionSummary: null,
+    lastQueryOptions: null,
+    pendingCronNotifications: [],
+    autoResumeInFlight: false
+  };
+}
+
+function getSessionRuntime(sessionId) {
+  return sessionRuntimes.get(sessionId);
+}
+
+function getOrCreateSessionRuntime(sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+
+  let runtime = sessionRuntimes.get(sessionId);
+  if (!runtime) {
+    runtime = createSessionRuntime(sessionId);
+    sessionRuntimes.set(sessionId, runtime);
+    registerCronSession(sessionId, async (notification) => {
+      await handleSessionCronNotification(sessionId, notification);
+    });
+  }
+  return runtime;
+}
+
+function updateSessionRuntime(sessionId, fields = {}) {
+  const runtime = getOrCreateSessionRuntime(sessionId);
+  if (!runtime) {
+    return null;
+  }
+
+  if (fields.writer) {
+    runtime.writer = fields.writer;
+  }
+  if (fields.userId !== undefined) {
+    runtime.userId = fields.userId;
+  }
+  if (fields.sessionSummary !== undefined) {
+    runtime.sessionSummary = fields.sessionSummary;
+  }
+  if (fields.lastQueryOptions) {
+    runtime.lastQueryOptions = fields.lastQueryOptions;
+  }
+
+  return runtime;
+}
+
+function createCronTaskNotificationMessage(sessionId, notification) {
+  const normalizedMessages = claudeAdapter.normalizeMessage({
+    uuid: notification.id,
+    timestamp: new Date(notification.createdAt).toISOString(),
+    message: {
+      role: 'user',
+      content: notification.message
+    }
+  }, sessionId);
+
+  return normalizedMessages.find((message) => message.kind === 'task_notification') ||
+    createNormalizedMessage({
+      id: notification.id,
+      sessionId,
+      provider: 'claude',
+      kind: 'task_notification',
+      status: 'completed',
+      summary: 'Background task update'
+    });
+}
+
+function emitCronNotificationToRuntime(runtime, notification) {
+  if (!runtime?.writer || !canWriteToSession(runtime.writer)) {
+    return false;
+  }
+
+  runtime.writer.send(
+    createCronTaskNotificationMessage(runtime.sessionId, notification)
+  );
+  return true;
+}
+
+function flushUndeliveredCronNotifications(sessionId) {
+  const runtime = getSessionRuntime(sessionId);
+  if (!runtime || !runtime.writer || !canWriteToSession(runtime.writer)) {
+    return 0;
+  }
+
+  let deliveredCount = 0;
+  for (const pending of runtime.pendingCronNotifications) {
+    if (pending.deliveredToClient) {
+      continue;
+    }
+
+    runtime.writer.send(
+      createCronTaskNotificationMessage(sessionId, pending.notification)
+    );
+    pending.deliveredToClient = true;
+    deliveredCount += 1;
+  }
+
+  return deliveredCount;
+}
+
+async function runQueuedCronNotifications(sessionId) {
+  const runtime = getSessionRuntime(sessionId);
+  if (
+    !runtime ||
+    runtime.autoResumeInFlight ||
+    isClaudeSDKSessionActive(sessionId) ||
+    runtime.pendingCronNotifications.length === 0 ||
+    !runtime.lastQueryOptions
+  ) {
+    return;
+  }
+
+  const pending = runtime.pendingCronNotifications[0];
+  runtime.autoResumeInFlight = true;
+  let autoResumeSucceeded = false;
+
+  try {
+    await queryClaudeSDK(
+      pending.notification.message,
+      {
+        ...runtime.lastQueryOptions,
+        sessionId,
+        sessionSummary: runtime.sessionSummary ?? runtime.lastQueryOptions.sessionSummary
+      },
+      runtime.writer || createSilentWriter(sessionId, runtime.userId),
+    );
+    autoResumeSucceeded = true;
+  } catch (error) {
+    console.error(`[cron-session-runtime] Failed to auto-resume session ${sessionId}:`, error);
+  } finally {
+    runtime.autoResumeInFlight = false;
+    if (autoResumeSucceeded) {
+      runtime.pendingCronNotifications.shift();
+      if (runtime.pendingCronNotifications.length > 0) {
+        void runQueuedCronNotifications(sessionId);
+      }
+    }
+  }
+}
+
+async function handleSessionCronNotification(sessionId, notification) {
+  const runtime = getOrCreateSessionRuntime(sessionId);
+  if (!runtime) {
+    return;
+  }
+
+  const deliveredToClient = emitCronNotificationToRuntime(runtime, notification);
+  runtime.pendingCronNotifications.push({
+    notification,
+    deliveredToClient
+  });
+
+  if (!isClaudeSDKSessionActive(sessionId) && !runtime.autoResumeInFlight) {
+    void runQueuedCronNotifications(sessionId);
+  }
+}
+
 /**
  * Transforms SDK messages to WebSocket format expected by frontend
  * @param {Object} sdkMessage - SDK message object
@@ -480,6 +703,15 @@ async function queryClaudeSDK(command, options = {}, ws) {
   let tempImagePaths = [];
   let tempDir = null;
 
+  if (sessionId) {
+    updateSessionRuntime(sessionId, {
+      writer: ws,
+      userId: ws?.userId || null,
+      sessionSummary,
+      lastQueryOptions: buildStoredQueryOptions(options, sessionId)
+    });
+  }
+
   const emitNotification = (event) => {
     notifyUserIfEnabled({
       userId: ws?.userId || null,
@@ -627,6 +859,13 @@ async function queryClaudeSDK(command, options = {}, ws) {
     // Track the query instance for abort capability
     if (capturedSessionId) {
       addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws);
+      updateSessionRuntime(capturedSessionId, {
+        writer: ws,
+        userId: ws?.userId || null,
+        sessionSummary,
+        lastQueryOptions: buildStoredQueryOptions(options, capturedSessionId)
+      });
+      void drainSessionCronNotifications(capturedSessionId);
     }
 
     // Process streaming messages
@@ -637,6 +876,13 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
         capturedSessionId = message.session_id;
         addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws);
+        updateSessionRuntime(capturedSessionId, {
+          writer: ws,
+          userId: ws?.userId || null,
+          sessionSummary,
+          lastQueryOptions: buildStoredQueryOptions(options, capturedSessionId)
+        });
+        void drainSessionCronNotifications(capturedSessionId);
 
         // Set session ID on writer
         if (ws.setSessionId && typeof ws.setSessionId === 'function') {
@@ -680,8 +926,8 @@ async function queryClaudeSDK(command, options = {}, ws) {
     }
 
     // Clean up session on completion
-    if (capturedSessionId) {
-      removeSession(capturedSessionId);
+    if (capturedSessionId || sessionId) {
+      removeSession(capturedSessionId || sessionId);
     }
 
     // Clean up temporary image files
@@ -696,14 +942,17 @@ async function queryClaudeSDK(command, options = {}, ws) {
       sessionName: sessionSummary,
       stopReason: 'completed'
     });
+    if (capturedSessionId || sessionId) {
+      void runQueuedCronNotifications(capturedSessionId || sessionId);
+    }
     // Complete
 
   } catch (error) {
     console.error('SDK query error:', error);
 
     // Clean up session on error
-    if (capturedSessionId) {
-      removeSession(capturedSessionId);
+    if (capturedSessionId || sessionId) {
+      removeSession(capturedSessionId || sessionId);
     }
 
     // Clean up temporary image files on error
@@ -718,6 +967,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
       sessionName: sessionSummary,
       error
     });
+    if (capturedSessionId || sessionId) {
+      void runQueuedCronNotifications(capturedSessionId || sessionId);
+    }
 
     throw error;
   }
@@ -806,9 +1058,16 @@ function getPendingApprovalsForSession(sessionId) {
  * @returns {boolean} True if writer was successfully reconnected
  */
 function reconnectSessionWriter(sessionId, newRawWs) {
-  const session = getSession(sessionId);
-  if (!session?.writer?.updateWebSocket) return false;
-  session.writer.updateWebSocket(newRawWs);
+  const runtime = getSessionRuntime(sessionId);
+  if (!runtime?.writer?.updateWebSocket) return false;
+  runtime.writer.updateWebSocket(newRawWs);
+  flushUndeliveredCronNotifications(sessionId);
+  void drainSessionCronNotifications(sessionId).then(() => {
+    flushUndeliveredCronNotifications(sessionId);
+    if (!isClaudeSDKSessionActive(sessionId) && !runtime.autoResumeInFlight) {
+      void runQueuedCronNotifications(sessionId);
+    }
+  });
   console.log(`[RECONNECT] Writer swapped for session ${sessionId}`);
   return true;
 }
