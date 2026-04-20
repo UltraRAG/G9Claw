@@ -18,5 +18,5 @@ build/
 .idea/
 .vscode/
 .cursor/
-.claude/
 claude
+bun.lock
