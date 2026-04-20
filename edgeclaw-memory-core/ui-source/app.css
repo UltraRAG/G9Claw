@@ -18,6 +18,7 @@
   --card: #ffffff;
   --danger: #dc2626;
   --danger-soft: #fef2f2;
+  --danger-border-soft: rgba(220, 38, 38, 0.15);
   --warning: #d97706;
   --status-project: #2563eb;
   --status-project-soft: #eff6ff;
@@ -33,6 +34,41 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
   --shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --bg-raised: #111a2b;
+  --bg-inset: #162033;
+  --bg-hover: #1d2940;
+  --bg-active: #243450;
+  --bg-scrim: rgba(2, 6, 23, 0.72);
+  --text: #e5edf8;
+  --text-2: #c0ccdd;
+  --text-3: #8fa0b8;
+  --border: #22304a;
+  --border-strong: #334766;
+  --accent: #60a5fa;
+  --accent-hover: #3b82f6;
+  --accent-soft: rgba(96, 165, 250, 0.18);
+  --accent-on: #eff6ff;
+  --card: #0f1727;
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.14);
+  --danger-border-soft: rgba(248, 113, 113, 0.26);
+  --warning: #f59e0b;
+  --status-project: #60a5fa;
+  --status-project-soft: rgba(96, 165, 250, 0.18);
+  --status-feedback: #34d399;
+  --status-feedback-soft: rgba(52, 211, 153, 0.18);
+  --status-deprecated: #94a3b8;
+  --status-deprecated-soft: rgba(148, 163, 184, 0.18);
+  --status-trace: #a78bfa;
+  --status-trace-soft: rgba(167, 139, 250, 0.18);
+  --shadow-sm: 0 1px 2px rgba(2, 6, 23, 0.36);
+  --shadow-md: 0 8px 24px rgba(2, 6, 23, 0.34);
+  --shadow-lg: 0 16px 40px rgba(2, 6, 23, 0.48);
 }
 
 *,
@@ -55,6 +91,11 @@ body {
   -webkit-font-smoothing: antialiased;
   background: var(--bg);
   overflow: hidden;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-3);
 }
 
 button,
@@ -281,7 +322,7 @@ button:disabled {
 
 .action-btn.danger:hover {
   background: var(--danger);
-  color: white;
+  color: var(--accent-on);
 }
 
 /* ── Search Row ── */
@@ -450,7 +491,7 @@ button:disabled {
   margin: 0 16px;
   padding: 8px 12px;
   border-radius: var(--radius-md);
-  border: 1px solid rgba(220, 38, 38, 0.15);
+  border: 1px solid var(--danger-border-soft);
   background: var(--danger-soft);
   color: var(--danger);
   font-size: 13px;
@@ -626,7 +667,7 @@ button:disabled {
   height: 20px;
   border-radius: 50%;
   background: var(--accent);
-  color: white;
+  color: var(--accent-on);
   font-size: 10px;
   font-weight: 700;
   display: flex;
@@ -1042,7 +1083,7 @@ button:disabled {
 
 .tool-btn.danger:hover {
   background: var(--danger);
-  color: white;
+  color: var(--accent-on);
 }
 
 /* ── Stacks & Trace List ── */

@@ -3,7 +3,18 @@ import { renderTraceI18nText } from "./trace-i18n.js";
 const params = new URLSearchParams(window.location.search);
 
 const MEMORY_LOCALE = params.get("locale") === "zh" ? "zh" : "en";
+const MEMORY_THEME = params.get("theme") === "dark" ? "dark" : "light";
 const DATE_TIME_LOCALE = MEMORY_LOCALE === "zh" ? "zh-CN" : "en-US";
+
+function applyMemoryTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+
+  const colorSchemeMeta = document.querySelector('meta[name="color-scheme"]');
+  if (colorSchemeMeta) {
+    colorSchemeMeta.setAttribute("content", theme);
+  }
+}
 
 const UI_STRINGS = {
   zh: {
@@ -374,6 +385,7 @@ const state = {
   settingsOpen: false,
 };
 
+applyMemoryTheme(MEMORY_THEME);
 document.documentElement.lang = MEMORY_LOCALE === "zh" ? "zh-CN" : "en";
 document.title = t("doc.title");
 

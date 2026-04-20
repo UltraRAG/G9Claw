@@ -1,6 +1,7 @@
 import type { Project } from '../../../../types/app';
 import { useTranslation } from 'react-i18next';
 import { AUTH_TOKEN_STORAGE_KEY } from '../../../auth/constants';
+import { useTheme } from '../../../../contexts/ThemeContext';
 
 type MemoryPanelProps = {
   selectedProject: Project | null;
@@ -8,6 +9,10 @@ type MemoryPanelProps = {
 
 function normalizeMemoryLocale(language: string | undefined): 'zh' | 'en' {
   return language === 'zh-CN' ? 'zh' : 'en';
+}
+
+function normalizeMemoryTheme(isDarkMode: boolean): 'light' | 'dark' {
+  return isDarkMode ? 'dark' : 'light';
 }
 
 const MEMORY_PANEL_TEXT: Record<'zh' | 'en', {
@@ -27,7 +32,7 @@ const MEMORY_PANEL_TEXT: Record<'zh' | 'en', {
   },
 };
 
-function buildMemoryDashboardUrl(project: Project, locale: 'zh' | 'en'): string | null {
+function buildMemoryDashboardUrl(project: Project, locale: 'zh' | 'en', theme: 'light' | 'dark'): string | null {
   const token = localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
   const projectPath = project.fullPath || project.path;
 
@@ -35,7 +40,7 @@ function buildMemoryDashboardUrl(project: Project, locale: 'zh' | 'en'): string 
     return null;
   }
 
-  const params = new URLSearchParams({ projectPath, locale });
+  const params = new URLSearchParams({ projectPath, locale, theme });
   if (token) {
     params.set('token', token);
   }
@@ -45,7 +50,9 @@ function buildMemoryDashboardUrl(project: Project, locale: 'zh' | 'en'): string 
 
 export default function MemoryPanel({ selectedProject }: MemoryPanelProps) {
   const { i18n } = useTranslation();
+  const { isDarkMode } = useTheme();
   const memoryLocale = normalizeMemoryLocale(i18n.language);
+  const memoryTheme = normalizeMemoryTheme(isDarkMode);
   const text = MEMORY_PANEL_TEXT[memoryLocale];
 
   if (!selectedProject) {
@@ -56,7 +63,7 @@ export default function MemoryPanel({ selectedProject }: MemoryPanelProps) {
     );
   }
 
-  const dashboardUrl = buildMemoryDashboardUrl(selectedProject, memoryLocale);
+  const dashboardUrl = buildMemoryDashboardUrl(selectedProject, memoryLocale, memoryTheme);
   if (!dashboardUrl) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -68,7 +75,7 @@ export default function MemoryPanel({ selectedProject }: MemoryPanelProps) {
   return (
     <div className="h-full w-full bg-background">
       <iframe
-        key={`${selectedProject.fullPath || selectedProject.path || 'memory'}:${memoryLocale}`}
+        key={`${selectedProject.fullPath || selectedProject.path || 'memory'}:${memoryLocale}:${memoryTheme}`}
         title={text.title}
         src={dashboardUrl}
         className="h-full w-full border-0"
