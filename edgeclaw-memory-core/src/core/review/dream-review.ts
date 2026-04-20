@@ -58,6 +58,10 @@ const DREAM_META_PROJECT_CONTEXT_LIMIT = 5;
 const DREAM_META_FEEDBACK_CONTEXT_LIMIT = 5;
 const DREAM_USER_NOTE_MAX_FILES = 200;
 const DREAM_USER_NOTE_CHAR_BUDGET = 120_000;
+const INTERNAL_USER_PROFILE_RELATIVE_PATH = "UserIdentity/user-profile.md";
+const EXPOSED_USER_PROFILE_RELATIVE_PATH = "global/UserIdentity/user-profile.md";
+const INTERNAL_USER_NOTE_PREFIX = "UserIdentityNotes/";
+const EXPOSED_USER_NOTE_PREFIX = "global/UserIdentityNotes/";
 
 function kvDetail(
   key: string,
@@ -90,6 +94,22 @@ function listDetail(
     kind: "list",
     items,
   };
+}
+
+function normalizeDreamRelativePath(relativePath: string): string {
+  return relativePath.replace(/\\/g, "/");
+}
+
+function isDreamUserProfilePath(relativePath: string): boolean {
+  const normalized = normalizeDreamRelativePath(relativePath);
+  return normalized === INTERNAL_USER_PROFILE_RELATIVE_PATH
+    || normalized === EXPOSED_USER_PROFILE_RELATIVE_PATH;
+}
+
+function isDreamUserNotePath(relativePath: string): boolean {
+  const normalized = normalizeDreamRelativePath(relativePath);
+  return normalized.startsWith(INTERNAL_USER_NOTE_PREFIX)
+    || normalized.startsWith(EXPOSED_USER_NOTE_PREFIX);
 }
 
 function jsonDetail(
@@ -214,7 +234,6 @@ function toDreamMetaInput(meta: ProjectMetaRecord): LlmDreamFileProjectMetaInput
     projectId: meta.projectId,
     projectName: meta.projectName,
     description: meta.description,
-    aliases: meta.aliases,
     status: meta.status,
     updatedAt: meta.updatedAt,
     ...(meta.dreamUpdatedAt ? { dreamUpdatedAt: meta.dreamUpdatedAt } : {}),
@@ -726,12 +745,18 @@ export class DreamRewriteRunner {
     const feedbackEntries = workspaceEntries.filter((entry) => entry.type === "feedback");
     const projectMeta = workspaceStore.getProjectMeta() ?? workspaceStore.ensureProjectMeta();
     const userSummary = this.repository.getUserSummary();
-    const userNoteEntries = this.repository.listMemoryEntries({
+    const rawGlobalUserEntries = this.repository.listMemoryEntries({
       kinds: ["user"],
       scope: "global",
       includeDeprecated: false,
       limit: 5000,
-    }).filter((entry) => entry.relativePath !== userProfileRelativePath);
+    });
+    const skippedProtectedUserEntries = rawGlobalUserEntries
+      .filter((entry) => isDreamUserProfilePath(entry.relativePath) || !isDreamUserNotePath(entry.relativePath))
+      .map((entry) => `${entry.relativePath} | ${entry.updatedAt}`);
+    const userNoteEntries = rawGlobalUserEntries.filter((entry) => (
+      isDreamUserNotePath(entry.relativePath) && !isDreamUserProfilePath(entry.relativePath)
+    ));
     const workspaceRecords = workspaceEntries.length > 0
       ? this.repository.getMemoryRecordsByIds(workspaceEntries.map((entry) => entry.relativePath), 5000)
       : [];
@@ -794,6 +819,13 @@ export class DreamRewriteRunner {
                 "snapshot-user-notes",
                 "User Notes",
                 sortEntries(userNoteEntries).map((entry) => `${entry.relativePath} | ${entry.updatedAt}`),
+              )]
+            : []),
+          ...(skippedProtectedUserEntries.length > 0
+            ? [listDetail(
+                "snapshot-protected-user-paths",
+                "Protected User Paths Skipped",
+                skippedProtectedUserEntries,
               )]
             : []),
         ],
@@ -897,22 +929,15 @@ export class DreamRewriteRunner {
           metaReviewDebug = debug;
         },
       });
-      const nextAliases = Array.from(new Set(
-        [...currentProjectMeta.aliases, ...metaReview.projectMeta.aliases]
-          .map((alias) => normalizeWhitespace(alias))
-          .filter(Boolean),
-      )).slice(0, 24);
       const shouldUpdate = metaReview.shouldUpdate && (
         metaReview.projectMeta.projectName !== currentProjectMeta.projectName
         || metaReview.projectMeta.description !== currentProjectMeta.description
-        || JSON.stringify(nextAliases) !== JSON.stringify(currentProjectMeta.aliases)
         || metaReview.projectMeta.status !== currentProjectMeta.status
       );
       if (shouldUpdate) {
         const nextMeta = workspaceStore.upsertProjectMeta({
           projectName: metaReview.projectMeta.projectName,
           description: metaReview.projectMeta.description,
-          aliases: nextAliases,
           status: metaReview.projectMeta.status,
           dreamUpdatedAt: nowIso(),
         });
@@ -954,6 +979,7 @@ export class DreamRewriteRunner {
     let userProfileUpdated = false;
     let userRewriteDebug: DreamTraceStep["promptDebug"];
     let absorbedUserNoteIds: string[] = [];
+    let protectedUserPathsSkipped: string[] = [];
     if (selectedUserCandidates.length > 0) {
       try {
         const rewrittenUser = await this.extractor.rewriteUserProfile({
@@ -979,7 +1005,11 @@ export class DreamRewriteRunner {
               relativePath: userProfileRelativePath ?? "global/UserIdentity/user-profile.md",
             });
           }
-          absorbedUserNoteIds = userNoteWindow.selectedRecords.map((record) => record.relativePath);
+          const requestedAbsorbedUserNoteIds = userNoteWindow.selectedRecords.map((record) => record.relativePath);
+          absorbedUserNoteIds = requestedAbsorbedUserNoteIds.filter((relativePath) => (
+            isDreamUserNotePath(relativePath) && !isDreamUserProfilePath(relativePath)
+          ));
+          protectedUserPathsSkipped = requestedAbsorbedUserNoteIds.filter((relativePath) => !absorbedUserNoteIds.includes(relativePath));
           if (absorbedUserNoteIds.length > 0) {
             this.repository.deleteMemoryEntries(absorbedUserNoteIds);
             for (const relativePath of absorbedUserNoteIds) {
@@ -1028,6 +1058,13 @@ export class DreamRewriteRunner {
                 "kept-user-notes",
                 "Kept User Notes",
                 userNoteWindow.keptRecords.map((record) => `${record.relativePath} | ${record.updatedAt}`),
+              )]
+            : []),
+          ...(protectedUserPathsSkipped.length > 0
+            ? [listDetail(
+                "protected-user-paths-skipped",
+                "Protected User Paths Skipped",
+                protectedUserPathsSkipped,
               )]
             : []),
         ],

@@ -234,7 +234,7 @@ Rules:
 - Do not create extra sibling projects, tmp projects, or umbrella projects.
 - Decide the final file-level organization for the current project before any rewrite happens.
 - Natural-language output fields must follow the dominant language already present in the supplied records and project metas.
-- If the supplied evidence is mainly Chinese, write summaries, project_name, description, aliases, and any other natural-language output in Chinese.
+- If the supplied evidence is mainly Chinese, write summaries, project_name, description, and any other natural-language output in Chinese.
 - Keys and enums must remain in English.
 - Multiple Project/*.md and Feedback/*.md files under the current project are expected and correct.
 - If two explicit project names appear in the memories, treat them as alternative names, phases, or topic labels inside the same current project unless the evidence clearly says they are unrelated noise that should be deleted.
@@ -243,11 +243,11 @@ Rules:
   - merge redundant files within the current project
   - keep multiple files when they represent distinct durable memories within the current project
   - delete old files only when their durable content is fully absorbed elsewhere
-- If you consolidate files that use different project labels inside the same current project, keep project_name user-recognizable and capture useful aliases.
+- If you consolidate files that use different project labels inside the same current project, keep project_name user-recognizable.
 - Each retained entry id must appear in exactly one output project.
 - deleted_entry_ids should only include files that are redundant, superseded, or absorbed by other rewritten files.
 - deleted_project_ids should stay empty in current-project mode.
-- Keep project names user-recognizable and aliases concise.
+- Keep project names user-recognizable.
 - Return valid JSON only.
 
 Use this exact JSON shape:
@@ -261,7 +261,6 @@ Use this exact JSON shape:
       "target_project_id": "current_project",
       "project_name": "final project name",
       "description": "final project description",
-      "aliases": ["alias 1", "alias 2"],
       "status": "active",
       "merge_reason": "",
       "evidence_entry_ids": ["Project/current-stage.md"],
@@ -298,7 +297,6 @@ Use this exact JSON shape:
   "project_meta": {
     "project_name": "final project name",
     "description": "final project description",
-    "aliases": ["alias 1", "alias 2"],
     "status": "active"
   },
   "files": [
@@ -415,7 +413,6 @@ Rules:
 - You may update only:
   - project_name
   - description
-  - aliases
   - status
 - Do not rewrite metadata just to paraphrase it.
 - Natural-language output fields must follow the dominant language already present in the supplied project/feedback files.
@@ -427,7 +424,6 @@ Use this exact JSON shape:
   "reason": "why metadata should or should not change",
   "project_name": "final project name",
   "description": "final description",
-  "aliases": ["alias 1", "alias 2"],
   "status": "in_progress"
 }
 `.trim();
@@ -584,7 +580,6 @@ function buildIndexPromptWindow(input) {
                 project_id: input.currentProjectMeta.projectId,
                 project_name: input.currentProjectMeta.projectName,
                 description: truncateForPrompt(input.currentProjectMeta.description, 220),
-                aliases: input.currentProjectMeta.aliases.slice(0, 12),
                 status: input.currentProjectMeta.status,
                 updated_at: input.currentProjectMeta.updatedAt,
             }
@@ -665,7 +660,6 @@ function buildDreamFileGlobalPlanPrompt(input) {
             project_id: project.projectId,
             project_name: project.projectName,
             description: truncateForPrompt(project.description, 220),
-            aliases: project.aliases.slice(0, 12),
             status: project.status,
             updated_at: project.updatedAt,
             dream_updated_at: project.dreamUpdatedAt ?? "",
@@ -718,7 +712,6 @@ function buildDreamFileProjectRewritePrompt(input) {
             plan_key: input.project.planKey,
             project_name: input.project.projectName,
             description: truncateForPrompt(input.project.description, 220),
-            aliases: input.project.aliases.slice(0, 12),
             status: input.project.status,
             merge_reason: input.project.mergeReason ?? "",
             evidence_entry_ids: input.project.evidenceEntryIds,
@@ -729,7 +722,6 @@ function buildDreamFileProjectRewritePrompt(input) {
                 project_id: input.currentMeta.projectId,
                 project_name: input.currentMeta.projectName,
                 description: truncateForPrompt(input.currentMeta.description, 220),
-                aliases: input.currentMeta.aliases.slice(0, 12),
                 status: input.currentMeta.status,
                 updated_at: input.currentMeta.updatedAt,
             }
@@ -797,7 +789,6 @@ function buildDreamProjectMetaReviewPrompt(input) {
             project_id: input.currentMeta.projectId,
             project_name: input.currentMeta.projectName,
             description: truncateForPrompt(input.currentMeta.description, 220),
-            aliases: input.currentMeta.aliases.slice(0, 12),
             status: input.currentMeta.status,
             updated_at: input.currentMeta.updatedAt,
             dream_updated_at: input.currentMeta.dreamUpdatedAt ?? "",
@@ -857,6 +848,67 @@ function extractFirstJsonObject(raw) {
         }
     }
     throw new Error("Incomplete JSON object in extraction response");
+}
+function extractLooseJsonEnvelope(raw) {
+    const trimmed = raw.trim();
+    if (!trimmed)
+        throw new Error("Empty extraction response");
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start < 0 || end <= start) {
+        throw new Error("No JSON envelope found in extraction response");
+    }
+    return trimmed.slice(start, end + 1);
+}
+function escapeRegexLiteral(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function decodeLooseJsonString(value) {
+    return value
+        .replace(/\\r\\n/g, "\n")
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\r")
+        .replace(/\\t/g, "\t")
+        .replace(/\\"/g, "\"")
+        .replace(/\\\\/g, "\\");
+}
+function extractLooseJsonBooleanProperty(source, key) {
+    const match = source.match(new RegExp(`"${escapeRegexLiteral(key)}"\\s*:\\s*(true|false)`, "i"));
+    if (!match)
+        return undefined;
+    return match[1]?.toLowerCase() === "true";
+}
+function extractLooseJsonStringProperty(source, key, nextKeys) {
+    const escapedKey = escapeRegexLiteral(key);
+    const nextKeyPattern = nextKeys.map((item) => escapeRegexLiteral(item)).join("|");
+    const pattern = nextKeys.length > 0
+        ? new RegExp(`"${escapedKey}"\\s*:\\s*"([\\s\\S]*?)"\\s*,\\s*"(${nextKeyPattern})"\\s*:`, "i")
+        : new RegExp(`"${escapedKey}"\\s*:\\s*"([\\s\\S]*)"\\s*}\\s*$`, "i");
+    const match = source.match(pattern);
+    return match?.[1] ? decodeLooseJsonString(match[1]) : undefined;
+}
+function tryParseLooseMemoryCreatePayload(raw) {
+    const envelope = extractLooseJsonEnvelope(raw);
+    const payload = {
+        ...(extractLooseJsonBooleanProperty(envelope, "skip") !== undefined
+            ? { skip: extractLooseJsonBooleanProperty(envelope, "skip") }
+            : {}),
+        ...(extractLooseJsonStringProperty(envelope, "reason", ["name", "description", "markdown"])
+            ? { reason: extractLooseJsonStringProperty(envelope, "reason", ["name", "description", "markdown"]) }
+            : {}),
+        ...(extractLooseJsonStringProperty(envelope, "name", ["description", "markdown"])
+            ? { name: extractLooseJsonStringProperty(envelope, "name", ["description", "markdown"]) }
+            : {}),
+        ...(extractLooseJsonStringProperty(envelope, "description", ["markdown"])
+            ? { description: extractLooseJsonStringProperty(envelope, "description", ["markdown"]) }
+            : {}),
+        ...(extractLooseJsonStringProperty(envelope, "markdown", [])
+            ? { markdown: extractLooseJsonStringProperty(envelope, "markdown", []) }
+            : {}),
+    };
+    return typeof payload.name === "string" && typeof payload.description === "string" && typeof payload.markdown === "string"
+        ? payload
+        : null;
 }
 function slugifyKeyPart(value) {
     const normalized = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -922,7 +974,6 @@ function normalizeDreamFileGlobalPlanProject(item, allowedEntryIds, allowedProje
         ...(targetProjectId ? { targetProjectId } : {}),
         projectName,
         description,
-        aliases: uniqueStrings(normalizeStringArray(item.aliases, 24), 24),
         status: normalizeDreamFileProjectStatus(item.status),
         ...(mergeReason ? { mergeReason } : {}),
         evidenceEntryIds: normalizeDreamFileEntryIds(item.evidence_entry_ids, allowedEntryIds, 80),
@@ -941,7 +992,6 @@ function normalizeDreamFileProjectMetaPayload(value, fallback) {
     return {
         projectName: projectName || fallback.projectName,
         description: description || fallback.description,
-        aliases: uniqueStrings(normalizeStringArray(value.aliases, 24), 24),
         status: normalizeDreamFileProjectStatus(value.status ?? fallback.status),
     };
 }
@@ -1019,7 +1069,6 @@ function normalizeDreamProjectMetaReview(payload, fallback) {
             description: typeof payload.description === "string"
                 ? truncate(normalizeWhitespace(payload.description), 320) || fallback.description
                 : fallback.description,
-            aliases: uniqueStrings(normalizeStringArray(payload.aliases, 24), 24),
             status: normalizeDreamFileProjectStatus(payload.status ?? fallback.status),
         },
     };
@@ -1228,25 +1277,11 @@ function extractProjectNameHint(text) {
     }
     return "";
 }
-function extractProjectAliasHints(text) {
-    const aliases = [];
-    const patterns = [
-        /(?:也可以把它记成|也可以记成|也叫做|也叫|别名(?:是|为)?|又叫)\s*[“"'《]?([^。；;\n，,：:（）()]{2,80})/gi,
-    ];
-    for (const pattern of patterns) {
-        for (const match of text.matchAll(pattern)) {
-            const value = match?.[1] ? normalizeWhitespace(match[1]) : "";
-            if (value)
-                aliases.push(truncate(value, 80));
-        }
-    }
-    return uniqueStrings(aliases, 10);
-}
 function hasGenericProjectAnchor(text) {
     return /(?:这个项目|该项目|本项目|这个东西|这件事)/i.test(normalizeWhitespace(text));
 }
 function projectIdentityTerms(project) {
-    return uniqueStrings([project.projectName, ...project.aliases]
+    return uniqueStrings([project.projectName]
         .map((item) => normalizeWhitespace(item).toLowerCase())
         .filter((item) => item.length > 0 && item.length <= 80 && !/[。！？!?]/.test(item)), 20);
 }
@@ -1366,9 +1401,6 @@ function buildSyntheticProjectFollowUpCandidate(input) {
         scope: "project",
         name: projectName,
         description,
-        ...(input.explicitProjectAliases.length > 0
-            ? { aliases: uniqueStrings(input.explicitProjectAliases.filter((alias) => alias !== projectName), 10) }
-            : {}),
         ...(input.sessionKey ? { sourceSessionKey: input.sessionKey } : {}),
         capturedAt: input.timestamp,
         ...(input.explicitProjectStage ? { stage: input.explicitProjectStage } : {}),
@@ -1755,26 +1787,53 @@ export class LlmMemoryExtractor {
             : input.kind === "project"
                 ? PROJECT_NOTE_CREATE_SYSTEM_PROMPT
                 : FEEDBACK_NOTE_CREATE_SYSTEM_PROMPT;
+        const userPrompt = JSON.stringify({
+            classification: {
+                type: input.classification.type,
+                reason: input.classification.reason,
+                evidence: input.classification.evidence,
+            },
+            context: JSON.parse(buildIndexPromptWindow({
+                batchContextMessages: input.batchContextMessages,
+                focusUserTurn: input.focusUserTurn,
+                currentProjectMeta: input.currentProjectMeta,
+            })),
+        }, null, 2);
+        let rawResponse = "";
         try {
-            const parsed = await this.callStructuredJsonWithDebug({
+            rawResponse = await this.callStructuredJson({
                 systemPrompt,
-                userPrompt: JSON.stringify({
-                    classification: {
-                        type: input.classification.type,
-                        reason: input.classification.reason,
-                        evidence: input.classification.evidence,
-                    },
-                    context: JSON.parse(buildIndexPromptWindow({
-                        batchContextMessages: input.batchContextMessages,
-                        focusUserTurn: input.focusUserTurn,
-                        currentProjectMeta: input.currentProjectMeta,
-                    })),
-                }, null, 2),
+                userPrompt,
                 requestLabel,
                 timeoutMs: input.timeoutMs ?? DEFAULT_FILE_MEMORY_EXTRACTION_TIMEOUT_MS,
                 ...(input.agentId ? { agentId: input.agentId } : {}),
-                ...(input.debugTrace ? { debugTrace: input.debugTrace } : {}),
-                parse: (raw) => JSON.parse(extractFirstJsonObject(raw)),
+            });
+            let parsed;
+            let parseMode = "strict";
+            let strictParseError = "";
+            try {
+                parsed = JSON.parse(extractFirstJsonObject(rawResponse));
+            }
+            catch (error) {
+                strictParseError = error instanceof Error ? error.message : String(error);
+                const fallback = tryParseLooseMemoryCreatePayload(rawResponse);
+                if (!fallback)
+                    throw error;
+                parsed = fallback;
+                parseMode = "fallback";
+            }
+            input.debugTrace?.({
+                requestLabel,
+                systemPrompt,
+                userPrompt,
+                rawResponse,
+                parsedResult: parseMode === "strict"
+                    ? parsed
+                    : {
+                        parseMode,
+                        strictParseError,
+                        payload: parsed,
+                    },
             });
             if (parsed.skip === true)
                 return null;
@@ -1786,6 +1845,15 @@ export class LlmMemoryExtractor {
             });
         }
         catch (error) {
+            input.debugTrace?.({
+                requestLabel,
+                systemPrompt,
+                userPrompt,
+                rawResponse,
+                errored: true,
+                timedOut: isTimeoutError(error) || (error instanceof Error && /timed out/i.test(error.message)),
+                errorMessage: error instanceof Error ? error.message : String(error),
+            });
             this.logger?.warn?.(`[clawxmemory] ${requestLabel.toLowerCase()} fallback: ${String(error)}`);
             return null;
         }
@@ -1859,7 +1927,6 @@ export class LlmMemoryExtractor {
         const fallback = {
             projectName: input.currentMeta.projectName,
             description: input.currentMeta.description,
-            aliases: input.currentMeta.aliases,
             status: input.currentMeta.status,
         };
         const parsed = await this.callStructuredJsonWithDebug({
@@ -1937,7 +2004,6 @@ export class LlmMemoryExtractor {
         const fallbackMeta = {
             projectName: input.project.projectName,
             description: input.project.description,
-            aliases: input.project.aliases,
             status: input.project.status,
         };
         return {
@@ -2006,7 +2072,6 @@ export class LlmMemoryExtractor {
                         project_id: project.projectId,
                         project_name: project.projectName,
                         description: truncateForPrompt(project.description, 180),
-                        aliases: project.aliases.slice(0, 12),
                         status: project.status,
                         updated_at: project.updatedAt,
                         shortlist_score: project.score,
@@ -2054,7 +2119,6 @@ export class LlmMemoryExtractor {
                             project_id: input.projectMeta.projectId,
                             project_name: input.projectMeta.projectName,
                             description: truncateForPrompt(input.projectMeta.description, 180),
-                            aliases: input.projectMeta.aliases.slice(0, 12),
                             status: input.projectMeta.status,
                         }
                         : null,
@@ -2096,7 +2160,6 @@ export class LlmMemoryExtractor {
         const explicitProjectName = extractProjectNameHint(focusText);
         const explicitProjectDescriptor = extractProjectDescriptorHint(focusText);
         const explicitProjectStage = extractProjectStageHint(focusText);
-        const explicitProjectAliases = extractProjectAliasHints(focusText);
         const explicitTimeline = extractTimelineHints(focusText);
         const explicitGoal = extractSingleHint(focusText, /目标(?:是|为|:|：)?\s*([^。；;\n]+)/i);
         const explicitBlocker = extractSingleHint(focusText, /当前卡点(?:是|为)?([^。；;\n]+)/i);
@@ -2104,7 +2167,6 @@ export class LlmMemoryExtractor {
         const uniqueBatchProjectName = extractUniqueBatchProjectName(batchContextMessages);
         const selectedKnownProject = selectKnownProjectHint(focusText, input.knownProjects ?? []);
         const contextProjectName = selectedKnownProject?.projectName ?? uniqueBatchProjectName;
-        const knownProjectAliases = selectedKnownProject?.aliases ?? [];
         const projectFollowUpSignal = looksLikeProjectFollowUpText(focusText);
         const projectRiskSignal = looksLikeProjectRiskText(focusText);
         const projectScopeSignal = looksLikeProjectScopeText(focusText);
@@ -2163,7 +2225,6 @@ export class LlmMemoryExtractor {
                         identity_key: project.identityKey,
                         project_id: project.projectId ?? "",
                         project_name: project.projectName,
-                        aliases: project.aliases.slice(0, 12),
                         description: truncateForPrompt(project.description, 180),
                         scope: project.scope,
                         updated_at: project.updatedAt,
@@ -2234,7 +2295,6 @@ export class LlmMemoryExtractor {
                 const rawBlockers = normalizeStringArray(item.blockers, 10);
                 const timeline = normalizeStringArray(item.timeline, 10);
                 const rawNotes = normalizeStringArray(item.notes, 10);
-                const knownProjectAliases = selectedKnownProject?.aliases ?? [];
                 const structuredProjectSummary = truncateForPrompt(rawDecisions[0]
                     || rawConstraints[0]
                     || rawNextSteps[0]
@@ -2253,13 +2313,6 @@ export class LlmMemoryExtractor {
                 }
                 const candidateType = type;
                 const shouldPinToKnownProject = Boolean(selectedKnownProject && !explicitProjectName);
-                const projectAliases = candidateType === "project"
-                    ? uniqueStrings([
-                        ...knownProjectAliases,
-                        ...normalizeStringArray(item.aliases, 10),
-                        ...explicitProjectAliases,
-                    ].filter((alias) => alias && alias !== explicitProjectName), 10)
-                    : [];
                 const projectNameFallback = candidateType === "project"
                     ? truncateForPrompt(explicitProjectName
                         || (shouldPinToKnownProject ? selectedKnownProject?.projectName ?? "" : "")
@@ -2364,7 +2417,6 @@ export class LlmMemoryExtractor {
                     })(),
                     name,
                     description: normalizedProjectDescription,
-                    ...(candidateType === "project" && projectAliases.length > 0 ? { aliases: projectAliases } : {}),
                     ...(input.sessionKey ? { sourceSessionKey: input.sessionKey } : {}),
                     capturedAt: input.timestamp,
                     ...(typeof item.profile === "string"
@@ -2476,7 +2528,6 @@ export class LlmMemoryExtractor {
                     ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
                     uniqueBatchProjectName: contextProjectName,
                     explicitProjectName,
-                    explicitProjectAliases: uniqueStrings([...explicitProjectAliases, ...knownProjectAliases], 10),
                     explicitProjectDescriptor,
                     explicitProjectStage,
                     explicitTimeline,

@@ -234,9 +234,6 @@ function buildProjectBody(candidate) {
     if (normalizeWhitespace(candidate.summary)) {
         lines.push("## Summary", normalizeWhitespace(candidate.summary), "");
     }
-    if (candidate.aliases && uniqueStrings(candidate.aliases).length > 0) {
-        lines.push("## Aliases", ...uniqueStrings(candidate.aliases).map((item) => `- ${item}`), "");
-    }
     return `${lines.join("\n").trim()}\n`;
 }
 function buildFeedbackBody(candidate) {
@@ -325,7 +322,6 @@ function mergeCandidates(primary, incoming) {
         description: normalizeDescription(incoming.description, primary.description),
         summary: normalizeWhitespace(incoming.summary || primary.summary),
         stage: normalizeWhitespace(incoming.stage || primary.stage),
-        aliases: uniqueStrings([...(primary.aliases ?? []), ...(incoming.aliases ?? [])]),
         decisions: uniqueStrings([...(primary.decisions ?? []), ...(incoming.decisions ?? [])]),
         constraints: uniqueStrings([...(primary.constraints ?? []), ...(incoming.constraints ?? [])]),
         nextSteps: uniqueStrings([...(primary.nextSteps ?? []), ...(incoming.nextSteps ?? [])]),
@@ -363,7 +359,6 @@ function renderProjectMeta(record) {
         `project_id: ${record.projectId}`,
         `project_name: ${record.projectName}`,
         `description: ${record.description}`,
-        `aliases: ${JSON.stringify(uniqueStrings(record.aliases, 50))}`,
         `status: ${record.status}`,
         `created_at: ${record.createdAt}`,
         `updated_at: ${record.updatedAt}`,
@@ -400,10 +395,6 @@ function parseProjectMeta(absolutePath) {
         projectId: CURRENT_PROJECT_ID,
         projectName,
         description,
-        aliases: uniqueStrings([
-            ...parseStringArray(values.get("aliases")),
-            projectName,
-        ], 50),
         status: normalizeWhitespace(values.get("status")) || DEFAULT_PROJECT_STATUS,
         createdAt: values.get("created_at") ?? parsed?.frontmatter.updatedAt ?? nowIso(),
         updatedAt: values.get("updated_at") ?? parsed?.frontmatter.updatedAt ?? nowIso(),
@@ -550,20 +541,12 @@ export class FileMemoryStore {
             return {
                 projectName: DEFAULT_PROJECT_NAME,
                 description: "Current project memory.",
-                aliases: [DEFAULT_PROJECT_NAME],
                 status: DEFAULT_PROJECT_STATUS,
             };
         }
         return {
             projectName: firstProject?.name || DEFAULT_PROJECT_NAME,
             description: firstProject?.description || first.description || DEFAULT_PROJECT_NAME,
-            aliases: uniqueStrings([
-                ...(firstProject?.type === "project"
-                    ? (this.getMemoryRecordsByIds([firstProject.relativePath], 5000)[0]
-                        ? this.toCandidate(this.getMemoryRecordsByIds([firstProject.relativePath], 5000)[0]).aliases ?? []
-                        : [])
-                    : []),
-            ], 20),
             status: DEFAULT_PROJECT_STATUS,
         };
     }
@@ -581,12 +564,6 @@ export class FileMemoryStore {
             projectId: CURRENT_PROJECT_ID,
             projectName,
             description,
-            aliases: uniqueStrings([
-                ...(existing?.aliases ?? []),
-                ...(input.aliases ?? []),
-                ...(seed.aliases ?? []),
-                projectName,
-            ], 50),
             status: normalizeProjectStatus(input.status || existing?.status || seed.status),
             createdAt: existing?.createdAt ?? nowIso(),
             updatedAt: nowIso(),
@@ -770,7 +747,6 @@ export class FileMemoryStore {
             this.ensureProjectMeta({
                 ...(candidate.type === "project" ? { projectName: candidate.name } : {}),
                 description: candidate.description,
-                ...(candidate.type === "project" && candidate.aliases?.length ? { aliases: candidate.aliases } : {}),
             });
         }
         const existing = this.findExistingRecordForCandidate(candidate);
@@ -790,10 +766,6 @@ export class FileMemoryStore {
                 this.upsertProjectMeta({
                     ...(autoSeedLike ? { projectName: candidate.name } : {}),
                     ...(autoSeedLike && candidate.description ? { description: candidate.description } : {}),
-                    aliases: uniqueStrings([
-                        ...(autoSeedLike ? [candidate.name] : []),
-                        ...(candidate.aliases ?? []),
-                    ], 20),
                     status: projectMeta.status,
                 });
             }
@@ -846,7 +818,6 @@ export class FileMemoryStore {
             blockers: parseListSection(sections.get("blockers")),
             timeline: parseListSection(sections.get("timeline")),
             notes: parseListSection(sections.get("notes")),
-            aliases: parseListSection(sections.get("aliases")),
             summary: parseParagraphSection(sections.get("summary")),
         };
     }
@@ -969,7 +940,6 @@ export class FileMemoryStore {
                 identityKey: CURRENT_PROJECT_ID,
                 projectId: CURRENT_PROJECT_ID,
                 projectName: projectMeta.projectName,
-                aliases: projectMeta.aliases,
                 description: projectMeta.description,
                 updatedAt: projectMeta.updatedAt,
                 scope: "formal",
@@ -1005,7 +975,6 @@ export class FileMemoryStore {
         return this.upsertProjectMeta({
             projectName: input.projectName,
             description: input.description,
-            aliases: input.aliases ?? [],
             status: input.status,
         });
     }
@@ -1032,7 +1001,6 @@ export class FileMemoryStore {
                         projectId: projectMeta.projectId,
                         projectName: projectMeta.projectName,
                         description: projectMeta.description,
-                        aliases: projectMeta.aliases,
                         status: projectMeta.status,
                         createdAt: projectMeta.createdAt,
                         updatedAt: projectMeta.updatedAt,

@@ -105,6 +105,24 @@
             </section>
           </div>
 
+          <!-- ═══ MEMORY DETAIL PAGE ═══ -->
+          <div id="memoryDetailBoard" class="board-content">
+            <div class="detail-page-head">
+              <button id="detailBackBtn" class="action-btn" type="button" data-i18n="actions.back">← 返回</button>
+            </div>
+            <div class="detail-page-hero">
+              <div class="detail-page-hero-text">
+                <p id="detailPageMeta" class="detail-eyebrow"></p>
+                <h2 id="detailPageTitle" class="detail-page-title"></h2>
+                <p id="detailPageDescription" class="detail-page-desc"></p>
+              </div>
+              <div id="detailPageActions" class="detail-page-actions"></div>
+            </div>
+            <div class="detail-page-body">
+              <pre id="detailPageContent" class="code-block detail-page-code"></pre>
+            </div>
+          </div>
+
           <!-- ═══ TRACE BOARD ═══ -->
           <div id="traceBoard" class="board-content">
             <div class="trace-sub-tabs">
@@ -220,6 +238,55 @@
         </div>
       </section>
     </aside>
+
+    <!-- ═══ EDIT MODAL ═══ -->
+    <div id="editorModal" class="editor-modal hidden" role="dialog" aria-modal="true" aria-labelledby="editorModalTitle">
+      <div class="editor-modal-card">
+        <div class="editor-modal-head">
+          <div>
+            <h3 id="editorModalTitle" class="editor-modal-title"></h3>
+            <p id="editorModalSubtitle" class="editor-modal-subtitle"></p>
+          </div>
+          <button id="editorCloseBtn" class="action-btn" type="button" data-i18n="actions.close"></button>
+        </div>
+        <form id="editorForm" class="editor-form">
+          <div id="editorError" class="status-bar hidden"></div>
+
+          <div id="editorProjectFields" class="editor-form-section hidden">
+            <div class="editor-field-grid">
+              <label class="editor-field">
+                <span data-i18n="editor.project.name"></span>
+                <input id="editorProjectName" class="settings-input" type="text" />
+              </label>
+              <label class="editor-field">
+                <span data-i18n="editor.project.status"></span>
+                <select id="editorProjectStatus" class="settings-input"></select>
+              </label>
+            </div>
+            <label class="editor-field">
+              <span data-i18n="editor.project.description"></span>
+              <textarea id="editorProjectDescription" class="editor-textarea" rows="4"></textarea>
+            </label>
+          </div>
+
+          <div id="editorMemoryFields" class="editor-form-section hidden">
+            <label class="editor-field">
+              <span data-i18n="editor.memory.name"></span>
+              <input id="editorMemoryName" class="settings-input" type="text" />
+            </label>
+            <label class="editor-field">
+              <span data-i18n="editor.memory.description"></span>
+              <textarea id="editorMemoryDescription" class="editor-textarea" rows="4"></textarea>
+            </label>
+          </div>
+
+          <div class="editor-actions">
+            <button id="editorCancelBtn" class="action-btn editor-action-btn" type="button" data-i18n="actions.cancel"></button>
+            <button id="editorSaveBtn" class="action-btn action-btn--primary editor-action-btn" type="submit" data-i18n="actions.save"></button>
+          </div>
+        </form>
+      </div>
+    </div>
 
     <script src="./app.js" type="module"></script>
   </body>

@@ -115,7 +115,6 @@ export declare class EdgeClawMemoryService {
     updateProjectMeta(input: {
         projectName: string;
         description: string;
-        aliases?: string[];
         status: string;
     }): import("./core/types.js").ProjectMetaRecord;
     getSnapshotVersion(): string;

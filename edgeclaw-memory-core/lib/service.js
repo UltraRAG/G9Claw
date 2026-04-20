@@ -681,7 +681,6 @@ export class EdgeClawMemoryService {
             const meta = this.repository.editProjectMeta({
                 projectName: input.projectName,
                 description: input.description,
-                aliases: input.aliases,
                 status: input.status,
             });
             mutatedIds = [meta.relativePath];

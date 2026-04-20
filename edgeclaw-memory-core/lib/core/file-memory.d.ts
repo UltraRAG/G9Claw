@@ -51,14 +51,12 @@ export declare class FileMemoryStore {
     upsertProjectMeta(input?: {
         projectName?: string;
         description?: string;
-        aliases?: string[];
         status?: string;
         dreamUpdatedAt?: string;
     }): ProjectMetaRecord;
     ensureProjectMeta(input?: {
         projectName?: string;
         description?: string;
-        aliases?: string[];
         status?: string;
     }): ProjectMetaRecord;
     private findExistingRecordForCandidate;
@@ -134,7 +132,6 @@ export declare class FileMemoryStore {
         projectId?: string;
         projectName: string;
         description: string;
-        aliases?: string[];
         status: string;
     }): ProjectMetaRecord;
     exportBundleRecords(_options?: {

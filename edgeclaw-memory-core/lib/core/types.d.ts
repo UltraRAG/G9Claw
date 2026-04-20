@@ -44,7 +44,6 @@ export interface ProjectShortlistCandidate {
     projectId: string;
     projectName: string;
     description: string;
-    aliases: string[];
     status: string;
     updatedAt: string;
     score: number;
@@ -84,7 +83,6 @@ export interface MemoryCandidate {
     name: string;
     description: string;
     body?: string;
-    aliases?: string[];
     capturedAt?: string;
     sourceSessionKey?: string;
     profile?: string;
@@ -106,7 +104,6 @@ export interface ProjectMetaRecord {
     projectId: string;
     projectName: string;
     description: string;
-    aliases: string[];
     status: string;
     createdAt: string;
     updatedAt: string;
@@ -118,7 +115,6 @@ export interface ProjectIdentityHint {
     identityKey: string;
     projectId?: string;
     projectName: string;
-    aliases: string[];
     description: string;
     updatedAt: string;
     scope: "formal" | "tmp";
@@ -150,7 +146,6 @@ export interface EditProjectMetaActionRequest {
     action: "edit_project_meta";
     projectName: string;
     description: string;
-    aliases: string[];
     status: string;
 }
 export interface MemoryEntryEditFields {
@@ -195,7 +190,6 @@ export interface ProjectMetaExportRecord {
     projectId: string;
     projectName: string;
     description: string;
-    aliases: string[];
     status: string;
     createdAt: string;
     updatedAt: string;

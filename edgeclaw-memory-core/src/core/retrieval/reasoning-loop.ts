@@ -142,9 +142,6 @@ function renderProjectMetaBlock(projectMeta: ProjectMetaRecord | null): string[]
     projectMeta.status,
     "",
   ];
-  if (projectMeta.aliases.length > 0) {
-    lines.push("## Aliases", ...projectMeta.aliases.map((item) => `- ${item}`), "");
-  }
   return lines;
 }
 

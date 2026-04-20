@@ -32,7 +32,6 @@ export interface LlmDreamFileProjectMetaInput {
     projectId: string;
     projectName: string;
     description: string;
-    aliases: string[];
     status: string;
     updatedAt: string;
     dreamUpdatedAt?: string;
@@ -78,7 +77,6 @@ export interface LlmDreamFileGlobalPlanProject {
     targetProjectId?: string;
     projectName: string;
     description: string;
-    aliases: string[];
     status: string;
     mergeReason?: "rename" | "alias_equivalence" | "duplicate_formal_project";
     evidenceEntryIds: string[];
@@ -123,7 +121,6 @@ export interface LlmDreamFileProjectRewriteOutput {
     projectMeta: {
         projectName: string;
         description: string;
-        aliases: string[];
         status: string;
     };
     files: LlmDreamFileProjectRewriteOutputFile[];
@@ -179,7 +176,6 @@ export interface LlmDreamProjectMetaReviewOutput {
     projectMeta: {
         projectName: string;
         description: string;
-        aliases: string[];
         status: string;
     };
 }

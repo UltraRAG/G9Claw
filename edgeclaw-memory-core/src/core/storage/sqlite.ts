@@ -1079,7 +1079,6 @@ export class MemoryRepository {
     projectId?: string;
     projectName: string;
     description: string;
-    aliases?: string[];
     status: string;
   }) {
     return this.workspaceMemory.editProjectMeta(input);
@@ -1088,7 +1087,6 @@ export class MemoryRepository {
   ensureProjectMeta(input: {
     projectName?: string;
     description?: string;
-    aliases?: string[];
     status?: string;
   } = {}) {
     return this.workspaceMemory.ensureProjectMeta(input);

@@ -98,13 +98,11 @@ export declare class MemoryRepository {
         projectId?: string;
         projectName: string;
         description: string;
-        aliases?: string[];
         status: string;
     }): import("../types.js").ProjectMetaRecord;
     ensureProjectMeta(input?: {
         projectName?: string;
         description?: string;
-        aliases?: string[];
         status?: string;
     }): import("../types.js").ProjectMetaRecord;
     getProjectMeta(): import("../types.js").ProjectMetaRecord | undefined;

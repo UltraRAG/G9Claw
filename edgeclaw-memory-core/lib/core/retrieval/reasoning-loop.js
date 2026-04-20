@@ -79,9 +79,6 @@ function renderProjectMetaBlock(projectMeta) {
         projectMeta.status,
         "",
     ];
-    if (projectMeta.aliases.length > 0) {
-        lines.push("## Aliases", ...projectMeta.aliases.map((item) => `- ${item}`), "");
-    }
     return lines;
 }
 function renderSelectedRecordsBlock(records) {

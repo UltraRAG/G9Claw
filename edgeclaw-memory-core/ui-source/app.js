@@ -62,6 +62,8 @@ const UI_STRINGS = {
     "actions.deprecate": "弃用",
     "actions.restore": "恢复",
     "actions.delete": "删除",
+    "actions.cancel": "取消",
+    "actions.save": "保存",
     "project.section.title": "项目记忆",
     "project.section.subtitle": "当前 project 的进展、事实和状态记录",
     "feedback.section.title": "协作反馈",
@@ -150,8 +152,25 @@ const UI_STRINGS = {
     "prompt.editMemoryDescription": "更新记忆描述",
     "prompt.editProjectName": "更新项目名称",
     "prompt.editProjectDescription": "更新项目描述",
-    "prompt.editProjectAliases": "更新项目别名，使用英文逗号分隔",
     "prompt.editProjectStatus": "更新项目状态",
+    "editor.project.title": "编辑项目信息",
+    "editor.project.subtitle": "修改项目 meta，不会直接重写已有记忆正文。",
+    "editor.project.name": "项目名称",
+    "editor.project.description": "项目摘要",
+    "editor.project.status": "项目状态",
+    "editor.project.save": "保存项目信息",
+    "editor.memory.title.project": "编辑项目记忆",
+    "editor.memory.title.feedback": "编辑协作反馈",
+    "editor.memory.subtitle": "只编辑头字段，不直接暴露原始 markdown。",
+    "editor.memory.name": "记忆名称",
+    "editor.memory.description": "记忆摘要",
+    "editor.memory.save": "保存记忆",
+    "editor.status.planned": "计划中",
+    "editor.status.in_progress": "进行中",
+    "editor.status.done": "已完成",
+    "editor.error.projectNameRequired": "项目名称不能为空。",
+    "editor.error.memoryNameRequired": "记忆名称不能为空。",
+    "actions.back": "← 返回",
     "error.authRequired": "需要登录后才能访问当前项目的 Memory Dashboard。",
     "error.missingProjectPath": "缺少 projectPath，无法加载当前项目的 Memory Dashboard。",
   },
@@ -200,6 +219,8 @@ const UI_STRINGS = {
     "actions.deprecate": "Deprecate",
     "actions.restore": "Restore",
     "actions.delete": "Delete",
+    "actions.cancel": "Cancel",
+    "actions.save": "Save",
     "project.section.title": "Project Memory",
     "project.section.subtitle": "Progress, facts, and status records for the current project.",
     "feedback.section.title": "Collaboration Feedback",
@@ -288,8 +309,25 @@ const UI_STRINGS = {
     "prompt.editMemoryDescription": "Update memory description",
     "prompt.editProjectName": "Update project name",
     "prompt.editProjectDescription": "Update project description",
-    "prompt.editProjectAliases": "Update project aliases, separated by commas",
     "prompt.editProjectStatus": "Update project status",
+    "editor.project.title": "Edit Project Info",
+    "editor.project.subtitle": "Update project metadata without rewriting existing memory bodies.",
+    "editor.project.name": "Project Name",
+    "editor.project.description": "Project Summary",
+    "editor.project.status": "Project Status",
+    "editor.project.save": "Save Project Info",
+    "editor.memory.title.project": "Edit Project Memory",
+    "editor.memory.title.feedback": "Edit Collaboration Feedback",
+    "editor.memory.subtitle": "Edit only header fields without exposing raw markdown.",
+    "editor.memory.name": "Memory Name",
+    "editor.memory.description": "Memory Summary",
+    "editor.memory.save": "Save Memory",
+    "editor.status.planned": "Planned",
+    "editor.status.in_progress": "In Progress",
+    "editor.status.done": "Done",
+    "editor.error.projectNameRequired": "Project name is required.",
+    "editor.error.memoryNameRequired": "Memory name is required.",
+    "actions.back": "← Back",
     "error.authRequired": "Sign in to access the Memory Dashboard for the current project.",
     "error.missingProjectPath": "Missing projectPath; unable to load the Memory Dashboard for the current project.",
   },
@@ -383,6 +421,10 @@ const state = {
   dreamTraces: [],
   detailOpen: false,
   settingsOpen: false,
+  editorOpen: false,
+  editorSession: null,
+  memoryDetailOpen: false,
+  previousPage: "project",
 };
 
 applyMemoryTheme(MEMORY_THEME);
@@ -457,6 +499,14 @@ const dreamDetailEl = document.getElementById("dreamDetail");
 const dreamEmptyEl = document.getElementById("dreamEmpty");
 const dreamStepsEl = document.getElementById("dreamSteps");
 
+const memoryDetailBoardEl = document.getElementById("memoryDetailBoard");
+const detailBackBtn = document.getElementById("detailBackBtn");
+const detailPageMetaEl = document.getElementById("detailPageMeta");
+const detailPageTitleEl = document.getElementById("detailPageTitle");
+const detailPageDescriptionEl = document.getElementById("detailPageDescription");
+const detailPageActionsEl = document.getElementById("detailPageActions");
+const detailPageContentEl = document.getElementById("detailPageContent");
+
 const detailDrawerEl = document.getElementById("detailDrawer");
 const detailCloseBtn = document.getElementById("detailCloseBtn");
 const detailEmptyEl = document.getElementById("detailEmpty");
@@ -466,6 +516,21 @@ const detailTitleEl = document.getElementById("detailTitle");
 const detailDescriptionEl = document.getElementById("detailDescription");
 const detailActionsEl = document.getElementById("detailActions");
 const detailContentEl = document.getElementById("detailContent");
+const editorModalEl = document.getElementById("editorModal");
+const editorCloseBtn = document.getElementById("editorCloseBtn");
+const editorFormEl = document.getElementById("editorForm");
+const editorErrorEl = document.getElementById("editorError");
+const editorModalTitleEl = document.getElementById("editorModalTitle");
+const editorModalSubtitleEl = document.getElementById("editorModalSubtitle");
+const editorProjectFieldsEl = document.getElementById("editorProjectFields");
+const editorProjectNameEl = document.getElementById("editorProjectName");
+const editorProjectStatusEl = document.getElementById("editorProjectStatus");
+const editorProjectDescriptionEl = document.getElementById("editorProjectDescription");
+const editorMemoryFieldsEl = document.getElementById("editorMemoryFields");
+const editorMemoryNameEl = document.getElementById("editorMemoryName");
+const editorMemoryDescriptionEl = document.getElementById("editorMemoryDescription");
+const editorCancelBtn = document.getElementById("editorCancelBtn");
+const editorSaveBtn = document.getElementById("editorSaveBtn");
 
 const PAGE_CONFIG = {
   project: { title: t("nav.project") },
@@ -493,9 +558,15 @@ function applyStaticTranslations() {
 function setActivity(msg = DEFAULT_ACTIVITY) { activityTextEl.textContent = msg || DEFAULT_ACTIVITY; }
 
 function updateAppScrim() {
-  const open = state.detailOpen || state.settingsOpen;
+  const open = state.detailOpen || state.settingsOpen || state.editorOpen;
   appScrimEl.classList.toggle("is-open", open);
   appScrimEl.classList.toggle("hidden", !open);
+}
+
+function formatProjectStatusLabel(status) {
+  const normalized = String(status || "").trim();
+  if (!normalized) return t("editor.status.in_progress");
+  return t(`editor.status.${normalized}`) === `editor.status.${normalized}` ? normalized : t(`editor.status.${normalized}`);
 }
 
 function setStatus(message, kind = "info") {
@@ -628,11 +699,13 @@ function updateCounts() {
 /* ── Page / Tab Navigation ── */
 
 function applyPageChrome() {
-  listSearchRowEl.classList.toggle("hidden", state.activePage !== "project");
-  projectBoardEl.classList.toggle("board-active", state.activePage === "project");
-  userBoardEl.classList.toggle("board-active", state.activePage === "user");
-  traceBoardEl.classList.toggle("board-active", state.activePage === "trace");
-  boardNavTabs.forEach((b) => b.classList.toggle("active", b.dataset.page === state.activePage));
+  const isDetail = state.memoryDetailOpen;
+  listSearchRowEl.classList.toggle("hidden", state.activePage !== "project" || isDetail);
+  projectBoardEl.classList.toggle("board-active", state.activePage === "project" && !isDetail);
+  userBoardEl.classList.toggle("board-active", state.activePage === "user" && !isDetail);
+  traceBoardEl.classList.toggle("board-active", state.activePage === "trace" && !isDetail);
+  memoryDetailBoardEl.classList.toggle("board-active", isDetail);
+  boardNavTabs.forEach((b) => b.classList.toggle("active", b.dataset.page === state.activePage && !isDetail));
 }
 
 function setActivePage(page) { if (!PAGE_CONFIG[page]) return; state.activePage = page; applyPageChrome(); }
@@ -682,6 +755,73 @@ function showDetail({ meta = "", title = "", description = "", content = "", act
   openDetailDrawer();
 }
 
+/* ── Edit Modal ── */
+
+function resetEditorError() {
+  editorErrorEl.textContent = "";
+  editorErrorEl.classList.add("hidden");
+}
+
+function showEditorError(message) {
+  editorErrorEl.textContent = message;
+  editorErrorEl.dataset.kind = "error";
+  editorErrorEl.classList.remove("hidden");
+}
+
+function populateProjectStatusOptions(currentStatus) {
+  clearNode(editorProjectStatusEl);
+  const normalizedCurrent = String(currentStatus || "in_progress").trim() || "in_progress";
+  const options = ["planned", "in_progress", "done"];
+  if (!options.includes(normalizedCurrent)) {
+    options.push(normalizedCurrent);
+  }
+  options.forEach((status) => {
+    const option = document.createElement("option");
+    option.value = status;
+    option.textContent = formatProjectStatusLabel(status);
+    if (status === normalizedCurrent) option.selected = true;
+    editorProjectStatusEl.append(option);
+  });
+}
+
+function openEditorModal(session) {
+  state.editorSession = session;
+  state.editorOpen = true;
+  resetEditorError();
+
+  editorProjectFieldsEl.classList.toggle("hidden", session.kind !== "project-meta");
+  editorMemoryFieldsEl.classList.toggle("hidden", session.kind === "project-meta");
+
+  if (session.kind === "project-meta") {
+    editorModalTitleEl.textContent = t("editor.project.title");
+    editorModalSubtitleEl.textContent = t("editor.project.subtitle");
+    editorSaveBtn.textContent = t("editor.project.save");
+    editorProjectNameEl.value = session.projectName;
+    editorProjectDescriptionEl.value = session.description;
+    populateProjectStatusOptions(session.status);
+    editorProjectNameEl.focus();
+  } else {
+    editorModalTitleEl.textContent = t(`editor.memory.title.${session.record.type}`);
+    editorModalSubtitleEl.textContent = t("editor.memory.subtitle");
+    editorSaveBtn.textContent = t("editor.memory.save");
+    editorMemoryNameEl.value = session.record.name || "";
+    editorMemoryDescriptionEl.value = session.record.description || "";
+    editorMemoryNameEl.focus();
+  }
+
+  editorModalEl.classList.remove("hidden");
+  updateAppScrim();
+}
+
+function closeEditorModal() {
+  state.editorOpen = false;
+  state.editorSession = null;
+  editorModalEl.classList.add("hidden");
+  resetEditorError();
+  editorFormEl.reset();
+  updateAppScrim();
+}
+
 /* ── Project Context Card (editable) ── */
 
 function renderProjectContext() {
@@ -703,7 +843,7 @@ function renderProjectContext() {
 
   const meta = el("div", "project-context-meta");
   [
-    t("project.context.statusChip", pm?.status || "in_progress"),
+    t("project.context.statusChip", formatProjectStatusLabel(pm?.status || "in_progress")),
     t("project.context.projectMemoryChip", state.workspace?.projectEntries?.length || 0),
     t("project.context.feedbackChip", state.workspace?.feedbackEntries?.length || 0),
     t("project.context.pathChip", basename(state.projectPath)),
@@ -736,24 +876,48 @@ async function openMemoryDetail(id) {
   const records = await fetchJson(`/api/memory/memory/get?ids=${encodeURIComponent(id)}`);
   const record = Array.isArray(records) ? records[0] : null;
   if (!record) { setStatus(t("status.notFoundMemory"), "error"); return; }
-  showDetail({
-    meta: t("detail.meta", formatEntryType(record.type), formatDateTime(record.updatedAt)),
-    title: record.name,
-    description: record.description || t("detail.noDescription"),
-    content: record.content,
-    actions: [
-      { label: t("actions.edit"), onClick: () => void editEntry(record) },
-      { label: record.deprecated ? t("actions.restore") : t("actions.deprecate"), onClick: () => void toggleDeprecation(record) },
-      { label: t("actions.delete"), variant: "danger", onClick: () => void deleteEntry(record) },
-    ],
+  showMemoryDetailPage(record);
+}
+
+function showMemoryDetailPage(record) {
+  state.previousPage = state.activePage;
+  state.memoryDetailOpen = true;
+
+  detailPageMetaEl.textContent = t("detail.meta", formatEntryType(record.type), formatDateTime(record.updatedAt));
+  detailPageTitleEl.textContent = record.name;
+  detailPageDescriptionEl.textContent = record.description || t("detail.noDescription");
+  detailPageContentEl.textContent = record.content;
+
+  clearNode(detailPageActionsEl);
+  const actions = [];
+  actions.push({ label: t("actions.edit"), onClick: () => void editEntry(record) });
+  if (record.deprecated) {
+    actions.push({ label: t("actions.restore"), onClick: () => void toggleDeprecation(record) });
+    actions.push({ label: t("actions.delete"), variant: "danger", onClick: () => void deleteEntry(record) });
+  } else {
+    actions.push({ label: t("actions.deprecate"), onClick: () => void toggleDeprecation(record) });
+  }
+  actions.forEach((a) => {
+    const btn = el("button", "tool-btn", a.label);
+    if (a.variant === "danger") btn.classList.add("danger");
+    btn.addEventListener("click", a.onClick);
+    detailPageActionsEl.append(btn);
   });
+
+  applyPageChrome();
+}
+
+function closeMemoryDetailPage() {
+  state.memoryDetailOpen = false;
+  state.activePage = state.previousPage || "project";
+  applyPageChrome();
 }
 
 async function editEntry(record) {
-  const name = window.prompt(t("prompt.editMemoryName"), record.name); if (name === null) return;
-  const description = window.prompt(t("prompt.editMemoryDescription"), record.description); if (description === null) return;
-  await fetchJson("/api/memory/memory/actions", { method: "POST", headers: { "Content-Type": "application/json" }, body: { action: "edit_entry", id: record.relativePath, name, description } });
-  setStatus(t("status.memoryUpdated")); await loadWorkspace(); await openMemoryDetail(record.relativePath);
+  openEditorModal({
+    kind: "memory-entry",
+    record,
+  });
 }
 
 async function toggleDeprecation(record) {
@@ -764,11 +928,11 @@ async function toggleDeprecation(record) {
 async function deleteEntry(record) {
   if (!window.confirm(t("confirm.deleteMemory", record.name))) return;
   await fetchJson("/api/memory/memory/actions", { method: "POST", headers: { "Content-Type": "application/json" }, body: { action: "delete_entries", ids: [record.relativePath] } });
-  setStatus(t("status.memoryDeleted")); await loadWorkspace(); detailViewEl.classList.add("hidden"); detailEmptyEl.classList.remove("hidden");
+  setStatus(t("status.memoryDeleted")); await loadWorkspace(); closeMemoryDetailPage();
 }
 
 function buildEntryCard(record) {
-  const card = el("div", "entry-card");
+  const card = el("div", "entry-card entry-card--clickable");
   card.dataset.kind = record.deprecated ? "deprecated" : record.type;
   const head = el("div", "entry-head");
   head.append(el("h4", "", record.name));
@@ -778,14 +942,7 @@ function buildEntryCard(record) {
   card.append(head);
   card.append(el("div", "entry-meta", `${formatDateTime(record.updatedAt)} · ${record.relativePath}`));
   card.append(el("div", "", record.description || t("detail.noDescription")));
-  const actions = el("div", "entry-actions");
-  [[t("actions.view"), () => void openMemoryDetail(record.relativePath)], [t("actions.edit"), () => void editEntry(record)], [record.deprecated ? t("actions.restore") : t("actions.deprecate"), () => void toggleDeprecation(record)], [t("actions.delete"), () => void deleteEntry(record), "danger"]].forEach(([label, onClick, variant]) => {
-    const btn = el("button", "tool-btn", label);
-    if (variant === "danger") btn.classList.add("danger");
-    btn.addEventListener("click", onClick);
-    actions.append(btn);
-  });
-  card.append(actions);
+  card.addEventListener("click", () => void openMemoryDetail(record.relativePath));
   return card;
 }
 
@@ -1108,14 +1265,85 @@ async function clearAllMemory() {
 
 async function editProjectMeta() {
   const c = state.workspace?.projectMeta || {};
-  const projectName = window.prompt(t("prompt.editProjectName"), c.projectName || basename(state.projectPath)); if (projectName === null) return;
-  const description = window.prompt(t("prompt.editProjectDescription"), c.description || ""); if (description === null) return;
-  const aliasesRaw = window.prompt(t("prompt.editProjectAliases"), Array.isArray(c.aliases) ? c.aliases.join(", ") : ""); if (aliasesRaw === null) return;
-  const status = window.prompt(t("prompt.editProjectStatus"), c.status || "in_progress"); if (status === null) return;
+  openEditorModal({
+    kind: "project-meta",
+    projectName: c.projectName || basename(state.projectPath),
+    description: c.description || "",
+    status: c.status || "in_progress",
+  });
+}
+
+async function saveProjectMetaFromEditor() {
+  const projectName = editorProjectNameEl.value.trim();
+  if (!projectName) {
+    showEditorError(t("editor.error.projectNameRequired"));
+    editorProjectNameEl.focus();
+    return;
+  }
+
+  const payload = {
+    projectName,
+    description: editorProjectDescriptionEl.value,
+    status: editorProjectStatusEl.value || "in_progress",
+  };
+
   try {
-    await fetchJson("/api/memory/project-meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: { projectName, description, aliases: aliasesRaw.split(",").map((i) => i.trim()).filter(Boolean), status } });
-    setStatus(t("status.projectMetaUpdated")); await loadDashboard();
-  } catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
+    editorSaveBtn.disabled = true;
+    await fetchJson("/api/memory/project-meta", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+    });
+    closeEditorModal();
+    setStatus(t("status.projectMetaUpdated"));
+    await loadDashboard();
+  } catch (err) {
+    showEditorError(err instanceof Error ? err.message : String(err));
+  } finally {
+    editorSaveBtn.disabled = false;
+  }
+}
+
+async function saveMemoryEntryFromEditor(session) {
+  const name = editorMemoryNameEl.value.trim();
+  if (!name) {
+    showEditorError(t("editor.error.memoryNameRequired"));
+    editorMemoryNameEl.focus();
+    return;
+  }
+
+  try {
+    editorSaveBtn.disabled = true;
+    await fetchJson("/api/memory/memory/actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: {
+        action: "edit_entry",
+        id: session.record.relativePath,
+        name,
+        description: editorMemoryDescriptionEl.value,
+      },
+    });
+    closeEditorModal();
+    setStatus(t("status.memoryUpdated"));
+    await loadWorkspace();
+    if (state.memoryDetailOpen) await openMemoryDetail(session.record.relativePath);
+  } catch (err) {
+    showEditorError(err instanceof Error ? err.message : String(err));
+  } finally {
+    editorSaveBtn.disabled = false;
+  }
+}
+
+async function handleEditorSubmit(event) {
+  event.preventDefault();
+  const session = state.editorSession;
+  if (!session) return;
+  if (session.kind === "project-meta") {
+    await saveProjectMetaFromEditor();
+    return;
+  }
+  await saveMemoryEntryFromEditor(session);
 }
 
 async function saveSettings() {
@@ -1129,7 +1357,7 @@ async function saveSettings() {
 
 /* ── Event Bindings ── */
 
-boardNavTabs.forEach((b) => b.addEventListener("click", () => { closeSettingsDrawer(); setActivePage(b.dataset.page || "project"); }));
+boardNavTabs.forEach((b) => b.addEventListener("click", () => { closeSettingsDrawer(); state.memoryDetailOpen = false; setActivePage(b.dataset.page || "project"); }));
 traceSubTabs.forEach((b) => b.addEventListener("click", () => setActiveTraceTab(b.dataset.trace || "recall")));
 recallCaseSelectEl.addEventListener("change", () => void loadRecallDetail(recallCaseSelectEl.value));
 indexTraceSelectEl.addEventListener("change", () => void loadIndexDetail(indexTraceSelectEl.value));
@@ -1137,6 +1365,9 @@ dreamTraceSelectEl.addEventListener("change", () => void loadDreamDetail(dreamTr
 settingsToggleBtn.addEventListener("click", () => { if (state.settingsOpen) closeSettingsDrawer(); else openSettingsDrawer(); });
 settingsCloseBtn.addEventListener("click", () => closeSettingsDrawer());
 saveSettingsBtn.addEventListener("click", () => void saveSettings());
+editorCloseBtn.addEventListener("click", () => closeEditorModal());
+editorCancelBtn.addEventListener("click", () => closeEditorModal());
+editorFormEl.addEventListener("submit", (event) => void handleEditorSubmit(event));
 refreshBtn.addEventListener("click", () => void loadDashboard());
 indexBtn.addEventListener("click", () => void runAction(t("actions.index"), "/api/memory/index/run"));
 dreamBtn.addEventListener("click", () => void runAction(t("actions.dream"), "/api/memory/dream/run"));
@@ -1156,8 +1387,9 @@ importInput.addEventListener("change", async (e) => {
   finally { importInput.value = ""; }
 });
 
+detailBackBtn.addEventListener("click", () => closeMemoryDetailPage());
 detailCloseBtn.addEventListener("click", () => closeDetailDrawer());
-appScrimEl.addEventListener("click", () => { closeSettingsDrawer(); closeDetailDrawer(); });
+appScrimEl.addEventListener("click", () => { closeSettingsDrawer(); closeDetailDrawer(); closeEditorModal(); });
 
 /* ── Init ── */
 
