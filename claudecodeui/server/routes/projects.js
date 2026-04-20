@@ -3,7 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import os from 'os';
-import { addProjectManually } from '../projects.js';
+import { addProjectManually, getProjectCronJobsOverview } from '../projects.js';
 
 const router = express.Router();
 
@@ -160,6 +160,20 @@ export async function validateWorkspacePath(requestedPath) {
     };
   }
 }
+
+router.get('/:projectName/cron-jobs', async (req, res) => {
+  try {
+    const { projectName } = req.params;
+    if (!projectName || !projectName.trim()) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+
+    const overview = await getProjectCronJobsOverview(projectName.trim());
+    return res.json(overview);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
 
 /**
  * Create a new workspace

@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import ChatInterface from '../../chat/view/ChatInterface';
+import AlwaysOnPanel from '../../always-on/view/AlwaysOnPanel';
 import FileTree from '../../file-tree/view/FileTree';
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import GitPanel from '../../git-panel/view/GitPanel';
@@ -141,6 +142,12 @@ function MainContent({
           {activeTab === 'files' && (
             <div className="h-full overflow-hidden">
               <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+            </div>
+          )}
+
+          {activeTab === 'always-on' && (
+            <div className="h-full overflow-hidden">
+              <AlwaysOnPanel selectedProject={selectedProject} />
             </div>
           )}
 

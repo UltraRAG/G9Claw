@@ -791,6 +791,137 @@ async function getSessions(projectName, limit = 5, offset = 0) {
   }
 }
 
+function normalizeScheduledCronTask(task) {
+  if (
+    !task ||
+    typeof task !== 'object' ||
+    typeof task.id !== 'string' ||
+    typeof task.cron !== 'string' ||
+    typeof task.prompt !== 'string' ||
+    typeof task.createdAt !== 'number'
+  ) {
+    return null;
+  }
+
+  return {
+    id: task.id,
+    cron: task.cron,
+    prompt: task.prompt,
+    createdAt: task.createdAt,
+    ...(typeof task.lastFiredAt === 'number' ? { lastFiredAt: task.lastFiredAt } : {}),
+    ...(task.recurring ? { recurring: true } : {}),
+    ...(task.permanent ? { permanent: true } : {}),
+    ...(typeof task.originSessionId === 'string' ? { originSessionId: task.originSessionId } : {}),
+    ...(typeof task.transcriptKey === 'string' ? { transcriptKey: task.transcriptKey } : {})
+  };
+}
+
+async function readProjectScheduledCronTasks(projectRoot) {
+  const cronFilePath = path.join(projectRoot, '.claude', 'scheduled_tasks.json');
+
+  try {
+    const raw = await fs.readFile(cronFilePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.tasks)) {
+      return [];
+    }
+
+    return parsed.tasks
+      .map((task) => normalizeScheduledCronTask(task))
+      .filter(Boolean);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return [];
+    }
+    console.warn(`Failed to read scheduled tasks for ${projectRoot}:`, error.message);
+    return [];
+  }
+}
+
+function mapCronJobStatus(task, backgroundSession) {
+  if (!backgroundSession) {
+    return task.transcriptKey ? 'unknown' : 'scheduled';
+  }
+
+  const normalizedStatus = String(backgroundSession.taskStatus || '').trim().toLowerCase();
+  if (normalizedStatus === 'completed') {
+    return 'completed';
+  }
+
+  if (normalizedStatus === 'failed' || normalizedStatus === 'stopped' || normalizedStatus === 'killed') {
+    return 'failed';
+  }
+
+  return 'unknown';
+}
+
+async function getProjectCronJobsOverview(projectName) {
+  const projectRoot = await extractProjectDirectory(projectName);
+  const scheduledTasks = await readProjectScheduledCronTasks(projectRoot);
+
+  if (scheduledTasks.length === 0) {
+    return { jobs: [] };
+  }
+
+  const projectStoreDir = path.join(os.homedir(), '.claude', 'projects', projectName);
+  let backgroundSessions = [];
+
+  try {
+    await fs.access(projectStoreDir);
+    const sessionResult = await getSessions(projectName, Number.MAX_SAFE_INTEGER, 0);
+    backgroundSessions = (sessionResult.sessions || []).filter(
+      (session) => session?.sessionKind === 'background_task'
+    );
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.warn(`Failed to read background task sessions for ${projectName}:`, error.message);
+    }
+  }
+
+  const backgroundSessionsByTranscriptKey = new Map();
+  for (const session of backgroundSessions) {
+    if (typeof session.transcriptKey !== 'string' || session.transcriptKey.trim().length === 0) {
+      continue;
+    }
+
+    const existing = backgroundSessionsByTranscriptKey.get(session.transcriptKey);
+    const existingTimestamp = toTimestampValue(existing?.lastActivity) ?? 0;
+    const candidateTimestamp = toTimestampValue(session.lastActivity) ?? 0;
+    if (!existing || candidateTimestamp >= existingTimestamp) {
+      backgroundSessionsByTranscriptKey.set(session.transcriptKey, session);
+    }
+  }
+
+  const jobs = scheduledTasks.map((task) => {
+    const backgroundSession = task.transcriptKey
+      ? backgroundSessionsByTranscriptKey.get(task.transcriptKey) || null
+      : null;
+
+    return {
+      ...task,
+      status: mapCronJobStatus(task, backgroundSession),
+      latestRun: backgroundSession
+        ? {
+            summary: typeof backgroundSession.summary === 'string' ? backgroundSession.summary : '',
+            lastActivity: typeof backgroundSession.lastActivity === 'string' ? backgroundSession.lastActivity : '',
+            taskId: typeof backgroundSession.taskId === 'string' ? backgroundSession.taskId : '',
+            outputFile: typeof backgroundSession.outputFile === 'string' ? backgroundSession.outputFile : '',
+            relativeTranscriptPath: typeof backgroundSession.parentSessionId === 'string' &&
+              typeof backgroundSession.transcriptKey === 'string'
+              ? normalizePathSeparators(
+                  path.join(backgroundSession.parentSessionId, 'subagents', backgroundSession.transcriptKey)
+                )
+              : typeof backgroundSession.relativeTranscriptPath === 'string'
+                ? backgroundSession.relativeTranscriptPath
+                : ''
+          }
+        : null
+    };
+  });
+
+  return { jobs };
+}
+
 async function parseJsonlSessions(filePath) {
   const sessions = new Map();
   const entries = [];
@@ -3002,6 +3133,7 @@ async function getGeminiCliSessionMessages(sessionId) {
 
 export {
   getProjects,
+  getProjectCronJobsOverview,
   getSessions,
   getSessionMessages,
   parseJsonlSessions,

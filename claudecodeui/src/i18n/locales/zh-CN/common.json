@@ -19,6 +19,7 @@
   },
   "tabs": {
     "chat": "聊天",
+    "alwaysOn": "Always-On",
     "shell": "终端",
     "files": "文件",
     "git": "源代码管理",
@@ -94,6 +95,47 @@
     "newSession": "新会话",
     "untitledSession": "未命名会话",
     "projectFiles": "项目文件"
+  },
+  "alwaysOn": {
+    "title": "后台任务总览",
+    "description": "查看当前项目的 cron job、调度属性，以及最近一次后台运行结果。",
+    "lastUpdated": "最近更新：{{timestamp}}",
+    "loadingTitle": "正在加载 cron job",
+    "loadingDescription": "正在读取计划任务并关联最近一次后台运行结果。",
+    "emptyTitle": "还没有 cron job",
+    "emptyDescription": "当前项目的 `.claude/scheduled_tasks.json` 中还没有已配置的 cron job。",
+    "latestRunTitle": "最近一次运行",
+    "statusLabels": {
+      "scheduled": "已调度",
+      "unknown": "未知"
+    },
+    "summary": {
+      "total": "任务总数",
+      "recurring": "循环任务",
+      "failed": "最近失败",
+      "scheduled": "等待结果"
+    },
+    "flags": {
+      "recurring": "循环",
+      "permanent": "永久"
+    },
+    "fields": {
+      "createdAt": "创建时间",
+      "lastFiredAt": "上次触发",
+      "originSessionId": "来源会话",
+      "transcriptKey": "转录键",
+      "summary": "摘要",
+      "lastActivity": "最近活动",
+      "taskId": "任务 ID",
+      "relativeTranscriptPath": "转录路径"
+    },
+    "values": {
+      "notUpdated": "尚未更新",
+      "notAvailable": "暂无"
+    },
+    "errors": {
+      "loadFailed": "加载 cron job 失败。"
+    }
   },
   "fileTree": {
     "loading": "正在加载文件...",

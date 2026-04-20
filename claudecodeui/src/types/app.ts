@@ -1,7 +1,35 @@
 export type SessionProvider = 'claude' | 'cursor' | 'codex' | 'gemini';
 export type ProjectSessionKind = 'background_task';
 
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'preview' | `plugin:${string}`;
+export type AppTab = 'chat' | 'always-on' | 'files' | 'shell' | 'git' | 'tasks' | 'preview' | `plugin:${string}`;
+
+export type CronJobOverviewStatus = 'scheduled' | 'completed' | 'failed' | 'unknown';
+
+export interface CronJobLatestRun {
+  summary?: string;
+  lastActivity?: string;
+  taskId?: string;
+  outputFile?: string;
+  relativeTranscriptPath?: string;
+}
+
+export interface CronJobOverview {
+  id: string;
+  cron: string;
+  prompt: string;
+  createdAt: number;
+  lastFiredAt?: number;
+  recurring?: boolean;
+  permanent?: boolean;
+  originSessionId?: string;
+  transcriptKey?: string;
+  status: CronJobOverviewStatus;
+  latestRun?: CronJobLatestRun | null;
+}
+
+export interface ProjectCronJobsResponse {
+  jobs: CronJobOverview[];
+}
 
 export interface ProjectSession {
   id: string;

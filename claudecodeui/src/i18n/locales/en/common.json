@@ -19,6 +19,7 @@
   },
   "tabs": {
     "chat": "Chat",
+    "alwaysOn": "Always-On",
     "shell": "Shell",
     "files": "Files",
     "git": "Source Control",
@@ -94,6 +95,47 @@
     "newSession": "New Session",
     "untitledSession": "Untitled Session",
     "projectFiles": "Project Files"
+  },
+  "alwaysOn": {
+    "title": "Background Jobs Overview",
+    "description": "Monitor the current project's cron jobs, schedule metadata, and latest background run results.",
+    "lastUpdated": "Last updated: {{timestamp}}",
+    "loadingTitle": "Loading cron jobs",
+    "loadingDescription": "Reading scheduled tasks and matching the latest background runs.",
+    "emptyTitle": "No cron jobs yet",
+    "emptyDescription": "This project does not currently have any scheduled cron jobs in .claude/scheduled_tasks.json.",
+    "latestRunTitle": "Latest Run",
+    "statusLabels": {
+      "scheduled": "Scheduled",
+      "unknown": "Unknown"
+    },
+    "summary": {
+      "total": "Total jobs",
+      "recurring": "Recurring jobs",
+      "failed": "Failed recently",
+      "scheduled": "Awaiting result"
+    },
+    "flags": {
+      "recurring": "Recurring",
+      "permanent": "Permanent"
+    },
+    "fields": {
+      "createdAt": "Created",
+      "lastFiredAt": "Last fired",
+      "originSessionId": "Origin session",
+      "transcriptKey": "Transcript key",
+      "summary": "Summary",
+      "lastActivity": "Last activity",
+      "taskId": "Task ID",
+      "relativeTranscriptPath": "Transcript path"
+    },
+    "values": {
+      "notUpdated": "Not updated yet",
+      "notAvailable": "Not available"
+    },
+    "errors": {
+      "loadFailed": "Failed to load cron jobs."
+    }
   },
   "fileTree": {
     "loading": "Loading files...",
