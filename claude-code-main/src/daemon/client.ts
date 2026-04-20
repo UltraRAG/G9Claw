@@ -1,4 +1,8 @@
 import { spawn } from 'child_process'
+import {
+  persistRequestedCronDaemonOwner,
+  reconcileCronDaemonOwnerForCurrentProcess,
+} from './ownership.js'
 import { assertCronDaemonOk, sendCronDaemonRequest } from './ipc.js'
 import { getDaemonCommandArgs } from './spawn.js'
 import type { CronDaemonRequest, CronDaemonResponse } from './types.js'
@@ -26,9 +30,11 @@ async function startCronDaemonDetached(): Promise<void> {
 }
 
 export async function ensureCronDaemon(): Promise<void> {
+  let startedByCurrentProcess = false
   try {
     const response = await sendCronDaemonRequest({ type: 'ping' })
     assertCronDaemonOk(response)
+    await reconcileCronDaemonOwnerForCurrentProcess()
     return
   } catch (error) {
     if (!isDaemonUnavailableError(error)) {
@@ -37,12 +43,16 @@ export async function ensureCronDaemon(): Promise<void> {
   }
 
   await startCronDaemonDetached()
+  startedByCurrentProcess = true
 
   let lastError: unknown = null
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
       const response = await sendCronDaemonRequest({ type: 'ping' })
       assertCronDaemonOk(response)
+      if (startedByCurrentProcess) {
+        await persistRequestedCronDaemonOwner()
+      }
       return
     } catch (error) {
       lastError = error

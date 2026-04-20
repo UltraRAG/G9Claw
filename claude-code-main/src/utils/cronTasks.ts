@@ -63,9 +63,9 @@ export type CronTask = {
    */
   permanent?: boolean
   /**
-   * Runtime-only flag. false → session-scoped (never written to disk).
-   * File-backed tasks leave this undefined; writeCronTasks strips it so
-   * the on-disk shape stays
+   * Runtime-only flag. false → session-scoped (never written to
+   * .claude/scheduled_tasks.json). File-backed tasks leave this undefined;
+   * writeCronTasks strips it so the on-disk shape stays
    * { id, cron, prompt, createdAt, lastFiredAt?, recurring?, permanent?, transcriptKey?, originSessionId? }.
    */
   durable?: boolean
@@ -226,7 +226,8 @@ export async function writeCronTasks(
  * When `durable` is false the task is routed to a runtime-owned session store.
  * The default REPL path uses bootstrap/state.ts in-process memory; the daemon
  * path can inject its own store via `options.addSessionTask`. Session tasks are
- * never written to .claude/scheduled_tasks.json.
+ * never written to .claude/scheduled_tasks.json (daemon callers may persist
+ * them separately for restart recovery).
  */
 export async function addCronTask(
   cron: string,
@@ -322,8 +323,9 @@ export async function updateCronTask(
 /**
  * Stamp `lastFiredAt` on the given recurring tasks and write back. Batched
  * so N fires in one scheduler tick = one read-modify-write, not N. Only
- * touches file-backed tasks — session tasks die with the process, no point
- * persisting their fire time. No-op if none of the ids match (task was
+ * touches file-backed tasks — daemon-managed session tasks use the separate
+ * session-scheduled file path when they need restart recovery. No-op if none
+ * of the ids match (task was
  * deleted between fire and write — e.g. user ran CronDelete mid-tick).
  *
  * Scheduler lock means at most one process calls this; chokidar picks up

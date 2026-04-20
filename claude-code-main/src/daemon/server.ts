@@ -2,6 +2,7 @@ import net from 'net'
 import { unlink } from 'fs/promises'
 import { resolve } from 'path'
 import { CronDaemonProjectRegistry } from './projectRegistry.js'
+import { clearCronDaemonOwner } from './ownership.js'
 import { ProjectRuntime } from './projectRuntime.js'
 import { DaemonSessionTaskStore } from './sessionTaskStore.js'
 import { getCronDaemonSocketPath } from './paths.js'
@@ -28,11 +29,12 @@ export class CronDaemonServer {
   async start(): Promise<void> {
     await this.registry.load()
     for (const projectRoot of this.registry.list()) {
-      this.getOrCreateRuntime(projectRoot).start()
+      await this.ensureHydratedRuntime(projectRoot)
     }
 
     const socketPath = getCronDaemonSocketPath()
     await unlink(socketPath).catch(() => {})
+    await clearCronDaemonOwner()
 
     await new Promise<void>((resolvePromise, reject) => {
       this.server.once('error', reject)
@@ -51,10 +53,12 @@ export class CronDaemonServer {
     for (const runtime of this.runtimes.values()) {
       runtime.stop()
     }
+    await this.sessionTaskStore.persistProjects(this.runtimes.keys())
     await new Promise<void>(resolvePromise => {
       this.server.close(() => resolvePromise())
     })
     await unlink(getCronDaemonSocketPath()).catch(() => {})
+    await clearCronDaemonOwner()
   }
 
   private async handleConnection(socket: net.Socket): Promise<void> {
@@ -132,6 +136,10 @@ export class CronDaemonServer {
             throw new Error(`Failed to create cron task ${id}`)
           }
 
+          if (!request.durable) {
+            await this.sessionTaskStore.persistProject(projectRoot)
+          }
+
           return {
             ok: true,
             data: {
@@ -169,6 +177,7 @@ export class CronDaemonServer {
             request.originSessionId,
           )
           if (deletedSessionTask) {
+            await this.sessionTaskStore.persistProject(projectRoot)
             return {
               ok: true,
               data: { type: 'delete_task', deleted: true },
@@ -197,17 +206,19 @@ export class CronDaemonServer {
   private async ensureRuntime(projectRoot: string): Promise<string> {
     const normalized = resolve(projectRoot)
     await this.registry.remember(normalized)
-    this.getOrCreateRuntime(normalized).start()
+    await this.ensureHydratedRuntime(normalized)
     return normalized
   }
 
-  private getOrCreateRuntime(projectRoot: string): ProjectRuntime {
+  private async ensureHydratedRuntime(projectRoot: string): Promise<ProjectRuntime> {
     const normalized = resolve(projectRoot)
     let runtime = this.runtimes.get(normalized)
     if (!runtime) {
+      await this.sessionTaskStore.hydrateProject(normalized)
       runtime = new ProjectRuntime(normalized, this.sessionTaskStore)
       this.runtimes.set(normalized, runtime)
     }
+    runtime.start()
     return runtime
   }
 }

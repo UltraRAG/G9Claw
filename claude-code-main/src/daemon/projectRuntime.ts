@@ -34,8 +34,24 @@ export class ProjectRuntime {
       runtimeTaskSource: {
         listTasks: () => this.sessionTaskStore.listProjectTasks(this.projectRoot),
         removeTasks: ids => {
+          let deletedAny = false
           for (const id of ids) {
-            this.sessionTaskStore.deleteTask(this.projectRoot, id)
+            deletedAny =
+              this.sessionTaskStore.deleteTask(this.projectRoot, id) || deletedAny
+          }
+          if (deletedAny) {
+            void this.sessionTaskStore.persistProject(this.projectRoot).catch(logError)
+          }
+        },
+        markTasksFired: (ids, firedAt) => {
+          let updatedAny = false
+          for (const id of ids) {
+            updatedAny =
+              this.sessionTaskStore.markTaskFired(this.projectRoot, id, firedAt) ||
+              updatedAny
+          }
+          if (updatedAny) {
+            void this.sessionTaskStore.persistProject(this.projectRoot).catch(logError)
           }
         },
       },
@@ -145,6 +161,10 @@ export class ProjectRuntime {
         originSessionId,
         durable: false,
       }
+
+    if (updated) {
+      await this.sessionTaskStore.persistProject(this.projectRoot)
+    }
 
     return updated
   }

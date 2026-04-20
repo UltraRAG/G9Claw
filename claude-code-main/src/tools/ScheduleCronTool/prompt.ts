@@ -65,7 +65,7 @@ export const CRON_LIST_TOOL_NAME = 'CronList'
 
 export function buildCronCreateDescription(durableEnabled: boolean): string {
   return durableEnabled
-    ? 'Schedule a prompt to run at a future time — either recurring on a cron schedule, or once at a specific time. Pass durable: true to persist to .claude/scheduled_tasks.json; otherwise keep it session-only in the Cron daemon.'
+    ? 'Schedule a prompt to run at a future time — either recurring on a cron schedule, or once at a specific time. Pass durable: true to persist to .claude/scheduled_tasks.json; otherwise keep it session-scoped in the Cron daemon.'
     : 'Schedule a prompt to run at a future time in the Cron daemon — either recurring on a cron schedule, or once at a specific time.'
 }
 
@@ -73,13 +73,13 @@ export function buildCronCreatePrompt(durableEnabled: boolean): string {
   const durabilitySection = durableEnabled
     ? `## Durability
 
-By default (durable: false) the job lives only in the Cron daemon's in-memory session store — nothing is written to disk, and the job is lost if the daemon restarts. Pass durable: true to write to .claude/scheduled_tasks.json so the job survives restarts. Only use durable: true when the user explicitly asks for the task to persist ("keep doing this every day", "set this up permanently"). Most "remind me in 5 minutes" / "check back in an hour" requests should stay session-only.`
+By default (durable: false) the job stays session-scoped in the Cron daemon and is stored separately from durable jobs so it can be restored after a daemon restart. Pass durable: true to write to .claude/scheduled_tasks.json so the job survives across sessions. Only use durable: true when the user explicitly asks for the task to persist across sessions ("keep doing this every day", "set this up permanently"). Most "remind me in 5 minutes" / "check back in an hour" requests should stay session-scoped.`
     : `## Session-only
 
-Jobs live only in the Cron daemon's in-memory session store — nothing is written to disk, and the job is lost if the daemon restarts.`
+Jobs stay session-scoped in the Cron daemon and are stored separately from durable jobs so they can be restored after a daemon restart.`
 
   const durableRuntimeNote = durableEnabled
-    ? 'Durable jobs persist to .claude/scheduled_tasks.json and survive session restarts — on next launch they resume automatically. One-shot durable tasks that were missed while the daemon was down are surfaced for catch-up. Session-only jobs live in daemon memory and are lost if the daemon restarts. '
+    ? 'Durable jobs persist to .claude/scheduled_tasks.json and survive session restarts — on next launch they resume automatically. One-shot durable tasks that were missed while the daemon was down are surfaced for catch-up. Session-scoped jobs are stored separately from durable jobs and are restored when the daemon restarts, but remain scoped to their originating session. '
     : ''
 
   return `Schedule a prompt to be enqueued at a future time. Use for both recurring schedules and one-shot reminders.
@@ -121,13 +121,13 @@ Returns a job ID you can pass to ${CRON_DELETE_TOOL_NAME}.`
 export const CRON_DELETE_DESCRIPTION = 'Cancel a scheduled cron job by ID'
 export function buildCronDeletePrompt(durableEnabled: boolean): string {
   return durableEnabled
-    ? `Cancel a cron job previously scheduled with ${CRON_CREATE_TOOL_NAME}. Removes it from .claude/scheduled_tasks.json (durable jobs) or the Cron daemon's in-memory session store (session-only jobs).`
-    : `Cancel a cron job previously scheduled with ${CRON_CREATE_TOOL_NAME}. Removes it from the Cron daemon's in-memory session store.`
+    ? `Cancel a cron job previously scheduled with ${CRON_CREATE_TOOL_NAME}. Removes it from .claude/scheduled_tasks.json (durable jobs) or the Cron daemon's session-scoped store (session-only jobs).`
+    : `Cancel a cron job previously scheduled with ${CRON_CREATE_TOOL_NAME}. Removes it from the Cron daemon's session-scoped store.`
 }
 
 export const CRON_LIST_DESCRIPTION = 'List scheduled cron jobs'
 export function buildCronListPrompt(durableEnabled: boolean): string {
   return durableEnabled
-    ? `List all cron jobs scheduled via ${CRON_CREATE_TOOL_NAME}, both durable (.claude/scheduled_tasks.json) and session-only in the Cron daemon.`
+    ? `List all cron jobs scheduled via ${CRON_CREATE_TOOL_NAME}, both durable (.claude/scheduled_tasks.json) and session-scoped in the Cron daemon.`
     : `List all cron jobs scheduled via ${CRON_CREATE_TOOL_NAME} in the Cron daemon session store.`
 }

@@ -36,7 +36,7 @@ const inputSchema = lazySchema(() =>
       `true (default) = fire on every cron match until deleted or auto-expired after ${DEFAULT_MAX_AGE_DAYS} days. false = fire once at the next match, then auto-delete. Use false for "remind me at X" one-shot requests with pinned minute/hour/dom/month.`,
     ),
     durable: semanticBoolean(z.boolean().optional()).describe(
-      'true = persist to .claude/scheduled_tasks.json and survive restarts. false (default) = session-only in the Cron daemon, not written to disk, and lost if the daemon restarts. Use true only when the user asks the task to survive across sessions.',
+      'true = persist to .claude/scheduled_tasks.json and survive restarts. false (default) = session-scoped in the Cron daemon, stored separately from durable jobs and restored when the daemon restarts. Use true only when the user asks the task to survive across sessions.',
     ),
   }),
 )
@@ -153,7 +153,7 @@ export const CronCreateTool = buildTool({
   mapToolResultToToolResultBlockParam(output, toolUseID) {
     const where = output.durable
       ? 'Persisted to .claude/scheduled_tasks.json'
-      : 'Session-only in the Cron daemon (not written to scheduled_tasks.json; persists until deleted or daemon restart)'
+      : 'Session-scoped in the Cron daemon (stored separately from .claude/scheduled_tasks.json and restored across daemon restarts)'
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',

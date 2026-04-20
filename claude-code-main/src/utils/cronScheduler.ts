@@ -12,6 +12,7 @@ import {
   getSessionCronTasks,
   removeSessionCronTasks,
   setScheduledTasksEnabled,
+  updateSessionCronTask,
 } from '../bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -131,11 +132,13 @@ type CronSchedulerOptions = {
   /**
    * Additional runtime-owned tasks to merge into the tick loop. REPL callers
    * leave this unset and use the legacy bootstrap session store. Daemon
-   * callers inject a project-local in-memory session-only store.
+   * callers inject a project-local session store which may also persist
+   * restart-recovery metadata separately from scheduled_tasks.json.
    */
   runtimeTaskSource?: {
     listTasks: () => CronTask[]
     removeTasks: (ids: readonly string[]) => void
+    markTasksFired?: (ids: readonly string[], firedAt: number) => void
   }
 }
 
@@ -174,6 +177,14 @@ export function createCronScheduler(
       ? {
           listTasks: getSessionCronTasks,
           removeTasks: removeSessionCronTasks,
+          markTasksFired: (ids: readonly string[], firedAt: number) => {
+            for (const id of ids) {
+              void updateSessionCronTask(id, task => ({
+                ...task,
+                ...(task.recurring ? { lastFiredAt: firedAt } : {}),
+              }))
+            }
+          },
         }
       : undefined)
 
@@ -342,8 +353,12 @@ export function createCronScheduler(
           jitteredNextCronRunMs(t.cron, now, t.id, jitterCfg) ?? Infinity
         nextFireAt.set(t.id, newNext)
         // Persist lastFiredAt=now so next process spawn reconstructs this
-        // same newNext on first-sight. Session tasks skip — process-local.
+        // same newNext on first-sight. Runtime-owned session tasks can opt in
+        // via runtimeTaskSource.markTasksFired (daemon restart recovery).
         if (!isSession) firedFileRecurring.push(t.id)
+        if (isSession) {
+          mergedRuntimeTaskSource?.markTasksFired?.([t.id], now)
+        }
       } else if (isSession) {
         // One-shot (or aged-out recurring) runtime-owned task: synchronous
         // removal. No inFlight window — the next tick will read a task source

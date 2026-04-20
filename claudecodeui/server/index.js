@@ -72,6 +72,7 @@ import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, userDb } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
+import { initializeCronDaemonOwnerEnv, shutdownOwnedCronDaemon } from './services/cron-daemon-owner.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { DISABLE_LOCAL_AUTH, IS_PLATFORM } from './constants/config.js';
 import { getConnectableHost } from '../shared/networkHosts.js';
@@ -2383,6 +2384,8 @@ async function ensureLocalUserWhenAuthDisabled() {
 // Initialize database and start server
 async function startServer() {
     try {
+        initializeCronDaemonOwnerEnv();
+
         // Initialize authentication database
         await initializeDatabase();
         await ensureLocalUserWhenAuthDisabled();
@@ -2426,13 +2429,26 @@ async function startServer() {
             });
         });
 
-        // Clean up plugin processes on shutdown
-        const shutdownPlugins = async () => {
-            await stopAllPlugins();
-            process.exit(0);
+        // Clean up plugin processes and any owned Cron daemon on shutdown
+        let shutdownPromise = null;
+        const gracefulShutdown = async () => {
+            if (shutdownPromise) {
+                return shutdownPromise;
+            }
+
+            shutdownPromise = (async () => {
+                try {
+                    await stopAllPlugins();
+                } finally {
+                    await shutdownOwnedCronDaemon();
+                    process.exit(0);
+                }
+            })();
+
+            return shutdownPromise;
         };
-        process.on('SIGTERM', () => void shutdownPlugins());
-        process.on('SIGINT', () => void shutdownPlugins());
+        process.on('SIGTERM', () => void gracefulShutdown());
+        process.on('SIGINT', () => void gracefulShutdown());
     } catch (error) {
         console.error('[ERROR] Failed to start server:', error);
         process.exit(1);
