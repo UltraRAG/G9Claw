@@ -1,8 +1,365 @@
+import { renderTraceI18nText } from "./trace-i18n.js";
+
 const params = new URLSearchParams(window.location.search);
+
+const MEMORY_LOCALE = params.get("locale") === "zh" ? "zh" : "en";
+const DATE_TIME_LOCALE = MEMORY_LOCALE === "zh" ? "zh-CN" : "en-US";
+
+const UI_STRINGS = {
+  zh: {
+    "doc.title": "Memory",
+    "status.ready": "已就绪",
+    "status.errorOccurred": "发生错误",
+    "status.waitingForIndex": "等待索引",
+    "status.refreshing": "正在刷新当前视图…",
+    "status.running": "{0} 执行中…",
+    "status.done": "{0} 完成",
+    "status.noSteps": "暂无步骤。",
+    "status.notFoundMemory": "未找到该记忆文件。",
+    "status.memoryUpdated": "记忆已更新。",
+    "status.memoryRestored": "记忆已恢复。",
+    "status.memoryDeprecated": "记忆已弃用。",
+    "status.memoryDeleted": "记忆已删除。",
+    "status.memoryExported": "记忆已导出。",
+    "status.memoryImported": "记忆已导入。",
+    "status.projectMetaUpdated": "项目元信息已更新。",
+    "status.settingsSaved": "设置已保存。",
+    "status.noToolEvents": "无",
+    "status.noReply": "暂无回复。",
+    "status.noContext": "无",
+    "status.yes": "是",
+    "status.no": "否",
+    "status.unknown": "未知",
+    "nav.project": "项目记忆",
+    "nav.user": "用户画像",
+    "nav.trace": "记忆追踪",
+    "topbar.lastIndexed": "最近索引",
+    "search.placeholder": "搜索当前视图",
+    "actions.search": "搜索",
+    "actions.refresh": "刷新",
+    "actions.index": "索引同步",
+    "actions.dream": "记忆 Dream",
+    "actions.settings": "设置",
+    "actions.close": "关闭",
+    "actions.saveSettings": "保存设置",
+    "actions.export": "导出迁移包",
+    "actions.import": "导入迁移包",
+    "actions.clearProject": "清空当前项目记忆",
+    "actions.clearAll": "清空所有记忆",
+    "actions.edit": "编辑",
+    "actions.view": "查看",
+    "actions.deprecate": "弃用",
+    "actions.restore": "恢复",
+    "actions.delete": "删除",
+    "project.section.title": "项目记忆",
+    "project.section.subtitle": "当前 project 的进展、事实和状态记录",
+    "feedback.section.title": "协作反馈",
+    "feedback.section.subtitle": "用户对当前 project 的偏好、约束和交付规则",
+    "deprecated.section.title": "已弃用",
+    "deprecated.section.subtitle": "已标记为弃用的项目记忆与协作反馈",
+    "user.section.title": "用户画像",
+    "user.section.subtitle": "长期身份背景信息",
+    "trace.tab.recall": "Recall",
+    "trace.tab.index": "Index",
+    "trace.tab.dream": "Dream",
+    "trace.selectCase": "选择案例",
+    "trace.selectTrace": "选择追踪",
+    "trace.selectRecallCase": "选择一个 Recall 事例…",
+    "trace.selectIndexTrace": "选择一条 Index 追踪…",
+    "trace.selectDreamTrace": "选择一条 Dream 追踪…",
+    "trace.injectedContext": "注入上下文",
+    "trace.toolEvents": "工具活动",
+    "trace.finalReply": "最终回答",
+    "trace.reasoningTimeline": "推理过程",
+    "trace.empty.recall": "选择一个事例查看 Recall 详情。",
+    "trace.empty.trace": "选择一条追踪查看详情。",
+    "trace.meta.query": "问题",
+    "trace.meta.session": "会话",
+    "trace.meta.mode": "模式",
+    "trace.meta.reason": "召回理由",
+    "trace.meta.status": "状态",
+    "trace.meta.injected": "注入",
+    "trace.meta.started": "开始",
+    "trace.meta.finished": "结束",
+    "trace.sourceLabel": "来源：{0} · 状态：{1}。说明：{2}",
+    "trace.index.explanation": "Index 追踪展示的是 Dream 前的 append-only 产物；主视图展示的是当前文件状态，可能已经被 Dream 合并。",
+    "trace.dream.explanation": "Dream 追踪展示的是合并、重写和删除过程；主视图展示的是 Dream 完成后的当前文件状态。",
+    "route.user": "用户",
+    "route.project": "项目",
+    "route.mix": "项目 + 用户",
+    "route.none": "无",
+    "trigger.manual": "手动",
+    "trigger.scheduled": "自动",
+    "displayStatus.noop": "空跑",
+    "displayStatus.completed": "已完成",
+    "displayStatus.error": "错误",
+    "displayStatus.running": "运行中",
+    "displayStatus.skipped": "跳过",
+    "project.context.defaultDescription": "当前打开的 workspace 就是唯一顶层 project。",
+    "project.context.statusChip": "状态 {0}",
+    "project.context.projectMemoryChip": "项目记忆 {0}",
+    "project.context.feedbackChip": "协作反馈 {0}",
+    "project.context.pathChip": "项目路径 {0}",
+    "project.currentProject": "当前项目",
+    "user.identityBackground": "身份背景",
+    "user.emptySummary": "当前还没有汇总后的用户画像；User Notes 会在 Dream 后合并到这里。",
+    "workspace.empty.project": "当前没有项目记忆。",
+    "workspace.empty.feedback": "当前没有协作反馈。",
+    "workspace.empty.deprecated": "当前没有已弃用记忆。",
+    "record.badge.deprecated": "已弃用",
+    "record.badge.feedback": "反馈",
+    "record.badge.project": "项目",
+    "detail.title": "详情",
+    "detail.empty": "选择一条记忆查看详情。",
+    "detail.meta": "{0} · {1}",
+    "detail.noDescription": "暂无描述。",
+    "timeline.status": "状态",
+    "timeline.stepType": "步骤类型",
+    "timeline.metrics": "指标",
+    "timeline.refs": "引用",
+    "timeline.inputSummary": "输入摘要",
+    "timeline.outputSummary": "输出摘要",
+    "timeline.details": "详细信息",
+    "timeline.promptDebug": "Prompt Debug — {0}",
+    "timeline.systemPrompt": "System Prompt",
+    "timeline.userPrompt": "User Prompt",
+    "timeline.rawResponse": "Raw Response",
+    "timeline.parsedResult": "Parsed Result",
+    "settings.title": "设置",
+    "settings.parameters.title": "参数设置",
+    "settings.autoIndex.label": "自动索引间隔（小时）",
+    "settings.autoIndex.hint": "0 表示关闭自动任务",
+    "settings.autoDream.label": "自动 Dream 间隔（小时）",
+    "settings.autoDream.hint": "只有自上次 Dream 以来有记忆文件更新时，自动 Dream 才会真正执行。",
+    "settings.dataManagement.title": "数据管理",
+    "confirm.deleteMemory": "确认删除 {0}？",
+    "confirm.clearProject": "确认清空当前项目的全部记忆吗？这不会删除全局用户身份背景。",
+    "confirm.clearAll": "确认清空所有记忆吗？这会删除所有项目记忆以及全局用户身份背景。",
+    "prompt.editMemoryName": "更新记忆名称",
+    "prompt.editMemoryDescription": "更新记忆描述",
+    "prompt.editProjectName": "更新项目名称",
+    "prompt.editProjectDescription": "更新项目描述",
+    "prompt.editProjectAliases": "更新项目别名，使用英文逗号分隔",
+    "prompt.editProjectStatus": "更新项目状态",
+    "error.authRequired": "需要登录后才能访问当前项目的 Memory Dashboard。",
+    "error.missingProjectPath": "缺少 projectPath，无法加载当前项目的 Memory Dashboard。",
+  },
+  en: {
+    "doc.title": "Memory",
+    "status.ready": "Ready",
+    "status.errorOccurred": "Error",
+    "status.waitingForIndex": "Waiting for indexing",
+    "status.refreshing": "Refreshing the current view…",
+    "status.running": "{0} in progress…",
+    "status.done": "{0} completed",
+    "status.noSteps": "No steps yet.",
+    "status.notFoundMemory": "Memory file not found.",
+    "status.memoryUpdated": "Memory updated.",
+    "status.memoryRestored": "Memory restored.",
+    "status.memoryDeprecated": "Memory deprecated.",
+    "status.memoryDeleted": "Memory deleted.",
+    "status.memoryExported": "Memory exported.",
+    "status.memoryImported": "Memory imported.",
+    "status.projectMetaUpdated": "Project metadata updated.",
+    "status.settingsSaved": "Settings saved.",
+    "status.noToolEvents": "None",
+    "status.noReply": "No reply yet.",
+    "status.noContext": "None",
+    "status.yes": "Yes",
+    "status.no": "No",
+    "status.unknown": "Unknown",
+    "nav.project": "Project Memory",
+    "nav.user": "User Profile",
+    "nav.trace": "Memory Traces",
+    "topbar.lastIndexed": "Last indexed",
+    "search.placeholder": "Search current view",
+    "actions.search": "Search",
+    "actions.refresh": "Refresh",
+    "actions.index": "Index Sync",
+    "actions.dream": "Memory Dream",
+    "actions.settings": "Settings",
+    "actions.close": "Close",
+    "actions.saveSettings": "Save Settings",
+    "actions.export": "Export Migration Package",
+    "actions.import": "Import Migration Package",
+    "actions.clearProject": "Clear Current Project Memory",
+    "actions.clearAll": "Clear All Memory",
+    "actions.edit": "Edit",
+    "actions.view": "View",
+    "actions.deprecate": "Deprecate",
+    "actions.restore": "Restore",
+    "actions.delete": "Delete",
+    "project.section.title": "Project Memory",
+    "project.section.subtitle": "Progress, facts, and status records for the current project.",
+    "feedback.section.title": "Collaboration Feedback",
+    "feedback.section.subtitle": "Preferences, constraints, and delivery rules for the current project.",
+    "deprecated.section.title": "Deprecated",
+    "deprecated.section.subtitle": "Project memory and collaboration feedback marked as deprecated.",
+    "user.section.title": "User Profile",
+    "user.section.subtitle": "Long-term identity background information.",
+    "trace.tab.recall": "Recall",
+    "trace.tab.index": "Index",
+    "trace.tab.dream": "Dream",
+    "trace.selectCase": "Select Case",
+    "trace.selectTrace": "Select Trace",
+    "trace.selectRecallCase": "Select a Recall case…",
+    "trace.selectIndexTrace": "Select an Index trace…",
+    "trace.selectDreamTrace": "Select a Dream trace…",
+    "trace.injectedContext": "Injected Context",
+    "trace.toolEvents": "Tool Events",
+    "trace.finalReply": "Final Reply",
+    "trace.reasoningTimeline": "Reasoning Timeline",
+    "trace.empty.recall": "Select a case to inspect Recall details.",
+    "trace.empty.trace": "Select a trace to inspect details.",
+    "trace.meta.query": "Query",
+    "trace.meta.session": "Session",
+    "trace.meta.mode": "Mode",
+    "trace.meta.reason": "Recall Route",
+    "trace.meta.status": "Status",
+    "trace.meta.injected": "Injected",
+    "trace.meta.started": "Started",
+    "trace.meta.finished": "Finished",
+    "trace.sourceLabel": "Source: {0} · Status: {1}. Note: {2}",
+    "trace.index.explanation": "Index traces show append-only artifacts before Dream; the main board shows the current file state, which may already have been merged by Dream.",
+    "trace.dream.explanation": "Dream traces show merge, rewrite, and deletion steps; the main board shows the current file state after Dream completes.",
+    "route.user": "User",
+    "route.project": "Project",
+    "route.mix": "Project + User",
+    "route.none": "None",
+    "trigger.manual": "Manual",
+    "trigger.scheduled": "Scheduled",
+    "displayStatus.noop": "No-op",
+    "displayStatus.completed": "Completed",
+    "displayStatus.error": "Error",
+    "displayStatus.running": "Running",
+    "displayStatus.skipped": "Skipped",
+    "project.context.defaultDescription": "The current workspace is the only top-level project.",
+    "project.context.statusChip": "Status {0}",
+    "project.context.projectMemoryChip": "Project Memory {0}",
+    "project.context.feedbackChip": "Collaboration Feedback {0}",
+    "project.context.pathChip": "Project Path {0}",
+    "project.currentProject": "Current Project",
+    "user.identityBackground": "Identity Background",
+    "user.emptySummary": "No consolidated user profile yet. User Notes will be merged here after Dream.",
+    "workspace.empty.project": "No project memory yet.",
+    "workspace.empty.feedback": "No collaboration feedback yet.",
+    "workspace.empty.deprecated": "No deprecated memory yet.",
+    "record.badge.deprecated": "Deprecated",
+    "record.badge.feedback": "Feedback",
+    "record.badge.project": "Project",
+    "detail.title": "Details",
+    "detail.empty": "Select a memory item to inspect details.",
+    "detail.meta": "{0} · {1}",
+    "detail.noDescription": "No description yet.",
+    "timeline.status": "Status",
+    "timeline.stepType": "Step Type",
+    "timeline.metrics": "Metrics",
+    "timeline.refs": "References",
+    "timeline.inputSummary": "Input Summary",
+    "timeline.outputSummary": "Output Summary",
+    "timeline.details": "Details",
+    "timeline.promptDebug": "Prompt Debug — {0}",
+    "timeline.systemPrompt": "System Prompt",
+    "timeline.userPrompt": "User Prompt",
+    "timeline.rawResponse": "Raw Response",
+    "timeline.parsedResult": "Parsed Result",
+    "settings.title": "Settings",
+    "settings.parameters.title": "Parameters",
+    "settings.autoIndex.label": "Auto Index Interval (hours)",
+    "settings.autoIndex.hint": "Set to 0 to disable automatic tasks.",
+    "settings.autoDream.label": "Auto Dream Interval (hours)",
+    "settings.autoDream.hint": "Automatic Dream only runs when memory files have changed since the last Dream.",
+    "settings.dataManagement.title": "Data Management",
+    "confirm.deleteMemory": "Delete {0}?",
+    "confirm.clearProject": "Clear all memory for the current project? This will not delete global user identity background.",
+    "confirm.clearAll": "Clear all memory? This will delete all project memory and global user identity background.",
+    "prompt.editMemoryName": "Update memory name",
+    "prompt.editMemoryDescription": "Update memory description",
+    "prompt.editProjectName": "Update project name",
+    "prompt.editProjectDescription": "Update project description",
+    "prompt.editProjectAliases": "Update project aliases, separated by commas",
+    "prompt.editProjectStatus": "Update project status",
+    "error.authRequired": "Sign in to access the Memory Dashboard for the current project.",
+    "error.missingProjectPath": "Missing projectPath; unable to load the Memory Dashboard for the current project.",
+  },
+};
+
+const TRACE_LOCALES = {
+  zh: {
+    "trace.step.index_start": "开始索引",
+    "trace.step.batch_loaded": "批次已加载",
+    "trace.step.focus_turns_selected": "已选择焦点轮次",
+    "trace.step.index_finished": "索引完成",
+    "trace.step.recall_start": "开始 Recall",
+    "trace.step.memory_gate": "记忆路由判定",
+    "trace.step.user_base_loaded": "已加载用户基础信息",
+    "trace.step.manifest_scanned": "已扫描清单",
+    "trace.step.manifest_selected": "已选择清单文件",
+    "trace.step.files_loaded": "文件已加载",
+    "trace.step.context_rendered": "上下文已渲染",
+    "trace.step.dream_start": "开始 Dream",
+    "trace.step.snapshot_loaded": "快照已加载",
+    "trace.step.dream_finished": "Dream 完成",
+    "trace.step.project_meta_review": "项目元信息审查",
+    "trace.step.user_profile_rewritten": "用户画像已重写",
+    "trace.step.manifests_repaired": "清单已修复",
+    "trace.step.project_header_scan": "项目记忆头部扫描",
+    "trace.step.feedback_header_scan": "反馈记忆头部扫描",
+    "trace.step.project_cluster_plan": "项目记忆聚类规划",
+    "trace.step.feedback_cluster_plan": "反馈记忆聚类规划",
+    "trace.step.project_cluster_refine": "项目记忆聚类精炼",
+    "trace.step.feedback_cluster_refine": "反馈记忆聚类精炼",
+    "trace.text.index_start.output.preparing_batch": "正在准备批次索引：{0}。",
+    "trace.text.batch_loaded.input": "共 {0} 段，时间范围 {1} 到 {2}",
+    "trace.text.batch_loaded.output": "批次上下文中已加载 {0} 条消息。",
+    "trace.text.focus_turns_selected.input": "本批次共有 {0} 个用户轮次。",
+    "trace.text.focus_turns_selected.output.classifying": "将逐条分类这些用户轮次。",
+    "trace.text.focus_turns_selected.output.no_user_turns": "未找到用户轮次；该批次将标记为已索引，但不会存储记忆。",
+    "trace.text.index_error.title": "索引错误",
+    "trace.detail.batch_summary": "批次摘要",
+    "trace.detail.batch_context": "批次上下文",
+    "trace.detail.focus_selection_summary": "焦点选择摘要",
+    "trace.detail.focus_turn": "焦点轮次 {0}",
+    "trace.detail.focus_user_turn": "焦点用户输入",
+    "trace.detail.classification_result": "分类结果",
+    "trace.detail.classifier_candidates": "分类候选",
+    "trace.detail.persisted_files": "已持久化文件",
+    "trace.detail.index_error": "索引错误",
+    "trace.detail.stored_results": "存储结果",
+    "trace.detail.recall_inputs": "Recall 输入",
+    "trace.detail.route": "路由",
+    "trace.detail.user_profile": "用户画像",
+    "trace.detail.source_files": "来源文件",
+    "trace.detail.manifest_scan": "清单扫描",
+    "trace.detail.sorted_candidates": "排序后的候选",
+    "trace.detail.manifest_candidate_ids": "清单候选 ID",
+    "trace.detail.selected_file_ids": "已选择文件 ID",
+    "trace.detail.requested_ids": "请求的 ID",
+    "trace.detail.loaded_files": "已加载文件",
+    "trace.detail.context_summary": "上下文摘要",
+    "trace.detail.injected_blocks": "注入块",
+    "trace.detail.snapshot_summary": "快照摘要",
+    "trace.detail.project_meta": "项目元信息",
+  },
+  en: {},
+};
+
+function formatMessage(template, ...args) {
+  return String(template).replace(/\{(\d+)\}/g, (_, index) => {
+    const value = args[Number(index)];
+    return value == null ? "" : String(value);
+  });
+}
+
+function t(key, ...args) {
+  const template = UI_STRINGS[MEMORY_LOCALE]?.[key] ?? UI_STRINGS.en[key] ?? key;
+  return formatMessage(template, ...args);
+}
 
 const state = {
   token: params.get("token") || "",
   projectPath: params.get("projectPath") || "",
+  locale: MEMORY_LOCALE,
   workspaceQuery: "",
   activePage: "project",
   activeTraceTab: "recall",
@@ -17,7 +374,10 @@ const state = {
   settingsOpen: false,
 };
 
-const DEFAULT_ACTIVITY = "已就绪";
+document.documentElement.lang = MEMORY_LOCALE === "zh" ? "zh-CN" : "en";
+document.title = t("doc.title");
+
+const DEFAULT_ACTIVITY = t("status.ready");
 
 const appScrimEl = document.getElementById("appScrim");
 const activityTextEl = document.getElementById("activityText");
@@ -96,12 +456,27 @@ const detailActionsEl = document.getElementById("detailActions");
 const detailContentEl = document.getElementById("detailContent");
 
 const PAGE_CONFIG = {
-  project: { title: "项目记忆" },
-  user: { title: "用户画像" },
-  trace: { title: "记忆追踪" },
+  project: { title: t("nav.project") },
+  user: { title: t("nav.user") },
+  trace: { title: t("nav.trace") },
 };
 
 /* ── Utilities ── */
+
+function applyStaticTranslations() {
+  document.querySelectorAll("[data-i18n]").forEach((node) => {
+    const key = node.getAttribute("data-i18n");
+    if (key) node.textContent = t(key);
+  });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
+    const key = node.getAttribute("data-i18n-placeholder");
+    if (key) node.setAttribute("placeholder", t(key));
+  });
+  document.querySelectorAll("[data-i18n-title]").forEach((node) => {
+    const key = node.getAttribute("data-i18n-title");
+    if (key) node.setAttribute("title", t(key));
+  });
+}
 
 function setActivity(msg = DEFAULT_ACTIVITY) { activityTextEl.textContent = msg || DEFAULT_ACTIVITY; }
 
@@ -113,56 +488,56 @@ function updateAppScrim() {
 
 function setStatus(message, kind = "info") {
   if (!message) { statusBarEl.classList.add("hidden"); statusBarEl.textContent = ""; setActivity(DEFAULT_ACTIVITY); return; }
-  if (kind === "error") { statusBarEl.classList.remove("hidden"); statusBarEl.textContent = message; statusBarEl.dataset.kind = kind; setActivity("发生错误"); return; }
+  if (kind === "error") { statusBarEl.classList.remove("hidden"); statusBarEl.textContent = message; statusBarEl.dataset.kind = kind; setActivity(t("status.errorOccurred")); return; }
   statusBarEl.classList.add("hidden"); statusBarEl.textContent = ""; delete statusBarEl.dataset.kind; setActivity(message);
 }
 
 function formatTraceTrigger(trigger) {
-  return trigger === "scheduled" ? "自动" : "手动";
+  return trigger === "scheduled" ? t("trigger.scheduled") : t("trigger.manual");
 }
 
 function formatRecallRoute(route) {
   switch (route) {
     case "user":
-      return "User";
+      return t("route.user");
     case "project":
-      return "Project";
+      return t("route.project");
     case "mix":
-      return "Project + User";
+      return t("route.mix");
     case "none":
-      return "None";
+      return t("route.none");
     case "project_memory":
-      return "Project";
+      return t("route.project");
     default:
-      return route || "none";
+      return route || t("route.none");
   }
 }
 
 function formatTraceDisplayStatus(record) {
-  if (record?.isNoOp) return "空跑";
+  if (record?.isNoOp) return t("displayStatus.noop");
   switch (record?.displayStatus) {
     case "Completed":
-      return "已完成";
+      return t("displayStatus.completed");
     case "No-op":
-      return "空跑";
+      return t("displayStatus.noop");
     case "Error":
-      return "错误";
+      return t("displayStatus.error");
     case "Running":
-      return "运行中";
+      return t("displayStatus.running");
     default:
       break;
   }
   switch (record?.status) {
     case "completed":
-      return "已完成";
+      return t("displayStatus.completed");
     case "error":
-      return "错误";
+      return t("displayStatus.error");
     case "running":
-      return "运行中";
+      return t("displayStatus.running");
     case "skipped":
-      return "跳过";
+      return t("displayStatus.skipped");
     default:
-      return "未知";
+      return t("status.unknown");
   }
 }
 
@@ -183,7 +558,7 @@ async function fetchJson(url, options = {}) {
   let data = null;
   if (raw) { try { data = JSON.parse(raw); } catch { data = null; } }
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) throw new Error("需要登录后才能访问当前项目的 Memory Dashboard。");
+    if (response.status === 401 || response.status === 403) throw new Error(t("error.authRequired"));
     throw new Error(data?.error || raw || `Request failed: ${response.status}`);
   }
   return data;
@@ -192,7 +567,7 @@ async function fetchJson(url, options = {}) {
 async function fetchBlob(url) {
   const response = await fetch(withProjectPath(url), { headers: headers() });
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) throw new Error("需要登录后才能访问当前项目的 Memory Dashboard。");
+    if (response.status === 401 || response.status === 403) throw new Error(t("error.authRequired"));
     throw new Error(await response.text());
   }
   return response.blob();
@@ -202,9 +577,20 @@ function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.
 function clearNode(n) { while (n.firstChild) n.removeChild(n.firstChild); }
 function renderEmpty(t, text) { clearNode(t); t.append(el("div", "empty-state", text)); }
 
-function formatDateTime(v) { if (!v) return "—"; const d = new Date(v); if (Number.isNaN(d.getTime())) return v; return d.toLocaleString(); }
+function formatDateTime(v) { if (!v) return "—"; const d = new Date(v); if (Number.isNaN(d.getTime())) return v; return d.toLocaleString(DATE_TIME_LOCALE); }
 function stringifyDetail(v) { return typeof v === "string" ? v : JSON.stringify(v, null, 2); }
-function basename(v) { const s = String(v || "").replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean); return s[s.length - 1] || v || "Current Project"; }
+function basename(v) { const s = String(v || "").replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean); return s[s.length - 1] || v || t("project.currentProject"); }
+
+function formatEntryType(type) {
+  switch (type) {
+    case "feedback":
+      return t("record.badge.feedback");
+    case "project":
+      return t("record.badge.project");
+    default:
+      return type || t("status.unknown");
+  }
+}
 
 function countUserSummaryRecords(s) {
   if (!s) return 0;
@@ -224,7 +610,7 @@ function updateCounts() {
   recallTraceCountEl.textContent = String(state.caseTraces.length);
   indexTraceCountEl.textContent = String(state.indexTraces.length);
   dreamTraceCountEl.textContent = String(state.dreamTraces.length);
-  navLastIndexedEl.textContent = formatDateTime(state.overview?.lastIndexedAt || "") === "—" ? "等待索引" : formatDateTime(state.overview?.lastIndexedAt || "");
+  navLastIndexedEl.textContent = formatDateTime(state.overview?.lastIndexedAt || "") === "—" ? t("status.waitingForIndex") : formatDateTime(state.overview?.lastIndexedAt || "");
 }
 
 /* ── Page / Tab Navigation ── */
@@ -269,7 +655,7 @@ function closeDetailDrawer() { state.detailOpen = false; detailDrawerEl.classLis
 
 function showDetail({ meta = "", title = "", description = "", content = "", actions = [] }) {
   detailMetaEl.textContent = meta;
-  detailTitleEl.textContent = title;
+  detailTitleEl.textContent = title || t("detail.title");
   detailDescriptionEl.textContent = description;
   detailContentEl.textContent = content;
   clearNode(detailActionsEl);
@@ -294,10 +680,10 @@ function renderProjectContext() {
   const wrapper = el("div", "project-context-head");
   const copy = el("div", "project-context-copy");
   copy.append(el("h4", "", projectName));
-  copy.append(el("p", "", pm?.description || "当前打开的 workspace 就是唯一顶层 project。"));
+  copy.append(el("p", "", pm?.description || t("project.context.defaultDescription")));
   wrapper.append(copy);
 
-  const editBtn = el("button", "action-btn", "编辑");
+  const editBtn = el("button", "action-btn", t("actions.edit"));
   editBtn.addEventListener("click", () => void editProjectMeta());
   wrapper.append(editBtn);
 
@@ -305,10 +691,10 @@ function renderProjectContext() {
 
   const meta = el("div", "project-context-meta");
   [
-    `状态 ${pm?.status || "in_progress"}`,
-    `项目记忆 ${state.workspace?.projectEntries?.length || 0}`,
-    `协作反馈 ${state.workspace?.feedbackEntries?.length || 0}`,
-    `项目路径 ${basename(state.projectPath)}`,
+    t("project.context.statusChip", pm?.status || "in_progress"),
+    t("project.context.projectMemoryChip", state.workspace?.projectEntries?.length || 0),
+    t("project.context.feedbackChip", state.workspace?.feedbackEntries?.length || 0),
+    t("project.context.pathChip", basename(state.projectPath)),
   ].forEach((text) => meta.append(el("span", "context-chip", text)));
   projectContextSectionEl.append(meta);
 }
@@ -320,11 +706,11 @@ function renderUserSummary() {
   const summary = state.userSummary;
   const identityBackground = summary?.identityBackground || [];
   if (!summary || !identityBackground.length) {
-    userSummaryEl.append(el("div", "empty-state", "当前还没有汇总后的用户画像；User Notes 会在 Dream 后合并到这里。"));
+    userSummaryEl.append(el("div", "empty-state", t("user.emptySummary")));
     updateCounts(); applyPageChrome(); return;
   }
   const card = el("div", "entry-card"); card.dataset.kind = "feedback";
-  card.append(el("h4", "", "身份背景"));
+  card.append(el("h4", "", t("user.identityBackground")));
   const list = el("ul", "");
   identityBackground.forEach((item) => list.append(el("li", "", item)));
   card.append(list);
@@ -337,34 +723,36 @@ function renderUserSummary() {
 async function openMemoryDetail(id) {
   const records = await fetchJson(`/api/memory/memory/get?ids=${encodeURIComponent(id)}`);
   const record = Array.isArray(records) ? records[0] : null;
-  if (!record) { setStatus("未找到该记忆文件。", "error"); return; }
+  if (!record) { setStatus(t("status.notFoundMemory"), "error"); return; }
   showDetail({
-    meta: `${record.type} · ${formatDateTime(record.updatedAt)}`,
-    title: record.name, description: record.description, content: record.content,
+    meta: t("detail.meta", formatEntryType(record.type), formatDateTime(record.updatedAt)),
+    title: record.name,
+    description: record.description || t("detail.noDescription"),
+    content: record.content,
     actions: [
-      { label: "编辑", onClick: () => void editEntry(record) },
-      { label: record.deprecated ? "恢复" : "弃用", onClick: () => void toggleDeprecation(record) },
-      { label: "删除", variant: "danger", onClick: () => void deleteEntry(record) },
+      { label: t("actions.edit"), onClick: () => void editEntry(record) },
+      { label: record.deprecated ? t("actions.restore") : t("actions.deprecate"), onClick: () => void toggleDeprecation(record) },
+      { label: t("actions.delete"), variant: "danger", onClick: () => void deleteEntry(record) },
     ],
   });
 }
 
 async function editEntry(record) {
-  const name = window.prompt("更新记忆名称", record.name); if (name === null) return;
-  const description = window.prompt("更新记忆描述", record.description); if (description === null) return;
+  const name = window.prompt(t("prompt.editMemoryName"), record.name); if (name === null) return;
+  const description = window.prompt(t("prompt.editMemoryDescription"), record.description); if (description === null) return;
   await fetchJson("/api/memory/memory/actions", { method: "POST", headers: { "Content-Type": "application/json" }, body: { action: "edit_entry", id: record.relativePath, name, description } });
-  setStatus("记忆已更新。"); await loadWorkspace(); await openMemoryDetail(record.relativePath);
+  setStatus(t("status.memoryUpdated")); await loadWorkspace(); await openMemoryDetail(record.relativePath);
 }
 
 async function toggleDeprecation(record) {
   await fetchJson("/api/memory/memory/actions", { method: "POST", headers: { "Content-Type": "application/json" }, body: { action: record.deprecated ? "restore_entries" : "deprecate_entries", ids: [record.relativePath] } });
-  setStatus(record.deprecated ? "记忆已恢复。" : "记忆已弃用。"); await loadWorkspace(); await openMemoryDetail(record.relativePath);
+  setStatus(record.deprecated ? t("status.memoryRestored") : t("status.memoryDeprecated")); await loadWorkspace(); await openMemoryDetail(record.relativePath);
 }
 
 async function deleteEntry(record) {
-  if (!window.confirm(`确认删除 ${record.name}？`)) return;
+  if (!window.confirm(t("confirm.deleteMemory", record.name))) return;
   await fetchJson("/api/memory/memory/actions", { method: "POST", headers: { "Content-Type": "application/json" }, body: { action: "delete_entries", ids: [record.relativePath] } });
-  setStatus("记忆已删除。"); await loadWorkspace(); detailViewEl.classList.add("hidden"); detailEmptyEl.classList.remove("hidden");
+  setStatus(t("status.memoryDeleted")); await loadWorkspace(); detailViewEl.classList.add("hidden"); detailEmptyEl.classList.remove("hidden");
 }
 
 function buildEntryCard(record) {
@@ -372,14 +760,14 @@ function buildEntryCard(record) {
   card.dataset.kind = record.deprecated ? "deprecated" : record.type;
   const head = el("div", "entry-head");
   head.append(el("h4", "", record.name));
-  const badge = el("span", "entry-badge", record.deprecated ? "已弃用" : record.type === "feedback" ? "反馈" : "项目");
+  const badge = el("span", "entry-badge", record.deprecated ? t("record.badge.deprecated") : record.type === "feedback" ? t("record.badge.feedback") : t("record.badge.project"));
   badge.dataset.kind = record.deprecated ? "deprecated" : record.type;
   head.append(badge);
   card.append(head);
   card.append(el("div", "entry-meta", `${formatDateTime(record.updatedAt)} · ${record.relativePath}`));
-  card.append(el("div", "", record.description || "暂无描述。"));
+  card.append(el("div", "", record.description || t("detail.noDescription")));
   const actions = el("div", "entry-actions");
-  [["查看", () => void openMemoryDetail(record.relativePath)], ["编辑", () => void editEntry(record)], [record.deprecated ? "恢复" : "弃用", () => void toggleDeprecation(record)], ["删除", () => void deleteEntry(record), "danger"]].forEach(([label, onClick, variant]) => {
+  [[t("actions.view"), () => void openMemoryDetail(record.relativePath)], [t("actions.edit"), () => void editEntry(record)], [record.deprecated ? t("actions.restore") : t("actions.deprecate"), () => void toggleDeprecation(record)], [t("actions.delete"), () => void deleteEntry(record), "danger"]].forEach(([label, onClick, variant]) => {
     const btn = el("button", "tool-btn", label);
     if (variant === "danger") btn.classList.add("danger");
     btn.addEventListener("click", onClick);
@@ -395,15 +783,15 @@ function renderWorkspace() {
   const pe = ws?.projectEntries || [], fe = ws?.feedbackEntries || [];
   const de = [...(ws?.deprecatedProjectEntries || []), ...(ws?.deprecatedFeedbackEntries || [])];
   clearNode(projectEntriesEl);
-  if (!pe.length) renderEmpty(projectEntriesEl, "当前没有项目记忆。");
+  if (!pe.length) renderEmpty(projectEntriesEl, t("workspace.empty.project"));
   else pe.forEach((r) => projectEntriesEl.append(buildEntryCard(r)));
   feedbackEntriesSectionEl.classList.toggle("hidden", !fe.length && !state.workspaceQuery);
   clearNode(feedbackEntriesEl);
-  if (!fe.length) renderEmpty(feedbackEntriesEl, "当前没有协作反馈。");
+  if (!fe.length) renderEmpty(feedbackEntriesEl, t("workspace.empty.feedback"));
   else fe.forEach((r) => feedbackEntriesEl.append(buildEntryCard(r)));
   deprecatedEntriesSectionEl.classList.toggle("hidden", !de.length);
   clearNode(deprecatedEntriesEl);
-  if (!de.length) renderEmpty(deprecatedEntriesEl, "当前没有已弃用记忆。");
+  if (!de.length) renderEmpty(deprecatedEntriesEl, t("workspace.empty.deprecated"));
   else de.forEach((r) => deprecatedEntriesEl.append(buildEntryCard(r)));
   updateCounts(); applyPageChrome();
 }
@@ -419,32 +807,35 @@ function buildTimelineStep(stepNum, step) {
   wrapper.append(dot);
 
   const card = el("div", "tl-card");
+  const titleText = renderTraceI18nText(step.title, step.titleI18n, state.locale, TRACE_LOCALES) || step.title || `Step ${stepNum}`;
+  const inputSummaryText = renderTraceI18nText(step.inputSummary, step.inputSummaryI18n, state.locale, TRACE_LOCALES);
+  const outputSummaryText = renderTraceI18nText(step.outputSummary, step.outputSummaryI18n, state.locale, TRACE_LOCALES);
 
   const head = el("div", "tl-head");
-  head.append(el("span", "tl-title", step.title || `步骤 ${stepNum}`));
+  head.append(el("span", "tl-title", titleText));
   if (step.kind) head.append(el("span", "tl-badge", step.kind.toUpperCase()));
   head.append(el("span", "tl-expand-icon", "▼"));
   card.append(head);
 
-  if (step.outputSummary || step.inputSummary) {
-    card.append(el("div", "tl-summary", step.outputSummary || step.inputSummary || ""));
+  if (outputSummaryText || inputSummaryText) {
+    card.append(el("div", "tl-summary", outputSummaryText || inputSummaryText || ""));
   }
 
   const body = el("div", "tl-body");
 
   const metaRow = el("div", "tl-meta-row");
   const statusCell = el("div", "tl-meta-cell");
-  statusCell.append(el("div", "tl-meta-label", "状态"));
+  statusCell.append(el("div", "tl-meta-label", t("timeline.status")));
   statusCell.append(el("div", "tl-meta-value", step.status || "—"));
   metaRow.append(statusCell);
   const kindCell = el("div", "tl-meta-cell");
-  kindCell.append(el("div", "tl-meta-label", "步骤类型"));
+  kindCell.append(el("div", "tl-meta-label", t("timeline.stepType")));
   kindCell.append(el("div", "tl-meta-value", step.kind || "—"));
   metaRow.append(kindCell);
   body.append(metaRow);
 
   if (step.metrics && Object.keys(step.metrics).length) {
-    body.append(el("div", "tl-section-title", "指标"));
+    body.append(el("div", "tl-section-title", t("timeline.metrics")));
     const table = el("table", "tl-kv-table");
     for (const [k, v] of Object.entries(step.metrics)) {
       const tr = el("tr", "");
@@ -456,7 +847,7 @@ function buildTimelineStep(stepNum, step) {
   }
 
   if (step.refs && Object.keys(step.refs).length) {
-    body.append(el("div", "tl-section-title", "引用"));
+    body.append(el("div", "tl-section-title", t("timeline.refs")));
     const table = el("table", "tl-kv-table");
     for (const [k, v] of Object.entries(step.refs)) {
       const tr = el("tr", "");
@@ -467,20 +858,21 @@ function buildTimelineStep(stepNum, step) {
     body.append(table);
   }
 
-  if (step.inputSummary) {
-    body.append(el("div", "tl-section-title", "输入摘要"));
-    body.append(el("pre", "tl-code", step.inputSummary));
+  if (inputSummaryText) {
+    body.append(el("div", "tl-section-title", t("timeline.inputSummary")));
+    body.append(el("pre", "tl-code", inputSummaryText));
   }
 
-  if (step.outputSummary) {
-    body.append(el("div", "tl-section-title", "输出摘要"));
-    body.append(el("pre", "tl-code", step.outputSummary));
+  if (outputSummaryText) {
+    body.append(el("div", "tl-section-title", t("timeline.outputSummary")));
+    body.append(el("pre", "tl-code", outputSummaryText));
   }
 
   if (step.details && Array.isArray(step.details) && step.details.length) {
-    body.append(el("div", "tl-section-title", "详细信息"));
+    body.append(el("div", "tl-section-title", t("timeline.details")));
     step.details.forEach((d) => {
-      if (d.label) body.append(el("div", "tl-section-title", d.label));
+      const detailLabel = renderTraceI18nText(d.label, d.labelI18n, state.locale, TRACE_LOCALES) || d.label;
+      if (detailLabel) body.append(el("div", "tl-section-title", detailLabel));
       if (d.kind === "text" || d.kind === "note") {
         body.append(el("pre", "tl-code", d.text || ""));
       } else if (d.kind === "list" && d.items) {
@@ -501,26 +893,26 @@ function buildTimelineStep(stepNum, step) {
       }
     });
   } else if (step.details && !Array.isArray(step.details)) {
-    body.append(el("div", "tl-section-title", "详细信息"));
+    body.append(el("div", "tl-section-title", t("timeline.details")));
     body.append(el("pre", "tl-code", typeof step.details === "string" ? step.details : JSON.stringify(step.details, null, 2)));
   }
 
   if (step.promptDebug) {
-    body.append(el("div", "tl-section-title", `Prompt Debug — ${step.promptDebug.requestLabel || ""}`));
+    body.append(el("div", "tl-section-title", t("timeline.promptDebug", step.promptDebug.requestLabel || "")));
     if (step.promptDebug.systemPrompt) {
-      body.append(el("div", "tl-section-title", "System Prompt"));
+      body.append(el("div", "tl-section-title", t("timeline.systemPrompt")));
       body.append(el("pre", "tl-code", step.promptDebug.systemPrompt));
     }
     if (step.promptDebug.userPrompt) {
-      body.append(el("div", "tl-section-title", "User Prompt"));
+      body.append(el("div", "tl-section-title", t("timeline.userPrompt")));
       body.append(el("pre", "tl-code", step.promptDebug.userPrompt));
     }
     if (step.promptDebug.rawResponse) {
-      body.append(el("div", "tl-section-title", "Raw Response"));
+      body.append(el("div", "tl-section-title", t("timeline.rawResponse")));
       body.append(el("pre", "tl-code", step.promptDebug.rawResponse));
     }
     if (step.promptDebug.parsedResult !== undefined) {
-      body.append(el("div", "tl-section-title", "Parsed Result"));
+      body.append(el("div", "tl-section-title", t("timeline.parsedResult")));
       body.append(el("pre", "tl-code", JSON.stringify(step.promptDebug.parsedResult, null, 2)));
     }
   }
@@ -536,7 +928,7 @@ function buildTimelineStep(stepNum, step) {
 function renderTimeline(containerEl, steps) {
   clearNode(containerEl);
   if (!steps || !steps.length) {
-    containerEl.append(el("div", "empty-state", "暂无步骤。"));
+    containerEl.append(el("div", "empty-state", t("status.noSteps")));
     return;
   }
   steps.forEach((step, i) => containerEl.append(buildTimelineStep(i + 1, step)));
@@ -546,7 +938,7 @@ function renderTimeline(containerEl, steps) {
 
 function renderRecallCaseList() {
   clearNode(recallCaseSelectEl);
-  const def = el("option", "", "选择一个 Recall 事例…"); def.value = ""; recallCaseSelectEl.append(def);
+  const def = el("option", "", t("trace.selectRecallCase")); def.value = ""; recallCaseSelectEl.append(def);
   state.caseTraces.forEach((c) => {
     const opt = el("option", "", `${c.query} — ${c.sessionKey} · ${formatDateTime(c.startedAt)}`);
     opt.value = c.caseId; recallCaseSelectEl.append(opt);
@@ -568,16 +960,16 @@ async function loadRecallDetail(caseId) {
     recallEmptyEl.classList.add("hidden"); recallDetailEl.classList.remove("hidden");
 
     clearNode(recallMetaTableEl);
-    recallMetaTableEl.append(buildKvCell("问题", r.query || "—"));
-    recallMetaTableEl.append(buildKvCell("会话", r.sessionKey || "—"));
-    recallMetaTableEl.append(buildKvCell("模式", formatRecallRoute(r.retrieval?.intent || "auto")));
-    recallMetaTableEl.append(buildKvCell("召回理由", formatRecallRoute(r.retrieval?.intent || "none")));
-    recallMetaTableEl.append(buildKvCell("状态", r.status || "—"));
-    recallMetaTableEl.append(buildKvCell("注入", r.retrieval?.injected ? "是" : "否"));
-    recallMetaTableEl.append(buildKvCell("开始", formatDateTime(r.startedAt)));
-    recallMetaTableEl.append(buildKvCell("结束", formatDateTime(r.finishedAt)));
+    recallMetaTableEl.append(buildKvCell(t("trace.meta.query"), r.query || "—"));
+    recallMetaTableEl.append(buildKvCell(t("trace.meta.session"), r.sessionKey || "—"));
+    recallMetaTableEl.append(buildKvCell(t("trace.meta.mode"), formatRecallRoute(r.retrieval?.intent || "auto")));
+    recallMetaTableEl.append(buildKvCell(t("trace.meta.reason"), formatRecallRoute(r.retrieval?.intent || "none")));
+    recallMetaTableEl.append(buildKvCell(t("trace.meta.status"), r.status || "—"));
+    recallMetaTableEl.append(buildKvCell(t("trace.meta.injected"), r.retrieval?.injected ? t("status.yes") : t("status.no")));
+    recallMetaTableEl.append(buildKvCell(t("trace.meta.started"), formatDateTime(r.startedAt)));
+    recallMetaTableEl.append(buildKvCell(t("trace.meta.finished"), formatDateTime(r.finishedAt)));
 
-    recallContextEl.textContent = r.retrieval?.contextPreview || "无";
+    recallContextEl.textContent = r.retrieval?.contextPreview || t("status.noContext");
 
     clearNode(recallToolEventsEl);
     if (r.toolEvents?.length) {
@@ -589,10 +981,10 @@ async function loadRecallDetail(caseId) {
         recallToolEventsEl.append(block);
       });
     } else {
-      recallToolEventsEl.textContent = "无";
+      recallToolEventsEl.textContent = t("status.noToolEvents");
     }
 
-    recallReplyEl.textContent = r.assistantReply || "暂无回复。";
+    recallReplyEl.textContent = r.assistantReply || t("status.noReply");
 
     const steps = r.retrieval?.trace?.steps || [];
     renderTimeline(recallStepsEl, steps);
@@ -603,7 +995,7 @@ async function loadRecallDetail(caseId) {
 
 function renderIndexTraceSelect() {
   clearNode(indexTraceSelectEl);
-  const def = el("option", "", "选择一条 Index 追踪…"); def.value = ""; indexTraceSelectEl.append(def);
+  const def = el("option", "", t("trace.selectIndexTrace")); def.value = ""; indexTraceSelectEl.append(def);
   state.indexTraces.forEach((t) => {
     const opt = el(
       "option",
@@ -617,7 +1009,7 @@ function renderIndexTraceSelect() {
 
 function renderDreamTraceSelect() {
   clearNode(dreamTraceSelectEl);
-  const def = el("option", "", "选择一条 Dream 追踪…"); def.value = ""; dreamTraceSelectEl.append(def);
+  const def = el("option", "", t("trace.selectDreamTrace")); def.value = ""; dreamTraceSelectEl.append(def);
   state.dreamTraces.forEach((t) => {
     const opt = el(
       "option",
@@ -638,7 +1030,7 @@ async function loadIndexDetail(traceId) {
     indexStepsEl.prepend(el(
       "div",
       "tl-summary",
-      `来源：${formatTraceTrigger(r.trigger)} · 状态：${formatTraceDisplayStatus(r)}。说明：Index 追踪展示的是 Dream 前的 append-only 产物；主视图展示的是当前文件状态，可能已经被 Dream 合并。`,
+      t("trace.sourceLabel", formatTraceTrigger(r.trigger), formatTraceDisplayStatus(r), t("trace.index.explanation")),
     ));
   } catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
 }
@@ -652,7 +1044,7 @@ async function loadDreamDetail(traceId) {
     dreamStepsEl.prepend(el(
       "div",
       "tl-summary",
-      `来源：${formatTraceTrigger(r.trigger)} · 状态：${formatTraceDisplayStatus(r)}。说明：Dream 追踪展示的是合并、重写和删除过程；主视图展示的是 Dream 完成后的当前文件状态。`,
+      t("trace.sourceLabel", formatTraceTrigger(r.trigger), formatTraceDisplayStatus(r), t("trace.dream.explanation")),
     ));
   } catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
 }
@@ -673,8 +1065,8 @@ async function loadTraces() {
 }
 
 async function loadDashboard() {
-  if (!state.projectPath) { setStatus("缺少 projectPath，无法加载当前项目的 Memory Dashboard。", "error"); return; }
-  setStatus("正在刷新当前视图…");
+  if (!state.projectPath) { setStatus(t("error.missingProjectPath"), "error"); return; }
+  setStatus(t("status.refreshing"));
   try { await Promise.all([loadOverview(), loadSettings(), loadWorkspace(), loadUserSummary(), loadCaseTraces(), loadTraces()]); setStatus(DEFAULT_ACTIVITY); }
   catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
 }
@@ -682,35 +1074,35 @@ async function loadDashboard() {
 /* ── Actions ── */
 
 async function runAction(label, path, body = {}) {
-  closeSettingsDrawer(); setStatus(`${label} 执行中…`);
-  try { const r = await fetchJson(path, { method: "POST", headers: { "Content-Type": "application/json" }, body }); setStatus(`${label} 完成`); await loadDashboard(); return r; }
+  closeSettingsDrawer(); setStatus(t("status.running", label));
+  try { const r = await fetchJson(path, { method: "POST", headers: { "Content-Type": "application/json" }, body }); setStatus(t("status.done", label)); await loadDashboard(); return r; }
   catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); throw err; }
 }
 
 async function exportMemory() {
-  try { const blob = await fetchBlob("/api/memory/export"); const href = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = href; link.download = `edgeclaw-memory-${Date.now()}.json`; link.click(); URL.revokeObjectURL(href); setStatus("记忆已导出。"); }
+  try { const blob = await fetchBlob("/api/memory/export"); const href = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = href; link.download = `edgeclaw-memory-${Date.now()}.json`; link.click(); URL.revokeObjectURL(href); setStatus(t("status.memoryExported")); }
   catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
 }
 
 async function clearCurrentProjectMemory() {
-  if (!window.confirm("确认清空当前项目的全部记忆吗？这不会删除全局用户身份背景。")) return;
-  await runAction("清空当前项目记忆", "/api/memory/clear", { scope: "current_project" });
+  if (!window.confirm(t("confirm.clearProject"))) return;
+  await runAction(t("actions.clearProject"), "/api/memory/clear", { scope: "current_project" });
 }
 
 async function clearAllMemory() {
-  if (!window.confirm("确认清空所有记忆吗？这会删除所有项目记忆以及全局用户身份背景。")) return;
-  await runAction("清空所有记忆", "/api/memory/clear", { scope: "all_memory" });
+  if (!window.confirm(t("confirm.clearAll"))) return;
+  await runAction(t("actions.clearAll"), "/api/memory/clear", { scope: "all_memory" });
 }
 
 async function editProjectMeta() {
   const c = state.workspace?.projectMeta || {};
-  const projectName = window.prompt("更新项目名称", c.projectName || basename(state.projectPath)); if (projectName === null) return;
-  const description = window.prompt("更新项目描述", c.description || ""); if (description === null) return;
-  const aliasesRaw = window.prompt("更新项目别名，使用英文逗号分隔", Array.isArray(c.aliases) ? c.aliases.join(", ") : ""); if (aliasesRaw === null) return;
-  const status = window.prompt("更新项目状态", c.status || "in_progress"); if (status === null) return;
+  const projectName = window.prompt(t("prompt.editProjectName"), c.projectName || basename(state.projectPath)); if (projectName === null) return;
+  const description = window.prompt(t("prompt.editProjectDescription"), c.description || ""); if (description === null) return;
+  const aliasesRaw = window.prompt(t("prompt.editProjectAliases"), Array.isArray(c.aliases) ? c.aliases.join(", ") : ""); if (aliasesRaw === null) return;
+  const status = window.prompt(t("prompt.editProjectStatus"), c.status || "in_progress"); if (status === null) return;
   try {
     await fetchJson("/api/memory/project-meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: { projectName, description, aliases: aliasesRaw.split(",").map((i) => i.trim()).filter(Boolean), status } });
-    setStatus("项目元信息已更新。"); await loadDashboard();
+    setStatus(t("status.projectMetaUpdated")); await loadDashboard();
   } catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
 }
 
@@ -719,7 +1111,7 @@ async function saveSettings() {
   const dreamH = Number.parseInt(settingAutoDreamEl.value, 10);
   try {
     await fetchJson("/api/memory/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: { autoIndexIntervalMinutes: (Number.isFinite(indexH) ? indexH : 1) * 60, autoDreamIntervalMinutes: (Number.isFinite(dreamH) ? dreamH : 6) * 60 } });
-    setStatus("设置已保存。"); await loadSettings();
+    setStatus(t("status.settingsSaved")); await loadSettings();
   } catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
 }
 
@@ -734,8 +1126,8 @@ settingsToggleBtn.addEventListener("click", () => { if (state.settingsOpen) clos
 settingsCloseBtn.addEventListener("click", () => closeSettingsDrawer());
 saveSettingsBtn.addEventListener("click", () => void saveSettings());
 refreshBtn.addEventListener("click", () => void loadDashboard());
-indexBtn.addEventListener("click", () => void runAction("索引同步", "/api/memory/index/run"));
-dreamBtn.addEventListener("click", () => void runAction("记忆 Dream", "/api/memory/dream/run"));
+indexBtn.addEventListener("click", () => void runAction(t("actions.index"), "/api/memory/index/run"));
+dreamBtn.addEventListener("click", () => void runAction(t("actions.dream"), "/api/memory/dream/run"));
 exportBtn.addEventListener("click", () => void exportMemory());
 importBtn.addEventListener("click", () => importInput.click());
 clearProjectBtn.addEventListener("click", () => void clearCurrentProjectMemory());
@@ -747,7 +1139,7 @@ workspaceSearchBtn.addEventListener("click", () => { state.workspaceQuery = work
 
 importInput.addEventListener("change", async (e) => {
   const file = e.target.files?.[0]; if (!file) return;
-  try { const text = await file.text(); const payload = JSON.parse(text); await fetchJson("/api/memory/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }); setStatus("记忆已导入。"); await loadDashboard(); }
+  try { const text = await file.text(); const payload = JSON.parse(text); await fetchJson("/api/memory/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }); setStatus(t("status.memoryImported")); await loadDashboard(); }
   catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
   finally { importInput.value = ""; }
 });
@@ -757,6 +1149,7 @@ appScrimEl.addEventListener("click", () => { closeSettingsDrawer(); closeDetailD
 
 /* ── Init ── */
 
+applyStaticTranslations();
 renderUserSummary();
 renderRecallCaseList();
 renderIndexTraceSelect();

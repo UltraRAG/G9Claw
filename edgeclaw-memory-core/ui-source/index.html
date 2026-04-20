@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -15,38 +15,38 @@
         <div class="topbar-left">
           <nav id="boardNavTabs" class="nav-tabs">
             <button class="nav-tab active" data-page="project" type="button">
-              <span class="nav-tab-label">项目记忆</span>
+              <span class="nav-tab-label" data-i18n="nav.project"></span>
               <span id="navProjectCount" class="nav-tab-count">0</span>
             </button>
             <button class="nav-tab" data-page="user" type="button">
-              <span class="nav-tab-label">用户画像</span>
+              <span class="nav-tab-label" data-i18n="nav.user"></span>
               <span id="navUserCount" class="nav-tab-count">0</span>
             </button>
             <button class="nav-tab" data-page="trace" type="button">
-              <span class="nav-tab-label">记忆追踪</span>
+              <span class="nav-tab-label" data-i18n="nav.trace"></span>
               <span id="navTraceCount" class="nav-tab-count">0</span>
             </button>
           </nav>
         </div>
         <div class="topbar-right">
           <div id="listSearchRow" class="search-row">
-            <input id="workspaceSearch" type="search" autocomplete="off" placeholder="搜索当前视图" />
-            <button id="workspaceSearchBtn" class="action-btn" type="button">搜索</button>
+            <input id="workspaceSearch" type="search" autocomplete="off" data-i18n-placeholder="search.placeholder" />
+            <button id="workspaceSearchBtn" class="action-btn" type="button" data-i18n="actions.search"></button>
           </div>
           <span class="topbar-sep"></span>
           <div class="toolbar">
-            <button id="refreshBtn" class="action-btn" type="button">刷新</button>
-            <button id="indexBtn" class="action-btn action-btn--primary" type="button">索引同步</button>
-            <button id="dreamBtn" class="action-btn action-btn--primary" type="button">记忆 Dream</button>
+            <button id="refreshBtn" class="action-btn" type="button" data-i18n="actions.refresh"></button>
+            <button id="indexBtn" class="action-btn action-btn--primary" type="button" data-i18n="actions.index"></button>
+            <button id="dreamBtn" class="action-btn action-btn--primary" type="button" data-i18n="actions.dream"></button>
           </div>
           <span class="topbar-sep"></span>
           <div class="topbar-meta">
-            <span id="activityText" class="activity-text">已就绪</span>
+            <span id="activityText" class="activity-text"></span>
             <span class="topbar-dot">·</span>
-            <span class="topbar-index-label">最近索引</span>
-            <span id="navLastIndexed" class="topbar-index-time">等待索引</span>
+            <span class="topbar-index-label" data-i18n="topbar.lastIndexed"></span>
+            <span id="navLastIndexed" class="topbar-index-time"></span>
           </div>
-          <button id="settingsToggleBtn" class="action-btn action-btn--icon" type="button" title="设置">⚙</button>
+          <button id="settingsToggleBtn" class="action-btn action-btn--icon" type="button" data-i18n-title="actions.settings">⚙</button>
         </div>
       </header>
 
@@ -60,21 +60,21 @@
             <section id="projectContextSection" class="project-context-card"></section>
             <section id="projectEntriesSection" class="board-group">
               <div class="board-group-header">
-                <div><h4>项目记忆</h4><p class="board-group-subtitle">当前 project 的进展、事实和状态记录</p></div>
+                <div><h4 data-i18n="project.section.title"></h4><p class="board-group-subtitle" data-i18n="project.section.subtitle"></p></div>
                 <span id="projectEntriesCount" class="group-count">0</span>
               </div>
               <div id="projectEntries" class="board-card-grid"></div>
             </section>
             <section id="feedbackEntriesSection" class="board-group">
               <div class="board-group-header">
-                <div><h4>协作反馈</h4><p class="board-group-subtitle">用户对当前 project 的偏好、约束和交付规则</p></div>
+                <div><h4 data-i18n="feedback.section.title"></h4><p class="board-group-subtitle" data-i18n="feedback.section.subtitle"></p></div>
                 <span id="feedbackEntriesCount" class="group-count">0</span>
               </div>
               <div id="feedbackEntries" class="board-card-grid"></div>
             </section>
             <section id="deprecatedEntriesSection" class="board-group hidden">
               <div class="board-group-header">
-                <div><h4>已弃用</h4><p class="board-group-subtitle">已标记为弃用的项目记忆与协作反馈</p></div>
+                <div><h4 data-i18n="deprecated.section.title"></h4><p class="board-group-subtitle" data-i18n="deprecated.section.subtitle"></p></div>
                 <span id="deprecatedEntriesCount" class="group-count">0</span>
               </div>
               <div id="deprecatedEntries" class="board-card-grid"></div>
@@ -85,7 +85,7 @@
           <div id="userBoard" class="board-content">
             <section class="board-group">
               <div class="board-group-header">
-                <div><h4>用户画像</h4><p class="board-group-subtitle">长期身份背景信息</p></div>
+                <div><h4 data-i18n="user.section.title"></h4><p class="board-group-subtitle" data-i18n="user.section.subtitle"></p></div>
                 <span id="userSummaryCount" class="group-count">0</span>
               </div>
               <div id="userSummary" class="stack"></div>
@@ -95,75 +95,75 @@
           <!-- ═══ TRACE BOARD ═══ -->
           <div id="traceBoard" class="board-content">
             <div class="trace-sub-tabs">
-              <button class="trace-tab active" data-trace="recall" type="button">Recall</button>
-              <button class="trace-tab" data-trace="index" type="button">Index</button>
-              <button class="trace-tab" data-trace="dream" type="button">Dream</button>
+              <button class="trace-tab active" data-trace="recall" type="button" data-i18n="trace.tab.recall"></button>
+              <button class="trace-tab" data-trace="index" type="button" data-i18n="trace.tab.index"></button>
+              <button class="trace-tab" data-trace="dream" type="button" data-i18n="trace.tab.dream"></button>
             </div>
 
             <!-- Recall Panel -->
             <div id="recallPanel" class="trace-panel trace-panel-active">
               <section class="board-group">
-                <div class="board-group-header"><div><h4>选择案例</h4></div>
+                <div class="board-group-header"><div><h4 data-i18n="trace.selectCase"></h4></div>
                   <span id="recallTraceCount" class="group-count">0</span>
                 </div>
-                <select id="recallCaseSelect" class="trace-select"><option value="">选择一个 Recall 事例…</option></select>
+                <select id="recallCaseSelect" class="trace-select"><option value="" data-i18n="trace.selectRecallCase"></option></select>
               </section>
               <div id="recallDetail" class="hidden">
                 <section class="board-group">
                   <div id="recallMetaTable" class="kv-grid"></div>
                 </section>
                 <section class="board-group">
-                  <div class="board-group-header"><div><h4>注入上下文</h4></div></div>
+                  <div class="board-group-header"><div><h4 data-i18n="trace.injectedContext"></h4></div></div>
                   <div id="recallContext" class="context-block"></div>
                 </section>
                 <section class="board-group">
-                  <div class="board-group-header"><div><h4>工具活动</h4></div></div>
+                  <div class="board-group-header"><div><h4 data-i18n="trace.toolEvents"></h4></div></div>
                   <div id="recallToolEvents" class="context-block"></div>
                 </section>
                 <section class="board-group">
-                  <div class="board-group-header"><div><h4>最终回答</h4></div></div>
+                  <div class="board-group-header"><div><h4 data-i18n="trace.finalReply"></h4></div></div>
                   <div id="recallReply" class="context-block"></div>
                 </section>
                 <section class="board-group">
-                  <div class="board-group-header"><div><h4>推理过程</h4></div></div>
+                  <div class="board-group-header"><div><h4 data-i18n="trace.reasoningTimeline"></h4></div></div>
                   <div id="recallSteps" class="timeline"></div>
                 </section>
               </div>
-              <div id="recallEmpty" class="empty-state">选择一个事例查看 Recall 详情。</div>
+              <div id="recallEmpty" class="empty-state" data-i18n="trace.empty.recall"></div>
             </div>
 
             <!-- Index Panel -->
             <div id="indexPanel" class="trace-panel">
               <section class="board-group">
-                <div class="board-group-header"><div><h4>选择追踪</h4></div>
+                <div class="board-group-header"><div><h4 data-i18n="trace.selectTrace"></h4></div>
                   <span id="indexTraceCount" class="group-count">0</span>
                 </div>
-                <select id="indexTraceSelect" class="trace-select"><option value="">选择一条 Index 追踪…</option></select>
+                <select id="indexTraceSelect" class="trace-select"><option value="" data-i18n="trace.selectIndexTrace"></option></select>
               </section>
               <div id="indexDetail" class="hidden">
                 <section class="board-group">
-                  <div class="board-group-header"><div><h4>推理过程</h4></div></div>
+                  <div class="board-group-header"><div><h4 data-i18n="trace.reasoningTimeline"></h4></div></div>
                   <div id="indexSteps" class="timeline"></div>
                 </section>
               </div>
-              <div id="indexEmpty" class="empty-state">选择一条追踪查看详情。</div>
+              <div id="indexEmpty" class="empty-state" data-i18n="trace.empty.trace"></div>
             </div>
 
             <!-- Dream Panel -->
             <div id="dreamPanel" class="trace-panel">
               <section class="board-group">
-                <div class="board-group-header"><div><h4>选择追踪</h4></div>
+                <div class="board-group-header"><div><h4 data-i18n="trace.selectTrace"></h4></div>
                   <span id="dreamTraceCount" class="group-count">0</span>
                 </div>
-                <select id="dreamTraceSelect" class="trace-select"><option value="">选择一条 Dream 追踪…</option></select>
+                <select id="dreamTraceSelect" class="trace-select"><option value="" data-i18n="trace.selectDreamTrace"></option></select>
               </section>
               <div id="dreamDetail" class="hidden">
                 <section class="board-group">
-                  <div class="board-group-header"><div><h4>推理过程</h4></div></div>
+                  <div class="board-group-header"><div><h4 data-i18n="trace.reasoningTimeline"></h4></div></div>
                   <div id="dreamSteps" class="timeline"></div>
                 </section>
               </div>
-              <div id="dreamEmpty" class="empty-state">选择一条追踪查看详情。</div>
+              <div id="dreamEmpty" class="empty-state" data-i18n="trace.empty.trace"></div>
             </div>
           </div>
 
@@ -173,21 +173,21 @@
 
     <!-- ═══ SETTINGS DRAWER ═══ -->
     <aside id="settingsDrawer" class="settings-drawer hidden">
-      <div class="settings-drawer-head"><h3>设置</h3><button id="settingsCloseBtn" class="action-btn" type="button">关闭</button></div>
+      <div class="settings-drawer-head"><h3 data-i18n="settings.title"></h3><button id="settingsCloseBtn" class="action-btn" type="button" data-i18n="actions.close"></button></div>
       <div class="settings-drawer-body">
         <section class="settings-section">
-          <h4 class="settings-section-title">参数设置</h4>
-          <div class="settings-field"><label for="settingAutoIndex">自动索引间隔（小时）</label><input id="settingAutoIndex" type="number" min="0" step="1" value="1" class="settings-input" /><p class="settings-hint">0 表示关闭自动任务</p></div>
-          <div class="settings-field"><label for="settingAutoDream">自动 Dream 间隔（小时）</label><input id="settingAutoDream" type="number" min="0" step="1" value="6" class="settings-input" /><p class="settings-hint">只有自上次 Dream 以来有记忆文件更新时，自动 Dream 才会真正执行。</p></div>
-          <button id="saveSettingsBtn" class="action-btn action-btn--primary settings-save-btn" type="button">保存设置</button>
+          <h4 class="settings-section-title" data-i18n="settings.parameters.title"></h4>
+          <div class="settings-field"><label for="settingAutoIndex" data-i18n="settings.autoIndex.label"></label><input id="settingAutoIndex" type="number" min="0" step="1" value="1" class="settings-input" /><p class="settings-hint" data-i18n="settings.autoIndex.hint"></p></div>
+          <div class="settings-field"><label for="settingAutoDream" data-i18n="settings.autoDream.label"></label><input id="settingAutoDream" type="number" min="0" step="1" value="6" class="settings-input" /><p class="settings-hint" data-i18n="settings.autoDream.hint"></p></div>
+          <button id="saveSettingsBtn" class="action-btn action-btn--primary settings-save-btn" type="button" data-i18n="actions.saveSettings"></button>
         </section>
         <hr class="settings-divider" />
         <section class="settings-section">
-          <h4 class="settings-section-title">数据管理</h4>
-          <button id="exportBtn" class="settings-action-btn" type="button"><span class="settings-action-icon">↓</span>导出迁移包</button>
-          <button id="importBtn" class="settings-action-btn" type="button"><span class="settings-action-icon">↑</span>导入迁移包</button>
-          <button id="clearProjectBtn" class="settings-action-btn settings-action-danger" type="button"><span class="settings-action-icon">🗑</span>清空当前项目记忆</button>
-          <button id="clearAllBtn" class="settings-action-btn settings-action-danger" type="button"><span class="settings-action-icon">🗑</span>清空所有记忆</button>
+          <h4 class="settings-section-title" data-i18n="settings.dataManagement.title"></h4>
+          <button id="exportBtn" class="settings-action-btn" type="button"><span class="settings-action-icon">↓</span><span data-i18n="actions.export"></span></button>
+          <button id="importBtn" class="settings-action-btn" type="button"><span class="settings-action-icon">↑</span><span data-i18n="actions.import"></span></button>
+          <button id="clearProjectBtn" class="settings-action-btn settings-action-danger" type="button"><span class="settings-action-icon">🗑</span><span data-i18n="actions.clearProject"></span></button>
+          <button id="clearAllBtn" class="settings-action-btn settings-action-danger" type="button"><span class="settings-action-icon">🗑</span><span data-i18n="actions.clearAll"></span></button>
           <input id="importInput" type="file" accept="application/json" hidden />
         </section>
       </div>
@@ -196,11 +196,11 @@
     <!-- ═══ DETAIL DRAWER ═══ -->
     <aside id="detailDrawer" class="detail-drawer hidden">
       <div class="detail-drawer-head">
-        <div><p id="detailMeta" class="detail-eyebrow"></p><h3 id="detailTitle" class="detail-title">详情</h3><p id="detailDescription" class="detail-subtitle"></p></div>
-        <button id="detailCloseBtn" class="action-btn" type="button">关闭</button>
+        <div><p id="detailMeta" class="detail-eyebrow"></p><h3 id="detailTitle" class="detail-title"></h3><p id="detailDescription" class="detail-subtitle"></p></div>
+        <button id="detailCloseBtn" class="action-btn" type="button" data-i18n="actions.close"></button>
       </div>
       <section class="drawer-section drawer-section-fill">
-        <div id="detailEmpty" class="empty-state">选择一条记忆查看详情。</div>
+        <div id="detailEmpty" class="empty-state" data-i18n="detail.empty"></div>
         <div id="detailView" class="detail hidden">
           <div id="detailActions" class="detail-actions"></div>
           <pre id="detailContent" class="code-block detail-code"></pre>
