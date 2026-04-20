@@ -208,8 +208,28 @@
       <div class="settings-drawer-body">
         <section class="settings-section">
           <h4 class="settings-section-title" data-i18n="settings.parameters.title"></h4>
-          <div class="settings-field"><label for="settingAutoIndex" data-i18n="settings.autoIndex.label"></label><input id="settingAutoIndex" type="number" min="0" step="1" value="1" class="settings-input" /><p class="settings-hint" data-i18n="settings.autoIndex.hint"></p></div>
-          <div class="settings-field"><label for="settingAutoDream" data-i18n="settings.autoDream.label"></label><input id="settingAutoDream" type="number" min="0" step="1" value="6" class="settings-input" /><p class="settings-hint" data-i18n="settings.autoDream.hint"></p></div>
+          <div class="settings-field">
+            <label for="settingAutoIndex" data-i18n="settings.autoIndex.label"></label>
+            <div class="settings-input-row">
+              <input id="settingAutoIndex" type="number" min="0" step="any" value="1" class="settings-input settings-input--with-unit" />
+              <select id="settingAutoIndexUnit" class="settings-input settings-unit-select">
+                <option value="minutes" data-i18n="settings.unit.minutes"></option>
+                <option value="hours" data-i18n="settings.unit.hours"></option>
+              </select>
+            </div>
+            <p class="settings-hint" data-i18n="settings.autoIndex.hint"></p>
+          </div>
+          <div class="settings-field">
+            <label for="settingAutoDream" data-i18n="settings.autoDream.label"></label>
+            <div class="settings-input-row">
+              <input id="settingAutoDream" type="number" min="0" step="any" value="6" class="settings-input settings-input--with-unit" />
+              <select id="settingAutoDreamUnit" class="settings-input settings-unit-select">
+                <option value="minutes" data-i18n="settings.unit.minutes"></option>
+                <option value="hours" data-i18n="settings.unit.hours"></option>
+              </select>
+            </div>
+            <p class="settings-hint" data-i18n="settings.autoDream.hint"></p>
+          </div>
           <button id="saveSettingsBtn" class="action-btn action-btn--primary settings-save-btn" type="button" data-i18n="actions.saveSettings"></button>
         </section>
         <hr class="settings-divider" />

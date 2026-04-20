@@ -140,10 +140,12 @@ const UI_STRINGS = {
     "timeline.parsedResult": "Parsed Result",
     "settings.title": "设置",
     "settings.parameters.title": "参数设置",
-    "settings.autoIndex.label": "自动索引间隔（小时）",
+    "settings.autoIndex.label": "自动索引间隔",
     "settings.autoIndex.hint": "0 表示关闭自动任务",
-    "settings.autoDream.label": "自动 Dream 间隔（小时）",
+    "settings.autoDream.label": "自动 Dream 间隔",
     "settings.autoDream.hint": "只有自上次 Dream 以来有记忆文件更新时，自动 Dream 才会真正执行。",
+    "settings.unit.minutes": "分钟",
+    "settings.unit.hours": "小时",
     "settings.dataManagement.title": "数据管理",
     "confirm.deleteMemory": "确认删除 {0}？",
     "confirm.clearProject": "确认清空当前项目的全部记忆吗？这不会删除全局用户身份背景。",
@@ -297,10 +299,12 @@ const UI_STRINGS = {
     "timeline.parsedResult": "Parsed Result",
     "settings.title": "Settings",
     "settings.parameters.title": "Parameters",
-    "settings.autoIndex.label": "Auto Index Interval (hours)",
+    "settings.autoIndex.label": "Auto Index Interval",
     "settings.autoIndex.hint": "Set to 0 to disable automatic tasks.",
-    "settings.autoDream.label": "Auto Dream Interval (hours)",
+    "settings.autoDream.label": "Auto Dream Interval",
     "settings.autoDream.hint": "Automatic Dream only runs when memory files have changed since the last Dream.",
+    "settings.unit.minutes": "Minutes",
+    "settings.unit.hours": "Hours",
     "settings.dataManagement.title": "Data Management",
     "confirm.deleteMemory": "Delete {0}?",
     "confirm.clearProject": "Clear all memory for the current project? This will not delete global user identity background.",
@@ -447,7 +451,9 @@ const settingsDrawerEl = document.getElementById("settingsDrawer");
 const settingsCloseBtn = document.getElementById("settingsCloseBtn");
 const saveSettingsBtn = document.getElementById("saveSettingsBtn");
 const settingAutoIndexEl = document.getElementById("settingAutoIndex");
+const settingAutoIndexUnitEl = document.getElementById("settingAutoIndexUnit");
 const settingAutoDreamEl = document.getElementById("settingAutoDream");
+const settingAutoDreamUnitEl = document.getElementById("settingAutoDreamUnit");
 const refreshBtn = document.getElementById("refreshBtn");
 const indexBtn = document.getElementById("indexBtn");
 const dreamBtn = document.getElementById("dreamBtn");
@@ -538,7 +544,114 @@ const PAGE_CONFIG = {
   trace: { title: t("nav.trace") },
 };
 
+const SETTINGS_UNIT_STORAGE_KEYS = {
+  autoIndex: "edgeclaw-memory:settings:autoIndexUnit",
+  autoDream: "edgeclaw-memory:settings:autoDreamUnit",
+};
+
+const SETTINGS_FIELD_CONFIG = {
+  autoIndex: {
+    inputEl: settingAutoIndexEl,
+    unitEl: settingAutoIndexUnitEl,
+    storageKey: SETTINGS_UNIT_STORAGE_KEYS.autoIndex,
+    settingsKey: "autoIndexIntervalMinutes",
+    defaultMinutes: 60,
+  },
+  autoDream: {
+    inputEl: settingAutoDreamEl,
+    unitEl: settingAutoDreamUnitEl,
+    storageKey: SETTINGS_UNIT_STORAGE_KEYS.autoDream,
+    settingsKey: "autoDreamIntervalMinutes",
+    defaultMinutes: 360,
+  },
+};
+
 /* ── Utilities ── */
+
+function normalizeSettingsUnit(value) {
+  return value === "minutes" ? "minutes" : "hours";
+}
+
+function readSettingsUnitPreference(fieldKey) {
+  const config = SETTINGS_FIELD_CONFIG[fieldKey];
+  if (!config) return "hours";
+  try {
+    return normalizeSettingsUnit(window.localStorage.getItem(config.storageKey) || "hours");
+  } catch {
+    return "hours";
+  }
+}
+
+function writeSettingsUnitPreference(fieldKey, unit) {
+  const config = SETTINGS_FIELD_CONFIG[fieldKey];
+  if (!config) return;
+  try {
+    window.localStorage.setItem(config.storageKey, normalizeSettingsUnit(unit));
+  } catch {
+    // Best effort only; the UI still works without persisted unit preferences.
+  }
+}
+
+function getSettingsFieldMinutes(fieldKey) {
+  const config = SETTINGS_FIELD_CONFIG[fieldKey];
+  if (!config) return 0;
+  const value = state.settings?.[config.settingsKey];
+  return Number.isFinite(value) ? Number(value) : config.defaultMinutes;
+}
+
+function formatIntervalValue(minutes, unit) {
+  const normalizedMinutes = Number.isFinite(minutes) ? Math.max(0, Number(minutes)) : 0;
+  const value = unit === "minutes" ? normalizedMinutes : normalizedMinutes / 60;
+  const rounded = Number(value.toFixed(4));
+  if (Number.isNaN(rounded)) return "0";
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+
+function parseIntervalInputValue(value, fallbackMinutes, unit) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return fallbackMinutes;
+  return Math.max(0, unit === "minutes" ? parsed : parsed * 60);
+}
+
+function syncSettingsFieldDisplay(fieldKey, minutes) {
+  const config = SETTINGS_FIELD_CONFIG[fieldKey];
+  if (!config) return;
+  const unit = normalizeSettingsUnit(config.unitEl.value);
+  config.unitEl.value = unit;
+  config.unitEl.dataset.prevUnit = unit;
+  config.inputEl.value = formatIntervalValue(minutes, unit);
+}
+
+function syncSettingsInputsFromState() {
+  Object.entries(SETTINGS_FIELD_CONFIG).forEach(([fieldKey, config]) => {
+    const unit = readSettingsUnitPreference(fieldKey);
+    config.unitEl.value = unit;
+    config.unitEl.dataset.prevUnit = unit;
+    syncSettingsFieldDisplay(fieldKey, getSettingsFieldMinutes(fieldKey));
+  });
+}
+
+function getCurrentSettingsFieldMinutes(fieldKey) {
+  const config = SETTINGS_FIELD_CONFIG[fieldKey];
+  if (!config) return 0;
+  const unit = normalizeSettingsUnit(config.unitEl.value);
+  return parseIntervalInputValue(config.inputEl.value, getSettingsFieldMinutes(fieldKey), unit);
+}
+
+function handleSettingsUnitChange(fieldKey) {
+  const config = SETTINGS_FIELD_CONFIG[fieldKey];
+  if (!config) return;
+  const previousUnit = normalizeSettingsUnit(config.unitEl.dataset.prevUnit);
+  const currentMinutes = parseIntervalInputValue(
+    config.inputEl.value,
+    getSettingsFieldMinutes(fieldKey),
+    previousUnit,
+  );
+  const nextUnit = normalizeSettingsUnit(config.unitEl.value);
+  writeSettingsUnitPreference(fieldKey, nextUnit);
+  config.unitEl.dataset.prevUnit = nextUnit;
+  config.inputEl.value = formatIntervalValue(currentMinutes, nextUnit);
+}
 
 function applyStaticTranslations() {
   document.querySelectorAll("[data-i18n]").forEach((node) => {
@@ -724,10 +837,7 @@ function setActiveTraceTab(tab) { state.activeTraceTab = tab; applyTraceTabChrom
 function openSettingsDrawer() {
   state.settingsOpen = true;
   settingsDrawerEl.classList.remove("hidden");
-  if (state.settings) {
-    settingAutoIndexEl.value = String(Math.round((state.settings.autoIndexIntervalMinutes ?? 60) / 60));
-    settingAutoDreamEl.value = String(Math.round((state.settings.autoDreamIntervalMinutes ?? 360) / 60));
-  }
+  syncSettingsInputsFromState();
   updateAppScrim();
 }
 
@@ -1347,11 +1457,17 @@ async function handleEditorSubmit(event) {
 }
 
 async function saveSettings() {
-  const indexH = Number.parseInt(settingAutoIndexEl.value, 10);
-  const dreamH = Number.parseInt(settingAutoDreamEl.value, 10);
+  const autoIndexIntervalMinutes = getCurrentSettingsFieldMinutes("autoIndex");
+  const autoDreamIntervalMinutes = getCurrentSettingsFieldMinutes("autoDream");
   try {
-    await fetchJson("/api/memory/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: { autoIndexIntervalMinutes: (Number.isFinite(indexH) ? indexH : 1) * 60, autoDreamIntervalMinutes: (Number.isFinite(dreamH) ? dreamH : 6) * 60 } });
-    setStatus(t("status.settingsSaved")); await loadSettings();
+    await fetchJson("/api/memory/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: { autoIndexIntervalMinutes, autoDreamIntervalMinutes },
+    });
+    setStatus(t("status.settingsSaved"));
+    await loadSettings();
+    syncSettingsInputsFromState();
   } catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
 }
 
@@ -1365,6 +1481,8 @@ dreamTraceSelectEl.addEventListener("change", () => void loadDreamDetail(dreamTr
 settingsToggleBtn.addEventListener("click", () => { if (state.settingsOpen) closeSettingsDrawer(); else openSettingsDrawer(); });
 settingsCloseBtn.addEventListener("click", () => closeSettingsDrawer());
 saveSettingsBtn.addEventListener("click", () => void saveSettings());
+settingAutoIndexUnitEl.addEventListener("change", () => handleSettingsUnitChange("autoIndex"));
+settingAutoDreamUnitEl.addEventListener("change", () => handleSettingsUnitChange("autoDream"));
 editorCloseBtn.addEventListener("click", () => closeEditorModal());
 editorCancelBtn.addEventListener("click", () => closeEditorModal());
 editorFormEl.addEventListener("submit", (event) => void handleEditorSubmit(event));

@@ -410,6 +410,12 @@ button:disabled {
   gap: 4px;
 }
 
+.settings-input-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
 .settings-field label {
   font-size: 13px;
   font-weight: 500;
@@ -429,6 +435,16 @@ button:disabled {
 .settings-input:focus {
   border-color: var(--accent);
   outline: none;
+}
+
+.settings-input--with-unit {
+  flex: 1;
+}
+
+.settings-unit-select {
+  width: 96px;
+  flex: 0 0 96px;
+  cursor: pointer;
 }
 
 .settings-hint {
