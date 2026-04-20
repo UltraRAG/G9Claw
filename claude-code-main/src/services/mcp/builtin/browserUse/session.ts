@@ -1,44 +1,77 @@
+import { join } from 'path'
+import { homedir } from 'os'
 import type { Browser, BrowserContext, Page } from 'playwright-core'
 
 let browserInstance: Browser | null = null
 let contextInstance: BrowserContext | null = null
+let isPersistent = false
 
 export interface BrowserSession {
-  browser: Browser
+  browser: Browser | null
   context: BrowserContext
 }
 
+function getUserDataDir(): string {
+  const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+  return join(configDir, 'browser-use-profile')
+}
+
 /**
- * Connects to an existing Chrome/Chromium via CDP, or launches a new one.
- * Prefers CDP_URL env var for remote connections. Falls back to launching
- * a local chromium-based browser.
+ * Connects to an existing Chrome/Chromium via CDP, or launches a persistent
+ * browser context locally. The persistent context stores cookies and
+ * localStorage across sessions in ~/.claude/browser-use-profile/.
  */
 export async function getOrCreateSession(): Promise<BrowserSession> {
-  if (browserInstance?.isConnected()) {
-    return { browser: browserInstance, context: contextInstance! }
+  if (contextInstance && (isPersistent || browserInstance?.isConnected())) {
+    return { browser: browserInstance, context: contextInstance }
   }
 
   const { chromium } = await import('playwright-core')
   const cdpUrl = process.env.CDP_URL
 
   if (cdpUrl) {
+    isPersistent = false
     browserInstance = await chromium.connectOverCDP(cdpUrl)
+    const contexts = browserInstance.contexts()
+    contextInstance = contexts[0] ?? await browserInstance.newContext()
+
+    browserInstance.on('disconnected', () => {
+      browserInstance = null
+      contextInstance = null
+    })
   } else {
+    isPersistent = true
     const executablePath = findChromePath()
-    browserInstance = await chromium.launch({
+    const userDataDir = getUserDataDir()
+
+    const { mkdirSync, unlinkSync, existsSync } = await import('fs')
+    mkdirSync(userDataDir, { recursive: true })
+
+    // Clean up stale lock files left by crashed Chrome instances
+    for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+      const lockPath = join(userDataDir, lockFile)
+      if (existsSync(lockPath)) {
+        try { unlinkSync(lockPath) } catch { /* ignore */ }
+      }
+    }
+
+    contextInstance = await chromium.launchPersistentContext(userDataDir, {
       headless: false,
       executablePath,
-      args: ['--no-first-run', '--no-default-browser-check'],
+      args: [
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-features=ProfilePicker',
+      ],
+    })
+    browserInstance = contextInstance.browser()
+
+    contextInstance.on('close', () => {
+      browserInstance = null
+      contextInstance = null
+      isPersistent = false
     })
   }
-
-  const contexts = browserInstance.contexts()
-  contextInstance = contexts[0] ?? await browserInstance.newContext()
-
-  browserInstance.on('disconnected', () => {
-    browserInstance = null
-    contextInstance = null
-  })
 
   return { browser: browserInstance, context: contextInstance }
 }
@@ -68,11 +101,14 @@ export async function getPageByTargetId(targetId: string): Promise<Page | null> 
 }
 
 export async function closeSession(): Promise<void> {
-  if (browserInstance) {
+  if (isPersistent && contextInstance) {
+    await contextInstance.close().catch(() => {})
+  } else if (browserInstance) {
     await browserInstance.close().catch(() => {})
-    browserInstance = null
-    contextInstance = null
   }
+  browserInstance = null
+  contextInstance = null
+  isPersistent = false
 }
 
 function findChromePath(): string | undefined {

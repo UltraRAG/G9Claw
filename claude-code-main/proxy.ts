@@ -517,6 +517,7 @@ class StreamConverter {
 
   /** Call after the stream ends to flush any remaining events */
   flush(): string {
+    console.log(`[proxy] tokens: in=${this.inputTokens} out=${this.outputTokens} model=${this.model}`)
     if (this.pendingFinish && !this.finished) {
       return this.emitFinish()
     }
@@ -625,6 +626,8 @@ const server = Bun.serve({
           oaiResp as Record<string, unknown>,
           body.model,
         )
+        const u = (anthropicResp as Record<string, unknown>).usage as Record<string, number> | undefined
+        console.log(`[proxy] tokens: in=${u?.input_tokens || 0} out=${u?.output_tokens || 0} model=${body.model}`)
         return new Response(JSON.stringify(anthropicResp), {
           headers: { 'Content-Type': 'application/json' },
         })

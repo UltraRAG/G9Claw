@@ -37,6 +37,7 @@ router.get('/cli/list', async (req, res) => {
     });
     
     process.on('close', (code) => {
+      if (res.headersSent) return;
       if (code === 0) {
         res.json({ success: true, output: stdout, servers: parseClaudeListOutput(stdout) });
       } else {
@@ -46,6 +47,7 @@ router.get('/cli/list', async (req, res) => {
     });
     
     process.on('error', (error) => {
+      if (res.headersSent) return;
       console.error('Error running Claude CLI:', error);
       res.status(500).json({ error: 'Failed to run Claude CLI', details: error.message });
     });
@@ -120,6 +122,7 @@ router.post('/cli/add', async (req, res) => {
     });
     
     process.on('close', (code) => {
+      if (res.headersSent) return;
       if (code === 0) {
         res.json({ success: true, output: stdout, message: `MCP server "${name}" added successfully` });
       } else {
@@ -129,6 +132,7 @@ router.post('/cli/add', async (req, res) => {
     });
     
     process.on('error', (error) => {
+      if (res.headersSent) return;
       console.error('Error running Claude CLI:', error);
       res.status(500).json({ error: 'Failed to run Claude CLI', details: error.message });
     });
@@ -213,6 +217,7 @@ router.post('/cli/add-json', async (req, res) => {
     });
     
     process.on('close', (code) => {
+      if (res.headersSent) return;
       if (code === 0) {
         res.json({ success: true, output: stdout, message: `MCP server "${name}" added successfully via JSON` });
       } else {
@@ -222,6 +227,7 @@ router.post('/cli/add-json', async (req, res) => {
     });
     
     process.on('error', (error) => {
+      if (res.headersSent) return;
       console.error('Error running Claude CLI:', error);
       res.status(500).json({ error: 'Failed to run Claude CLI', details: error.message });
     });
@@ -283,6 +289,7 @@ router.delete('/cli/remove/:name', async (req, res) => {
     });
     
     process.on('close', (code) => {
+      if (res.headersSent) return;
       if (code === 0) {
         res.json({ success: true, output: stdout, message: `MCP server "${name}" removed successfully` });
       } else {
@@ -292,6 +299,7 @@ router.delete('/cli/remove/:name', async (req, res) => {
     });
     
     process.on('error', (error) => {
+      if (res.headersSent) return;
       console.error('Error running Claude CLI:', error);
       res.status(500).json({ error: 'Failed to run Claude CLI', details: error.message });
     });
@@ -326,6 +334,7 @@ router.get('/cli/get/:name', async (req, res) => {
     });
     
     process.on('close', (code) => {
+      if (res.headersSent) return;
       if (code === 0) {
         res.json({ success: true, output: stdout, server: parseClaudeGetOutput(stdout) });
       } else {
@@ -335,6 +344,7 @@ router.get('/cli/get/:name', async (req, res) => {
     });
     
     process.on('error', (error) => {
+      if (res.headersSent) return;
       console.error('Error running Claude CLI:', error);
       res.status(500).json({ error: 'Failed to run Claude CLI', details: error.message });
     });

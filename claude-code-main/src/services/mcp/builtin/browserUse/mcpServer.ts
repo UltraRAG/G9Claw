@@ -66,6 +66,12 @@ async function handleToolCall(
       return handleEvaluate(args)
     case 'tabs':
       return handleTabs(args)
+    case 'upload':
+      return handleUpload(args)
+    case 'fill':
+      return handleFill(args)
+    case 'sleep':
+      return handleSleep(args)
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
@@ -288,4 +294,27 @@ async function handleTabs(args: Record<string, unknown>) {
     default:
       throw new Error(`Unknown tab action: ${action}`)
   }
+}
+
+async function handleUpload(args: Record<string, unknown>) {
+  const page = await getActivePage()
+  const selector = args.selector as string
+  const paths = args.paths as string[]
+  await page.locator(selector).setInputFiles(paths)
+  return [{ type: 'text' as const, text: JSON.stringify({ ok: true, count: paths.length }) }]
+}
+
+async function handleFill(args: Record<string, unknown>) {
+  const page = await getActivePage()
+  const selector = args.selector as string
+  const value = args.value as string
+  await page.locator(selector).fill(value)
+  return [{ type: 'text' as const, text: JSON.stringify({ ok: true }) }]
+}
+
+async function handleSleep(args: Record<string, unknown>) {
+  const page = await getActivePage()
+  const ms = (args.ms as number) ?? 1000
+  await page.waitForTimeout(ms)
+  return [{ type: 'text' as const, text: JSON.stringify({ ok: true, ms }) }]
 }

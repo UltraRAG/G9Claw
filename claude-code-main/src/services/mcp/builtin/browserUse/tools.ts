@@ -227,4 +227,46 @@ export const BROWSER_TOOLS: Tool[] = [
       required: ['action'],
     },
   },
+  {
+    name: 'upload',
+    description: 'Upload file(s) to a file input element.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        selector: { type: 'string', description: 'CSS selector of the file input element' },
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Absolute paths of files to upload',
+        },
+      },
+      required: ['selector', 'paths'],
+    },
+  },
+  {
+    name: 'fill',
+    description:
+      'Clear the field and fill it with new text. Works on input, textarea, and contenteditable elements.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        selector: { type: 'string', description: 'CSS selector of the element' },
+        value: { type: 'string', description: 'Text to fill' },
+      },
+      required: ['selector', 'value'],
+    },
+  },
+  {
+    name: 'sleep',
+    description: 'Wait for a specified number of milliseconds. Use when you need a pure time-based delay (e.g., waiting for animations or async rendering).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        ms: {
+          type: 'number',
+          description: 'Milliseconds to wait. Default: 1000',
+        },
+      },
+    },
+  },
 ]
