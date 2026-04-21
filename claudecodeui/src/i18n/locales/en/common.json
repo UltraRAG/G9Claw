@@ -111,6 +111,7 @@
     },
     "status": {
       "scheduled": "Scheduled",
+      "running": "Running",
       "completed": "Completed",
       "failed": "Failed",
       "unknown": "Unknown"
@@ -129,6 +130,7 @@
     "fields": {
       "scope": "Scope",
       "type": "Type",
+      "kind": "Kind",
       "jobId": "Task ID",
       "prompt": "Prompt",
       "cron": "Cron schedule",

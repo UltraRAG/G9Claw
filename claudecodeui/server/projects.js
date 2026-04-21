@@ -67,6 +67,7 @@ import { open } from 'sqlite';
 import os from 'os';
 import sessionManager from './sessionManager.js';
 import { applyCustomSessionNames } from './database/db.js';
+import { sendCronDaemonRequest } from './services/cron-daemon-owner.js';
 
 // Import TaskMaster detection functions
 async function detectTaskMasterFolder(projectPath) {
@@ -1053,7 +1054,47 @@ function mergeCronTasks(...taskGroups) {
   return tasks;
 }
 
-function mapCronJobStatus(task, backgroundSession) {
+function isCronDaemonUnavailableError(error) {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    (
+      ('code' in error && (error.code === 'ENOENT' || error.code === 'ECONNREFUSED')) ||
+      (typeof error.message === 'string' &&
+        error.message.includes('Timed out waiting for Cron daemon response'))
+    )
+  );
+}
+
+async function listProjectRuntimeCronTasks(projectRoot) {
+  try {
+    const response = await sendCronDaemonRequest({
+      type: 'list_tasks',
+      projectRoot
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || 'Cron daemon list request failed');
+    }
+    if (response.data?.type !== 'list_tasks' || !Array.isArray(response.data.tasks)) {
+      throw new Error('Unexpected Cron daemon list response');
+    }
+    return response.data.tasks;
+  } catch (error) {
+    if (!isCronDaemonUnavailableError(error)) {
+      console.warn(
+        `Failed to read runtime cron tasks for ${projectRoot}:`,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+    return null;
+  }
+}
+
+function mapCronJobStatus(task, backgroundSession, runtimeTask) {
+  if (runtimeTask?.running) {
+    return 'running';
+  }
+
   if (!backgroundSession) {
     return task.transcriptKey ? 'unknown' : 'scheduled';
   }
@@ -1079,6 +1120,8 @@ async function getProjectCronJobsOverview(projectName) {
   if (scheduledTasks.length === 0) {
     return { jobs: [] };
   }
+
+  const runtimeTasks = await listProjectRuntimeCronTasks(projectRoot);
 
   const projectStoreDir = path.join(os.homedir(), '.claude', 'projects', projectName);
   let backgroundSessions = [];
@@ -1109,14 +1152,21 @@ async function getProjectCronJobsOverview(projectName) {
     }
   }
 
+  const runtimeTasksById = new Map(
+    Array.isArray(runtimeTasks)
+      ? runtimeTasks.map((task) => [task.id, task])
+      : []
+  );
+
   const jobs = scheduledTasks.map((task) => {
     const backgroundSession = task.transcriptKey
       ? backgroundSessionsByTranscriptKey.get(task.transcriptKey) || null
       : null;
+    const runtimeTask = runtimeTasksById.get(task.id) || null;
 
     return {
       ...task,
-      status: mapCronJobStatus(task, backgroundSession),
+      status: mapCronJobStatus(task, backgroundSession, runtimeTask),
       latestRun: backgroundSession
         ? {
             summary: typeof backgroundSession.summary === 'string' ? backgroundSession.summary : '',

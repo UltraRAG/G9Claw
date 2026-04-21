@@ -4,6 +4,10 @@ export type DaemonCronTask = CronTask & {
   durable: boolean
 }
 
+export type DaemonListedCronTask = DaemonCronTask & {
+  running: boolean
+}
+
 export type CronDaemonRequest =
   | {
       type: 'ping'
@@ -52,7 +56,7 @@ export type CronDaemonResponse =
         | { type: 'pong'; runtimes: RuntimeSummary[] }
         | { type: 'shutdown' }
         | { type: 'create_task'; task: DaemonCronTask }
-        | { type: 'list_tasks'; tasks: DaemonCronTask[] }
+        | { type: 'list_tasks'; tasks: DaemonListedCronTask[] }
         | { type: 'delete_task'; deleted: boolean }
         | {
             type: 'run_task_now'

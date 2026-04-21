@@ -6,7 +6,12 @@ import { clearCronDaemonOwner } from './ownership.js'
 import { ProjectRuntime } from './projectRuntime.js'
 import { DaemonSessionTaskStore } from './sessionTaskStore.js'
 import { getCronDaemonSocketPath } from './paths.js'
-import type { CronDaemonRequest, CronDaemonResponse, DaemonCronTask } from './types.js'
+import type {
+  CronDaemonRequest,
+  CronDaemonResponse,
+  DaemonCronTask,
+  DaemonListedCronTask,
+} from './types.js'
 import { safeParseJSON } from '../utils/json.js'
 import { logForDebugging } from '../utils/debug.js'
 import { addCronTask, readCronTasks, removeCronTasks } from '../utils/cronTasks.js'
@@ -153,6 +158,7 @@ export class CronDaemonServer {
         }
         case 'list_tasks': {
           const projectRoot = await this.ensureRuntime(request.projectRoot)
+          const runtime = await this.ensureHydratedRuntime(projectRoot)
           const durableTasks = (await readCronTasks(projectRoot)).map(task => ({
             ...task,
             durable: true as const,
@@ -161,11 +167,17 @@ export class CronDaemonServer {
             projectRoot,
             request.originSessionId,
           )
+          const tasks: DaemonListedCronTask[] = [...durableTasks, ...sessionTasks].map(
+            task => ({
+              ...task,
+              running: runtime.isTaskRunning(task.id),
+            }),
+          )
           return {
             ok: true,
             data: {
               type: 'list_tasks',
-              tasks: [...durableTasks, ...sessionTasks],
+              tasks,
             },
           }
         }

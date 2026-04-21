@@ -3,6 +3,7 @@ import type { RunProjectCronJobNowResponse } from '../../../types/app';
 import {
   buildRunNowFeedback,
   findSelectedCronJob,
+  getCronJobKindLabel,
   getPayloadError,
   getStatusBadgeVariant,
   sortCronJobsByCreatedAt
@@ -45,6 +46,18 @@ function t(key: string, options?: Record<string, string>) {
   }
   if (key === 'alwaysOn.feedback.alreadyRunning') {
     message = 'Task {{id}} is already running.';
+  }
+  if (key === 'alwaysOn.flags.sessionScoped') {
+    message = 'Session';
+  }
+  if (key === 'alwaysOn.flags.durable') {
+    message = 'Durable';
+  }
+  if (key === 'alwaysOn.flags.oneShot') {
+    message = 'One-shot';
+  }
+  if (key === 'alwaysOn.flags.recurring') {
+    message = 'Recurring';
   }
   if (options) {
     for (const [name, value] of Object.entries(options)) {
@@ -92,9 +105,15 @@ describe('AlwaysOnPanel helpers', () => {
     expect(getPayloadError({ error: '   ' })).toBeNull();
     expect(getPayloadError(null)).toBeNull();
 
+    expect(getStatusBadgeVariant('running')).toBe('default');
     expect(getStatusBadgeVariant('completed')).toBe('secondary');
     expect(getStatusBadgeVariant('failed')).toBe('destructive');
     expect(getStatusBadgeVariant('scheduled')).toBe('outline');
     expect(getStatusBadgeVariant('unknown')).toBe('outline');
+  });
+
+  it('builds a combined scope and type label for the overview table', () => {
+    expect(getCronJobKindLabel({ durable: false, recurring: false }, t)).toBe('Session / One-shot');
+    expect(getCronJobKindLabel({ durable: true, recurring: true }, t)).toBe('Durable / Recurring');
   });
 });

@@ -96,6 +96,10 @@ export class ProjectRuntime {
     }
   }
 
+  isTaskRunning(taskId: string): boolean {
+    return this.activeWorkers.has(taskId)
+  }
+
   private async handleMissedTasks(tasks: CronTask[]): Promise<void> {
     if (tasks.length === 0) return
     await this.handleMissedPrompt(buildMissedTaskNotification(tasks), tasks[0])

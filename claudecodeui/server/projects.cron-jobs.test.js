@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { promises as fs } from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -11,11 +12,17 @@ import {
 
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
-const tempHomes = [];
+const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+const tempDirs = [];
+
+async function createTempDir(prefix) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
 
 async function createTempHome() {
-  const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'projects-cron-jobs-'));
-  tempHomes.push(homeDir);
+  const homeDir = await createTempDir('projects-cron-jobs-');
   process.env.HOME = homeDir;
   process.env.USERPROFILE = homeDir;
   clearProjectDirectoryCache();
@@ -122,12 +129,45 @@ async function createBackgroundCronArtifacts({
   return transcriptPath;
 }
 
+async function withCronDaemonServer(configDir, responder, callback) {
+  process.env.CLAUDE_CONFIG_DIR = configDir;
+  const socketPath = path.join(configDir, 'cron-daemon.sock');
+  const requests = [];
+  const server = net.createServer((socket) => {
+    let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('utf-8');
+      const newlineIndex = buffer.indexOf('\n');
+      if (newlineIndex === -1) {
+        return;
+      }
+      const request = JSON.parse(buffer.slice(0, newlineIndex));
+      requests.push(request);
+      socket.end(`${JSON.stringify(responder(request))}\n`);
+    });
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(socketPath, () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+
+  try {
+    await callback(requests);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
 afterEach(async () => {
   clearProjectDirectoryCache();
 
-  while (tempHomes.length > 0) {
-    const homeDir = tempHomes.pop();
-    await fs.rm(homeDir, { recursive: true, force: true });
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop();
+    await fs.rm(dir, { recursive: true, force: true });
   }
 
   if (originalHome === undefined) {
@@ -140,6 +180,12 @@ afterEach(async () => {
     delete process.env.USERPROFILE;
   } else {
     process.env.USERPROFILE = originalUserProfile;
+  }
+
+  if (originalClaudeConfigDir === undefined) {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  } else {
+    process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
   }
 });
 
@@ -326,4 +372,90 @@ test('getProjectCronJobsOverview matches recurring cron jobs to failed backgroun
   assert.equal(overview.jobs[0].status, 'failed');
   assert.equal(overview.jobs[0].latestRun?.summary, 'Cron task "Recurring cron cron-9012" failed');
   assert.equal(overview.jobs[0].latestRun?.taskId, 'task-failed');
+});
+
+test('getProjectCronJobsOverview marks daemon-running cron jobs as running', async () => {
+  const homeDir = await createTempHome();
+  const configDir = await createTempDir('projects-cron-jobs-config-');
+  const projectName = 'project-with-running-cron';
+  const projectRoot = path.join(homeDir, 'workspace-running');
+  const parentSessionId = 'parent-session-running';
+  const transcriptFileName = 'agent-cron-running.jsonl';
+
+  await fs.mkdir(projectRoot, { recursive: true });
+  await writeProjectConfig(homeDir, projectName, projectRoot);
+  await createBackgroundCronArtifacts({
+    homeDir,
+    projectName,
+    parentSessionId,
+    transcriptFileName,
+    status: 'completed',
+    summary: 'Cron task "Recurring cron cron-running" completed'
+  });
+  await writeScheduledTasks(projectRoot, [
+    {
+      id: 'cron-running',
+      cron: '*/10 * * * *',
+      prompt: 'Watch the live queue',
+      createdAt: 1713515000000,
+      recurring: true,
+      originSessionId: parentSessionId,
+      transcriptKey: transcriptFileName
+    }
+  ]);
+
+  await withCronDaemonServer(configDir, () => ({
+    ok: true,
+    data: {
+      type: 'list_tasks',
+      tasks: [
+        {
+          id: 'cron-running',
+          cron: '*/10 * * * *',
+          prompt: 'Watch the live queue',
+          createdAt: 1713515000000,
+          recurring: true,
+          durable: true,
+          originSessionId: parentSessionId,
+          transcriptKey: transcriptFileName,
+          running: true
+        }
+      ]
+    }
+  }), async (requests) => {
+    const overview = await getProjectCronJobsOverview(projectName);
+
+    assert.equal(overview.jobs.length, 1);
+    assert.equal(overview.jobs[0].status, 'running');
+    assert.equal(overview.jobs[0].latestRun?.summary, 'Cron task "Recurring cron cron-running" completed');
+    assert.deepEqual(requests, [{
+      type: 'list_tasks',
+      projectRoot
+    }]);
+  });
+});
+
+test('getProjectCronJobsOverview falls back when the cron daemon is unavailable', async () => {
+  const homeDir = await createTempHome();
+  const projectName = 'project-without-daemon';
+  const projectRoot = path.join(homeDir, 'workspace-no-daemon');
+
+  await fs.mkdir(projectRoot, { recursive: true });
+  await writeProjectConfig(homeDir, projectName, projectRoot);
+  await writeScheduledTasks(projectRoot, [
+    {
+      id: 'cron-fallback',
+      cron: '0 * * * *',
+      prompt: 'Fallback to file-backed schedule',
+      createdAt: 1713516000000,
+      recurring: true,
+      originSessionId: 'origin-session-fallback'
+    }
+  ]);
+
+  const overview = await getProjectCronJobsOverview(projectName);
+
+  assert.equal(overview.jobs.length, 1);
+  assert.equal(overview.jobs[0].status, 'scheduled');
+  assert.equal(overview.jobs[0].latestRun, null);
 });

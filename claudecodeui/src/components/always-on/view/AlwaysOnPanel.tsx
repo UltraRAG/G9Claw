@@ -16,6 +16,8 @@ type AlwaysOnPanelProps = {
   selectedProject: Project;
 };
 
+type TranslateFn = (key: string, options?: Record<string, string>) => string;
+
 function formatDateTime(value?: string | number, fallback = '-'): string {
   if (value === undefined || value === null || value === '') {
     return fallback;
@@ -67,7 +69,12 @@ export function getPayloadError(payload: unknown): string | null {
   return null;
 }
 
-export function getStatusBadgeVariant(status: CronJobOverview['status']): 'secondary' | 'destructive' | 'outline' {
+export function getStatusBadgeVariant(
+  status: CronJobOverview['status']
+): 'default' | 'secondary' | 'destructive' | 'outline' {
+  if (status === 'running') {
+    return 'default';
+  }
   if (status === 'completed') {
     return 'secondary';
   }
@@ -75,6 +82,25 @@ export function getStatusBadgeVariant(status: CronJobOverview['status']): 'secon
     return 'destructive';
   }
   return 'outline';
+}
+
+export function getCronJobScopeLabel(job: Pick<CronJobOverview, 'durable'>, t: TranslateFn): string {
+  return job.durable === false
+    ? t('alwaysOn.flags.sessionScoped')
+    : t('alwaysOn.flags.durable');
+}
+
+export function getCronJobTypeLabel(job: Pick<CronJobOverview, 'recurring'>, t: TranslateFn): string {
+  return job.recurring
+    ? t('alwaysOn.flags.recurring')
+    : t('alwaysOn.flags.oneShot');
+}
+
+export function getCronJobKindLabel(
+  job: Pick<CronJobOverview, 'durable' | 'recurring'>,
+  t: TranslateFn
+): string {
+  return `${getCronJobScopeLabel(job, t)} / ${getCronJobTypeLabel(job, t)}`;
 }
 
 export function sortCronJobsByCreatedAt(jobs: CronJobOverview[]): CronJobOverview[] {
@@ -94,7 +120,7 @@ export function findSelectedCronJob(
 export function buildRunNowFeedback(
   jobId: string,
   result: RunProjectCronJobNowResponse | null,
-  t: (key: string, options?: Record<string, string>) => string
+  t: TranslateFn
 ): {
   tone: 'success' | 'info';
   message: string;
@@ -503,17 +529,13 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
                       </DetailField>
                       <DetailField label={t('alwaysOn.fields.scope')}>
                         <Badge variant="outline" className="text-xs">
-                          {selectedJob.durable === false
-                            ? t('alwaysOn.flags.sessionScoped')
-                            : t('alwaysOn.flags.durable')}
+                          {getCronJobScopeLabel(selectedJob, t)}
                         </Badge>
                       </DetailField>
                       <DetailField label={t('alwaysOn.fields.type')}>
                         <div className="flex flex-wrap gap-2">
                           <Badge variant="outline" className="text-xs">
-                            {selectedJob.recurring
-                              ? t('alwaysOn.flags.recurring')
-                              : t('alwaysOn.flags.oneShot')}
+                            {getCronJobTypeLabel(selectedJob, t)}
                           </Badge>
                           {selectedJob.permanent && (
                             <Badge variant="secondary" className="text-xs">
@@ -596,10 +618,10 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
                 <thead className="bg-muted/30">
                   <tr className="border-b border-border/60">
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      {t('alwaysOn.fields.scope')}
+                      {t('alwaysOn.fields.kind')}
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      {t('alwaysOn.fields.type')}
+                      {t('alwaysOn.fields.status')}
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       {t('alwaysOn.fields.jobId')}
@@ -625,25 +647,21 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
                   {sortedJobs.map((job) => (
                     <tr key={job.id} className="border-b border-border/60 align-top last:border-b-0">
                       <td className="px-4 py-4">
-                        <Badge variant="outline" className="text-xs">
-                          {job.durable === false
-                            ? t('alwaysOn.flags.sessionScoped')
-                            : t('alwaysOn.flags.durable')}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-4">
-                        <div className="flex flex-wrap gap-2">
-                          <Badge variant="outline" className="text-xs">
-                            {job.recurring
-                              ? t('alwaysOn.flags.recurring')
-                              : t('alwaysOn.flags.oneShot')}
-                          </Badge>
+                        <div className="space-y-2">
+                          <div className="font-medium text-foreground">{getCronJobKindLabel(job, t)}</div>
                           {job.permanent && (
-                            <Badge variant="secondary" className="text-xs">
-                              {t('alwaysOn.flags.permanent')}
-                            </Badge>
+                            <div className="flex flex-wrap gap-2">
+                              <Badge variant="secondary" className="text-xs">
+                                {t('alwaysOn.flags.permanent')}
+                              </Badge>
+                            </div>
                           )}
                         </div>
+                      </td>
+                      <td className="px-4 py-4">
+                        <Badge variant={getStatusBadgeVariant(job.status)} className="text-xs">
+                          {t(`alwaysOn.status.${job.status}`)}
+                        </Badge>
                       </td>
                       <td className="px-4 py-4">
                         <button

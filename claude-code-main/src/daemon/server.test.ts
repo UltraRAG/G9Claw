@@ -19,6 +19,7 @@ describe('CronDaemonServer run_task_now', () => {
   let projectRoot: string
   let configDir: string
   let launchTaskSpy: ReturnType<typeof spyOn>
+  let isTaskRunningSpy: ReturnType<typeof spyOn>
   let startSpy: ReturnType<typeof spyOn>
   const priorConfigDir = process.env.CLAUDE_CONFIG_DIR
 
@@ -28,6 +29,9 @@ describe('CronDaemonServer run_task_now', () => {
     process.env.CLAUDE_CONFIG_DIR = configDir
 
     startSpy = spyOn(ProjectRuntime.prototype, 'start').mockImplementation(() => {})
+    isTaskRunningSpy = spyOn(ProjectRuntime.prototype, 'isTaskRunning').mockReturnValue(
+      false,
+    )
     launchTaskSpy = spyOn(ProjectRuntime.prototype, 'launchSessionTask').mockResolvedValue(
       true,
     )
@@ -35,6 +39,7 @@ describe('CronDaemonServer run_task_now', () => {
 
   afterEach(async () => {
     launchTaskSpy.mockRestore()
+    isTaskRunningSpy.mockRestore()
     startSpy.mockRestore()
     if (priorConfigDir === undefined) {
       delete process.env.CLAUDE_CONFIG_DIR
@@ -168,5 +173,61 @@ describe('CronDaemonServer run_task_now', () => {
       },
     })
     expect(launchTaskSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test('list_tasks includes whether each task is currently running', async () => {
+    const durableTaskId = 'cron-durable-list'
+    await writeScheduledTasks(projectRoot, [
+      {
+        id: durableTaskId,
+        cron: '*/5 * * * *',
+        prompt: 'Check backlog',
+        createdAt: Date.now(),
+        recurring: true,
+        originSessionId: 'origin-session-list',
+      },
+    ])
+
+    const server = new CronDaemonServer()
+    const createResponse = await (server as any).handleRequest({
+      type: 'create_task',
+      projectRoot,
+      originSessionId: 'origin-session-session',
+      cron: '* * * * *',
+      prompt: 'Stretch now',
+      recurring: false,
+      durable: false,
+    })
+
+    expect(createResponse.ok).toBe(true)
+    if (!createResponse.ok || createResponse.data.type !== 'create_task') {
+      return
+    }
+
+    isTaskRunningSpy.mockImplementation(taskId => taskId === durableTaskId)
+
+    const response = await (server as any).handleRequest({
+      type: 'list_tasks',
+      projectRoot,
+    })
+
+    expect(response).toEqual({
+      ok: true,
+      data: {
+        type: 'list_tasks',
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            id: durableTaskId,
+            durable: true,
+            running: true,
+          }),
+          expect.objectContaining({
+            id: createResponse.data.task.id,
+            durable: false,
+            running: false,
+          }),
+        ]),
+      },
+    })
   })
 })
