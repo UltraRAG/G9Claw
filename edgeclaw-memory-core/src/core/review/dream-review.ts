@@ -953,6 +953,7 @@ export class DreamRewriteRunner {
     let absorbedUserNoteIds: string[] = [];
     let protectedUserPathsSkipped: string[] = [];
     let userRewriteFailureMessage = "";
+    let userRewriteKeptNotesMessage = "";
     if (selectedUserCandidates.length > 0) {
       try {
         const rewrittenUser = await this.extractor.rewriteUserProfile({
@@ -973,17 +974,19 @@ export class DreamRewriteRunner {
               action: "rewrite_user_profile",
               relativePath: userProfileRelativePath ?? "global/UserIdentity/user-profile.md",
             });
-          }
-          const requestedAbsorbedUserNoteIds = userNoteWindow.selectedRecords.map((record) => record.relativePath);
-          absorbedUserNoteIds = requestedAbsorbedUserNoteIds.filter((relativePath) => (
-            isDreamUserNotePath(relativePath) && !isDreamUserProfilePath(relativePath)
-          ));
-          protectedUserPathsSkipped = requestedAbsorbedUserNoteIds.filter((relativePath) => !absorbedUserNoteIds.includes(relativePath));
-          if (absorbedUserNoteIds.length > 0) {
-            this.repository.deleteMemoryEntries(absorbedUserNoteIds);
-            for (const relativePath of absorbedUserNoteIds) {
-              trace.mutations.push(mutation("delete", relativePath));
+            const requestedAbsorbedUserNoteIds = userNoteWindow.selectedRecords.map((record) => record.relativePath);
+            absorbedUserNoteIds = requestedAbsorbedUserNoteIds.filter((relativePath) => (
+              isDreamUserNotePath(relativePath) && !isDreamUserProfilePath(relativePath)
+            ));
+            protectedUserPathsSkipped = requestedAbsorbedUserNoteIds.filter((relativePath) => !absorbedUserNoteIds.includes(relativePath));
+            if (absorbedUserNoteIds.length > 0) {
+              this.repository.deleteMemoryEntries(absorbedUserNoteIds);
+              for (const relativePath of absorbedUserNoteIds) {
+                trace.mutations.push(mutation("delete", relativePath));
+              }
             }
+          } else {
+            userRewriteKeptNotesMessage = "Dream kept the selected user notes because the rewritten profile matched the existing profile.";
           }
         } else {
           userRewriteFailureMessage = "Dream skipped user profile rewrite because the model returned no valid rewritten profile.";
@@ -1005,7 +1008,7 @@ export class DreamRewriteRunner {
         : absorbedUserNoteIds.length > 0
           ? `Dream absorbed ${absorbedUserNoteIds.length} user notes without changing the current profile summary.`
           : selectedUserCandidates.length > 0
-            ? userRewriteFailureMessage || "Dream could not absorb the selected user notes into the global profile."
+            ? userRewriteFailureMessage || userRewriteKeptNotesMessage || "Dream could not absorb the selected user notes into the global profile."
             : "Dream found no user notes within the current processing window.",
       {
         titleI18n: traceI18n("trace.step.user_profile_rewritten", "User Profile Rewritten"),
@@ -1045,6 +1048,13 @@ export class DreamRewriteRunner {
                 "user-rewrite-warning",
                 "User Rewrite Warning",
                 [{ label: "message", value: userRewriteFailureMessage }],
+              )]
+            : []),
+          ...(userRewriteKeptNotesMessage
+            ? [kvDetail(
+                "user-rewrite-kept-notes",
+                "User Notes Kept",
+                [{ label: "message", value: userRewriteKeptNotesMessage }],
               )]
             : []),
         ],
