@@ -204,21 +204,24 @@ Use this exact JSON shape:
 }
 `.trim();
 const USER_PROFILE_REWRITE_SYSTEM_PROMPT = `
-You rewrite a global user profile for a conversational memory system.
+You rewrite the single "身份背景" section of a global user profile for a conversational memory system.
 
 Rules:
 - Return JSON only.
+- The existing profile markdown is the previous draft. The incoming user notes are the newest evidence.
+- Rewrite the section from scratch. Do not append blindly, and do not keep duplicate or near-duplicate facts just because they already exist.
 - Keep only durable personal identity/background information that should persist across future sessions.
-- Preserve durable incoming facts about who the user is. Do not drop a newly supplied stable identity, background, role detail, or durable relationship unless it clearly conflicts with older evidence.
-- "identity_background" should contain concise bullet-like facts about the user's stable identity, background, role context, or durable relationships.
-- If the incoming evidence only describes reply preferences, formatting habits, style choices, language choices, file/tool boundaries, or project collaboration rules, return an empty array.
+- If old profile content conflicts with newer, clearer incoming evidence, prefer the newer evidence and rewrite the section accordingly.
+- If the incoming evidence only describes reply preferences, formatting habits, style choices, language choices, file/tool boundaries, or project collaboration rules, do not include them in the rewritten section.
 - Do not include project progress, project-specific collaboration rules, deadlines, blockers, or temporary tasks.
 - Keep the language aligned with the user's language in the incoming content.
-- Do not copy markdown syntax, heading markers, bullet markers, or code formatting into the output items. Normalize them into clean natural-language facts.
+- "identity_background_markdown" must contain only the markdown content that belongs under the "## 身份背景" heading.
+- Do not include the heading itself.
+- Prefer concise bullet-list markdown when possible.
 
 Use this exact JSON shape:
 {
-  "identity_background": ["..."]
+  "identity_background_markdown": "- ..."
 }
 `.trim();
 const STABLE_FORMAL_PROJECT_ID_PATTERN = /^project_[a-z0-9]+$/;
@@ -507,27 +510,64 @@ function detectPreferredOutputLanguage(messages) {
 }
 function buildUserProfileRewritePrompt(input) {
     return JSON.stringify({
-        existing_user_profile: input.existingProfile
-            ? {
-                identity_background: input.existingProfile.identityBackground
-                    .map((item) => truncateForPrompt(item, 120))
-                    .slice(0, 20),
-            }
+        existing_profile_markdown: input.existingProfile?.files[0]?.content
+            ? truncate(input.existingProfile.files[0].content, 3_200)
             : null,
-        incoming_user_candidates: input.candidates.map((candidate) => {
-            const plainText = stripMarkdownSyntax(candidate.body || candidate.profile || candidate.summary || candidate.description);
+        incoming_user_notes: input.candidates.map((candidate) => {
+            const noteMarkdown = candidate.body || candidate.profile || candidate.summary || candidate.description;
             return {
                 description: truncateForPrompt(candidate.description, 180),
-                identity_background_hints: uniqueStrings([
-                    ...splitProfileFacts(candidate.profile || candidate.summary || ""),
-                    ...(candidate.relationships ?? []),
-                ], 12).map((item) => truncateForPrompt(item, 120)),
-                note_text: truncateForPrompt(plainText, 900),
+                note_markdown: truncate(String(noteMarkdown || ""), 1_400),
                 captured_at: candidate.capturedAt ?? "",
                 source_session_key: candidate.sourceSessionKey ?? "",
             };
         }),
     }, null, 2);
+}
+function renderIdentityBackgroundMarkdownFromItems(items) {
+    const normalized = uniqueStrings(items.map((item) => stripMarkdownSyntax(item)), 20);
+    return normalized.map((item) => `- ${item}`).join("\n");
+}
+function normalizeIdentityBackgroundSectionMarkdown(value) {
+    if (typeof value !== "string") {
+        if (Array.isArray(value)) {
+            return renderIdentityBackgroundMarkdownFromItems(value.filter((item) => typeof item === "string")).trim();
+        }
+        return "";
+    }
+    let normalized = value
+        .replace(/\r/g, "\n")
+        .replace(/^```(?:markdown)?\s*/i, "")
+        .replace(/```$/i, "")
+        .trim();
+    normalized = normalized.replace(/^#{1,6}\s*身份背景\s*\n+/i, "").trim();
+    return normalized;
+}
+function buildUserProfileBodyFromSectionMarkdown(sectionMarkdown) {
+    const normalizedSection = normalizeIdentityBackgroundSectionMarkdown(sectionMarkdown);
+    if (!normalizedSection)
+        return null;
+    return `## 身份背景\n${normalizedSection.trim()}\n`;
+}
+function extractIdentityBackgroundFactsFromProfileBody(body) {
+    return splitProfileFacts(stripMarkdownSyntax(body));
+}
+function buildRewrittenUserProfileCandidate(input) {
+    const body = buildUserProfileBodyFromSectionMarkdown(input.sectionMarkdown);
+    if (!body)
+        return null;
+    const facts = extractIdentityBackgroundFactsFromProfileBody(body);
+    return {
+        type: "user",
+        scope: "global",
+        name: "user-profile",
+        description: truncateForPrompt(facts[0] || "User profile", 120),
+        ...(input.latestCandidate?.capturedAt ? { capturedAt: input.latestCandidate.capturedAt } : {}),
+        ...(input.latestCandidate?.sourceSessionKey ? { sourceSessionKey: input.latestCandidate.sourceSessionKey } : {}),
+        body,
+        ...(facts.length > 0 ? { profile: facts.join("；") } : {}),
+        ...(facts.length > 0 ? { relationships: facts } : {}),
+    };
 }
 function buildConversationTurns(messages) {
     const turns = [];
@@ -1703,32 +1743,6 @@ export class LlmMemoryExtractor {
         if (userCandidates.length === 0)
             return null;
         const latestCandidate = userCandidates[userCandidates.length - 1];
-        const fallbackIdentityBackground = uniqueStrings([
-            ...(input.existingProfile?.identityBackground ?? []),
-            ...userCandidates.flatMap((candidate) => [
-                ...splitProfileFacts(candidate.profile || candidate.summary || candidate.description || ""),
-                ...(candidate.relationships ?? []),
-            ]),
-        ], 20);
-        const buildCandidate = (next) => {
-            const cleaned = cleanUserIdentitySummary(next);
-            const identityBackground = cleaned.identityBackground;
-            if (identityBackground.length === 0) {
-                return null;
-            }
-            return {
-                type: "user",
-                scope: "global",
-                name: "user-profile",
-                description: truncateForPrompt(identityBackground[0] || "User profile", 120),
-                ...(latestCandidate?.capturedAt ? { capturedAt: latestCandidate.capturedAt } : {}),
-                ...(latestCandidate?.sourceSessionKey ? { sourceSessionKey: latestCandidate.sourceSessionKey } : {}),
-                profile: identityBackground.join("；"),
-            };
-        };
-        const mergeWithFallback = (next) => cleanUserIdentitySummary({
-            identityBackground: uniqueStrings([...next.identityBackground, ...fallbackIdentityBackground], 20),
-        });
         try {
             const parsed = await this.callStructuredJsonWithDebug({
                 systemPrompt: USER_PROFILE_REWRITE_SYSTEM_PROMPT,
@@ -1739,18 +1753,15 @@ export class LlmMemoryExtractor {
                 ...(input.debugTrace ? { debugTrace: input.debugTrace } : {}),
                 parse: (raw) => JSON.parse(extractFirstJsonObject(raw)),
             });
-            const rewritten = buildCandidate(mergeWithFallback({
-                identityBackground: normalizeUserSectionItems(parsed.identity_background, 20),
-            }));
-            if (rewritten)
-                return rewritten;
+            return buildRewrittenUserProfileCandidate({
+                sectionMarkdown: parsed.identity_background_markdown ?? parsed.identity_background ?? "",
+                latestCandidate,
+            });
         }
         catch (error) {
-            this.logger?.warn?.(`[clawxmemory] user profile rewrite fallback: ${String(error)}`);
+            this.logger?.warn?.(`[clawxmemory] user profile rewrite failed: ${String(error)}`);
         }
-        return buildCandidate(mergeWithFallback({
-            identityBackground: fallbackIdentityBackground,
-        }));
+        return null;
     }
     async classifyMemoryTurn(input) {
         try {

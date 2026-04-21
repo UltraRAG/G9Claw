@@ -413,7 +413,7 @@ export class MemoryRepository {
         const summary = this.globalUserMemory.getUserSummary();
         return {
             ...summary,
-            files: summary.files.map((entry) => this.mapGlobalManifestEntry(entry)),
+            files: summary.files.map((entry) => this.mapGlobalFileRecord(entry)),
         };
     }
     mapGlobalManifestEntry(entry) {

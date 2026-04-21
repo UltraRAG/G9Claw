@@ -194,24 +194,6 @@ function toRefinedCandidate(input) {
         ...(input.sourceRecord.sourceSessionKey ? { sourceSessionKey: input.sourceRecord.sourceSessionKey } : {}),
     };
 }
-function normalizeFactText(value) {
-    return value.trim();
-}
-function uniqueFactStrings(items, maxItems = 20) {
-    return Array.from(new Set(items
-        .map((item) => normalizeFactText(item))
-        .filter(Boolean))).slice(0, maxItems);
-}
-function splitUserSummaryFacts(text) {
-    return uniqueFactStrings(text
-        .replace(/\r/g, "\n")
-        .split(/\n|[，,；;。.!?]/)
-        .map((line) => line.trim())
-        .filter((line) => line.length >= 2));
-}
-function sameUserSummary(left, right) {
-    return JSON.stringify(left) === JSON.stringify(right);
-}
 function validateExclusiveClusters(clusters, allowedRelativePaths, maxFiles) {
     const used = new Set();
     const accepted = [];
@@ -657,6 +639,7 @@ export class DreamRewriteRunner {
         let userRewriteDebug;
         let absorbedUserNoteIds = [];
         let protectedUserPathsSkipped = [];
+        let userRewriteFailureMessage = "";
         if (selectedUserCandidates.length > 0) {
             try {
                 const rewrittenUser = await this.extractor.rewriteUserProfile({
@@ -666,14 +649,10 @@ export class DreamRewriteRunner {
                         userRewriteDebug = debug;
                     },
                 });
-                if (rewrittenUser) {
-                    const nextSummary = {
-                        identityBackground: splitUserSummaryFacts(rewrittenUser.profile ?? ""),
-                    };
-                    const previousSummary = {
-                        identityBackground: userSummary.identityBackground,
-                    };
-                    if (!sameUserSummary(previousSummary, nextSummary)) {
+                if (rewrittenUser?.body?.trim()) {
+                    const previousProfileBody = (userSummary.files[0]?.content ?? "").trim();
+                    const nextProfileBody = rewrittenUser.body.trim();
+                    if (previousProfileBody !== nextProfileBody) {
                         globalUserStore.upsertUserProfile(rewrittenUser);
                         userProfileUpdated = true;
                         trace.mutations.push({
@@ -692,8 +671,12 @@ export class DreamRewriteRunner {
                         }
                     }
                 }
+                else {
+                    userRewriteFailureMessage = "Dream skipped user profile rewrite because the model returned no valid rewritten profile.";
+                }
             }
             catch (error) {
+                userRewriteFailureMessage = `Dream skipped user profile rewrite because the rewrite request failed: ${error instanceof Error ? error.message : String(error)}`;
                 this.logger?.warn?.(`[clawxmemory] staged dream user-profile rewrite failed: ${String(error)}`);
             }
         }
@@ -702,7 +685,7 @@ export class DreamRewriteRunner {
             : absorbedUserNoteIds.length > 0
                 ? `Dream absorbed ${absorbedUserNoteIds.length} user notes without changing the current profile summary.`
                 : selectedUserCandidates.length > 0
-                    ? "Dream could not absorb the selected user notes into the global profile."
+                    ? userRewriteFailureMessage || "Dream could not absorb the selected user notes into the global profile."
                     : "Dream found no user notes within the current processing window.", {
             titleI18n: traceI18n("trace.step.user_profile_rewritten", "User Profile Rewritten"),
             details: [
@@ -713,6 +696,7 @@ export class DreamRewriteRunner {
                     { label: "selectedChars", value: userNoteWindow.selectedChars },
                     { label: "keptUserNotes", value: userNoteWindow.keptRecords.length },
                     { label: "profileUpdated", value: userProfileUpdated ? "yes" : "no" },
+                    { label: "notesAbsorbed", value: absorbedUserNoteIds.length },
                 ]),
                 ...(userNoteWindow.selectedRecords.length > 0
                     ? [listDetail("selected-user-notes", "Selected User Notes", userNoteWindow.selectedRecords.map((record) => `${record.relativePath} | ${record.updatedAt}`))]
@@ -722,6 +706,9 @@ export class DreamRewriteRunner {
                     : []),
                 ...(protectedUserPathsSkipped.length > 0
                     ? [listDetail("protected-user-paths-skipped", "Protected User Paths Skipped", protectedUserPathsSkipped)]
+                    : []),
+                ...(userRewriteFailureMessage
+                    ? [kvDetail("user-rewrite-warning", "User Rewrite Warning", [{ label: "message", value: userRewriteFailureMessage }])]
                     : []),
             ],
             ...(userRewriteDebug ? { promptDebug: userRewriteDebug } : {}),

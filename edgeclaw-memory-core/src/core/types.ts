@@ -61,7 +61,7 @@ export interface ProjectShortlistCandidate {
 
 export interface MemoryUserSummary {
   identityBackground: string[];
-  files: MemoryManifestEntry[];
+  files: MemoryFileRecord[];
 }
 
 export type ClearMemoryScope = "current_project" | "all_memory";
