@@ -1,10 +1,9 @@
-import { AlertCircle, CheckCircle2, CircleHelp, Radio, RefreshCw, Repeat2 } from 'lucide-react';
+import { AlertCircle, Radio, RefreshCw, Repeat2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Button, ScrollArea } from '../../../shared/view/ui';
 import type {
   CronJobOverview,
-  CronJobOverviewStatus,
   Project,
   ProjectCronJobsResponse
 } from '../../../types/app';
@@ -16,43 +15,17 @@ type AlwaysOnPanelProps = {
   selectedProject: Project;
 };
 
-function formatDateTime(value?: string | number): string {
+function formatDateTime(value?: string | number, fallback = '-'): string {
   if (value === undefined || value === null || value === '') {
-    return '-';
+    return fallback;
   }
 
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    return '-';
+    return fallback;
   }
 
   return date.toLocaleString();
-}
-
-function getStatusBadgeClassName(status: CronJobOverviewStatus): string {
-  switch (status) {
-    case 'completed':
-      return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-900/20 dark:text-emerald-200';
-    case 'failed':
-      return 'border-red-200 bg-red-50 text-red-700 dark:border-red-800/60 dark:bg-red-900/20 dark:text-red-200';
-    case 'scheduled':
-      return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-200';
-    default:
-      return 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900/20 dark:text-slate-200';
-  }
-}
-
-function getStatusLabel(status: CronJobOverviewStatus, t: (key: string) => string): string {
-  switch (status) {
-    case 'completed':
-      return t('status.completed');
-    case 'failed':
-      return t('status.failed');
-    case 'scheduled':
-      return t('alwaysOn.statusLabels.scheduled');
-    default:
-      return t('alwaysOn.statusLabels.unknown');
-  }
 }
 
 function getRefreshErrorMessage(error: unknown, fallback: string): string {
@@ -61,6 +34,15 @@ function getRefreshErrorMessage(error: unknown, fallback: string): string {
   }
 
   return fallback;
+}
+
+function getDisplayText(value: string | undefined, fallback: string): string {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
 }
 
 export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
@@ -124,11 +106,10 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
       setError(getRefreshErrorMessage(loadError, t('alwaysOn.errors.loadFailed')));
     } finally {
       requestInFlightRef.current = false;
-      if (!isMountedRef.current) {
-        return;
+      if (isMountedRef.current) {
+        setIsLoading(false);
+        setIsRefreshing(false);
       }
-      setIsLoading(false);
-      setIsRefreshing(false);
     }
   }, [selectedProject.name, t]);
 
@@ -153,41 +134,20 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
       if (job.status === 'failed') {
         accumulator.failed += 1;
       }
-      if (job.status === 'scheduled') {
-        accumulator.scheduled += 1;
-      }
       return accumulator;
     }, {
       total: 0,
       recurring: 0,
-      failed: 0,
-      scheduled: 0
+      failed: 0
     });
   }, [jobs]);
 
-  const jobSections = useMemo(() => {
-    const durableJobs: CronJobOverview[] = [];
-    const sessionJobs: CronJobOverview[] = [];
+  const sortedJobs = useMemo(
+    () => [...jobs].sort((left: CronJobOverview, right: CronJobOverview) => right.createdAt - left.createdAt),
+    [jobs]
+  );
 
-    for (const job of jobs) {
-      if (job.durable === false) {
-        sessionJobs.push(job);
-      } else {
-        durableJobs.push(job);
-      }
-    }
-
-    const sortJobsByCreatedAt = (left: CronJobOverview, right: CronJobOverview) =>
-      right.createdAt - left.createdAt;
-
-    durableJobs.sort(sortJobsByCreatedAt);
-    sessionJobs.sort(sortJobsByCreatedAt);
-
-    return [
-      { key: 'durable', title: t('alwaysOn.sections.durable'), jobs: durableJobs },
-      { key: 'session', title: t('alwaysOn.sections.sessionScoped'), jobs: sessionJobs }
-    ].filter((section) => section.jobs.length > 0);
-  }, [jobs, t]);
+  const notAvailableLabel = t('alwaysOn.values.notAvailable');
 
   const summaryCards = [
     {
@@ -207,12 +167,6 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
       label: t('alwaysOn.summary.failed'),
       value: summary.failed,
       icon: <AlertCircle className="h-4 w-4 text-red-500" />
-    },
-    {
-      key: 'scheduled',
-      label: t('alwaysOn.summary.scheduled'),
-      value: summary.scheduled,
-      icon: <CircleHelp className="h-4 w-4 text-amber-500" />
     }
   ];
 
@@ -246,7 +200,7 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
 
       <ScrollArea className="flex-1">
         <div className="space-y-6 p-4 sm:p-6">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {summaryCards.map((card) => (
               <div
                 key={card.key}
@@ -284,137 +238,100 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
               <p className="mt-2 text-sm text-muted-foreground">{t('alwaysOn.emptyDescription')}</p>
             </div>
           ) : (
-            <div className="space-y-4">
-              {jobSections.map((section) => (
-                <section key={section.key} className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold text-foreground">{section.title}</h3>
-                    <Badge variant="secondary" className="px-2 py-0 text-xs">
-                      {section.jobs.length}
-                    </Badge>
-                  </div>
-
-                  {section.jobs.map((job) => (
-                    <div
-                      key={job.id}
-                      className="rounded-xl border border-border bg-card/50 p-4 shadow-sm"
-                    >
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="text-sm font-semibold text-foreground">{job.id}</h3>
-                            <Badge
-                              variant="outline"
-                              className={getStatusBadgeClassName(job.status)}
-                            >
-                              {getStatusLabel(job.status, t)}
+            <div className="overflow-x-auto rounded-xl border border-border bg-card/50 shadow-sm">
+              <table className="w-full min-w-[1160px] border-collapse text-sm">
+                <thead className="bg-muted/30">
+                  <tr className="border-b border-border/60">
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t('alwaysOn.fields.scope')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t('alwaysOn.fields.type')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t('alwaysOn.fields.jobId')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t('alwaysOn.fields.createdAt')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t('alwaysOn.fields.lastFiredAt')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t('alwaysOn.fields.lastActivity')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t('alwaysOn.fields.originSessionId')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t('alwaysOn.fields.transcriptKey')}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedJobs.map((job) => (
+                    <tr key={job.id} className="border-b border-border/60 align-top last:border-b-0">
+                      <td className="px-4 py-4">
+                        <Badge variant="outline" className="text-xs">
+                          {job.durable === false
+                            ? t('alwaysOn.flags.sessionScoped')
+                            : t('alwaysOn.flags.durable')}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-4">
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant="outline" className="text-xs">
+                            {job.recurring
+                              ? t('alwaysOn.flags.recurring')
+                              : t('alwaysOn.flags.oneShot')}
+                          </Badge>
+                          {job.permanent && (
+                            <Badge variant="secondary" className="text-xs">
+                              {t('alwaysOn.flags.permanent')}
                             </Badge>
-                            <Badge variant="outline" className="text-xs">
-                              {job.durable === false
-                                ? t('alwaysOn.flags.sessionScoped')
-                                : t('alwaysOn.flags.durable')}
-                            </Badge>
-                            <Badge variant="outline" className="text-xs">
-                              {job.recurring
-                                ? t('alwaysOn.flags.recurring')
-                                : t('alwaysOn.flags.oneShot')}
-                            </Badge>
-                            {job.permanent && (
-                              <Badge variant="outline" className="text-xs">
-                                {t('alwaysOn.flags.permanent')}
-                              </Badge>
-                            )}
-                          </div>
-
-                          <p className="mt-3 break-words text-sm leading-6 text-muted-foreground">
-                            {job.prompt}
-                          </p>
+                          )}
                         </div>
-
-                        <div className="shrink-0">
-                          <code className="rounded-md bg-muted px-2.5 py-1.5 text-xs text-foreground">
+                      </td>
+                      <td className="px-4 py-4">
+                        <div className="min-w-0 space-y-2">
+                          <div className="break-all font-medium text-foreground">{job.id}</div>
+                          <p
+                            className="max-w-md truncate text-xs text-muted-foreground"
+                            title={job.prompt}
+                          >
+                            {getDisplayText(job.prompt, notAvailableLabel)}
+                          </p>
+                          <code
+                            className="block max-w-full break-all rounded-md bg-muted px-2.5 py-1.5 text-xs text-foreground"
+                            title={job.cron}
+                          >
                             {job.cron}
                           </code>
                         </div>
-                      </div>
-
-                      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                        <div className="rounded-lg border border-border/70 bg-background/70 p-3">
-                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                            {t('alwaysOn.fields.createdAt')}
-                          </div>
-                          <div className="mt-1 text-sm text-foreground">{formatDateTime(job.createdAt)}</div>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-4 text-foreground">
+                        {formatDateTime(job.createdAt, notAvailableLabel)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-4 text-foreground">
+                        {formatDateTime(job.lastFiredAt, notAvailableLabel)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-4 text-foreground">
+                        {formatDateTime(job.latestRun?.lastActivity, notAvailableLabel)}
+                      </td>
+                      <td className="px-4 py-4 text-foreground">
+                        <div className="max-w-56 break-all">
+                          {getDisplayText(job.originSessionId, notAvailableLabel)}
                         </div>
-                        <div className="rounded-lg border border-border/70 bg-background/70 p-3">
-                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                            {t('alwaysOn.fields.lastFiredAt')}
-                          </div>
-                          <div className="mt-1 text-sm text-foreground">{formatDateTime(job.lastFiredAt)}</div>
+                      </td>
+                      <td className="px-4 py-4 text-foreground">
+                        <div className="max-w-72 break-all">
+                          {getDisplayText(job.transcriptKey, notAvailableLabel)}
                         </div>
-                        <div className="rounded-lg border border-border/70 bg-background/70 p-3">
-                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                            {t('alwaysOn.fields.originSessionId')}
-                          </div>
-                          <div className="mt-1 break-all text-sm text-foreground">
-                            {job.originSessionId || t('alwaysOn.values.notAvailable')}
-                          </div>
-                        </div>
-                        <div className="rounded-lg border border-border/70 bg-background/70 p-3">
-                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                            {t('alwaysOn.fields.transcriptKey')}
-                          </div>
-                          <div className="mt-1 break-all text-sm text-foreground">
-                            {job.transcriptKey || t('alwaysOn.values.notAvailable')}
-                          </div>
-                        </div>
-                      </div>
-
-                      {job.latestRun && (
-                        <div className="mt-4 rounded-lg border border-border/70 bg-background/70 p-3">
-                          <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
-                            <CheckCircle2 className="h-4 w-4 text-primary" />
-                            {t('alwaysOn.latestRunTitle')}
-                          </div>
-                          <div className="grid gap-3 md:grid-cols-2">
-                            <div>
-                              <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                                {t('alwaysOn.fields.summary')}
-                              </div>
-                              <div className="mt-1 break-words text-sm text-foreground">
-                                {job.latestRun.summary || t('alwaysOn.values.notAvailable')}
-                              </div>
-                            </div>
-                            <div>
-                              <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                                {t('alwaysOn.fields.lastActivity')}
-                              </div>
-                              <div className="mt-1 text-sm text-foreground">
-                                {formatDateTime(job.latestRun.lastActivity)}
-                              </div>
-                            </div>
-                            <div>
-                              <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                                {t('alwaysOn.fields.taskId')}
-                              </div>
-                              <div className="mt-1 break-all text-sm text-foreground">
-                                {job.latestRun.taskId || t('alwaysOn.values.notAvailable')}
-                              </div>
-                            </div>
-                            <div>
-                              <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                                {t('alwaysOn.fields.relativeTranscriptPath')}
-                              </div>
-                              <div className="mt-1 break-all text-sm text-foreground">
-                                {job.latestRun.relativeTranscriptPath || t('alwaysOn.values.notAvailable')}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                      </td>
+                    </tr>
                   ))}
-                </section>
-              ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>

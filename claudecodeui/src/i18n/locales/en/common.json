@@ -98,22 +98,16 @@
   },
   "alwaysOn": {
     "title": "Background Jobs Overview",
-    "description": "Monitor the current project's durable cron jobs, session-scoped tasks, and latest background run results.",
+    "description": "View the current project's existing durable cron jobs and session-scoped tasks in a single table.",
     "lastUpdated": "Last updated: {{timestamp}}",
     "loadingTitle": "Loading cron jobs",
-    "loadingDescription": "Reading durable cron jobs and session-scoped tasks, then matching the latest background runs.",
-    "emptyTitle": "No cron jobs yet",
+    "loadingDescription": "Reading the current project's visible scheduled tasks and preparing the overview table.",
+    "emptyTitle": "No scheduled tasks yet",
     "emptyDescription": "This project does not currently have any visible durable cron jobs or session-scoped tasks.",
-    "latestRunTitle": "Latest Run",
-    "statusLabels": {
-      "scheduled": "Scheduled",
-      "unknown": "Unknown"
-    },
     "summary": {
       "total": "Total jobs",
       "recurring": "Recurring jobs",
-      "failed": "Failed recently",
-      "scheduled": "Awaiting result"
+      "failed": "Failed recently"
     },
     "flags": {
       "durable": "Durable",
@@ -122,19 +116,15 @@
       "recurring": "Recurring",
       "permanent": "Permanent"
     },
-    "sections": {
-      "durable": "Durable Cron",
-      "sessionScoped": "Session-Scoped Tasks"
-    },
     "fields": {
+      "scope": "Scope",
+      "type": "Type",
+      "jobId": "Task ID",
       "createdAt": "Created",
       "lastFiredAt": "Last fired",
       "originSessionId": "Origin session",
       "transcriptKey": "Transcript key",
-      "summary": "Summary",
-      "lastActivity": "Last activity",
-      "taskId": "Task ID",
-      "relativeTranscriptPath": "Transcript path"
+      "lastActivity": "Last activity"
     },
     "values": {
       "notUpdated": "Not updated yet",

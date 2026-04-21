@@ -93,10 +93,13 @@ export function useScheduledTasks({
           logForDebugging(
             `[ScheduledTasks] teammate ${task.agentId} gone, removing orphaned cron ${task.id}`,
           )
-          void removeCronTasks([task.id])
-          return
+          return removeCronTasks([task.id]).catch(error =>
+            logForDebugging(
+              `[ScheduledTasks] failed to remove orphaned cron ${task.id}: ${String(error)}`,
+            ),
+          )
         }
-        void Promise.resolve(runLeadCronTask(task)).catch(error =>
+        return Promise.resolve(runLeadCronTask(task)).catch(error =>
           logForDebugging(
             `[ScheduledTasks] failed to start cron background task ${task.id}: ${String(error)}`,
           ),

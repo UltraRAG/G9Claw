@@ -80,9 +80,11 @@ type CronSchedulerOptions = {
   /**
    * When provided, receives the full CronTask on normal fires (and onFire is
    * NOT called for that fire). Lets daemon callers see the task id/cron/etc
-   * instead of just the prompt string.
+   * instead of just the prompt string. File-backed recurring tasks await this
+   * callback before lastFiredAt is persisted so transcript metadata can land
+   * first.
    */
-  onFireTask?: (task: CronTask) => void
+  onFireTask?: (task: CronTask) => void | Promise<void>
   /**
    * When provided, receives the missed one-shot tasks on initial load (and
    * onFire is NOT called with the pre-formatted notification). Daemon decides
@@ -154,6 +156,22 @@ export type CronScheduler = {
   getNextFireTime: () => number | null
 }
 
+export async function persistFiredRecurringTasks(
+  taskIds: readonly string[],
+  firedAt: number,
+  pendingFireStarts: readonly Promise<void>[],
+  dir?: string,
+  markTasksFired: (
+    ids: string[],
+    firedAt: number,
+    dir?: string,
+  ) => Promise<void> = markCronTasksFired,
+): Promise<void> {
+  if (taskIds.length === 0) return
+  await Promise.all(pendingFireStarts)
+  await markTasksFired([...taskIds], firedAt, dir)
+}
+
 export function createCronScheduler(
   options: CronSchedulerOptions,
 ): CronScheduler {
@@ -208,6 +226,7 @@ export function createCronScheduler(
   let watcher: FSWatcher | null = null
   let stopped = false
   let isOwner = false
+  let checkInFlight = false
 
   async function load(initial: boolean) {
     const next = await readCronTasks(dir)
@@ -260,171 +279,186 @@ export function createCronScheduler(
     }
   }
 
-  function check() {
-    if (isKilled?.()) return
-    if (shouldDeferFire?.()) return
-    const now = Date.now()
-    const seen = new Set<string>()
-    // File-backed recurring tasks that fired this tick. Batched into one
-    // markCronTasksFired call after the loop so N fires = one write. Session
-    // tasks excluded — they die with the process, no point persisting.
-    const firedFileRecurring: string[] = []
-    // Read once per tick. REPL callers pass getJitterConfig backed by
-    // GrowthBook so a config push takes effect without restart. Daemon and
-    // SDK callers omit it and get DEFAULT_CRON_JITTER_CONFIG (safe — jitter
-    // is an ops lever for REPL fleet load-shedding, not a daemon concern).
-    const jitterCfg = getJitterConfig?.() ?? DEFAULT_CRON_JITTER_CONFIG
+  async function check() {
+    if (checkInFlight) return
+    checkInFlight = true
+    try {
+      if (isKilled?.()) return
+      if (shouldDeferFire?.()) return
+      const now = Date.now()
+      const seen = new Set<string>()
+      // File-backed recurring tasks that fired this tick. Batched into one
+      // lastFiredAt write after any async fire-start persistence settles so
+      // transcript metadata is not overwritten by a stale file snapshot.
+      const firedFileRecurring: string[] = []
+      const pendingFileRecurringStarts: Promise<void>[] = []
+      // Read once per tick. REPL callers pass getJitterConfig backed by
+      // GrowthBook so a config push takes effect without restart. Daemon and
+      // SDK callers omit it and get DEFAULT_CRON_JITTER_CONFIG (safe — jitter
+      // is an ops lever for REPL fleet load-shedding, not a daemon concern).
+      const jitterCfg = getJitterConfig?.() ?? DEFAULT_CRON_JITTER_CONFIG
 
-    // Shared loop body. `isSession` routes the one-shot cleanup path:
-    // session tasks are removed synchronously from memory, file tasks go
-    // through the async removeCronTasks + chokidar reload.
-    function process(t: CronTask, isSession: boolean) {
-      if (filter && !filter(t)) return
-      seen.add(t.id)
-      if (inFlight.has(t.id)) return
+      // Shared loop body. `isSession` routes the one-shot cleanup path:
+      // session tasks are removed synchronously from memory, file tasks go
+      // through the async removeCronTasks + chokidar reload.
+      function process(t: CronTask, isSession: boolean) {
+        if (filter && !filter(t)) return
+        seen.add(t.id)
+        if (inFlight.has(t.id)) return
 
-      let next = nextFireAt.get(t.id)
-      if (next === undefined) {
-        // First sight — anchor from lastFiredAt (recurring) or createdAt.
-        // Never-fired recurring tasks use createdAt: if firing was deferred
-        // past the fire time, anchoring from `now` would compute
-        // next-year for pinned crons (`30 14 27 2 *`). Fired-before tasks
-        // use lastFiredAt: the reschedule below writes `now` back to disk,
-        // so on next process spawn first-sight computes the SAME newNext we
-        // set in-memory here. Without this, a daemon child despawning on
-        // idle loses nextFireAt and the next spawn re-anchors from 10-day-
-        // old createdAt → fires every task every cycle.
-        next = t.recurring
-          ? (jitteredNextCronRunMs(
-              t.cron,
-              t.lastFiredAt ?? t.createdAt,
-              t.id,
-              jitterCfg,
-            ) ?? Infinity)
-          : (oneShotJitteredNextCronRunMs(
-              t.cron,
-              t.createdAt,
-              t.id,
-              jitterCfg,
-            ) ?? Infinity)
-        nextFireAt.set(t.id, next)
+        let next = nextFireAt.get(t.id)
+        if (next === undefined) {
+          // First sight — anchor from lastFiredAt (recurring) or createdAt.
+          // Never-fired recurring tasks use createdAt: if firing was deferred
+          // past the fire time, anchoring from `now` would compute
+          // next-year for pinned crons (`30 14 27 2 *`). Fired-before tasks
+          // use lastFiredAt: the reschedule below writes `now` back to disk,
+          // so on next process spawn first-sight computes the SAME newNext we
+          // set in-memory here. Without this, a daemon child despawning on
+          // idle loses nextFireAt and the next spawn re-anchors from 10-day-
+          // old createdAt → fires every task every cycle.
+          next = t.recurring
+            ? (jitteredNextCronRunMs(
+                t.cron,
+                t.lastFiredAt ?? t.createdAt,
+                t.id,
+                jitterCfg,
+              ) ?? Infinity)
+            : (oneShotJitteredNextCronRunMs(
+                t.cron,
+                t.createdAt,
+                t.id,
+                jitterCfg,
+              ) ?? Infinity)
+          nextFireAt.set(t.id, next)
+          logForDebugging(
+            `[ScheduledTasks] scheduled ${t.id} for ${next === Infinity ? 'never' : new Date(next).toISOString()}`,
+          )
+        }
+
+        if (now < next) return
+
+        // Aged-out recurring tasks fall through to the one-shot delete paths
+        // below (session tasks get synchronous removal; file tasks get the
+        // async inFlight/chokidar path). Fires one last time, then is removed.
+        const aged = isRecurringTaskAged(t, now, jitterCfg.recurringMaxAgeMs)
+
         logForDebugging(
-          `[ScheduledTasks] scheduled ${t.id} for ${next === Infinity ? 'never' : new Date(next).toISOString()}`,
+          `[ScheduledTasks] firing ${t.id}${t.recurring ? ' (recurring)' : ''}`,
         )
-      }
-
-      if (now < next) return
-
-      logForDebugging(
-        `[ScheduledTasks] firing ${t.id}${t.recurring ? ' (recurring)' : ''}`,
-      )
-      logEvent('tengu_scheduled_task_fire', {
-        recurring: t.recurring ?? false,
-        taskId:
-          t.id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      })
-      if (onFireTask) {
-        onFireTask(t)
-      } else {
-        onFire(t.prompt)
-      }
-
-      // Aged-out recurring tasks fall through to the one-shot delete paths
-      // below (session tasks get synchronous removal; file tasks get the
-      // async inFlight/chokidar path). Fires one last time, then is removed.
-      const aged = isRecurringTaskAged(t, now, jitterCfg.recurringMaxAgeMs)
-      if (aged) {
-        const ageHours = Math.floor((now - t.createdAt) / 1000 / 60 / 60)
-        logForDebugging(
-          `[ScheduledTasks] recurring task ${t.id} aged out (${ageHours}h since creation), deleting after final fire`,
-        )
-        logEvent('tengu_scheduled_task_expired', {
+        logEvent('tengu_scheduled_task_fire', {
+          recurring: t.recurring ?? false,
           taskId:
             t.id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          ageHours,
         })
-      }
-
-      if (t.recurring && !aged) {
-        // Recurring: reschedule from now (not from next) to avoid rapid
-        // catch-up if the session was blocked. Jitter keeps us off the
-        // exact :00 wall-clock boundary every cycle.
-        const newNext =
-          jitteredNextCronRunMs(t.cron, now, t.id, jitterCfg) ?? Infinity
-        nextFireAt.set(t.id, newNext)
-        // Persist lastFiredAt=now so next process spawn reconstructs this
-        // same newNext on first-sight. Runtime-owned session tasks can opt in
-        // via runtimeTaskSource.markTasksFired (daemon restart recovery).
-        if (!isSession) firedFileRecurring.push(t.id)
-        if (isSession) {
-          mergedRuntimeTaskSource?.markTasksFired?.([t.id], now)
+        if (onFireTask) {
+          const fireTaskPromise = Promise.resolve()
+            .then(() => onFireTask(t))
+            .catch(error => {
+              logForDebugging(
+                `[ScheduledTasks] failed to start cron task ${t.id}: ${String(error)}`,
+              )
+            })
+          if (t.recurring && !aged && !isSession) {
+            pendingFileRecurringStarts.push(fireTaskPromise)
+          }
+        } else {
+          onFire(t.prompt)
         }
-      } else if (isSession) {
-        // One-shot (or aged-out recurring) runtime-owned task: synchronous
-        // removal. No inFlight window — the next tick will read a task source
-        // without this id.
-        mergedRuntimeTaskSource?.removeTasks([t.id])
-        nextFireAt.delete(t.id)
-      } else {
-        // One-shot (or aged-out recurring) file task: delete from disk.
-        // inFlight guards against double-fire during the async
-        // removeCronTasks + chokidar reload.
-        inFlight.add(t.id)
-        void removeCronTasks([t.id], dir)
-          .catch(e =>
-            logForDebugging(
-              `[ScheduledTasks] failed to remove task ${t.id}: ${e}`,
-            ),
-          )
-          .finally(() => inFlight.delete(t.id))
-        nextFireAt.delete(t.id)
-      }
-    }
 
-    // File-backed tasks: only when we own the scheduler lock. The lock
-    // exists to stop two Claude sessions in the same cwd from double-firing
-    // the same on-disk task.
-    if (isOwner) {
-      for (const t of tasks) process(t, false)
-      // Batched lastFiredAt write. inFlight guards against double-fire
-      // during the chokidar-triggered reload (same pattern as removeCronTasks
-      // below) — the reload re-seeds `tasks` with the just-written
-      // lastFiredAt, and first-sight on that yields the same newNext we
-      // already set in-memory, so it's idempotent even without inFlight.
-      // Guarding anyway keeps the semantics obvious.
-      if (firedFileRecurring.length > 0) {
-        for (const id of firedFileRecurring) inFlight.add(id)
-        void markCronTasksFired(firedFileRecurring, now, dir)
-          .catch(e =>
-            logForDebugging(
-              `[ScheduledTasks] failed to persist lastFiredAt: ${e}`,
-            ),
+        if (aged) {
+          const ageHours = Math.floor((now - t.createdAt) / 1000 / 60 / 60)
+          logForDebugging(
+            `[ScheduledTasks] recurring task ${t.id} aged out (${ageHours}h since creation), deleting after final fire`,
           )
-          .finally(() => {
-            for (const id of firedFileRecurring) inFlight.delete(id)
+          logEvent('tengu_scheduled_task_expired', {
+            taskId:
+              t.id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            ageHours,
           })
-      }
-    }
-    // Runtime-owned session tasks: process-private, the lock does not apply —
-    // other sessions cannot see them and there is no double-fire risk. Read
-    // fresh every tick (no chokidar, no load()).
-    if (mergedRuntimeTaskSource) {
-      for (const t of mergedRuntimeTaskSource.listTasks()) process(t, true)
-    }
+        }
 
-    if (seen.size === 0) {
-      // No live tasks this tick — clear the whole schedule so
-      // getNextFireTime() returns null. The eviction loop below is
-      // unreachable here (seen is empty), so stale entries would
-      // otherwise survive indefinitely and keep the daemon agent warm.
-      nextFireAt.clear()
-      return
-    }
-    // Evict schedule entries for tasks no longer present. When !isOwner,
-    // file-task ids aren't in `seen` and get evicted — harmless: they
-    // re-anchor from createdAt on the first owned tick.
-    for (const id of nextFireAt.keys()) {
-      if (!seen.has(id)) nextFireAt.delete(id)
+        if (t.recurring && !aged) {
+          // Recurring: reschedule from now (not from next) to avoid rapid
+          // catch-up if the session was blocked. Jitter keeps us off the
+          // exact :00 wall-clock boundary every cycle.
+          const newNext =
+            jitteredNextCronRunMs(t.cron, now, t.id, jitterCfg) ?? Infinity
+          nextFireAt.set(t.id, newNext)
+          // Persist lastFiredAt=now so next process spawn reconstructs this
+          // same newNext on first-sight. Runtime-owned session tasks can opt in
+          // via runtimeTaskSource.markTasksFired (daemon restart recovery).
+          if (!isSession) firedFileRecurring.push(t.id)
+          if (isSession) {
+            mergedRuntimeTaskSource?.markTasksFired?.([t.id], now)
+          }
+        } else if (isSession) {
+          // One-shot (or aged-out recurring) runtime-owned task: synchronous
+          // removal. No inFlight window — the next tick will read a task source
+          // without this id.
+          mergedRuntimeTaskSource?.removeTasks([t.id])
+          nextFireAt.delete(t.id)
+        } else {
+          // One-shot (or aged-out recurring) file task: delete from disk.
+          // inFlight guards against double-fire during the async
+          // removeCronTasks + chokidar reload.
+          inFlight.add(t.id)
+          void removeCronTasks([t.id], dir)
+            .catch(e =>
+              logForDebugging(
+                `[ScheduledTasks] failed to remove task ${t.id}: ${e}`,
+              ),
+            )
+            .finally(() => inFlight.delete(t.id))
+          nextFireAt.delete(t.id)
+        }
+      }
+
+      // File-backed tasks: only when we own the scheduler lock. The lock
+      // exists to stop two Claude sessions in the same cwd from double-firing
+      // the same on-disk task.
+      if (isOwner) {
+        for (const t of tasks) process(t, false)
+      }
+      // Runtime-owned session tasks: process-private, the lock does not apply —
+      // other sessions cannot see them and there is no double-fire risk. Read
+      // fresh every tick (no chokidar, no load()).
+      if (mergedRuntimeTaskSource) {
+        for (const t of mergedRuntimeTaskSource.listTasks()) process(t, true)
+      }
+
+      if (isOwner && firedFileRecurring.length > 0) {
+        for (const id of firedFileRecurring) inFlight.add(id)
+        try {
+          await persistFiredRecurringTasks(
+            firedFileRecurring,
+            now,
+            pendingFileRecurringStarts,
+            dir,
+          )
+        } catch (e) {
+          logForDebugging(`[ScheduledTasks] failed to persist lastFiredAt: ${e}`)
+        } finally {
+          for (const id of firedFileRecurring) inFlight.delete(id)
+        }
+      }
+
+      if (seen.size === 0) {
+        // No live tasks this tick — clear the whole schedule so
+        // getNextFireTime() returns null. The eviction loop below is
+        // unreachable here (seen is empty), so stale entries would
+        // otherwise survive indefinitely and keep the daemon agent warm.
+        nextFireAt.clear()
+        return
+      }
+      // Evict schedule entries for tasks no longer present. When !isOwner,
+      // file-task ids aren't in `seen` and get evicted — harmless: they
+      // re-anchor from createdAt on the first owned tick.
+      for (const id of nextFireAt.keys()) {
+        if (!seen.has(id)) nextFireAt.delete(id)
+      }
+    } finally {
+      checkInFlight = false
     }
   }
 
@@ -488,7 +522,9 @@ export function createCronScheduler(
       }
     })
 
-    checkTimer = setInterval(check, CHECK_INTERVAL_MS)
+    checkTimer = setInterval(() => {
+      void check()
+    }, CHECK_INTERVAL_MS)
     // Don't keep the process alive for the scheduler alone — in -p text mode
     // the process should exit after the single turn even if a cron was created.
     checkTimer.unref?.()

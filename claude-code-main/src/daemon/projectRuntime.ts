@@ -62,9 +62,13 @@ export class ProjectRuntime {
         void this.handleMissedTasks(tasks)
       },
       onFireTask: task => {
-        void this.handleScheduledTask({
+        return this.handleScheduledTask({
           ...task,
           durable: true,
+        }).catch(error => {
+          logForDebugging(
+            `[CronDaemon] failed to start scheduled task ${task.id}: ${String(error)}`,
+          )
         })
       },
     })

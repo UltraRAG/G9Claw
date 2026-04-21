@@ -2751,7 +2751,7 @@ function runHeadlessStreaming(
   // Missed-task prompts still route through the main queue so the model can
   // decide how to handle them. Actual cron executions now run in isolated
   // background sessions with their own sidechain transcripts.
-  const runLeadCronTask = async (task: CronTask) =>
+  const runLeadCronTask = async (task: CronTask): Promise<void> => {
     await startCronBackgroundTask({
       task,
       setAppState,
@@ -2823,6 +2823,7 @@ function runHeadlessStreaming(
         }
       },
     })
+  }
   let cronScheduler: import('../utils/cronScheduler.js').CronScheduler | null =
     null
   if (cronGate.isKairosCronEnabled()) {
@@ -2860,14 +2861,13 @@ function runHeadlessStreaming(
           logForDebugging(
             `[print.ts] teammate ${task.agentId} gone, removing orphaned cron ${task.id}`,
           )
-          void removeCronTasks([task.id]).catch(error =>
+          return removeCronTasks([task.id]).catch(error =>
             logForDebugging(
               `[print.ts] failed to remove orphaned teammate cron ${task.id}: ${String(error)}`,
             ),
           )
-          return
         }
-        void runLeadCronTask(task).catch(error =>
+        return runLeadCronTask(task).catch(error =>
           logForDebugging(
             `[print.ts] failed to start cron background task ${task.id}: ${String(error)}`,
           ),

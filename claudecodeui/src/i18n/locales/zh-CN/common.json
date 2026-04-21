@@ -98,22 +98,16 @@
   },
   "alwaysOn": {
     "title": "后台任务总览",
-    "description": "查看当前项目的持久化 cron、本会话任务，以及最近一次后台运行结果。",
+    "description": "以统一表格查看当前项目里已存在的持久化 cron 和本会话任务。",
     "lastUpdated": "最近更新：{{timestamp}}",
     "loadingTitle": "正在加载 cron job",
-    "loadingDescription": "正在读取持久化 cron 与本会话任务，并关联最近一次后台运行结果。",
-    "emptyTitle": "还没有 cron job",
+    "loadingDescription": "正在读取当前项目可见的定时任务，并准备概览表格。",
+    "emptyTitle": "还没有定时任务",
     "emptyDescription": "当前项目暂时没有可显示的持久化 cron 或本会话任务。",
-    "latestRunTitle": "最近一次运行",
-    "statusLabels": {
-      "scheduled": "已调度",
-      "unknown": "未知"
-    },
     "summary": {
       "total": "任务总数",
       "recurring": "循环任务",
-      "failed": "最近失败",
-      "scheduled": "等待结果"
+      "failed": "最近失败"
     },
     "flags": {
       "durable": "持久化",
@@ -122,19 +116,15 @@
       "recurring": "循环",
       "permanent": "永久"
     },
-    "sections": {
-      "durable": "持久化 Cron",
-      "sessionScoped": "本会话任务"
-    },
     "fields": {
+      "scope": "范围",
+      "type": "类型",
+      "jobId": "任务 ID",
       "createdAt": "创建时间",
       "lastFiredAt": "上次触发",
       "originSessionId": "来源会话",
       "transcriptKey": "转录键",
-      "summary": "摘要",
-      "lastActivity": "最近活动",
-      "taskId": "任务 ID",
-      "relativeTranscriptPath": "转录路径"
+      "lastActivity": "最近活动"
     },
     "values": {
       "notUpdated": "尚未更新",
