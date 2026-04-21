@@ -47,6 +47,16 @@ async function writeScheduledTasks(projectRoot, tasks) {
   );
 }
 
+async function writeSessionScheduledTasks(projectRoot, tasks) {
+  const configDir = path.join(projectRoot, '.claude');
+  await fs.mkdir(configDir, { recursive: true });
+  await fs.writeFile(
+    path.join(configDir, 'session_scheduled_tasks.json'),
+    JSON.stringify({ tasks }, null, 2),
+    'utf8'
+  );
+}
+
 async function writeJsonl(filePath, entries) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(
@@ -169,7 +179,74 @@ test('getProjectCronJobsOverview marks unmatched cron jobs as scheduled', async 
   assert.equal(overview.jobs.length, 1);
   assert.equal(overview.jobs[0].status, 'scheduled');
   assert.equal(overview.jobs[0].latestRun, null);
+  assert.equal(overview.jobs[0].durable, true);
   assert.equal(overview.jobs[0].originSessionId, 'origin-session-1');
+});
+
+test('getProjectCronJobsOverview returns session-only one-shot jobs before they fire', async () => {
+  const homeDir = await createTempHome();
+  const projectName = 'project-with-session-only-cron';
+  const projectRoot = path.join(homeDir, 'workspace-session-only');
+  const createdAt = Date.now();
+
+  await fs.mkdir(projectRoot, { recursive: true });
+  await writeProjectConfig(homeDir, projectName, projectRoot);
+  await writeSessionScheduledTasks(projectRoot, [
+    {
+      id: 'cron-session-1234',
+      cron: '* * * * *',
+      prompt: 'Stand up and stretch',
+      createdAt,
+      originSessionId: 'origin-session-session-only'
+    }
+  ]);
+
+  const overview = await getProjectCronJobsOverview(projectName);
+
+  assert.equal(overview.jobs.length, 1);
+  assert.equal(overview.jobs[0].id, 'cron-session-1234');
+  assert.equal(overview.jobs[0].durable, false);
+  assert.equal(overview.jobs[0].recurring, undefined);
+  assert.equal(overview.jobs[0].status, 'scheduled');
+  assert.equal(overview.jobs[0].latestRun, null);
+});
+
+test('getProjectCronJobsOverview merges durable and session-only cron jobs', async () => {
+  const homeDir = await createTempHome();
+  const projectName = 'project-with-mixed-crons';
+  const projectRoot = path.join(homeDir, 'workspace-mixed-crons');
+  const sessionCreatedAt = Date.now();
+
+  await fs.mkdir(projectRoot, { recursive: true });
+  await writeProjectConfig(homeDir, projectName, projectRoot);
+  await writeScheduledTasks(projectRoot, [
+    {
+      id: 'cron-durable-1234',
+      cron: '0 * * * *',
+      prompt: 'Check durable queue depth',
+      createdAt: 1713510000000,
+      recurring: true,
+      originSessionId: 'origin-session-durable'
+    }
+  ]);
+  await writeSessionScheduledTasks(projectRoot, [
+    {
+      id: 'cron-session-5678',
+      cron: '* * * * *',
+      prompt: 'Check session queue depth',
+      createdAt: sessionCreatedAt,
+      originSessionId: 'origin-session-session'
+    }
+  ]);
+
+  const overview = await getProjectCronJobsOverview(projectName);
+  const jobsById = new Map(overview.jobs.map((job) => [job.id, job]));
+
+  assert.equal(overview.jobs.length, 2);
+  assert.equal(jobsById.get('cron-durable-1234')?.durable, true);
+  assert.equal(jobsById.get('cron-durable-1234')?.status, 'scheduled');
+  assert.equal(jobsById.get('cron-session-5678')?.durable, false);
+  assert.equal(jobsById.get('cron-session-5678')?.status, 'scheduled');
 });
 
 test('getProjectCronJobsOverview matches recurring cron jobs to completed background sessions via transcriptKey', async () => {

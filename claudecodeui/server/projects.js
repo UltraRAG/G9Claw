@@ -791,7 +791,8 @@ async function getSessions(projectName, limit = 5, offset = 0) {
   }
 }
 
-function normalizeScheduledCronTask(task) {
+function normalizeScheduledCronTask(task, options = {}) {
+  const durable = options.durable === false ? false : true;
   if (
     !task ||
     typeof task !== 'object' ||
@@ -808,12 +809,177 @@ function normalizeScheduledCronTask(task) {
     cron: task.cron,
     prompt: task.prompt,
     createdAt: task.createdAt,
+    durable,
     ...(typeof task.lastFiredAt === 'number' ? { lastFiredAt: task.lastFiredAt } : {}),
     ...(task.recurring ? { recurring: true } : {}),
     ...(task.permanent ? { permanent: true } : {}),
     ...(typeof task.originSessionId === 'string' ? { originSessionId: task.originSessionId } : {}),
     ...(typeof task.transcriptKey === 'string' ? { transcriptKey: task.transcriptKey } : {})
   };
+}
+
+const CRON_FIELD_RANGES = [
+  { min: 0, max: 59 },
+  { min: 0, max: 23 },
+  { min: 1, max: 31 },
+  { min: 1, max: 12 },
+  { min: 0, max: 6 }
+];
+
+function expandCronField(field, range) {
+  const { min, max } = range;
+  const values = new Set();
+  const isDayOfWeek = min === 0 && max === 6;
+
+  for (const part of field.split(',')) {
+    const wildcardMatch = part.match(/^\*(?:\/(\d+))?$/);
+    if (wildcardMatch) {
+      const step = wildcardMatch[1] ? parseInt(wildcardMatch[1], 10) : 1;
+      if (step < 1) {
+        return null;
+      }
+      for (let value = min; value <= max; value += step) {
+        values.add(value);
+      }
+      continue;
+    }
+
+    const rangeMatch = part.match(/^(\d+)-(\d+)(?:\/(\d+))?$/);
+    if (rangeMatch) {
+      const lo = parseInt(rangeMatch[1], 10);
+      const hi = parseInt(rangeMatch[2], 10);
+      const step = rangeMatch[3] ? parseInt(rangeMatch[3], 10) : 1;
+      const effectiveMax = isDayOfWeek ? 7 : max;
+      if (lo > hi || step < 1 || lo < min || hi > effectiveMax) {
+        return null;
+      }
+      for (let value = lo; value <= hi; value += step) {
+        values.add(isDayOfWeek && value === 7 ? 0 : value);
+      }
+      continue;
+    }
+
+    if (/^\d+$/.test(part)) {
+      let value = parseInt(part, 10);
+      if (isDayOfWeek && value === 7) {
+        value = 0;
+      }
+      if (value < min || value > max) {
+        return null;
+      }
+      values.add(value);
+      continue;
+    }
+
+    return null;
+  }
+
+  if (values.size === 0) {
+    return null;
+  }
+
+  return [...values].sort((a, b) => a - b);
+}
+
+function parseCronExpression(expr) {
+  if (typeof expr !== 'string') {
+    return null;
+  }
+
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    return null;
+  }
+
+  const expanded = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const result = expandCronField(parts[index], CRON_FIELD_RANGES[index]);
+    if (!result) {
+      return null;
+    }
+    expanded.push(result);
+  }
+
+  return {
+    minute: expanded[0],
+    hour: expanded[1],
+    dayOfMonth: expanded[2],
+    month: expanded[3],
+    dayOfWeek: expanded[4]
+  };
+}
+
+function computeNextCronRun(fields, from) {
+  const minuteSet = new Set(fields.minute);
+  const hourSet = new Set(fields.hour);
+  const dayOfMonthSet = new Set(fields.dayOfMonth);
+  const monthSet = new Set(fields.month);
+  const dayOfWeekSet = new Set(fields.dayOfWeek);
+  const dayOfMonthWildcard = fields.dayOfMonth.length === 31;
+  const dayOfWeekWildcard = fields.dayOfWeek.length === 7;
+
+  const timestamp = new Date(from.getTime());
+  timestamp.setSeconds(0, 0);
+  timestamp.setMinutes(timestamp.getMinutes() + 1);
+
+  const maxIterations = 366 * 24 * 60;
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    const month = timestamp.getMonth() + 1;
+    if (!monthSet.has(month)) {
+      timestamp.setMonth(timestamp.getMonth() + 1, 1);
+      timestamp.setHours(0, 0, 0, 0);
+      continue;
+    }
+
+    const dayOfMonth = timestamp.getDate();
+    const dayOfWeek = timestamp.getDay();
+    const dayMatches = dayOfMonthWildcard && dayOfWeekWildcard
+      ? true
+      : dayOfMonthWildcard
+        ? dayOfWeekSet.has(dayOfWeek)
+        : dayOfWeekWildcard
+          ? dayOfMonthSet.has(dayOfMonth)
+          : dayOfMonthSet.has(dayOfMonth) || dayOfWeekSet.has(dayOfWeek);
+
+    if (!dayMatches) {
+      timestamp.setDate(timestamp.getDate() + 1);
+      timestamp.setHours(0, 0, 0, 0);
+      continue;
+    }
+
+    if (!hourSet.has(timestamp.getHours())) {
+      timestamp.setHours(timestamp.getHours() + 1, 0, 0, 0);
+      continue;
+    }
+
+    if (!minuteSet.has(timestamp.getMinutes())) {
+      timestamp.setMinutes(timestamp.getMinutes() + 1);
+      continue;
+    }
+
+    return timestamp;
+  }
+
+  return null;
+}
+
+function nextCronRunMs(cron, fromMs) {
+  const fields = parseCronExpression(cron);
+  if (!fields) {
+    return null;
+  }
+
+  const nextRun = computeNextCronRun(fields, new Date(fromMs));
+  return nextRun ? nextRun.getTime() : null;
+}
+
+function isRecoverableSessionCronTask(task, nowMs) {
+  if (task.recurring) {
+    return true;
+  }
+
+  const nextFireAt = nextCronRunMs(task.cron, task.createdAt);
+  return nextFireAt !== null && nextFireAt >= nowMs;
 }
 
 async function readProjectScheduledCronTasks(projectRoot) {
@@ -838,6 +1004,55 @@ async function readProjectScheduledCronTasks(projectRoot) {
   }
 }
 
+async function readProjectSessionCronTasks(projectRoot, nowMs = Date.now()) {
+  const cronFilePath = path.join(projectRoot, '.claude', 'session_scheduled_tasks.json');
+
+  try {
+    const raw = await fs.readFile(cronFilePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.tasks)) {
+      return [];
+    }
+
+    return parsed.tasks
+      .map((task) => normalizeScheduledCronTask(task, { durable: false }))
+      .filter((task) => {
+        if (!task) {
+          return false;
+        }
+
+        if (!parseCronExpression(task.cron)) {
+          return false;
+        }
+
+        return isRecoverableSessionCronTask(task, nowMs);
+      });
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return [];
+    }
+    console.warn(`Failed to read session scheduled tasks for ${projectRoot}:`, error.message);
+    return [];
+  }
+}
+
+function mergeCronTasks(...taskGroups) {
+  const tasks = [];
+  const seenTaskIds = new Set();
+
+  for (const group of taskGroups) {
+    for (const task of group) {
+      if (!task || seenTaskIds.has(task.id)) {
+        continue;
+      }
+      seenTaskIds.add(task.id);
+      tasks.push(task);
+    }
+  }
+
+  return tasks;
+}
+
 function mapCronJobStatus(task, backgroundSession) {
   if (!backgroundSession) {
     return task.transcriptKey ? 'unknown' : 'scheduled';
@@ -857,7 +1072,9 @@ function mapCronJobStatus(task, backgroundSession) {
 
 async function getProjectCronJobsOverview(projectName) {
   const projectRoot = await extractProjectDirectory(projectName);
-  const scheduledTasks = await readProjectScheduledCronTasks(projectRoot);
+  const durableTasks = await readProjectScheduledCronTasks(projectRoot);
+  const sessionTasks = await readProjectSessionCronTasks(projectRoot);
+  const scheduledTasks = mergeCronTasks(durableTasks, sessionTasks);
 
   if (scheduledTasks.length === 0) {
     return { jobs: [] };

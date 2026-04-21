@@ -98,12 +98,12 @@
   },
   "alwaysOn": {
     "title": "Background Jobs Overview",
-    "description": "Monitor the current project's cron jobs, schedule metadata, and latest background run results.",
+    "description": "Monitor the current project's durable cron jobs, session-scoped tasks, and latest background run results.",
     "lastUpdated": "Last updated: {{timestamp}}",
     "loadingTitle": "Loading cron jobs",
-    "loadingDescription": "Reading scheduled tasks and matching the latest background runs.",
+    "loadingDescription": "Reading durable cron jobs and session-scoped tasks, then matching the latest background runs.",
     "emptyTitle": "No cron jobs yet",
-    "emptyDescription": "This project does not currently have any scheduled cron jobs in .claude/scheduled_tasks.json.",
+    "emptyDescription": "This project does not currently have any visible durable cron jobs or session-scoped tasks.",
     "latestRunTitle": "Latest Run",
     "statusLabels": {
       "scheduled": "Scheduled",
@@ -116,8 +116,15 @@
       "scheduled": "Awaiting result"
     },
     "flags": {
+      "durable": "Durable",
+      "sessionScoped": "Session",
+      "oneShot": "One-shot",
       "recurring": "Recurring",
       "permanent": "Permanent"
+    },
+    "sections": {
+      "durable": "Durable Cron",
+      "sessionScoped": "Session-Scoped Tasks"
     },
     "fields": {
       "createdAt": "Created",

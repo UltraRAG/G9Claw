@@ -165,6 +165,30 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
     });
   }, [jobs]);
 
+  const jobSections = useMemo(() => {
+    const durableJobs: CronJobOverview[] = [];
+    const sessionJobs: CronJobOverview[] = [];
+
+    for (const job of jobs) {
+      if (job.durable === false) {
+        sessionJobs.push(job);
+      } else {
+        durableJobs.push(job);
+      }
+    }
+
+    const sortJobsByCreatedAt = (left: CronJobOverview, right: CronJobOverview) =>
+      right.createdAt - left.createdAt;
+
+    durableJobs.sort(sortJobsByCreatedAt);
+    sessionJobs.sort(sortJobsByCreatedAt);
+
+    return [
+      { key: 'durable', title: t('alwaysOn.sections.durable'), jobs: durableJobs },
+      { key: 'session', title: t('alwaysOn.sections.sessionScoped'), jobs: sessionJobs }
+    ].filter((section) => section.jobs.length > 0);
+  }, [jobs, t]);
+
   const summaryCards = [
     {
       key: 'total',
@@ -261,119 +285,135 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
             </div>
           ) : (
             <div className="space-y-4">
-              {jobs.map((job) => (
-                <div
-                  key={job.id}
-                  className="rounded-xl border border-border bg-card/50 p-4 shadow-sm"
-                >
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-sm font-semibold text-foreground">{job.id}</h3>
-                        <Badge
-                          variant="outline"
-                          className={getStatusBadgeClassName(job.status)}
-                        >
-                          {getStatusLabel(job.status, t)}
-                        </Badge>
-                        {job.recurring && (
-                          <Badge variant="outline" className="text-xs">
-                            {t('alwaysOn.flags.recurring')}
-                          </Badge>
-                        )}
-                        {job.permanent && (
-                          <Badge variant="outline" className="text-xs">
-                            {t('alwaysOn.flags.permanent')}
-                          </Badge>
-                        )}
-                      </div>
-
-                      <p className="mt-3 break-words text-sm leading-6 text-muted-foreground">
-                        {job.prompt}
-                      </p>
-                    </div>
-
-                    <div className="shrink-0">
-                      <code className="rounded-md bg-muted px-2.5 py-1.5 text-xs text-foreground">
-                        {job.cron}
-                      </code>
-                    </div>
+              {jobSections.map((section) => (
+                <section key={section.key} className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold text-foreground">{section.title}</h3>
+                    <Badge variant="secondary" className="px-2 py-0 text-xs">
+                      {section.jobs.length}
+                    </Badge>
                   </div>
 
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    <div className="rounded-lg border border-border/70 bg-background/70 p-3">
-                      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                        {t('alwaysOn.fields.createdAt')}
-                      </div>
-                      <div className="mt-1 text-sm text-foreground">{formatDateTime(job.createdAt)}</div>
-                    </div>
-                    <div className="rounded-lg border border-border/70 bg-background/70 p-3">
-                      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                        {t('alwaysOn.fields.lastFiredAt')}
-                      </div>
-                      <div className="mt-1 text-sm text-foreground">{formatDateTime(job.lastFiredAt)}</div>
-                    </div>
-                    <div className="rounded-lg border border-border/70 bg-background/70 p-3">
-                      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                        {t('alwaysOn.fields.originSessionId')}
-                      </div>
-                      <div className="mt-1 break-all text-sm text-foreground">
-                        {job.originSessionId || t('alwaysOn.values.notAvailable')}
-                      </div>
-                    </div>
-                    <div className="rounded-lg border border-border/70 bg-background/70 p-3">
-                      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                        {t('alwaysOn.fields.transcriptKey')}
-                      </div>
-                      <div className="mt-1 break-all text-sm text-foreground">
-                        {job.transcriptKey || t('alwaysOn.values.notAvailable')}
-                      </div>
-                    </div>
-                  </div>
+                  {section.jobs.map((job) => (
+                    <div
+                      key={job.id}
+                      className="rounded-xl border border-border bg-card/50 p-4 shadow-sm"
+                    >
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-sm font-semibold text-foreground">{job.id}</h3>
+                            <Badge
+                              variant="outline"
+                              className={getStatusBadgeClassName(job.status)}
+                            >
+                              {getStatusLabel(job.status, t)}
+                            </Badge>
+                            <Badge variant="outline" className="text-xs">
+                              {job.durable === false
+                                ? t('alwaysOn.flags.sessionScoped')
+                                : t('alwaysOn.flags.durable')}
+                            </Badge>
+                            <Badge variant="outline" className="text-xs">
+                              {job.recurring
+                                ? t('alwaysOn.flags.recurring')
+                                : t('alwaysOn.flags.oneShot')}
+                            </Badge>
+                            {job.permanent && (
+                              <Badge variant="outline" className="text-xs">
+                                {t('alwaysOn.flags.permanent')}
+                              </Badge>
+                            )}
+                          </div>
 
-                  {job.latestRun && (
-                    <div className="mt-4 rounded-lg border border-border/70 bg-background/70 p-3">
-                      <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
-                        <CheckCircle2 className="h-4 w-4 text-primary" />
-                        {t('alwaysOn.latestRunTitle')}
-                      </div>
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <div>
-                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                            {t('alwaysOn.fields.summary')}
-                          </div>
-                          <div className="mt-1 break-words text-sm text-foreground">
-                            {job.latestRun.summary || t('alwaysOn.values.notAvailable')}
-                          </div>
+                          <p className="mt-3 break-words text-sm leading-6 text-muted-foreground">
+                            {job.prompt}
+                          </p>
                         </div>
-                        <div>
-                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                            {t('alwaysOn.fields.lastActivity')}
-                          </div>
-                          <div className="mt-1 text-sm text-foreground">
-                            {formatDateTime(job.latestRun.lastActivity)}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                            {t('alwaysOn.fields.taskId')}
-                          </div>
-                          <div className="mt-1 break-all text-sm text-foreground">
-                            {job.latestRun.taskId || t('alwaysOn.values.notAvailable')}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                            {t('alwaysOn.fields.relativeTranscriptPath')}
-                          </div>
-                          <div className="mt-1 break-all text-sm text-foreground">
-                            {job.latestRun.relativeTranscriptPath || t('alwaysOn.values.notAvailable')}
-                          </div>
+
+                        <div className="shrink-0">
+                          <code className="rounded-md bg-muted px-2.5 py-1.5 text-xs text-foreground">
+                            {job.cron}
+                          </code>
                         </div>
                       </div>
+
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                        <div className="rounded-lg border border-border/70 bg-background/70 p-3">
+                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                            {t('alwaysOn.fields.createdAt')}
+                          </div>
+                          <div className="mt-1 text-sm text-foreground">{formatDateTime(job.createdAt)}</div>
+                        </div>
+                        <div className="rounded-lg border border-border/70 bg-background/70 p-3">
+                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                            {t('alwaysOn.fields.lastFiredAt')}
+                          </div>
+                          <div className="mt-1 text-sm text-foreground">{formatDateTime(job.lastFiredAt)}</div>
+                        </div>
+                        <div className="rounded-lg border border-border/70 bg-background/70 p-3">
+                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                            {t('alwaysOn.fields.originSessionId')}
+                          </div>
+                          <div className="mt-1 break-all text-sm text-foreground">
+                            {job.originSessionId || t('alwaysOn.values.notAvailable')}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-border/70 bg-background/70 p-3">
+                          <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                            {t('alwaysOn.fields.transcriptKey')}
+                          </div>
+                          <div className="mt-1 break-all text-sm text-foreground">
+                            {job.transcriptKey || t('alwaysOn.values.notAvailable')}
+                          </div>
+                        </div>
+                      </div>
+
+                      {job.latestRun && (
+                        <div className="mt-4 rounded-lg border border-border/70 bg-background/70 p-3">
+                          <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
+                            <CheckCircle2 className="h-4 w-4 text-primary" />
+                            {t('alwaysOn.latestRunTitle')}
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div>
+                              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                                {t('alwaysOn.fields.summary')}
+                              </div>
+                              <div className="mt-1 break-words text-sm text-foreground">
+                                {job.latestRun.summary || t('alwaysOn.values.notAvailable')}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                                {t('alwaysOn.fields.lastActivity')}
+                              </div>
+                              <div className="mt-1 text-sm text-foreground">
+                                {formatDateTime(job.latestRun.lastActivity)}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                                {t('alwaysOn.fields.taskId')}
+                              </div>
+                              <div className="mt-1 break-all text-sm text-foreground">
+                                {job.latestRun.taskId || t('alwaysOn.values.notAvailable')}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                                {t('alwaysOn.fields.relativeTranscriptPath')}
+                              </div>
+                              <div className="mt-1 break-all text-sm text-foreground">
+                                {job.latestRun.relativeTranscriptPath || t('alwaysOn.values.notAvailable')}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                  ))}
+                </section>
               ))}
             </div>
           )}

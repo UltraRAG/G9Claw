@@ -18,6 +18,7 @@ export interface CronJobOverview {
   cron: string;
   prompt: string;
   createdAt: number;
+  durable?: boolean;
   lastFiredAt?: number;
   recurring?: boolean;
   permanent?: boolean;

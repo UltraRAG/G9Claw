@@ -98,12 +98,12 @@
   },
   "alwaysOn": {
     "title": "后台任务总览",
-    "description": "查看当前项目的 cron job、调度属性，以及最近一次后台运行结果。",
+    "description": "查看当前项目的持久化 cron、本会话任务，以及最近一次后台运行结果。",
     "lastUpdated": "最近更新：{{timestamp}}",
     "loadingTitle": "正在加载 cron job",
-    "loadingDescription": "正在读取计划任务并关联最近一次后台运行结果。",
+    "loadingDescription": "正在读取持久化 cron 与本会话任务，并关联最近一次后台运行结果。",
     "emptyTitle": "还没有 cron job",
-    "emptyDescription": "当前项目的 `.claude/scheduled_tasks.json` 中还没有已配置的 cron job。",
+    "emptyDescription": "当前项目暂时没有可显示的持久化 cron 或本会话任务。",
     "latestRunTitle": "最近一次运行",
     "statusLabels": {
       "scheduled": "已调度",
@@ -116,8 +116,15 @@
       "scheduled": "等待结果"
     },
     "flags": {
+      "durable": "持久化",
+      "sessionScoped": "本会话",
+      "oneShot": "单次",
       "recurring": "循环",
       "permanent": "永久"
+    },
+    "sections": {
+      "durable": "持久化 Cron",
+      "sessionScoped": "本会话任务"
     },
     "fields": {
       "createdAt": "创建时间",
