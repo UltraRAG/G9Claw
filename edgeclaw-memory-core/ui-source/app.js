@@ -515,7 +515,6 @@ const importCurrentProjectInput = document.getElementById("importCurrentProjectI
 const importAllProjectsInput = document.getElementById("importAllProjectsInput");
 const clearProjectBtn = document.getElementById("clearProjectBtn");
 const clearAllBtn = document.getElementById("clearAllBtn");
-const lastDreamSnapshotMetaEl = document.getElementById("lastDreamSnapshotMeta");
 const workspaceSearchEl = document.getElementById("workspaceSearch");
 const workspaceSearchBtn = document.getElementById("workspaceSearchBtn");
 const listSearchRowEl = document.getElementById("listSearchRow");
@@ -910,22 +909,6 @@ function formatLastDreamSnapshotSource(snapshot) {
   return formatTraceTrigger(snapshot.trigger);
 }
 
-function renderLastDreamSnapshotMeta() {
-  const snapshot = state.overview?.lastDreamSnapshot || null;
-  if (!lastDreamSnapshotMetaEl) return;
-  if (!snapshot) {
-    lastDreamSnapshotMetaEl.textContent = t("settings.snapshot.none");
-    return;
-  }
-  const stateLabel = snapshot.rollbackReady ? t("settings.snapshot.ready") : t("settings.snapshot.stale");
-  lastDreamSnapshotMetaEl.textContent = t(
-    "settings.snapshot.meta",
-    formatDateTime(snapshot.capturedAt),
-    formatLastDreamSnapshotSource(snapshot),
-    stateLabel,
-  );
-}
-
 function buildRollbackLastDreamTitle(snapshot) {
   if (!snapshot) {
     return t("settings.snapshot.none");
@@ -962,7 +945,6 @@ function updateCounts() {
   indexTraceCountEl.textContent = String(state.indexTraces.length);
   dreamTraceCountEl.textContent = String(state.dreamTraces.length);
   navLastIndexedEl.textContent = formatDateTime(state.overview?.lastIndexedAt || "") === "—" ? t("status.waitingForIndex") : formatDateTime(state.overview?.lastIndexedAt || "");
-  renderLastDreamSnapshotMeta();
   syncMaintenanceActionState();
 }
 
