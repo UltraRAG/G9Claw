@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start Claude Code with embedded CCR (Claude Code Router)
+# Start Claude Code with local proxy (proxy.ts)
 # Usage:
 #   ./start.sh                    # interactive TUI mode (requires real terminal)
 #   ./start.sh -p "your prompt"   # non-interactive (print & exit)
@@ -7,8 +7,11 @@
 #   ./start.sh --help             # show help
 #   ./start.sh --version          # show version
 #
-# Routing config: ccr-config.json (providers, tokenSaver, autoOrchestrate, etc.)
-# Environment:    .env (ANTHROPIC_MODEL, DISABLE_TELEMETRY)
+# proxy.ts is the unified entry point:
+#   - With ccr-config.json present: advanced CCR routing (multi-provider, tokenSaver, etc.)
+#   - Without ccr-config.json (or CCR_DISABLED=1): legacy Anthropic→OpenAI conversion
+#
+# Configuration: .env (API keys, model), ccr-config.json (CCR routing)
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -18,12 +21,11 @@ if [ -f "$DIR/.env" ]; then
   source "$DIR/.env"
   set +a
 else
-  echo "Error: missing $DIR/.env — copy .env.example to .env." >&2
+  echo "Error: missing $DIR/.env — copy .env.example to .env and set your API keys." >&2
   exit 1
 fi
 
-# CCR router port — read from ccr-config.json, fallback to 19080
-CCR_PORT="${CCR_PORT:-19080}"
+PROXY_PORT="${PROXY_PORT:-18080}"
 
 # ── Ensure peekaboo is installed (macOS only, for computer-use MCP) ──
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -76,16 +78,34 @@ EOF
   exit 1
 fi
 
-# ── CCR router is now embedded in preload.ts (starts in-process) ──
-# No separate router process needed. preload.ts reads ccr-config.json,
-# auto-builds server.cjs if needed, starts CCR, and sets ANTHROPIC_BASE_URL.
-# Set CCR_DISABLED=1 to skip, or set ANTHROPIC_BASE_URL manually to override.
-export CCR_PORT="${CCR_PORT}"
-trap "[ -n \"\$GATEWAY_PID\" ] && kill \$GATEWAY_PID 2>/dev/null" EXIT
+export OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+export PROXY_PORT="$PROXY_PORT"
+if [ -n "$OPENAI_BASE_URL" ]; then
+  export OPENAI_BASE_URL
+fi
+
+# ── Start local proxy (if not already running) ──
+if ! curl -s "http://127.0.0.1:$PROXY_PORT/health" >/dev/null 2>&1; then
+  bun run "$DIR/proxy.ts" > "$DIR/.proxy.log" 2>&1 &
+  PROXY_PID=$!
+  for _ in $(seq 1 30); do
+    if curl -s "http://127.0.0.1:$PROXY_PORT/health" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.3
+  done
+  if ! curl -s "http://127.0.0.1:$PROXY_PORT/health" >/dev/null 2>&1; then
+    echo "Error: proxy failed to start. Check $DIR/.proxy.log" >&2
+    cat "$DIR/.proxy.log" >&2
+    exit 1
+  fi
+fi
+trap "[ -n \"\$PROXY_PID\" ] && kill \$PROXY_PID 2>/dev/null; [ -n \"\$GATEWAY_PID\" ] && kill \$GATEWAY_PID 2>/dev/null" EXIT
 
 # ── Claude Code env ──
 unset ANTHROPIC_AUTH_TOKEN
-export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-dummy-key-for-ccr}"
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-${OPENAI_API_KEY:-dummy-key}}"
+export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://127.0.0.1:$PROXY_PORT}"
 export DISABLE_TELEMETRY="${DISABLE_TELEMETRY:-1}"
 
 if [ -z "$ANTHROPIC_MODEL" ]; then
@@ -99,7 +119,7 @@ if [ "$GATEWAY_ONLY" = true ]; then
   export GATEWAY_ALLOW_ALL_USERS="${GATEWAY_ALLOW_ALL_USERS:-true}"
   echo "[start] ═══════════════════════════════════════════"
   echo "[start]  Gateway-only mode"
-  echo "[start]  CCR Router: http://127.0.0.1:$CCR_PORT"
+  echo "[start]  Proxy: http://127.0.0.1:$PROXY_PORT"
   echo "[start]  Model: $ANTHROPIC_MODEL"
   echo "[start]  Log:   tail -f $DIR/.gateway.log"
   echo "[start] ═══════════════════════════════════════════"
