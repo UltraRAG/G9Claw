@@ -19,6 +19,24 @@ const UPSTREAM_URL = process.env.OPENAI_BASE_URL || 'https://yeysai.com'
 const UPSTREAM_KEY = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || ''
 const PORT = parseInt(process.env.PROXY_PORT || '18080', 10)
 
+// OpenRouter app attribution. Only injected when the upstream is openrouter.ai
+// so we don't leak the header through unrelated upstreams (e.g. yeysai).
+const IS_OPENROUTER_UPSTREAM = (() => {
+  try {
+    return /(^|\.)openrouter\.ai$/i.test(new URL(UPSTREAM_URL).hostname)
+  } catch {
+    return false
+  }
+})()
+const ATTRIBUTION_HEADERS: Record<string, string> = IS_OPENROUTER_UPSTREAM
+  ? {
+      'HTTP-Referer': 'https://edgeclaw.ai',
+      'X-Title': 'EdgeClaw',
+      'X-OpenRouter-Title': 'EdgeClaw',
+      'X-OpenRouter-Categories': 'cli-agent',
+    }
+  : {}
+
 // ─── CCR (Claude Code Router) integration ───
 
 interface CCRServices {
@@ -619,6 +637,7 @@ async function forwardToUpstream(
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${UPSTREAM_KEY}`,
+      ...ATTRIBUTION_HEADERS,
     },
     body: JSON.stringify(openaiBody),
   })
@@ -644,7 +663,11 @@ const server = Bun.serve({
       try {
         const upResp = await fetch(`${UPSTREAM_URL}${url.pathname}${url.search}`, {
           method: req.method,
-          headers: { 'Authorization': `Bearer ${UPSTREAM_KEY}`, 'Content-Type': 'application/json' },
+          headers: {
+            Authorization: `Bearer ${UPSTREAM_KEY}`,
+            'Content-Type': 'application/json',
+            ...ATTRIBUTION_HEADERS,
+          },
           body: req.method !== 'GET' ? await req.text() : undefined,
         })
         return new Response(await upResp.text(), {
