@@ -2,7 +2,12 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
-import { EdgeClawMemoryService, hashText } from '../../../edgeclaw-memory-core/lib/index.js';
+import {
+  ALL_PROJECTS_MEMORY_EXPORT_FORMAT_VERSION,
+  EdgeClawMemoryService,
+  MemoryBundleValidationError,
+  hashText,
+} from '../../../edgeclaw-memory-core/lib/index.js';
 import { extractProjectDirectory } from '../projects.js';
 
 const MEMORY_ROOT_DIR = path.join(os.homedir(), '.edgeclaw', 'memory');
@@ -116,6 +121,172 @@ async function pathExists(targetPath) {
   } catch {
     return false;
   }
+}
+
+function normalizeSnapshotRelativePath(relativePath, label) {
+  if (typeof relativePath !== 'string' || !relativePath.trim()) {
+    throw new MemoryBundleValidationError(`Invalid ${label}.relativePath`);
+  }
+
+  const segments = relativePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  if (segments.length === 0 || segments.some((segment) => segment === '.' || segment === '..')) {
+    throw new MemoryBundleValidationError(`Invalid ${label}.relativePath`);
+  }
+
+  return segments.join('/');
+}
+
+function normalizeSnapshotFileRecord(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new MemoryBundleValidationError(`Invalid ${label}`);
+  }
+  if (typeof value.content !== 'string') {
+    throw new MemoryBundleValidationError(`Invalid ${label}.content`);
+  }
+  return {
+    relativePath: normalizeSnapshotRelativePath(value.relativePath, label),
+    content: value.content,
+  };
+}
+
+async function listSnapshotFiles(rootDir) {
+  if (!(await pathExists(rootDir))) {
+    return [];
+  }
+
+  const files = [];
+
+  async function walk(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+
+    for (const entry of entries) {
+      const absolutePath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      const relativePath = path.relative(rootDir, absolutePath).replace(/\\/g, '/');
+      files.push({
+        relativePath,
+        content: await fs.readFile(absolutePath, 'utf8'),
+      });
+    }
+  }
+
+  await walk(rootDir);
+  return files;
+}
+
+async function replaceSnapshotFiles(rootDir, files) {
+  await fs.rm(rootDir, { recursive: true, force: true });
+  await fs.mkdir(rootDir, { recursive: true });
+
+  for (let index = 0; index < files.length; index += 1) {
+    const record = normalizeSnapshotFileRecord(files[index], `files[${index}]`);
+    const absolutePath = path.resolve(rootDir, record.relativePath);
+    const relativeCheck = path.relative(rootDir, absolutePath);
+    if (
+      !relativeCheck
+      || relativeCheck.startsWith('..')
+      || path.isAbsolute(relativeCheck)
+    ) {
+      throw new MemoryBundleValidationError(`Invalid files[${index}].relativePath`);
+    }
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, record.content, 'utf8');
+  }
+}
+
+function createEmptyTransferCounts() {
+  return {
+    managedFiles: 0,
+    memoryFiles: 0,
+    project: 0,
+    feedback: 0,
+    user: 0,
+    tmp: 0,
+    projectMetas: 0,
+  };
+}
+
+function addTransferCounts(total, partial) {
+  total.managedFiles += Number(partial?.managedFiles ?? 0);
+  total.memoryFiles += Number(partial?.memoryFiles ?? 0);
+  total.project += Number(partial?.project ?? 0);
+  total.feedback += Number(partial?.feedback ?? 0);
+  total.user += Number(partial?.user ?? 0);
+  total.tmp += Number(partial?.tmp ?? 0);
+  total.projectMetas += Number(partial?.projectMetas ?? 0);
+}
+
+function normalizeAllProjectsBundle(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new MemoryBundleValidationError('Invalid all-projects memory bundle');
+  }
+  if (value.formatVersion !== ALL_PROJECTS_MEMORY_EXPORT_FORMAT_VERSION) {
+    throw new MemoryBundleValidationError(
+      `Unsupported all-projects memory bundle formatVersion. Expected ${ALL_PROJECTS_MEMORY_EXPORT_FORMAT_VERSION}.`,
+    );
+  }
+  if (value.scope !== 'all_projects') {
+    throw new MemoryBundleValidationError('Unsupported all-projects memory bundle scope.');
+  }
+  if (!Array.isArray(value.projects)) {
+    throw new MemoryBundleValidationError('Invalid all-projects memory bundle projects.');
+  }
+
+  const globalFiles = Array.isArray(value.globalFiles)
+    ? value.globalFiles.map((item, index) => normalizeSnapshotFileRecord(item, `globalFiles[${index}]`))
+    : [];
+  const seenGlobalPaths = new Set();
+  for (const record of globalFiles) {
+    if (seenGlobalPaths.has(record.relativePath)) {
+      throw new MemoryBundleValidationError(`Duplicate globalFiles path: ${record.relativePath}`);
+    }
+    seenGlobalPaths.add(record.relativePath);
+  }
+
+  const seenProjectPaths = new Set();
+  const projects = value.projects.map((project, index) => {
+    if (!project || typeof project !== 'object' || Array.isArray(project)) {
+      throw new MemoryBundleValidationError(`Invalid projects[${index}]`);
+    }
+
+    const projectPath = normalizePath(project.projectPath);
+    if (!projectPath) {
+      throw new MemoryBundleValidationError(`Invalid projects[${index}].projectPath`);
+    }
+    if (seenProjectPaths.has(projectPath)) {
+      throw new MemoryBundleValidationError(`Duplicate projectPath in projects[${index}]`);
+    }
+    seenProjectPaths.add(projectPath);
+
+    if (!project.bundle || typeof project.bundle !== 'object' || Array.isArray(project.bundle)) {
+      throw new MemoryBundleValidationError(`Invalid projects[${index}].bundle`);
+    }
+
+    return {
+      projectPath,
+      projectName: typeof project.projectName === 'string' && project.projectName.trim()
+        ? project.projectName.trim()
+        : path.basename(projectPath),
+      bundle: project.bundle,
+    };
+  });
+
+  return {
+    formatVersion: ALL_PROJECTS_MEMORY_EXPORT_FORMAT_VERSION,
+    scope: 'all_projects',
+    exportedAt: typeof value.exportedAt === 'string' && value.exportedAt.trim()
+      ? value.exportedAt.trim()
+      : new Date().toISOString(),
+    projects,
+    globalFiles,
+  };
 }
 
 async function listWorkspaceDataDirs() {
@@ -264,5 +435,57 @@ export async function clearAllMemoryData() {
       memoryFiles: 0,
       projectMetas: 0,
     },
+  };
+}
+
+export async function exportAllProjectsMemoryBundle() {
+  const workspaceDataDirs = await listWorkspaceDataDirs();
+  const projects = [];
+
+  for (const dataDir of workspaceDataDirs) {
+    const restoredWorkspaceDir = readWorkspaceDirFromDataDir(dataDir);
+    const { service } = getOrCreateServiceForDataDir(dataDir, restoredWorkspaceDir ?? dataDir);
+    const projectMeta = service.getProjectMeta();
+    projects.push({
+      projectPath: service.workspaceDir,
+      projectName: projectMeta?.projectName || path.basename(service.workspaceDir),
+      bundle: service.exportBundle(),
+    });
+  }
+
+  return {
+    formatVersion: ALL_PROJECTS_MEMORY_EXPORT_FORMAT_VERSION,
+    scope: 'all_projects',
+    exportedAt: new Date().toISOString(),
+    globalFiles: await listSnapshotFiles(MEMORY_GLOBAL_ROOT),
+    projects,
+  };
+}
+
+export async function importAllProjectsMemoryBundle(bundle) {
+  const normalized = normalizeAllProjectsBundle(bundle);
+  await clearAllMemoryData();
+
+  const imported = createEmptyTransferCounts();
+  const warnings = [];
+
+  for (const project of normalized.projects) {
+    const { service } = getOrCreateServiceForProjectPath(project.projectPath);
+    const result = service.importBundle(project.bundle);
+    addTransferCounts(imported, result.imported);
+    if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+      warnings.push(...result.warnings.map((warning) => `[${project.projectName}] ${warning}`));
+    }
+  }
+
+  await replaceSnapshotFiles(MEMORY_GLOBAL_ROOT, normalized.globalFiles);
+
+  return {
+    formatVersion: ALL_PROJECTS_MEMORY_EXPORT_FORMAT_VERSION,
+    scope: 'all_projects',
+    importedAt: new Date().toISOString(),
+    projectCount: normalized.projects.length,
+    imported,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

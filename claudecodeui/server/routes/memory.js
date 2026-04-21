@@ -7,7 +7,9 @@ import {
 } from '../../../edgeclaw-memory-core/lib/index.js';
 import {
   clearAllMemoryData,
+  exportAllProjectsMemoryBundle,
   getMemoryServiceForRequest,
+  importAllProjectsMemoryBundle,
   runManualMemoryDream,
   runManualMemoryFlush,
 } from '../services/memoryService.js';
@@ -108,6 +110,22 @@ async function withMemoryService(req, res, fn) {
     const message = error instanceof Error ? error.message : String(error);
     return res.status(400).json({ error: message });
   }
+}
+
+function buildDownloadFileName(prefix, exportedAt) {
+  const safe = String(exportedAt || '')
+    .replace(/[^\dTZ-]/g, '-')
+    .replace(/-+/g, '-');
+  return `${prefix}-${safe || 'export'}.json`;
+}
+
+function sendBundleDownload(res, bundle, prefix) {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${buildDownloadFileName(prefix, bundle.exportedAt)}"`,
+  );
+  res.send(JSON.stringify(bundle, null, 2));
 }
 
 router.get('/overview', async (req, res) =>
@@ -267,18 +285,52 @@ router.get('/dream-traces/:dreamTraceId', async (req, res) =>
   }),
 );
 
+router.get('/export/current-project', async (req, res) =>
+  withMemoryService(req, res, async ({ service }) => {
+    const bundle = service.exportBundle();
+    sendBundleDownload(res, bundle, 'edgeclaw-memory-current-project');
+  }),
+);
+
+router.get('/export/all-projects', async (_req, res) => {
+  try {
+    const bundle = await exportAllProjectsMemoryBundle();
+    sendBundleDownload(res, bundle, 'edgeclaw-memory-all-projects');
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+router.post('/import/current-project', async (req, res) =>
+  withMemoryService(req, res, async ({ service }) => {
+    try {
+      res.json(service.importBundle(req.body));
+    } catch (error) {
+      const status = error instanceof MemoryBundleValidationError ? 400 : 500;
+      res.status(status).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }),
+);
+
+router.post('/import/all-projects', async (req, res) => {
+  try {
+    res.json(await importAllProjectsMemoryBundle(req.body));
+  } catch (error) {
+    const status = error instanceof MemoryBundleValidationError ? 400 : 500;
+    res.status(status).json({
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
 router.get('/export', async (req, res) =>
   withMemoryService(req, res, async ({ service }) => {
     const bundle = service.exportBundle();
-    const safe = String(bundle.exportedAt || '')
-      .replace(/[^\dTZ-]/g, '-')
-      .replace(/-+/g, '-');
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="clawxmemory-memory-${safe || 'export'}.json"`,
-    );
-    res.send(JSON.stringify(bundle, null, 2));
+    sendBundleDownload(res, bundle, 'edgeclaw-memory-current-project');
   }),
 );
 

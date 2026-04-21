@@ -33,6 +33,10 @@ const UI_STRINGS = {
     "status.memoryDeleted": "记忆已删除。",
     "status.memoryExported": "记忆已导出。",
     "status.memoryImported": "记忆已导入。",
+    "status.currentProjectMemoryExported": "当前项目记忆已导出。",
+    "status.currentProjectMemoryImported": "当前项目记忆已导入。",
+    "status.allProjectsMemoryExported": "全部项目记忆已导出。",
+    "status.allProjectsMemoryImported": "全部项目记忆已导入。",
     "status.projectMetaUpdated": "项目元信息已更新。",
     "status.settingsSaved": "设置已保存。",
     "status.noToolEvents": "无",
@@ -53,8 +57,10 @@ const UI_STRINGS = {
     "actions.settings": "设置",
     "actions.close": "关闭",
     "actions.saveSettings": "保存设置",
-    "actions.export": "导出迁移包",
-    "actions.import": "导入迁移包",
+    "actions.exportCurrentProject": "导出当前项目记忆",
+    "actions.importCurrentProject": "导入当前项目记忆",
+    "actions.exportAllProjects": "导出全部项目记忆",
+    "actions.importAllProjects": "导入全部项目记忆",
     "actions.clearProject": "清空当前项目记忆",
     "actions.clearAll": "清空所有记忆",
     "actions.edit": "编辑",
@@ -147,6 +153,10 @@ const UI_STRINGS = {
     "settings.unit.minutes": "分钟",
     "settings.unit.hours": "小时",
     "settings.dataManagement.title": "数据管理",
+    "settings.data.currentProject": "当前项目",
+    "settings.data.allMemory": "全部记忆",
+    "confirm.importCurrentProject": "导入将覆盖当前项目记忆，但不会影响其他项目，也不会修改工作区代码文件。确认继续吗？",
+    "confirm.importAllProjects": "导入将覆盖全部项目记忆和全局用户画像，但不会修改工作区代码文件。确认继续吗？",
     "confirm.deleteMemory": "确认删除 {0}？",
     "confirm.clearProject": "确认清空当前项目的全部记忆吗？这不会删除全局用户身份背景。",
     "confirm.clearAll": "确认清空所有记忆吗？这会删除所有项目记忆以及全局用户身份背景。",
@@ -175,6 +185,12 @@ const UI_STRINGS = {
     "actions.back": "← 返回",
     "error.authRequired": "需要登录后才能访问当前项目的 Memory Dashboard。",
     "error.missingProjectPath": "缺少 projectPath，无法加载当前项目的 Memory Dashboard。",
+    "error.bundleDownloadReturnedHtml": "导出接口返回了 HTML 页面，而不是记忆 JSON。通常是服务未重启或路由未生效，请重启 CloudCLI 后重新导出。",
+    "error.bundleDownloadInvalidJson": "导出接口返回的不是合法 JSON，无法生成记忆导出文件。",
+    "error.apiReturnedHtml": "接口返回了 HTML 页面，而不是预期的 JSON。通常是服务未重启或路由未生效。",
+    "error.apiReturnedInvalidJson": "接口返回的不是合法 JSON。",
+    "error.importFileIsHtml": "你选择的文件不是记忆导出包，而是一页 HTML 页面。通常是之前导出时服务未重启或路由未生效，请重新导出后再导入。",
+    "error.importFileInvalidJson": "你选择的文件不是合法的记忆 JSON 导出包。",
   },
   en: {
     "doc.title": "Memory",
@@ -192,6 +208,10 @@ const UI_STRINGS = {
     "status.memoryDeleted": "Memory deleted.",
     "status.memoryExported": "Memory exported.",
     "status.memoryImported": "Memory imported.",
+    "status.currentProjectMemoryExported": "Current project memory exported.",
+    "status.currentProjectMemoryImported": "Current project memory imported.",
+    "status.allProjectsMemoryExported": "All-project memory exported.",
+    "status.allProjectsMemoryImported": "All-project memory imported.",
     "status.projectMetaUpdated": "Project metadata updated.",
     "status.settingsSaved": "Settings saved.",
     "status.noToolEvents": "None",
@@ -212,8 +232,10 @@ const UI_STRINGS = {
     "actions.settings": "Settings",
     "actions.close": "Close",
     "actions.saveSettings": "Save Settings",
-    "actions.export": "Export Migration Package",
-    "actions.import": "Import Migration Package",
+    "actions.exportCurrentProject": "Export Current Project Memory",
+    "actions.importCurrentProject": "Import Current Project Memory",
+    "actions.exportAllProjects": "Export All Projects Memory",
+    "actions.importAllProjects": "Import All Projects Memory",
     "actions.clearProject": "Clear Current Project Memory",
     "actions.clearAll": "Clear All Memory",
     "actions.edit": "Edit",
@@ -306,6 +328,10 @@ const UI_STRINGS = {
     "settings.unit.minutes": "Minutes",
     "settings.unit.hours": "Hours",
     "settings.dataManagement.title": "Data Management",
+    "settings.data.currentProject": "Current Project",
+    "settings.data.allMemory": "All Memory",
+    "confirm.importCurrentProject": "Importing will overwrite the current project's memory, but it will not affect other projects or modify workspace code files. Continue?",
+    "confirm.importAllProjects": "Importing will overwrite all project memory and the global user profile, but it will not modify workspace code files. Continue?",
     "confirm.deleteMemory": "Delete {0}?",
     "confirm.clearProject": "Clear all memory for the current project? This will not delete global user identity background.",
     "confirm.clearAll": "Clear all memory? This will delete all project memory and global user identity background.",
@@ -334,6 +360,12 @@ const UI_STRINGS = {
     "actions.back": "← Back",
     "error.authRequired": "Sign in to access the Memory Dashboard for the current project.",
     "error.missingProjectPath": "Missing projectPath; unable to load the Memory Dashboard for the current project.",
+    "error.bundleDownloadReturnedHtml": "The export endpoint returned an HTML page instead of a memory JSON bundle. This usually means the service was not restarted or the route is not active. Restart CloudCLI and export again.",
+    "error.bundleDownloadInvalidJson": "The export endpoint did not return valid JSON, so the memory export file could not be created.",
+    "error.apiReturnedHtml": "The endpoint returned an HTML page instead of the expected JSON. This usually means the service was not restarted or the route is not active.",
+    "error.apiReturnedInvalidJson": "The endpoint did not return valid JSON.",
+    "error.importFileIsHtml": "The selected file is not a memory export bundle. It is an HTML page, usually because the earlier export hit an old or inactive route. Export again and retry the import.",
+    "error.importFileInvalidJson": "The selected file is not a valid memory JSON export bundle.",
   },
 };
 
@@ -447,7 +479,7 @@ const navTraceCountEl = document.getElementById("navTraceCount");
 const boardNavTabs = Array.from(document.querySelectorAll(".nav-tab[data-page]"));
 const traceSubTabs = Array.from(document.querySelectorAll(".trace-tab[data-trace]"));
 const settingsToggleBtn = document.getElementById("settingsToggleBtn");
-const settingsDrawerEl = document.getElementById("settingsDrawer");
+const settingsModalEl = document.getElementById("settingsModal");
 const settingsCloseBtn = document.getElementById("settingsCloseBtn");
 const saveSettingsBtn = document.getElementById("saveSettingsBtn");
 const settingAutoIndexEl = document.getElementById("settingAutoIndex");
@@ -457,9 +489,12 @@ const settingAutoDreamUnitEl = document.getElementById("settingAutoDreamUnit");
 const refreshBtn = document.getElementById("refreshBtn");
 const indexBtn = document.getElementById("indexBtn");
 const dreamBtn = document.getElementById("dreamBtn");
-const exportBtn = document.getElementById("exportBtn");
-const importBtn = document.getElementById("importBtn");
-const importInput = document.getElementById("importInput");
+const exportCurrentProjectBtn = document.getElementById("exportCurrentProjectBtn");
+const importCurrentProjectBtn = document.getElementById("importCurrentProjectBtn");
+const exportAllProjectsBtn = document.getElementById("exportAllProjectsBtn");
+const importAllProjectsBtn = document.getElementById("importAllProjectsBtn");
+const importCurrentProjectInput = document.getElementById("importCurrentProjectInput");
+const importAllProjectsInput = document.getElementById("importAllProjectsInput");
 const clearProjectBtn = document.getElementById("clearProjectBtn");
 const clearAllBtn = document.getElementById("clearAllBtn");
 const workspaceSearchEl = document.getElementById("workspaceSearch");
@@ -745,14 +780,37 @@ function withProjectPath(url) {
   return `${next.pathname}${next.search}`;
 }
 
-async function fetchJson(url, options = {}) {
+function parseJsonText(raw) {
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+function looksLikeHtmlDocument(raw) {
+  const trimmed = String(raw || "").trimStart().toLowerCase();
+  return trimmed.startsWith("<!doctype html") || trimmed.startsWith("<html");
+}
+
+function createTaggedError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function isRecoverableLegacyRouteError(error) {
+  return ["html_response", "invalid_json_response", "not_found"].includes(error?.code);
+}
+
+async function requestText(url, options = {}) {
   const response = await fetch(withProjectPath(url), {
     method: options.method || "GET", headers: headers(options.headers),
     ...(options.body ? { body: JSON.stringify({ ...options.body, projectPath: state.projectPath }) } : {}),
   });
   const raw = await response.text();
-  let data = null;
-  if (raw) { try { data = JSON.parse(raw); } catch { data = null; } }
+  return { response, raw, data: parseJsonText(raw) };
+}
+
+async function fetchJson(url, options = {}) {
+  const { response, raw, data } = await requestText(url, options);
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) throw new Error(t("error.authRequired"));
     throw new Error(data?.error || raw || `Request failed: ${response.status}`);
@@ -760,13 +818,40 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
-async function fetchBlob(url) {
-  const response = await fetch(withProjectPath(url), { headers: headers() });
+async function fetchBundleText(url) {
+  const { response, raw, data } = await requestText(url, { headers: headers() });
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) throw new Error(t("error.authRequired"));
-    throw new Error(await response.text());
+    if (response.status === 404) throw createTaggedError(t("error.apiReturnedHtml"), "not_found");
+    throw new Error(data?.error || raw || `Request failed: ${response.status}`);
   }
-  return response.blob();
+  if (looksLikeHtmlDocument(raw)) {
+    throw createTaggedError(t("error.bundleDownloadReturnedHtml"), "html_response");
+  }
+  if (!data) {
+    throw createTaggedError(t("error.bundleDownloadInvalidJson"), "invalid_json_response");
+  }
+  return raw;
+}
+
+async function postJsonExpectJson(url, body) {
+  const { response, raw, data } = await requestText(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) throw new Error(t("error.authRequired"));
+    if (response.status === 404) throw createTaggedError(t("error.apiReturnedHtml"), "not_found");
+    throw new Error(data?.error || raw || `Request failed: ${response.status}`);
+  }
+  if (looksLikeHtmlDocument(raw)) {
+    throw createTaggedError(t("error.apiReturnedHtml"), "html_response");
+  }
+  if (!data) {
+    throw createTaggedError(t("error.apiReturnedInvalidJson"), "invalid_json_response");
+  }
+  return data;
 }
 
 function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (typeof text === "string") n.textContent = text; return n; }
@@ -836,12 +921,12 @@ function setActiveTraceTab(tab) { state.activeTraceTab = tab; applyTraceTabChrom
 
 function openSettingsDrawer() {
   state.settingsOpen = true;
-  settingsDrawerEl.classList.remove("hidden");
+  settingsModalEl.classList.remove("hidden");
   syncSettingsInputsFromState();
   updateAppScrim();
 }
 
-function closeSettingsDrawer() { state.settingsOpen = false; settingsDrawerEl.classList.add("hidden"); updateAppScrim(); }
+function closeSettingsDrawer() { state.settingsOpen = false; settingsModalEl.classList.add("hidden"); updateAppScrim(); }
 
 /* ── Detail Drawer ── */
 
@@ -1358,9 +1443,105 @@ async function runAction(label, path, body = {}) {
   catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); throw err; }
 }
 
-async function exportMemory() {
-  try { const blob = await fetchBlob("/api/memory/export"); const href = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = href; link.download = `edgeclaw-memory-${Date.now()}.json`; link.click(); URL.revokeObjectURL(href); setStatus(t("status.memoryExported")); }
-  catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
+function buildDownloadName(prefix) {
+  return `${prefix}-${Date.now()}.json`;
+}
+
+function buildImportStatusMessage(successKey, response) {
+  const warnings = Array.isArray(response?.warnings)
+    ? response.warnings.filter((warning) => typeof warning === "string" && warning.trim())
+    : [];
+  return warnings.length > 0
+    ? `${t(successKey)} ${warnings.join(" ")}`
+    : t(successKey);
+}
+
+function parseBundleFileText(raw) {
+  if (looksLikeHtmlDocument(raw)) {
+    throw new Error(t("error.importFileIsHtml"));
+  }
+  const data = parseJsonText(raw);
+  if (!data) {
+    throw new Error(t("error.importFileInvalidJson"));
+  }
+  return data;
+}
+
+async function exportBundle(urls, downloadName, successKey) {
+  try {
+    const candidates = Array.isArray(urls) ? urls : [urls];
+    let exportedText = null;
+    let lastError = null;
+    for (let index = 0; index < candidates.length; index += 1) {
+      try {
+        exportedText = await fetchBundleText(candidates[index]);
+        break;
+      } catch (error) {
+        lastError = error;
+        if (index === candidates.length - 1 || !isRecoverableLegacyRouteError(error)) {
+          throw error;
+        }
+      }
+    }
+    if (typeof exportedText !== "string") {
+      throw lastError || new Error(t("error.bundleDownloadInvalidJson"));
+    }
+    const blob = new Blob([exportedText], { type: "application/json" });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = downloadName;
+    link.click();
+    URL.revokeObjectURL(href);
+    setStatus(t(successKey));
+  } catch (err) {
+    setStatus(err instanceof Error ? err.message : String(err), "error");
+  }
+}
+
+async function importBundle(file, urls, confirmKey, successKey) {
+  if (!window.confirm(t(confirmKey))) return;
+  try {
+    const text = await file.text();
+    const payload = parseBundleFileText(text);
+    const candidates = Array.isArray(urls) ? urls : [urls];
+    let response = null;
+    let lastError = null;
+    for (let index = 0; index < candidates.length; index += 1) {
+      try {
+        response = await postJsonExpectJson(candidates[index], payload);
+        break;
+      } catch (error) {
+        lastError = error;
+        if (index === candidates.length - 1 || !isRecoverableLegacyRouteError(error)) {
+          throw error;
+        }
+      }
+    }
+    if (!response) {
+      throw lastError || new Error(t("error.apiReturnedInvalidJson"));
+    }
+    setStatus(buildImportStatusMessage(successKey, response));
+    await loadDashboard();
+  } catch (err) {
+    setStatus(err instanceof Error ? err.message : String(err), "error");
+  }
+}
+
+async function exportCurrentProjectMemory() {
+  await exportBundle(
+    ["/api/memory/export/current-project", "/api/memory/export"],
+    buildDownloadName("edgeclaw-memory-current-project"),
+    "status.currentProjectMemoryExported",
+  );
+}
+
+async function exportAllProjectsMemory() {
+  await exportBundle(
+    "/api/memory/export/all-projects",
+    buildDownloadName("edgeclaw-memory-all-projects"),
+    "status.allProjectsMemoryExported",
+  );
 }
 
 async function clearCurrentProjectMemory() {
@@ -1489,8 +1670,10 @@ editorFormEl.addEventListener("submit", (event) => void handleEditorSubmit(event
 refreshBtn.addEventListener("click", () => void loadDashboard());
 indexBtn.addEventListener("click", () => void runAction(t("actions.index"), "/api/memory/index/run"));
 dreamBtn.addEventListener("click", () => void runAction(t("actions.dream"), "/api/memory/dream/run"));
-exportBtn.addEventListener("click", () => void exportMemory());
-importBtn.addEventListener("click", () => importInput.click());
+exportCurrentProjectBtn.addEventListener("click", () => void exportCurrentProjectMemory());
+importCurrentProjectBtn.addEventListener("click", () => importCurrentProjectInput.click());
+exportAllProjectsBtn.addEventListener("click", () => void exportAllProjectsMemory());
+importAllProjectsBtn.addEventListener("click", () => importAllProjectsInput.click());
 clearProjectBtn.addEventListener("click", () => void clearCurrentProjectMemory());
 clearAllBtn.addEventListener("click", () => void clearAllMemory());
 
@@ -1498,15 +1681,21 @@ workspaceSearchEl.addEventListener("input", () => { state.workspaceQuery = works
 workspaceSearchEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); state.workspaceQuery = workspaceSearchEl.value.trim(); void loadWorkspace(); } });
 workspaceSearchBtn.addEventListener("click", () => { state.workspaceQuery = workspaceSearchEl.value.trim(); void loadWorkspace(); });
 
-importInput.addEventListener("change", async (e) => {
+importCurrentProjectInput.addEventListener("change", async (e) => {
   const file = e.target.files?.[0]; if (!file) return;
-  try { const text = await file.text(); const payload = JSON.parse(text); await fetchJson("/api/memory/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }); setStatus(t("status.memoryImported")); await loadDashboard(); }
-  catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); }
-  finally { importInput.value = ""; }
+  try { await importBundle(file, ["/api/memory/import/current-project", "/api/memory/import"], "confirm.importCurrentProject", "status.currentProjectMemoryImported"); }
+  finally { importCurrentProjectInput.value = ""; }
+});
+
+importAllProjectsInput.addEventListener("change", async (e) => {
+  const file = e.target.files?.[0]; if (!file) return;
+  try { await importBundle(file, "/api/memory/import/all-projects", "confirm.importAllProjects", "status.allProjectsMemoryImported"); }
+  finally { importAllProjectsInput.value = ""; }
 });
 
 detailBackBtn.addEventListener("click", () => closeMemoryDetailPage());
 detailCloseBtn.addEventListener("click", () => closeDetailDrawer());
+settingsModalEl.addEventListener("click", (e) => { if (e.target === settingsModalEl) closeSettingsDrawer(); });
 appScrimEl.addEventListener("click", () => { closeSettingsDrawer(); closeDetailDrawer(); closeEditorModal(); });
 
 /* ── Init ── */

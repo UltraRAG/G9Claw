@@ -181,6 +181,8 @@ export interface RestoreEntriesActionRequest {
 }
 export type MemoryActionRequest = EditProjectMetaActionRequest | EditEntryActionRequest | DeleteEntriesActionRequest | DeprecateEntriesActionRequest | RestoreEntriesActionRequest;
 export declare const MEMORY_EXPORT_FORMAT_VERSION: "clawxmemory-memory-snapshot.v4";
+export declare const ALL_PROJECTS_MEMORY_EXPORT_FORMAT_VERSION: "clawxmemory-memory-snapshot.all-projects.v1";
+export type MemoryBundleScope = "current_project" | "all_projects";
 export interface MemoryFileExportRecord extends MemoryFileFrontmatter {
     file: string;
     relativePath: string;
@@ -212,9 +214,21 @@ export interface MemorySnapshotFileRecord {
 }
 export interface MemoryExportBundle extends MemoryBundleMetadata {
     formatVersion: typeof MEMORY_EXPORT_FORMAT_VERSION;
+    scope?: "current_project";
     files: MemorySnapshotFileRecord[];
 }
 export type MemoryImportableBundle = MemoryExportBundle;
+export interface AllProjectsMemoryProjectBundle {
+    projectPath: string;
+    projectName?: string;
+    bundle: MemoryExportBundle;
+}
+export interface AllProjectsMemoryExportBundle extends MemoryBundleMetadata {
+    formatVersion: typeof ALL_PROJECTS_MEMORY_EXPORT_FORMAT_VERSION;
+    scope: "all_projects";
+    globalFiles: MemorySnapshotFileRecord[];
+    projects: AllProjectsMemoryProjectBundle[];
+}
 export interface MemoryTransferCounts {
     managedFiles: number;
     memoryFiles: number;
@@ -226,8 +240,10 @@ export interface MemoryTransferCounts {
 }
 export interface MemoryImportResult {
     formatVersion: typeof MEMORY_EXPORT_FORMAT_VERSION;
+    scope: "current_project";
     imported: MemoryTransferCounts;
     importedAt: string;
+    warnings?: string[];
     lastIndexedAt?: string;
     lastDreamAt?: string;
     lastDreamStatus?: DreamPipelineStatus;

@@ -246,6 +246,14 @@ function hasLegacyMultiProjectPath(relativePath: string): boolean {
 
 function normalizeMemoryBundle(value: unknown): MemoryImportableBundle {
   if (!isRecord(value)) throw new MemoryBundleValidationError("Invalid memory bundle");
+  const scope = normalizeString(
+    typeof value.scope === "string" ? value.scope : undefined,
+  );
+  if (scope && scope !== "current_project") {
+    throw new MemoryBundleValidationError(
+      "Unsupported memory bundle scope. Expected current_project.",
+    );
+  }
   const metadata = {
     exportedAt: normalizeString(value.exportedAt).trim() || nowIso(),
     ...(typeof value.lastIndexedAt === "string" && value.lastIndexedAt.trim() ? { lastIndexedAt: value.lastIndexedAt.trim() } : {}),
@@ -283,6 +291,7 @@ function normalizeMemoryBundle(value: unknown): MemoryImportableBundle {
     }
     return {
       formatVersion: MEMORY_EXPORT_FORMAT_VERSION,
+      scope: "current_project",
       ...metadata,
       files,
     };
@@ -806,6 +815,8 @@ export class MemoryRepository {
     stagedWorkspaceRoot: string;
     stagedGlobalRoot: string;
     counts: MemoryTransferCounts;
+  } & {
+    ignoredGlobalFileCount: number;
   } {
     const workspaceFiles = bundle.files.filter((record) => !isGlobalRelativePath(record.relativePath));
     const globalFiles = bundle.files
@@ -840,6 +851,7 @@ export class MemoryRepository {
         stagedWorkspaceRoot,
         stagedGlobalRoot,
         counts: this.buildTransferCounts(stagedWorkspaceStore, stagedGlobalStore),
+        ignoredGlobalFileCount: globalFiles.length,
       };
     } catch (error) {
       rmSync(stagedWorkspaceRoot, { recursive: true, force: true });
@@ -900,6 +912,7 @@ export class MemoryRepository {
   exportMemoryBundle(): MemoryExportBundle {
     return {
       formatVersion: MEMORY_EXPORT_FORMAT_VERSION,
+      scope: "current_project",
       exportedAt: nowIso(),
       ...(typeof this.getPipelineState<string>(LAST_INDEXED_AT_STATE_KEY) === "string"
         ? { lastIndexedAt: this.getPipelineState<string>(LAST_INDEXED_AT_STATE_KEY)! }
@@ -916,35 +929,44 @@ export class MemoryRepository {
       ...(this.listRecentCaseTraces(200).length > 0 ? { recentCaseTraces: this.listRecentCaseTraces(200) } : {}),
       ...(this.listRecentIndexTraces(200).length > 0 ? { recentIndexTraces: this.listRecentIndexTraces(200) } : {}),
       ...(this.listRecentDreamTraces(200).length > 0 ? { recentDreamTraces: this.listRecentDreamTraces(200) } : {}),
-      files: [
-        ...this.workspaceMemory.exportSnapshotFiles(),
-        ...this.globalUserMemory.exportSnapshotFiles().map((record) => ({
-          ...record,
-          relativePath: toExposedGlobalRelativePath(record.relativePath),
-        })),
-      ],
+      // MEMORY.md is a derived manifest that is regenerated on import. Excluding it keeps
+      // current-project bundles free of cross-project/global references.
+      files: this.workspaceMemory
+        .exportSnapshotFiles()
+        .filter((record) => record.relativePath !== "MEMORY.md"),
     };
   }
 
   importMemoryBundle(bundle: MemoryImportableBundle): MemoryImportResult {
     const normalized = normalizeMemoryBundle(bundle);
     const staged = this.stageImportBundle(normalized);
-    this.swapInStagedMemoryRoot(this.workspaceMemory.getRootDir(), staged.stagedWorkspaceRoot);
-    this.swapInStagedMemoryRoot(this.globalUserMemory.getRootDir(), staged.stagedGlobalRoot);
-    this.workspaceMemory.repairManifests();
-    this.resetImportedRuntimeState(normalized);
-    return {
-      formatVersion: MEMORY_EXPORT_FORMAT_VERSION,
-      imported: staged.counts,
-      importedAt: nowIso(),
-      ...(normalized.lastIndexedAt ? { lastIndexedAt: normalized.lastIndexedAt } : {}),
-      ...(normalized.lastDreamAt ? { lastDreamAt: normalized.lastDreamAt } : {}),
-      ...(normalized.lastDreamStatus ? { lastDreamStatus: normalized.lastDreamStatus } : {}),
-      ...(normalized.lastDreamSummary ? { lastDreamSummary: normalized.lastDreamSummary } : {}),
-      ...(normalized.recentCaseTraces ? { recentCaseTraces: normalized.recentCaseTraces } : {}),
-      ...(normalized.recentIndexTraces ? { recentIndexTraces: normalized.recentIndexTraces } : {}),
-      ...(normalized.recentDreamTraces ? { recentDreamTraces: normalized.recentDreamTraces } : {}),
-    };
+    try {
+      this.swapInStagedMemoryRoot(this.workspaceMemory.getRootDir(), staged.stagedWorkspaceRoot);
+      this.workspaceMemory.repairManifests();
+      this.resetImportedRuntimeState(normalized);
+      return {
+        formatVersion: MEMORY_EXPORT_FORMAT_VERSION,
+        scope: "current_project",
+        imported: staged.counts,
+        importedAt: nowIso(),
+        ...(staged.ignoredGlobalFileCount > 0
+          ? {
+              warnings: [
+                `Ignored ${staged.ignoredGlobalFileCount} global user memory file(s) from a legacy current-project bundle.`,
+              ],
+            }
+          : {}),
+        ...(normalized.lastIndexedAt ? { lastIndexedAt: normalized.lastIndexedAt } : {}),
+        ...(normalized.lastDreamAt ? { lastDreamAt: normalized.lastDreamAt } : {}),
+        ...(normalized.lastDreamStatus ? { lastDreamStatus: normalized.lastDreamStatus } : {}),
+        ...(normalized.lastDreamSummary ? { lastDreamSummary: normalized.lastDreamSummary } : {}),
+        ...(normalized.recentCaseTraces ? { recentCaseTraces: normalized.recentCaseTraces } : {}),
+        ...(normalized.recentIndexTraces ? { recentIndexTraces: normalized.recentIndexTraces } : {}),
+        ...(normalized.recentDreamTraces ? { recentDreamTraces: normalized.recentDreamTraces } : {}),
+      };
+    } finally {
+      rmSync(staged.stagedGlobalRoot, { recursive: true, force: true });
+    }
   }
 
   getOverview(): DashboardOverview {
