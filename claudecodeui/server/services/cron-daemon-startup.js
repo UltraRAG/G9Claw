@@ -1,5 +1,6 @@
+import path from 'path';
 import { spawn } from 'child_process';
-import { getLeakedClaudeSdkSpawnOptions } from '../claude-code-main-path.js';
+import { resolveClaudeCodeMainRoot } from '../claude-code-main-path.js';
 import { sendCronDaemonRequest } from './cron-daemon-owner.js';
 
 const DEFAULT_RETRY_ATTEMPTS = 20;
@@ -20,18 +21,20 @@ export function isCronDaemonUnavailableError(error) {
 }
 
 export function buildCronDaemonSpawnCommand({
-  getLeakedClaudeSdkSpawnOptionsFn = getLeakedClaudeSdkSpawnOptions,
+  resolveClaudeCodeMainRootFn = resolveClaudeCodeMainRoot,
   cliPath = process.env.CLAUDE_CLI_PATH
 } = {}) {
-  const leakedSpawn = getLeakedClaudeSdkSpawnOptionsFn();
-  if (leakedSpawn) {
+  const localClaudeCodeMainRoot = resolveClaudeCodeMainRootFn();
+  if (localClaudeCodeMainRoot) {
+    const preloadPath = path.join(localClaudeCodeMainRoot, 'preload.ts');
+    const daemonMainPath = path.join(localClaudeCodeMainRoot, 'src', 'daemon', 'main.ts');
     return {
-      command: leakedSpawn.executable,
+      command: 'bun',
       args: [
-        ...leakedSpawn.executableArgs,
-        leakedSpawn.pathToClaudeCodeExecutable,
-        'daemon',
-        'serve'
+        '--preload',
+        preloadPath,
+        '-e',
+        `const { daemonMain } = await import(${JSON.stringify(daemonMainPath)}); await daemonMain(['serve'])`
       ]
     };
   }

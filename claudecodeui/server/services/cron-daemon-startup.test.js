@@ -14,20 +14,22 @@ function createUnavailableError(code) {
 
 test('buildCronDaemonSpawnCommand prefers the local Claude Code tree and falls back to the CLI path', () => {
   const localCommand = buildCronDaemonSpawnCommand({
-    getLeakedClaudeSdkSpawnOptionsFn: () => ({
-      executable: 'bun',
-      executableArgs: ['run', '--preload', '/tmp/preload.ts'],
-      pathToClaudeCodeExecutable: '/tmp/cli.tsx'
-    })
+    resolveClaudeCodeMainRootFn: () => '/tmp/claude-code-main'
   });
 
-  assert.deepEqual(localCommand, {
-    command: 'bun',
-    args: ['run', '--preload', '/tmp/preload.ts', '/tmp/cli.tsx', 'daemon', 'serve']
-  });
+  assert.equal(localCommand.command, 'bun');
+  assert.deepEqual(localCommand.args.slice(0, 3), [
+    '--preload',
+    '/tmp/claude-code-main/preload.ts',
+    '-e'
+  ]);
+  assert.match(localCommand.args[3], /daemonMain/);
+  assert.match(localCommand.args[3], /daemonMain\(\['serve'\]\)/);
+  assert.doesNotMatch(localCommand.args.join(' '), /\brun\b/);
+  assert.doesNotMatch(localCommand.args.join(' '), /cli\.tsx/);
 
   const fallbackCommand = buildCronDaemonSpawnCommand({
-    getLeakedClaudeSdkSpawnOptionsFn: () => null,
+    resolveClaudeCodeMainRootFn: () => null,
     cliPath: '/opt/bin/claude'
   });
 
@@ -82,7 +84,12 @@ test('ensureCronDaemonForUiStartup starts the daemon when the socket is unavaila
     },
     buildCronDaemonSpawnCommandFn: () => ({
       command: 'bun',
-      args: ['run', '/tmp/cli.tsx', 'daemon', 'serve']
+      args: [
+        '--preload',
+        '/tmp/claude-code-main/preload.ts',
+        '-e',
+        `const { daemonMain } = await import(${JSON.stringify('/tmp/claude-code-main/src/daemon/main.ts')}); await daemonMain(['serve'])`
+      ]
     }),
     sleepFn: async () => {}
   });
@@ -90,17 +97,20 @@ test('ensureCronDaemonForUiStartup starts the daemon when the socket is unavaila
   assert.equal(response.data.type, 'pong');
   assert.deepEqual(requests, [{ type: 'ping' }, { type: 'ping' }]);
   assert.equal(spawnCalls.length, 1);
-  assert.deepEqual(spawnCalls[0], {
-    command: 'bun',
-    args: ['run', '/tmp/cli.tsx', 'daemon', 'serve'],
-    options: {
-      cwd: process.cwd(),
-      env: process.env,
-      detached: true,
-      stdio: 'ignore'
-    },
-    unrefCalled: true
+  assert.equal(spawnCalls[0].command, 'bun');
+  assert.deepEqual(spawnCalls[0].args.slice(0, 3), [
+    '--preload',
+    '/tmp/claude-code-main/preload.ts',
+    '-e'
+  ]);
+  assert.match(spawnCalls[0].args[3], /daemonMain\(\['serve'\]\)/);
+  assert.deepEqual(spawnCalls[0].options, {
+    cwd: process.cwd(),
+    env: process.env,
+    detached: true,
+    stdio: 'ignore'
   });
+  assert.equal(spawnCalls[0].unrefCalled, true);
 });
 
 test('ensureCronDaemonForUiStartup fails fast when the daemon never becomes healthy', async () => {
