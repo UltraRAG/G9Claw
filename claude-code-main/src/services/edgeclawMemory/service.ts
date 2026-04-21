@@ -25,7 +25,7 @@ export function isEdgeClawMemoryEnabled(): boolean {
   if (isEnvDefinedFalsy(raw)) {
     return false
   }
-  return false
+  return true
 }
 
 export function getEdgeClawMemoryService(

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Load environment variables before other imports execute
-import './load-env.js';
+import { assertRequiredEdgeClawEnv } from './load-env.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -31,6 +31,7 @@ const c = {
     dim: (text) => `${colors.dim}${text}${colors.reset}`,
 };
 
+assertRequiredEdgeClawEnv();
 console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
 import express from 'express';

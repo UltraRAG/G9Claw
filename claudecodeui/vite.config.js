@@ -1,10 +1,19 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import { getConnectableHost, normalizeLoopbackHost } from './shared/networkHosts.js'
 
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+const repoRoot = path.resolve(__dirname, '..')
+
 export default defineConfig(({ mode }) => {
-  // Load env file based on `mode` in the current working directory.
-  const env = loadEnv(mode, process.cwd(), '')
+  // Load the single root .env and let exported shell vars override file values.
+  const env = {
+    ...loadEnv(mode, repoRoot, ''),
+    ...process.env,
+  }
 
   const configuredHost = env.HOST || '0.0.0.0'
   // if the host is not a loopback address, it should be used directly. 
@@ -20,10 +29,12 @@ export default defineConfig(({ mode }) => {
   const disableLocalAuth =
     env.CLOUDCLI_DISABLE_LOCAL_AUTH !== '0' &&
     env.CLOUDCLI_DISABLE_LOCAL_AUTH !== 'false'
+  const contextWindow = env.CONTEXT_WINDOW || env.VITE_CONTEXT_WINDOW || '160000'
 
   return {
     define: {
       'import.meta.env.VITE_DISABLE_LOCAL_AUTH': JSON.stringify(disableLocalAuth ? 'true' : 'false'),
+      'import.meta.env.VITE_CONTEXT_WINDOW': JSON.stringify(contextWindow),
     },
     plugins: [react()],
     server: {

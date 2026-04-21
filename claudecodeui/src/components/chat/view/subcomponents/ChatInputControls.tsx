@@ -78,7 +78,10 @@ export default function ChatInputControls({
         <ThinkingModeSelector selectedMode={thinkingMode} onModeChange={setThinkingMode} onClose={() => {}} className="" />
       )}
 
-      <TokenUsagePie used={tokenBudget?.used || 0} total={tokenBudget?.total || parseInt(import.meta.env.VITE_CONTEXT_WINDOW) || 160000} />
+      <TokenUsagePie
+        used={tokenBudget?.used || 0}
+        total={tokenBudget?.total || parseInt(import.meta.env.VITE_CONTEXT_WINDOW || '160000', 10) || 160000}
+      />
 
       <button
         type="button"
