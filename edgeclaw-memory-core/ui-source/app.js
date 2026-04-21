@@ -39,6 +39,7 @@ const UI_STRINGS = {
     "status.allProjectsMemoryImported": "全部项目记忆已导入。",
     "status.projectMetaUpdated": "项目元信息已更新。",
     "status.settingsSaved": "设置已保存。",
+    "status.lastDreamRolledBack": "已回滚上一次 Dream。",
     "status.noToolEvents": "无",
     "status.noReply": "暂无回复。",
     "status.noContext": "无",
@@ -61,6 +62,7 @@ const UI_STRINGS = {
     "actions.importCurrentProject": "导入当前项目记忆",
     "actions.exportAllProjects": "导出全部项目记忆",
     "actions.importAllProjects": "导入全部项目记忆",
+    "actions.rollbackLastDream": "回滚上一次 Dream",
     "actions.clearProject": "清空当前项目记忆",
     "actions.clearAll": "清空所有记忆",
     "actions.edit": "编辑",
@@ -109,6 +111,7 @@ const UI_STRINGS = {
     "route.none": "无",
     "trigger.manual": "手动",
     "trigger.scheduled": "自动",
+    "trigger.rollback": "回滚",
     "displayStatus.noop": "空跑",
     "displayStatus.completed": "已完成",
     "displayStatus.error": "错误",
@@ -155,8 +158,13 @@ const UI_STRINGS = {
     "settings.dataManagement.title": "数据管理",
     "settings.data.currentProject": "当前项目",
     "settings.data.allMemory": "全部记忆",
+    "settings.snapshot.none": "还没有可用的 Dream 快照。",
+    "settings.snapshot.ready": "可回滚",
+    "settings.snapshot.stale": "快照已失效",
+    "settings.snapshot.meta": "快照：{0} · 来源：{1} · {2}",
     "confirm.importCurrentProject": "导入将覆盖当前项目记忆，但不会影响其他项目，也不会修改工作区代码文件。确认继续吗？",
     "confirm.importAllProjects": "导入将覆盖全部项目记忆和全局用户画像，但不会修改工作区代码文件。确认继续吗？",
+    "confirm.rollbackLastDream": "回滚将恢复上一次 Dream 前的记忆快照，并覆盖当前项目记忆与全局用户画像中的 Dream 结果。不会修改工作区代码文件。确认继续吗？",
     "confirm.deleteMemory": "确认删除 {0}？",
     "confirm.clearProject": "确认清空当前项目的全部记忆吗？这不会删除全局用户身份背景。",
     "confirm.clearAll": "确认清空所有记忆吗？这会删除所有项目记忆以及全局用户身份背景。",
@@ -214,6 +222,7 @@ const UI_STRINGS = {
     "status.allProjectsMemoryImported": "All-project memory imported.",
     "status.projectMetaUpdated": "Project metadata updated.",
     "status.settingsSaved": "Settings saved.",
+    "status.lastDreamRolledBack": "Rolled back the last Dream.",
     "status.noToolEvents": "None",
     "status.noReply": "No reply yet.",
     "status.noContext": "None",
@@ -236,6 +245,7 @@ const UI_STRINGS = {
     "actions.importCurrentProject": "Import Current Project Memory",
     "actions.exportAllProjects": "Export All Projects Memory",
     "actions.importAllProjects": "Import All Projects Memory",
+    "actions.rollbackLastDream": "Rollback Last Dream",
     "actions.clearProject": "Clear Current Project Memory",
     "actions.clearAll": "Clear All Memory",
     "actions.edit": "Edit",
@@ -284,6 +294,7 @@ const UI_STRINGS = {
     "route.none": "None",
     "trigger.manual": "Manual",
     "trigger.scheduled": "Scheduled",
+    "trigger.rollback": "Rollback",
     "displayStatus.noop": "No-op",
     "displayStatus.completed": "Completed",
     "displayStatus.error": "Error",
@@ -330,8 +341,13 @@ const UI_STRINGS = {
     "settings.dataManagement.title": "Data Management",
     "settings.data.currentProject": "Current Project",
     "settings.data.allMemory": "All Memory",
+    "settings.snapshot.none": "No Dream snapshot is available yet.",
+    "settings.snapshot.ready": "Rollback ready",
+    "settings.snapshot.stale": "Snapshot stale",
+    "settings.snapshot.meta": "Snapshot: {0} · Source: {1} · {2}",
     "confirm.importCurrentProject": "Importing will overwrite the current project's memory, but it will not affect other projects or modify workspace code files. Continue?",
     "confirm.importAllProjects": "Importing will overwrite all project memory and the global user profile, but it will not modify workspace code files. Continue?",
+    "confirm.rollbackLastDream": "Rollback will restore the memory snapshot from before the last Dream and overwrite the current project's Dream results plus the global user profile updates. It will not modify workspace code files. Continue?",
     "confirm.deleteMemory": "Delete {0}?",
     "confirm.clearProject": "Clear all memory for the current project? This will not delete global user identity background.",
     "confirm.clearAll": "Clear all memory? This will delete all project memory and global user identity background.",
@@ -461,6 +477,7 @@ const state = {
   editorSession: null,
   memoryDetailOpen: false,
   previousPage: "project",
+  maintenanceBusy: false,
 };
 
 applyMemoryTheme(MEMORY_THEME);
@@ -491,12 +508,14 @@ const indexBtn = document.getElementById("indexBtn");
 const dreamBtn = document.getElementById("dreamBtn");
 const exportCurrentProjectBtn = document.getElementById("exportCurrentProjectBtn");
 const importCurrentProjectBtn = document.getElementById("importCurrentProjectBtn");
+const rollbackLastDreamBtn = document.getElementById("rollbackLastDreamBtn");
 const exportAllProjectsBtn = document.getElementById("exportAllProjectsBtn");
 const importAllProjectsBtn = document.getElementById("importAllProjectsBtn");
 const importCurrentProjectInput = document.getElementById("importCurrentProjectInput");
 const importAllProjectsInput = document.getElementById("importAllProjectsInput");
 const clearProjectBtn = document.getElementById("clearProjectBtn");
 const clearAllBtn = document.getElementById("clearAllBtn");
+const lastDreamSnapshotMetaEl = document.getElementById("lastDreamSnapshotMeta");
 const workspaceSearchEl = document.getElementById("workspaceSearch");
 const workspaceSearchBtn = document.getElementById("workspaceSearchBtn");
 const listSearchRowEl = document.getElementById("listSearchRow");
@@ -723,8 +742,15 @@ function setStatus(message, kind = "info") {
   statusBarEl.classList.add("hidden"); statusBarEl.textContent = ""; delete statusBarEl.dataset.kind; setActivity(message);
 }
 
+function setMaintenanceBusy(next) {
+  state.maintenanceBusy = Boolean(next);
+  syncMaintenanceActionState();
+}
+
 function formatTraceTrigger(trigger) {
-  return trigger === "scheduled" ? t("trigger.scheduled") : t("trigger.manual");
+  if (trigger === "scheduled") return t("trigger.scheduled");
+  if (trigger === "rollback") return t("trigger.rollback");
+  return t("trigger.manual");
 }
 
 function formatRecallRoute(route) {
@@ -878,6 +904,50 @@ function countUserSummaryRecords(s) {
   return s.identityBackground?.length ? 1 : 0;
 }
 
+function formatLastDreamSnapshotSource(snapshot) {
+  if (!snapshot) return t("status.unknown");
+  if (snapshot.sourceAction === "rollback") return t("trigger.rollback");
+  return formatTraceTrigger(snapshot.trigger);
+}
+
+function renderLastDreamSnapshotMeta() {
+  const snapshot = state.overview?.lastDreamSnapshot || null;
+  if (!lastDreamSnapshotMetaEl) return;
+  if (!snapshot) {
+    lastDreamSnapshotMetaEl.textContent = t("settings.snapshot.none");
+    return;
+  }
+  const stateLabel = snapshot.rollbackReady ? t("settings.snapshot.ready") : t("settings.snapshot.stale");
+  lastDreamSnapshotMetaEl.textContent = t(
+    "settings.snapshot.meta",
+    formatDateTime(snapshot.capturedAt),
+    formatLastDreamSnapshotSource(snapshot),
+    stateLabel,
+  );
+}
+
+function buildRollbackLastDreamTitle(snapshot) {
+  if (!snapshot) {
+    return t("settings.snapshot.none");
+  }
+  const stateLabel = snapshot.rollbackReady ? t("settings.snapshot.ready") : t("settings.snapshot.stale");
+  return t(
+    "settings.snapshot.meta",
+    formatDateTime(snapshot.capturedAt),
+    formatLastDreamSnapshotSource(snapshot),
+    stateLabel,
+  );
+}
+
+function syncMaintenanceActionState() {
+  const snapshot = state.overview?.lastDreamSnapshot || null;
+  dreamBtn.disabled = state.maintenanceBusy;
+  if (rollbackLastDreamBtn) {
+    rollbackLastDreamBtn.disabled = state.maintenanceBusy || !snapshot?.rollbackReady;
+    rollbackLastDreamBtn.title = buildRollbackLastDreamTitle(snapshot);
+  }
+}
+
 function getProjectCardCount() { return state.workspace?.projectEntries?.length || 0; }
 
 function updateCounts() {
@@ -892,6 +962,8 @@ function updateCounts() {
   indexTraceCountEl.textContent = String(state.indexTraces.length);
   dreamTraceCountEl.textContent = String(state.dreamTraces.length);
   navLastIndexedEl.textContent = formatDateTime(state.overview?.lastIndexedAt || "") === "—" ? t("status.waitingForIndex") : formatDateTime(state.overview?.lastIndexedAt || "");
+  renderLastDreamSnapshotMeta();
+  syncMaintenanceActionState();
 }
 
 /* ── Page / Tab Navigation ── */
@@ -1437,10 +1509,21 @@ async function loadDashboard() {
 
 /* ── Actions ── */
 
-async function runAction(label, path, body = {}) {
-  closeSettingsDrawer(); setStatus(t("status.running", label));
-  try { const r = await fetchJson(path, { method: "POST", headers: { "Content-Type": "application/json" }, body }); setStatus(t("status.done", label)); await loadDashboard(); return r; }
-  catch (err) { setStatus(err instanceof Error ? err.message : String(err), "error"); throw err; }
+async function runAction(label, path, body = {}, options = {}) {
+  closeSettingsDrawer();
+  if (options.maintenance) setMaintenanceBusy(true);
+  setStatus(t("status.running", label));
+  try {
+    const r = await fetchJson(path, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    setStatus(t("status.done", label));
+    await loadDashboard();
+    return r;
+  } catch (err) {
+    setStatus(err instanceof Error ? err.message : String(err), "error");
+    throw err;
+  } finally {
+    if (options.maintenance) setMaintenanceBusy(false);
+  }
 }
 
 function buildDownloadName(prefix) {
@@ -1552,6 +1635,22 @@ async function clearCurrentProjectMemory() {
 async function clearAllMemory() {
   if (!window.confirm(t("confirm.clearAll"))) return;
   await runAction(t("actions.clearAll"), "/api/memory/clear", { scope: "all_memory" });
+}
+
+async function rollbackLastDream() {
+  if (!window.confirm(t("confirm.rollbackLastDream"))) return;
+  closeSettingsDrawer();
+  try {
+    await runAction(
+      t("actions.rollbackLastDream"),
+      "/api/memory/dream/rollback-last",
+      {},
+      { maintenance: true },
+    );
+    setStatus(t("status.lastDreamRolledBack"));
+  } catch {
+    // runAction already surfaced the error
+  }
 }
 
 async function editProjectMeta() {
@@ -1668,10 +1767,11 @@ editorCloseBtn.addEventListener("click", () => closeEditorModal());
 editorCancelBtn.addEventListener("click", () => closeEditorModal());
 editorFormEl.addEventListener("submit", (event) => void handleEditorSubmit(event));
 refreshBtn.addEventListener("click", () => void loadDashboard());
-indexBtn.addEventListener("click", () => void runAction(t("actions.index"), "/api/memory/index/run"));
-dreamBtn.addEventListener("click", () => void runAction(t("actions.dream"), "/api/memory/dream/run"));
+indexBtn.addEventListener("click", () => void runAction(t("actions.index"), "/api/memory/index/run", {}, { maintenance: true }));
+dreamBtn.addEventListener("click", () => void runAction(t("actions.dream"), "/api/memory/dream/run", {}, { maintenance: true }));
 exportCurrentProjectBtn.addEventListener("click", () => void exportCurrentProjectMemory());
 importCurrentProjectBtn.addEventListener("click", () => importCurrentProjectInput.click());
+rollbackLastDreamBtn?.addEventListener("click", () => void rollbackLastDream());
 exportAllProjectsBtn.addEventListener("click", () => void exportAllProjectsMemory());
 importAllProjectsBtn.addEventListener("click", () => importAllProjectsInput.click());
 clearProjectBtn.addEventListener("click", () => void clearCurrentProjectMemory());

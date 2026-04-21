@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { MEMORY_EXPORT_FORMAT_VERSION, } from "../types.js";
 import { FileMemoryStore } from "../file-memory.js";
@@ -14,6 +14,8 @@ const RECENT_DREAM_TRACES_STATE_KEY = "recentDreamTraces";
 const GLOBAL_MEMORY_PREFIX = "global/";
 const GLOBAL_USER_PROFILE_RELATIVE_PATH = "UserIdentity/user-profile.md";
 const GLOBAL_USER_NOTES_RELATIVE_DIR = "UserIdentityNotes";
+const LAST_DREAM_SNAPSHOT_DIR = "last_dream";
+const LAST_DREAM_SNAPSHOT_METADATA_FILE = "metadata.json";
 export class MemoryBundleValidationError extends Error {
     constructor(message) {
         super(message);
@@ -282,12 +284,49 @@ function createSiblingTempPath(targetDir, label) {
     const parentDir = dirname(targetDir);
     return join(parentDir, `.${basename(targetDir)}.${label}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
 }
+function sortSnapshotFiles(files) {
+    return [...files].sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+function snapshotVersionFromFiles(files) {
+    return hashText(JSON.stringify(sortSnapshotFiles(files.filter((file) => file.relativePath !== "MEMORY.md"))));
+}
+function readSnapshotFiles(rootDir) {
+    if (!existsSync(rootDir))
+        return [];
+    const files = [];
+    const walk = (currentDir) => {
+        const entries = readdirSync(currentDir, { withFileTypes: true })
+            .sort((left, right) => left.name.localeCompare(right.name));
+        for (const entry of entries) {
+            const absolutePath = join(currentDir, entry.name);
+            if (entry.isDirectory()) {
+                walk(absolutePath);
+                continue;
+            }
+            if (!entry.isFile())
+                continue;
+            files.push({
+                relativePath: relative(rootDir, absolutePath).replace(/\\/g, "/"),
+                content: readFileSync(absolutePath, "utf8"),
+            });
+        }
+    };
+    walk(rootDir);
+    return files;
+}
+function sameDreamRuntimeState(left, right) {
+    return (left.lastDreamAt ?? "") === (right.lastDreamAt ?? "")
+        && (left.lastDreamStatus ?? "") === (right.lastDreamStatus ?? "")
+        && (left.lastDreamSummary ?? "") === (right.lastDreamSummary ?? "");
+}
 export class MemoryRepository {
+    dbPath;
     db;
     workspaceMemory;
     globalUserMemory;
     constructor(dbPath, options = {}) {
         mkdirSync(dirname(dbPath), { recursive: true });
+        this.dbPath = resolve(dbPath);
         const memoryDir = options.memoryDir ?? join(dirname(dbPath), "memory");
         const globalRootDir = options.globalRootDir ?? join(dirname(dirname(memoryDir)), "global");
         mkdirSync(memoryDir, { recursive: true });
@@ -608,78 +647,87 @@ export class MemoryRepository {
         this.setPipelineState(INDEXING_SETTINGS_STATE_KEY, next);
         return next;
     }
-    buildTransferCounts(workspaceStore, globalStore) {
-        const workspaceImported = workspaceStore.exportBundleRecords({ includeTmp: true });
-        const globalImported = globalStore.exportBundleRecords({ includeTmp: true });
-        const memoryFiles = [...workspaceImported.memoryFiles, ...globalImported.memoryFiles];
+    workspaceStoreOptions() {
         return {
-            managedFiles: workspaceStore.exportSnapshotFiles().length + globalStore.exportSnapshotFiles().length,
-            memoryFiles: memoryFiles.length,
-            project: memoryFiles.filter((item) => item.type === "project").length,
-            feedback: memoryFiles.filter((item) => item.type === "feedback").length,
-            user: memoryFiles.filter((item) => item.type === "user").length,
-            tmp: 0,
-            projectMetas: workspaceImported.projectMetas.length,
+            manageProjectMeta: true,
+            manageProjectFiles: true,
+            manageUserProfile: false,
+            enableManifest: true,
         };
     }
-    materializeSnapshotBundle(rootDir, files, options) {
-        mkdirSync(rootDir, { recursive: true });
-        for (const record of files) {
-            const absolutePath = resolve(rootDir, record.relativePath);
-            if (!isPathWithinRoot(rootDir, absolutePath) || absolutePath === resolve(rootDir)) {
-                throw new MemoryBundleValidationError(`Invalid imported snapshot file path: ${record.relativePath}`);
-            }
-            mkdirSync(dirname(absolutePath), { recursive: true });
-            writeFileSync(absolutePath, record.content, "utf-8");
-        }
-        const store = new FileMemoryStore(rootDir, options);
-        store.repairManifests();
-        return store;
+    globalStoreOptions() {
+        return {
+            manageProjectMeta: false,
+            manageProjectFiles: false,
+            manageUserProfile: true,
+            userProfileRelativePath: GLOBAL_USER_PROFILE_RELATIVE_PATH,
+            userNotesRelativeDir: GLOBAL_USER_NOTES_RELATIVE_DIR,
+            appendOnlyUserEntries: true,
+            enableManifest: false,
+        };
     }
-    stageImportBundle(bundle) {
-        const workspaceFiles = bundle.files.filter((record) => !isGlobalRelativePath(record.relativePath));
-        const globalFiles = bundle.files
-            .filter((record) => isGlobalRelativePath(record.relativePath))
-            .map((record) => ({
-            ...record,
-            relativePath: toInternalGlobalRelativePath(record.relativePath),
-        }));
-        const liveWorkspaceRoot = this.workspaceMemory.getRootDir();
-        const liveGlobalRoot = this.globalUserMemory.getRootDir();
-        const stagedWorkspaceRoot = createSiblingTempPath(liveWorkspaceRoot, "import");
-        const stagedGlobalRoot = createSiblingTempPath(liveGlobalRoot, "import");
-        mkdirSync(stagedWorkspaceRoot, { recursive: true });
-        mkdirSync(stagedGlobalRoot, { recursive: true });
-        try {
-            const stagedWorkspaceStore = this.materializeSnapshotBundle(stagedWorkspaceRoot, workspaceFiles, {
-                manageProjectMeta: true,
-                manageProjectFiles: true,
-                manageUserProfile: false,
-                enableManifest: true,
-            });
-            const stagedGlobalStore = this.materializeSnapshotBundle(stagedGlobalRoot, globalFiles, {
-                manageProjectMeta: false,
-                manageProjectFiles: false,
-                manageUserProfile: true,
-                userProfileRelativePath: GLOBAL_USER_PROFILE_RELATIVE_PATH,
-                userNotesRelativeDir: GLOBAL_USER_NOTES_RELATIVE_DIR,
-                appendOnlyUserEntries: true,
-                enableManifest: false,
-            });
-            return {
-                stagedWorkspaceRoot,
-                stagedGlobalRoot,
-                counts: this.buildTransferCounts(stagedWorkspaceStore, stagedGlobalStore),
-                ignoredGlobalFileCount: globalFiles.length,
-            };
-        }
-        catch (error) {
-            rmSync(stagedWorkspaceRoot, { recursive: true, force: true });
-            rmSync(stagedGlobalRoot, { recursive: true, force: true });
-            throw error;
-        }
+    captureDreamRuntimeState() {
+        const runtimeState = {};
+        const lastDreamAt = this.getPipelineState(LAST_DREAM_AT_STATE_KEY);
+        const lastDreamStatus = sanitizeDreamStatus(this.getPipelineState(LAST_DREAM_STATUS_STATE_KEY));
+        const lastDreamSummary = this.getPipelineState(LAST_DREAM_SUMMARY_STATE_KEY);
+        if (typeof lastDreamAt === "string" && lastDreamAt.trim())
+            runtimeState.lastDreamAt = lastDreamAt;
+        if (lastDreamStatus)
+            runtimeState.lastDreamStatus = lastDreamStatus;
+        if (typeof lastDreamSummary === "string" && lastDreamSummary.trim())
+            runtimeState.lastDreamSummary = lastDreamSummary;
+        return runtimeState;
     }
-    swapInStagedMemoryRoot(liveRoot, stagedRoot) {
+    getWorkspaceDir() {
+        const workspaceDir = this.getPipelineState("workspaceDir");
+        return typeof workspaceDir === "string" && workspaceDir.trim()
+            ? workspaceDir
+            : "";
+    }
+    restoreDreamRuntimeState(runtimeState) {
+        for (const key of [
+            LAST_DREAM_AT_STATE_KEY,
+            LAST_DREAM_STATUS_STATE_KEY,
+            LAST_DREAM_SUMMARY_STATE_KEY,
+        ]) {
+            this.deletePipelineState(key);
+        }
+        if (runtimeState.lastDreamAt)
+            this.setPipelineState(LAST_DREAM_AT_STATE_KEY, runtimeState.lastDreamAt);
+        if (runtimeState.lastDreamStatus)
+            this.setPipelineState(LAST_DREAM_STATUS_STATE_KEY, runtimeState.lastDreamStatus);
+        if (runtimeState.lastDreamSummary)
+            this.setPipelineState(LAST_DREAM_SUMMARY_STATE_KEY, runtimeState.lastDreamSummary);
+    }
+    captureLiveMemorySnapshot() {
+        const workspaceFiles = this.workspaceMemory.exportSnapshotFiles();
+        const globalFiles = this.globalUserMemory.exportSnapshotFiles();
+        return {
+            workspaceFiles,
+            globalFiles,
+            counts: this.buildTransferCounts(this.workspaceMemory, this.globalUserMemory),
+            workspaceVersion: snapshotVersionFromFiles(workspaceFiles),
+            globalVersion: snapshotVersionFromFiles(globalFiles),
+            runtimeState: this.captureDreamRuntimeState(),
+        };
+    }
+    captureCurrentMemorySnapshot() {
+        return this.captureLiveMemorySnapshot();
+    }
+    lastDreamSnapshotRoot() {
+        return join(dirname(this.dbPath), LAST_DREAM_SNAPSHOT_DIR);
+    }
+    lastDreamSnapshotWorkspaceRoot(rootDir = this.lastDreamSnapshotRoot()) {
+        return join(rootDir, "workspace");
+    }
+    lastDreamSnapshotGlobalRoot(rootDir = this.lastDreamSnapshotRoot()) {
+        return join(rootDir, "global");
+    }
+    lastDreamSnapshotMetadataPath(rootDir = this.lastDreamSnapshotRoot()) {
+        return join(rootDir, LAST_DREAM_SNAPSHOT_METADATA_FILE);
+    }
+    replaceDirectoryWithStaged(liveRoot, stagedRoot) {
         const backupRoot = createSiblingTempPath(liveRoot, "backup");
         let movedLiveRoot = false;
         try {
@@ -703,8 +751,266 @@ export class MemoryRepository {
                 rmSync(backupRoot, { recursive: true, force: true });
             }
             catch {
-                // Best-effort cleanup; the live memory root has already been swapped in.
+                // Best-effort cleanup; the live directory has already been swapped in.
             }
+        }
+    }
+    stageLastDreamSnapshot(snapshot, metadata) {
+        const snapshotRoot = this.lastDreamSnapshotRoot();
+        const stagedSnapshotRoot = createSiblingTempPath(snapshotRoot, "snapshot");
+        mkdirSync(stagedSnapshotRoot, { recursive: true });
+        try {
+            this.writeSnapshotFilesToRoot(this.lastDreamSnapshotWorkspaceRoot(stagedSnapshotRoot), snapshot.workspaceFiles);
+            this.writeSnapshotFilesToRoot(this.lastDreamSnapshotGlobalRoot(stagedSnapshotRoot), snapshot.globalFiles);
+            writeFileSync(this.lastDreamSnapshotMetadataPath(stagedSnapshotRoot), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+            return stagedSnapshotRoot;
+        }
+        catch (error) {
+            rmSync(stagedSnapshotRoot, { recursive: true, force: true });
+            throw error;
+        }
+    }
+    loadLastDreamSnapshotRecord() {
+        const snapshotRoot = this.lastDreamSnapshotRoot();
+        const metadataPath = this.lastDreamSnapshotMetadataPath(snapshotRoot);
+        if (!existsSync(metadataPath))
+            return undefined;
+        const parsed = parseJson(readFileSync(metadataPath, "utf8"), null);
+        if (!parsed || parsed.version !== 1)
+            return undefined;
+        const workspaceRoot = this.lastDreamSnapshotWorkspaceRoot(snapshotRoot);
+        const globalRoot = this.lastDreamSnapshotGlobalRoot(snapshotRoot);
+        if (!existsSync(workspaceRoot) || !existsSync(globalRoot))
+            return undefined;
+        return {
+            metadata: parsed,
+            workspaceFiles: readSnapshotFiles(workspaceRoot),
+            globalFiles: readSnapshotFiles(globalRoot),
+        };
+    }
+    clearLastDreamSnapshot() {
+        rmSync(this.lastDreamSnapshotRoot(), { recursive: true, force: true });
+    }
+    getLastDreamSnapshotOverview() {
+        const snapshot = this.loadLastDreamSnapshotRecord();
+        if (!snapshot)
+            return undefined;
+        const currentSnapshot = this.captureLiveMemorySnapshot();
+        const rollbackReady = snapshot.metadata.after.workspaceVersion === currentSnapshot.workspaceVersion
+            && snapshot.metadata.after.globalVersion === currentSnapshot.globalVersion;
+        const warning = rollbackReady
+            ? undefined
+            : "Current memory state no longer matches the last Dream snapshot, so rollback is unavailable.";
+        return {
+            capturedAt: snapshot.metadata.capturedAt,
+            sourceAction: snapshot.metadata.sourceAction,
+            sourceWorkspaceDir: snapshot.metadata.sourceWorkspaceDir,
+            ...(snapshot.metadata.trigger ? { trigger: snapshot.metadata.trigger } : {}),
+            ...(snapshot.metadata.dreamTraceId ? { dreamTraceId: snapshot.metadata.dreamTraceId } : {}),
+            ...(snapshot.metadata.summary ? { summary: snapshot.metadata.summary } : {}),
+            rollbackReady,
+            ...(warning ? { warning } : {}),
+        };
+    }
+    createDreamStage(label = "dream") {
+        return this.createStagedRepositoryFromSnapshot(this.captureLiveMemorySnapshot(), label);
+    }
+    createStagedRepositoryFromSnapshot(snapshot, label) {
+        const liveWorkspaceRoot = this.workspaceMemory.getRootDir();
+        const liveGlobalRoot = this.globalUserMemory.getRootDir();
+        const stagedWorkspaceRoot = createSiblingTempPath(liveWorkspaceRoot, label);
+        const stagedGlobalRoot = createSiblingTempPath(liveGlobalRoot, label);
+        const stagedDbPath = createSiblingTempPath(this.dbPath, label);
+        mkdirSync(stagedWorkspaceRoot, { recursive: true });
+        mkdirSync(stagedGlobalRoot, { recursive: true });
+        let stageRepository = null;
+        try {
+            this.writeSnapshotFilesToRoot(stagedWorkspaceRoot, snapshot.workspaceFiles);
+            this.writeSnapshotFilesToRoot(stagedGlobalRoot, snapshot.globalFiles);
+            stageRepository = new MemoryRepository(stagedDbPath, {
+                memoryDir: stagedWorkspaceRoot,
+                globalRootDir: stagedGlobalRoot,
+            });
+            stageRepository.repairWorkspaceManifest();
+            return {
+                repository: stageRepository,
+                snapshot,
+                stagedWorkspaceRoot,
+                stagedGlobalRoot,
+                stagedDbPath,
+                dispose: () => {
+                    try {
+                        stageRepository?.close();
+                    }
+                    catch {
+                        // ignore close failures during temp-stage cleanup
+                    }
+                    rmSync(stagedWorkspaceRoot, { recursive: true, force: true });
+                    rmSync(stagedGlobalRoot, { recursive: true, force: true });
+                    rmSync(stagedDbPath, { recursive: true, force: true });
+                },
+            };
+        }
+        catch (error) {
+            try {
+                stageRepository?.close();
+            }
+            catch {
+                // ignore close failures during temp-stage cleanup
+            }
+            rmSync(stagedWorkspaceRoot, { recursive: true, force: true });
+            rmSync(stagedGlobalRoot, { recursive: true, force: true });
+            rmSync(stagedDbPath, { recursive: true, force: true });
+            throw error;
+        }
+    }
+    replaceLiveRootsWithStage(stage, fallbackSnapshot) {
+        let workspaceSwapped = false;
+        try {
+            this.replaceDirectoryWithStaged(this.workspaceMemory.getRootDir(), stage.stagedWorkspaceRoot);
+            workspaceSwapped = true;
+            this.replaceDirectoryWithStaged(this.globalUserMemory.getRootDir(), stage.stagedGlobalRoot);
+        }
+        catch (error) {
+            if (workspaceSwapped) {
+                const restoreStage = this.createStagedRepositoryFromSnapshot(fallbackSnapshot, "restore");
+                try {
+                    restoreStage.repository.close();
+                    this.replaceDirectoryWithStaged(this.workspaceMemory.getRootDir(), restoreStage.stagedWorkspaceRoot);
+                }
+                finally {
+                    restoreStage.dispose();
+                }
+            }
+            throw error;
+        }
+    }
+    installLastDreamSnapshot(snapshot, metadata) {
+        const stagedSnapshotRoot = this.stageLastDreamSnapshot(snapshot, metadata);
+        this.replaceDirectoryWithStaged(this.lastDreamSnapshotRoot(), stagedSnapshotRoot);
+    }
+    rollbackLastDreamSnapshot() {
+        const snapshot = this.loadLastDreamSnapshotRecord();
+        if (!snapshot) {
+            throw new Error("No last Dream snapshot is available for rollback.");
+        }
+        const currentSnapshot = this.captureLiveMemorySnapshot();
+        const rollbackReady = snapshot.metadata.after.workspaceVersion === currentSnapshot.workspaceVersion
+            && snapshot.metadata.after.globalVersion === currentSnapshot.globalVersion;
+        if (!rollbackReady) {
+            throw new Error("Current memory state no longer matches the last Dream snapshot, so rollback is unavailable.");
+        }
+        const rolledBackAt = nowIso();
+        const nextSnapshotMetadata = {
+            version: 1,
+            capturedAt: rolledBackAt,
+            sourceAction: "rollback",
+            sourceWorkspaceDir: this.getWorkspaceDir(),
+            summary: currentSnapshot.runtimeState.lastDreamSummary,
+            before: {
+                workspaceVersion: currentSnapshot.workspaceVersion,
+                globalVersion: currentSnapshot.globalVersion,
+                counts: currentSnapshot.counts,
+                runtimeState: currentSnapshot.runtimeState,
+            },
+            after: {
+                workspaceVersion: snapshot.metadata.before.workspaceVersion,
+                globalVersion: snapshot.metadata.before.globalVersion,
+                counts: snapshot.metadata.before.counts,
+                runtimeState: snapshot.metadata.before.runtimeState,
+            },
+        };
+        this.installLastDreamSnapshot(currentSnapshot, nextSnapshotMetadata);
+        const rollbackStage = this.createStagedRepositoryFromSnapshot({
+            workspaceFiles: snapshot.workspaceFiles,
+            globalFiles: snapshot.globalFiles,
+            counts: snapshot.metadata.before.counts,
+            workspaceVersion: snapshot.metadata.before.workspaceVersion,
+            globalVersion: snapshot.metadata.before.globalVersion,
+            runtimeState: snapshot.metadata.before.runtimeState,
+        }, "rollback");
+        try {
+            rollbackStage.repository.close();
+            this.replaceLiveRootsWithStage(rollbackStage, currentSnapshot);
+        }
+        finally {
+            rollbackStage.dispose();
+        }
+        this.restoreDreamRuntimeState(snapshot.metadata.before.runtimeState);
+        return {
+            rolledBackAt,
+            snapshotCapturedAt: snapshot.metadata.capturedAt,
+            restored: snapshot.metadata.before.counts,
+            ...(snapshot.metadata.before.runtimeState.lastDreamAt
+                ? { lastDreamAt: snapshot.metadata.before.runtimeState.lastDreamAt }
+                : {}),
+            ...(snapshot.metadata.before.runtimeState.lastDreamStatus
+                ? { lastDreamStatus: snapshot.metadata.before.runtimeState.lastDreamStatus }
+                : {}),
+            ...(snapshot.metadata.before.runtimeState.lastDreamSummary
+                ? { lastDreamSummary: snapshot.metadata.before.runtimeState.lastDreamSummary }
+                : {}),
+        };
+    }
+    buildTransferCounts(workspaceStore, globalStore) {
+        const workspaceImported = workspaceStore.exportBundleRecords({ includeTmp: true });
+        const globalImported = globalStore.exportBundleRecords({ includeTmp: true });
+        const memoryFiles = [...workspaceImported.memoryFiles, ...globalImported.memoryFiles];
+        return {
+            managedFiles: workspaceStore.exportSnapshotFiles().length + globalStore.exportSnapshotFiles().length,
+            memoryFiles: memoryFiles.length,
+            project: memoryFiles.filter((item) => item.type === "project").length,
+            feedback: memoryFiles.filter((item) => item.type === "feedback").length,
+            user: memoryFiles.filter((item) => item.type === "user").length,
+            tmp: 0,
+            projectMetas: workspaceImported.projectMetas.length,
+        };
+    }
+    materializeSnapshotBundle(rootDir, files, options) {
+        this.writeSnapshotFilesToRoot(rootDir, files);
+        const store = new FileMemoryStore(rootDir, options);
+        store.repairManifests();
+        return store;
+    }
+    writeSnapshotFilesToRoot(rootDir, files) {
+        mkdirSync(rootDir, { recursive: true });
+        for (const record of files) {
+            const absolutePath = resolve(rootDir, record.relativePath);
+            if (!isPathWithinRoot(rootDir, absolutePath) || absolutePath === resolve(rootDir)) {
+                throw new MemoryBundleValidationError(`Invalid imported snapshot file path: ${record.relativePath}`);
+            }
+            mkdirSync(dirname(absolutePath), { recursive: true });
+            writeFileSync(absolutePath, record.content, "utf-8");
+        }
+    }
+    stageImportBundle(bundle) {
+        const workspaceFiles = bundle.files.filter((record) => !isGlobalRelativePath(record.relativePath));
+        const globalFiles = bundle.files
+            .filter((record) => isGlobalRelativePath(record.relativePath))
+            .map((record) => ({
+            ...record,
+            relativePath: toInternalGlobalRelativePath(record.relativePath),
+        }));
+        const liveWorkspaceRoot = this.workspaceMemory.getRootDir();
+        const liveGlobalRoot = this.globalUserMemory.getRootDir();
+        const stagedWorkspaceRoot = createSiblingTempPath(liveWorkspaceRoot, "import");
+        const stagedGlobalRoot = createSiblingTempPath(liveGlobalRoot, "import");
+        mkdirSync(stagedWorkspaceRoot, { recursive: true });
+        mkdirSync(stagedGlobalRoot, { recursive: true });
+        try {
+            const stagedWorkspaceStore = this.materializeSnapshotBundle(stagedWorkspaceRoot, workspaceFiles, this.workspaceStoreOptions());
+            const stagedGlobalStore = this.materializeSnapshotBundle(stagedGlobalRoot, globalFiles, this.globalStoreOptions());
+            return {
+                stagedWorkspaceRoot,
+                stagedGlobalRoot,
+                counts: this.buildTransferCounts(stagedWorkspaceStore, stagedGlobalStore),
+                ignoredGlobalFileCount: globalFiles.length,
+            };
+        }
+        catch (error) {
+            rmSync(stagedWorkspaceRoot, { recursive: true, force: true });
+            rmSync(stagedGlobalRoot, { recursive: true, force: true });
+            throw error;
         }
     }
     resetImportedRuntimeState(bundle) {
@@ -766,8 +1072,9 @@ export class MemoryRepository {
         const normalized = normalizeMemoryBundle(bundle);
         const staged = this.stageImportBundle(normalized);
         try {
-            this.swapInStagedMemoryRoot(this.workspaceMemory.getRootDir(), staged.stagedWorkspaceRoot);
+            this.replaceDirectoryWithStaged(this.workspaceMemory.getRootDir(), staged.stagedWorkspaceRoot);
             this.workspaceMemory.repairManifests();
+            this.clearLastDreamSnapshot();
             this.resetImportedRuntimeState(normalized);
             return {
                 formatVersion: MEMORY_EXPORT_FORMAT_VERSION,
@@ -801,6 +1108,7 @@ export class MemoryRepository {
         const recentRecallTraceCount = this.listRecentCaseTraces(12).length;
         const recentIndexTraceCount = this.listRecentIndexTraces(30).length;
         const recentDreamTraceCount = this.listRecentDreamTraces(30).length;
+        const lastDreamSnapshot = this.getLastDreamSnapshotOverview();
         const workspaceHasProjectMemory = fileOverview.projectMemories + fileOverview.feedbackMemories > 0;
         const userProfileCount = this.listGlobalMemoryEntries({
             kinds: ["user"],
@@ -829,6 +1137,7 @@ export class MemoryRepository {
             ...(typeof this.getPipelineState(LAST_DREAM_SUMMARY_STATE_KEY) === "string"
                 ? { lastDreamSummary: this.getPipelineState(LAST_DREAM_SUMMARY_STATE_KEY) }
                 : {}),
+            ...(lastDreamSnapshot ? { lastDreamSnapshot } : {}),
         };
     }
     getUiSnapshot(limit = 50) {
@@ -994,6 +1303,7 @@ export class MemoryRepository {
     `);
         this.workspaceMemory.clearAllData({ rebuildManifest: false });
         this.globalUserMemory.clearAllData({ rebuildManifest: false });
+        this.clearLastDreamSnapshot();
         return {
             scope: "all_memory",
             cleared: {
@@ -1022,6 +1332,7 @@ export class MemoryRepository {
             this.setPipelineState("workspaceDir", preservedWorkspaceDir);
         }
         this.workspaceMemory.clearAllData({ rebuildManifest: false });
+        this.clearLastDreamSnapshot();
         return {
             scope: "current_project",
             cleared: {

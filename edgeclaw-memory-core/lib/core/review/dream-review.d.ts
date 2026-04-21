@@ -26,12 +26,17 @@ export interface DreamRunResult extends DreamRewriteOutcome {
     status?: "success" | "skipped";
     skipReason?: string;
 }
+export interface DreamExecutionResult extends DreamRewriteOutcome {
+    finishedAt: string;
+    isNoOp: boolean;
+    trace: DreamTraceRecord;
+}
 export declare class DreamRewriteRunner {
     private readonly repository;
     private readonly extractor;
     private readonly logger?;
     constructor(repository: MemoryRepository, extractor: LlmMemoryExtractor, options?: DreamReviewRunnerOptions);
     private runCategoryDream;
-    run(trigger?: DreamTraceRecord["trigger"]): Promise<DreamRewriteOutcome>;
+    run(trigger?: DreamTraceRecord["trigger"]): Promise<DreamExecutionResult>;
 }
 export {};

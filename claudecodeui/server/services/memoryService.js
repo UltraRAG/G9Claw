@@ -14,6 +14,7 @@ const MEMORY_ROOT_DIR = path.join(os.homedir(), '.edgeclaw', 'memory');
 const MEMORY_WORKSPACES_ROOT = path.join(MEMORY_ROOT_DIR, 'workspaces');
 const MEMORY_GLOBAL_ROOT = path.join(MEMORY_ROOT_DIR, 'global');
 const MEMORY_SCHEDULER_INTERVAL_MS = 60_000;
+const GLOBAL_MAINTENANCE_TASK_KEY = '__edgeclaw_memory_global_maintenance__';
 
 const servicesByDataDir = new Map();
 const workspaceTaskChains = new Map();
@@ -98,20 +99,34 @@ function getOrCreateServiceForProjectPath(projectPath) {
   };
 }
 
-function enqueueWorkspaceTask(dataDir, task) {
-  const key = path.resolve(dataDir);
-  const previous = workspaceTaskChains.get(key) ?? Promise.resolve();
-  const next = previous
-    .catch(() => undefined)
-    .then(task);
+function enqueueTaskWithKeys(keys, task) {
+  const normalizedKeys = Array.from(new Set(
+    keys
+      .map((key) => String(key || '').trim())
+      .filter(Boolean),
+  ));
+  const previous = Promise.all(
+    normalizedKeys.map((key) => (workspaceTaskChains.get(key) ?? Promise.resolve()).catch(() => undefined)),
+  );
+  const next = previous.then(task);
   const sentinel = next.then(() => undefined, () => undefined);
-  workspaceTaskChains.set(key, sentinel);
+  normalizedKeys.forEach((key) => workspaceTaskChains.set(key, sentinel));
   sentinel.finally(() => {
-    if (workspaceTaskChains.get(key) === sentinel) {
-      workspaceTaskChains.delete(key);
-    }
+    normalizedKeys.forEach((key) => {
+      if (workspaceTaskChains.get(key) === sentinel) {
+        workspaceTaskChains.delete(key);
+      }
+    });
   });
   return next;
+}
+
+function enqueueWorkspaceTask(dataDir, task) {
+  return enqueueTaskWithKeys([path.resolve(dataDir)], task);
+}
+
+function enqueueMaintenanceTask(dataDir, task) {
+  return enqueueTaskWithKeys([path.resolve(dataDir), GLOBAL_MAINTENANCE_TASK_KEY], task);
 }
 
 async function pathExists(targetPath) {
@@ -310,7 +325,7 @@ async function listWorkspaceDataDirs() {
 
 async function executeScheduledMaintenanceForDataDir(dataDir) {
   const { service } = getOrCreateServiceForDataDir(dataDir);
-  return enqueueWorkspaceTask(dataDir, async () => service.runDueScheduledMaintenance('scheduled:server_scheduler'));
+  return enqueueMaintenanceTask(dataDir, async () => service.runDueScheduledMaintenance('scheduled:server_scheduler'));
 }
 
 export async function resolveProjectPathFromRequest(req) {
@@ -343,7 +358,7 @@ export async function getMemoryServiceForRequest(req) {
 }
 
 export async function runManualMemoryFlush(service, dataDir, options = {}) {
-  return enqueueWorkspaceTask(dataDir, async () => service.flush({
+  return enqueueMaintenanceTask(dataDir, async () => service.flush({
     reason: options.reason ?? 'manual',
     ...(typeof options.batchSize === 'number' ? { batchSize: options.batchSize } : {}),
     ...(Array.isArray(options.sessionKeys) ? { sessionKeys: options.sessionKeys } : {}),
@@ -351,7 +366,11 @@ export async function runManualMemoryFlush(service, dataDir, options = {}) {
 }
 
 export async function runManualMemoryDream(service, dataDir) {
-  return enqueueWorkspaceTask(dataDir, async () => service.dream('manual'));
+  return enqueueMaintenanceTask(dataDir, async () => service.dream('manual'));
+}
+
+export async function rollbackLastMemoryDream(service, dataDir) {
+  return enqueueMaintenanceTask(dataDir, async () => service.rollbackLastDream());
 }
 
 export async function runMemorySchedulerCycle() {

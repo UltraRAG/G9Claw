@@ -10,6 +10,7 @@ import {
   exportAllProjectsMemoryBundle,
   getMemoryServiceForRequest,
   importAllProjectsMemoryBundle,
+  rollbackLastMemoryDream,
   runManualMemoryDream,
   runManualMemoryFlush,
 } from '../services/memoryService.js';
@@ -153,6 +154,12 @@ router.post('/index/run', async (req, res) =>
 router.post('/dream/run', async (req, res) =>
   withMemoryService(req, res, async ({ dataDir, service }) => {
     res.json(await runManualMemoryDream(service, dataDir));
+  }),
+);
+
+router.post('/dream/rollback-last', async (req, res) =>
+  withMemoryService(req, res, async ({ dataDir, service }) => {
+    res.json(await rollbackLastMemoryDream(service, dataDir));
   }),
 );
 

@@ -1,4 +1,4 @@
-import { type CaseTraceRecord, type ClearMemoryScope, type ClearMemoryResult, type DreamRunResult, DreamRewriteRunner, type HeartbeatStats, HeartbeatIndexer, type IndexingSettings, LlmMemoryExtractor, type MemoryActionRequest, type MemoryActionResult, type MemoryExportBundle, type MemoryImportResult, type MemoryImportableBundle, type MemoryMessage, type MemoryRecordType, type MemoryUiSnapshot, MemoryRepository, type RetrievalResult, ReasoningRetriever } from "./core/index.js";
+import { type CaseTraceRecord, type ClearMemoryScope, type ClearMemoryResult, type DreamRunResult, type DreamRollbackResult, type HeartbeatStats, HeartbeatIndexer, type IndexingSettings, LlmMemoryExtractor, type MemoryActionRequest, type MemoryActionResult, type MemoryExportBundle, type MemoryImportResult, type MemoryImportableBundle, type MemoryMessage, type MemoryRecordType, type MemoryUiSnapshot, MemoryRepository, type RetrievalResult, ReasoningRetriever } from "./core/index.js";
 import { type TranscriptMessageInfo } from "./message-utils.js";
 type LoggerLike = {
     info?: (...args: unknown[]) => void;
@@ -61,7 +61,6 @@ export declare class EdgeClawMemoryService {
     readonly extractor: LlmMemoryExtractor;
     readonly indexer: HeartbeatIndexer;
     readonly retriever: ReasoningRetriever;
-    readonly dreamRewriter: DreamRewriteRunner;
     private readonly logger?;
     private readonly captureStrategy;
     private readonly includeAssistant;
@@ -88,6 +87,7 @@ export declare class EdgeClawMemoryService {
         reason?: string;
     }): Promise<HeartbeatStats>;
     dream(trigger?: "manual" | "scheduled"): Promise<DreamRunResult>;
+    rollbackLastDream(): DreamRollbackResult;
     retrieve(query: string, options?: {
         recentMessages?: MemoryMessage[];
         workspaceHint?: string;

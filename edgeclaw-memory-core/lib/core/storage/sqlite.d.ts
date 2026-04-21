@@ -1,5 +1,21 @@
-import { type CaseTraceRecord, type ClearMemoryScope, type DashboardOverview, type DreamTraceRecord, type IndexTraceRecord, type IndexingSettings, type L0SessionRecord, type MemoryExportBundle, type MemoryEntryEditFields, type MemoryFileRecord, type MemoryImportResult, type MemoryImportableBundle, type MemoryManifestEntry, type MemoryMessage, type MemoryUiSnapshot } from "../types.js";
+import { type CaseTraceRecord, type ClearMemoryScope, type DashboardOverview, type DreamRollbackResult, type DreamRuntimeStateSnapshot, type DreamTraceRecord, type IndexTraceRecord, type IndexingSettings, type LastDreamSnapshotMetadata, type LastDreamSnapshotOverview, type L0SessionRecord, type MemoryExportBundle, type MemoryEntryEditFields, type MemoryFileRecord, type MemoryImportResult, type MemoryImportableBundle, type MemoryManifestEntry, type MemoryMessage, type MemorySnapshotFileRecord, type MemoryTransferCounts, type MemoryUiSnapshot } from "../types.js";
 import { FileMemoryStore } from "../file-memory.js";
+export interface LiveMemorySnapshot {
+    workspaceFiles: MemorySnapshotFileRecord[];
+    globalFiles: MemorySnapshotFileRecord[];
+    counts: MemoryTransferCounts;
+    workspaceVersion: string;
+    globalVersion: string;
+    runtimeState: DreamRuntimeStateSnapshot;
+}
+export interface MemoryRepositoryStage {
+    repository: MemoryRepository;
+    snapshot: LiveMemorySnapshot;
+    stagedWorkspaceRoot: string;
+    stagedGlobalRoot: string;
+    stagedDbPath: string;
+    dispose: () => void;
+}
 export declare class MemoryBundleValidationError extends Error {
     constructor(message: string);
 }
@@ -20,6 +36,7 @@ export interface RepairMemoryResult {
     rebuilt: boolean;
 }
 export declare class MemoryRepository {
+    private readonly dbPath;
     private readonly db;
     private readonly workspaceMemory;
     private readonly globalUserMemory;
@@ -66,10 +83,31 @@ export declare class MemoryRepository {
     getDreamTrace(dreamTraceId: string): DreamTraceRecord | undefined;
     getIndexingSettings(defaults: IndexingSettings): IndexingSettings;
     saveIndexingSettings(partial: Partial<IndexingSettings>, defaults: IndexingSettings): IndexingSettings;
+    private workspaceStoreOptions;
+    private globalStoreOptions;
+    private captureDreamRuntimeState;
+    private getWorkspaceDir;
+    private restoreDreamRuntimeState;
+    private captureLiveMemorySnapshot;
+    captureCurrentMemorySnapshot(): LiveMemorySnapshot;
+    private lastDreamSnapshotRoot;
+    private lastDreamSnapshotWorkspaceRoot;
+    private lastDreamSnapshotGlobalRoot;
+    private lastDreamSnapshotMetadataPath;
+    private replaceDirectoryWithStaged;
+    private stageLastDreamSnapshot;
+    private loadLastDreamSnapshotRecord;
+    clearLastDreamSnapshot(): void;
+    getLastDreamSnapshotOverview(): LastDreamSnapshotOverview | undefined;
+    createDreamStage(label?: string): MemoryRepositoryStage;
+    private createStagedRepositoryFromSnapshot;
+    replaceLiveRootsWithStage(stage: MemoryRepositoryStage, fallbackSnapshot: LiveMemorySnapshot): void;
+    installLastDreamSnapshot(snapshot: LiveMemorySnapshot, metadata: LastDreamSnapshotMetadata): void;
+    rollbackLastDreamSnapshot(): DreamRollbackResult;
     private buildTransferCounts;
     private materializeSnapshotBundle;
+    private writeSnapshotFilesToRoot;
     private stageImportBundle;
-    private swapInStagedMemoryRoot;
     private resetImportedRuntimeState;
     exportMemoryBundle(): MemoryExportBundle;
     importMemoryBundle(bundle: MemoryImportableBundle): MemoryImportResult;

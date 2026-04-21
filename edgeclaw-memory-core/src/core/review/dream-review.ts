@@ -52,6 +52,12 @@ export interface DreamRunResult extends DreamRewriteOutcome {
   skipReason?: string;
 }
 
+export interface DreamExecutionResult extends DreamRewriteOutcome {
+  finishedAt: string;
+  isNoOp: boolean;
+  trace: DreamTraceRecord;
+}
+
 const DREAM_HEADER_SCAN_LIMIT = 200;
 const DREAM_CLUSTER_MAX_FILES = 8;
 const DREAM_META_PROJECT_CONTEXT_LIMIT = 5;
@@ -730,7 +736,7 @@ export class DreamRewriteRunner {
     };
   }
 
-  async run(trigger: DreamTraceRecord["trigger"] = "manual"): Promise<DreamRewriteOutcome> {
+  async run(trigger: DreamTraceRecord["trigger"] = "manual"): Promise<DreamExecutionResult> {
     const trace = createDreamTrace(trigger);
     const workspaceStore = this.repository.getFileMemoryStore();
     const globalUserStore = this.repository.getGlobalUserStore();
@@ -857,10 +863,6 @@ export class DreamRewriteRunner {
           titleI18n: traceI18n("trace.step.dream_finished", "Dream Finished"),
         },
       );
-      this.repository.setPipelineState("lastDreamAt", finishedAt);
-      this.repository.setPipelineState("lastDreamStatus", "success");
-      this.repository.setPipelineState("lastDreamSummary", summary);
-      this.repository.saveDreamTrace(trace);
       return {
         reviewedFiles: 0,
         rewrittenProjects: 0,
@@ -870,6 +872,9 @@ export class DreamRewriteRunner {
         duplicateTopicCount: 0,
         conflictTopicCount: 0,
         summary,
+        finishedAt,
+        isNoOp: true,
+        trace,
       };
     }
 
@@ -1142,11 +1147,6 @@ export class DreamRewriteRunner {
       },
     );
 
-    this.repository.setPipelineState("lastDreamAt", finishedAt);
-    this.repository.setPipelineState("lastDreamStatus", "success");
-    this.repository.setPipelineState("lastDreamSummary", summary);
-    this.repository.saveDreamTrace(trace);
-
     return {
       reviewedFiles: workspaceEntries.length + userNoteRecords.length,
       rewrittenProjects,
@@ -1156,6 +1156,9 @@ export class DreamRewriteRunner {
       duplicateTopicCount,
       conflictTopicCount,
       summary,
+      finishedAt,
+      isNoOp: trace.isNoOp,
+      trace,
     };
   }
 }

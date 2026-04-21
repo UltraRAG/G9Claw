@@ -557,10 +557,6 @@ export class DreamRewriteRunner {
             pushStep(trace, "dream_finished", "Dream Finished", "success", "No memory files", summary, {
                 titleI18n: traceI18n("trace.step.dream_finished", "Dream Finished"),
             });
-            this.repository.setPipelineState("lastDreamAt", finishedAt);
-            this.repository.setPipelineState("lastDreamStatus", "success");
-            this.repository.setPipelineState("lastDreamSummary", summary);
-            this.repository.saveDreamTrace(trace);
             return {
                 reviewedFiles: 0,
                 rewrittenProjects: 0,
@@ -570,6 +566,9 @@ export class DreamRewriteRunner {
                 duplicateTopicCount: 0,
                 conflictTopicCount: 0,
                 summary,
+                finishedAt,
+                isNoOp: true,
+                trace,
             };
         }
         const projectDream = await this.runCategoryDream({
@@ -778,10 +777,6 @@ export class DreamRewriteRunner {
                 }),
             ],
         });
-        this.repository.setPipelineState("lastDreamAt", finishedAt);
-        this.repository.setPipelineState("lastDreamStatus", "success");
-        this.repository.setPipelineState("lastDreamSummary", summary);
-        this.repository.saveDreamTrace(trace);
         return {
             reviewedFiles: workspaceEntries.length + userNoteRecords.length,
             rewrittenProjects,
@@ -791,6 +786,9 @@ export class DreamRewriteRunner {
             duplicateTopicCount,
             conflictTopicCount,
             summary,
+            finishedAt,
+            isNoOp: trace.isNoOp,
+            trace,
         };
     }
 }

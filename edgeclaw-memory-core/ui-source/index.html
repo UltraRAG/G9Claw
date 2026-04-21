@@ -51,6 +51,7 @@
             <button id="refreshBtn" class="action-btn" type="button" data-i18n="actions.refresh"></button>
             <button id="indexBtn" class="action-btn action-btn--primary" type="button" data-i18n="actions.index"></button>
             <button id="dreamBtn" class="action-btn action-btn--primary" type="button" data-i18n="actions.dream"></button>
+            <button id="rollbackLastDreamBtn" class="action-btn" type="button" data-i18n="actions.rollbackLastDream"></button>
           </div>
           <span class="topbar-sep"></span>
           <div class="topbar-meta">
@@ -249,7 +250,10 @@
               <div class="settings-data-group" data-variant="default">
                 <div class="settings-data-group-head">
                   <span class="settings-data-group-icon">📁</span>
-                  <h5 class="settings-data-group-title" data-i18n="settings.data.currentProject"></h5>
+                  <div class="settings-data-group-heading">
+                    <h5 class="settings-data-group-title" data-i18n="settings.data.currentProject"></h5>
+                    <p id="lastDreamSnapshotMeta" class="settings-data-group-note"></p>
+                  </div>
                 </div>
                 <div class="settings-data-actions">
                   <button id="exportCurrentProjectBtn" class="settings-action-btn" type="button"><span class="settings-action-icon">↓</span><span data-i18n="actions.exportCurrentProject"></span></button>

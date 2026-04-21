@@ -155,6 +155,7 @@ export interface FactCandidate {
 export type ProjectStatus = "planned" | "in_progress" | "done";
 export type ReasoningMode = "answer_first" | "accuracy_first";
 export type DreamPipelineStatus = "running" | "success" | "skipped" | "failed";
+export type LastDreamSnapshotSourceAction = "dream" | "rollback";
 
 export interface IndexingSettings {
   reasoningMode: ReasoningMode;
@@ -299,6 +300,51 @@ export interface MemoryImportResult {
   recentCaseTraces?: CaseTraceRecord[];
   recentIndexTraces?: IndexTraceRecord[];
   recentDreamTraces?: DreamTraceRecord[];
+}
+
+export interface DreamRuntimeStateSnapshot {
+  lastDreamAt?: string;
+  lastDreamStatus?: DreamPipelineStatus;
+  lastDreamSummary?: string;
+}
+
+export interface LastDreamSnapshotBoundary {
+  workspaceVersion: string;
+  globalVersion: string;
+  counts: MemoryTransferCounts;
+  runtimeState: DreamRuntimeStateSnapshot;
+}
+
+export interface LastDreamSnapshotMetadata {
+  version: 1;
+  capturedAt: string;
+  sourceAction: LastDreamSnapshotSourceAction;
+  sourceWorkspaceDir: string;
+  trigger?: DreamTraceTrigger;
+  dreamTraceId?: string;
+  summary?: string;
+  before: LastDreamSnapshotBoundary;
+  after: LastDreamSnapshotBoundary;
+}
+
+export interface LastDreamSnapshotOverview {
+  capturedAt: string;
+  sourceAction: LastDreamSnapshotSourceAction;
+  sourceWorkspaceDir: string;
+  trigger?: DreamTraceTrigger;
+  dreamTraceId?: string;
+  summary?: string;
+  rollbackReady: boolean;
+  warning?: string;
+}
+
+export interface DreamRollbackResult {
+  rolledBackAt: string;
+  snapshotCapturedAt: string;
+  restored: MemoryTransferCounts;
+  lastDreamAt?: string;
+  lastDreamStatus?: DreamPipelineStatus;
+  lastDreamSummary?: string;
 }
 
 export interface RetrievalTraceKvEntry {
@@ -611,6 +657,7 @@ export interface DashboardOverview {
   lastDreamAt?: string;
   lastDreamStatus?: DreamPipelineStatus;
   lastDreamSummary?: string;
+  lastDreamSnapshot?: LastDreamSnapshotOverview;
   dashboardStatus?: DashboardStatus;
   dashboardWarning?: string | null;
   dashboardDiagnostics?: DashboardDiagnostics | null;

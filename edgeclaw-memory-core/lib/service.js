@@ -221,6 +221,29 @@ function hasElapsedMinutes(anchorAt, intervalMinutes, nowMs) {
         return false;
     return nowMs - anchorMs >= intervalMinutes * 60_000;
 }
+function buildLastDreamSnapshotMetadata(input) {
+    return {
+        version: 1,
+        capturedAt: input.capturedAt,
+        sourceAction: input.sourceAction,
+        sourceWorkspaceDir: input.workspaceDir,
+        ...(input.trigger ? { trigger: input.trigger } : {}),
+        ...(input.dreamTraceId ? { dreamTraceId: input.dreamTraceId } : {}),
+        ...(input.summary ? { summary: input.summary } : {}),
+        before: {
+            workspaceVersion: input.before.workspaceVersion,
+            globalVersion: input.before.globalVersion,
+            counts: input.before.counts,
+            runtimeState: input.before.runtimeState,
+        },
+        after: {
+            workspaceVersion: input.after.workspaceVersion,
+            globalVersion: input.after.globalVersion,
+            counts: input.after.counts,
+            runtimeState: input.after.runtimeState,
+        },
+    };
+}
 function toMessages(rawMessages, options) {
     return normalizeMessages([...rawMessages], options);
 }
@@ -394,7 +417,6 @@ export class EdgeClawMemoryService {
     extractor;
     indexer;
     retriever;
-    dreamRewriter;
     logger;
     captureStrategy;
     includeAssistant;
@@ -426,9 +448,6 @@ export class EdgeClawMemoryService {
         });
         this.retriever = new ReasoningRetriever(this.repository, this.extractor, {
             getSettings: () => this.getSettings(),
-        });
-        this.dreamRewriter = new DreamRewriteRunner(this.repository, this.extractor, {
-            logger: this.logger,
         });
     }
     close() {
@@ -549,16 +568,85 @@ export class EdgeClawMemoryService {
         const prepFlush = await this.flush({
             reason: trigger === "manual" ? "manual_dream_prep" : "scheduled_dream_prep",
         });
-        const outcome = await this.dreamRewriter.run(trigger);
+        const stage = this.repository.createDreamStage("dream");
+        let outcome;
+        let stagedSnapshot;
+        try {
+            const stagedRunner = new DreamRewriteRunner(stage.repository, this.extractor, {
+                logger: this.logger,
+            });
+            outcome = await stagedRunner.run(trigger);
+            stagedSnapshot = stage.repository.captureCurrentMemorySnapshot();
+            stage.repository.close();
+        }
+        catch (error) {
+            stage.dispose();
+            throw error;
+        }
+        if (!outcome || !stagedSnapshot) {
+            stage.dispose();
+            throw new Error("Dream staging failed before a valid outcome was produced.");
+        }
+        try {
+            if (!outcome.isNoOp) {
+                const lastDreamSnapshotMetadata = buildLastDreamSnapshotMetadata({
+                    sourceAction: "dream",
+                    workspaceDir: this.workspaceDir,
+                    capturedAt: outcome.finishedAt,
+                    before: {
+                        workspaceVersion: stage.snapshot.workspaceVersion,
+                        globalVersion: stage.snapshot.globalVersion,
+                        counts: stage.snapshot.counts,
+                        runtimeState: stage.snapshot.runtimeState,
+                    },
+                    after: {
+                        workspaceVersion: stagedSnapshot.workspaceVersion,
+                        globalVersion: stagedSnapshot.globalVersion,
+                        counts: stagedSnapshot.counts,
+                        runtimeState: {
+                            lastDreamAt: outcome.finishedAt,
+                            lastDreamStatus: "success",
+                            lastDreamSummary: outcome.summary,
+                        },
+                    },
+                    trigger,
+                    dreamTraceId: outcome.trace.dreamTraceId,
+                    summary: outcome.summary,
+                });
+                this.repository.installLastDreamSnapshot(stage.snapshot, lastDreamSnapshotMetadata);
+                this.repository.replaceLiveRootsWithStage(stage, stage.snapshot);
+            }
+        }
+        finally {
+            stage.dispose();
+        }
+        this.repository.setPipelineState("lastDreamAt", outcome.finishedAt);
+        this.repository.setPipelineState("lastDreamStatus", "success");
+        this.repository.setPipelineState("lastDreamSummary", outcome.summary);
+        this.repository.saveDreamTrace(outcome.trace);
         this.reconcileAutoDreamAnchor();
         this.repository.getFileMemoryStore().repairManifests();
         this.retriever.resetTransientState();
         return {
             prepFlush,
-            ...outcome,
+            reviewedFiles: outcome.reviewedFiles,
+            rewrittenProjects: outcome.rewrittenProjects,
+            deletedProjects: outcome.deletedProjects,
+            deletedFiles: outcome.deletedFiles,
+            profileUpdated: outcome.profileUpdated,
+            duplicateTopicCount: outcome.duplicateTopicCount,
+            conflictTopicCount: outcome.conflictTopicCount,
+            summary: outcome.summary,
             trigger,
             status: "success",
         };
+    }
+    rollbackLastDream() {
+        const result = this.repository.rollbackLastDreamSnapshot();
+        this.reconcileAutoDreamAnchor({ manualResetAt: result.rolledBackAt });
+        this.repository.getFileMemoryStore().repairManifests();
+        this.retriever.resetTransientState();
+        return result;
     }
     async retrieve(query, options = {}) {
         return this.retriever.retrieve(query, options);
