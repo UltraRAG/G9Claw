@@ -149,10 +149,23 @@ IMPORTANT: see the next section below for the per-step annotations you can optio
 
 Before writing the file, output the complete SKILL.md content as a yaml code block in your response so the user can review it with proper syntax highlighting. Then ask for confirmation using AskUserQuestion with a simple question like "Does this SKILL.md look good to save?" — do NOT use the body field, keep the question concise.
 
+**Preferred: use the \`SkillManage\` tool** to save the skill — it validates frontmatter, writes atomically, and invalidates the skill cache so \`/{{skill-name}}\` works in this session. Invoke it as:
+
+\`\`\`
+SkillManage(
+  action: "create",
+  name: "{{skill-name}}",
+  scope: "user" | "project",    // user = ~/.claude/skills, project = <cwd>/.claude/skills
+  content: "<full SKILL.md content>"
+)
+\`\`\`
+
+Only fall back to raw \`Write\`/\`Bash(mkdir:*)\` if \`SkillManage\` isn't available in this environment.
+
 After writing, tell the user:
 - Where the skill was saved
 - How to invoke it: \`/{{skill-name}} [arguments]\`
-- That they can edit the SKILL.md directly to refine it
+- That they can edit the SKILL.md directly or patch it via \`SkillManage(action='patch')\` later
 `
 
 export function registerSkillifySkill(): void {
@@ -172,6 +185,7 @@ export function registerSkillifySkill(): void {
       'Grep',
       'AskUserQuestion',
       'Bash(mkdir:*)',
+      'SkillManage',
     ],
     userInvocable: true,
     disableModelInvocation: true,
