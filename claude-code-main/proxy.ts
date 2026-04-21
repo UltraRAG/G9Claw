@@ -321,7 +321,8 @@ const MODEL_MAP: Record<string, string> = {
   'claude-3-haiku':             'anthropic/claude-3-haiku',
 }
 
-function toOpenRouterModel(model: string): string {
+function toUpstreamModel(model: string): string {
+  if (!IS_OPENROUTER_UPSTREAM) return model
   if (model.startsWith('anthropic/')) return model
   const stripped = model.replace(/-\d{8}$/, '')
   if (MODEL_MAP[stripped]) return MODEL_MAP[stripped]
@@ -330,7 +331,7 @@ function toOpenRouterModel(model: string): string {
 
 function buildOpenAIRequest(body: AnthropicRequest): Record<string, unknown> {
   const req: Record<string, unknown> = {
-    model: toOpenRouterModel(body.model),
+    model: toUpstreamModel(body.model),
     max_tokens: body.max_tokens,
     messages: convertMessages(body.messages, body.system),
     stream: body.stream ?? false,
