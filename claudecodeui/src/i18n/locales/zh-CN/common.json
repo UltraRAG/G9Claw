@@ -109,6 +109,16 @@
       "recurring": "循环任务",
       "failed": "最近失败"
     },
+    "status": {
+      "scheduled": "待触发",
+      "completed": "已完成",
+      "failed": "失败",
+      "unknown": "未知"
+    },
+    "actions": {
+      "viewDetails": "查看 {{id}} 的详情",
+      "runNow": "立即执行"
+    },
     "flags": {
       "durable": "持久化",
       "sessionScoped": "本会话",
@@ -120,18 +130,46 @@
       "scope": "范围",
       "type": "类型",
       "jobId": "任务 ID",
+      "prompt": "提示词",
+      "cron": "Cron 表达式",
+      "status": "状态",
       "createdAt": "创建时间",
       "lastFiredAt": "上次触发",
       "originSessionId": "来源会话",
       "transcriptKey": "转录键",
-      "lastActivity": "最近活动"
+      "lastActivity": "最近活动",
+      "latestRunSummary": "最近一次运行摘要",
+      "latestRunTaskId": "最近一次运行任务 ID",
+      "latestRunTranscript": "最近一次运行转录",
+      "outputFile": "输出文件"
+    },
+    "detail": {
+      "title": "任务详情",
+      "oneShotRunNowHint": "对单次任务点击“立即执行”只会额外触发一次，不会改变原始定时触发；到原定时间时它仍可能再次执行。",
+      "missingTitle": "任务已不可用",
+      "missingDescription": "该任务可能已经被删除，或在概览加载后变得不可见。",
+      "noLatestRun": "该任务还没有记录到后台运行结果。",
+      "sections": {
+        "definition": "任务定义",
+        "latestRun": "最近一次运行"
+      }
     },
     "values": {
       "notUpdated": "尚未更新",
       "notAvailable": "暂无"
     },
+    "confirmations": {
+      "delete": "确认删除定时任务 {{id}} 吗？"
+    },
+    "feedback": {
+      "deleted": "已删除定时任务 {{id}}。",
+      "runNowStarted": "已立即发起 {{id}}。",
+      "alreadyRunning": "任务 {{id}} 正在运行中。"
+    },
     "errors": {
-      "loadFailed": "加载 cron job 失败。"
+      "loadFailed": "加载 cron job 失败。",
+      "deleteFailed": "删除 cron job 失败。",
+      "runNowFailed": "立即执行 cron job 失败。"
     }
   },
   "fileTree": {

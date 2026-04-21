@@ -116,8 +116,8 @@ export class ProjectRuntime {
     await this.spawnWorkerForTask(syntheticTask)
   }
 
-  async launchSessionTask(task: DaemonCronTask): Promise<void> {
-    await this.spawnWorkerForTask(await this.prepareTask(task))
+  async launchSessionTask(task: DaemonCronTask): Promise<boolean> {
+    return await this.spawnWorkerForTask(await this.prepareTask(task))
   }
 
   private async handleScheduledTask(task: DaemonCronTask): Promise<void> {
@@ -173,12 +173,12 @@ export class ProjectRuntime {
     return updated
   }
 
-  private async spawnWorkerForTask(task: DaemonCronTask): Promise<void> {
+  private async spawnWorkerForTask(task: DaemonCronTask): Promise<boolean> {
     if (this.activeWorkers.has(task.id)) {
       logForDebugging(
         `[CronDaemon] skipping ${task.id}: worker already active for ${this.projectRoot}`,
       )
-      return
+      return false
     }
 
     const workerId = randomUUID()
@@ -217,5 +217,7 @@ export class ProjectRuntime {
         )
       }
     })
+
+    return true
   }
 }

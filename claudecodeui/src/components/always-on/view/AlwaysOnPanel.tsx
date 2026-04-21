@@ -1,11 +1,12 @@
-import { AlertCircle, Radio, RefreshCw, Repeat2 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, ArrowLeft, Play, Radio, RefreshCw, Repeat2, Trash2 } from 'lucide-react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Button, ScrollArea } from '../../../shared/view/ui';
 import type {
   CronJobOverview,
   Project,
-  ProjectCronJobsResponse
+  ProjectCronJobsResponse,
+  RunProjectCronJobNowResponse
 } from '../../../types/app';
 import { api } from '../../../utils/api';
 
@@ -45,13 +46,112 @@ function getDisplayText(value: string | undefined, fallback: string): string {
   return trimmed.length > 0 ? trimmed : fallback;
 }
 
+async function readJsonPayload(response: Response) {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+export function getPayloadError(payload: unknown): string | null {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'error' in payload &&
+    typeof payload.error === 'string' &&
+    payload.error.trim().length > 0
+  ) {
+    return payload.error;
+  }
+  return null;
+}
+
+export function getStatusBadgeVariant(status: CronJobOverview['status']): 'secondary' | 'destructive' | 'outline' {
+  if (status === 'completed') {
+    return 'secondary';
+  }
+  if (status === 'failed') {
+    return 'destructive';
+  }
+  return 'outline';
+}
+
+export function sortCronJobsByCreatedAt(jobs: CronJobOverview[]): CronJobOverview[] {
+  return [...jobs].sort((left, right) => right.createdAt - left.createdAt);
+}
+
+export function findSelectedCronJob(
+  jobs: CronJobOverview[],
+  selectedTaskId: string | null
+): CronJobOverview | null {
+  if (!selectedTaskId) {
+    return null;
+  }
+  return jobs.find((job) => job.id === selectedTaskId) ?? null;
+}
+
+export function buildRunNowFeedback(
+  jobId: string,
+  result: RunProjectCronJobNowResponse | null,
+  t: (key: string, options?: Record<string, string>) => string
+): {
+  tone: 'success' | 'info';
+  message: string;
+} {
+  if (result?.reason === 'already_running' || result?.started === false) {
+    return {
+      tone: 'info',
+      message: t('alwaysOn.feedback.alreadyRunning', { id: jobId })
+    };
+  }
+
+  return {
+    tone: 'success',
+    message: t('alwaysOn.feedback.runNowStarted', { id: jobId })
+  };
+}
+
+function getFeedbackClasses(tone: 'success' | 'info' | 'error'): string {
+  switch (tone) {
+    case 'success':
+      return 'rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-900/20 dark:text-emerald-200';
+    case 'info':
+      return 'rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800/60 dark:bg-blue-900/20 dark:text-blue-200';
+    case 'error':
+      return 'rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800/60 dark:bg-red-900/20 dark:text-red-200';
+  }
+}
+
+function DetailField({
+  label,
+  children
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-1">
+      <dt className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className="text-sm text-foreground">{children}</dd>
+    </div>
+  );
+}
+
 export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
   const { t } = useTranslation();
   const [jobs, setJobs] = useState<CronJobOverview[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [feedback, setFeedback] = useState<{
+    tone: 'success' | 'info' | 'error';
+    message: string;
+  } | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string>('');
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isRunningNow, setIsRunningNow] = useState(false);
   const isMountedRef = useRef(true);
   const requestInFlightRef = useRef(false);
 
@@ -61,6 +161,11 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
       isMountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    setSelectedTaskId(null);
+    setFeedback(null);
+  }, [selectedProject.name]);
 
   const loadJobs = useCallback(async (mode: 'initial' | 'refresh' | 'poll' = 'initial') => {
     if (requestInFlightRef.current) {
@@ -97,13 +202,13 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
       }
 
       setJobs(Array.isArray(body?.jobs) ? body.jobs : []);
-      setError('');
+      setLoadError('');
       setLastUpdatedAt(new Date().toISOString());
     } catch (loadError) {
       if (!isMountedRef.current) {
         return;
       }
-      setError(getRefreshErrorMessage(loadError, t('alwaysOn.errors.loadFailed')));
+      setLoadError(getRefreshErrorMessage(loadError, t('alwaysOn.errors.loadFailed')));
     } finally {
       requestInFlightRef.current = false;
       if (isMountedRef.current) {
@@ -142,12 +247,14 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
     });
   }, [jobs]);
 
-  const sortedJobs = useMemo(
-    () => [...jobs].sort((left: CronJobOverview, right: CronJobOverview) => right.createdAt - left.createdAt),
-    [jobs]
+  const sortedJobs = useMemo(() => sortCronJobsByCreatedAt(jobs), [jobs]);
+  const selectedJob = useMemo(
+    () => findSelectedCronJob(jobs, selectedTaskId),
+    [jobs, selectedTaskId]
   );
 
   const notAvailableLabel = t('alwaysOn.values.notAvailable');
+  const selectedJobStatusLabel = selectedJob ? t(`alwaysOn.status.${selectedJob.status}`) : '';
 
   const summaryCards = [
     {
@@ -169,6 +276,87 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
       icon: <AlertCircle className="h-4 w-4 text-red-500" />
     }
   ];
+
+  const handleSelectTask = useCallback((taskId: string) => {
+    setSelectedTaskId(taskId);
+    setFeedback(null);
+  }, []);
+
+  const handleBackToOverview = useCallback(() => {
+    setSelectedTaskId(null);
+  }, []);
+
+  const handleDeleteTask = useCallback(async () => {
+    if (!selectedJob) {
+      return;
+    }
+    if (
+      typeof window !== 'undefined' &&
+      !window.confirm(t('alwaysOn.confirmations.delete', { id: selectedJob.id }))
+    ) {
+      return;
+    }
+
+    setIsDeleting(true);
+    setFeedback(null);
+    try {
+      const response = await api.deleteProjectCronJob(selectedProject.name, selectedJob.id);
+      const payload = await readJsonPayload(response);
+      if (!response.ok) {
+        throw new Error(
+          getPayloadError(payload) ?? t('alwaysOn.errors.deleteFailed')
+        );
+      }
+
+      setSelectedTaskId(null);
+      setFeedback({
+        tone: 'success',
+        message: t('alwaysOn.feedback.deleted', { id: selectedJob.id })
+      });
+      await loadJobs('refresh');
+    } catch (deleteError) {
+      setFeedback({
+        tone: 'error',
+        message: getRefreshErrorMessage(deleteError, t('alwaysOn.errors.deleteFailed'))
+      });
+    } finally {
+      if (isMountedRef.current) {
+        setIsDeleting(false);
+      }
+    }
+  }, [loadJobs, selectedJob, selectedProject.name, t]);
+
+  const handleRunNow = useCallback(async () => {
+    if (!selectedJob) {
+      return;
+    }
+
+    setIsRunningNow(true);
+    setFeedback(null);
+    try {
+      const response = await api.runProjectCronJobNow(selectedProject.name, selectedJob.id);
+      const payload = await readJsonPayload(response);
+      if (!response.ok) {
+        throw new Error(
+          getPayloadError(payload) ?? t('alwaysOn.errors.runNowFailed')
+        );
+      }
+      const body = payload as RunProjectCronJobNowResponse | null;
+
+      setFeedback(buildRunNowFeedback(selectedJob.id, body, t));
+
+      await loadJobs('refresh');
+    } catch (runNowError) {
+      setFeedback({
+        tone: 'error',
+        message: getRefreshErrorMessage(runNowError, t('alwaysOn.errors.runNowFailed'))
+      });
+    } finally {
+      if (isMountedRef.current) {
+        setIsRunningNow(false);
+      }
+    }
+  }, [loadJobs, selectedJob, selectedProject.name, t]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
@@ -200,24 +388,32 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
 
       <ScrollArea className="flex-1">
         <div className="space-y-6 p-4 sm:p-6">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {summaryCards.map((card) => (
-              <div
-                key={card.key}
-                className="rounded-xl border border-border bg-card/50 p-4 shadow-sm"
-              >
-                <div className="mb-3 flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">{card.label}</span>
-                  {card.icon}
+          {!selectedTaskId && (
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {summaryCards.map((card) => (
+                <div
+                  key={card.key}
+                  className="rounded-xl border border-border bg-card/50 p-4 shadow-sm"
+                >
+                  <div className="mb-3 flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">{card.label}</span>
+                    {card.icon}
+                  </div>
+                  <div className="text-2xl font-semibold text-foreground">{card.value}</div>
                 </div>
-                <div className="text-2xl font-semibold text-foreground">{card.value}</div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
 
-          {error && (
+          {loadError && (
             <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800/60 dark:bg-red-900/20 dark:text-red-200">
-              {error}
+              {loadError}
+            </div>
+          )}
+
+          {feedback && (
+            <div className={getFeedbackClasses(feedback.tone)}>
+              {feedback.message}
             </div>
           )}
 
@@ -237,6 +433,163 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
               <h3 className="text-base font-medium text-foreground">{t('alwaysOn.emptyTitle')}</h3>
               <p className="mt-2 text-sm text-muted-foreground">{t('alwaysOn.emptyDescription')}</p>
             </div>
+          ) : selectedTaskId ? (
+            selectedJob ? (
+              <div className="space-y-4">
+                <div className="rounded-xl border border-border bg-card/50 p-4 shadow-sm">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="space-y-3">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="-ml-2 w-fit"
+                        onClick={handleBackToOverview}
+                      >
+                        <ArrowLeft className="h-4 w-4" />
+                        {t('navigation.back')}
+                      </Button>
+                      <div className="space-y-1">
+                        <h3 className="text-lg font-semibold text-foreground">{t('alwaysOn.detail.title')}</h3>
+                        <p className="break-all text-sm text-muted-foreground">{selectedJob.id}</p>
+                      </div>
+                      {!selectedJob.recurring && (
+                        <p className="max-w-2xl text-xs text-muted-foreground">
+                          {t('alwaysOn.detail.oneShotRunNowHint')}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void handleRunNow()}
+                        disabled={isRunningNow || isDeleting}
+                      >
+                        <Play className={isRunningNow ? 'animate-pulse' : ''} />
+                        {t('alwaysOn.actions.runNow')}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        onClick={() => void handleDeleteTask()}
+                        disabled={isDeleting || isRunningNow}
+                      >
+                        <Trash2 className={isDeleting ? 'animate-pulse' : ''} />
+                        {t('buttons.delete')}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="rounded-xl border border-border bg-card/50 p-4 shadow-sm">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <h4 className="text-sm font-semibold text-foreground">{t('alwaysOn.detail.sections.definition')}</h4>
+                      <Badge variant={getStatusBadgeVariant(selectedJob.status)}>
+                        {selectedJobStatusLabel}
+                      </Badge>
+                    </div>
+
+                    <dl className="space-y-4">
+                      <DetailField label={t('alwaysOn.fields.prompt')}>
+                        <div className="whitespace-pre-wrap break-words">{getDisplayText(selectedJob.prompt, notAvailableLabel)}</div>
+                      </DetailField>
+                      <DetailField label={t('alwaysOn.fields.cron')}>
+                        <code className="block rounded-md bg-muted px-2.5 py-1.5 text-xs text-foreground">
+                          {selectedJob.cron}
+                        </code>
+                      </DetailField>
+                      <DetailField label={t('alwaysOn.fields.scope')}>
+                        <Badge variant="outline" className="text-xs">
+                          {selectedJob.durable === false
+                            ? t('alwaysOn.flags.sessionScoped')
+                            : t('alwaysOn.flags.durable')}
+                        </Badge>
+                      </DetailField>
+                      <DetailField label={t('alwaysOn.fields.type')}>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant="outline" className="text-xs">
+                            {selectedJob.recurring
+                              ? t('alwaysOn.flags.recurring')
+                              : t('alwaysOn.flags.oneShot')}
+                          </Badge>
+                          {selectedJob.permanent && (
+                            <Badge variant="secondary" className="text-xs">
+                              {t('alwaysOn.flags.permanent')}
+                            </Badge>
+                          )}
+                        </div>
+                      </DetailField>
+                      <DetailField label={t('alwaysOn.fields.createdAt')}>
+                        {formatDateTime(selectedJob.createdAt, notAvailableLabel)}
+                      </DetailField>
+                      <DetailField label={t('alwaysOn.fields.lastFiredAt')}>
+                        {formatDateTime(selectedJob.lastFiredAt, notAvailableLabel)}
+                      </DetailField>
+                      <DetailField label={t('alwaysOn.fields.originSessionId')}>
+                        <div className="break-all">{getDisplayText(selectedJob.originSessionId, notAvailableLabel)}</div>
+                      </DetailField>
+                      <DetailField label={t('alwaysOn.fields.transcriptKey')}>
+                        <div className="break-all">{getDisplayText(selectedJob.transcriptKey, notAvailableLabel)}</div>
+                      </DetailField>
+                    </dl>
+                  </div>
+
+                  <div className="rounded-xl border border-border bg-card/50 p-4 shadow-sm">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <h4 className="text-sm font-semibold text-foreground">{t('alwaysOn.detail.sections.latestRun')}</h4>
+                      <Badge variant={getStatusBadgeVariant(selectedJob.status)}>
+                        {selectedJobStatusLabel}
+                      </Badge>
+                    </div>
+
+                    {selectedJob.latestRun ? (
+                      <dl className="space-y-4">
+                        <DetailField label={t('alwaysOn.fields.lastActivity')}>
+                          {formatDateTime(selectedJob.latestRun.lastActivity, notAvailableLabel)}
+                        </DetailField>
+                        <DetailField label={t('alwaysOn.fields.latestRunSummary')}>
+                          <div className="whitespace-pre-wrap break-words">
+                            {getDisplayText(selectedJob.latestRun.summary, notAvailableLabel)}
+                          </div>
+                        </DetailField>
+                        <DetailField label={t('alwaysOn.fields.latestRunTaskId')}>
+                          <div className="break-all">{getDisplayText(selectedJob.latestRun.taskId, notAvailableLabel)}</div>
+                        </DetailField>
+                        <DetailField label={t('alwaysOn.fields.latestRunTranscript')}>
+                          <div className="break-all">
+                            {getDisplayText(selectedJob.latestRun.relativeTranscriptPath, notAvailableLabel)}
+                          </div>
+                        </DetailField>
+                        <DetailField label={t('alwaysOn.fields.outputFile')}>
+                          <div className="break-all">{getDisplayText(selectedJob.latestRun.outputFile, notAvailableLabel)}</div>
+                        </DetailField>
+                      </dl>
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-6 text-sm text-muted-foreground">
+                        {t('alwaysOn.detail.noLatestRun')}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-border bg-card/30 px-6 py-12 text-center">
+                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-muted/50">
+                  <AlertCircle className="h-6 w-6 text-muted-foreground" />
+                </div>
+                <h3 className="text-base font-medium text-foreground">{t('alwaysOn.detail.missingTitle')}</h3>
+                <p className="mt-2 text-sm text-muted-foreground">{t('alwaysOn.detail.missingDescription')}</p>
+                <div className="mt-4">
+                  <Button type="button" variant="outline" onClick={handleBackToOverview}>
+                    <ArrowLeft className="h-4 w-4" />
+                    {t('navigation.back')}
+                  </Button>
+                </div>
+              </div>
+            )
           ) : (
             <div className="overflow-x-auto rounded-xl border border-border bg-card/50 shadow-sm">
               <table className="w-full min-w-[1160px] border-collapse text-sm">
@@ -293,7 +646,12 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
                         </div>
                       </td>
                       <td className="px-4 py-4">
-                        <div className="min-w-0 space-y-2">
+                        <button
+                          type="button"
+                          className="min-w-0 space-y-2 text-left transition-opacity hover:opacity-90"
+                          onClick={() => handleSelectTask(job.id)}
+                          aria-label={t('alwaysOn.actions.viewDetails', { id: job.id })}
+                        >
                           <div className="break-all font-medium text-foreground">{job.id}</div>
                           <p
                             className="max-w-md truncate text-xs text-muted-foreground"
@@ -307,7 +665,10 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
                           >
                             {job.cron}
                           </code>
-                        </div>
+                          <div className="text-xs font-medium text-primary">
+                            {t('alwaysOn.actions.viewDetails', { id: job.id })}
+                          </div>
+                        </button>
                       </td>
                       <td className="whitespace-nowrap px-4 py-4 text-foreground">
                         {formatDateTime(job.createdAt, notAvailableLabel)}

@@ -54,6 +54,14 @@ export const api = {
   projects: () => authenticatedFetch('/api/projects'),
   projectCronJobs: (projectName) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/cron-jobs`),
+  deleteProjectCronJob: (projectName, taskId) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/cron-jobs/${encodeURIComponent(taskId)}`, {
+      method: 'DELETE',
+    }),
+  runProjectCronJobNow: (projectName, taskId) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/cron-jobs/${encodeURIComponent(taskId)}/run-now`, {
+      method: 'POST',
+    }),
   sessions: (projectName, limit = 5, offset = 0) =>
     authenticatedFetch(`/api/projects/${projectName}/sessions?limit=${limit}&offset=${offset}`),
   // Unified endpoint — all providers through one URL

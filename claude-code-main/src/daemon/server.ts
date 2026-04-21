@@ -194,6 +194,52 @@ export class CronDaemonServer {
             data: { type: 'delete_task', deleted: exists },
           }
         }
+        case 'run_task_now': {
+          const projectRoot = await this.ensureRuntime(request.projectRoot)
+          const runtime = await this.ensureHydratedRuntime(projectRoot)
+          const sessionTask = this.sessionTaskStore.getTask(
+            projectRoot,
+            request.taskId,
+          )
+          if (sessionTask) {
+            const started = await runtime.launchSessionTask(sessionTask)
+            return {
+              ok: true,
+              data: {
+                type: 'run_task_now',
+                started,
+                ...(started ? {} : { reason: 'already_running' as const }),
+              },
+            }
+          }
+
+          const durableTask = (await readCronTasks(projectRoot)).find(
+            task => task.id === request.taskId,
+          )
+          if (!durableTask) {
+            return {
+              ok: true,
+              data: {
+                type: 'run_task_now',
+                started: false,
+                reason: 'not_found',
+              },
+            }
+          }
+
+          const started = await runtime.launchSessionTask({
+            ...durableTask,
+            durable: true,
+          })
+          return {
+            ok: true,
+            data: {
+              type: 'run_task_now',
+              started,
+              ...(started ? {} : { reason: 'already_running' as const }),
+            },
+          }
+        }
       }
     } catch (error) {
       return {

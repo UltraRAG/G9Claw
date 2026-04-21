@@ -109,6 +109,16 @@
       "recurring": "Recurring jobs",
       "failed": "Failed recently"
     },
+    "status": {
+      "scheduled": "Scheduled",
+      "completed": "Completed",
+      "failed": "Failed",
+      "unknown": "Unknown"
+    },
+    "actions": {
+      "viewDetails": "View details for {{id}}",
+      "runNow": "Run now"
+    },
     "flags": {
       "durable": "Durable",
       "sessionScoped": "Session",
@@ -120,18 +130,46 @@
       "scope": "Scope",
       "type": "Type",
       "jobId": "Task ID",
+      "prompt": "Prompt",
+      "cron": "Cron schedule",
+      "status": "Status",
       "createdAt": "Created",
       "lastFiredAt": "Last fired",
       "originSessionId": "Origin session",
       "transcriptKey": "Transcript key",
-      "lastActivity": "Last activity"
+      "lastActivity": "Last activity",
+      "latestRunSummary": "Latest run summary",
+      "latestRunTaskId": "Latest run task ID",
+      "latestRunTranscript": "Latest run transcript",
+      "outputFile": "Output file"
+    },
+    "detail": {
+      "title": "Task details",
+      "oneShotRunNowHint": "Run now executes this one-shot task immediately without changing the original scheduled trigger. It can still fire again at the scheduled time.",
+      "missingTitle": "Task no longer available",
+      "missingDescription": "This task may have been deleted or become unavailable since the overview was loaded.",
+      "noLatestRun": "This task does not have a recorded background run yet.",
+      "sections": {
+        "definition": "Task definition",
+        "latestRun": "Latest run"
+      }
     },
     "values": {
       "notUpdated": "Not updated yet",
       "notAvailable": "Not available"
     },
+    "confirmations": {
+      "delete": "Delete scheduled task {{id}}?"
+    },
+    "feedback": {
+      "deleted": "Deleted scheduled task {{id}}.",
+      "runNowStarted": "Started {{id}} immediately.",
+      "alreadyRunning": "Task {{id}} is already running."
+    },
     "errors": {
-      "loadFailed": "Failed to load cron jobs."
+      "loadFailed": "Failed to load cron jobs.",
+      "deleteFailed": "Failed to delete cron job.",
+      "runNowFailed": "Failed to run cron job immediately."
     }
   },
   "fileTree": {

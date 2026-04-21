@@ -32,6 +32,17 @@ export interface ProjectCronJobsResponse {
   jobs: CronJobOverview[];
 }
 
+export interface DeleteProjectCronJobResponse {
+  deleted: boolean;
+}
+
+export type CronJobRunNowReason = 'already_running' | 'not_found';
+
+export interface RunProjectCronJobNowResponse {
+  started: boolean;
+  reason?: CronJobRunNowReason;
+}
+
 export interface ProjectSession {
   id: string;
   title?: string;

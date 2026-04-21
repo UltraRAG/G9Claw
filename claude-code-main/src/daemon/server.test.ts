@@ -1,0 +1,172 @@
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
+import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { CronDaemonServer } from './server.js'
+import { ProjectRuntime } from './projectRuntime.js'
+
+async function writeScheduledTasks(projectRoot: string, tasks: unknown[]) {
+  const configDir = join(projectRoot, '.claude')
+  await mkdir(configDir, { recursive: true })
+  await writeFile(
+    join(configDir, 'scheduled_tasks.json'),
+    JSON.stringify({ tasks }, null, 2),
+    'utf-8',
+  )
+}
+
+describe('CronDaemonServer run_task_now', () => {
+  let projectRoot: string
+  let configDir: string
+  let launchTaskSpy: ReturnType<typeof spyOn>
+  let startSpy: ReturnType<typeof spyOn>
+  const priorConfigDir = process.env.CLAUDE_CONFIG_DIR
+
+  beforeEach(async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), 'cron-daemon-server-project-'))
+    configDir = await mkdtemp(join(tmpdir(), 'cron-daemon-server-config-'))
+    process.env.CLAUDE_CONFIG_DIR = configDir
+
+    startSpy = spyOn(ProjectRuntime.prototype, 'start').mockImplementation(() => {})
+    launchTaskSpy = spyOn(ProjectRuntime.prototype, 'launchSessionTask').mockResolvedValue(
+      true,
+    )
+  })
+
+  afterEach(async () => {
+    launchTaskSpy.mockRestore()
+    startSpy.mockRestore()
+    if (priorConfigDir === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = priorConfigDir
+    }
+    await rm(projectRoot, { recursive: true, force: true })
+    await rm(configDir, { recursive: true, force: true })
+  })
+
+  test('starts an existing durable task immediately', async () => {
+    const taskId = 'cron-durable-1234'
+    await writeScheduledTasks(projectRoot, [
+      {
+        id: taskId,
+        cron: '0 * * * *',
+        prompt: 'Review the queue',
+        createdAt: Date.now(),
+        recurring: true,
+        originSessionId: 'origin-session-durable',
+      },
+    ])
+
+    const server = new CronDaemonServer()
+    const response = await (server as any).handleRequest({
+      type: 'run_task_now',
+      projectRoot,
+      taskId,
+    })
+
+    expect(response).toEqual({
+      ok: true,
+      data: {
+        type: 'run_task_now',
+        started: true,
+      },
+    })
+    expect(launchTaskSpy).toHaveBeenCalledTimes(1)
+    expect(launchTaskSpy.mock.calls[0]?.[0]).toMatchObject({
+      id: taskId,
+      durable: true,
+      recurring: true,
+    })
+  })
+
+  test('starts an existing session-scoped task immediately', async () => {
+    const server = new CronDaemonServer()
+    const createResponse = await (server as any).handleRequest({
+      type: 'create_task',
+      projectRoot,
+      originSessionId: 'origin-session-session',
+      cron: '* * * * *',
+      prompt: 'Stretch now',
+      recurring: false,
+      durable: false,
+    })
+
+    expect(createResponse.ok).toBe(true)
+    if (!createResponse.ok || createResponse.data.type !== 'create_task') {
+      return
+    }
+
+    launchTaskSpy.mockClear()
+    const response = await (server as any).handleRequest({
+      type: 'run_task_now',
+      projectRoot,
+      taskId: createResponse.data.task.id,
+    })
+
+    expect(response).toEqual({
+      ok: true,
+      data: {
+        type: 'run_task_now',
+        started: true,
+      },
+    })
+    expect(launchTaskSpy).toHaveBeenCalledTimes(1)
+    expect(launchTaskSpy.mock.calls[0]?.[0]).toMatchObject({
+      id: createResponse.data.task.id,
+      durable: false,
+      prompt: 'Stretch now',
+    })
+  })
+
+  test('returns not_found when the task does not exist', async () => {
+    const server = new CronDaemonServer()
+    const response = await (server as any).handleRequest({
+      type: 'run_task_now',
+      projectRoot,
+      taskId: 'missing-task',
+    })
+
+    expect(response).toEqual({
+      ok: true,
+      data: {
+        type: 'run_task_now',
+        started: false,
+        reason: 'not_found',
+      },
+    })
+    expect(launchTaskSpy).not.toHaveBeenCalled()
+  })
+
+  test('returns already_running when runtime refuses to launch a duplicate worker', async () => {
+    const taskId = 'cron-durable-running'
+    await writeScheduledTasks(projectRoot, [
+      {
+        id: taskId,
+        cron: '*/5 * * * *',
+        prompt: 'Check backlog',
+        createdAt: Date.now(),
+        recurring: true,
+        originSessionId: 'origin-session-running',
+      },
+    ])
+    launchTaskSpy.mockResolvedValue(false)
+
+    const server = new CronDaemonServer()
+    const response = await (server as any).handleRequest({
+      type: 'run_task_now',
+      projectRoot,
+      taskId,
+    })
+
+    expect(response).toEqual({
+      ok: true,
+      data: {
+        type: 'run_task_now',
+        started: false,
+        reason: 'already_running',
+      },
+    })
+    expect(launchTaskSpy).toHaveBeenCalledTimes(1)
+  })
+})

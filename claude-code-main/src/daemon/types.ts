@@ -32,6 +32,11 @@ export type CronDaemonRequest =
       taskId: string
       originSessionId?: string
     }
+  | {
+      type: 'run_task_now'
+      projectRoot: string
+      taskId: string
+    }
 
 export type RuntimeSummary = {
   projectRoot: string
@@ -49,6 +54,11 @@ export type CronDaemonResponse =
         | { type: 'create_task'; task: DaemonCronTask }
         | { type: 'list_tasks'; tasks: DaemonCronTask[] }
         | { type: 'delete_task'; deleted: boolean }
+        | {
+            type: 'run_task_now'
+            started: boolean
+            reason?: 'already_running' | 'not_found'
+          }
     }
   | {
       ok: false

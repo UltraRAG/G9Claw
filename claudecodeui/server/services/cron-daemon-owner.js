@@ -115,3 +115,7 @@ export async function shutdownOwnedCronDaemon() {
 export async function _readCronDaemonOwnerForTest() {
   return await readCronDaemonOwner();
 }
+
+export {
+  sendCronDaemonRequest
+};
