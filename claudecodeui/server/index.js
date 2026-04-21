@@ -68,6 +68,7 @@ import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import messagesRoutes from './routes/messages.js';
+import ccrRoutes from './routes/ccr.js';
 import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, userDb } from './database/db.js';
@@ -402,6 +403,9 @@ app.use('/api/plugins', authenticateToken, pluginsRoutes);
 
 // Unified session messages route (protected)
 app.use('/api/sessions', authenticateToken, messagesRoutes);
+
+// CCR (Claude Code Router) API Routes (protected)
+app.use('/api/ccr', authenticateToken, ccrRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
@@ -2396,6 +2400,25 @@ async function startServer() {
         const distIndexPath = path.join(__dirname, '../dist/index.html');
         const isProduction = fs.existsSync(distIndexPath);
 
+        // Start embedded CCR (Claude Code Router) if enabled
+        const ccrEnabled = process.env.CCR_ENABLED !== '0' && process.env.CCR_ENABLED !== 'false';
+        if (ccrEnabled) {
+            try {
+                const { startEmbeddedCCR } = await import('./embedded-ccr.js');
+                const ccr = await startEmbeddedCCR();
+                if (ccr.zeroPorts) {
+                    console.log(`${c.ok('[CCR]')} Embedded router ready (zero-port mode, in-process)`);
+                } else if (ccr.reused) {
+                    console.log(`${c.info('[CCR]')} Reusing existing CCR router at ${c.bright(ccr.baseUrl)}`);
+                } else {
+                    console.log(`${c.ok('[CCR]')} Embedded router started at ${c.bright(ccr.baseUrl)}`);
+                }
+            } catch (err) {
+                console.warn(`${c.warn('[CCR]')} Skipped embedded router: ${err.message}`);
+                console.warn(`${c.warn('[CCR]')} Falling back to ANTHROPIC_BASE_URL from .env`);
+            }
+        }
+
         // Log Claude implementation mode
         console.log(`${c.info('[INFO]')} Using Claude Agents SDK for Claude integration`);
         console.log('');
@@ -2428,13 +2451,17 @@ async function startServer() {
             });
         });
 
-        // Clean up plugin processes on shutdown
-        const shutdownPlugins = async () => {
+        // Clean up plugin processes and CCR on shutdown
+        const shutdownAll = async () => {
             await stopAllPlugins();
+            try {
+                const { shutdownCCR } = await import('./embedded-ccr.js');
+                await shutdownCCR();
+            } catch { /* CCR may not have been loaded */ }
             process.exit(0);
         };
-        process.on('SIGTERM', () => void shutdownPlugins());
-        process.on('SIGINT', () => void shutdownPlugins());
+        process.on('SIGTERM', () => void shutdownAll());
+        process.on('SIGINT', () => void shutdownAll());
     } catch (error) {
         console.error('[ERROR] Failed to start server:', error);
         process.exit(1);

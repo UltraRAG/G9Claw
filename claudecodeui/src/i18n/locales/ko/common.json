@@ -22,7 +22,8 @@
     "shell": "Shell",
     "files": "파일",
     "git": "소스 관리",
-    "tasks": "작업"
+    "tasks": "작업",
+    "dashboard": "대시보드"
   },
   "status": {
     "loading": "로딩 중...",

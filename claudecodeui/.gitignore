@@ -139,3 +139,6 @@ tasks/
 
 # Git worktrees
 .worktrees/
+
+# CCR (Claude Code Router) config — contains API keys
+ccr-config.json

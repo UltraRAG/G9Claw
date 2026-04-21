@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { PermissionMode, Provider } from '../../types/types';
 import ThinkingModeSelector from './ThinkingModeSelector';
 import TokenUsagePie from './TokenUsagePie';
+import CCRSessionBadge from './CCRSessionBadge';
 
 interface ChatInputControlsProps {
   permissionMode: PermissionMode | string;
@@ -11,6 +12,7 @@ interface ChatInputControlsProps {
   thinkingMode: string;
   setThinkingMode: React.Dispatch<React.SetStateAction<string>>;
   tokenBudget: { used?: number; total?: number } | null;
+  sessionId?: string | null;
   slashCommandsCount: number;
   onToggleCommandMenu: () => void;
   hasInput: boolean;
@@ -27,6 +29,7 @@ export default function ChatInputControls({
   thinkingMode,
   setThinkingMode,
   tokenBudget,
+  sessionId,
   slashCommandsCount,
   onToggleCommandMenu,
   hasInput,
@@ -78,6 +81,7 @@ export default function ChatInputControls({
         <ThinkingModeSelector selectedMode={thinkingMode} onModeChange={setThinkingMode} onClose={() => {}} className="" />
       )}
 
+      <CCRSessionBadge sessionId={sessionId} />
       <TokenUsagePie used={tokenBudget?.used || 0} total={tokenBudget?.total || parseInt(import.meta.env.VITE_CONTEXT_WINDOW) || 160000} />
 
       <button

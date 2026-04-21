@@ -14,7 +14,9 @@
     "types": ["bun-types"],
     "baseUrl": ".",
     "paths": {
-      "src/*": ["./src/*"]
+      "src/*": ["./src/*"],
+      "@/*": ["./src/router/src/*"],
+      "@CCR/shared": ["./src/router/shared/index.ts"]
     }
   },
   "include": ["src/**/*", "preload.ts"]

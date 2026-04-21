@@ -96,6 +96,7 @@
     "tasks": "Tasks",
     "notifications": "Notifications",
     "plugins": "Plugins",
+    "router": "Router",
     "about": "About"
   },
   "notifications": {

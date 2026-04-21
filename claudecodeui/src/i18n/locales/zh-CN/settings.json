@@ -96,6 +96,7 @@
     "tasks": "任务",
     "notifications": "通知",
     "plugins": "插件",
+    "router": "路由",
     "about": "关于"
   },
   "notifications": {

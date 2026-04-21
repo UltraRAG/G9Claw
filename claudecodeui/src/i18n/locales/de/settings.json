@@ -95,6 +95,7 @@
     "apiTokens": "API & Token",
     "tasks": "Aufgaben",
     "plugins": "Plugins",
+    "router": "Router",
     "about": "Info"
   },
   "appearanceSettings": {

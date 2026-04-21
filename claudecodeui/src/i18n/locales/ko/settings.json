@@ -96,6 +96,7 @@
     "tasks": "작업",
     "notifications": "알림",
     "plugins": "플러그인",
+    "router": "라우터",
     "about": "정보"
   },
   "notifications": {
