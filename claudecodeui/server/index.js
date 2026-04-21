@@ -72,7 +72,8 @@ import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, userDb } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
-import { initializeCronDaemonOwnerEnv, shutdownOwnedCronDaemon } from './services/cron-daemon-owner.js';
+import { shutdownOwnedCronDaemon } from './services/cron-daemon-owner.js';
+import { runServerStartupBeforeListen, startServerAfterStartup } from './services/server-startup.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { DISABLE_LOCAL_AUTH, IS_PLATFORM } from './constants/config.js';
 import { getConnectableHost } from '../shared/networkHosts.js';
@@ -2384,49 +2385,51 @@ async function ensureLocalUserWhenAuthDisabled() {
 // Initialize database and start server
 async function startServer() {
     try {
-        initializeCronDaemonOwnerEnv();
+        await startServerAfterStartup({
+            startupFn: async () => {
+                await runServerStartupBeforeListen({
+                    initializeDatabaseFn: initializeDatabase,
+                    ensureLocalUserWhenAuthDisabledFn: ensureLocalUserWhenAuthDisabled,
+                    configureWebPushFn: configureWebPush
+                });
+            },
+            listenFn: async () => {
+                // Check if running in production mode (dist folder exists)
+                const distIndexPath = path.join(__dirname, '../dist/index.html');
+                const isProduction = fs.existsSync(distIndexPath);
 
-        // Initialize authentication database
-        await initializeDatabase();
-        await ensureLocalUserWhenAuthDisabled();
+                // Log Claude implementation mode
+                console.log(`${c.info('[INFO]')} Using Claude Agents SDK for Claude integration`);
+                console.log('');
 
-        // Configure Web Push (VAPID keys)
-        configureWebPush();
+                if (isProduction) {
+                    console.log(`${c.info('[INFO]')} To run in production mode, go to http://${DISPLAY_HOST}:${SERVER_PORT}`);            
+                }
 
-        // Check if running in production mode (dist folder exists)
-        const distIndexPath = path.join(__dirname, '../dist/index.html');
-        const isProduction = fs.existsSync(distIndexPath);
+                console.log(`${c.info('[INFO]')} To run in development mode with hot-module replacement, go to http://${DISPLAY_HOST}:${VITE_PORT}`);
+       
+                server.listen(SERVER_PORT, HOST, async () => {
+                    const appInstallPath = path.join(__dirname, '..');
 
-        // Log Claude implementation mode
-        console.log(`${c.info('[INFO]')} Using Claude Agents SDK for Claude integration`);
-        console.log('');
+                    console.log('');
+                    console.log(c.dim('═'.repeat(63)));
+                    console.log(`  ${c.bright('CloudCLI Server - Ready')}`);
+                    console.log(c.dim('═'.repeat(63)));
+                    console.log('');
+                    console.log(`${c.info('[INFO]')} Server URL:  ${c.bright('http://' + DISPLAY_HOST + ':' + SERVER_PORT)}`);
+                    console.log(`${c.info('[INFO]')} Installed at: ${c.dim(appInstallPath)}`);
+                    console.log(`${c.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
+                    console.log('');
 
-        if (isProduction) {
-            console.log(`${c.info('[INFO]')} To run in production mode, go to http://${DISPLAY_HOST}:${SERVER_PORT}`);            
-        }
+                    // Start watching the projects folder for changes
+                    await setupProjectsWatcher();
 
-        console.log(`${c.info('[INFO]')} To run in development mode with hot-module replacement, go to http://${DISPLAY_HOST}:${VITE_PORT}`);
-   
-        server.listen(SERVER_PORT, HOST, async () => {
-            const appInstallPath = path.join(__dirname, '..');
-
-            console.log('');
-            console.log(c.dim('═'.repeat(63)));
-            console.log(`  ${c.bright('CloudCLI Server - Ready')}`);
-            console.log(c.dim('═'.repeat(63)));
-            console.log('');
-            console.log(`${c.info('[INFO]')} Server URL:  ${c.bright('http://' + DISPLAY_HOST + ':' + SERVER_PORT)}`);
-            console.log(`${c.info('[INFO]')} Installed at: ${c.dim(appInstallPath)}`);
-            console.log(`${c.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
-            console.log('');
-
-            // Start watching the projects folder for changes
-            await setupProjectsWatcher();
-
-            // Start server-side plugin processes for enabled plugins
-            startEnabledPluginServers().catch(err => {
-                console.error('[Plugins] Error during startup:', err.message);
-            });
+                    // Start server-side plugin processes for enabled plugins
+                    startEnabledPluginServers().catch(err => {
+                        console.error('[Plugins] Error during startup:', err.message);
+                    });
+                });
+            }
         });
 
         // Clean up plugin processes and any owned Cron daemon on shutdown
