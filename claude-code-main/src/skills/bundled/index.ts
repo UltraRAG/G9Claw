@@ -1,15 +1,20 @@
 import { feature } from 'bun:bundle'
 import { shouldAutoEnableClaudeInChrome } from 'src/utils/claudeInChrome/setup.js'
+import { registerAddProjectSkill } from './addProject.js'
 import { registerBatchSkill } from './batch.js'
 import { registerClaudeInChromeSkill } from './claudeInChrome.js'
+import { registerCloneRepoSkill } from './cloneRepo.js'
 import { registerDebugSkill } from './debug.js'
 import { registerImportOpenClawSkill } from './importOpenClaw.js'
 import { registerKeybindingsSkill } from './keybindings.js'
+import { registerListProjectsSkill } from './listProjects.js'
 import { registerLoremIpsumSkill } from './loremIpsum.js'
+import { registerPwdSkill } from './pwd.js'
 import { registerRememberSkill } from './remember.js'
 import { registerSimplifySkill } from './simplify.js'
 import { registerSkillifySkill } from './skillify.js'
 import { registerStuckSkill } from './stuck.js'
+import { registerSwitchProjectSkill } from './switchProject.js'
 import { registerUpdateConfigSkill } from './updateConfig.js'
 import { registerVerifySkill } from './verify.js'
 
@@ -34,6 +39,11 @@ export function initBundledSkills(): void {
   registerBatchSkill()
   registerStuckSkill()
   registerImportOpenClawSkill()
+  registerListProjectsSkill()
+  registerAddProjectSkill()
+  registerSwitchProjectSkill()
+  registerPwdSkill()
+  registerCloneRepoSkill()
   if (feature('KAIROS') || feature('KAIROS_DREAM')) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { registerDreamSkill } = require('./dream.js')
