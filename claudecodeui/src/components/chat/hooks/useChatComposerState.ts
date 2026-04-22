@@ -14,6 +14,12 @@ import { authenticatedFetch } from '../../../utils/api';
 import { thinkingModes } from '../constants/thinkingModes';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import { safeLocalStorage } from '../utils/chatStorage';
+import {
+  createTemporarySessionId,
+  getNotificationSessionSummary,
+  isTemporarySessionId,
+  startClaudeSessionCommand,
+} from '../utils/claudeSessionLauncher';
 import type {
   ChatMessage,
   PendingPermissionRequest,
@@ -78,27 +84,6 @@ interface CommandExecutionResult {
 
 const createFakeSubmitEvent = () => {
   return { preventDefault: () => undefined } as unknown as FormEvent<HTMLFormElement>;
-};
-
-const isTemporarySessionId = (sessionId: string | null | undefined) =>
-  Boolean(sessionId && sessionId.startsWith('new-session-'));
-
-const getNotificationSessionSummary = (
-  selectedSession: ProjectSession | null,
-  fallbackInput: string,
-): string | null => {
-  const sessionSummary = selectedSession?.summary || selectedSession?.name || selectedSession?.title;
-  if (typeof sessionSummary === 'string' && sessionSummary.trim()) {
-    const normalized = sessionSummary.replace(/\s+/g, ' ').trim();
-    return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
-  }
-
-  const normalizedFallback = fallbackInput.replace(/\s+/g, ' ').trim();
-  if (!normalizedFallback) {
-    return null;
-  }
-
-  return normalizedFallback.length > 80 ? `${normalizedFallback.slice(0, 77)}...` : normalizedFallback;
 };
 
 export function useChatComposerState({
@@ -529,7 +514,7 @@ export function useChatComposerState({
 
       const effectiveSessionId =
         currentSessionId || selectedSession?.id || sessionStorage.getItem('cursorSessionId');
-      const sessionToActivate = effectiveSessionId || `new-session-${Date.now()}`;
+      const sessionToActivate = effectiveSessionId || createTemporarySessionId();
 
       const userMessage: ChatMessage = {
         type: 'user',
@@ -639,20 +624,17 @@ export function useChatComposerState({
           },
         });
       } else {
-        sendMessage({
-          type: 'claude-command',
+        startClaudeSessionCommand({
+          sendMessage,
+          selectedProject,
           command: messageContent,
-          options: {
-            projectPath: resolvedProjectPath,
-            cwd: resolvedProjectPath,
-            sessionId: effectiveSessionId,
-            resume: Boolean(effectiveSessionId),
-            toolsSettings,
-            permissionMode,
-            model: claudeModel,
-            sessionSummary,
-            images: uploadedImages,
-          },
+          sessionId: effectiveSessionId,
+          temporarySessionId: sessionToActivate,
+          toolsSettings,
+          permissionMode,
+          claudeModel,
+          sessionSummary,
+          images: uploadedImages,
         });
       }
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { persistFiredRecurringTasks } from './cronScheduler.js'
+import { createCronScheduler, persistFiredRecurringTasks } from './cronScheduler.js'
 import { readCronTasks, updateCronTask, writeCronTasks } from './cronTasks.js'
 import { sleep } from './sleep.js'
 
@@ -74,6 +74,61 @@ describe('persistFiredRecurringTasks', () => {
       originSessionId: 'session-1',
       transcriptKey: 'cron-thread-123',
       lastFiredAt: firedAt,
+    })
+  })
+})
+
+describe('createCronScheduler', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cron-scheduler-manual-only-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test('does not auto-fire manual-only tasks', async () => {
+    await writeCronTasks(
+      [
+        {
+          id: 'manualonly',
+          cron: '* * * * *',
+          prompt: 'proposal',
+          createdAt: Date.now() - 90_000,
+          recurring: true,
+          manualOnly: true,
+          originSessionId: 'session-1',
+        },
+      ],
+      dir,
+    )
+
+    let fired = false
+    const scheduler = createCronScheduler({
+      dir,
+      onFire: () => {
+        fired = true
+      },
+    })
+
+    try {
+      scheduler.start()
+      await sleep(1800)
+    } finally {
+      scheduler.stop()
+    }
+
+    expect(fired).toBe(false)
+    await expect(readCronTasks(dir)).resolves.toContainEqual({
+      id: 'manualonly',
+      cron: '* * * * *',
+      prompt: 'proposal',
+      createdAt: expect.any(Number),
+      recurring: true,
+      manualOnly: true,
+      originSessionId: 'session-1',
     })
   })
 })

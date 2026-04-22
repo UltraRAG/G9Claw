@@ -23,6 +23,7 @@ export type CronDaemonRequest =
       prompt: string
       recurring: boolean
       durable: boolean
+      manualOnly?: boolean
       agentId?: string
     }
   | {

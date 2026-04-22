@@ -17,6 +17,7 @@ type SessionCronTaskFile = {
     createdAt: number
     lastFiredAt?: number
     recurring?: boolean
+    manualOnly?: boolean
     transcriptKey?: string
     originSessionId?: string
     agentId?: string
@@ -39,6 +40,7 @@ function serializeTask(task: DaemonCronTask): SessionCronTaskFile['tasks'][numbe
       ? { lastFiredAt: task.lastFiredAt }
       : {}),
     ...(task.recurring ? { recurring: true } : {}),
+    ...(task.manualOnly ? { manualOnly: true } : {}),
     ...(typeof task.transcriptKey === 'string'
       ? { transcriptKey: task.transcriptKey }
       : {}),
@@ -79,6 +81,7 @@ function parseTask(
       ? { lastFiredAt: task.lastFiredAt }
       : {}),
     ...(task.recurring ? { recurring: true } : {}),
+    ...(task.manualOnly ? { manualOnly: true } : {}),
     ...(typeof task.transcriptKey === 'string'
       ? { transcriptKey: task.transcriptKey }
       : {}),
@@ -90,6 +93,9 @@ function parseTask(
 }
 
 function isRecoverableSessionTask(task: DaemonCronTask, nowMs: number): boolean {
+  if (task.manualOnly) {
+    return true
+  }
   if (task.recurring) {
     return true
   }

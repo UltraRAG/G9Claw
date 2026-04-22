@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RunProjectCronJobNowResponse } from '../../../types/app';
 import {
   buildRunNowFeedback,
+  getCronJobExecutionModeLabel,
   findSelectedCronJob,
   getCronJobKindLabel,
   getPayloadError,
@@ -59,6 +60,9 @@ function t(key: string, options?: Record<string, string>) {
   if (key === 'alwaysOn.flags.recurring') {
     message = 'Recurring';
   }
+  if (key === 'alwaysOn.flags.manualOnly') {
+    message = 'Manual only';
+  }
   if (options) {
     for (const [name, value] of Object.entries(options)) {
       message = message.replace(`{{${name}}}`, value);
@@ -115,5 +119,10 @@ describe('AlwaysOnPanel helpers', () => {
   it('builds a combined scope and type label for the overview table', () => {
     expect(getCronJobKindLabel({ durable: false, recurring: false }, t)).toBe('Session / One-shot');
     expect(getCronJobKindLabel({ durable: true, recurring: true }, t)).toBe('Durable / Recurring');
+  });
+
+  it('labels manual-only proposals when present', () => {
+    expect(getCronJobExecutionModeLabel({ manualOnly: true }, t)).toBe('Manual only');
+    expect(getCronJobExecutionModeLabel({ manualOnly: false }, t)).toBeNull();
   });
 });

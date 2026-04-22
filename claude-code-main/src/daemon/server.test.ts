@@ -230,4 +230,49 @@ describe('CronDaemonServer run_task_now', () => {
       },
     })
   })
+
+  test('create_task and list_tasks preserve manual-only proposals', async () => {
+    const server = new CronDaemonServer()
+    const createResponse = await (server as any).handleRequest({
+      type: 'create_task',
+      projectRoot,
+      originSessionId: 'origin-session-manual',
+      cron: '0 9 * * *',
+      prompt: 'Review follow-up work',
+      recurring: true,
+      durable: true,
+      manualOnly: true,
+    })
+
+    expect(createResponse.ok).toBe(true)
+    if (!createResponse.ok || createResponse.data.type !== 'create_task') {
+      return
+    }
+
+    expect(createResponse.data.task).toMatchObject({
+      durable: true,
+      manualOnly: true,
+      originSessionId: 'origin-session-manual',
+    })
+
+    const listResponse = await (server as any).handleRequest({
+      type: 'list_tasks',
+      projectRoot,
+    })
+
+    expect(listResponse).toEqual({
+      ok: true,
+      data: {
+        type: 'list_tasks',
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            id: createResponse.data.task.id,
+            durable: true,
+            manualOnly: true,
+            running: false,
+          }),
+        ]),
+      },
+    })
+  })
 })

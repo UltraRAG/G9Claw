@@ -257,6 +257,32 @@ test('getProjectCronJobsOverview returns session-only one-shot jobs before they 
   assert.equal(overview.jobs[0].latestRun, null);
 });
 
+test('getProjectCronJobsOverview keeps manual-only proposal jobs visible after their cron window passes', async () => {
+  const homeDir = await createTempHome();
+  const projectName = 'project-with-manual-only-cron';
+  const projectRoot = path.join(homeDir, 'workspace-manual-only');
+
+  await fs.mkdir(projectRoot, { recursive: true });
+  await writeProjectConfig(homeDir, projectName, projectRoot);
+  await writeSessionScheduledTasks(projectRoot, [
+    {
+      id: 'cron-manual-only',
+      cron: '0 9 1 1 *',
+      prompt: 'Follow up on the stale TODOs',
+      createdAt: 0,
+      manualOnly: true,
+      originSessionId: 'origin-session-manual-only'
+    }
+  ]);
+
+  const overview = await getProjectCronJobsOverview(projectName);
+
+  assert.equal(overview.jobs.length, 1);
+  assert.equal(overview.jobs[0].id, 'cron-manual-only');
+  assert.equal(overview.jobs[0].manualOnly, true);
+  assert.equal(overview.jobs[0].status, 'scheduled');
+});
+
 test('getProjectCronJobsOverview merges durable and session-only cron jobs', async () => {
   const homeDir = await createTempHome();
   const projectName = 'project-with-mixed-crons';

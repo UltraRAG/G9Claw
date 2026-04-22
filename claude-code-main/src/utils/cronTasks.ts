@@ -10,7 +10,7 @@
 //   {
 //     "tasks": [{
 //       id, cron, prompt, createdAt, recurring?, permanent?,
-//       transcriptKey?, originSessionId?
+//       manualOnly?, transcriptKey?, originSessionId?
 //     }]
 //   }
 
@@ -66,9 +66,14 @@ export type CronTask = {
    * Runtime-only flag. false → session-scoped (never written to
    * .claude/scheduled_tasks.json). File-backed tasks leave this undefined;
    * writeCronTasks strips it so the on-disk shape stays
-   * { id, cron, prompt, createdAt, lastFiredAt?, recurring?, permanent?, transcriptKey?, originSessionId? }.
+   * { id, cron, prompt, createdAt, lastFiredAt?, recurring?, permanent?, manualOnly?, transcriptKey?, originSessionId? }.
    */
   durable?: boolean
+  /**
+   * When true, the job is a proposal that never auto-fires on its cron
+   * schedule. It only runs when explicitly triggered via "run now".
+   */
+  manualOnly?: boolean
   /**
    * Stable sidechain transcript key for recurring Cron runs. One-shot tasks
    * intentionally do not persist this because each fire gets a fresh transcript.
@@ -101,6 +106,7 @@ export type AddCronTaskOptions = {
   dir?: string
   originSessionId?: string
   addSessionTask?: (task: CronTask) => void
+  manualOnly?: boolean
 }
 
 /**
@@ -164,6 +170,7 @@ export async function readCronTasks(dir?: string): Promise<CronTask[]> {
         : {}),
       ...(t.recurring ? { recurring: true } : {}),
       ...(t.permanent ? { permanent: true } : {}),
+      ...(t.manualOnly ? { manualOnly: true } : {}),
       ...(typeof t.transcriptKey === 'string'
         ? { transcriptKey: t.transcriptKey }
         : {}),
@@ -247,6 +254,7 @@ export async function addCronTask(
     createdAt: Date.now(),
     originSessionId: options?.originSessionId ?? getSessionId(),
     ...(recurring ? { recurring: true } : {}),
+    ...(options?.manualOnly ? { manualOnly: true } : {}),
   }
   if (!durable) {
     const sessionTask: CronTask = {

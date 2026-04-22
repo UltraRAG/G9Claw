@@ -22,6 +22,7 @@ export interface CronJobOverview {
   lastFiredAt?: number;
   recurring?: boolean;
   permanent?: boolean;
+  manualOnly?: boolean;
   originSessionId?: string;
   transcriptKey?: string;
   status: CronJobOverviewStatus;

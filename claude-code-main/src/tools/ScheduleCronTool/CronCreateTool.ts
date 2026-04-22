@@ -38,6 +38,9 @@ const inputSchema = lazySchema(() =>
     durable: semanticBoolean(z.boolean().optional()).describe(
       'true = persist to .claude/scheduled_tasks.json and survive restarts. false (default) = session-scoped in the Cron daemon, stored separately from durable jobs and restored when the daemon restarts. Use true only when the user asks the task to survive across sessions.',
     ),
+    manualOnly: semanticBoolean(z.boolean().optional()).describe(
+      'true = create a proposal that appears in Always-On but never fires automatically on schedule. Use this when the task should wait for explicit user approval or a manual "Run now".',
+    ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -48,6 +51,7 @@ const outputSchema = lazySchema(() =>
     humanSchedule: z.string(),
     recurring: z.boolean(),
     durable: z.boolean().optional(),
+      manualOnly: z.boolean().optional(),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -123,7 +127,13 @@ export const CronCreateTool = buildTool({
     }
     return { result: true }
   },
-  async call({ cron, prompt, recurring = true, durable = false }) {
+  async call({
+    cron,
+    prompt,
+    recurring = true,
+    durable = false,
+    manualOnly = false,
+  }) {
     // Kill switch forces session-only; schema stays stable so the model sees
     // no validation errors when the gate flips mid-session.
     const effectiveDurable = durable && isDurableCronEnabled()
@@ -135,6 +145,7 @@ export const CronCreateTool = buildTool({
       prompt,
       recurring,
       durable: effectiveDurable,
+      manualOnly,
       agentId: getTeammateContext()?.agentId,
     })
     assertCronDaemonOk(response)
@@ -147,6 +158,7 @@ export const CronCreateTool = buildTool({
         humanSchedule: cronToHuman(cron),
         recurring,
         durable: effectiveDurable,
+        manualOnly,
       },
     }
   },
@@ -154,12 +166,15 @@ export const CronCreateTool = buildTool({
     const where = output.durable
       ? 'Persisted to .claude/scheduled_tasks.json'
       : 'Session-scoped in the Cron daemon (stored separately from .claude/scheduled_tasks.json and restored across daemon restarts)'
+    const executionMode = output.manualOnly
+      ? ' Manual-only: it will not run on schedule until explicitly triggered.'
+      : ''
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
       content: output.recurring
-        ? `Scheduled recurring job ${output.id} (${output.humanSchedule}). ${where}. Auto-expires after ${DEFAULT_MAX_AGE_DAYS} days. Use CronDelete to cancel sooner.`
-        : `Scheduled one-shot task ${output.id} (${output.humanSchedule}). ${where}. It will fire once then auto-delete.`,
+        ? `Scheduled recurring job ${output.id} (${output.humanSchedule}). ${where}.${executionMode} Auto-expires after ${DEFAULT_MAX_AGE_DAYS} days. Use CronDelete to cancel sooner.`
+        : `Scheduled one-shot task ${output.id} (${output.humanSchedule}). ${where}.${executionMode}${output.manualOnly ? '' : ' It will fire once then auto-delete.'}`,
     }
   },
   renderToolUseMessage: renderCreateToolUseMessage,

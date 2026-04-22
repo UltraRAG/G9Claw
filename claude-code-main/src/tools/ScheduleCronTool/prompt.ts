@@ -65,8 +65,8 @@ export const CRON_LIST_TOOL_NAME = 'CronList'
 
 export function buildCronCreateDescription(durableEnabled: boolean): string {
   return durableEnabled
-    ? 'Schedule a prompt to run at a future time — either recurring on a cron schedule, or once at a specific time. Pass durable: true to persist to .claude/scheduled_tasks.json; otherwise keep it session-scoped in the Cron daemon.'
-    : 'Schedule a prompt to run at a future time in the Cron daemon — either recurring on a cron schedule, or once at a specific time.'
+    ? 'Schedule a prompt to run at a future time — either recurring on a cron schedule, or once at a specific time. Pass durable: true to persist to .claude/scheduled_tasks.json; pass manualOnly: true to create a proposal that only runs when manually triggered.'
+    : 'Schedule a prompt to run at a future time in the Cron daemon — either recurring on a cron schedule, or once at a specific time. Pass manualOnly: true to create a proposal that only runs when manually triggered.'
 }
 
 export function buildCronCreatePrompt(durableEnabled: boolean): string {
@@ -77,6 +77,10 @@ By default (durable: false) the job stays session-scoped in the Cron daemon and 
     : `## Session-only
 
 Jobs stay session-scoped in the Cron daemon and are stored separately from durable jobs so they can be restored after a daemon restart.`
+
+  const manualOnlySection = `## Manual-only proposals
+
+Pass manualOnly: true when the job should be created as a proposal rather than auto-scheduled. Manual-only jobs still appear in Always-On and can be launched with "Run now", but they never fire automatically on their cron schedule. Use this for "propose follow-up tasks for later approval" workflows.`
 
   const durableRuntimeNote = durableEnabled
     ? 'Durable jobs persist to .claude/scheduled_tasks.json and survive session restarts — on next launch they resume automatically. One-shot durable tasks that were missed while the daemon was down are surfaced for catch-up. Session-scoped jobs are stored separately from durable jobs and are restored when the daemon restarts, but remain scoped to their originating session. '
@@ -109,6 +113,8 @@ Only use minute 0 or 30 when the user names that exact time and clearly means it
 
 ${durabilitySection}
 
+${manualOnlySection}
+
 ## Runtime behavior
 
 Jobs fire from the Cron daemon rather than the foreground REPL/Web query process. ${durableRuntimeNote}The scheduler adds a small deterministic jitter on top of whatever you pick: recurring tasks fire up to 10% of their period late (max 15 min); one-shot tasks landing on :00 or :30 fire up to 90 s early. Picking an off-minute is still the bigger lever.
@@ -128,6 +134,6 @@ export function buildCronDeletePrompt(durableEnabled: boolean): string {
 export const CRON_LIST_DESCRIPTION = 'List scheduled cron jobs'
 export function buildCronListPrompt(durableEnabled: boolean): string {
   return durableEnabled
-    ? `List all cron jobs scheduled via ${CRON_CREATE_TOOL_NAME}, both durable (.claude/scheduled_tasks.json) and session-scoped in the Cron daemon.`
-    : `List all cron jobs scheduled via ${CRON_CREATE_TOOL_NAME} in the Cron daemon session store.`
+    ? `List all cron jobs scheduled via ${CRON_CREATE_TOOL_NAME}, both durable (.claude/scheduled_tasks.json) and session-scoped in the Cron daemon. Include whether each job is manualOnly (proposal-only, no auto-fire).`
+    : `List all cron jobs scheduled via ${CRON_CREATE_TOOL_NAME} in the Cron daemon session store. Include whether each job is manualOnly (proposal-only, no auto-fire).`
 }

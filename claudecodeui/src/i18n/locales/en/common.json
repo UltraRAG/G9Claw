@@ -118,6 +118,7 @@
     },
     "actions": {
       "viewDetails": "View details for {{id}}",
+      "discoverTasks": "Discover tasks",
       "runNow": "Run now"
     },
     "flags": {
@@ -125,6 +126,7 @@
       "sessionScoped": "Session",
       "oneShot": "One-shot",
       "recurring": "Recurring",
+      "manualOnly": "Manual only",
       "permanent": "Permanent"
     },
     "fields": {

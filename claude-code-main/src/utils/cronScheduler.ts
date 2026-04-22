@@ -228,6 +228,9 @@ export function createCronScheduler(
   let isOwner = false
   let checkInFlight = false
 
+  const shouldAutoScheduleTask = (task: CronTask): boolean =>
+    !task.manualOnly && (!filter || filter(task))
+
   async function load(initial: boolean) {
     const next = await readCronTasks(dir)
     if (stopped) return
@@ -245,7 +248,7 @@ export function createCronScheduler(
 
     const now = Date.now()
     const missed = findMissedTasks(next, now).filter(
-      t => !t.recurring && !missedAsked.has(t.id) && (!filter || filter(t)),
+      t => !t.recurring && !missedAsked.has(t.id) && shouldAutoScheduleTask(t),
     )
     if (missed.length > 0) {
       for (const t of missed) {
@@ -302,7 +305,7 @@ export function createCronScheduler(
       // session tasks are removed synchronously from memory, file tasks go
       // through the async removeCronTasks + chokidar reload.
       function process(t: CronTask, isSession: boolean) {
-        if (filter && !filter(t)) return
+        if (!shouldAutoScheduleTask(t)) return
         seen.add(t.id)
         if (inFlight.has(t.id)) return
 

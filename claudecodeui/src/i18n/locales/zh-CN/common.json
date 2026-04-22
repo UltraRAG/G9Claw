@@ -118,6 +118,7 @@
     },
     "actions": {
       "viewDetails": "查看 {{id}} 的详情",
+      "discoverTasks": "主动发现任务",
       "runNow": "立即执行"
     },
     "flags": {
@@ -125,6 +126,7 @@
       "sessionScoped": "本会话",
       "oneShot": "单次",
       "recurring": "循环",
+      "manualOnly": "仅手动执行",
       "permanent": "永久"
     },
     "fields": {

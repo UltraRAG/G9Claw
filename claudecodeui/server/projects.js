@@ -814,6 +814,7 @@ function normalizeScheduledCronTask(task, options = {}) {
     ...(typeof task.lastFiredAt === 'number' ? { lastFiredAt: task.lastFiredAt } : {}),
     ...(task.recurring ? { recurring: true } : {}),
     ...(task.permanent ? { permanent: true } : {}),
+    ...(task.manualOnly ? { manualOnly: true } : {}),
     ...(typeof task.originSessionId === 'string' ? { originSessionId: task.originSessionId } : {}),
     ...(typeof task.transcriptKey === 'string' ? { transcriptKey: task.transcriptKey } : {})
   };
@@ -975,6 +976,9 @@ function nextCronRunMs(cron, fromMs) {
 }
 
 function isRecoverableSessionCronTask(task, nowMs) {
+  if (task.manualOnly) {
+    return true;
+  }
   if (task.recurring) {
     return true;
   }

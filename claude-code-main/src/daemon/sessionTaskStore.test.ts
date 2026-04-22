@@ -124,6 +124,38 @@ describe('DaemonSessionTaskStore', () => {
     await rm(projectRoot, { recursive: true, force: true })
   })
 
+  test('keeps manual-only one-shot tasks during hydration even after the cron window passes', async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), 'daemon-session-store-'))
+    const store = new DaemonSessionTaskStore()
+    store.addTask(
+      projectRoot,
+      createTask({
+        id: 'manual-shot',
+        recurring: false,
+        manualOnly: true,
+        cron: '0 9 1 1 *',
+        createdAt: 0,
+      }),
+    )
+    await store.persistProject(projectRoot)
+
+    const restored = new DaemonSessionTaskStore()
+    await restored.hydrateProject(projectRoot, Date.UTC(2026, 3, 20, 4, 0, 0))
+
+    expect(restored.getTask(projectRoot, 'manual-shot')).toMatchObject({
+      id: 'manual-shot',
+      manualOnly: true,
+    })
+
+    const rewritten = await readFile(
+      join(projectRoot, '.claude', 'session_scheduled_tasks.json'),
+      'utf-8',
+    )
+    expect(rewritten).toContain('"manualOnly": true')
+
+    await rm(projectRoot, { recursive: true, force: true })
+  })
+
   test('marks recurring session tasks as fired', () => {
     const store = new DaemonSessionTaskStore()
     store.addTask('/tmp/project', createTask({ recurring: true }))

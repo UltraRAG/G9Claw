@@ -1,4 +1,4 @@
-import { AlertCircle, ArrowLeft, Play, Radio, RefreshCw, Repeat2, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Play, Radio, RefreshCw, Repeat2, Sparkles, Trash2 } from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Button, ScrollArea } from '../../../shared/view/ui';
@@ -14,6 +14,7 @@ const POLL_INTERVAL_MS = 15000;
 
 type AlwaysOnPanelProps = {
   selectedProject: Project;
+  onStartDiscoverySession: () => void | Promise<void>;
 };
 
 type TranslateFn = (key: string, options?: Record<string, string>) => string;
@@ -96,6 +97,13 @@ export function getCronJobTypeLabel(job: Pick<CronJobOverview, 'recurring'>, t: 
     : t('alwaysOn.flags.oneShot');
 }
 
+export function getCronJobExecutionModeLabel(
+  job: Pick<CronJobOverview, 'manualOnly'>,
+  t: TranslateFn,
+): string | null {
+  return job.manualOnly ? t('alwaysOn.flags.manualOnly') : null;
+}
+
 export function getCronJobKindLabel(
   job: Pick<CronJobOverview, 'durable' | 'recurring'>,
   t: TranslateFn
@@ -164,11 +172,15 @@ function DetailField({
   );
 }
 
-export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
+export default function AlwaysOnPanel({
+  selectedProject,
+  onStartDiscoverySession,
+}: AlwaysOnPanelProps) {
   const { t } = useTranslation();
   const [jobs, setJobs] = useState<CronJobOverview[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isStartingDiscovery, setIsStartingDiscovery] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [feedback, setFeedback] = useState<{
     tone: 'success' | 'info' | 'error';
@@ -384,6 +396,21 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
     }
   }, [loadJobs, selectedJob, selectedProject.name, t]);
 
+  const handleStartDiscovery = useCallback(async () => {
+    if (isStartingDiscovery) {
+      return;
+    }
+
+    setIsStartingDiscovery(true);
+    try {
+      await onStartDiscoverySession();
+    } finally {
+      if (isMountedRef.current) {
+        setIsStartingDiscovery(false);
+      }
+    }
+  }, [isStartingDiscovery, onStartDiscoverySession]);
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
       <div className="border-b border-border/60 px-4 py-4 sm:px-6">
@@ -398,17 +425,28 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
             </p>
           </div>
 
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="self-start"
-            onClick={() => void loadJobs('refresh')}
-            disabled={isLoading || isRefreshing}
-          >
-            <RefreshCw className={isRefreshing ? 'animate-spin' : ''} />
-            {t('buttons.refresh')}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2 self-start">
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              onClick={() => void handleStartDiscovery()}
+              disabled={isStartingDiscovery}
+            >
+              <Sparkles className={isStartingDiscovery ? 'animate-pulse' : ''} />
+              {t('alwaysOn.actions.discoverTasks')}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void loadJobs('refresh')}
+              disabled={isLoading || isRefreshing}
+            >
+              <RefreshCw className={isRefreshing ? 'animate-spin' : ''} />
+              {t('buttons.refresh')}
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -537,6 +575,11 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
                           <Badge variant="outline" className="text-xs">
                             {getCronJobTypeLabel(selectedJob, t)}
                           </Badge>
+                          {getCronJobExecutionModeLabel(selectedJob, t) && (
+                            <Badge variant="secondary" className="text-xs">
+                              {getCronJobExecutionModeLabel(selectedJob, t)}
+                            </Badge>
+                          )}
                           {selectedJob.permanent && (
                             <Badge variant="secondary" className="text-xs">
                               {t('alwaysOn.flags.permanent')}
@@ -649,11 +692,18 @@ export default function AlwaysOnPanel({ selectedProject }: AlwaysOnPanelProps) {
                       <td className="px-4 py-4">
                         <div className="space-y-2">
                           <div className="font-medium text-foreground">{getCronJobKindLabel(job, t)}</div>
-                          {job.permanent && (
+                          {(job.permanent || job.manualOnly) && (
                             <div className="flex flex-wrap gap-2">
-                              <Badge variant="secondary" className="text-xs">
-                                {t('alwaysOn.flags.permanent')}
-                              </Badge>
+                              {getCronJobExecutionModeLabel(job, t) && (
+                                <Badge variant="secondary" className="text-xs">
+                                  {getCronJobExecutionModeLabel(job, t)}
+                                </Badge>
+                              )}
+                              {job.permanent && (
+                                <Badge variant="secondary" className="text-xs">
+                                  {t('alwaysOn.flags.permanent')}
+                                </Badge>
+                              )}
                             </div>
                           )}
                         </div>
