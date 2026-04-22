@@ -39,6 +39,7 @@ cp .env.example .env
 - `HOST=0.0.0.0`
 - `CONTEXT_WINDOW=160000`
 - `EDGECLAW_MEMORY_ENABLED=1`
+- `GATEWAY_ENABLED=1`
 
 注意：
 
@@ -66,6 +67,19 @@ chmod +x start.sh
 
 `start.sh` 会读取仓库根目录 `.env`，派生内部 `OPENAI_*` / `ANTHROPIC_*` 变量，并在需要时自动拉起本地代理。
 
+如果要只运行消息网关，不启动 CLI：
+
+```bash
+cd claude-code-main
+./start.sh --gateway
+```
+
+如果要在正常启动 CLI 的同时后台拉起 gateway，可以在根目录 `.env` 里设置：
+
+```bash
+GATEWAY_ENABLED=1
+```
+
 ## 第四步：启动 Web UI
 
 ```bash
@@ -79,6 +93,27 @@ npm run dev
 - API Server: `http://localhost:3001`
 
 前端和服务端都会从仓库根目录 `.env` 读取配置；不需要再创建子目录 `.env`。
+
+## Gateway 配置
+
+gateway 也统一读取仓库根目录 `.env`，不再单独维护 `claude-code-main/.env`。
+
+常见入口变量：
+
+- `GATEWAY_ENABLED=1`
+- `GATEWAY_ALLOW_ALL_USERS=true`
+- `GATEWAY_ALLOWED_USERS=user1,user2`
+
+支持的平台变量示例可直接参考根目录 `.env.example`，其中已经包含：
+
+- Telegram
+- Discord
+- Slack
+- Feishu / Lark
+- WeCom / DingTalk
+- Matrix / Signal / Mattermost
+- Email / SMS / Home Assistant
+- API Server / Webhook / Weixin / WhatsApp
 
 ## Memory 配置
 

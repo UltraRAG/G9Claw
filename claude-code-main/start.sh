@@ -20,32 +20,6 @@ if [ -f "$ROOT_ENV" ]; then
   set +a
 fi
 
-require_env() {
-  local key="$1"
-  if [ -z "${!key:-}" ]; then
-    echo "Error: $key is not set. Configure it in $ROOT_ENV or export it before starting Claude Code." >&2
-    exit 1
-  fi
-}
-
-require_env EDGECLAW_API_BASE_URL
-require_env EDGECLAW_API_KEY
-require_env EDGECLAW_MODEL
-
-PROXY_PORT="${EDGECLAW_PROXY_PORT:-18080}"
-
-# ── Ensure peekaboo is installed (macOS only, for computer-use MCP) ──
-if [[ "$(uname)" == "Darwin" ]]; then
-  if ! command -v peekaboo &>/dev/null; then
-    echo "[start] Installing peekaboo (macOS UI automation)..."
-    if command -v brew &>/dev/null; then
-      brew install steipete/tap/peekaboo 2>/dev/null || echo "[start] Warning: peekaboo install failed (computer-use will be unavailable)"
-    else
-      echo "[start] Warning: brew not found, skipping peekaboo install (computer-use will be unavailable)"
-    fi
-  fi
-fi
-
 # Ensure bun is on PATH
 if ! command -v bun &>/dev/null; then
   if [ -f "$HOME/.bun/bin/bun" ]; then
@@ -59,15 +33,47 @@ fi
 # ── Check for --gateway flag ──
 GATEWAY_ONLY=false
 HAS_PRINT=false
+HAS_HELP_OR_VERSION=false
 REMAINING_ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --gateway) GATEWAY_ONLY=true ;;
-    -p|--print|--help|--version|-v|-V) HAS_PRINT=true; REMAINING_ARGS+=("$arg") ;;
+    --help|--version|-v|-V) HAS_PRINT=true; HAS_HELP_OR_VERSION=true; REMAINING_ARGS+=("$arg") ;;
+    -p|--print) HAS_PRINT=true; REMAINING_ARGS+=("$arg") ;;
     *) REMAINING_ARGS+=("$arg") ;;
   esac
 done
 set -- "${REMAINING_ARGS[@]}"
+
+if [ "$HAS_HELP_OR_VERSION" = true ] && [ "$GATEWAY_ONLY" = false ]; then
+  exec bun run --preload="$DIR/preload.ts" "$DIR/src/entrypoints/cli.tsx" "$@"
+fi
+
+# ── Ensure peekaboo is installed (macOS only, for computer-use MCP) ──
+if [[ "$(uname)" == "Darwin" ]]; then
+  if ! command -v peekaboo &>/dev/null; then
+    echo "[start] Installing peekaboo (macOS UI automation)..."
+    if command -v brew &>/dev/null; then
+      brew install steipete/tap/peekaboo 2>/dev/null || echo "[start] Warning: peekaboo install failed (computer-use will be unavailable)"
+    else
+      echo "[start] Warning: brew not found, skipping peekaboo install (computer-use will be unavailable)"
+    fi
+  fi
+fi
+
+require_env() {
+  local key="$1"
+  if [ -z "${!key:-}" ]; then
+    echo "Error: $key is not set. Configure it in $ROOT_ENV or export it before starting Claude Code." >&2
+    exit 1
+  fi
+}
+
+require_env EDGECLAW_API_BASE_URL
+require_env EDGECLAW_API_KEY
+require_env EDGECLAW_MODEL
+
+PROXY_PORT="${EDGECLAW_PROXY_PORT:-18080}"
 
 if [ "$GATEWAY_ONLY" = false ] && [ "$HAS_PRINT" = false ] && [ ! -t 1 ]; then
   cat >&2 <<'EOF'
