@@ -204,6 +204,53 @@ function clearProjectDirectoryCache() {
   projectDirectoryCache.clear();
 }
 
+// Path for the built-in "general" scratch project. Kept in sync with
+// claude-code-main/gateway/runner.ts::getGeneralCwd() so that messages sent
+// via the Feishu/Telegram gateway when no project is selected land in the
+// same directory and show up as the same entry in the UI sidebar.
+const GENERAL_PROJECT_PATH = path.join(os.homedir(), '.claude-gateway', 'general');
+const GENERAL_PROJECT_KEY = GENERAL_PROJECT_PATH.replace(/[\\/:\s~_]/g, '-');
+
+/**
+ * Make sure the default "general" project is registered in
+ * ~/.claude/project-config.json and its backing directory exists on disk.
+ * Runs on every getProjects() call (cheap, idempotent) so fresh installs
+ * and new machines always see it in the sidebar without manual setup.
+ */
+async function ensureDefaultGeneralProject() {
+  try {
+    await fs.mkdir(GENERAL_PROJECT_PATH, { recursive: true });
+  } catch (error) {
+    if (error.code !== 'EEXIST') {
+      console.warn(`[projects] Could not create ${GENERAL_PROJECT_PATH}: ${error.message}`);
+    }
+  }
+
+  const configPath = path.join(os.homedir(), '.claude', 'project-config.json');
+  let config = {};
+  try {
+    config = JSON.parse(await fs.readFile(configPath, 'utf8'));
+  } catch {
+    config = {};
+  }
+
+  if (config[GENERAL_PROJECT_KEY]) return;
+
+  config[GENERAL_PROJECT_KEY] = {
+    manuallyAdded: true,
+    originalPath: GENERAL_PROJECT_PATH,
+    displayName: 'general',
+    isDefault: true,
+  };
+
+  try {
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+  } catch (error) {
+    console.warn(`[projects] Could not seed default general project: ${error.message}`);
+  }
+}
+
 // Load project configuration file
 async function loadProjectConfig() {
   const configPath = path.join(os.homedir(), '.claude', 'project-config.json');
@@ -383,6 +430,7 @@ async function extractProjectDirectory(projectName) {
 
 async function getProjects(progressCallback = null) {
   const claudeDir = path.join(os.homedir(), '.claude', 'projects');
+  await ensureDefaultGeneralProject();
   const config = await loadProjectConfig();
   const projects = [];
   const existingProjects = new Set();
@@ -436,6 +484,7 @@ async function getProjects(progressCallback = null) {
         displayName: customName || autoDisplayName,
         fullPath: fullPath,
         isCustomName: !!customName,
+        isDefault: config[entry.name]?.isDefault === true,
         sessions: [],
         geminiSessions: [],
         sessionMeta: {
@@ -560,6 +609,7 @@ async function getProjects(progressCallback = null) {
         fullPath: actualProjectDir,
         isCustomName: !!projectConfig.displayName,
         isManuallyAdded: true,
+        isDefault: projectConfig.isDefault === true,
         sessions: [],
         geminiSessions: [],
         sessionMeta: {

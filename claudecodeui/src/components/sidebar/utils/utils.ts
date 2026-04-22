@@ -151,6 +151,20 @@ export const sortProjects = (
   const byName = [...projects];
 
   byName.sort((projectA, projectB) => {
+    // Built-in defaults (e.g. the `general` scratch project seeded by
+    // ensureDefaultGeneralProject on the server) always pin above starred
+    // and regular projects, regardless of sort order.
+    const aDefault = projectA.isDefault === true;
+    const bDefault = projectB.isDefault === true;
+
+    if (aDefault && !bDefault) {
+      return -1;
+    }
+
+    if (!aDefault && bDefault) {
+      return 1;
+    }
+
     const aStarred = starredProjects.has(projectA.name);
     const bStarred = starredProjects.has(projectB.name);
 
