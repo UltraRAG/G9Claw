@@ -12,6 +12,7 @@ import { InProcessTeammateTask } from 'src/tasks/InProcessTeammateTask/InProcess
 import type { InProcessTeammateTaskState } from 'src/tasks/InProcessTeammateTask/types.js';
 import type { LocalAgentTaskState } from 'src/tasks/LocalAgentTask/LocalAgentTask.js';
 import { LocalAgentTask } from 'src/tasks/LocalAgentTask/LocalAgentTask.js';
+import { foregroundMainSessionTask, isMainSessionTask } from 'src/tasks/LocalMainSessionTask.js';
 import type { LocalShellTaskState } from 'src/tasks/LocalShellTask/guards.js';
 import { LocalShellTask } from 'src/tasks/LocalShellTask/LocalShellTask.js';
 // Type import is erased at build time — safe even though module is ant-gated.
@@ -288,7 +289,13 @@ export function BackgroundTasksDialog({
       }
     }
     if (e.key === 'f') {
-      if (currentSelection_0.type === 'in_process_teammate' && currentSelection_0.status === 'running') {
+      if (currentSelection_0.type === 'local_agent' && currentSelection_0.status === 'running' && isMainSessionTask(currentSelection_0.task)) {
+        e.preventDefault();
+        foregroundMainSessionTask(currentSelection_0.id, setAppState);
+        onDone('Viewing background session', {
+          display: 'system'
+        });
+      } else if (currentSelection_0.type === 'in_process_teammate' && currentSelection_0.status === 'running') {
         e.preventDefault();
         enterTeammateView(currentSelection_0.id, setAppState);
         onDone('Viewing teammate', {
@@ -411,7 +418,7 @@ export function BackgroundTasksDialog({
               {runningAgentCount}{' '}
               {runningAgentCount !== 1 ? 'active agents' : 'active agent'}
             </Text>] : [])], index => <Text key={`separator-${index}`}> · </Text>);
-  const actions = [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...(currentSelection?.type === 'in_process_teammate' && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent') && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(agentTasks.some(t => t.status === 'running') ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
+  const actions = [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...((currentSelection?.type === 'in_process_teammate' && currentSelection.status === 'running' || currentSelection?.type === 'local_agent' && currentSelection.status === 'running' && isMainSessionTask(currentSelection.task)) ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent') && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(agentTasks.some(t => t.status === 'running') ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
   const handleCancel = () => onDone('Background tasks dialog dismissed', {
     display: 'system'
   });

@@ -1,22 +1,34 @@
-import React, { useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import ChatInterface from '../../chat/view/ChatInterface';
+import AlwaysOnPanel from '../../always-on/view/AlwaysOnPanel';
 import FileTree from '../../file-tree/view/FileTree';
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import GitPanel from '../../git-panel/view/GitPanel';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
 import RoutingDashboard from '../../routing-dashboard/RoutingDashboard';
 import MemoryPanel from './memory/MemoryPanel';
+import {
+  getStoredClaudePermissionMode,
+  startClaudeSessionCommand,
+} from '../../chat/utils/claudeSessionLauncher';
+import { getClaudeSettings } from '../../chat/utils/chatStorage';
 import type { MainContentProps } from '../types/types';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
 import { useEditorSidebar } from '../../code-editor/hooks/useEditorSidebar';
 import EditorSidebar from '../../code-editor/view/EditorSidebar';
-import type { Project } from '../../../types/app';
+import type {
+  ExecuteDiscoveryPlanResponse,
+  Project,
+  ProjectDiscoveryContextResponse,
+  ProjectDiscoveryPlansResponse,
+} from '../../../types/app';
 import { TaskMasterPanel } from '../../task-master';
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
 import ErrorBoundary from './ErrorBoundary';
+import { api } from '../../../utils/api';
 
 type TaskMasterContextValue = {
   currentProject?: Project | null;
@@ -28,6 +40,106 @@ type TasksSettingsContextValue = {
   isTaskMasterInstalled: boolean | null;
   isTaskMasterReady: boolean | null;
 };
+
+type PendingDiscoveryExecution = {
+  projectName: string;
+  planId: string;
+};
+
+const AUTO_EXECUTION_POLL_INTERVAL_MS = 15000;
+
+function getClaudeProjectStorePath(project: Project): string {
+  const projectPath = project.fullPath || project.path || '';
+  const unixHomeMatch = projectPath.match(/^(\/Users\/[^/]+|\/home\/[^/]+)/);
+  if (unixHomeMatch?.[1]) {
+    return `${unixHomeMatch[1]}/.claude/projects/${project.name}`;
+  }
+
+  const windowsHomeMatch = projectPath.match(/^([A-Za-z]:\\Users\\[^\\]+)/);
+  if (windowsHomeMatch?.[1]) {
+    return `${windowsHomeMatch[1]}\\.claude\\projects\\${project.name}`;
+  }
+
+  return `~/.claude/projects/${project.name}`;
+}
+
+function buildAlwaysOnDiscoveryPrompt(
+  project: Project,
+  context: ProjectDiscoveryContextResponse,
+): string {
+  const workspacePath = project.fullPath || project.path || project.name;
+  const claudeProjectStorePath = getClaudeProjectStorePath(project);
+  const displayName = project.displayName || project.name;
+
+  return [
+    `Always-On discovery planning for project "${displayName}".`,
+    '',
+    'Your job is discovery only.',
+    'Inspect the provided context, decide whether there are worthwhile follow-up tasks, and persist up to 3 structured discovery plans.',
+    '',
+    'Requirements:',
+    `1. Inspect the current workspace at \`${workspacePath}\`.`,
+    `2. Use the project store at \`${claudeProjectStorePath}\` as supporting context if needed.`,
+    '3. Read the structured discovery context below instead of inventing your own context window.',
+    '4. If there is no worthwhile follow-up work, explain why and stop without saving any plans.',
+    '5. If there is worthwhile work, use `AlwaysOnDiscoveryPlan` to persist up to 3 plans.',
+    '6. Every saved plan must include these markdown sections exactly:',
+    '   - `## Context`',
+    '   - `## Signals Reviewed`',
+    '   - `## Proposed Work`',
+    '   - `## Execution Steps`',
+    '   - `## Verification`',
+    '   - `## Approval And Execution`',
+    '7. Use `approvalMode: "manual"` unless the work is clearly safe and suitable for auto-execution.',
+    '8. Do not call `CronCreate`, do not execute the work now, and do not start background tasks.',
+    '9. In your final reply, summarize what you reviewed and which discovery plan IDs were created or updated.',
+    '',
+    'Structured discovery context:',
+    '```json',
+    JSON.stringify(context, null, 2),
+    '```',
+  ].join('\n');
+}
+
+async function readJsonPayload<T>(response: Response): Promise<T | null> {
+  try {
+    return await response.json() as T;
+  } catch {
+    return null;
+  }
+}
+
+function buildAlwaysOnExecutionToolsSettings() {
+  const settings = getClaudeSettings();
+  const disallowedTools = Array.isArray(settings.disallowedTools)
+    ? [...settings.disallowedTools]
+    : [];
+
+  if (!disallowedTools.includes('EnterPlanMode')) {
+    disallowedTools.push('EnterPlanMode');
+  }
+
+  return {
+    ...settings,
+    disallowedTools,
+  };
+}
+
+function buildAlwaysOnDiscoveryToolsSettings() {
+  const settings = getClaudeSettings();
+  const disallowedTools = Array.isArray(settings.disallowedTools)
+    ? [...settings.disallowedTools]
+    : [];
+
+  if (!disallowedTools.includes('CronCreate')) {
+    disallowedTools.push('CronCreate');
+  }
+
+  return {
+    ...settings,
+    disallowedTools,
+  };
+}
 
 function MainContent({
   selectedProject,
@@ -48,6 +160,7 @@ function MainContent({
   processingSessions,
   onReplaceTemporarySession,
   onNavigateToSession,
+  onStartNewSession,
   onShowSettings,
   externalMessageUpdate,
 }: MainContentProps) {
@@ -56,6 +169,9 @@ function MainContent({
 
   const { currentProject, setCurrentProject } = useTaskMaster() as TaskMasterContextValue;
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings() as TasksSettingsContextValue;
+  const pendingDiscoveryExecutionsRef = useRef<Map<string, PendingDiscoveryExecution>>(new Map());
+  const discoveryExecutionsBySessionRef = useRef<Map<string, PendingDiscoveryExecution>>(new Map());
+  const autoLaunchInFlightRef = useRef<Set<string>>(new Set());
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
 
@@ -88,6 +204,255 @@ function MainContent({
       setActiveTab('chat');
     }
   }, [shouldShowTasksTab, activeTab, setActiveTab]);
+
+  const refreshProjectsSilently = useCallback(() => {
+    if (window.refreshProjects) {
+      void window.refreshProjects();
+    }
+  }, []);
+
+  const updateDiscoveryExecution = useCallback(async (
+    projectName: string,
+    planId: string,
+    body: Record<string, unknown>,
+  ) => {
+    const response = await api.updateProjectDiscoveryPlanExecution(projectName, planId, body);
+    if (!response.ok) {
+      const payload = await readJsonPayload<{ error?: string }>(response);
+      throw new Error(payload?.error || 'Failed to update discovery plan execution');
+    }
+  }, []);
+
+  const launchQueuedDiscoveryPlanExecution = useCallback(async (
+    payload: ExecuteDiscoveryPlanResponse,
+  ) => {
+    if (!selectedProject) {
+      return;
+    }
+
+    const planId = payload?.plan?.id;
+    if (!planId) {
+      throw new Error('Missing discovery plan id in execution payload');
+    }
+
+    pendingDiscoveryExecutionsRef.current.set(payload.executionToken, {
+      projectName: selectedProject.name,
+      planId,
+    });
+
+    startClaudeSessionCommand({
+      sendMessage,
+      selectedProject,
+      command: payload.command,
+      permissionMode: 'default',
+      sessionSummary: payload.sessionSummary,
+      toolsSettings: buildAlwaysOnExecutionToolsSettings(),
+      alwaysOnPlanId: planId,
+      alwaysOnExecutionToken: payload.executionToken,
+    });
+
+    refreshProjectsSilently();
+  }, [refreshProjectsSilently, selectedProject, sendMessage]);
+
+  const handleExecuteDiscoveryPlan = useCallback(async (
+    planId: string,
+    source: 'manual' | 'auto' = 'manual',
+  ) => {
+    if (!selectedProject) {
+      return;
+    }
+
+    autoLaunchInFlightRef.current.add(planId);
+
+    const response = await api.executeProjectDiscoveryPlan(selectedProject.name, planId, { source });
+    const payload = await readJsonPayload<ExecuteDiscoveryPlanResponse & { error?: string }>(response);
+    if (!response.ok || !payload) {
+      autoLaunchInFlightRef.current.delete(planId);
+      throw new Error(payload?.error || 'Failed to queue discovery plan execution');
+    }
+
+    await launchQueuedDiscoveryPlanExecution(payload);
+  }, [launchQueuedDiscoveryPlanExecution, selectedProject]);
+
+  useEffect(() => {
+    const message = latestMessage as {
+      kind?: string;
+      sessionId?: string;
+      newSessionId?: string;
+      content?: string;
+      exitCode?: number;
+      aborted?: boolean;
+      alwaysOnPlanId?: string | null;
+      alwaysOnExecutionToken?: string | null;
+    } | null;
+
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+
+    const executionToken = typeof message.alwaysOnExecutionToken === 'string'
+      ? message.alwaysOnExecutionToken
+      : '';
+    const explicitPlanId = typeof message.alwaysOnPlanId === 'string'
+      ? message.alwaysOnPlanId
+      : '';
+
+    if (message.kind === 'session_created' && executionToken) {
+      const pending = pendingDiscoveryExecutionsRef.current.get(executionToken);
+      const newSessionId = typeof message.newSessionId === 'string'
+        ? message.newSessionId
+        : '';
+      if (!pending || !newSessionId) {
+        return;
+      }
+
+      pendingDiscoveryExecutionsRef.current.delete(executionToken);
+      discoveryExecutionsBySessionRef.current.set(newSessionId, pending);
+      autoLaunchInFlightRef.current.delete(pending.planId);
+
+      void updateDiscoveryExecution(pending.projectName, pending.planId, {
+        executionSessionId: newSessionId,
+        status: 'running',
+        executionStartedAt: new Date().toISOString(),
+      }).finally(() => {
+        refreshProjectsSilently();
+      });
+      return;
+    }
+
+    if (message.kind !== 'complete' && message.kind !== 'error') {
+      return;
+    }
+
+    const sessionId = typeof message.sessionId === 'string' ? message.sessionId : '';
+    const trackedExecution = sessionId
+      ? discoveryExecutionsBySessionRef.current.get(sessionId)
+      : null;
+    const fallbackTrackedExecution = explicitPlanId && selectedProject
+      ? {
+          projectName: selectedProject.name,
+          planId: explicitPlanId,
+        }
+      : null;
+    const execution = trackedExecution || fallbackTrackedExecution;
+
+    if (!execution) {
+      return;
+    }
+
+    if (sessionId) {
+      discoveryExecutionsBySessionRef.current.delete(sessionId);
+    }
+    autoLaunchInFlightRef.current.delete(execution.planId);
+
+    const status = message.kind === 'error'
+      ? 'failed'
+      : (message.aborted || (typeof message.exitCode === 'number' && message.exitCode !== 0))
+        ? 'failed'
+        : 'completed';
+
+    void updateDiscoveryExecution(execution.projectName, execution.planId, {
+      executionSessionId: sessionId || undefined,
+      status,
+      executionLastActivityAt: new Date().toISOString(),
+      latestSummary: typeof message.content === 'string' ? message.content : undefined,
+    }).finally(() => {
+      refreshProjectsSilently();
+    });
+  }, [latestMessage, refreshProjectsSilently, selectedProject, updateDiscoveryExecution]);
+
+  const pollAutoExecutablePlans = useCallback(async () => {
+    if (!selectedProject) {
+      return;
+    }
+
+    const response = await api.projectDiscoveryPlans(selectedProject.name);
+    const payload = await readJsonPayload<ProjectDiscoveryPlansResponse & { error?: string }>(response);
+    if (!response.ok || !payload) {
+      return;
+    }
+
+    const autoReadyPlans = Array.isArray(payload.plans)
+      ? payload.plans.filter((plan) =>
+          plan.approvalMode === 'auto' &&
+          plan.status === 'ready' &&
+          !plan.executionSessionId &&
+          !autoLaunchInFlightRef.current.has(plan.id),
+        )
+      : [];
+
+    for (const plan of autoReadyPlans) {
+      try {
+        await handleExecuteDiscoveryPlan(plan.id, 'auto');
+      } catch {
+        autoLaunchInFlightRef.current.delete(plan.id);
+      }
+    }
+  }, [handleExecuteDiscoveryPlan, selectedProject]);
+
+  useEffect(() => {
+    if (!selectedProject) {
+      return undefined;
+    }
+
+    void pollAutoExecutablePlans();
+    const timer = window.setInterval(() => {
+      void pollAutoExecutablePlans();
+    }, AUTO_EXECUTION_POLL_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [pollAutoExecutablePlans, selectedProject]);
+
+  const handleStartDiscoverySession = useCallback(async () => {
+    if (!selectedProject) {
+      return;
+    }
+
+    onStartNewSession(selectedProject);
+    let discoveryContext: ProjectDiscoveryContextResponse = {
+      generatedAt: new Date().toISOString(),
+      lookbackDays: 7,
+      workspace: {
+        projectName: selectedProject.name,
+        projectRoot: selectedProject.fullPath || selectedProject.path || selectedProject.name,
+        signals: [],
+      },
+      memory: [],
+      existingPlans: [],
+      cronJobs: [],
+      recentChats: [],
+    };
+
+    try {
+      const response = await api.projectDiscoveryContext(selectedProject.name);
+      const payload = await readJsonPayload<ProjectDiscoveryContextResponse & { error?: string }>(response);
+      if (response.ok && payload) {
+        discoveryContext = payload;
+      }
+    } catch {
+      // Fall back to a minimal context payload if the API call fails.
+    }
+
+    const discoveryPrompt = buildAlwaysOnDiscoveryPrompt(selectedProject, discoveryContext);
+    const pendingSessionId = startClaudeSessionCommand({
+      sendMessage,
+      selectedProject,
+      command: discoveryPrompt,
+      permissionMode: getStoredClaudePermissionMode(selectedSession),
+      sessionSummary: `Always-On discovery: ${selectedProject.displayName || selectedProject.name}`,
+      toolsSettings: buildAlwaysOnDiscoveryToolsSettings(),
+    });
+
+    onSessionActive?.(pendingSessionId);
+  }, [
+    onSessionActive,
+    onStartNewSession,
+    selectedProject,
+    selectedSession,
+    sendMessage,
+  ]);
 
   if (isLoading) {
     return <MainContentStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
@@ -129,6 +494,7 @@ function MainContent({
                 onReplaceTemporarySession={onReplaceTemporarySession}
                 onNavigateToSession={onNavigateToSession}
                 onShowSettings={onShowSettings}
+                onLaunchAlwaysOnPlanExecution={launchQueuedDiscoveryPlanExecution}
                 autoExpandTools={autoExpandTools}
                 showRawParameters={showRawParameters}
                 showThinking={showThinking}
@@ -143,6 +509,17 @@ function MainContent({
           {activeTab === 'files' && (
             <div className="h-full overflow-hidden">
               <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+            </div>
+          )}
+
+          {activeTab === 'always-on' && (
+            <div className="h-full overflow-hidden">
+              <AlwaysOnPanel
+                selectedProject={selectedProject}
+                onStartDiscoverySession={handleStartDiscoverySession}
+                onExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
+                onOpenDiscoverySession={onNavigateToSession}
+              />
             </div>
           )}
 

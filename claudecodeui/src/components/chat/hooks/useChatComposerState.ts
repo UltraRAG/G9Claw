@@ -14,15 +14,27 @@ import { authenticatedFetch } from '../../../utils/api';
 import { thinkingModes } from '../constants/thinkingModes';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import { safeLocalStorage } from '../utils/chatStorage';
+import {
+  createTemporarySessionId,
+  getNotificationSessionSummary,
+  isTemporarySessionId,
+  startClaudeSessionCommand,
+} from '../utils/claudeSessionLauncher';
 import type {
   ChatMessage,
   PendingPermissionRequest,
   PermissionMode,
 } from '../types/types';
-import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
+import type {
+  ExecuteDiscoveryPlanResponse,
+  Project,
+  ProjectSession,
+  SessionProvider,
+} from '../../../types/app';
 import { escapeRegExp } from '../utils/chatFormatting';
 import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
+import { handleAlwaysOnSlashAction } from '../utils/alwaysOnSlashActions';
 
 type PendingViewSession = {
   sessionId: string | null;
@@ -50,6 +62,7 @@ interface UseChatComposerStateArgs {
   onInputFocusChange?: (focused: boolean) => void;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
+  onLaunchAlwaysOnPlanExecution?: ((execution: ExecuteDiscoveryPlanResponse) => void | Promise<void>) | null;
   pendingViewSessionRef: { current: PendingViewSession | null };
   scrollToBottom: () => void;
   addMessage: (msg: ChatMessage) => void;
@@ -80,27 +93,6 @@ const createFakeSubmitEvent = () => {
   return { preventDefault: () => undefined } as unknown as FormEvent<HTMLFormElement>;
 };
 
-const isTemporarySessionId = (sessionId: string | null | undefined) =>
-  Boolean(sessionId && sessionId.startsWith('new-session-'));
-
-const getNotificationSessionSummary = (
-  selectedSession: ProjectSession | null,
-  fallbackInput: string,
-): string | null => {
-  const sessionSummary = selectedSession?.summary || selectedSession?.name || selectedSession?.title;
-  if (typeof sessionSummary === 'string' && sessionSummary.trim()) {
-    const normalized = sessionSummary.replace(/\s+/g, ' ').trim();
-    return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
-  }
-
-  const normalizedFallback = fallbackInput.replace(/\s+/g, ' ').trim();
-  if (!normalizedFallback) {
-    return null;
-  }
-
-  return normalizedFallback.length > 80 ? `${normalizedFallback.slice(0, 77)}...` : normalizedFallback;
-};
-
 export function useChatComposerState({
   selectedProject,
   selectedSession,
@@ -122,6 +114,7 @@ export function useChatComposerState({
   onInputFocusChange,
   onFileOpen,
   onShowSettings,
+  onLaunchAlwaysOnPlanExecution,
   pendingViewSessionRef,
   scrollToBottom,
   addMessage,
@@ -153,7 +146,7 @@ export function useChatComposerState({
   const inputValueRef = useRef(input);
 
   const handleBuiltInCommand = useCallback(
-    (result: CommandExecutionResult) => {
+    async (result: CommandExecutionResult) => {
       const { action, data } = result;
       switch (action) {
         case 'clear':
@@ -228,11 +221,26 @@ export function useChatComposerState({
           }
           break;
 
+        case 'ao':
+          await handleAlwaysOnSlashAction({
+            data,
+            addMessage,
+            onLaunchAlwaysOnPlanExecution,
+          });
+          break;
+
         default:
           console.warn('Unknown built-in command action:', action);
       }
     },
-    [onFileOpen, onShowSettings, addMessage, clearMessages, rewindMessages],
+    [
+      onFileOpen,
+      onShowSettings,
+      addMessage,
+      clearMessages,
+      rewindMessages,
+      onLaunchAlwaysOnPlanExecution,
+    ],
   );
 
   const handleCustomCommand = useCallback(async (result: CommandExecutionResult) => {
@@ -311,7 +319,7 @@ export function useChatComposerState({
 
         const result = (await response.json()) as CommandExecutionResult;
         if (result.type === 'builtin') {
-          handleBuiltInCommand(result);
+          await handleBuiltInCommand(result);
           setInput('');
           inputValueRef.current = '';
         } else if (result.type === 'custom') {
@@ -529,7 +537,7 @@ export function useChatComposerState({
 
       const effectiveSessionId =
         currentSessionId || selectedSession?.id || sessionStorage.getItem('cursorSessionId');
-      const sessionToActivate = effectiveSessionId || `new-session-${Date.now()}`;
+      const sessionToActivate = effectiveSessionId || createTemporarySessionId();
 
       const userMessage: ChatMessage = {
         type: 'user',
@@ -639,20 +647,17 @@ export function useChatComposerState({
           },
         });
       } else {
-        sendMessage({
-          type: 'claude-command',
+        startClaudeSessionCommand({
+          sendMessage,
+          selectedProject,
           command: messageContent,
-          options: {
-            projectPath: resolvedProjectPath,
-            cwd: resolvedProjectPath,
-            sessionId: effectiveSessionId,
-            resume: Boolean(effectiveSessionId),
-            toolsSettings,
-            permissionMode,
-            model: claudeModel,
-            sessionSummary,
-            images: uploadedImages,
-          },
+          sessionId: effectiveSessionId,
+          temporarySessionId: sessionToActivate,
+          toolsSettings,
+          permissionMode,
+          claudeModel,
+          sessionSummary,
+          images: uploadedImages,
         });
       }
 

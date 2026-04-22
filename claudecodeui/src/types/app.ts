@@ -1,6 +1,155 @@
 export type SessionProvider = 'claude' | 'cursor' | 'codex' | 'gemini';
+export type ProjectSessionKind = 'background_task';
 
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'memory' | 'preview' | 'dashboard' | `plugin:${string}`;
+export type AppTab = 'chat' | 'always-on' | 'files' | 'shell' | 'git' | 'tasks' | 'memory' | 'preview' | 'dashboard' | `plugin:${string}`;
+
+export type CronJobOverviewStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'unknown';
+
+export interface CronJobLatestRun {
+  summary?: string;
+  lastActivity?: string;
+  taskId?: string;
+  outputFile?: string;
+  relativeTranscriptPath?: string;
+}
+
+export interface CronJobOverview {
+  id: string;
+  cron: string;
+  prompt: string;
+  createdAt: number;
+  durable?: boolean;
+  lastFiredAt?: number;
+  recurring?: boolean;
+  permanent?: boolean;
+  manualOnly?: boolean;
+  originSessionId?: string;
+  transcriptKey?: string;
+  status: CronJobOverviewStatus;
+  latestRun?: CronJobLatestRun | null;
+}
+
+export interface ProjectCronJobsResponse {
+  jobs: CronJobOverview[];
+}
+
+export interface DeleteProjectCronJobResponse {
+  deleted: boolean;
+}
+
+export type CronJobRunNowReason = 'already_running' | 'not_found';
+
+export interface RunProjectCronJobNowResponse {
+  started: boolean;
+  reason?: CronJobRunNowReason;
+}
+
+export type DiscoveryPlanApprovalMode = 'auto' | 'manual';
+export type DiscoveryPlanStatus =
+  | 'draft'
+  | 'ready'
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'superseded';
+export type DiscoveryPlanExecutionStatus = 'queued' | 'running' | 'completed' | 'failed';
+
+export interface DiscoveryPlanContextRefs {
+  workingDirectory: string[];
+  memory: string[];
+  existingPlans: string[];
+  cronJobs: string[];
+  recentChats: string[];
+}
+
+export interface DiscoveryPlanOverview {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  approvalMode: DiscoveryPlanApprovalMode;
+  status: DiscoveryPlanStatus;
+  summary: string;
+  rationale: string;
+  dedupeKey: string;
+  sourceDiscoverySessionId: string;
+  executionSessionId?: string;
+  executionStartedAt?: string;
+  executionLastActivityAt?: string;
+  executionStatus?: DiscoveryPlanExecutionStatus;
+  latestSummary?: string;
+  contextRefs: DiscoveryPlanContextRefs;
+  planFilePath: string;
+  structureVersion: number;
+  content: string;
+}
+
+export interface ProjectDiscoveryPlansResponse {
+  plans: DiscoveryPlanOverview[];
+}
+
+export interface DiscoveryContextMemoryItem {
+  path: string;
+  modifiedAt: string;
+  summary: string;
+}
+
+export interface DiscoveryContextPlanItem {
+  id: string;
+  title: string;
+  status: DiscoveryPlanStatus;
+  approvalMode: DiscoveryPlanApprovalMode;
+  updatedAt: string;
+  summary: string;
+}
+
+export interface DiscoveryContextCronItem {
+  id: string;
+  status: CronJobOverviewStatus;
+  cron: string;
+  recurring: boolean;
+  manualOnly: boolean;
+  prompt: string;
+  latestRunSummary?: string;
+}
+
+export interface DiscoveryContextChatItem {
+  id: string;
+  summary: string;
+  lastActivity: string;
+  lastUserMessage?: string;
+  lastAssistantMessage?: string;
+}
+
+export interface ProjectDiscoveryContextResponse {
+  generatedAt: string;
+  lookbackDays: number;
+  workspace: {
+    projectName: string;
+    projectRoot: string;
+    signals: string[];
+  };
+  memory: DiscoveryContextMemoryItem[];
+  existingPlans: DiscoveryContextPlanItem[];
+  cronJobs: DiscoveryContextCronItem[];
+  recentChats: DiscoveryContextChatItem[];
+}
+
+export interface ExecuteDiscoveryPlanResponse {
+  plan: DiscoveryPlanOverview;
+  sessionSummary: string;
+  command: string;
+  executionToken: string;
+}
+
+export interface UpdateDiscoveryPlanExecutionResponse {
+  plan: DiscoveryPlanOverview;
+}
+
+export interface ArchiveDiscoveryPlanResponse {
+  archived: boolean;
+}
 
 export interface ProjectSession {
   id: string;
@@ -12,9 +161,53 @@ export interface ProjectSession {
   updated_at?: string;
   lastActivity?: string;
   messageCount?: number;
+  sessionKind?: ProjectSessionKind;
+  parentSessionId?: string;
+  relativeTranscriptPath?: string;
+  transcriptKey?: string;
+  taskId?: string;
+  taskStatus?: string;
+  outputFile?: string;
+  isReadOnly?: boolean;
   __provider?: SessionProvider;
   __projectName?: string;
   [key: string]: unknown;
+}
+
+export type SessionRequestParams = {
+  sessionKind?: ProjectSessionKind;
+  parentSessionId?: string;
+  relativeTranscriptPath?: string;
+};
+
+export function isBackgroundTaskSession(
+  session: ProjectSession | null | undefined,
+): session is ProjectSession & {
+  sessionKind: 'background_task';
+  parentSessionId: string;
+  relativeTranscriptPath: string;
+} {
+  return (
+    session?.sessionKind === 'background_task' &&
+    typeof session.parentSessionId === 'string' &&
+    session.parentSessionId.length > 0 &&
+    typeof session.relativeTranscriptPath === 'string' &&
+    session.relativeTranscriptPath.length > 0
+  );
+}
+
+export function getSessionRequestParams(
+  session: ProjectSession | null | undefined,
+): SessionRequestParams {
+  if (!isBackgroundTaskSession(session)) {
+    return {};
+  }
+
+  return {
+    sessionKind: session.sessionKind,
+    parentSessionId: session.parentSessionId,
+    relativeTranscriptPath: session.relativeTranscriptPath,
+  };
 }
 
 export interface ProjectSessionMeta {

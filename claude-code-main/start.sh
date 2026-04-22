@@ -44,7 +44,7 @@ for arg in "$@"; do
   case "$arg" in
     --gateway) GATEWAY_ONLY=true ;;
     --help|--version|-v|-V) HAS_PRINT=true; HAS_HELP_OR_VERSION=true; REMAINING_ARGS+=("$arg") ;;
-    -p|--print) HAS_PRINT=true; REMAINING_ARGS+=("$arg") ;;
+    -p|--print|daemon|--daemon-worker) HAS_PRINT=true; REMAINING_ARGS+=("$arg") ;;
     *) REMAINING_ARGS+=("$arg") ;;
   esac
 done
@@ -124,6 +124,7 @@ unset ANTHROPIC_AUTH_TOKEN
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-${EDGECLAW_API_KEY:-dummy-key}}"
 export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://127.0.0.1:$PROXY_PORT}"
 export DISABLE_TELEMETRY="${DISABLE_TELEMETRY:-1}"
+export CLAUDE_CODE_SYNTAX_HIGHLIGHT=0
 export ANTHROPIC_MODEL="$EDGECLAW_MODEL"
 
 # ── Gateway-only mode: start gateway in foreground, no CLI ──

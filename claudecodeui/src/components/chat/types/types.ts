@@ -1,4 +1,9 @@
-import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
+import type {
+  ExecuteDiscoveryPlanResponse,
+  Project,
+  ProjectSession,
+  SessionProvider,
+} from '../../../types/app';
 
 export type Provider = SessionProvider;
 
@@ -26,6 +31,7 @@ export interface SubagentChildTool {
 }
 
 export interface ChatMessage {
+  id?: string;
   type: string;
   content?: string;
   timestamp: string | number | Date;
@@ -40,7 +46,11 @@ export interface ChatMessage {
   toolResult?: ToolResult | null;
   toolId?: string;
   toolCallId?: string;
+  taskStatus?: string;
+  taskId?: string;
+  outputFile?: string;
   isSubagentContainer?: boolean;
+  isTaskNotification?: boolean;
   subagentState?: {
     childTools: SubagentChildTool[];
     currentToolIndex: number;
@@ -107,6 +117,7 @@ export interface ChatInterfaceProps {
   onReplaceTemporarySession?: (sessionId?: string | null) => void;
   onNavigateToSession?: (targetSessionId: string) => void;
   onShowSettings?: () => void;
+  onLaunchAlwaysOnPlanExecution?: ((execution: ExecuteDiscoveryPlanResponse) => void | Promise<void>) | null;
   autoExpandTools?: boolean;
   showRawParameters?: boolean;
   showThinking?: boolean;

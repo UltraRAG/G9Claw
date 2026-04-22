@@ -78,6 +78,8 @@ import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './util
 import { getClaudeRuntimeModelConfig } from './utils/claude-runtime-config.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, userDb } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
+import { shutdownOwnedCronDaemon } from './services/cron-daemon-owner.js';
+import { runServerStartupBeforeListen, startServerAfterStartup } from './services/server-startup.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { DISABLE_LOCAL_AUTH, IS_PLATFORM } from './constants/config.js';
 import { getConnectableHost } from '../shared/networkHosts.js';
@@ -1747,11 +1749,9 @@ function handleChatConnection(ws, request) {
                 } else {
                     // Use Claude Agents SDK
                     isActive = isClaudeSDKSessionActive(sessionId);
-                    if (isActive) {
-                        // Reconnect the session's writer to the new WebSocket so
-                        // subsequent SDK output flows to the refreshed client.
-                        reconnectSessionWriter(sessionId, ws);
-                    }
+                    // Reconnect idle and active Claude session runtimes alike so
+                    // Cron inbox backfill can reach a refreshed browser tab.
+                    reconnectSessionWriter(sessionId, ws);
                 }
 
                 writer.send({
@@ -2557,86 +2557,103 @@ async function ensureLocalUserWhenAuthDisabled() {
 // Initialize database and start server
 async function startServer() {
     try {
-        // Initialize authentication database
-        await initializeDatabase();
-        await ensureLocalUserWhenAuthDisabled();
+        await startServerAfterStartup({
+            startupFn: async () => {
+                await runServerStartupBeforeListen({
+                    initializeDatabaseFn: initializeDatabase,
+                    ensureLocalUserWhenAuthDisabledFn: ensureLocalUserWhenAuthDisabled,
+                    configureWebPushFn: configureWebPush
+                });
+            },
+            listenFn: async () => {
+                // Check if running in production mode (dist folder exists)
+                const distIndexPath = path.join(__dirname, '../dist/index.html');
+                const isProduction = fs.existsSync(distIndexPath);
 
-        // Configure Web Push (VAPID keys)
-        configureWebPush();
+                // Log Claude implementation mode
+                console.log(`${c.info('[INFO]')} Using Claude Agents SDK for Claude integration`);
+                console.log('');
 
-        // Check if running in production mode (dist folder exists)
-        const distIndexPath = path.join(__dirname, '../dist/index.html');
-        const isProduction = fs.existsSync(distIndexPath);
-
-        // Start embedded CCR (Claude Code Router) if enabled
-        const ccrEnabled = process.env.CCR_ENABLED !== '0' && process.env.CCR_ENABLED !== 'false';
-        if (ccrEnabled) {
-            try {
-                const { startEmbeddedCCR } = await import('./embedded-ccr.js');
-                const ccr = await startEmbeddedCCR();
-                if (ccr.zeroPorts) {
-                    console.log(`${c.ok('[CCR]')} Embedded router ready (zero-port mode, in-process)`);
-                } else if (ccr.reused) {
-                    console.log(`${c.info('[CCR]')} Reusing existing CCR router at ${c.bright(ccr.baseUrl)}`);
-                } else {
-                    console.log(`${c.ok('[CCR]')} Embedded router started at ${c.bright(ccr.baseUrl)}`);
+                if (isProduction) {
+                    console.log(`${c.info('[INFO]')} To run in production mode, go to http://${DISPLAY_HOST}:${SERVER_PORT}`);
                 }
-            } catch (err) {
-                console.warn(`${c.warn('[CCR]')} Skipped embedded router: ${err.message}`);
-                console.warn(`${c.warn('[CCR]')} Falling back to ANTHROPIC_BASE_URL from .env`);
+
+                // Start embedded CCR (Claude Code Router) if enabled
+                const ccrEnabled = process.env.CCR_ENABLED !== '0' && process.env.CCR_ENABLED !== 'false';
+                if (ccrEnabled) {
+                    try {
+                        const { startEmbeddedCCR } = await import('./embedded-ccr.js');
+                        const ccr = await startEmbeddedCCR();
+                        if (ccr.zeroPorts) {
+                            console.log(`${c.ok('[CCR]')} Embedded router ready (zero-port mode, in-process)`);
+                        } else if (ccr.reused) {
+                            console.log(`${c.info('[CCR]')} Reusing existing CCR router at ${c.bright(ccr.baseUrl)}`);
+                        } else {
+                            console.log(`${c.ok('[CCR]')} Embedded router started at ${c.bright(ccr.baseUrl)}`);
+                        }
+                    } catch (err) {
+                        console.warn(`${c.warn('[CCR]')} Skipped embedded router: ${err.message}`);
+                        console.warn(`${c.warn('[CCR]')} Falling back to ANTHROPIC_BASE_URL from .env`);
+                    }
+                }
+
+                console.log(`${c.info('[INFO]')} To run in development mode with hot-module replacement, go to http://${DISPLAY_HOST}:${VITE_PORT}`);
+
+                server.listen(SERVER_PORT, HOST, async () => {
+                    const appInstallPath = path.join(__dirname, '..');
+
+                    console.log('');
+                    console.log(c.dim('═'.repeat(63)));
+                    console.log(`  ${c.bright('CloudCLI Server - Ready')}`);
+                    console.log(c.dim('═'.repeat(63)));
+                    console.log('');
+                    console.log(`${c.info('[INFO]')} Server URL:  ${c.bright('http://' + DISPLAY_HOST + ':' + SERVER_PORT)}`);
+                    console.log(`${c.info('[INFO]')} Installed at: ${c.dim(appInstallPath)}`);
+                    console.log(`${c.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
+                    console.log('');
+
+                    // Start watching the projects folder for changes
+                    await setupProjectsWatcher();
+
+                    await ensureEdgeClawProxyRunning();
+
+                    // Start background memory scheduler for auto index/dream.
+                    startMemoryScheduler();
+
+                    // Start server-side plugin processes for enabled plugins
+                    startEnabledPluginServers().catch(err => {
+                        console.error('[Plugins] Error during startup:', err.message);
+                    });
+                });
             }
-        }
-
-        // Log Claude implementation mode
-        console.log(`${c.info('[INFO]')} Using Claude Agents SDK for Claude integration`);
-        console.log('');
-
-        if (isProduction) {
-            console.log(`${c.info('[INFO]')} To run in production mode, go to http://${DISPLAY_HOST}:${SERVER_PORT}`);            
-        }
-
-        console.log(`${c.info('[INFO]')} To run in development mode with hot-module replacement, go to http://${DISPLAY_HOST}:${VITE_PORT}`);
-   
-        server.listen(SERVER_PORT, HOST, async () => {
-            const appInstallPath = path.join(__dirname, '..');
-
-            console.log('');
-            console.log(c.dim('═'.repeat(63)));
-            console.log(`  ${c.bright('CloudCLI Server - Ready')}`);
-            console.log(c.dim('═'.repeat(63)));
-            console.log('');
-            console.log(`${c.info('[INFO]')} Server URL:  ${c.bright('http://' + DISPLAY_HOST + ':' + SERVER_PORT)}`);
-            console.log(`${c.info('[INFO]')} Installed at: ${c.dim(appInstallPath)}`);
-            console.log(`${c.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
-            console.log('');
-
-            await ensureEdgeClawProxyRunning();
-
-            // Start watching the projects folder for changes
-            await setupProjectsWatcher();
-
-            // Start background memory scheduler for auto index/dream.
-            startMemoryScheduler();
-
-            // Start server-side plugin processes for enabled plugins
-            startEnabledPluginServers().catch(err => {
-                console.error('[Plugins] Error during startup:', err.message);
-            });
         });
 
-        const shutdownAll = async () => {
-            stopMemoryScheduler();
-            closeMemoryServices();
-            await stopEdgeClawProxy();
-            await stopAllPlugins();
-            try {
-                const { shutdownCCR } = await import('./embedded-ccr.js');
-                await shutdownCCR();
-            } catch { /* CCR may not have been loaded */ }
-            process.exit(0);
+        let shutdownPromise = null;
+        const gracefulShutdown = async () => {
+            if (shutdownPromise) {
+                return shutdownPromise;
+            }
+
+            shutdownPromise = (async () => {
+                try {
+                    stopMemoryScheduler();
+                    closeMemoryServices();
+                    await stopEdgeClawProxy();
+                    await stopAllPlugins();
+                    try {
+                        const { shutdownCCR } = await import('./embedded-ccr.js');
+                        await shutdownCCR();
+                    } catch { /* CCR may not have been loaded */ }
+                } finally {
+                    await shutdownOwnedCronDaemon();
+                    process.exit(0);
+                }
+            })();
+
+            return shutdownPromise;
         };
-        process.on('SIGTERM', () => void shutdownAll());
-        process.on('SIGINT', () => void shutdownAll());
+        process.on('SIGTERM', () => void gracefulShutdown());
+        process.on('SIGINT', () => void gracefulShutdown());
     } catch (error) {
         console.error('[ERROR] Failed to start server:', error);
         process.exit(1);

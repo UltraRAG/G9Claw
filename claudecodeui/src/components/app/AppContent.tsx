@@ -40,6 +40,7 @@ export default function AppContent() {
     openSettings,
     refreshProjectsSilently,
     sidebarSharedProps,
+    handleNewSession,
   } = useProjectsState({
     sessionId,
     navigate,
@@ -177,6 +178,7 @@ export default function AppContent() {
           processingSessions={processingSessions}
           onReplaceTemporarySession={replaceTemporarySession}
           onNavigateToSession={(targetSessionId: string) => navigate(`/session/${targetSessionId}`)}
+          onStartNewSession={handleNewSession}
           onShowSettings={() => setShowSettings(true)}
           externalMessageUpdate={externalMessageUpdate}
         />

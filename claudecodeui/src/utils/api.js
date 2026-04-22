@@ -52,6 +52,34 @@ export const api = {
   // Protected endpoints
   // config endpoint removed - no longer needed (frontend uses window.location)
   projects: () => authenticatedFetch('/api/projects'),
+  projectCronJobs: (projectName) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/cron-jobs`),
+  projectDiscoveryContext: (projectName) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-context`),
+  projectDiscoveryPlans: (projectName) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-plans`),
+  executeProjectDiscoveryPlan: (projectName, planId, body = {}) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-plans/${encodeURIComponent(planId)}/execute`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateProjectDiscoveryPlanExecution: (projectName, planId, body = {}) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-plans/${encodeURIComponent(planId)}/execution`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  archiveProjectDiscoveryPlan: (projectName, planId) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-plans/${encodeURIComponent(planId)}/archive`, {
+      method: 'POST',
+    }),
+  deleteProjectCronJob: (projectName, taskId) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/cron-jobs/${encodeURIComponent(taskId)}`, {
+      method: 'DELETE',
+    }),
+  runProjectCronJobNow: (projectName, taskId) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/cron-jobs/${encodeURIComponent(taskId)}/run-now`, {
+      method: 'POST',
+    }),
   sessions: (projectName, limit = 5, offset = 0) =>
     authenticatedFetch(`/api/projects/${projectName}/sessions?limit=${limit}&offset=${offset}`),
   // Unified endpoint — all providers through one URL

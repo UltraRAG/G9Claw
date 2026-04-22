@@ -67,6 +67,7 @@ import { open } from 'sqlite';
 import os from 'os';
 import sessionManager from './sessionManager.js';
 import { applyCustomSessionNames } from './database/db.js';
+import { sendCronDaemonRequest } from './services/cron-daemon-owner.js';
 
 // Import TaskMaster detection functions
 async function detectTaskMasterFolder(projectPath) {
@@ -695,12 +696,15 @@ async function getSessions(projectName, limit = 5, offset = 0) {
   const projectDir = path.join(os.homedir(), '.claude', 'projects', projectName);
 
   try {
-    const files = await fs.readdir(projectDir);
+    const projectEntries = await fs.readdir(projectDir, { withFileTypes: true });
     // agent-*.jsonl files contain session start data at this point. This needs to be revisited
     // periodically to make sure only accurate data is there and no new functionality is added there
-    const jsonlFiles = files.filter(file => file.endsWith('.jsonl') && !file.startsWith('agent-'));
+    const jsonlFiles = projectEntries
+      .filter(entry => entry.isFile() && entry.name.endsWith('.jsonl') && !entry.name.startsWith('agent-'))
+      .map(entry => entry.name);
+    const backgroundTranscriptFiles = await getBackgroundTaskTranscriptFiles(projectDir, projectEntries);
 
-    if (jsonlFiles.length === 0) {
+    if (jsonlFiles.length === 0 && backgroundTranscriptFiles.length === 0) {
       return { sessions: [], hasMore: false, total: 0 };
     }
 
@@ -798,7 +802,26 @@ async function getSessions(projectName, limit = 5, offset = 0) {
       }
       return session;
     });
-    const visibleSessions = [...latestFromGroups, ...standaloneSessionsArray]
+    const taskNotificationIndex = await buildTaskNotificationMetadataIndex(projectName, allEntries);
+    const backgroundSessions = (await Promise.all(
+      backgroundTranscriptFiles.map(async (transcriptInfo) => {
+        try {
+          return await buildBackgroundTaskSession(
+            projectDir,
+            transcriptInfo,
+            taskNotificationIndex
+          );
+        } catch (error) {
+          console.warn(
+            `Failed to build background task session for ${transcriptInfo.relativeTranscriptPath}:`,
+            error.message
+          );
+          return null;
+        }
+      })
+    )).filter(Boolean);
+
+    const visibleSessions = [...latestFromGroups, ...standaloneSessionsArray, ...backgroundSessions]
       .filter(session => !session.summary.startsWith('{ "'))
       .sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
 
@@ -817,6 +840,407 @@ async function getSessions(projectName, limit = 5, offset = 0) {
     console.error(`Error reading sessions for project ${projectName}:`, error);
     return { sessions: [], hasMore: false, total: 0 };
   }
+}
+
+function normalizeScheduledCronTask(task, options = {}) {
+  const durable = options.durable === false ? false : true;
+  if (
+    !task ||
+    typeof task !== 'object' ||
+    typeof task.id !== 'string' ||
+    typeof task.cron !== 'string' ||
+    typeof task.prompt !== 'string' ||
+    typeof task.createdAt !== 'number'
+  ) {
+    return null;
+  }
+
+  return {
+    id: task.id,
+    cron: task.cron,
+    prompt: task.prompt,
+    createdAt: task.createdAt,
+    durable,
+    ...(typeof task.lastFiredAt === 'number' ? { lastFiredAt: task.lastFiredAt } : {}),
+    ...(task.recurring ? { recurring: true } : {}),
+    ...(task.permanent ? { permanent: true } : {}),
+    ...(task.manualOnly ? { manualOnly: true } : {}),
+    ...(typeof task.originSessionId === 'string' ? { originSessionId: task.originSessionId } : {}),
+    ...(typeof task.transcriptKey === 'string' ? { transcriptKey: task.transcriptKey } : {})
+  };
+}
+
+const CRON_FIELD_RANGES = [
+  { min: 0, max: 59 },
+  { min: 0, max: 23 },
+  { min: 1, max: 31 },
+  { min: 1, max: 12 },
+  { min: 0, max: 6 }
+];
+
+function expandCronField(field, range) {
+  const { min, max } = range;
+  const values = new Set();
+  const isDayOfWeek = min === 0 && max === 6;
+
+  for (const part of field.split(',')) {
+    const wildcardMatch = part.match(/^\*(?:\/(\d+))?$/);
+    if (wildcardMatch) {
+      const step = wildcardMatch[1] ? parseInt(wildcardMatch[1], 10) : 1;
+      if (step < 1) {
+        return null;
+      }
+      for (let value = min; value <= max; value += step) {
+        values.add(value);
+      }
+      continue;
+    }
+
+    const rangeMatch = part.match(/^(\d+)-(\d+)(?:\/(\d+))?$/);
+    if (rangeMatch) {
+      const lo = parseInt(rangeMatch[1], 10);
+      const hi = parseInt(rangeMatch[2], 10);
+      const step = rangeMatch[3] ? parseInt(rangeMatch[3], 10) : 1;
+      const effectiveMax = isDayOfWeek ? 7 : max;
+      if (lo > hi || step < 1 || lo < min || hi > effectiveMax) {
+        return null;
+      }
+      for (let value = lo; value <= hi; value += step) {
+        values.add(isDayOfWeek && value === 7 ? 0 : value);
+      }
+      continue;
+    }
+
+    if (/^\d+$/.test(part)) {
+      let value = parseInt(part, 10);
+      if (isDayOfWeek && value === 7) {
+        value = 0;
+      }
+      if (value < min || value > max) {
+        return null;
+      }
+      values.add(value);
+      continue;
+    }
+
+    return null;
+  }
+
+  if (values.size === 0) {
+    return null;
+  }
+
+  return [...values].sort((a, b) => a - b);
+}
+
+function parseCronExpression(expr) {
+  if (typeof expr !== 'string') {
+    return null;
+  }
+
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    return null;
+  }
+
+  const expanded = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const result = expandCronField(parts[index], CRON_FIELD_RANGES[index]);
+    if (!result) {
+      return null;
+    }
+    expanded.push(result);
+  }
+
+  return {
+    minute: expanded[0],
+    hour: expanded[1],
+    dayOfMonth: expanded[2],
+    month: expanded[3],
+    dayOfWeek: expanded[4]
+  };
+}
+
+function computeNextCronRun(fields, from) {
+  const minuteSet = new Set(fields.minute);
+  const hourSet = new Set(fields.hour);
+  const dayOfMonthSet = new Set(fields.dayOfMonth);
+  const monthSet = new Set(fields.month);
+  const dayOfWeekSet = new Set(fields.dayOfWeek);
+  const dayOfMonthWildcard = fields.dayOfMonth.length === 31;
+  const dayOfWeekWildcard = fields.dayOfWeek.length === 7;
+
+  const timestamp = new Date(from.getTime());
+  timestamp.setSeconds(0, 0);
+  timestamp.setMinutes(timestamp.getMinutes() + 1);
+
+  const maxIterations = 366 * 24 * 60;
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    const month = timestamp.getMonth() + 1;
+    if (!monthSet.has(month)) {
+      timestamp.setMonth(timestamp.getMonth() + 1, 1);
+      timestamp.setHours(0, 0, 0, 0);
+      continue;
+    }
+
+    const dayOfMonth = timestamp.getDate();
+    const dayOfWeek = timestamp.getDay();
+    const dayMatches = dayOfMonthWildcard && dayOfWeekWildcard
+      ? true
+      : dayOfMonthWildcard
+        ? dayOfWeekSet.has(dayOfWeek)
+        : dayOfWeekWildcard
+          ? dayOfMonthSet.has(dayOfMonth)
+          : dayOfMonthSet.has(dayOfMonth) || dayOfWeekSet.has(dayOfWeek);
+
+    if (!dayMatches) {
+      timestamp.setDate(timestamp.getDate() + 1);
+      timestamp.setHours(0, 0, 0, 0);
+      continue;
+    }
+
+    if (!hourSet.has(timestamp.getHours())) {
+      timestamp.setHours(timestamp.getHours() + 1, 0, 0, 0);
+      continue;
+    }
+
+    if (!minuteSet.has(timestamp.getMinutes())) {
+      timestamp.setMinutes(timestamp.getMinutes() + 1);
+      continue;
+    }
+
+    return timestamp;
+  }
+
+  return null;
+}
+
+function nextCronRunMs(cron, fromMs) {
+  const fields = parseCronExpression(cron);
+  if (!fields) {
+    return null;
+  }
+
+  const nextRun = computeNextCronRun(fields, new Date(fromMs));
+  return nextRun ? nextRun.getTime() : null;
+}
+
+function isRecoverableSessionCronTask(task, nowMs) {
+  if (task.manualOnly) {
+    return true;
+  }
+  if (task.recurring) {
+    return true;
+  }
+
+  const nextFireAt = nextCronRunMs(task.cron, task.createdAt);
+  return nextFireAt !== null && nextFireAt >= nowMs;
+}
+
+async function readProjectScheduledCronTasks(projectRoot) {
+  const cronFilePath = path.join(projectRoot, '.claude', 'scheduled_tasks.json');
+
+  try {
+    const raw = await fs.readFile(cronFilePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.tasks)) {
+      return [];
+    }
+
+    return parsed.tasks
+      .map((task) => normalizeScheduledCronTask(task))
+      .filter(Boolean);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return [];
+    }
+    console.warn(`Failed to read scheduled tasks for ${projectRoot}:`, error.message);
+    return [];
+  }
+}
+
+async function readProjectSessionCronTasks(projectRoot, nowMs = Date.now()) {
+  const cronFilePath = path.join(projectRoot, '.claude', 'session_scheduled_tasks.json');
+
+  try {
+    const raw = await fs.readFile(cronFilePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.tasks)) {
+      return [];
+    }
+
+    return parsed.tasks
+      .map((task) => normalizeScheduledCronTask(task, { durable: false }))
+      .filter((task) => {
+        if (!task) {
+          return false;
+        }
+
+        if (!parseCronExpression(task.cron)) {
+          return false;
+        }
+
+        return isRecoverableSessionCronTask(task, nowMs);
+      });
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return [];
+    }
+    console.warn(`Failed to read session scheduled tasks for ${projectRoot}:`, error.message);
+    return [];
+  }
+}
+
+function mergeCronTasks(...taskGroups) {
+  const tasks = [];
+  const seenTaskIds = new Set();
+
+  for (const group of taskGroups) {
+    for (const task of group) {
+      if (!task || seenTaskIds.has(task.id)) {
+        continue;
+      }
+      seenTaskIds.add(task.id);
+      tasks.push(task);
+    }
+  }
+
+  return tasks;
+}
+
+function isCronDaemonUnavailableError(error) {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    (
+      ('code' in error && (error.code === 'ENOENT' || error.code === 'ECONNREFUSED')) ||
+      (typeof error.message === 'string' &&
+        error.message.includes('Timed out waiting for Cron daemon response'))
+    )
+  );
+}
+
+async function listProjectRuntimeCronTasks(projectRoot) {
+  try {
+    const response = await sendCronDaemonRequest({
+      type: 'list_tasks',
+      projectRoot
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || 'Cron daemon list request failed');
+    }
+    if (response.data?.type !== 'list_tasks' || !Array.isArray(response.data.tasks)) {
+      throw new Error('Unexpected Cron daemon list response');
+    }
+    return response.data.tasks;
+  } catch (error) {
+    if (!isCronDaemonUnavailableError(error)) {
+      console.warn(
+        `Failed to read runtime cron tasks for ${projectRoot}:`,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+    return null;
+  }
+}
+
+function mapCronJobStatus(task, backgroundSession, runtimeTask) {
+  if (runtimeTask?.running) {
+    return 'running';
+  }
+
+  if (!backgroundSession) {
+    return task.transcriptKey ? 'unknown' : 'scheduled';
+  }
+
+  const normalizedStatus = String(backgroundSession.taskStatus || '').trim().toLowerCase();
+  if (normalizedStatus === 'completed') {
+    return 'completed';
+  }
+
+  if (normalizedStatus === 'failed' || normalizedStatus === 'stopped' || normalizedStatus === 'killed') {
+    return 'failed';
+  }
+
+  return 'unknown';
+}
+
+async function getProjectCronJobsOverview(projectName) {
+  const projectRoot = await extractProjectDirectory(projectName);
+  const durableTasks = await readProjectScheduledCronTasks(projectRoot);
+  const sessionTasks = await readProjectSessionCronTasks(projectRoot);
+  const scheduledTasks = mergeCronTasks(durableTasks, sessionTasks);
+
+  if (scheduledTasks.length === 0) {
+    return { jobs: [] };
+  }
+
+  const runtimeTasks = await listProjectRuntimeCronTasks(projectRoot);
+
+  const projectStoreDir = path.join(os.homedir(), '.claude', 'projects', projectName);
+  let backgroundSessions = [];
+
+  try {
+    await fs.access(projectStoreDir);
+    const sessionResult = await getSessions(projectName, Number.MAX_SAFE_INTEGER, 0);
+    backgroundSessions = (sessionResult.sessions || []).filter(
+      (session) => session?.sessionKind === 'background_task'
+    );
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.warn(`Failed to read background task sessions for ${projectName}:`, error.message);
+    }
+  }
+
+  const backgroundSessionsByTranscriptKey = new Map();
+  for (const session of backgroundSessions) {
+    if (typeof session.transcriptKey !== 'string' || session.transcriptKey.trim().length === 0) {
+      continue;
+    }
+
+    const existing = backgroundSessionsByTranscriptKey.get(session.transcriptKey);
+    const existingTimestamp = toTimestampValue(existing?.lastActivity) ?? 0;
+    const candidateTimestamp = toTimestampValue(session.lastActivity) ?? 0;
+    if (!existing || candidateTimestamp >= existingTimestamp) {
+      backgroundSessionsByTranscriptKey.set(session.transcriptKey, session);
+    }
+  }
+
+  const runtimeTasksById = new Map(
+    Array.isArray(runtimeTasks)
+      ? runtimeTasks.map((task) => [task.id, task])
+      : []
+  );
+
+  const jobs = scheduledTasks.map((task) => {
+    const backgroundSession = task.transcriptKey
+      ? backgroundSessionsByTranscriptKey.get(task.transcriptKey) || null
+      : null;
+    const runtimeTask = runtimeTasksById.get(task.id) || null;
+
+    return {
+      ...task,
+      status: mapCronJobStatus(task, backgroundSession, runtimeTask),
+      latestRun: backgroundSession
+        ? {
+            summary: typeof backgroundSession.summary === 'string' ? backgroundSession.summary : '',
+            lastActivity: typeof backgroundSession.lastActivity === 'string' ? backgroundSession.lastActivity : '',
+            taskId: typeof backgroundSession.taskId === 'string' ? backgroundSession.taskId : '',
+            outputFile: typeof backgroundSession.outputFile === 'string' ? backgroundSession.outputFile : '',
+            relativeTranscriptPath: typeof backgroundSession.parentSessionId === 'string' &&
+              typeof backgroundSession.transcriptKey === 'string'
+              ? normalizePathSeparators(
+                  path.join(backgroundSession.parentSessionId, 'subagents', backgroundSession.transcriptKey)
+                )
+              : typeof backgroundSession.relativeTranscriptPath === 'string'
+                ? backgroundSession.relativeTranscriptPath
+                : ''
+          }
+        : null
+    };
+  });
+
+  return { jobs };
 }
 
 async function parseJsonlSessions(filePath) {
@@ -1029,23 +1453,509 @@ async function parseAgentTools(filePath) {
   return tools;
 }
 
+const TASK_NOTIFICATION_REGEX = /<task-notification>\s*<task-id>([\s\S]*?)<\/task-id>\s*<output-file>([\s\S]*?)<\/output-file>\s*<status>([\s\S]*?)<\/status>\s*<summary>([\s\S]*?)<\/summary>\s*<\/task-notification>/i;
+const CRON_TRANSCRIPT_FILENAME_REGEX = /^agent-cron[^/]*\.jsonl$/i;
+
+function extractTextContent(messageContent) {
+  if (typeof messageContent === 'string') {
+    return messageContent;
+  }
+
+  if (!Array.isArray(messageContent)) {
+    return '';
+  }
+
+  return messageContent
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('\n');
+}
+
+function parseTaskNotificationContent(content) {
+  if (typeof content !== 'string' || content.trim().length === 0) {
+    return null;
+  }
+
+  const match = content.match(TASK_NOTIFICATION_REGEX);
+  if (!match) {
+    return null;
+  }
+
+  const [, taskId = '', outputFile = '', status = '', summary = ''] = match;
+
+  return {
+    taskId: taskId.trim(),
+    outputFile: outputFile.trim(),
+    status: status.trim(),
+    summary: summary.trim(),
+  };
+}
+
+function normalizePathSeparators(filePath) {
+  return String(filePath || '').split(path.sep).join('/');
+}
+
+function isWithinAllowedDir(allowedDir, candidatePath) {
+  const relativeToAllowed = path.relative(allowedDir, candidatePath);
+  return Boolean(relativeToAllowed) &&
+    !relativeToAllowed.startsWith('..') &&
+    !path.isAbsolute(relativeToAllowed);
+}
+
+async function canonicalizePath(filePath) {
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) {
+    return null;
+  }
+
+  const trimmedPath = filePath.trim();
+
+  try {
+    return await fs.realpath(trimmedPath);
+  } catch {
+    return path.resolve(trimmedPath);
+  }
+}
+
+function getTaskNotificationEntryContent(entry) {
+  if (typeof entry?.content === 'string' && entry.content.trim().length > 0) {
+    return entry.content;
+  }
+
+  return extractTextContent(entry?.message?.content);
+}
+
+function createBackgroundTaskSessionId(parentSessionId, transcriptFilename) {
+  const safeParent = String(parentSessionId || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '-');
+  const safeTranscript = String(transcriptFilename || 'transcript')
+    .replace(/\.jsonl$/i, '')
+    .replace(/[^a-zA-Z0-9._-]/g, '-');
+
+  return `background-${safeParent}-${safeTranscript}`;
+}
+
+function summarizeBackgroundTaskPrompt(content) {
+  if (typeof content !== 'string') {
+    return '';
+  }
+
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return '';
+  }
+
+  return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
+}
+
+function countDisplayableBackgroundMessages(entries) {
+  let count = 0;
+
+  for (const entry of entries) {
+    if (entry?.message?.role === 'user' || entry?.message?.role === 'assistant') {
+      count++;
+      continue;
+    }
+
+    if (entry?.type === 'thinking' || entry?.type === 'tool_use' || entry?.type === 'tool_result') {
+      count++;
+    }
+  }
+
+  return count;
+}
+
+function toTimestampValue(value) {
+  if (!value) {
+    return null;
+  }
+
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+function toIsoTimestamp(value) {
+  const timestamp = toTimestampValue(value);
+  return timestamp === null ? null : new Date(timestamp).toISOString();
+}
+
+function pickLatestTimestamp(...values) {
+  let latestValue = null;
+
+  for (const value of values) {
+    const timestamp = toTimestampValue(value);
+    if (timestamp === null) {
+      continue;
+    }
+
+    if (latestValue === null || timestamp > latestValue) {
+      latestValue = timestamp;
+    }
+  }
+
+  return latestValue === null ? null : new Date(latestValue).toISOString();
+}
+
+async function readJsonlEntries(filePath) {
+  const entries = [];
+
+  try {
+    const fileStream = fsSync.createReadStream(filePath);
+    const rl = readline.createInterface({
+      input: fileStream,
+      crlfDelay: Infinity
+    });
+
+    for await (const line of rl) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      try {
+        entries.push(JSON.parse(line));
+      } catch {
+        // Ignore malformed JSONL lines written during concurrent flushes.
+      }
+    }
+  } catch (error) {
+    console.warn(`Error reading JSONL file ${filePath}:`, error.message);
+  }
+
+  return entries;
+}
+
+async function resolveCronTranscriptPath(projectName, sessionId, outputFile) {
+  if (typeof outputFile !== 'string' || outputFile.trim().length === 0) {
+    return null;
+  }
+
+  try {
+    const allowedDir = path.join(
+      os.homedir(),
+      '.claude',
+      'projects',
+      projectName,
+      sessionId,
+      'subagents'
+    );
+    const resolvedOutput = await canonicalizePath(outputFile);
+    const resolvedAllowedDir = await canonicalizePath(allowedDir);
+
+    if (!resolvedOutput || !resolvedAllowedDir || !isWithinAllowedDir(resolvedAllowedDir, resolvedOutput)) {
+      return null;
+    }
+
+    if (!CRON_TRANSCRIPT_FILENAME_REGEX.test(path.basename(resolvedOutput))) {
+      return null;
+    }
+
+    return resolvedOutput;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveBackgroundTranscriptPath(projectName, parentSessionId, relativeTranscriptPath) {
+  if (
+    typeof parentSessionId !== 'string' ||
+    parentSessionId.trim().length === 0 ||
+    typeof relativeTranscriptPath !== 'string' ||
+    relativeTranscriptPath.trim().length === 0
+  ) {
+    return null;
+  }
+
+  try {
+    const projectDir = path.join(os.homedir(), '.claude', 'projects', projectName);
+    const allowedDir = path.join(projectDir, parentSessionId.trim(), 'subagents');
+    const requestedPath = path.resolve(projectDir, relativeTranscriptPath.trim());
+    const resolvedRequestedPath = await canonicalizePath(requestedPath);
+    const resolvedAllowedDir = await canonicalizePath(allowedDir);
+
+    if (
+      !resolvedRequestedPath ||
+      !resolvedAllowedDir ||
+      !isWithinAllowedDir(resolvedAllowedDir, resolvedRequestedPath)
+    ) {
+      return null;
+    }
+
+    if (!CRON_TRANSCRIPT_FILENAME_REGEX.test(path.basename(resolvedRequestedPath))) {
+      return null;
+    }
+
+    return resolvedRequestedPath;
+  } catch {
+    return null;
+  }
+}
+
+async function buildTaskNotificationMetadataIndex(projectName, entries) {
+  const metadataByTranscript = new Map();
+
+  for (const entry of entries) {
+    if (typeof entry?.sessionId !== 'string' || entry.sessionId.trim().length === 0) {
+      continue;
+    }
+
+    const content = getTaskNotificationEntryContent(entry);
+    const taskNotification = parseTaskNotificationContent(content);
+    if (!taskNotification) {
+      continue;
+    }
+
+    const transcriptPath = await resolveCronTranscriptPath(
+      projectName,
+      entry.sessionId,
+      taskNotification.outputFile
+    );
+    if (!transcriptPath) {
+      continue;
+    }
+
+    const candidate = {
+      ...taskNotification,
+      parentSessionId: entry.sessionId,
+      timestamp: toIsoTimestamp(entry.timestamp),
+    };
+    const existing = metadataByTranscript.get(transcriptPath);
+    const existingTimestamp = toTimestampValue(existing?.timestamp) ?? 0;
+    const candidateTimestamp = toTimestampValue(candidate.timestamp) ?? 0;
+
+    if (!existing || candidateTimestamp >= existingTimestamp) {
+      metadataByTranscript.set(transcriptPath, candidate);
+    }
+  }
+
+  return metadataByTranscript;
+}
+
+async function getBackgroundTaskTranscriptFiles(projectDir, projectEntries = null) {
+  const entries = projectEntries || await fs.readdir(projectDir, { withFileTypes: true });
+  const transcriptFiles = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const subagentsDir = path.join(projectDir, entry.name, 'subagents');
+    let subagentEntries = [];
+
+    try {
+      subagentEntries = await fs.readdir(subagentsDir, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        console.warn(`Error scanning background task transcripts in ${subagentsDir}:`, error.message);
+      }
+      continue;
+    }
+
+    for (const subagentEntry of subagentEntries) {
+      if (!subagentEntry.isFile() || !CRON_TRANSCRIPT_FILENAME_REGEX.test(subagentEntry.name)) {
+        continue;
+      }
+
+      const transcriptPath = path.join(subagentsDir, subagentEntry.name);
+      const resolvedTranscriptPath = await canonicalizePath(transcriptPath);
+      if (!resolvedTranscriptPath) {
+        continue;
+      }
+
+      transcriptFiles.push({
+        parentSessionId: entry.name,
+        transcriptFilename: subagentEntry.name,
+        transcriptPath: resolvedTranscriptPath,
+        relativeTranscriptPath: normalizePathSeparators(path.relative(projectDir, resolvedTranscriptPath)),
+      });
+    }
+  }
+
+  return transcriptFiles;
+}
+
+async function buildBackgroundTaskSession(projectDir, transcriptInfo, taskNotificationIndex) {
+  const entries = await readJsonlEntries(transcriptInfo.transcriptPath);
+  const taskMetadata = taskNotificationIndex.get(transcriptInfo.transcriptPath);
+  let firstTimestamp = null;
+  let lastTimestamp = null;
+  let firstUserText = '';
+
+  for (const entry of entries) {
+    const entryTimestamp = toIsoTimestamp(entry?.timestamp);
+    if (entryTimestamp && !firstTimestamp) {
+      firstTimestamp = entryTimestamp;
+    }
+    if (entryTimestamp) {
+      lastTimestamp = entryTimestamp;
+    }
+
+    if (!firstUserText && entry?.message?.role === 'user') {
+      firstUserText = extractTextContent(entry.message.content).trim();
+    }
+  }
+
+  if (!lastTimestamp) {
+    try {
+      const stats = await fs.stat(transcriptInfo.transcriptPath);
+      lastTimestamp = stats.mtime.toISOString();
+    } catch {
+      // Fall back to task metadata timestamp below.
+    }
+  }
+
+  const createdAt = firstTimestamp || taskMetadata?.timestamp || lastTimestamp || new Date().toISOString();
+  const lastActivity = pickLatestTimestamp(lastTimestamp, taskMetadata?.timestamp) || createdAt;
+  const fallbackSummary = summarizeBackgroundTaskPrompt(firstUserText);
+  const summary = taskMetadata?.summary || fallbackSummary || 'Background task';
+  const displayableMessageCount = countDisplayableBackgroundMessages(entries);
+
+  return {
+    id: createBackgroundTaskSessionId(
+      transcriptInfo.parentSessionId,
+      transcriptInfo.transcriptFilename
+    ),
+    title: summary,
+    summary,
+    createdAt,
+    created_at: createdAt,
+    updated_at: lastActivity,
+    lastActivity,
+    messageCount: displayableMessageCount > 0 ? displayableMessageCount : entries.length,
+    sessionKind: 'background_task',
+    parentSessionId: transcriptInfo.parentSessionId,
+    relativeTranscriptPath: transcriptInfo.relativeTranscriptPath,
+    transcriptKey: transcriptInfo.transcriptFilename,
+    taskId: taskMetadata?.taskId || '',
+    taskStatus: taskMetadata?.status || '',
+    outputFile: taskMetadata?.outputFile || '',
+    isReadOnly: true,
+  };
+}
+
+function isAgentToolHistoryFilename(fileName) {
+  return fileName.endsWith('.jsonl') &&
+    fileName.startsWith('agent-') &&
+    !CRON_TRANSCRIPT_FILENAME_REGEX.test(fileName);
+}
+
+async function attachAgentToolsToMessages(messages, agentFiles, agentDir) {
+  const agentToolsCache = new Map();
+  const agentIds = new Set();
+
+  for (const message of messages) {
+    if (message.toolUseResult?.agentId) {
+      agentIds.add(message.toolUseResult.agentId);
+    }
+  }
+
+  for (const agentId of agentIds) {
+    const agentFileName = `agent-${agentId}.jsonl`;
+    if (!agentFiles.includes(agentFileName)) {
+      continue;
+    }
+
+    const agentFilePath = path.join(agentDir, agentFileName);
+    const tools = await parseAgentTools(agentFilePath);
+    if (tools.length > 0) {
+      agentToolsCache.set(agentId, tools);
+    }
+  }
+
+  for (const message of messages) {
+    if (!message.toolUseResult?.agentId) {
+      continue;
+    }
+
+    const agentTools = agentToolsCache.get(message.toolUseResult.agentId);
+    if (agentTools && agentTools.length > 0) {
+      message.subagentTools = agentTools;
+    }
+  }
+
+  return messages;
+}
+
+function buildEmptySessionMessagesResult(limit = null, offset = 0) {
+  if (limit === null) {
+    return [];
+  }
+
+  return { messages: [], total: 0, hasMore: false, offset, limit };
+}
+
+function buildSessionMessagesResult(sortedMessages, limit = null, offset = 0) {
+  const total = sortedMessages.length;
+
+  if (limit === null) {
+    return sortedMessages;
+  }
+
+  const safeOffset = Number.isFinite(offset) ? Math.max(0, offset) : 0;
+  const safeLimit = Number.isFinite(limit) ? Math.max(0, limit) : 0;
+  const startIndex = Math.max(0, total - safeOffset - safeLimit);
+  const endIndex = Math.max(startIndex, total - safeOffset);
+  const paginatedMessages = sortedMessages.slice(startIndex, endIndex);
+
+  return {
+    messages: paginatedMessages,
+    total,
+    hasMore: startIndex > 0,
+    offset: safeOffset,
+    limit: safeLimit,
+  };
+}
+
 // Get messages for a specific session with pagination support
-async function getSessionMessages(projectName, sessionId, limit = null, offset = 0) {
+async function getSessionMessages(projectName, sessionId, options = {}) {
+  const {
+    limit = null,
+    offset = 0,
+    sessionKind = null,
+    parentSessionId = null,
+    relativeTranscriptPath = null,
+  } = options;
   const projectDir = path.join(os.homedir(), '.claude', 'projects', projectName);
 
   try {
-    const files = await fs.readdir(projectDir);
+    if (sessionKind === 'background_task') {
+      const transcriptPath = await resolveBackgroundTranscriptPath(
+        projectName,
+        parentSessionId,
+        relativeTranscriptPath
+      );
+      if (!transcriptPath) {
+        return buildEmptySessionMessagesResult(limit, offset);
+      }
+
+      const messages = await readJsonlEntries(transcriptPath);
+      const transcriptDir = path.dirname(transcriptPath);
+      const transcriptDirEntries = await fs.readdir(transcriptDir, { withFileTypes: true }).catch(() => []);
+      const agentFiles = transcriptDirEntries
+        .filter(entry => entry.isFile() && isAgentToolHistoryFilename(entry.name))
+        .map(entry => entry.name);
+
+      await attachAgentToolsToMessages(messages, agentFiles, transcriptDir);
+
+      const sortedMessages = messages.sort((a, b) =>
+        new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
+      );
+
+      return buildSessionMessagesResult(sortedMessages, limit, offset);
+    }
+
+    const projectEntries = await fs.readdir(projectDir, { withFileTypes: true });
     // agent-*.jsonl files contain subagent tool history - we'll process them separately
-    const jsonlFiles = files.filter(file => file.endsWith('.jsonl') && !file.startsWith('agent-'));
-    const agentFiles = files.filter(file => file.endsWith('.jsonl') && file.startsWith('agent-'));
+    const jsonlFiles = projectEntries
+      .filter(entry => entry.isFile() && entry.name.endsWith('.jsonl') && !entry.name.startsWith('agent-'))
+      .map(entry => entry.name);
+    const agentFiles = projectEntries
+      .filter(entry => entry.isFile() && isAgentToolHistoryFilename(entry.name))
+      .map(entry => entry.name);
 
     if (jsonlFiles.length === 0) {
-      return { messages: [], total: 0, hasMore: false };
+      return buildEmptySessionMessagesResult(limit, offset);
     }
 
     const messages = [];
-    // Map of agentId -> tools for subagent tool grouping
-    const agentToolsCache = new Map();
 
     // Process all JSONL files to find messages for this session
     for (const file of jsonlFiles) {
@@ -1070,63 +1980,17 @@ async function getSessionMessages(projectName, sessionId, limit = null, offset =
       }
     }
 
-    // Collect agentIds from Task tool results
-    const agentIds = new Set();
-    for (const message of messages) {
-      if (message.toolUseResult?.agentId) {
-        agentIds.add(message.toolUseResult.agentId);
-      }
-    }
+    await attachAgentToolsToMessages(messages, agentFiles, projectDir);
 
-    // Load agent tools for each agentId found
-    for (const agentId of agentIds) {
-      const agentFileName = `agent-${agentId}.jsonl`;
-      if (agentFiles.includes(agentFileName)) {
-        const agentFilePath = path.join(projectDir, agentFileName);
-        const tools = await parseAgentTools(agentFilePath);
-        agentToolsCache.set(agentId, tools);
-      }
-    }
-
-    // Attach agent tools to their parent Task messages
-    for (const message of messages) {
-      if (message.toolUseResult?.agentId) {
-        const agentId = message.toolUseResult.agentId;
-        const agentTools = agentToolsCache.get(agentId);
-        if (agentTools && agentTools.length > 0) {
-          message.subagentTools = agentTools;
-        }
-      }
-    }
     // Sort messages by timestamp
     const sortedMessages = messages.sort((a, b) =>
       new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
     );
 
-    const total = sortedMessages.length;
-
-    // If no limit is specified, return all messages (backward compatibility)
-    if (limit === null) {
-      return sortedMessages;
-    }
-
-    // Apply pagination - for recent messages, we need to slice from the end
-    // offset 0 should give us the most recent messages
-    const startIndex = Math.max(0, total - offset - limit);
-    const endIndex = total - offset;
-    const paginatedMessages = sortedMessages.slice(startIndex, endIndex);
-    const hasMore = startIndex > 0;
-
-    return {
-      messages: paginatedMessages,
-      total,
-      hasMore,
-      offset,
-      limit
-    };
+    return buildSessionMessagesResult(sortedMessages, limit, offset);
   } catch (error) {
     console.error(`Error reading messages for session ${sessionId}:`, error);
-    return limit === null ? [] : { messages: [], total: 0, hasMore: false };
+    return buildEmptySessionMessagesResult(limit, offset);
   }
 }
 
@@ -2590,6 +3454,7 @@ async function getGeminiCliSessionMessages(sessionId) {
 
 export {
   getProjects,
+  getProjectCronJobsOverview,
   getSessions,
   getSessionMessages,
   parseJsonlSessions,

@@ -23,6 +23,9 @@ const router = express.Router();
  *   provider    - 'claude' | 'cursor' | 'codex' | 'gemini' (default: 'claude')
  *   projectName - required for claude provider
  *   projectPath - required for cursor provider (absolute path used for cwdId hash)
+ *   sessionKind - Claude session subtype (e.g. background_task)
+ *   parentSessionId - Claude parent session id for background transcripts
+ *   relativeTranscriptPath - Claude project-relative transcript path for background sessions
  *   limit       - page size (omit or null for all)
  *   offset      - pagination offset (default: 0)
  */
@@ -32,6 +35,9 @@ router.get('/:sessionId/messages', async (req, res) => {
     const provider = req.query.provider || 'claude';
     const projectName = req.query.projectName || '';
     const projectPath = req.query.projectPath || '';
+    const sessionKind = req.query.sessionKind || '';
+    const parentSessionId = req.query.parentSessionId || '';
+    const relativeTranscriptPath = req.query.relativeTranscriptPath || '';
     const limitParam = req.query.limit;
     const limit = limitParam !== undefined && limitParam !== null && limitParam !== ''
       ? parseInt(limitParam, 10)
@@ -47,6 +53,9 @@ router.get('/:sessionId/messages', async (req, res) => {
     const result = await adapter.fetchHistory(sessionId, {
       projectName,
       projectPath,
+      sessionKind,
+      parentSessionId,
+      relativeTranscriptPath,
       limit,
       offset,
     });

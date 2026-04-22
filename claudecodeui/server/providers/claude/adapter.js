@@ -10,6 +10,80 @@ import { createNormalizedMessage, generateMessageId } from '../types.js';
 import { isInternalContent } from '../utils.js';
 
 const PROVIDER = 'claude';
+const TASK_NOTIFICATION_REGEX = /<task-notification>\s*<task-id>([\s\S]*?)<\/task-id>\s*<output-file>([\s\S]*?)<\/output-file>\s*<status>([\s\S]*?)<\/status>\s*<summary>([\s\S]*?)<\/summary>\s*<\/task-notification>/i;
+
+function extractTextContent(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  return content
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('\n');
+}
+
+function parseTaskNotificationContent(content) {
+  if (typeof content !== 'string' || content.trim().length === 0) {
+    return null;
+  }
+
+  const match = content.match(TASK_NOTIFICATION_REGEX);
+  if (!match) {
+    return null;
+  }
+
+  const [, taskId = '', outputFile = '', status = '', summary = ''] = match;
+  return {
+    taskId: taskId.trim(),
+    outputFile: outputFile.trim(),
+    status: status.trim(),
+    summary: summary.trim(),
+  };
+}
+
+function normalizeHistoryMessages(rawMessages, sessionId) {
+  const toolResultMap = new Map();
+  for (const raw of rawMessages) {
+    if (raw.message?.role === 'user' && Array.isArray(raw.message?.content)) {
+      for (const part of raw.message.content) {
+        if (part.type === 'tool_result') {
+          toolResultMap.set(part.tool_use_id, {
+            content: part.content,
+            isError: Boolean(part.is_error),
+            timestamp: raw.timestamp,
+            subagentTools: raw.subagentTools,
+            toolUseResult: raw.toolUseResult,
+          });
+        }
+      }
+    }
+  }
+
+  const normalized = [];
+  for (const raw of rawMessages) {
+    const entries = normalizeMessage(raw, sessionId);
+    normalized.push(...entries);
+  }
+
+  for (const msg of normalized) {
+    if (msg.kind === 'tool_use' && msg.toolId && toolResultMap.has(msg.toolId)) {
+      const tr = toolResultMap.get(msg.toolId);
+      msg.toolResult = {
+        content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
+        isError: tr.isError,
+        toolUseResult: tr.toolUseResult,
+      };
+      msg.subagentTools = tr.subagentTools;
+    }
+  }
+
+  return normalized;
+}
 
 /**
  * Normalize a raw JSONL message or realtime SDK event into NormalizedMessage(s).
@@ -34,6 +108,22 @@ export function normalizeMessage(raw, sessionId, options = {}) {
   const messages = [];
   const ts = raw.timestamp || new Date().toISOString();
   const baseId = raw.uuid || generateMessageId('claude');
+  const taskNotification = raw.taskNotification ||
+    parseTaskNotificationContent(extractTextContent(raw.message?.content));
+
+  if (raw.message?.role === 'user' && raw.message?.content && taskNotification) {
+    return [createNormalizedMessage({
+      id: baseId,
+      sessionId,
+      timestamp: ts,
+      provider: PROVIDER,
+      kind: 'task_notification',
+      status: taskNotification.status || 'completed',
+      summary: taskNotification.summary || 'Background task update',
+      taskId: taskNotification.taskId || '',
+      outputFile: taskNotification.outputFile || '',
+    })];
+  }
 
   // User message
   if (raw.message?.role === 'user' && raw.message?.content) {
@@ -213,14 +303,27 @@ export const claudeAdapter = {
    * Fetch session history from JSONL files, returning normalized messages.
    */
   async fetchHistory(sessionId, opts = {}) {
-    const { projectName, limit = null, offset = 0 } = opts;
+    const {
+      projectName,
+      limit = null,
+      offset = 0,
+      sessionKind = null,
+      parentSessionId = null,
+      relativeTranscriptPath = null,
+    } = opts;
     if (!projectName) {
       return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
     }
 
     let result;
     try {
-      result = await getSessionMessages(projectName, sessionId, limit, offset);
+      result = await getSessionMessages(projectName, sessionId, {
+        limit,
+        offset,
+        sessionKind,
+        parentSessionId,
+        relativeTranscriptPath,
+      });
     } catch (error) {
       console.warn(`[ClaudeAdapter] Failed to load session ${sessionId}:`, error.message);
       return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
@@ -231,43 +334,7 @@ export const claudeAdapter = {
     const total = Array.isArray(result) ? rawMessages.length : (result.total || 0);
     const hasMore = Array.isArray(result) ? false : Boolean(result.hasMore);
 
-    // First pass: collect tool results for attachment to tool_use messages
-    const toolResultMap = new Map();
-    for (const raw of rawMessages) {
-      if (raw.message?.role === 'user' && Array.isArray(raw.message?.content)) {
-        for (const part of raw.message.content) {
-          if (part.type === 'tool_result') {
-            toolResultMap.set(part.tool_use_id, {
-              content: part.content,
-              isError: Boolean(part.is_error),
-              timestamp: raw.timestamp,
-              subagentTools: raw.subagentTools,
-              toolUseResult: raw.toolUseResult,
-            });
-          }
-        }
-      }
-    }
-
-    // Second pass: normalize all messages
-    const normalized = [];
-    for (const raw of rawMessages) {
-      const entries = normalizeMessage(raw, sessionId);
-      normalized.push(...entries);
-    }
-
-    // Attach tool results to their corresponding tool_use messages
-    for (const msg of normalized) {
-      if (msg.kind === 'tool_use' && msg.toolId && toolResultMap.has(msg.toolId)) {
-        const tr = toolResultMap.get(msg.toolId);
-        msg.toolResult = {
-          content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
-          isError: tr.isError,
-          toolUseResult: tr.toolUseResult,
-        };
-        msg.subagentTools = tr.subagentTools;
-      }
-    }
+    const normalized = normalizeHistoryMessages(rawMessages, sessionId);
 
     return {
       messages: normalized,
