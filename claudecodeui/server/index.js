@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Load environment variables before other imports execute
-import './load-env.js';
+import { assertRequiredEdgeClawEnv } from './load-env.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import net from 'net';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -31,6 +32,7 @@ const c = {
     dim: (text) => `${colors.dim}${text}${colors.reset}`,
 };
 
+assertRequiredEdgeClawEnv();
 console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
 import express from 'express';
@@ -57,6 +59,7 @@ import authRoutes from './routes/auth.js';
 import mcpRoutes from './routes/mcp.js';
 import cursorRoutes from './routes/cursor.js';
 import taskmasterRoutes from './routes/taskmaster.js';
+import memoryRoutes, { MEMORY_DASHBOARD_DIR } from './routes/memory.js';
 import mcpUtilsRoutes from './routes/mcp-utils.js';
 import commandsRoutes from './routes/commands.js';
 import settingsRoutes from './routes/settings.js';
@@ -68,13 +71,16 @@ import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import messagesRoutes from './routes/messages.js';
+import { closeMemoryServices, startMemoryScheduler, stopMemoryScheduler } from './services/memoryService.js';
 import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
+import { getClaudeRuntimeModelConfig } from './utils/claude-runtime-config.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, userDb } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { DISABLE_LOCAL_AUTH, IS_PLATFORM } from './constants/config.js';
 import { getConnectableHost } from '../shared/networkHosts.js';
+import { resolveClaudeCodeMainRoot } from './claude-code-main-path.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
 
@@ -100,6 +106,145 @@ let projectsWatchers = [];
 let projectsWatcherDebounceTimer = null;
 const connectedClients = new Set();
 let isGetProjectsRunning = false; // Flag to prevent reentrant calls
+let edgeClawProxyProcess = null;
+
+function resolveBunExecutable() {
+    const candidates = [
+        process.env.BUN_BIN,
+        process.env.BUN,
+        process.env.BUN_INSTALL ? path.join(process.env.BUN_INSTALL, 'bin', 'bun') : null,
+        path.join(os.homedir(), '.bun', 'bin', 'bun'),
+        '/opt/homebrew/bin/bun',
+        '/usr/local/bin/bun',
+        'bun',
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+        if (candidate === 'bun' || fs.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+
+    return 'bun';
+}
+
+function isLocalPortListening(port, host = '127.0.0.1', timeoutMs = 400) {
+    return new Promise(resolve => {
+        const socket = net.createConnection({ port, host });
+        const finalize = (isOpen) => {
+            socket.destroy();
+            resolve(isOpen);
+        };
+
+        socket.setTimeout(timeoutMs);
+        socket.once('connect', () => finalize(true));
+        socket.once('timeout', () => finalize(false));
+        socket.once('error', () => finalize(false));
+    });
+}
+
+async function waitForLocalPort(port, host = '127.0.0.1', timeoutMs = 4000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (await isLocalPortListening(port, host)) {
+            return true;
+        }
+        await new Promise(resolve => setTimeout(resolve, 120));
+    }
+    return false;
+}
+
+async function ensureEdgeClawProxyRunning() {
+    const proxyPort = parseInt(process.env.PROXY_PORT || process.env.EDGECLAW_PROXY_PORT || '18080', 10);
+    const upstreamBaseUrl = process.env.EDGECLAW_API_BASE_URL?.trim();
+    const upstreamApiKey = process.env.EDGECLAW_API_KEY?.trim();
+
+    if (!proxyPort || !upstreamBaseUrl || !upstreamApiKey) {
+        console.warn('[WARN] EdgeClaw proxy not started: missing EDGECLAW_API_BASE_URL / EDGECLAW_API_KEY / proxy port');
+        return;
+    }
+
+    if (await isLocalPortListening(proxyPort)) {
+        console.log(`${c.info('[INFO]')} Reusing existing EdgeClaw proxy on http://127.0.0.1:${proxyPort}`);
+        return;
+    }
+
+    const claudeCodeMainRoot = resolveClaudeCodeMainRoot();
+    if (!claudeCodeMainRoot) {
+        console.error('[ERROR] Unable to locate claude-code-main; cannot start EdgeClaw proxy automatically.');
+        return;
+    }
+
+    const proxyEntrypoint = path.join(claudeCodeMainRoot, 'proxy.ts');
+    if (!fs.existsSync(proxyEntrypoint)) {
+        console.error(`[ERROR] Missing EdgeClaw proxy entrypoint: ${proxyEntrypoint}`);
+        return;
+    }
+
+    const bunExecutable = resolveBunExecutable();
+    const proxyProcess = spawn(bunExecutable, ['run', proxyEntrypoint], {
+        cwd: claudeCodeMainRoot,
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    edgeClawProxyProcess = proxyProcess;
+
+    proxyProcess.stdout.on('data', chunk => {
+        const text = chunk.toString().trimEnd();
+        if (text) {
+            console.log(`[EdgeClaw proxy] ${text}`);
+        }
+    });
+    proxyProcess.stderr.on('data', chunk => {
+        const text = chunk.toString().trimEnd();
+        if (text) {
+            console.error(`[EdgeClaw proxy] ${text}`);
+        }
+    });
+    proxyProcess.on('exit', (code, signal) => {
+        if (edgeClawProxyProcess?.pid === proxyProcess.pid) {
+            edgeClawProxyProcess = null;
+        }
+        if (signal === 'SIGTERM' || signal === 'SIGINT') {
+            return;
+        }
+        console.error(`[ERROR] EdgeClaw proxy exited unexpectedly (code=${code ?? 'null'}, signal=${signal ?? 'null'})`);
+    });
+
+    const ready = await waitForLocalPort(proxyPort);
+    if (ready) {
+        console.log(`${c.info('[INFO]')} EdgeClaw proxy ready on http://127.0.0.1:${proxyPort}`);
+        return;
+    }
+
+    console.error(`[ERROR] EdgeClaw proxy did not become ready on http://127.0.0.1:${proxyPort}`);
+}
+
+async function stopEdgeClawProxy() {
+    if (!edgeClawProxyProcess) {
+        return;
+    }
+
+    const proxyProcess = edgeClawProxyProcess;
+    edgeClawProxyProcess = null;
+
+    if (proxyProcess.exitCode !== null || proxyProcess.signalCode !== null) {
+        return;
+    }
+
+    await new Promise(resolve => {
+        const timeout = setTimeout(() => {
+            proxyProcess.kill('SIGKILL');
+        }, 2000);
+
+        proxyProcess.once('exit', () => {
+            clearTimeout(timeout);
+            resolve();
+        });
+
+        proxyProcess.kill('SIGTERM');
+    });
+}
 
 // Broadcast progress to all connected WebSocket clients
 function broadcastProgress(progress) {
@@ -376,6 +521,9 @@ app.use('/api/cursor', authenticateToken, cursorRoutes);
 // TaskMaster API Routes (protected)
 app.use('/api/taskmaster', authenticateToken, taskmasterRoutes);
 
+// Memory API Routes (protected)
+app.use('/api/memory', authenticateToken, memoryRoutes);
+
 // MCP utilities
 app.use('/api/mcp-utils', authenticateToken, mcpUtilsRoutes);
 
@@ -405,6 +553,26 @@ app.use('/api/sessions', authenticateToken, messagesRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
+
+app.get('/api/agents/runtime-config', authenticateToken, (_req, res) => {
+    res.json({
+        claude: getClaudeRuntimeModelConfig(),
+    });
+});
+
+app.get('/memory-dashboard', authenticateToken, (req, res) => {
+    res.sendFile(path.join(MEMORY_DASHBOARD_DIR, 'index.html'));
+});
+
+app.use('/memory-dashboard', authenticateToken, express.static(MEMORY_DASHBOARD_DIR, {
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+        }
+    }
+}));
 
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(__dirname, '../public')));
@@ -2419,8 +2587,13 @@ async function startServer() {
             console.log(`${c.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
             console.log('');
 
+            await ensureEdgeClawProxyRunning();
+
             // Start watching the projects folder for changes
             await setupProjectsWatcher();
+
+            // Start background memory scheduler for auto index/dream.
+            startMemoryScheduler();
 
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
@@ -2430,6 +2603,9 @@ async function startServer() {
 
         // Clean up plugin processes on shutdown
         const shutdownPlugins = async () => {
+            stopMemoryScheduler();
+            closeMemoryServices();
+            await stopEdgeClawProxy();
             await stopAllPlugins();
             process.exit(0);
         };

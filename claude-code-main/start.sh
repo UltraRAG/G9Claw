@@ -7,32 +7,17 @@
 #   ./start.sh --help             # show help
 #   ./start.sh --version          # show version
 #
-# Configuration: copy .env.example to .env and set OPENAI_* / ANTHROPIC_*.
+# Configuration: set EDGECLAW_* in the repository root .env or export them.
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$DIR/.." && pwd)"
+ROOT_ENV="$REPO_ROOT/.env"
 
-if [ -f "$DIR/.env" ]; then
+if [ -f "$ROOT_ENV" ]; then
   set -a
   # shellcheck disable=SC1091
-  source "$DIR/.env"
+  source "$ROOT_ENV"
   set +a
-else
-  echo "Error: missing $DIR/.env — copy .env.example to .env and set your API keys." >&2
-  exit 1
-fi
-
-PROXY_PORT="${PROXY_PORT:-18080}"
-
-# ── Ensure peekaboo is installed (macOS only, for computer-use MCP) ──
-if [[ "$(uname)" == "Darwin" ]]; then
-  if ! command -v peekaboo &>/dev/null; then
-    echo "[start] Installing peekaboo (macOS UI automation)..."
-    if command -v brew &>/dev/null; then
-      brew install steipete/tap/peekaboo 2>/dev/null || echo "[start] Warning: peekaboo install failed (computer-use will be unavailable)"
-    else
-      echo "[start] Warning: brew not found, skipping peekaboo install (computer-use will be unavailable)"
-    fi
-  fi
 fi
 
 # Ensure bun is on PATH
@@ -48,15 +33,47 @@ fi
 # ── Check for --gateway flag ──
 GATEWAY_ONLY=false
 HAS_PRINT=false
+HAS_HELP_OR_VERSION=false
 REMAINING_ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --gateway) GATEWAY_ONLY=true ;;
-    -p|--print|--help|--version|-v|-V) HAS_PRINT=true; REMAINING_ARGS+=("$arg") ;;
+    --help|--version|-v|-V) HAS_PRINT=true; HAS_HELP_OR_VERSION=true; REMAINING_ARGS+=("$arg") ;;
+    -p|--print) HAS_PRINT=true; REMAINING_ARGS+=("$arg") ;;
     *) REMAINING_ARGS+=("$arg") ;;
   esac
 done
 set -- "${REMAINING_ARGS[@]}"
+
+if [ "$HAS_HELP_OR_VERSION" = true ] && [ "$GATEWAY_ONLY" = false ]; then
+  exec bun run --preload="$DIR/preload.ts" "$DIR/src/entrypoints/cli.tsx" "$@"
+fi
+
+# ── Ensure peekaboo is installed (macOS only, for computer-use MCP) ──
+if [[ "$(uname)" == "Darwin" ]]; then
+  if ! command -v peekaboo &>/dev/null; then
+    echo "[start] Installing peekaboo (macOS UI automation)..."
+    if command -v brew &>/dev/null; then
+      brew install steipete/tap/peekaboo 2>/dev/null || echo "[start] Warning: peekaboo install failed (computer-use will be unavailable)"
+    else
+      echo "[start] Warning: brew not found, skipping peekaboo install (computer-use will be unavailable)"
+    fi
+  fi
+fi
+
+require_env() {
+  local key="$1"
+  if [ -z "${!key:-}" ]; then
+    echo "Error: $key is not set. Configure it in $ROOT_ENV or export it before starting Claude Code." >&2
+    exit 1
+  fi
+}
+
+require_env EDGECLAW_API_BASE_URL
+require_env EDGECLAW_API_KEY
+require_env EDGECLAW_MODEL
+
+PROXY_PORT="${EDGECLAW_PROXY_PORT:-18080}"
 
 if [ "$GATEWAY_ONLY" = false ] && [ "$HAS_PRINT" = false ] && [ ! -t 1 ]; then
   cat >&2 <<'EOF'
@@ -74,16 +91,10 @@ EOF
   exit 1
 fi
 
-if [ -z "$OPENAI_API_KEY" ]; then
-  echo "Error: OPENAI_API_KEY is not set (add it to .env)." >&2
-  exit 1
-fi
-
-export OPENAI_API_KEY
+export OPENAI_API_KEY="$EDGECLAW_API_KEY"
+export OPENAI_BASE_URL="$EDGECLAW_API_BASE_URL"
+export OPENAI_MODEL="$EDGECLAW_MODEL"
 export PROXY_PORT="$PROXY_PORT"
-if [ -n "$OPENAI_BASE_URL" ]; then
-  export OPENAI_BASE_URL
-fi
 
 # ── Start local Anthropic→OpenAI proxy (if not already running) ──
 if ! curl -s "http://127.0.0.1:$PROXY_PORT/health" >/dev/null 2>&1; then
@@ -100,15 +111,10 @@ fi
 
 # ── Claude Code env ──
 unset ANTHROPIC_AUTH_TOKEN
-export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$OPENAI_API_KEY}"
-export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://127.0.0.1:$PROXY_PORT}"
+export ANTHROPIC_API_KEY="$EDGECLAW_API_KEY"
+export ANTHROPIC_BASE_URL="http://127.0.0.1:$PROXY_PORT"
 export DISABLE_TELEMETRY="${DISABLE_TELEMETRY:-1}"
-
-if [ -z "$ANTHROPIC_MODEL" ]; then
-  echo "Error: ANTHROPIC_MODEL is not set (add it to .env)." >&2
-  exit 1
-fi
-export ANTHROPIC_MODEL
+export ANTHROPIC_MODEL="$EDGECLAW_MODEL"
 
 # ── Gateway-only mode: start gateway in foreground, no CLI ──
 if [ "$GATEWAY_ONLY" = true ]; then

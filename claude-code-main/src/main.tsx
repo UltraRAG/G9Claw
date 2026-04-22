@@ -26,6 +26,7 @@ import mapValues from 'lodash-es/mapValues.js';
 import pickBy from 'lodash-es/pickBy.js';
 import uniqBy from 'lodash-es/uniqBy.js';
 import React from 'react';
+import { PassThrough } from 'stream';
 import { getOauthConfig } from './constants/oauth.js';
 import { getRemoteSessionUrl } from './constants/product.js';
 import { getSystemContext, getUserContext } from './context.js';
@@ -854,12 +855,36 @@ export async function main() {
   await run();
   profileCheckpoint('main_after_run');
 }
+function createStructuredStdinStream(): AsyncIterable<string> {
+  const inputStream = new PassThrough({
+    encoding: 'utf8'
+  });
+  process.stdin.setEncoding('utf8');
+  const flushReadable = () => {
+    let chunk = process.stdin.read();
+    while (chunk !== null) {
+      inputStream.write(typeof chunk === 'string' ? chunk : String(chunk));
+      chunk = process.stdin.read();
+    }
+  };
+  process.stdin.on('readable', flushReadable);
+  process.stdin.on('end', () => {
+    flushReadable();
+    inputStream.end();
+  });
+  process.stdin.on('error', error => {
+    const streamError = error instanceof Error ? error : new Error(String(error));
+    inputStream.destroy(streamError);
+  });
+  flushReadable();
+  return inputStream;
+}
 async function getInputPrompt(prompt: string, inputFormat: 'text' | 'stream-json'): Promise<string | AsyncIterable<string>> {
   if (!process.stdin.isTTY &&
   // Input hijacking breaks MCP.
   !process.argv.includes('mcp')) {
     if (inputFormat === 'stream-json') {
-      return process.stdin;
+      return createStructuredStdinStream();
     }
     process.stdin.setEncoding('utf8');
     let data = '';

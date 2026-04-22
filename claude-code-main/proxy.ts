@@ -6,8 +6,79 @@
  * for compatibility with OpenAI-style API proxies (e.g. yeysai.com).
  */
 
-const UPSTREAM_URL = process.env.OPENAI_BASE_URL || 'https://yeysai.com'
-const UPSTREAM_KEY = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || ''
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+const ROOT_ENV_PATH = path.resolve(__dirname, '../.env')
+
+function normalizeEnvValue(value: string | undefined): string {
+  return value?.trim() || ''
+}
+
+function loadRootEnvFile(): void {
+  try {
+    const envFile = fs.readFileSync(ROOT_ENV_PATH, 'utf8')
+    envFile.split('\n').forEach(line => {
+      const trimmedLine = line.trim()
+      if (!trimmedLine || trimmedLine.startsWith('#')) {
+        return
+      }
+
+      const [key, ...valueParts] = trimmedLine.split('=')
+      const normalizedKey = key?.trim()
+      if (!normalizedKey || valueParts.length === 0 || process.env[normalizedKey]) {
+        return
+      }
+
+      process.env[normalizedKey] = valueParts.join('=').trim()
+    })
+  } catch {
+    // Root .env is optional when EDGECLAW_* variables are already exported.
+  }
+}
+
+function applyEdgeClawProxyEnv(): void {
+  const baseUrl = normalizeEnvValue(process.env.EDGECLAW_API_BASE_URL)
+  const apiKey = normalizeEnvValue(process.env.EDGECLAW_API_KEY)
+  const model = normalizeEnvValue(process.env.EDGECLAW_MODEL)
+  const proxyPort = normalizeEnvValue(process.env.EDGECLAW_PROXY_PORT) || '18080'
+
+  process.env.PROXY_PORT = proxyPort
+
+  if (baseUrl) {
+    process.env.OPENAI_BASE_URL = baseUrl
+  }
+  if (apiKey) {
+    process.env.OPENAI_API_KEY = apiKey
+    process.env.ANTHROPIC_API_KEY = apiKey
+  }
+  if (model) {
+    process.env.OPENAI_MODEL = model
+    process.env.ANTHROPIC_MODEL = model
+  }
+  process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxyPort}`
+}
+
+function requireConfig(name: 'EDGECLAW_API_BASE_URL' | 'EDGECLAW_API_KEY'): string {
+  const value = normalizeEnvValue(process.env[name])
+  if (value) {
+    return value
+  }
+
+  throw new Error(
+    `Missing required EdgeClaw configuration: ${name}. ` +
+      `Set it in ${ROOT_ENV_PATH} or export it before starting claude-code-main/proxy.ts.`,
+  )
+}
+
+loadRootEnvFile()
+applyEdgeClawProxyEnv()
+
+const UPSTREAM_URL = normalizeEnvValue(process.env.OPENAI_BASE_URL) || requireConfig('EDGECLAW_API_BASE_URL')
+const UPSTREAM_KEY = normalizeEnvValue(process.env.OPENAI_API_KEY) || requireConfig('EDGECLAW_API_KEY')
 const PORT = parseInt(process.env.PROXY_PORT || '18080', 10)
 
 // OpenRouter app attribution. Only injected when the upstream is openrouter.ai
@@ -222,10 +293,14 @@ const MODEL_MAP: Record<string, string> = {
 }
 
 function toOpenRouterModel(model: string): string {
-  if (model.startsWith('anthropic/')) return model
-  const stripped = model.replace(/-\d{8}$/, '')
+  const normalized = model.trim()
+  if (!normalized) return normalized
+  if (normalized.includes('/')) return normalized
+
+  const stripped = normalized.replace(/-\d{8}$/, '')
+  if (MODEL_MAP[normalized]) return MODEL_MAP[normalized]
   if (MODEL_MAP[stripped]) return MODEL_MAP[stripped]
-  return `anthropic/${stripped}`
+  return normalized
 }
 
 function buildOpenAIRequest(body: AnthropicRequest): Record<string, unknown> {

@@ -3,8 +3,9 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
-import { CLAUDE_MODELS, CURSOR_MODELS, CODEX_MODELS } from '../../shared/modelConstants.js';
+import { CURSOR_MODELS, CODEX_MODELS } from '../../shared/modelConstants.js';
 import { parseFrontmatter } from '../utils/frontmatter.js';
+import { getClaudeRuntimeModelConfig, getClaudeRuntimeModelValues } from '../utils/claude-runtime-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -183,15 +184,16 @@ Custom commands can be created in:
   },
 
   '/model': async (args, context) => {
+    const claudeRuntimeConfig = getClaudeRuntimeModelConfig();
     // Read available models from centralized constants
     const availableModels = {
-      claude: CLAUDE_MODELS.OPTIONS.map(o => o.value),
+      claude: getClaudeRuntimeModelValues(),
       cursor: CURSOR_MODELS.OPTIONS.map(o => o.value),
       codex: CODEX_MODELS.OPTIONS.map(o => o.value)
     };
 
     const currentProvider = context?.provider || 'claude';
-    const currentModel = context?.model || CLAUDE_MODELS.DEFAULT;
+    const currentModel = context?.model || claudeRuntimeConfig.defaultModel;
 
     return {
       type: 'builtin',
@@ -218,7 +220,7 @@ Custom commands can be created in:
         ? CURSOR_MODELS.DEFAULT
         : provider === 'codex'
           ? CODEX_MODELS.DEFAULT
-          : CLAUDE_MODELS.DEFAULT);
+          : getClaudeRuntimeModelConfig().defaultModel);
 
     const used = Number(tokenUsage.used ?? tokenUsage.totalUsed ?? tokenUsage.total_tokens ?? 0) || 0;
     const total =

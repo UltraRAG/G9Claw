@@ -14,6 +14,7 @@
     "@alcalzone/ansi-tokenize": "latest",
     "@anthropic-ai/bedrock-sdk": "latest",
     "@anthropic-ai/claude-agent-sdk": "^0.2.107",
+    "@anthropic-ai/sandbox-runtime": "^0.0.49",
     "@anthropic-ai/sdk": "latest",
     "@anthropic-ai/vertex-sdk": "latest",
     "@aws-sdk/client-bedrock": "latest",
@@ -58,6 +59,7 @@
     "cli-boxes": "latest",
     "cli-highlight": "latest",
     "code-excerpt": "latest",
+    "color-diff-napi": "^0.0.1",
     "commander": "latest",
     "diff": "latest",
     "discord.js": "^14.26.2",
@@ -119,6 +121,7 @@
     "@types/proper-lockfile": "latest",
     "@types/turndown": "latest",
     "bun-types": "latest",
+    "tsx": "^4.21.0",
     "typescript": "latest"
   }
 }

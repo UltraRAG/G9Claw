@@ -50,6 +50,7 @@ const jobClassifierModule = feature('TEMPLATES')
 
 import type { QuerySource } from '../constants/querySource.js'
 import { executeAutoDream } from '../services/autoDream/autoDream.js'
+import { isEdgeClawMemoryEnabled } from '../services/edgeclawMemory/index.js'
 import { executePromptSuggestion } from '../services/PromptSuggestion/promptSuggestion.js'
 import { isBareMode, isEnvDefinedFalsy } from '../utils/envUtils.js'
 import {
@@ -141,7 +142,8 @@ export async function* handleStopHooks(
     if (
       feature('EXTRACT_MEMORIES') &&
       !toolUseContext.agentId &&
-      isExtractModeActive()
+      isExtractModeActive() &&
+      !isEdgeClawMemoryEnabled()
     ) {
       // Fire-and-forget in both interactive and non-interactive. For -p/SDK,
       // print.ts drains the in-flight promise after flushing the response
@@ -151,7 +153,7 @@ export async function* handleStopHooks(
         toolUseContext.appendSystemMessage,
       )
     }
-    if (!toolUseContext.agentId) {
+    if (!toolUseContext.agentId && !isEdgeClawMemoryEnabled()) {
       void executeAutoDream(stopHookContext, toolUseContext.appendSystemMessage)
     }
   }

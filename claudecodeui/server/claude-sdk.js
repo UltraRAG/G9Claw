@@ -17,7 +17,6 @@ import crypto from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
-import { CLAUDE_MODELS } from '../shared/modelConstants.js';
 import {
   createNotificationEvent,
   notifyRunFailed,
@@ -27,6 +26,7 @@ import {
 import { claudeAdapter } from './providers/claude/adapter.js';
 import { createNormalizedMessage } from './providers/types.js';
 import { getLeakedClaudeSdkSpawnOptions } from './claude-code-main-path.js';
+import { getClaudeRuntimeModelConfig } from './utils/claude-runtime-config.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -34,6 +34,35 @@ const pendingToolApprovals = new Map();
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion']);
+
+function normalizeEnvValue(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function buildClaudeSubprocessEnv() {
+  const env = { ...process.env };
+  const runtimeModel = getClaudeRuntimeModelConfig().defaultModel;
+  const anthropicBaseUrl = normalizeEnvValue(process.env.ANTHROPIC_BASE_URL);
+  const anthropicApiKey = normalizeEnvValue(process.env.ANTHROPIC_API_KEY);
+
+  if (anthropicBaseUrl) {
+    env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
+  }
+  if (anthropicApiKey) {
+    env.ANTHROPIC_API_KEY = anthropicApiKey;
+  }
+  if (runtimeModel) {
+    env.ANTHROPIC_MODEL = runtimeModel;
+  }
+  env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = '1';
+
+  if (anthropicApiKey || anthropicBaseUrl) {
+    delete env.ANTHROPIC_AUTH_TOKEN;
+    delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  }
+
+  return env;
+}
 
 function createRequestId() {
   if (typeof crypto.randomUUID === 'function') {
@@ -193,9 +222,8 @@ function mapCliOptionsToSDK(options = {}) {
 
   sdkOptions.disallowedTools = settings.disallowedTools || [];
 
-  // Map model (default to sonnet)
-  // Valid models: sonnet, opus, haiku, opusplan, sonnet[1m]
-  sdkOptions.model = options.model || CLAUDE_MODELS.DEFAULT;
+  // Map model (default resolved from runtime env/config)
+  sdkOptions.model = options.model || getClaudeRuntimeModelConfig().defaultModel;
   // Model logged at query start below
 
   // Map system prompt configuration
@@ -207,6 +235,7 @@ function mapCliOptionsToSDK(options = {}) {
   // Map setting sources for CLAUDE.md loading
   // This loads CLAUDE.md from project, user (~/.config/claude/CLAUDE.md), and local directories
   sdkOptions.settingSources = ['project', 'user', 'local'];
+  sdkOptions.env = buildClaudeSubprocessEnv();
 
   // Map resume session
   if (sessionId) {
@@ -218,6 +247,10 @@ function mapCliOptionsToSDK(options = {}) {
     sdkOptions.pathToClaudeCodeExecutable = leakedSpawn.pathToClaudeCodeExecutable;
     sdkOptions.executable = leakedSpawn.executable;
     sdkOptions.executableArgs = leakedSpawn.executableArgs;
+    sdkOptions.extraArgs = {
+      ...(sdkOptions.extraArgs || {}),
+      print: null,
+    };
   }
 
   return sdkOptions;
@@ -657,7 +690,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
       const sid = capturedSessionId || sessionId || null;
 
       // Use adapter to normalize SDK events into NormalizedMessage[]
-      const normalized = claudeAdapter.normalizeMessage(transformedMessage, sid);
+      const normalized = claudeAdapter.normalizeMessage(transformedMessage, sid, {
+        includeUserText: false,
+      });
       for (const msg of normalized) {
         // Preserve parentToolUseId from SDK wrapper for subagent tool grouping
         if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {

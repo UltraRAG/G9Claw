@@ -1,4 +1,4 @@
-import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, type LucideIcon } from 'lucide-react';
+import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, Database, type LucideIcon } from 'lucide-react';
 import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip, PillBar, Pill } from '../../../../shared/view/ui';
@@ -43,6 +43,13 @@ const TASKS_TAB: BuiltInTab = {
   icon: ClipboardCheck,
 };
 
+const MEMORY_TAB: BuiltInTab = {
+  kind: 'builtin',
+  id: 'memory',
+  labelKey: 'tabs.memory',
+  icon: Database,
+};
+
 export default function MainContentTabSwitcher({
   activeTab,
   setActiveTab,
@@ -51,7 +58,9 @@ export default function MainContentTabSwitcher({
   const { t } = useTranslation();
   const { plugins } = usePlugins();
 
-  const builtInTabs: BuiltInTab[] = shouldShowTasksTab ? [...BASE_TABS, TASKS_TAB] : BASE_TABS;
+  const builtInTabs: BuiltInTab[] = shouldShowTasksTab
+    ? [...BASE_TABS, TASKS_TAB, MEMORY_TAB]
+    : [...BASE_TABS, MEMORY_TAB];
 
   const pluginTabs: PluginTab[] = plugins
     .filter((p) => p.enabled)
