@@ -27,7 +27,7 @@ import { registerVerifySkill } from './verify.js'
  * 2. Export a register function that calls registerBundledSkill()
  * 3. Import and call that function here
  */
-export function initBundledSkills(): void {
+export async function initBundledSkills(): Promise<void> {
   registerUpdateConfigSkill()
   registerKeybindingsSkill()
   registerVerifySkill()
@@ -56,9 +56,7 @@ export function initBundledSkills(): void {
     /* eslint-enable @typescript-eslint/no-require-imports */
     registerHunterSkill()
   }
-  /* eslint-disable @typescript-eslint/no-require-imports */
-  const { registerLoopSkill } = require('./loop.js')
-  /* eslint-enable @typescript-eslint/no-require-imports */
+  const { registerLoopSkill } = await import('./loop.js')
   // /loop's isEnabled delegates to isKairosCronEnabled() — same lazy
   // per-invocation pattern as the cron tools. Register it unconditionally so
   // all entrypoints share the same runtime gate.

@@ -42,7 +42,7 @@ const CCR_SENTINEL = 'http://ccr.local';
 if (
   process.env.CCR_DISABLED !== '1' &&
   process.env.CCR_DISABLED !== 'true' &&
-  !process.env.ANTHROPIC_BASE_URL
+  (!process.env.ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL === CCR_SENTINEL)
 ) {
   const DIR = dirname(new URL(import.meta.url).pathname);
   const configPath = resolve(DIR, 'ccr-config.json');
@@ -71,9 +71,9 @@ if (
         newestMtime(resolve(routerDir, 'shared')),
       );
       if (srcMtime > cjsMtime || cjsMtime === 0) {
-        console.log('[CCR] Source newer than bundle — rebuilding...');
+        console.error('[CCR] Source newer than bundle — rebuilding...');
         execSync('node build.mjs', { cwd: routerDir, stdio: 'inherit' });
-        console.log('[CCR] Rebuild complete');
+        console.error('[CCR] Rebuild complete');
       }
     }
 
@@ -113,7 +113,7 @@ if (
 
         process.env.ANTHROPIC_BASE_URL = CCR_SENTINEL;
         process.env.ANTHROPIC_API_KEY ??= 'dummy-key-for-ccr';
-        console.log('[CCR] Router ready (zero-port mode, fetch interceptor)');
+        console.error('[CCR] Router ready (zero-port mode, fetch interceptor)');
 
         (globalThis as any).__ccrServer = server;
         (globalThis as any).__ccrModule = CCR;
