@@ -1,3 +1,4 @@
+import path from 'path'
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { getConnectableHost, normalizeLoopbackHost } from './shared/networkHosts.js'
@@ -16,6 +17,8 @@ export default defineConfig(({ mode }) => {
   const proxyHost = getConnectableHost(configuredHost)
   // TODO: Remove support for legacy PORT variables in all locations in a future major release, leaving only SERVER_PORT.
   const serverPort = env.SERVER_PORT || env.PORT || 3001
+  const localNodeModules = (...segments) =>
+    path.resolve(process.cwd(), 'node_modules', ...segments)
 
   const disableLocalAuth =
     env.CLOUDCLI_DISABLE_LOCAL_AUTH !== '0' &&
@@ -26,6 +29,14 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_DISABLE_LOCAL_AUTH': JSON.stringify(disableLocalAuth ? 'true' : 'false'),
     },
     plugins: [react()],
+    resolve: {
+      alias: {
+        react: localNodeModules('react'),
+        'react-dom': localNodeModules('react-dom'),
+        'react/jsx-runtime': localNodeModules('react', 'jsx-runtime.js'),
+        'react/jsx-dev-runtime': localNodeModules('react', 'jsx-dev-runtime.js'),
+      }
+    },
     server: {
       host,
       port: parseInt(env.VITE_PORT) || 5173,
@@ -60,6 +71,14 @@ export default defineConfig(({ mode }) => {
             ],
             'vendor-xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-clipboard', '@xterm/addon-webgl']
           }
+        }
+      }
+    },
+    test: {
+      environment: 'jsdom',
+      server: {
+        deps: {
+          inline: ['react', 'react-dom']
         }
       }
     }

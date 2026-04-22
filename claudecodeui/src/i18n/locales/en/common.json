@@ -19,6 +19,7 @@
   },
   "tabs": {
     "chat": "Chat",
+    "alwaysOn": "Always-On",
     "shell": "Shell",
     "files": "Files",
     "git": "Source Control",
@@ -94,6 +95,86 @@
     "newSession": "New Session",
     "untitledSession": "Untitled Session",
     "projectFiles": "Project Files"
+  },
+  "alwaysOn": {
+    "title": "Background Jobs Overview",
+    "description": "View the current project's existing durable cron jobs and session-scoped tasks in a single table.",
+    "lastUpdated": "Last updated: {{timestamp}}",
+    "loadingTitle": "Loading cron jobs",
+    "loadingDescription": "Reading the current project's visible scheduled tasks and preparing the overview table.",
+    "emptyTitle": "No scheduled tasks yet",
+    "emptyDescription": "This project does not currently have any visible durable cron jobs or session-scoped tasks.",
+    "summary": {
+      "total": "Total jobs",
+      "recurring": "Recurring jobs",
+      "failed": "Failed recently"
+    },
+    "status": {
+      "scheduled": "Scheduled",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "unknown": "Unknown"
+    },
+    "actions": {
+      "viewDetails": "View details for {{id}}",
+      "discoverTasks": "Discover tasks",
+      "runNow": "Run now"
+    },
+    "flags": {
+      "durable": "Durable",
+      "sessionScoped": "Session",
+      "oneShot": "One-shot",
+      "recurring": "Recurring",
+      "manualOnly": "Manual only",
+      "permanent": "Permanent"
+    },
+    "fields": {
+      "scope": "Scope",
+      "type": "Type",
+      "kind": "Kind",
+      "jobId": "Task ID",
+      "prompt": "Prompt",
+      "cron": "Cron schedule",
+      "status": "Status",
+      "createdAt": "Created",
+      "lastFiredAt": "Last fired",
+      "originSessionId": "Origin session",
+      "transcriptKey": "Transcript key",
+      "lastActivity": "Last activity",
+      "latestRunSummary": "Latest run summary",
+      "latestRunTaskId": "Latest run task ID",
+      "latestRunTranscript": "Latest run transcript",
+      "outputFile": "Output file"
+    },
+    "detail": {
+      "title": "Task details",
+      "oneShotRunNowHint": "Run now executes this one-shot task immediately without changing the original scheduled trigger. It can still fire again at the scheduled time.",
+      "missingTitle": "Task no longer available",
+      "missingDescription": "This task may have been deleted or become unavailable since the overview was loaded.",
+      "noLatestRun": "This task does not have a recorded background run yet.",
+      "sections": {
+        "definition": "Task definition",
+        "latestRun": "Latest run"
+      }
+    },
+    "values": {
+      "notUpdated": "Not updated yet",
+      "notAvailable": "Not available"
+    },
+    "confirmations": {
+      "delete": "Delete scheduled task {{id}}?"
+    },
+    "feedback": {
+      "deleted": "Deleted scheduled task {{id}}.",
+      "runNowStarted": "Started {{id}} immediately.",
+      "alreadyRunning": "Task {{id}} is already running."
+    },
+    "errors": {
+      "loadFailed": "Failed to load cron jobs.",
+      "deleteFailed": "Failed to delete cron job.",
+      "runNowFailed": "Failed to run cron job immediately."
+    }
   },
   "fileTree": {
     "loading": "Loading files...",

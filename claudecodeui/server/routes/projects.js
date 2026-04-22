@@ -3,7 +3,12 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import os from 'os';
-import { addProjectManually } from '../projects.js';
+import {
+  addProjectManually,
+  extractProjectDirectory,
+  getProjectCronJobsOverview
+} from '../projects.js';
+import { sendCronDaemonRequest } from '../services/cron-daemon-owner.js';
 
 const router = express.Router();
 
@@ -160,6 +165,118 @@ export async function validateWorkspacePath(requestedPath) {
     };
   }
 }
+
+function getTrimmedParam(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getCronRequestErrorMessage(error, fallback) {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+  return fallback;
+}
+
+function isCronDaemonUnavailableError(error) {
+  return Boolean(
+    error instanceof Error &&
+    (('code' in error && (error.code === 'ENOENT' || error.code === 'ECONNREFUSED')) ||
+      error.message.includes('Timed out waiting for Cron daemon response'))
+  );
+}
+
+function getCronDaemonErrorStatus(error) {
+  return isCronDaemonUnavailableError(error) ? 503 : 500;
+}
+
+export async function handleGetProjectCronJobs(req, res) {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    if (!projectName) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+
+    const overview = await getProjectCronJobsOverview(projectName);
+    return res.json(overview);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+export async function handleDeleteProjectCronJob(req, res) {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    const taskId = getTrimmedParam(req.params?.taskId);
+    if (!projectName) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+    if (!taskId) {
+      return res.status(400).json({ error: 'taskId is required' });
+    }
+
+    const projectRoot = await extractProjectDirectory(projectName);
+    const response = await sendCronDaemonRequest({
+      type: 'delete_task',
+      projectRoot,
+      taskId
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || 'Cron daemon delete request failed');
+    }
+    if (response.data.type !== 'delete_task') {
+      throw new Error('Unexpected Cron daemon delete response');
+    }
+    if (!response.data.deleted) {
+      return res.status(404).json({ error: 'Scheduled task not found' });
+    }
+    return res.json({ deleted: true });
+  } catch (error) {
+    return res.status(getCronDaemonErrorStatus(error)).json({
+      error: getCronRequestErrorMessage(error, 'Failed to delete cron job')
+    });
+  }
+}
+
+export async function handleRunProjectCronJobNow(req, res) {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    const taskId = getTrimmedParam(req.params?.taskId);
+    if (!projectName) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+    if (!taskId) {
+      return res.status(400).json({ error: 'taskId is required' });
+    }
+
+    const projectRoot = await extractProjectDirectory(projectName);
+    const response = await sendCronDaemonRequest({
+      type: 'run_task_now',
+      projectRoot,
+      taskId
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || 'Cron daemon run-now request failed');
+    }
+    if (response.data.type !== 'run_task_now') {
+      throw new Error('Unexpected Cron daemon run-now response');
+    }
+    if (response.data.reason === 'not_found') {
+      return res.status(404).json({ error: 'Scheduled task not found' });
+    }
+    return res.json({
+      started: response.data.started,
+      ...(response.data.reason ? { reason: response.data.reason } : {})
+    });
+  } catch (error) {
+    return res.status(getCronDaemonErrorStatus(error)).json({
+      error: getCronRequestErrorMessage(error, 'Failed to run cron job now')
+    });
+  }
+}
+
+router.get('/:projectName/cron-jobs', handleGetProjectCronJobs);
+router.delete('/:projectName/cron-jobs/:taskId', handleDeleteProjectCronJob);
+router.post('/:projectName/cron-jobs/:taskId/run-now', handleRunProjectCronJobNow);
 
 /**
  * Create a new workspace

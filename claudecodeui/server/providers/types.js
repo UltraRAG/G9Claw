@@ -46,7 +46,7 @@
  * - permission_cancelled: requestId
  * - session_created:      newSessionId
  * - interactive_prompt:   content
- * - task_notification:    status, summary
+ * - task_notification:    status, summary, taskId?, outputFile?
  */
 
 // ─── Fetch History ───────────────────────────────────────────────────────────
@@ -55,6 +55,9 @@
  * @typedef {Object} FetchHistoryOptions
  * @property {string} [projectName] - Project name (required for Claude)
  * @property {string} [projectPath] - Absolute project path (required for Cursor cwdId hash)
+ * @property {'background_task'} [sessionKind] - Claude background transcript session kind
+ * @property {string} [parentSessionId] - Claude parent session id for background transcripts
+ * @property {string} [relativeTranscriptPath] - Project-relative transcript path for background sessions
  * @property {number|null} [limit] - Page size (null = all messages)
  * @property {number} [offset] - Pagination offset (default: 0)
  */

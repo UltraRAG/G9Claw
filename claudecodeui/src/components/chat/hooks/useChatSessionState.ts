@@ -2,10 +2,16 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { MutableRefObject } from 'react';
 import { authenticatedFetch } from '../../../utils/api';
 import type { ChatMessage, Provider } from '../types/types';
-import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
+import {
+  getSessionRequestParams,
+  isBackgroundTaskSession,
+  type Project,
+  type ProjectSession,
+  type SessionProvider,
+} from '../../../types/app';
+import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
 import { normalizedToChatMessages } from './useChatMessages';
-import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
 
 const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
@@ -139,6 +145,11 @@ export function useChatSessionState({
   /* ---------------------------------------------------------------- */
 
   const activeSessionId = selectedSession?.id || currentSessionId || null;
+  const isReadOnlyBackgroundSession = isBackgroundTaskSession(selectedSession);
+  const sessionRequestParams = useMemo(
+    () => getSessionRequestParams(selectedSession),
+    [selectedSession],
+  );
   const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null);
 
   // Tell the store which session we're viewing so it only re-renders for this one
@@ -243,6 +254,7 @@ export function useChatSessionState({
           provider: sessionProvider as SessionProvider,
           projectName: selectedProject.name,
           projectPath: selectedProject.fullPath || selectedProject.path || '',
+          ...sessionRequestParams,
           limit: MESSAGES_PER_PAGE,
         });
         if (!slot || slot.serverMessages.length === 0) return false;
@@ -256,7 +268,14 @@ export function useChatSessionState({
         isLoadingMoreRef.current = false;
       }
     },
-    [hasMoreMessages, isLoadingMoreMessages, selectedProject, selectedSession, sessionStore],
+    [
+      hasMoreMessages,
+      isLoadingMoreMessages,
+      selectedProject,
+      selectedSession,
+      sessionRequestParams,
+      sessionStore,
+    ],
   );
 
   const handleScroll = useCallback(async () => {
@@ -365,7 +384,7 @@ export function useChatSessionState({
     }
 
     // Check session status
-    if (ws) {
+    if (ws && !isReadOnlyBackgroundSession) {
       sendMessage({ type: 'check-session-status', sessionId: selectedSession.id, provider });
     }
 
@@ -377,6 +396,7 @@ export function useChatSessionState({
       provider: (selectedSession.__provider || provider) as SessionProvider,
       projectName: selectedProject.name,
       projectPath: selectedProject.fullPath || selectedProject.path || '',
+      ...sessionRequestParams,
       limit: MESSAGES_PER_PAGE,
       offset: 0,
     }).then(slot => {
@@ -390,12 +410,15 @@ export function useChatSessionState({
       setIsLoadingSessionMessages(false);
     });
   }, [
+    currentSessionId,
     pendingViewSessionRef,
     resetStreamingState,
     selectedProject,
-    selectedSession?.id,
+    selectedSession,
     sendMessage,
     ws,
+    isReadOnlyBackgroundSession,
+    sessionRequestParams,
     sessionStore,
   ]);
 
@@ -413,6 +436,7 @@ export function useChatSessionState({
             provider: (selectedSession.__provider || provider) as SessionProvider,
             projectName: selectedProject.name,
             projectPath: selectedProject.fullPath || selectedProject.path || '',
+            ...sessionRequestParams,
           });
 
           if (Boolean(autoScrollToBottom) && isNearBottom()) {
@@ -432,6 +456,7 @@ export function useChatSessionState({
     scrollToBottom,
     selectedProject,
     selectedSession,
+    sessionRequestParams,
     sessionStore,
     isLoading,
   ]);
@@ -471,6 +496,7 @@ export function useChatSessionState({
               provider: sessionProvider as SessionProvider,
               projectName: selectedProject.name,
               projectPath: selectedProject.fullPath || selectedProject.path || '',
+              ...sessionRequestParams,
               limit: null,
               offset: 0,
             });
@@ -536,8 +562,7 @@ export function useChatSessionState({
     };
 
     scrollToTarget();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages.length, isLoadingSessionMessages, searchTarget]);
+  }, [chatMessages.length, isLoadingSessionMessages, searchTarget, selectedProject, selectedSession, sessionRequestParams, sessionStore]);
 
   // Token usage fetch for Claude
   useEffect(() => {
@@ -546,7 +571,10 @@ export function useChatSessionState({
       return;
     }
     const sessionProvider = selectedSession.__provider || 'claude';
-    if (sessionProvider !== 'claude') return;
+    if (sessionProvider !== 'claude' || isReadOnlyBackgroundSession) {
+      setTokenBudget(null);
+      return;
+    }
 
     const fetchInitialTokenUsage = async () => {
       try {
@@ -562,7 +590,7 @@ export function useChatSessionState({
       }
     };
     fetchInitialTokenUsage();
-  }, [selectedProject, selectedSession?.id, selectedSession?.__provider]);
+  }, [isReadOnlyBackgroundSession, selectedProject, selectedSession?.id, selectedSession?.__provider]);
 
   const visibleMessages = useMemo(() => {
     if (chatMessages.length <= visibleMessageCount) return chatMessages;
@@ -658,6 +686,7 @@ export function useChatSessionState({
         provider: sessionProvider as SessionProvider,
         projectName: selectedProject.name,
         projectPath: selectedProject.fullPath || selectedProject.path || '',
+        ...sessionRequestParams,
         limit: null,
         offset: 0,
       });
@@ -690,7 +719,14 @@ export function useChatSessionState({
       isLoadingMoreRef.current = false;
       setIsLoadingAllMessages(false);
     }
-  }, [selectedSession, selectedProject, isLoadingAllMessages, currentSessionId, sessionStore]);
+  }, [
+    selectedSession,
+    selectedProject,
+    isLoadingAllMessages,
+    currentSessionId,
+    sessionRequestParams,
+    sessionStore,
+  ]);
 
   const loadEarlierMessages = useCallback(() => {
     setVisibleMessageCount((prev) => prev + 100);

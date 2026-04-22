@@ -7,7 +7,12 @@
 //     a configurable limit (DEFAULT_CRON_JITTER_CONFIG.recurringMaxAgeMs).
 //
 // File format:
-//   { "tasks": [{ id, cron, prompt, createdAt, recurring?, permanent? }] }
+//   {
+//     "tasks": [{
+//       id, cron, prompt, createdAt, recurring?, permanent?,
+//       manualOnly?, transcriptKey?, originSessionId?
+//     }]
+//   }
 
 import { randomUUID } from 'crypto'
 import { readFileSync } from 'fs'
@@ -16,8 +21,10 @@ import { join } from 'path'
 import {
   addSessionCronTask,
   getProjectRoot,
+  getSessionId,
   getSessionCronTasks,
   removeSessionCronTasks,
+  updateSessionCronTask,
 } from '../bootstrap/state.js'
 import { computeNextCronRun, parseCronExpression } from './cron.js'
 import { logForDebugging } from './debug.js'
@@ -56,11 +63,33 @@ export type CronTask = {
    */
   permanent?: boolean
   /**
-   * Runtime-only flag. false → session-scoped (never written to disk).
-   * File-backed tasks leave this undefined; writeCronTasks strips it so
-   * the on-disk shape stays { id, cron, prompt, createdAt, lastFiredAt?, recurring?, permanent? }.
+   * Runtime-only flag. false → session-scoped (never written to
+   * .claude/scheduled_tasks.json). File-backed tasks leave this undefined;
+   * writeCronTasks strips it so the on-disk shape stays
+   * { id, cron, prompt, createdAt, lastFiredAt?, recurring?, permanent?, manualOnly?, transcriptKey?, originSessionId? }.
    */
   durable?: boolean
+  /**
+   * When true, the job is a proposal that never auto-fires on its cron
+   * schedule. It only runs when explicitly triggered via "run now".
+   */
+  manualOnly?: boolean
+  /**
+   * Stable sidechain transcript key for recurring Cron runs. One-shot tasks
+   * intentionally do not persist this because each fire gets a fresh transcript.
+   */
+  transcriptKey?: string
+  /**
+   * Session that owns the recurring sidechain transcript. This lets recurring
+   * tasks keep appending to the same sidechain JSONL even after the foreground
+   * session id changes (for example after /clear or a later restart).
+   */
+  originSessionId?: string
+  /**
+   * Runtime-only: the currently active or most recent background task instance.
+   * Useful for diagnostics and TUI foregrounding, but not persisted to disk.
+   */
+  lastRunTaskId?: string
   /**
    * Runtime-only. When set, the task was created by an in-process teammate.
    * The scheduler routes fires to that teammate's queue instead of the main
@@ -72,6 +101,13 @@ export type CronTask = {
 type CronFile = { tasks: CronTask[] }
 
 const CRON_FILE_REL = join('.claude', 'scheduled_tasks.json')
+
+export type AddCronTaskOptions = {
+  dir?: string
+  originSessionId?: string
+  addSessionTask?: (task: CronTask) => void
+  manualOnly?: boolean
+}
 
 /**
  * Path to the cron file. `dir` defaults to getProjectRoot() — pass it
@@ -134,6 +170,13 @@ export async function readCronTasks(dir?: string): Promise<CronTask[]> {
         : {}),
       ...(t.recurring ? { recurring: true } : {}),
       ...(t.permanent ? { permanent: true } : {}),
+      ...(t.manualOnly ? { manualOnly: true } : {}),
+      ...(typeof t.transcriptKey === 'string'
+        ? { transcriptKey: t.transcriptKey }
+        : {}),
+      ...(typeof t.originSessionId === 'string'
+        ? { originSessionId: t.originSessionId }
+        : {}),
     })
   }
   return out
@@ -169,10 +212,12 @@ export async function writeCronTasks(
   const root = dir ?? getProjectRoot()
   await mkdir(join(root, '.claude'), { recursive: true })
   // Strip the runtime-only `durable` flag — everything on disk is durable
-  // by definition, and keeping the flag out means readCronTasks() naturally
-  // yields durable: undefined without having to set it explicitly.
+  // by definition. `lastRunTaskId` is also runtime-only: runtime task ids are
+  // per-execution and should not be revived from disk.
   const body: CronFile = {
-    tasks: tasks.map(({ durable: _durable, ...rest }) => rest),
+    tasks: tasks.map(
+      ({ durable: _durable, lastRunTaskId: _lastRunTaskId, ...rest }) => rest,
+    ),
   }
   await writeFile(
     getCronFilePath(root),
@@ -185,11 +230,11 @@ export async function writeCronTasks(
  * Append a task. Returns the generated id. Caller is responsible for having
  * already validated the cron string (the tool does this via validateInput).
  *
- * When `durable` is false the task is held in process memory only
- * (bootstrap/state.ts) — it fires on schedule this session but is never
- * written to .claude/scheduled_tasks.json and dies with the process. The
- * scheduler merges session tasks into its tick loop directly, so no file
- * change event is needed.
+ * When `durable` is false the task is routed to a runtime-owned session store.
+ * The default REPL path uses bootstrap/state.ts in-process memory; the daemon
+ * path can inject its own store via `options.addSessionTask`. Session tasks are
+ * never written to .claude/scheduled_tasks.json (daemon callers may persist
+ * them separately for restart recovery).
  */
 export async function addCronTask(
   cron: string,
@@ -197,6 +242,7 @@ export async function addCronTask(
   recurring: boolean,
   durable: boolean,
   agentId?: string,
+  options?: AddCronTaskOptions,
 ): Promise<string> {
   // Short ID — 8 hex chars is plenty for MAX_JOBS=50, avoids slice/prefix
   // juggling between the tool layer (shows short IDs) and disk.
@@ -206,15 +252,26 @@ export async function addCronTask(
     cron,
     prompt,
     createdAt: Date.now(),
+    originSessionId: options?.originSessionId ?? getSessionId(),
     ...(recurring ? { recurring: true } : {}),
+    ...(options?.manualOnly ? { manualOnly: true } : {}),
   }
   if (!durable) {
+    const sessionTask: CronTask = {
+      ...task,
+      ...(agentId ? { agentId } : {}),
+      durable: false,
+    }
+    if (options?.addSessionTask) {
+      options.addSessionTask(sessionTask)
+      return id
+    }
     addSessionCronTask({ ...task, ...(agentId ? { agentId } : {}) })
     return id
   }
-  const tasks = await readCronTasks()
+  const tasks = await readCronTasks(options?.dir)
   tasks.push(task)
-  await writeCronTasks(tasks)
+  await writeCronTasks(tasks, options?.dir)
   return id
 }
 
@@ -247,11 +304,36 @@ export async function removeCronTasks(
   await writeCronTasks(remaining, dir)
 }
 
+export async function updateCronTask(
+  id: string,
+  updater: (task: CronTask) => CronTask,
+  dir?: string,
+): Promise<CronTask | null> {
+  if (dir === undefined) {
+    const updated = updateSessionCronTask(id, task => updater(task))
+    if (updated) {
+      return updated
+    }
+  }
+
+  const tasks = await readCronTasks(dir)
+  let updatedTask: CronTask | null = null
+  const nextTasks = tasks.map(task => {
+    if (task.id !== id) return task
+    updatedTask = updater(task)
+    return updatedTask
+  })
+  if (!updatedTask) return null
+  await writeCronTasks(nextTasks, dir)
+  return updatedTask
+}
+
 /**
  * Stamp `lastFiredAt` on the given recurring tasks and write back. Batched
  * so N fires in one scheduler tick = one read-modify-write, not N. Only
- * touches file-backed tasks — session tasks die with the process, no point
- * persisting their fire time. No-op if none of the ids match (task was
+ * touches file-backed tasks — daemon-managed session tasks use the separate
+ * session-scheduled file path when they need restart recovery. No-op if none
+ * of the ids match (task was
  * deleted between fire and write — e.g. user ran CronDelete mid-tick).
  *
  * Scheduler lock means at most one process calls this; chokidar picks up

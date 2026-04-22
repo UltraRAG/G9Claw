@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_WITH_REFRESH } from '../../services/analytics/growthbook.js'
 import { DEFAULT_CRON_JITTER_CONFIG } from '../../utils/cronTasks.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -9,14 +8,13 @@ export const DEFAULT_MAX_AGE_DAYS =
   DEFAULT_CRON_JITTER_CONFIG.recurringMaxAgeMs / (24 * 60 * 60 * 1000)
 
 /**
- * Unified gate for the cron scheduling system. Combines the build-time
- * `feature('AGENT_TRIGGERS')` flag (dead code elimination) with the runtime
- * `tengu_kairos_cron` GrowthBook gate on a 5-minute refresh window.
+ * Unified gate for the cron scheduling system. Cron tooling is now always
+ * compiled into repo builds, and this runtime gate decides whether the tools,
+ * scheduler, and /loop skill are actually enabled.
  *
- * AGENT_TRIGGERS is independently shippable from KAIROS — the cron module
- * graph (cronScheduler/cronTasks/cronTasksLock/cron.ts + the three tools +
- * /loop skill) has zero imports into src/assistant/ and no feature('KAIROS')
- * calls. The REPL.tsx kairosEnabled read is safe:
+ * The cron module graph (cronScheduler/cronTasks/cronTasksLock/cron.ts + the
+ * three tools + /loop skill) has zero imports into src/assistant/ and no
+ * feature('KAIROS') calls. The REPL.tsx kairosEnabled read is safe:
  * kairosEnabled is unconditionally in AppStateStore with default false, so
  * when KAIROS is off the scheduler just gets assistantMode: false.
  *
@@ -34,14 +32,14 @@ export const DEFAULT_MAX_AGE_DAYS =
  * `CLAUDE_CODE_DISABLE_CRON` is a local override that wins over GB.
  */
 export function isKairosCronEnabled(): boolean {
-  return feature('AGENT_TRIGGERS')
-    ? !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON) &&
-        getFeatureValue_CACHED_WITH_REFRESH(
-          'tengu_kairos_cron',
-          true,
-          KAIROS_CRON_REFRESH_MS,
-        )
-    : false
+  return (
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON) &&
+    getFeatureValue_CACHED_WITH_REFRESH(
+      'tengu_kairos_cron',
+      true,
+      KAIROS_CRON_REFRESH_MS,
+    )
+  )
 }
 
 /**
@@ -67,21 +65,25 @@ export const CRON_LIST_TOOL_NAME = 'CronList'
 
 export function buildCronCreateDescription(durableEnabled: boolean): string {
   return durableEnabled
-    ? 'Schedule a prompt to run at a future time — either recurring on a cron schedule, or once at a specific time. Pass durable: true to persist to .claude/scheduled_tasks.json; otherwise session-only.'
-    : 'Schedule a prompt to run at a future time within this Claude session — either recurring on a cron schedule, or once at a specific time.'
+    ? 'Schedule a prompt to run at a future time — either recurring on a cron schedule, or once at a specific time. Pass durable: true to persist to .claude/scheduled_tasks.json; pass manualOnly: true to create a proposal that only runs when manually triggered.'
+    : 'Schedule a prompt to run at a future time in the Cron daemon — either recurring on a cron schedule, or once at a specific time. Pass manualOnly: true to create a proposal that only runs when manually triggered.'
 }
 
 export function buildCronCreatePrompt(durableEnabled: boolean): string {
   const durabilitySection = durableEnabled
     ? `## Durability
 
-By default (durable: false) the job lives only in this Claude session — nothing is written to disk, and the job is gone when Claude exits. Pass durable: true to write to .claude/scheduled_tasks.json so the job survives restarts. Only use durable: true when the user explicitly asks for the task to persist ("keep doing this every day", "set this up permanently"). Most "remind me in 5 minutes" / "check back in an hour" requests should stay session-only.`
+By default (durable: false) the job stays session-scoped in the Cron daemon and is stored separately from durable jobs so it can be restored after a daemon restart. Pass durable: true to write to .claude/scheduled_tasks.json so the job survives across sessions. Only use durable: true when the user explicitly asks for the task to persist across sessions ("keep doing this every day", "set this up permanently"). Most "remind me in 5 minutes" / "check back in an hour" requests should stay session-scoped.`
     : `## Session-only
 
-Jobs live only in this Claude session — nothing is written to disk, and the job is gone when Claude exits.`
+Jobs stay session-scoped in the Cron daemon and are stored separately from durable jobs so they can be restored after a daemon restart.`
+
+  const manualOnlySection = `## Manual-only proposals
+
+Pass manualOnly: true when the job should be created as a proposal rather than auto-scheduled. Manual-only jobs still appear in Always-On and can be launched with "Run now", but they never fire automatically on their cron schedule. Use this for "propose follow-up tasks for later approval" workflows.`
 
   const durableRuntimeNote = durableEnabled
-    ? 'Durable jobs persist to .claude/scheduled_tasks.json and survive session restarts — on next launch they resume automatically. One-shot durable tasks that were missed while the REPL was closed are surfaced for catch-up. Session-only jobs die with the process. '
+    ? 'Durable jobs persist to .claude/scheduled_tasks.json and survive session restarts — on next launch they resume automatically. One-shot durable tasks that were missed while the daemon was down are surfaced for catch-up. Session-scoped jobs are stored separately from durable jobs and are restored when the daemon restarts, but remain scoped to their originating session. '
     : ''
 
   return `Schedule a prompt to be enqueued at a future time. Use for both recurring schedules and one-shot reminders.
@@ -111,9 +113,11 @@ Only use minute 0 or 30 when the user names that exact time and clearly means it
 
 ${durabilitySection}
 
+${manualOnlySection}
+
 ## Runtime behavior
 
-Jobs only fire while the REPL is idle (not mid-query). ${durableRuntimeNote}The scheduler adds a small deterministic jitter on top of whatever you pick: recurring tasks fire up to 10% of their period late (max 15 min); one-shot tasks landing on :00 or :30 fire up to 90 s early. Picking an off-minute is still the bigger lever.
+Jobs fire from the Cron daemon rather than the foreground REPL/Web query process. ${durableRuntimeNote}The scheduler adds a small deterministic jitter on top of whatever you pick: recurring tasks fire up to 10% of their period late (max 15 min); one-shot tasks landing on :00 or :30 fire up to 90 s early. Picking an off-minute is still the bigger lever.
 
 Recurring tasks auto-expire after ${DEFAULT_MAX_AGE_DAYS} days — they fire one final time, then are deleted. This bounds session lifetime. Tell the user about the ${DEFAULT_MAX_AGE_DAYS}-day limit when scheduling recurring jobs.
 
@@ -123,13 +127,13 @@ Returns a job ID you can pass to ${CRON_DELETE_TOOL_NAME}.`
 export const CRON_DELETE_DESCRIPTION = 'Cancel a scheduled cron job by ID'
 export function buildCronDeletePrompt(durableEnabled: boolean): string {
   return durableEnabled
-    ? `Cancel a cron job previously scheduled with ${CRON_CREATE_TOOL_NAME}. Removes it from .claude/scheduled_tasks.json (durable jobs) or the in-memory session store (session-only jobs).`
-    : `Cancel a cron job previously scheduled with ${CRON_CREATE_TOOL_NAME}. Removes it from the in-memory session store.`
+    ? `Cancel a cron job previously scheduled with ${CRON_CREATE_TOOL_NAME}. Removes it from .claude/scheduled_tasks.json (durable jobs) or the Cron daemon's session-scoped store (session-only jobs).`
+    : `Cancel a cron job previously scheduled with ${CRON_CREATE_TOOL_NAME}. Removes it from the Cron daemon's session-scoped store.`
 }
 
 export const CRON_LIST_DESCRIPTION = 'List scheduled cron jobs'
 export function buildCronListPrompt(durableEnabled: boolean): string {
   return durableEnabled
-    ? `List all cron jobs scheduled via ${CRON_CREATE_TOOL_NAME}, both durable (.claude/scheduled_tasks.json) and session-only.`
-    : `List all cron jobs scheduled via ${CRON_CREATE_TOOL_NAME} in this session.`
+    ? `List all cron jobs scheduled via ${CRON_CREATE_TOOL_NAME}, both durable (.claude/scheduled_tasks.json) and session-scoped in the Cron daemon. Include whether each job is manualOnly (proposal-only, no auto-fire).`
+    : `List all cron jobs scheduled via ${CRON_CREATE_TOOL_NAME} in the Cron daemon session store. Include whether each job is manualOnly (proposal-only, no auto-fire).`
 }

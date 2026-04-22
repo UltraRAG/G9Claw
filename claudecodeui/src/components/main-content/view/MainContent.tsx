@@ -1,9 +1,14 @@
-import React, { useEffect } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import ChatInterface from '../../chat/view/ChatInterface';
+import AlwaysOnPanel from '../../always-on/view/AlwaysOnPanel';
 import FileTree from '../../file-tree/view/FileTree';
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import GitPanel from '../../git-panel/view/GitPanel';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
+import {
+  getStoredClaudePermissionMode,
+  startClaudeSessionCommand,
+} from '../../chat/utils/claudeSessionLauncher';
 import type { MainContentProps } from '../types/types';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
@@ -27,6 +32,42 @@ type TasksSettingsContextValue = {
   isTaskMasterReady: boolean | null;
 };
 
+function getClaudeProjectStorePath(project: Project): string {
+  const projectPath = project.fullPath || project.path || '';
+  const unixHomeMatch = projectPath.match(/^(\/Users\/[^/]+|\/home\/[^/]+)/);
+  if (unixHomeMatch?.[1]) {
+    return `${unixHomeMatch[1]}/.claude/projects/${project.name}`;
+  }
+
+  const windowsHomeMatch = projectPath.match(/^([A-Za-z]:\\Users\\[^\\]+)/);
+  if (windowsHomeMatch?.[1]) {
+    return `${windowsHomeMatch[1]}\\.claude\\projects\\${project.name}`;
+  }
+
+  return `~/.claude/projects/${project.name}`;
+}
+
+function buildAlwaysOnDiscoveryPrompt(project: Project): string {
+  const workspacePath = project.fullPath || project.path || project.name;
+  const claudeProjectStorePath = getClaudeProjectStorePath(project);
+  const displayName = project.displayName || project.name;
+
+  return [
+    `Always-On task discovery for project "${displayName}".`,
+    '',
+    'Please proactively inspect this project and decide whether there are meaningful follow-up tasks worth proposing.',
+    '',
+    'Requirements:',
+    `1. Inspect the current workspace at \`${workspacePath}\`.`,
+    `2. Inspect the 5 most recently modified files under \`${claudeProjectStorePath}\` and use them as additional context for discovery.`,
+    '3. Judge whether there are valuable follow-up tasks. If there are none, explain why and stop.',
+    '4. If there are worthwhile tasks, create at most 3 cron jobs using CronCreate.',
+    '5. Every cron job you create must use `durable: true` and `manualOnly: true` so it appears in Always-On but never runs automatically.',
+    '6. Do not execute any cron job or background task right now.',
+    '7. In your reply, summarize what you inspected, why each proposed task is valuable, and which cron IDs were created.',
+  ].join('\n');
+}
+
 function MainContent({
   selectedProject,
   selectedSession,
@@ -46,6 +87,7 @@ function MainContent({
   processingSessions,
   onReplaceTemporarySession,
   onNavigateToSession,
+  onStartNewSession,
   onShowSettings,
   externalMessageUpdate,
 }: MainContentProps) {
@@ -86,6 +128,31 @@ function MainContent({
       setActiveTab('chat');
     }
   }, [shouldShowTasksTab, activeTab, setActiveTab]);
+
+  const handleStartDiscoverySession = useCallback(async () => {
+    if (!selectedProject) {
+      return;
+    }
+
+    onStartNewSession(selectedProject);
+
+    const discoveryPrompt = buildAlwaysOnDiscoveryPrompt(selectedProject);
+    const pendingSessionId = startClaudeSessionCommand({
+      sendMessage,
+      selectedProject,
+      command: discoveryPrompt,
+      permissionMode: getStoredClaudePermissionMode(selectedSession),
+      sessionSummary: `Always-On discovery: ${selectedProject.displayName || selectedProject.name}`,
+    });
+
+    onSessionActive?.(pendingSessionId);
+  }, [
+    onSessionActive,
+    onStartNewSession,
+    selectedProject,
+    selectedSession,
+    sendMessage,
+  ]);
 
   if (isLoading) {
     return <MainContentStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
@@ -141,6 +208,15 @@ function MainContent({
           {activeTab === 'files' && (
             <div className="h-full overflow-hidden">
               <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+            </div>
+          )}
+
+          {activeTab === 'always-on' && (
+            <div className="h-full overflow-hidden">
+              <AlwaysOnPanel
+                selectedProject={selectedProject}
+                onStartDiscoverySession={handleStartDiscoverySession}
+              />
             </div>
           )}
 

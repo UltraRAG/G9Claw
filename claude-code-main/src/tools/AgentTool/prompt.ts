@@ -9,6 +9,7 @@ import { FILE_WRITE_TOOL_NAME } from '../FileWriteTool/prompt.js'
 import { GLOB_TOOL_NAME } from '../GlobTool/prompt.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
 import { AGENT_TOOL_NAME } from './constants.js'
+import { shouldForceMainAgentAsyncSpawn } from './asyncSpawnPolicy.js'
 import { isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 
@@ -76,6 +77,7 @@ export async function getPrompt(
   // Fork subagent feature: when enabled, insert the "When to fork" section
   // (fork semantics, directive-style prompts) and swap in fork-aware examples.
   const forkEnabled = isForkSubagentEnabled()
+  const mainAgentDefaultsToBackground = shouldForceMainAgentAsyncSpawn()
 
   const whenToForkSection = forkEnabled
     ? `
@@ -248,22 +250,25 @@ When NOT to use the ${AGENT_TOOL_NAME} tool:
 - Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses`
       : ''
 
+  const backgroundUsageSection =
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) &&
+    !isInProcessTeammate()
+      ? mainAgentDefaultsToBackground
+        ? `
+- Agent invocations from the main conversation launch in the background by default. You will be automatically notified when they complete — do NOT sleep, poll, or proactively check on their progress. Continue with other work or respond to the user instead.
+- Forks (omit \`subagent_type\`) also remain background tasks so their tool output stays out of your context.`
+        : `
+- You can optionally run agents in the background using the run_in_background parameter. When an agent runs in the background, you will be automatically notified when it completes — do NOT sleep, poll, or proactively check on its progress. Continue with other work or respond to the user instead.
+- **Foreground vs background**: Use foreground (default) when you need the agent's results before you can proceed — e.g., research agents whose findings inform your next steps. Use background when you have genuinely independent work to do in parallel.`
+      : ''
+
   // Non-coordinator gets the full prompt with all sections
   return `${shared}
 ${whenNotToUseSection}
 
 Usage notes:
 - Always include a short description (3-5 words) summarizing what the agent will do${concurrencyNote}
-- When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.${
-    // eslint-disable-next-line custom-rules/no-process-env-top-level
-    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) &&
-    !isInProcessTeammate() &&
-    !forkEnabled
-      ? `
-- You can optionally run agents in the background using the run_in_background parameter. When an agent runs in the background, you will be automatically notified when it completes — do NOT sleep, poll, or proactively check on its progress. Continue with other work or respond to the user instead.
-- **Foreground vs background**: Use foreground (default) when you need the agent's results before you can proceed — e.g., research agents whose findings inform your next steps. Use background when you have genuinely independent work to do in parallel.`
-      : ''
-  }
+- When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.${backgroundUsageSection}
 - To continue a previously spawned agent, use ${SEND_MESSAGE_TOOL_NAME} with the agent's ID or name as the \`to\` field. The agent resumes with its full context preserved. ${forkEnabled ? 'Each fresh Agent invocation with a subagent_type starts without context — provide a complete task description.' : 'Each Agent invocation starts fresh — provide a complete task description.'}
 - The agent's outputs should generally be trusted
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.)${forkEnabled ? '' : ", since it is not aware of the user's intent"}

@@ -282,6 +282,104 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
   },
 
   // ============================================================================
+  // CRON TOOLS
+  // ============================================================================
+
+  CronCreate: {
+    input: {
+      type: 'one-line',
+      label: 'CronCreate',
+      getValue: (input) => input.prompt || 'schedule job',
+      getSecondary: (input) => {
+        const cadence = input.recurring === false ? 'one-shot' : 'recurring';
+        const storage = input.durable ? 'durable' : 'session';
+        return input.cron
+          ? `${input.cron} · ${cadence} · ${storage}`
+          : `${cadence} · ${storage}`;
+      },
+      action: 'none',
+      colorScheme: {
+        primary: 'text-gray-700 dark:text-gray-300',
+        secondary: 'text-gray-500 dark:text-gray-400',
+        border: 'border-amber-400 dark:border-amber-500',
+        icon: 'text-amber-500 dark:text-amber-400'
+      }
+    },
+    result: {
+      type: 'collapsible',
+      defaultOpen: false,
+      title: (result) => {
+        const toolData = result?.toolUseResult || {};
+        const job = toolData.data || toolData;
+        const id = job.id ? `Scheduled ${job.id}` : 'Scheduled job';
+        return job.humanSchedule ? `${id} · ${job.humanSchedule}` : id;
+      },
+      contentType: 'text',
+      getContentProps: (result) => ({
+        content: String(result?.content || ''),
+        format: 'plain'
+      })
+    }
+  },
+
+  CronDelete: {
+    input: {
+      type: 'one-line',
+      label: 'CronDelete',
+      getValue: (input) => input.id || 'cancel scheduled job',
+      action: 'none',
+      colorScheme: {
+        primary: 'text-gray-700 dark:text-gray-300',
+        border: 'border-amber-400 dark:border-amber-500',
+        icon: 'text-amber-500 dark:text-amber-400'
+      }
+    },
+    result: {
+      type: 'collapsible',
+      defaultOpen: false,
+      title: (result) => {
+        const toolData = result?.toolUseResult || {};
+        const job = toolData.data || toolData;
+        return job.id ? `Cancelled ${job.id}` : 'Cancelled scheduled job';
+      },
+      contentType: 'text',
+      getContentProps: (result) => ({
+        content: String(result?.content || ''),
+        format: 'plain'
+      })
+    }
+  },
+
+  CronList: {
+    input: {
+      type: 'one-line',
+      label: 'CronList',
+      getValue: () => 'listing scheduled jobs',
+      action: 'none',
+      colorScheme: {
+        primary: 'text-gray-700 dark:text-gray-300',
+        border: 'border-amber-400 dark:border-amber-500',
+        icon: 'text-amber-500 dark:text-amber-400'
+      }
+    },
+    result: {
+      type: 'collapsible',
+      defaultOpen: false,
+      title: (result) => {
+        const toolData = result?.toolUseResult || {};
+        const jobs = toolData.data?.jobs || toolData.jobs || [];
+        const count = Array.isArray(jobs) ? jobs.length : 0;
+        return `${count} scheduled ${count === 1 ? 'job' : 'jobs'}`;
+      },
+      contentType: 'text',
+      getContentProps: (result) => ({
+        content: String(result?.content || ''),
+        format: 'plain'
+      })
+    }
+  },
+
+  // ============================================================================
   // TASK TOOLS (TaskCreate, TaskUpdate, TaskList, TaskGet)
   // ============================================================================
 

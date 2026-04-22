@@ -19,6 +19,7 @@ export function renderCreateResultMessage(output: CreateOutput): React.ReactNode
       <Text>
         Scheduled <Text bold>{output.id}</Text>{' '}
         <Text dimColor>({output.humanSchedule})</Text>
+        {output.manualOnly ? <Text dimColor> [manual-only]</Text> : null}
       </Text>
     </MessageResponse>;
 }
@@ -52,6 +53,7 @@ export function renderListResultMessage(output: ListOutput): React.ReactNode {
   return <MessageResponse>
       {output.jobs.map(j => <Text key={j.id}>
           <Text bold>{j.id}</Text> <Text dimColor>{j.humanSchedule}</Text>
+          {j.manualOnly ? <Text dimColor> [manual-only]</Text> : null}
         </Text>)}
     </MessageResponse>;
 }
