@@ -1482,6 +1482,28 @@ async function loadTraces() {
   updateCounts();
 }
 
+function applyDashboardSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return false;
+
+  state.overview = snapshot.overview ?? null;
+  state.settings = snapshot.settings ?? null;
+  state.workspace = snapshot.workspace ?? null;
+  state.userSummary = snapshot.userSummary ?? null;
+  state.caseTraces = Array.isArray(snapshot.caseTraces) ? snapshot.caseTraces : [];
+  state.indexTraces = Array.isArray(snapshot.indexTraces) ? snapshot.indexTraces : [];
+  state.dreamTraces = Array.isArray(snapshot.dreamTraces) ? snapshot.dreamTraces : [];
+
+  syncSettingsInputsFromState();
+  renderWorkspace();
+  renderUserSummary();
+  renderRecallCaseList();
+  renderIndexTraceSelect();
+  renderDreamTraceSelect();
+  updateCounts();
+  applyPageChrome();
+  return true;
+}
+
 async function loadDashboard() {
   if (!state.projectPath) { setStatus(t("error.missingProjectPath"), "error"); return; }
   setStatus(t("status.refreshing"));
@@ -1496,9 +1518,14 @@ async function runAction(label, path, body = {}, options = {}) {
   if (options.maintenance) setMaintenanceBusy(true);
   setStatus(t("status.running", label));
   try {
-    const r = await fetchJson(path, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    const actionPath = state.workspaceQuery
+      ? `${path}${path.includes("?") ? "&" : "?"}q=${encodeURIComponent(state.workspaceQuery)}`
+      : path;
+    const r = await fetchJson(actionPath, { method: "POST", headers: { "Content-Type": "application/json" }, body });
     setStatus(t("status.done", label));
-    await loadDashboard();
+    if (!applyDashboardSnapshot(r?.dashboard)) {
+      await loadDashboard();
+    }
     return r;
   } catch (err) {
     setStatus(err instanceof Error ? err.message : String(err), "error");

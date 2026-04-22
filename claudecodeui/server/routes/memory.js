@@ -99,6 +99,22 @@ function buildWorkspaceSnapshot(repository, { query = '', limit = 100, offset = 
   };
 }
 
+function buildDashboardSnapshot(service, repository, { query = '' } = {}) {
+  return {
+    overview: service.overview(),
+    settings: service.getSettings(),
+    workspace: buildWorkspaceSnapshot(repository, {
+      query,
+      limit: 200,
+      offset: 0,
+    }),
+    userSummary: service.getUserSummary(),
+    caseTraces: service.listCaseTraces(12),
+    indexTraces: service.listIndexTraces(10),
+    dreamTraces: service.listDreamTraces(10),
+  };
+}
+
 function getQuery(req) {
   return typeof req.query.q === 'string' ? req.query.q.trim() : '';
 }
@@ -146,20 +162,38 @@ router.route('/settings')
     }));
 
 router.post('/index/run', async (req, res) =>
-  withMemoryService(req, res, async ({ dataDir, service }) => {
-    res.json(await runManualMemoryFlush(service, dataDir, { reason: 'manual' }));
+  withMemoryService(req, res, async ({ dataDir, service, repository }) => {
+    const result = await runManualMemoryFlush(service, dataDir, { reason: 'manual' });
+    res.json({
+      ...result,
+      dashboard: buildDashboardSnapshot(service, repository, {
+        query: getQuery(req),
+      }),
+    });
   }),
 );
 
 router.post('/dream/run', async (req, res) =>
-  withMemoryService(req, res, async ({ dataDir, service }) => {
-    res.json(await runManualMemoryDream(service, dataDir));
+  withMemoryService(req, res, async ({ dataDir, service, repository }) => {
+    const result = await runManualMemoryDream(service, dataDir);
+    res.json({
+      ...result,
+      dashboard: buildDashboardSnapshot(service, repository, {
+        query: getQuery(req),
+      }),
+    });
   }),
 );
 
 router.post('/dream/rollback-last', async (req, res) =>
-  withMemoryService(req, res, async ({ dataDir, service }) => {
-    res.json(await rollbackLastMemoryDream(service, dataDir));
+  withMemoryService(req, res, async ({ dataDir, service, repository }) => {
+    const result = await rollbackLastMemoryDream(service, dataDir);
+    res.json({
+      ...result,
+      dashboard: buildDashboardSnapshot(service, repository, {
+        query: getQuery(req),
+      }),
+    });
   }),
 );
 
@@ -367,8 +401,14 @@ router.post('/clear', async (req, res) => {
     return;
   }
 
-  return withMemoryService(req, res, async ({ service }) => {
-    res.json(service.clear(scope));
+  return withMemoryService(req, res, async ({ service, repository }) => {
+    const result = service.clear(scope);
+    res.json({
+      ...result,
+      dashboard: buildDashboardSnapshot(service, repository, {
+        query: getQuery(req),
+      }),
+    });
   });
 });
 
