@@ -50,8 +50,21 @@ export function loadCCRConfig(ccrRoot) {
 }
 
 export function saveCCRConfig(config) {
+  const json = JSON.stringify(config, null, 2) + '\n';
   const localPath = getLocalConfigPath();
-  fs.writeFileSync(localPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  fs.writeFileSync(localPath, json, 'utf-8');
+
+  // Sync to claude-code-main so proxy.ts / gateway pick up the same config
+  const ccrRoot = resolveClaudeCodeMainRoot();
+  if (ccrRoot) {
+    const upstreamPath = path.join(ccrRoot, 'ccr-config.json');
+    try {
+      fs.writeFileSync(upstreamPath, json, 'utf-8');
+      console.log(`[CCR] Config synced → ${upstreamPath}`);
+    } catch (err) {
+      console.warn(`[CCR] Failed to sync config to ${upstreamPath}: ${err.message}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

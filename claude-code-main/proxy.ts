@@ -9,7 +9,7 @@
  * Set CCR_DISABLED=1 (or remove ccr-config.json) to force legacy mode.
  */
 
-import { readFileSync, readdirSync, statSync, existsSync } from 'fs'
+import { readFileSync, readdirSync, statSync, existsSync, watch } from 'fs'
 import { execSync } from 'child_process'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'node:url'
@@ -104,84 +104,114 @@ interface CCRServices {
 
 let ccrProcessRequest: ((url: string, init: RequestInit | undefined, services: CCRServices, realFetch: typeof fetch) => Promise<Response>) | null = null
 let ccrServices: CCRServices | null = null
+let ccrModule: any = null
 
-if (process.env.CCR_DISABLED !== '1' && process.env.CCR_DISABLED !== 'true') {
-  const configPath = resolve(DIR, 'ccr-config.json')
-  if (existsSync(configPath)) {
-    try {
-      const routerDir = resolve(DIR, 'src/router')
-      const cjsPath = resolve(routerDir, 'server.cjs')
-      const buildScript = resolve(routerDir, 'build.mjs')
+const CCR_CONFIG_PATH = resolve(DIR, 'ccr-config.json')
+const ROUTER_DIR = resolve(DIR, 'src/router')
+const CJS_PATH = resolve(ROUTER_DIR, 'server.cjs')
 
-      // Auto-build: rebuild server.cjs when TS source is newer
-      function newestMtime(dir: string, ext = '.ts'): number {
-        let newest = 0
-        try {
-          for (const entry of readdirSync(dir, { withFileTypes: true })) {
-            const full = `${dir}/${entry.name}`
-            if (entry.isDirectory()) newest = Math.max(newest, newestMtime(full, ext))
-            else if (entry.name.endsWith(ext)) newest = Math.max(newest, statSync(full).mtimeMs)
-          }
-        } catch {}
-        return newest
-      }
-
-      if (existsSync(resolve(routerDir, 'src/server.ts')) && existsSync(buildScript)) {
-        const cjsMtime = existsSync(cjsPath) ? statSync(cjsPath).mtimeMs : 0
-        const srcMtime = Math.max(
-          newestMtime(resolve(routerDir, 'src')),
-          newestMtime(resolve(routerDir, 'shared')),
-        )
-        if (srcMtime > cjsMtime || cjsMtime === 0) {
-          console.log('[proxy] CCR source newer than bundle — rebuilding...')
-          execSync('node build.mjs', { cwd: routerDir, stdio: 'inherit' })
-          console.log('[proxy] CCR rebuild complete')
-        }
-      }
-
-      if (existsSync(cjsPath)) {
-        const config = JSON.parse(readFileSync(configPath, 'utf-8'))
-        const CCR = require(cjsPath)
-        const Server = CCR.default
-
-        const server = new Server({
-          initialConfig: {
-            providers: config.Providers,
-            Router: config.Router,
-            tokenStats: config.tokenStats,
-            API_TIMEOUT_MS: config.API_TIMEOUT_MS,
-            HOST: '127.0.0.1',
-            PORT: 0,
-            LOG: config.LOG ?? false,
-          },
-          logger: config.LOG !== false && process.env.CCR_LOG === '1',
-        })
-
-        await server.init()
-
-        ccrProcessRequest = CCR.processRequest
-        ccrServices = {
-          configService: server.configService,
-          providerService: server.providerService,
-          transformerService: server.transformerService,
-          tokenizerService: server.tokenizerService,
-          logger: process.env.CCR_LOG === '1' ? undefined : {
-            info: () => {},
-            warn: (...a: any[]) => console.warn('[CCR]', ...a),
-            error: (...a: any[]) => console.error('[CCR]', ...a),
-            debug: () => {},
-          },
-        }
-
-        console.log('[proxy] CCR router loaded — advanced routing enabled')
-      }
-    } catch (err: any) {
-      console.warn(`[proxy] CCR unavailable (${err.message}), using legacy proxy mode`)
+function newestMtime(dir: string, ext = '.ts'): number {
+  let newest = 0
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = `${dir}/${entry.name}`
+      if (entry.isDirectory()) newest = Math.max(newest, newestMtime(full, ext))
+      else if (entry.name.endsWith(ext)) newest = Math.max(newest, statSync(full).mtimeMs)
     }
+  } catch {}
+  return newest
+}
+
+function ensureCjsBuilt(): boolean {
+  const buildScript = resolve(ROUTER_DIR, 'build.mjs')
+  if (existsSync(resolve(ROUTER_DIR, 'src/server.ts')) && existsSync(buildScript)) {
+    const cjsMtime = existsSync(CJS_PATH) ? statSync(CJS_PATH).mtimeMs : 0
+    const srcMtime = Math.max(
+      newestMtime(resolve(ROUTER_DIR, 'src')),
+      newestMtime(resolve(ROUTER_DIR, 'shared')),
+    )
+    if (srcMtime > cjsMtime || cjsMtime === 0) {
+      console.log('[proxy] CCR source newer than bundle — rebuilding...')
+      execSync('node build.mjs', { cwd: ROUTER_DIR, stdio: 'inherit' })
+      console.log('[proxy] CCR rebuild complete')
+    }
+  }
+  return existsSync(CJS_PATH)
+}
+
+async function loadCCR(): Promise<boolean> {
+  if (!existsSync(CCR_CONFIG_PATH)) return false
+  if (!ensureCjsBuilt()) return false
+
+  const config = JSON.parse(readFileSync(CCR_CONFIG_PATH, 'utf-8'))
+  if (!ccrModule) ccrModule = require(CJS_PATH)
+  const Server = ccrModule.default
+
+  const server = new Server({
+    initialConfig: {
+      providers: config.Providers,
+      Router: config.Router,
+      tokenStats: config.tokenStats,
+      API_TIMEOUT_MS: config.API_TIMEOUT_MS,
+      HOST: '127.0.0.1',
+      PORT: 0,
+      LOG: config.LOG ?? false,
+    },
+    logger: config.LOG !== false && process.env.CCR_LOG === '1',
+  })
+
+  await server.init()
+
+  ccrProcessRequest = ccrModule.processRequest
+  ccrServices = {
+    configService: server.configService,
+    providerService: server.providerService,
+    transformerService: server.transformerService,
+    tokenizerService: server.tokenizerService,
+    logger: process.env.CCR_LOG === '1' ? undefined : {
+      info: () => {},
+      warn: (...a: any[]) => console.warn('[CCR]', ...a),
+      error: (...a: any[]) => console.error('[CCR]', ...a),
+      debug: () => {},
+    },
+  }
+  return true
+}
+
+// Initial load
+if (process.env.CCR_DISABLED !== '1' && process.env.CCR_DISABLED !== 'true') {
+  try {
+    if (await loadCCR()) {
+      console.log('[proxy] CCR router loaded — advanced routing enabled')
+    }
+  } catch (err: any) {
+    console.warn(`[proxy] CCR unavailable (${err.message}), using legacy proxy mode`)
   }
 }
 
-const CCR_ENABLED = ccrProcessRequest !== null && ccrServices !== null
+let ccrEnabled = ccrProcessRequest !== null && ccrServices !== null
+
+// ─── Hot-reload: watch ccr-config.json for changes ───
+if (process.env.CCR_DISABLED !== '1' && process.env.CCR_DISABLED !== 'true') {
+  let reloadTimer: ReturnType<typeof setTimeout> | null = null
+  try {
+    watch(CCR_CONFIG_PATH, () => {
+      if (reloadTimer) clearTimeout(reloadTimer)
+      reloadTimer = setTimeout(async () => {
+        reloadTimer = null
+        try {
+          console.log('[proxy] ccr-config.json changed — reloading CCR...')
+          if (await loadCCR()) {
+            ccrEnabled = true
+            console.log('[proxy] CCR hot-reloaded successfully')
+          }
+        } catch (err: any) {
+          console.error(`[proxy] CCR hot-reload failed: ${err.message}`)
+        }
+      }, 500)
+    })
+  } catch { /* watcher not critical */ }
+}
 
 // ─── Request conversion: Anthropic → OpenAI ───
 
@@ -754,7 +784,7 @@ const server = Bun.serve({
     }
 
     // ── CCR mode: delegate to embedded router pipeline ──
-    if (CCR_ENABLED) {
+    if (ccrEnabled) {
       try {
         const reqUrl = url.toString()
         const reqInit: RequestInit = {
@@ -885,7 +915,7 @@ const server = Bun.serve({
   },
 })
 
-console.log(`[proxy] listening on http://localhost:${PORT}  mode=${CCR_ENABLED ? 'CCR' : 'legacy'}`)
-if (!CCR_ENABLED) {
+console.log(`[proxy] listening on http://localhost:${PORT}  mode=${ccrEnabled ? 'CCR' : 'legacy'}`)
+if (!ccrEnabled) {
   console.log(`[proxy] Upstream: ${UPSTREAM_URL}`)
 }
