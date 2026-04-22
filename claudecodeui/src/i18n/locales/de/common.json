@@ -23,7 +23,8 @@
     "files": "Dateien",
     "git": "Quellcodeverwaltung",
     "tasks": "Aufgaben",
-    "dashboard": "Dashboard"
+    "dashboard": "Dashboard",
+    "memory": "Memory"
   },
   "status": {
     "loading": "Lädt...",

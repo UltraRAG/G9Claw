@@ -23,7 +23,8 @@
     "files": "文件",
     "git": "源代码管理",
     "tasks": "任务",
-    "dashboard": "路由看板"
+    "dashboard": "路由看板",
+    "memory": "记忆"
   },
   "status": {
     "loading": "加载中...",

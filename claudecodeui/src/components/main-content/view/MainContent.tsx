@@ -5,6 +5,7 @@ import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import GitPanel from '../../git-panel/view/GitPanel';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
 import RoutingDashboard from '../../routing-dashboard/RoutingDashboard';
+import MemoryPanel from './memory/MemoryPanel';
 import type { MainContentProps } from '../types/types';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
@@ -167,6 +168,12 @@ function MainContent({
           {activeTab === 'dashboard' && (
             <div className="h-full overflow-auto">
               <RoutingDashboard />
+            </div>
+          )}
+
+          {activeTab === 'memory' && (
+            <div className="h-full overflow-hidden">
+              <MemoryPanel selectedProject={selectedProject} />
             </div>
           )}
 

@@ -67,6 +67,7 @@ function ChatInterface({
     setCursorModel,
     claudeModel,
     setClaudeModel,
+    claudeModelOptions,
     codexModel,
     setCodexModel,
     geminiModel,
@@ -313,6 +314,7 @@ function ChatInterface({
           setCodexModel={setCodexModel}
           geminiModel={geminiModel}
           setGeminiModel={setGeminiModel}
+          claudeModelOptions={claudeModelOptions}
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}

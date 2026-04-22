@@ -34,6 +34,13 @@ import { loadMemoryPrompt } from './memdir/memdir.js'
 import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
+import {
+  buildEdgeClawMemoryQuery,
+  buildEdgeClawRecentMessages,
+  getEdgeClawMemoryPromptSection,
+  getEdgeClawMemoryService,
+  isEdgeClawMemoryEnabled,
+} from './services/edgeclawMemory/index.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
@@ -58,7 +65,9 @@ import {
 } from './utils/fileStateCache.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
+import { logForDebugging } from './utils/debug.js'
 import { getInMemoryErrors } from './utils/log.js'
+import { selectableUserMessagesFilter } from './utils/messageSelectorHelpers.js'
 import { countToolCalls, SYNTHETIC_MESSAGES } from './utils/messages.js'
 import {
   getMainLoopModel,
@@ -82,12 +91,6 @@ import {
   type ThinkingConfig,
 } from './utils/thinking.js'
 
-// Lazy: MessageSelector.tsx pulls React/ink; only needed for message filtering at query time
-/* eslint-disable @typescript-eslint/no-require-imports */
-const messageSelector =
-  (): typeof import('src/components/MessageSelector.js') =>
-    require('src/components/MessageSelector.js')
-
 import {
   localCommandOutputToSDKAssistantMessage,
   toSDKCompactMetadata,
@@ -100,7 +103,6 @@ import {
   getScratchpadDir,
   isScratchpadEnabled,
 } from './utils/permissions/filesystem.js'
-/* eslint-enable @typescript-eslint/no-require-imports */
 import {
   handleOrphanedPermission,
   isResultSuccessful,
@@ -314,8 +316,10 @@ export class QueryEngine {
     // Write/Edit tools to call, MEMORY.md filename, loading semantics).
     // The caller can layer their own policy text via appendSystemPrompt.
     const memoryMechanicsPrompt =
-      customPrompt !== undefined && hasAutoMemPathOverride()
-        ? await loadMemoryPrompt()
+      customPrompt !== undefined && isEdgeClawMemoryEnabled()
+        ? getEdgeClawMemoryPromptSection(tools.map(tool => tool.name))
+        : customPrompt !== undefined && hasAutoMemPathOverride()
+          ? await loadMemoryPrompt()
         : null
 
     const systemPrompt = asSystemPrompt([
@@ -429,9 +433,77 @@ export class QueryEngine {
 
     // Push new messages, including user input and any attachments
     this.mutableMessages.push(...messagesFromUserInput)
+    const edgeClawTurnMessages: Message[] = [...messagesFromUserInput]
 
     // Update params to reflect updates from processing /slash commands
     const messages = [...this.mutableMessages]
+    const edgeClawMemoryService = isEdgeClawMemoryEnabled()
+      ? getEdgeClawMemoryService(cwd)
+      : null
+    let edgeClawMemoryQueryForTrace: string | null = null
+    let edgeClawMemoryRecallForTrace: any = null
+    let edgeClawRecallTraceStatus: 'completed' | 'error' | 'interrupted' =
+      'error'
+    let edgeClawRecallAssistantReply = ''
+    const captureEdgeClawMemoryTurn = () => {
+      if (!edgeClawMemoryService) {
+        return
+      }
+      try {
+        const captureResult = edgeClawMemoryService.captureTurn(
+          edgeClawTurnMessages,
+          {
+            sessionKey: getSessionId(),
+          },
+        )
+      } catch (error) {
+        logForDebugging(
+          `[edgeclaw-memory] capture failed: ${String(error)}`,
+          { level: 'debug' },
+        )
+      }
+    }
+    const persistEdgeClawRecallTrace = () => {
+      if (
+        !edgeClawMemoryService ||
+        !edgeClawMemoryQueryForTrace ||
+        !edgeClawMemoryRecallForTrace
+      ) {
+        return
+      }
+      try {
+        const traceStatus =
+          this.abortController.signal.aborted &&
+          edgeClawRecallTraceStatus === 'error'
+            ? 'interrupted'
+            : edgeClawRecallTraceStatus
+        edgeClawMemoryService.saveCaseTrace({
+          sessionKey: getSessionId(),
+          query: edgeClawMemoryQueryForTrace,
+          startedAt:
+            edgeClawMemoryRecallForTrace.trace?.startedAt ??
+            new Date(startTime).toISOString(),
+          finishedAt: new Date().toISOString(),
+          status: traceStatus,
+          retrieval: {
+            intent: edgeClawMemoryRecallForTrace.intent,
+            injected: Boolean(edgeClawMemoryRecallForTrace.systemContext),
+            contextPreview: edgeClawMemoryRecallForTrace.systemContext ?? '',
+            ...(edgeClawMemoryRecallForTrace.debug?.preflightReason
+              ? { preflightReason: edgeClawMemoryRecallForTrace.debug.preflightReason }
+              : {}),
+            trace: edgeClawMemoryRecallForTrace.trace ?? null,
+          },
+          toolEvents: [],
+          assistantReply: edgeClawRecallAssistantReply,
+        })
+      } catch (error) {
+        logForDebugging(
+          `[edgeclaw-memory] save case trace failed: ${String(error)}`,
+          { level: 'debug' },
+        )
+      }
+    }
 
     // Persist the user's message(s) to transcript BEFORE entering the query
     // loop. The for-await below only calls recordTranscript when ask() yields
@@ -468,7 +540,7 @@ export class QueryEngine {
         (msg.type === 'user' &&
           !msg.isMeta && // Skip synthetic caveat messages
           !msg.toolUseResult && // Skip tool results (they'll be acked from query)
-          messageSelector().selectableUserMessagesFilter(msg)) || // Skip non-user-authored messages (task notifications, etc.)
+          selectableUserMessagesFilter(msg)) || // Skip non-user-authored messages (task notifications, etc.)
         (msg.type === 'system' && msg.subtype === 'compact_boundary'), // Always ack compact boundaries
     )
     const messagesToAck = replayUserMessages ? replayableMessages : []
@@ -526,6 +598,36 @@ export class QueryEngine {
       setSDKStatus,
     }
 
+    let effectiveSystemPrompt = systemPrompt
+    if (edgeClawMemoryService && shouldQuery) {
+      try {
+        const memoryQuery = buildEdgeClawMemoryQuery(messagesFromUserInput)
+        if (memoryQuery) {
+          edgeClawMemoryQueryForTrace = memoryQuery
+          const memoryRecall = await edgeClawMemoryService.retrieveContext(
+            memoryQuery,
+            {
+              recentMessages: buildEdgeClawRecentMessages(messages),
+              workspaceHint: cwd,
+              retrievalMode: 'auto',
+            },
+          )
+          edgeClawMemoryRecallForTrace = memoryRecall
+          if (memoryRecall.systemContext) {
+            effectiveSystemPrompt = asSystemPrompt([
+              ...systemPrompt,
+              memoryRecall.systemContext,
+            ])
+          }
+        }
+      } catch (error) {
+        logForDebugging(
+          `[edgeclaw-memory] retrieve failed: ${String(error)}`,
+          { level: 'debug' },
+        )
+      }
+    }
+
     headlessProfilerCheckpoint('before_skills_plugins')
     // Cache-only: headless/SDK/CCR startup must not block on network for
     // ref-tracked plugins. CCR populates the cache via CLAUDE_CODE_SYNC_PLUGIN_INSTALL
@@ -553,106 +655,109 @@ export class QueryEngine {
     // Record when system message is yielded for headless latency tracking
     headlessProfilerCheckpoint('system_message_yielded')
 
-    if (!shouldQuery) {
-      // Return the results of local slash commands.
-      // Use messagesFromUserInput (not replayableMessages) for command output
-      // because selectableUserMessagesFilter excludes local-command-stdout tags.
-      for (const msg of messagesFromUserInput) {
-        if (
-          msg.type === 'user' &&
-          typeof msg.message.content === 'string' &&
-          (msg.message.content.includes(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
-            msg.message.content.includes(`<${LOCAL_COMMAND_STDERR_TAG}>`) ||
-            msg.isCompactSummary)
-        ) {
-          yield {
-            type: 'user',
-            message: {
-              ...msg.message,
-              content: stripAnsi(msg.message.content),
-            },
-            session_id: getSessionId(),
-            parent_tool_use_id: null,
-            uuid: msg.uuid,
-            timestamp: msg.timestamp,
-            isReplay: !msg.isCompactSummary,
-            isSynthetic: msg.isMeta || msg.isVisibleInTranscriptOnly,
-          } as SDKUserMessageReplay
+    try {
+      if (!shouldQuery) {
+        // Return the results of local slash commands.
+        // Use messagesFromUserInput (not replayableMessages) for command output
+        // because selectableUserMessagesFilter excludes local-command-stdout tags.
+        for (const msg of messagesFromUserInput) {
+          if (
+            msg.type === 'user' &&
+            typeof msg.message.content === 'string' &&
+            (msg.message.content.includes(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
+              msg.message.content.includes(`<${LOCAL_COMMAND_STDERR_TAG}>`) ||
+              msg.isCompactSummary)
+          ) {
+            yield {
+              type: 'user',
+              message: {
+                ...msg.message,
+                content: stripAnsi(msg.message.content),
+              },
+              session_id: getSessionId(),
+              parent_tool_use_id: null,
+              uuid: msg.uuid,
+              timestamp: msg.timestamp,
+              isReplay: !msg.isCompactSummary,
+              isSynthetic: msg.isMeta || msg.isVisibleInTranscriptOnly,
+            } as SDKUserMessageReplay
+          }
+
+          // Local command output — yield as a synthetic assistant message so
+          // RC renders it as assistant-style text rather than a user bubble.
+          // Emitted as assistant (not the dedicated SDKLocalCommandOutputMessage
+          // system subtype) so mobile clients + session-ingress can parse it.
+          if (
+            msg.type === 'system' &&
+            msg.subtype === 'local_command' &&
+            typeof msg.content === 'string' &&
+            (msg.content.includes(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
+              msg.content.includes(`<${LOCAL_COMMAND_STDERR_TAG}>`))
+          ) {
+            yield localCommandOutputToSDKAssistantMessage(msg.content, msg.uuid)
+          }
+
+          if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
+            yield {
+              type: 'system',
+              subtype: 'compact_boundary' as const,
+              session_id: getSessionId(),
+              uuid: msg.uuid,
+              compact_metadata: toSDKCompactMetadata(msg.compactMetadata),
+            } as SDKCompactBoundaryMessage
+          }
         }
 
-        // Local command output — yield as a synthetic assistant message so
-        // RC renders it as assistant-style text rather than a user bubble.
-        // Emitted as assistant (not the dedicated SDKLocalCommandOutputMessage
-        // system subtype) so mobile clients + session-ingress can parse it.
-        if (
-          msg.type === 'system' &&
-          msg.subtype === 'local_command' &&
-          typeof msg.content === 'string' &&
-          (msg.content.includes(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
-            msg.content.includes(`<${LOCAL_COMMAND_STDERR_TAG}>`))
-        ) {
-          yield localCommandOutputToSDKAssistantMessage(msg.content, msg.uuid)
+        if (persistSession) {
+          await recordTranscript(messages)
+          if (
+            isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
+            isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK)
+          ) {
+            await flushSessionStorage()
+          }
         }
 
-        if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
-          yield {
-            type: 'system',
-            subtype: 'compact_boundary' as const,
-            session_id: getSessionId(),
-            uuid: msg.uuid,
-            compact_metadata: toSDKCompactMetadata(msg.compactMetadata),
-          } as SDKCompactBoundaryMessage
+        edgeClawRecallTraceStatus = 'completed'
+        edgeClawRecallAssistantReply = resultText ?? ''
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          duration_ms: Date.now() - startTime,
+          duration_api_ms: getTotalAPIDuration(),
+          num_turns: messages.length - 1,
+          result: resultText ?? '',
+          stop_reason: null,
+          session_id: getSessionId(),
+          total_cost_usd: getTotalCost(),
+          usage: this.totalUsage,
+          modelUsage: getModelUsage(),
+          permission_denials: this.permissionDenials,
+          fast_mode_state: getFastModeState(
+            mainLoopModel,
+            initialAppState.fastMode,
+          ),
+          uuid: randomUUID(),
         }
+        return
       }
 
-      if (persistSession) {
-        await recordTranscript(messages)
-        if (
-          isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
-          isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK)
-        ) {
-          await flushSessionStorage()
-        }
+      if (fileHistoryEnabled() && persistSession) {
+        messagesFromUserInput
+          .filter(selectableUserMessagesFilter)
+          .forEach(message => {
+            void fileHistoryMakeSnapshot(
+              (updater: (prev: FileHistoryState) => FileHistoryState) => {
+                setAppState(prev => ({
+                  ...prev,
+                  fileHistory: updater(prev.fileHistory),
+                }))
+              },
+              message.uuid,
+            )
+          })
       }
-
-      yield {
-        type: 'result',
-        subtype: 'success',
-        is_error: false,
-        duration_ms: Date.now() - startTime,
-        duration_api_ms: getTotalAPIDuration(),
-        num_turns: messages.length - 1,
-        result: resultText ?? '',
-        stop_reason: null,
-        session_id: getSessionId(),
-        total_cost_usd: getTotalCost(),
-        usage: this.totalUsage,
-        modelUsage: getModelUsage(),
-        permission_denials: this.permissionDenials,
-        fast_mode_state: getFastModeState(
-          mainLoopModel,
-          initialAppState.fastMode,
-        ),
-        uuid: randomUUID(),
-      }
-      return
-    }
-
-    if (fileHistoryEnabled() && persistSession) {
-      messagesFromUserInput
-        .filter(messageSelector().selectableUserMessagesFilter)
-        .forEach(message => {
-          void fileHistoryMakeSnapshot(
-            (updater: (prev: FileHistoryState) => FileHistoryState) => {
-              setAppState(prev => ({
-                ...prev,
-                fileHistory: updater(prev.fileHistory),
-              }))
-            },
-            message.uuid,
-          )
-        })
-    }
 
     // Track current message usage (reset on each message_start)
     let currentMessageUsage: NonNullableUsage = EMPTY_USAGE
@@ -674,7 +779,7 @@ export class QueryEngine {
 
     for await (const message of query({
       messages,
-      systemPrompt,
+      systemPrompt: effectiveSystemPrompt,
       userContext,
       systemContext,
       canUseTool: wrappedCanUseTool,
@@ -766,10 +871,12 @@ export class QueryEngine {
             lastStopReason = message.message.stop_reason
           }
           this.mutableMessages.push(message)
+          edgeClawTurnMessages.push(message)
           yield* normalizeMessage(message)
           break
         case 'progress':
           this.mutableMessages.push(message)
+          edgeClawTurnMessages.push(message)
           // Record inline so the dedup loop in the next ask() call sees it
           // as already-recorded. Without this, deferred progress interleaves
           // with already-recorded tool_results in mutableMessages, and the
@@ -783,6 +890,7 @@ export class QueryEngine {
           break
         case 'user':
           this.mutableMessages.push(message)
+          edgeClawTurnMessages.push(message)
           yield* normalizeMessage(message)
           break
         case 'stream_event':
@@ -839,6 +947,7 @@ export class QueryEngine {
           break
         case 'attachment':
           this.mutableMessages.push(message)
+          edgeClawTurnMessages.push(message)
           // Record inline (same reason as progress above).
           if (persistSession) {
             messages.push(message)
@@ -859,9 +968,10 @@ export class QueryEngine {
                 await flushSessionStorage()
               }
             }
-            yield {
-              type: 'result',
-              subtype: 'error_max_turns',
+          edgeClawRecallTraceStatus = 'error'
+          yield {
+            type: 'result',
+            subtype: 'error_max_turns',
               duration_ms: Date.now() - startTime,
               duration_api_ms: getTotalAPIDuration(),
               is_error: true,
@@ -878,11 +988,11 @@ export class QueryEngine {
               ),
               uuid: randomUUID(),
               errors: [
-                `Reached maximum number of turns (${message.attachment.maxTurns})`,
-              ],
-            }
-            return
+              `Reached maximum number of turns (${message.attachment.maxTurns})`,
+            ],
           }
+          return
+        }
           // Yield queued_command attachments as SDK user message replays
           else if (
             replayUserMessages &&
@@ -925,6 +1035,7 @@ export class QueryEngine {
             break
           }
           this.mutableMessages.push(message)
+          edgeClawTurnMessages.push(message)
           // Yield compact boundary messages to SDK
           if (
             message.subtype === 'compact_boundary' &&
@@ -989,6 +1100,7 @@ export class QueryEngine {
             await flushSessionStorage()
           }
         }
+        edgeClawRecallTraceStatus = 'error'
         yield {
           type: 'result',
           subtype: 'error_max_budget_usd',
@@ -1007,10 +1119,10 @@ export class QueryEngine {
             initialAppState.fastMode,
           ),
           uuid: randomUUID(),
-          errors: [`Reached maximum budget ($${maxBudgetUsd})`],
+            errors: [`Reached maximum budget ($${maxBudgetUsd})`],
+          }
+          return
         }
-        return
-      }
 
       // Check if structured output retry limit exceeded (only on user messages)
       if (message.type === 'user' && jsonSchema) {
@@ -1032,6 +1144,7 @@ export class QueryEngine {
               await flushSessionStorage()
             }
           }
+          edgeClawRecallTraceStatus = 'error'
           yield {
             type: 'result',
             subtype: 'error_max_structured_output_retries',
@@ -1091,6 +1204,7 @@ export class QueryEngine {
     }
 
     if (!isResultSuccessful(result, lastStopReason)) {
+      edgeClawRecallTraceStatus = 'error'
       yield {
         type: 'result',
         subtype: 'error_during_execution',
@@ -1143,6 +1257,8 @@ export class QueryEngine {
       isApiError = Boolean(result.isApiErrorMessage)
     }
 
+    edgeClawRecallTraceStatus = isApiError ? 'error' : 'completed'
+    edgeClawRecallAssistantReply = textResult
     yield {
       type: 'result',
       subtype: 'success',
@@ -1163,6 +1279,10 @@ export class QueryEngine {
         initialAppState.fastMode,
       ),
       uuid: randomUUID(),
+    }
+    } finally {
+      persistEdgeClawRecallTrace()
+      captureEdgeClawMemoryTurn()
     }
   }
 

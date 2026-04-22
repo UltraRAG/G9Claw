@@ -12,8 +12,63 @@
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs'
 import { execSync } from 'child_process'
 import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'node:url'
 
-const DIR = dirname(new URL(import.meta.url).pathname)
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const DIR = __dirname
+const ROOT_ENV_PATH = resolve(__dirname, '../.env')
+
+function normalizeEnvValue(value: string | undefined): string {
+  return value?.trim() || ''
+}
+
+function loadRootEnvFile(): void {
+  try {
+    const envFile = readFileSync(ROOT_ENV_PATH, 'utf8')
+    envFile.split('\n').forEach(line => {
+      const trimmedLine = line.trim()
+      if (!trimmedLine || trimmedLine.startsWith('#')) {
+        return
+      }
+
+      const [key, ...valueParts] = trimmedLine.split('=')
+      const normalizedKey = key?.trim()
+      if (!normalizedKey || valueParts.length === 0 || process.env[normalizedKey]) {
+        return
+      }
+
+      process.env[normalizedKey] = valueParts.join('=').trim()
+    })
+  } catch {
+    // Root .env is optional when EDGECLAW_* variables are already exported.
+  }
+}
+
+function applyEdgeClawProxyEnv(): void {
+  const baseUrl = normalizeEnvValue(process.env.EDGECLAW_API_BASE_URL)
+  const apiKey = normalizeEnvValue(process.env.EDGECLAW_API_KEY)
+  const model = normalizeEnvValue(process.env.EDGECLAW_MODEL)
+  const proxyPort = normalizeEnvValue(process.env.EDGECLAW_PROXY_PORT) || '18080'
+
+  process.env.PROXY_PORT = proxyPort
+
+  if (baseUrl) {
+    process.env.OPENAI_BASE_URL = baseUrl
+  }
+  if (apiKey) {
+    process.env.OPENAI_API_KEY = apiKey
+    process.env.ANTHROPIC_API_KEY = apiKey
+  }
+  if (model) {
+    process.env.OPENAI_MODEL = model
+    process.env.ANTHROPIC_MODEL = model
+  }
+  process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxyPort}`
+}
+
+loadRootEnvFile()
+applyEdgeClawProxyEnv()
 
 const UPSTREAM_URL = process.env.OPENAI_BASE_URL || 'https://yeysai.com'
 const UPSTREAM_KEY = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || ''
@@ -322,9 +377,13 @@ const MODEL_MAP: Record<string, string> = {
 }
 
 function toUpstreamModel(model: string): string {
-  if (!IS_OPENROUTER_UPSTREAM) return model
-  if (model.startsWith('anthropic/')) return model
-  const stripped = model.replace(/-\d{8}$/, '')
+  const normalized = model.trim()
+  if (!normalized) return normalized
+  if (!IS_OPENROUTER_UPSTREAM) return normalized
+  if (normalized.includes('/')) return normalized
+
+  const stripped = normalized.replace(/-\d{8}$/, '')
+  if (MODEL_MAP[normalized]) return MODEL_MAP[normalized]
   if (MODEL_MAP[stripped]) return MODEL_MAP[stripped]
   return `anthropic/${stripped}`
 }

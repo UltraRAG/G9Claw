@@ -102,6 +102,55 @@ function createEmptySlot(): SessionSlot {
   };
 }
 
+function normalizeRealtimeText(value?: string): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+function parseTimestampMs(value?: string): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isConfirmedUserMessageDuplicate(
+  realtimeMessage: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+): boolean {
+  if (
+    realtimeMessage.kind !== 'text'
+    || realtimeMessage.role !== 'user'
+    || !realtimeMessage.id.startsWith('local_')
+  ) {
+    return false;
+  }
+
+  const realtimeText = normalizeRealtimeText(realtimeMessage.content);
+  if (!realtimeText) return false;
+
+  const realtimeTimestamp = parseTimestampMs(realtimeMessage.timestamp);
+
+  return serverMessages.some((serverMessage) => {
+    if (serverMessage.kind !== 'text' || serverMessage.role !== 'user') {
+      return false;
+    }
+
+    if (normalizeRealtimeText(serverMessage.content) !== realtimeText) {
+      return false;
+    }
+
+    if (realtimeTimestamp == null) {
+      return true;
+    }
+
+    const serverTimestamp = parseTimestampMs(serverMessage.timestamp);
+    if (serverTimestamp == null) {
+      return true;
+    }
+
+    return Math.abs(serverTimestamp - realtimeTimestamp) <= 10_000;
+  });
+}
+
 /**
  * Compute merged messages: server + realtime, deduped by id.
  * Server messages take priority (they're the persisted source of truth).
@@ -111,7 +160,11 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
   if (realtime.length === 0) return server;
   if (server.length === 0) return realtime;
   const serverIds = new Set(server.map(m => m.id));
-  const extra = realtime.filter(m => !serverIds.has(m.id));
+  const extra = realtime.filter((message) => {
+    if (serverIds.has(message.id)) return false;
+    if (isConfirmedUserMessageDuplicate(message, server)) return false;
+    return true;
+  });
   if (extra.length === 0) return server;
   return [...server, ...extra];
 }

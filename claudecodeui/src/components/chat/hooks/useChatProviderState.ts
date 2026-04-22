@@ -8,6 +8,15 @@ interface UseChatProviderStateArgs {
   selectedSession: ProjectSession | null;
 }
 
+type ModelOption = {
+  value: string;
+  label: string;
+};
+
+const DEFAULT_CLAUDE_MODEL_OPTIONS: ModelOption[] = CLAUDE_MODELS.OPTIONS.map((option) => ({
+  ...option,
+}));
+
 export function useChatProviderState({ selectedSession }: UseChatProviderStateArgs) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
@@ -20,6 +29,7 @@ export function useChatProviderState({ selectedSession }: UseChatProviderStateAr
   const [claudeModel, setClaudeModel] = useState<string>(() => {
     return localStorage.getItem('claude-model') || CLAUDE_MODELS.DEFAULT;
   });
+  const [claudeModelOptions, setClaudeModelOptions] = useState<ModelOption[]>(DEFAULT_CLAUDE_MODEL_OPTIONS);
   const [codexModel, setCodexModel] = useState<string>(() => {
     return localStorage.getItem('codex-model') || CODEX_MODELS.DEFAULT;
   });
@@ -60,6 +70,52 @@ export function useChatProviderState({ selectedSession }: UseChatProviderStateAr
       previous.filter((request) => !request.sessionId || request.sessionId === selectedSession?.id),
     );
   }, [selectedSession?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    authenticatedFetch('/api/agents/runtime-config')
+      .then((response) => response.json())
+      .then((data) => {
+        if (cancelled) {
+          return;
+        }
+
+        const availableModels = Array.isArray(data?.claude?.availableModels)
+          ? data.claude.availableModels
+            .filter((option: unknown): option is ModelOption => (
+              typeof option === 'object'
+              && option !== null
+              && typeof (option as ModelOption).value === 'string'
+              && typeof (option as ModelOption).label === 'string'
+            ))
+            .map((option: ModelOption) => ({
+              value: option.value.trim(),
+              label: option.label.trim() || option.value.trim(),
+            }))
+            .filter((option: ModelOption) => option.value.length > 0)
+          : [];
+        const runtimeOptions = availableModels.length > 0 ? availableModels : DEFAULT_CLAUDE_MODEL_OPTIONS;
+        const runtimeDefaultModel = typeof data?.claude?.defaultModel === 'string' && data.claude.defaultModel.trim()
+          ? data.claude.defaultModel.trim()
+          : CLAUDE_MODELS.DEFAULT;
+        const storedModel = localStorage.getItem('claude-model')?.trim() || '';
+        const hasStoredModel = runtimeOptions.some((option: ModelOption) => option.value === storedModel);
+        const shouldReuseStoredModel = hasStoredModel && storedModel !== CLAUDE_MODELS.DEFAULT;
+        const nextClaudeModel = shouldReuseStoredModel ? storedModel : runtimeDefaultModel;
+
+        setClaudeModelOptions(runtimeOptions);
+        setClaudeModel(nextClaudeModel);
+        localStorage.setItem('claude-model', nextClaudeModel);
+      })
+      .catch((error) => {
+        console.error('Error loading Claude runtime config:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (provider !== 'cursor') {
@@ -106,6 +162,7 @@ export function useChatProviderState({ selectedSession }: UseChatProviderStateAr
     setCursorModel,
     claudeModel,
     setClaudeModel,
+    claudeModelOptions,
     codexModel,
     setCodexModel,
     geminiModel,

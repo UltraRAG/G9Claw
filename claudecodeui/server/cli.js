@@ -17,6 +17,12 @@ import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import {
+    getMissingEdgeClawEnvKeys,
+    getRootEnvPath,
+    hasRootEnvFile,
+    loadRootEdgeClawEnv,
+} from './load-env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -52,28 +58,9 @@ const c = {
 const packageJsonPath = path.join(__dirname, '../package.json');
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
-// Load environment variables from .env file if it exists
-function loadEnvFile() {
-    try {
-        const envPath = path.join(__dirname, '../.env');
-        const envFile = fs.readFileSync(envPath, 'utf8');
-        envFile.split('\n').forEach(line => {
-            const trimmedLine = line.trim();
-            if (trimmedLine && !trimmedLine.startsWith('#')) {
-                const [key, ...valueParts] = trimmedLine.split('=');
-                if (key && valueParts.length > 0 && !process.env[key]) {
-                    process.env[key] = valueParts.join('=').trim();
-                }
-            }
-        });
-    } catch (e) {
-        // .env file is optional
-    }
-}
-
 // Get the database path (same logic as db.js)
 function getDatabasePath() {
-    loadEnvFile();
+    loadRootEdgeClawEnv();
     return process.env.DATABASE_PATH || path.join(__dirname, 'database', 'auth.db');
 }
 
@@ -84,6 +71,8 @@ function getInstallDir() {
 
 // Show status command
 function showStatus() {
+    loadRootEdgeClawEnv();
+
     console.log(`\n${c.bright('CloudCLI UI - Status')}\n`);
     console.log(c.dim('═'.repeat(60)));
 
@@ -109,11 +98,17 @@ function showStatus() {
     }
 
     // Environment variables
+    const missingConfig = getMissingEdgeClawEnvKeys();
     console.log(`\n${c.info('[INFO]')} Configuration:`);
     console.log(`       SERVER_PORT: ${c.bright(process.env.SERVER_PORT || process.env.PORT || '3001')} ${c.dim(process.env.SERVER_PORT || process.env.PORT ? '' : '(default)')}`);
     console.log(`       DATABASE_PATH: ${c.dim(process.env.DATABASE_PATH || '(using default location)')}`);
     console.log(`       CLAUDE_CLI_PATH: ${c.dim(process.env.CLAUDE_CLI_PATH || 'claude (default)')}`);
     console.log(`       CONTEXT_WINDOW: ${c.dim(process.env.CONTEXT_WINDOW || '160000 (default)')}`);
+    console.log(`       EDGECLAW_API_BASE_URL: ${normalizeConfiguredValue(process.env.EDGECLAW_API_BASE_URL)}`);
+    console.log(`       EDGECLAW_API_KEY: ${maskConfiguredSecret(process.env.EDGECLAW_API_KEY)}`);
+    console.log(`       EDGECLAW_MODEL: ${normalizeConfiguredValue(process.env.EDGECLAW_MODEL)}`);
+    console.log(`       EDGECLAW_MEMORY_ENABLED: ${c.dim(process.env.EDGECLAW_MEMORY_ENABLED || '1 (default)')}`);
+    console.log(`       Required EdgeClaw Config: ${missingConfig.length === 0 ? c.ok('[OK] Complete') : c.warn(`[WARN] Missing ${missingConfig.join(', ')}`)}`);
 
     // Claude projects folder
     const claudeProjectsPath = path.join(os.homedir(), '.claude', 'projects');
@@ -123,11 +118,11 @@ function showStatus() {
     console.log(`       Status: ${projectsExists ? c.ok('[OK] Exists') : c.warn('[WARN] Not found')}`);
 
     // Config file location
-    const envFilePath = path.join(__dirname, '../.env');
-    const envExists = fs.existsSync(envFilePath);
+    const envFilePath = getRootEnvPath();
+    const envExists = hasRootEnvFile();
     console.log(`\n${c.info('[INFO]')} Configuration File:`);
     console.log(`       ${c.dim(envFilePath)}`);
-    console.log(`       Status: ${envExists ? c.ok('[OK] Exists') : c.warn('[WARN] Not found (using defaults)')}`);
+    console.log(`       Status: ${envExists ? c.ok('[OK] Exists') : c.warn('[WARN] Not found (using exported environment only)')}`);
 
     console.log('\n' + c.dim('═'.repeat(60)));
     console.log(`\n${c.tip('[TIP]')} Hints:`);
@@ -169,11 +164,16 @@ Examples:
   $ cloudcli status                 # Show configuration
 
 Environment Variables:
-  SERVER_PORT         Set server port (default: 3001)
-  PORT                Set server port (default: 3001) (LEGACY)
-  DATABASE_PATH       Set custom database location
-  CLAUDE_CLI_PATH     Set custom Claude CLI path
-  CONTEXT_WINDOW      Set context window size (default: 160000)
+  EDGECLAW_API_BASE_URL      Upstream OpenAI-compatible API base URL
+  EDGECLAW_API_KEY           Upstream API key
+  EDGECLAW_MODEL             Main chat model
+  EDGECLAW_PROXY_PORT        Local proxy port (default: 18080)
+  EDGECLAW_MEMORY_ENABLED    Enable memory (default: 1)
+  CONTEXT_WINDOW             Set context window size (default: 160000)
+  SERVER_PORT                Set server port (default: 3001)
+  PORT                       Set server port (default: 3001) (LEGACY)
+  DATABASE_PATH              Set custom database location
+  CLAUDE_CLI_PATH            Set custom Claude CLI path
 
 Documentation:
   ${packageJson.homepage || 'https://github.com/siteboon/claudecodeui'}
@@ -328,3 +328,13 @@ main().catch(error => {
     console.error('\n❌ Error:', error.message);
     process.exit(1);
 });
+
+function normalizeConfiguredValue(value) {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    return normalized ? c.dim(normalized) : c.warn('[missing]');
+}
+
+function maskConfiguredSecret(value) {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    return normalized ? c.dim('[set]') : c.warn('[missing]');
+}

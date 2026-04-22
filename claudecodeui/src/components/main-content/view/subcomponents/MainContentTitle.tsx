@@ -27,6 +27,10 @@ function getTabTitle(activeTab: AppTab, shouldShowTasksTab: boolean, t: (key: st
     return 'TaskMaster';
   }
 
+  if (activeTab === 'memory') {
+    return t('tabs.memory');
+  }
+
   return 'Project';
 }
 

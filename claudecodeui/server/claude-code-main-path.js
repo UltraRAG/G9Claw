@@ -14,6 +14,7 @@
  */
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -23,6 +24,29 @@ let didLogSpawn = false;
 
 function packageRootDir() {
   return path.resolve(__dirname, '..');
+}
+
+function resolveBunExecutable() {
+  const candidates = [
+    process.env.BUN_BIN,
+    process.env.BUN,
+    process.env.BUN_INSTALL ? path.join(process.env.BUN_INSTALL, 'bin', 'bun') : null,
+    path.join(os.homedir(), '.bun', 'bin', 'bun'),
+    '/opt/homebrew/bin/bun',
+    '/usr/local/bin/bun',
+    'bun',
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (candidate === 'bun') {
+      return candidate;
+    }
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return 'bun';
 }
 
 export function resolveClaudeCodeMainRoot() {
@@ -68,14 +92,16 @@ export function getLeakedClaudeSdkSpawnOptions() {
     executableArgs.push('--preload', preload);
   }
 
+  const executable = resolveBunExecutable();
+
   if (!didLogSpawn) {
     didLogSpawn = true;
-    console.log(`[cloudcli] Claude Agent SDK → local tree: ${root} (bun ${executableArgs.join(' ')} → cli.tsx)`);
+    console.log(`[cloudcli] Claude Agent SDK → local tree: ${root} (${executable} ${executableArgs.join(' ')} → cli.tsx)`);
   }
 
   return {
     pathToClaudeCodeExecutable: cli,
-    executable: 'bun',
+    executable,
     executableArgs,
   };
 }

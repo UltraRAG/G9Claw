@@ -23,7 +23,8 @@
     "files": "Files",
     "git": "Source Control",
     "tasks": "Tasks",
-    "dashboard": "Dashboard"
+    "dashboard": "Dashboard",
+    "memory": "Memory"
   },
   "status": {
     "loading": "Loading...",
