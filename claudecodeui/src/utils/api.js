@@ -54,6 +54,24 @@ export const api = {
   projects: () => authenticatedFetch('/api/projects'),
   projectCronJobs: (projectName) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/cron-jobs`),
+  projectDiscoveryContext: (projectName) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-context`),
+  projectDiscoveryPlans: (projectName) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-plans`),
+  executeProjectDiscoveryPlan: (projectName, planId, body = {}) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-plans/${encodeURIComponent(planId)}/execute`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateProjectDiscoveryPlanExecution: (projectName, planId, body = {}) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-plans/${encodeURIComponent(planId)}/execution`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  archiveProjectDiscoveryPlan: (projectName, planId) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-plans/${encodeURIComponent(planId)}/archive`, {
+      method: 'POST',
+    }),
   deleteProjectCronJob: (projectName, taskId) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/cron-jobs/${encodeURIComponent(taskId)}`, {
       method: 'DELETE',

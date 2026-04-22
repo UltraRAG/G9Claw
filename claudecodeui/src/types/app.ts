@@ -44,6 +44,113 @@ export interface RunProjectCronJobNowResponse {
   reason?: CronJobRunNowReason;
 }
 
+export type DiscoveryPlanApprovalMode = 'auto' | 'manual';
+export type DiscoveryPlanStatus =
+  | 'draft'
+  | 'ready'
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'superseded';
+export type DiscoveryPlanExecutionStatus = 'queued' | 'running' | 'completed' | 'failed';
+
+export interface DiscoveryPlanContextRefs {
+  workingDirectory: string[];
+  memory: string[];
+  existingPlans: string[];
+  cronJobs: string[];
+  recentChats: string[];
+}
+
+export interface DiscoveryPlanOverview {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  approvalMode: DiscoveryPlanApprovalMode;
+  status: DiscoveryPlanStatus;
+  summary: string;
+  rationale: string;
+  dedupeKey: string;
+  sourceDiscoverySessionId: string;
+  executionSessionId?: string;
+  executionStartedAt?: string;
+  executionLastActivityAt?: string;
+  executionStatus?: DiscoveryPlanExecutionStatus;
+  latestSummary?: string;
+  contextRefs: DiscoveryPlanContextRefs;
+  planFilePath: string;
+  structureVersion: number;
+  content: string;
+}
+
+export interface ProjectDiscoveryPlansResponse {
+  plans: DiscoveryPlanOverview[];
+}
+
+export interface DiscoveryContextMemoryItem {
+  path: string;
+  modifiedAt: string;
+  summary: string;
+}
+
+export interface DiscoveryContextPlanItem {
+  id: string;
+  title: string;
+  status: DiscoveryPlanStatus;
+  approvalMode: DiscoveryPlanApprovalMode;
+  updatedAt: string;
+  summary: string;
+}
+
+export interface DiscoveryContextCronItem {
+  id: string;
+  status: CronJobOverviewStatus;
+  cron: string;
+  recurring: boolean;
+  manualOnly: boolean;
+  prompt: string;
+  latestRunSummary?: string;
+}
+
+export interface DiscoveryContextChatItem {
+  id: string;
+  summary: string;
+  lastActivity: string;
+  lastUserMessage?: string;
+  lastAssistantMessage?: string;
+}
+
+export interface ProjectDiscoveryContextResponse {
+  generatedAt: string;
+  lookbackDays: number;
+  workspace: {
+    projectName: string;
+    projectRoot: string;
+    signals: string[];
+  };
+  memory: DiscoveryContextMemoryItem[];
+  existingPlans: DiscoveryContextPlanItem[];
+  cronJobs: DiscoveryContextCronItem[];
+  recentChats: DiscoveryContextChatItem[];
+}
+
+export interface ExecuteDiscoveryPlanResponse {
+  plan: DiscoveryPlanOverview;
+  sessionSummary: string;
+  command: string;
+  executionToken: string;
+}
+
+export interface UpdateDiscoveryPlanExecutionResponse {
+  plan: DiscoveryPlanOverview;
+}
+
+export interface ArchiveDiscoveryPlanResponse {
+  archived: boolean;
+}
+
 export interface ProjectSession {
   id: string;
   title?: string;

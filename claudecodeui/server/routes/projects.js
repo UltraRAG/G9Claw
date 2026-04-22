@@ -8,6 +8,13 @@ import {
   extractProjectDirectory,
   getProjectCronJobsOverview
 } from '../projects.js';
+import {
+  archiveProjectDiscoveryPlan,
+  getProjectDiscoveryContext,
+  getProjectDiscoveryPlansOverview,
+  queueDiscoveryPlanExecution,
+  updateProjectDiscoveryPlanExecution
+} from '../discovery-plans.js';
 import { sendCronDaemonRequest } from '../services/cron-daemon-owner.js';
 
 const router = express.Router();
@@ -189,6 +196,26 @@ function getCronDaemonErrorStatus(error) {
   return isCronDaemonUnavailableError(error) ? 503 : 500;
 }
 
+function getDiscoveryPlanErrorMessage(error, fallback) {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+  return fallback;
+}
+
+function getDiscoveryPlanErrorStatus(error) {
+  if (error?.code === 'NOT_FOUND') {
+    return 404;
+  }
+  if (error?.code === 'INVALID_STATE' || error?.code === 'MISSING_PLAN_BODY') {
+    return 409;
+  }
+  if (error?.code === 'ALREADY_RUNNING') {
+    return 409;
+  }
+  return 500;
+}
+
 export async function handleGetProjectCronJobs(req, res) {
   try {
     const projectName = getTrimmedParam(req.params?.projectName);
@@ -237,6 +264,101 @@ export async function handleDeleteProjectCronJob(req, res) {
   }
 }
 
+export async function handleGetProjectDiscoveryPlans(req, res) {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    if (!projectName) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+
+    const overview = await getProjectDiscoveryPlansOverview(projectName);
+    return res.json(overview);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+export async function handleGetProjectDiscoveryContext(req, res) {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    if (!projectName) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+
+    const context = await getProjectDiscoveryContext(projectName);
+    return res.json(context);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+export async function handleExecuteProjectDiscoveryPlan(req, res) {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    const planId = getTrimmedParam(req.params?.planId);
+    if (!projectName) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+    if (!planId) {
+      return res.status(400).json({ error: 'planId is required' });
+    }
+
+    const source = getTrimmedParam(req.body?.source) || 'manual';
+    const payload = await queueDiscoveryPlanExecution(projectName, planId, { source });
+    return res.json(payload);
+  } catch (error) {
+    return res.status(getDiscoveryPlanErrorStatus(error)).json({
+      error: getDiscoveryPlanErrorMessage(error, 'Failed to execute discovery plan')
+    });
+  }
+}
+
+export async function handleUpdateProjectDiscoveryPlanExecution(req, res) {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    const planId = getTrimmedParam(req.params?.planId);
+    if (!projectName) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+    if (!planId) {
+      return res.status(400).json({ error: 'planId is required' });
+    }
+
+    const updatedPlan = await updateProjectDiscoveryPlanExecution(projectName, planId, {
+      executionSessionId: getTrimmedParam(req.body?.executionSessionId),
+      executionStartedAt: getTrimmedParam(req.body?.executionStartedAt),
+      executionLastActivityAt: getTrimmedParam(req.body?.executionLastActivityAt),
+      status: getTrimmedParam(req.body?.status),
+      latestSummary: getTrimmedParam(req.body?.latestSummary)
+    });
+    return res.json({ plan: updatedPlan });
+  } catch (error) {
+    return res.status(getDiscoveryPlanErrorStatus(error)).json({
+      error: getDiscoveryPlanErrorMessage(error, 'Failed to update discovery plan execution')
+    });
+  }
+}
+
+export async function handleArchiveProjectDiscoveryPlan(req, res) {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    const planId = getTrimmedParam(req.params?.planId);
+    if (!projectName) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+    if (!planId) {
+      return res.status(400).json({ error: 'planId is required' });
+    }
+
+    const result = await archiveProjectDiscoveryPlan(projectName, planId);
+    return res.json(result);
+  } catch (error) {
+    return res.status(getDiscoveryPlanErrorStatus(error)).json({
+      error: getDiscoveryPlanErrorMessage(error, 'Failed to archive discovery plan')
+    });
+  }
+}
+
 export async function handleRunProjectCronJobNow(req, res) {
   try {
     const projectName = getTrimmedParam(req.params?.projectName);
@@ -277,6 +399,11 @@ export async function handleRunProjectCronJobNow(req, res) {
 router.get('/:projectName/cron-jobs', handleGetProjectCronJobs);
 router.delete('/:projectName/cron-jobs/:taskId', handleDeleteProjectCronJob);
 router.post('/:projectName/cron-jobs/:taskId/run-now', handleRunProjectCronJobNow);
+router.get('/:projectName/discovery-context', handleGetProjectDiscoveryContext);
+router.get('/:projectName/discovery-plans', handleGetProjectDiscoveryPlans);
+router.post('/:projectName/discovery-plans/:planId/execute', handleExecuteProjectDiscoveryPlan);
+router.patch('/:projectName/discovery-plans/:planId/execution', handleUpdateProjectDiscoveryPlanExecution);
+router.post('/:projectName/discovery-plans/:planId/archive', handleArchiveProjectDiscoveryPlan);
 
 /**
  * Create a new workspace

@@ -14,6 +14,8 @@ type StartClaudeSessionOptions = {
   sessionSummary?: string | null;
   toolsSettings?: ClaudeSettings;
   images?: unknown[];
+  alwaysOnPlanId?: string;
+  alwaysOnExecutionToken?: string;
 };
 
 const VALID_PERMISSION_MODES = new Set<PermissionMode>([
@@ -83,6 +85,8 @@ export function startClaudeSessionCommand({
   sessionSummary,
   toolsSettings = getClaudeSettings(),
   images,
+  alwaysOnPlanId,
+  alwaysOnExecutionToken,
 }: StartClaudeSessionOptions): string {
   const sessionToActivate =
     sessionId || temporarySessionId || createTemporarySessionId();
@@ -101,6 +105,8 @@ export function startClaudeSessionCommand({
       permissionMode,
       model: claudeModel || safeLocalStorage.getItem('claude-model') || CLAUDE_MODELS.DEFAULT,
       sessionSummary,
+      ...(alwaysOnPlanId ? { alwaysOnPlanId } : {}),
+      ...(alwaysOnExecutionToken ? { alwaysOnExecutionToken } : {}),
       ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
     },
   });

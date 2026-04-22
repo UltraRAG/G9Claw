@@ -298,6 +298,8 @@ function buildStoredQueryOptions(options = {}, sessionId) {
     permissionMode: options.permissionMode,
     model: options.model,
     sessionSummary: options.sessionSummary,
+    alwaysOnPlanId: options.alwaysOnPlanId,
+    alwaysOnExecutionToken: options.alwaysOnExecutionToken,
     toolsSettings: cloneToolsSettings(options.toolsSettings)
   };
 }
@@ -892,7 +894,14 @@ async function queryClaudeSDK(command, options = {}, ws) {
         // Send session-created event only once for new sessions
         if (!sessionId && !sessionCreatedSent) {
           sessionCreatedSent = true;
-          ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
+          ws.send(createNormalizedMessage({
+            kind: 'session_created',
+            newSessionId: capturedSessionId,
+            sessionId: capturedSessionId,
+            provider: 'claude',
+            alwaysOnPlanId: options.alwaysOnPlanId || null,
+            alwaysOnExecutionToken: options.alwaysOnExecutionToken || null
+          }));
         }
       } else {
         // session_id already captured
@@ -934,7 +943,15 @@ async function queryClaudeSDK(command, options = {}, ws) {
     await cleanupTempFiles(tempImagePaths, tempDir);
 
     // Send completion event
-    ws.send(createNormalizedMessage({ kind: 'complete', exitCode: 0, isNewSession: !sessionId && !!command, sessionId: capturedSessionId, provider: 'claude' }));
+    ws.send(createNormalizedMessage({
+      kind: 'complete',
+      exitCode: 0,
+      isNewSession: !sessionId && !!command,
+      sessionId: capturedSessionId,
+      provider: 'claude',
+      alwaysOnPlanId: options.alwaysOnPlanId || null,
+      alwaysOnExecutionToken: options.alwaysOnExecutionToken || null
+    }));
     notifyRunStopped({
       userId: ws?.userId || null,
       provider: 'claude',
@@ -959,7 +976,14 @@ async function queryClaudeSDK(command, options = {}, ws) {
     await cleanupTempFiles(tempImagePaths, tempDir);
 
     // Send error to WebSocket
-    ws.send(createNormalizedMessage({ kind: 'error', content: error.message, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+    ws.send(createNormalizedMessage({
+      kind: 'error',
+      content: error.message,
+      sessionId: capturedSessionId || sessionId || null,
+      provider: 'claude',
+      alwaysOnPlanId: options.alwaysOnPlanId || null,
+      alwaysOnExecutionToken: options.alwaysOnExecutionToken || null
+    }));
     notifyRunFailed({
       userId: ws?.userId || null,
       provider: 'claude',

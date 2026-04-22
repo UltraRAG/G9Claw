@@ -97,11 +97,11 @@
     "projectFiles": "项目文件"
   },
   "alwaysOn": {
-    "title": "后台任务总览",
-    "description": "以统一表格查看当前项目里已存在的持久化 cron 和本会话任务。",
+    "title": "Always-On 总览",
+    "description": "在一个界面里查看当前项目的 discovery 计划和定时 cron 任务。",
     "lastUpdated": "最近更新：{{timestamp}}",
-    "loadingTitle": "正在加载 cron job",
-    "loadingDescription": "正在读取当前项目可见的定时任务，并准备概览表格。",
+    "loadingTitle": "正在加载 Always-On 数据",
+    "loadingDescription": "正在读取当前项目的 discovery 计划和定时任务。",
     "emptyTitle": "还没有定时任务",
     "emptyDescription": "当前项目暂时没有可显示的持久化 cron 或本会话任务。",
     "summary": {
@@ -110,10 +110,14 @@
       "failed": "最近失败"
     },
     "status": {
+      "draft": "草稿",
+      "ready": "待执行",
+      "queued": "已排队",
       "scheduled": "待触发",
       "running": "运行中",
       "completed": "已完成",
       "failed": "失败",
+      "superseded": "已替代",
       "unknown": "未知"
     },
     "actions": {
@@ -171,9 +175,65 @@
       "alreadyRunning": "任务 {{id}} 正在运行中。"
     },
     "errors": {
-      "loadFailed": "加载 cron job 失败。",
+      "loadFailed": "加载 Always-On 数据失败。",
       "deleteFailed": "删除 cron job 失败。",
       "runNowFailed": "立即执行 cron job 失败。"
+    },
+    "discovery": {
+      "title": "Discovery 计划",
+      "description": "由 Always-On discovery 生成、在执行前可审阅的结构化计划。",
+      "emptyTitle": "还没有 discovery 计划",
+      "emptyDescription": "运行 discovery 后，这里会出现可执行的结构化计划。",
+      "modes": {
+        "auto": "自动执行",
+        "manual": "等待批准"
+      },
+      "summary": {
+        "manualPending": "待批准计划",
+        "running": "运行中计划"
+      },
+      "actions": {
+        "viewDetails": "查看详情",
+        "openSession": "打开会话",
+        "archive": "归档"
+      },
+      "fields": {
+        "title": "标题",
+        "summary": "摘要",
+        "rationale": "价值说明",
+        "approvalMode": "批准方式",
+        "updatedAt": "更新时间",
+        "planFile": "计划文件",
+        "sourceSession": "discovery 会话",
+        "executionSession": "执行会话",
+        "executionStartedAt": "开始执行时间",
+        "executionLastActivityAt": "最近活动",
+        "latestSummary": "最近摘要",
+        "contextRefsWorkingDirectory": "工作区信号",
+        "contextRefsMemory": "记忆引用",
+        "contextRefsPlans": "相关计划",
+        "contextRefsCron": "相关 cron 任务",
+        "contextRefsChats": "最近聊天"
+      },
+      "detail": {
+        "meta": "计划元数据",
+        "plan": "计划正文",
+        "noContent": "这份 discovery 计划暂时没有落盘的 Markdown 正文。",
+        "missingTitle": "discovery 计划已不可用",
+        "missingDescription": "该计划可能已在概览加载后被更新或归档。"
+      },
+      "feedback": {
+        "executionQueued": "已将 discovery 计划 {{id}} 加入执行队列。",
+        "archived": "已归档 discovery 计划 {{id}}。"
+      },
+      "errors": {
+        "executeFailed": "执行 discovery 计划失败。",
+        "archiveFailed": "归档 discovery 计划失败。"
+      }
+    },
+    "cron": {
+      "title": "定时 cron 任务",
+      "description": "当前项目里已有的持久化和本会话 cron 任务。"
     }
   },
   "fileTree": {
