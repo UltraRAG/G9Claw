@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 import { CLAUDE_MODELS, CURSOR_MODELS, CODEX_MODELS } from '../../shared/modelConstants.js';
 import { parseFrontmatter } from '../utils/frontmatter.js';
+import { executeAlwaysOnSlashCommand } from '../always-on-slash.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -124,6 +125,12 @@ const builtInCommands = [
   {
     name: '/rewind',
     description: 'Rewind the conversation to a previous state',
+    namespace: 'builtin',
+    metadata: { type: 'builtin' }
+  },
+  {
+    name: '/ao',
+    description: 'List, run, or inspect Always-On cron jobs and discovery plans',
     namespace: 'builtin',
     metadata: { type: 'builtin' }
   }
@@ -396,6 +403,10 @@ Custom commands can be created in:
         message: `Rewinding conversation by ${steps} step${steps > 1 ? 's' : ''}...`
       }
     };
+  },
+
+  '/ao': async (args, context) => {
+    return await executeAlwaysOnSlashCommand(args, context);
   }
 };
 

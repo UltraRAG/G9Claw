@@ -221,26 +221,20 @@ function MainContent({
     }
   }, []);
 
-  const handleExecuteDiscoveryPlan = useCallback(async (
-    planId: string,
-    source: 'manual' | 'auto' = 'manual',
+  const launchQueuedDiscoveryPlanExecution = useCallback(async (
+    payload: ExecuteDiscoveryPlanResponse,
   ) => {
     if (!selectedProject) {
       return;
     }
 
-    const projectName = selectedProject.name;
-    autoLaunchInFlightRef.current.add(planId);
-
-    const response = await api.executeProjectDiscoveryPlan(projectName, planId, { source });
-    const payload = await readJsonPayload<ExecuteDiscoveryPlanResponse & { error?: string }>(response);
-    if (!response.ok || !payload) {
-      autoLaunchInFlightRef.current.delete(planId);
-      throw new Error(payload?.error || 'Failed to queue discovery plan execution');
+    const planId = payload?.plan?.id;
+    if (!planId) {
+      throw new Error('Missing discovery plan id in execution payload');
     }
 
     pendingDiscoveryExecutionsRef.current.set(payload.executionToken, {
-      projectName,
+      projectName: selectedProject.name,
       planId,
     });
 
@@ -257,6 +251,26 @@ function MainContent({
 
     refreshProjectsSilently();
   }, [refreshProjectsSilently, selectedProject, sendMessage]);
+
+  const handleExecuteDiscoveryPlan = useCallback(async (
+    planId: string,
+    source: 'manual' | 'auto' = 'manual',
+  ) => {
+    if (!selectedProject) {
+      return;
+    }
+
+    autoLaunchInFlightRef.current.add(planId);
+
+    const response = await api.executeProjectDiscoveryPlan(selectedProject.name, planId, { source });
+    const payload = await readJsonPayload<ExecuteDiscoveryPlanResponse & { error?: string }>(response);
+    if (!response.ok || !payload) {
+      autoLaunchInFlightRef.current.delete(planId);
+      throw new Error(payload?.error || 'Failed to queue discovery plan execution');
+    }
+
+    await launchQueuedDiscoveryPlanExecution(payload);
+  }, [launchQueuedDiscoveryPlanExecution, selectedProject]);
 
   useEffect(() => {
     const message = latestMessage as {
@@ -478,6 +492,7 @@ function MainContent({
                 onReplaceTemporarySession={onReplaceTemporarySession}
                 onNavigateToSession={onNavigateToSession}
                 onShowSettings={onShowSettings}
+                onLaunchAlwaysOnPlanExecution={launchQueuedDiscoveryPlanExecution}
                 autoExpandTools={autoExpandTools}
                 showRawParameters={showRawParameters}
                 showThinking={showThinking}

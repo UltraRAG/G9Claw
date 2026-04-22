@@ -25,10 +25,16 @@ import type {
   PendingPermissionRequest,
   PermissionMode,
 } from '../types/types';
-import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
+import type {
+  ExecuteDiscoveryPlanResponse,
+  Project,
+  ProjectSession,
+  SessionProvider,
+} from '../../../types/app';
 import { escapeRegExp } from '../utils/chatFormatting';
 import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
+import { handleAlwaysOnSlashAction } from '../utils/alwaysOnSlashActions';
 
 type PendingViewSession = {
   sessionId: string | null;
@@ -56,6 +62,7 @@ interface UseChatComposerStateArgs {
   onInputFocusChange?: (focused: boolean) => void;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
+  onLaunchAlwaysOnPlanExecution?: ((execution: ExecuteDiscoveryPlanResponse) => void | Promise<void>) | null;
   pendingViewSessionRef: { current: PendingViewSession | null };
   scrollToBottom: () => void;
   addMessage: (msg: ChatMessage) => void;
@@ -107,6 +114,7 @@ export function useChatComposerState({
   onInputFocusChange,
   onFileOpen,
   onShowSettings,
+  onLaunchAlwaysOnPlanExecution,
   pendingViewSessionRef,
   scrollToBottom,
   addMessage,
@@ -138,7 +146,7 @@ export function useChatComposerState({
   const inputValueRef = useRef(input);
 
   const handleBuiltInCommand = useCallback(
-    (result: CommandExecutionResult) => {
+    async (result: CommandExecutionResult) => {
       const { action, data } = result;
       switch (action) {
         case 'clear':
@@ -213,11 +221,26 @@ export function useChatComposerState({
           }
           break;
 
+        case 'ao':
+          await handleAlwaysOnSlashAction({
+            data,
+            addMessage,
+            onLaunchAlwaysOnPlanExecution,
+          });
+          break;
+
         default:
           console.warn('Unknown built-in command action:', action);
       }
     },
-    [onFileOpen, onShowSettings, addMessage, clearMessages, rewindMessages],
+    [
+      onFileOpen,
+      onShowSettings,
+      addMessage,
+      clearMessages,
+      rewindMessages,
+      onLaunchAlwaysOnPlanExecution,
+    ],
   );
 
   const handleCustomCommand = useCallback(async (result: CommandExecutionResult) => {
@@ -296,7 +319,7 @@ export function useChatComposerState({
 
         const result = (await response.json()) as CommandExecutionResult;
         if (result.type === 'builtin') {
-          handleBuiltInCommand(result);
+          await handleBuiltInCommand(result);
           setInput('');
           inputValueRef.current = '';
         } else if (result.type === 'custom') {

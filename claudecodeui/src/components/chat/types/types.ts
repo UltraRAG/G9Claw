@@ -1,4 +1,9 @@
-import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
+import type {
+  ExecuteDiscoveryPlanResponse,
+  Project,
+  ProjectSession,
+  SessionProvider,
+} from '../../../types/app';
 
 export type Provider = SessionProvider;
 
@@ -112,6 +117,7 @@ export interface ChatInterfaceProps {
   onReplaceTemporarySession?: (sessionId?: string | null) => void;
   onNavigateToSession?: (targetSessionId: string) => void;
   onShowSettings?: () => void;
+  onLaunchAlwaysOnPlanExecution?: ((execution: ExecuteDiscoveryPlanResponse) => void | Promise<void>) | null;
   autoExpandTools?: boolean;
   showRawParameters?: boolean;
   showThinking?: boolean;
