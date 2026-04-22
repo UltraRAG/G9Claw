@@ -19,7 +19,11 @@ export async function runServerStartupBeforeListen({
   }
 
   initializeCronDaemonOwnerEnvFn();
-  await ensureCronDaemonForUiStartupFn();
+  try {
+    await ensureCronDaemonForUiStartupFn();
+  } catch (err) {
+    console.warn('[server-startup] Cron daemon unavailable, continuing without it:', err.message);
+  }
   await initializeDatabaseFn();
   await ensureLocalUserWhenAuthDisabledFn();
   configureWebPushFn();
