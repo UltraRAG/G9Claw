@@ -198,8 +198,12 @@ const PROACTIVE_NO_OP_SUBSCRIBE = (_cb: () => void) => () => {};
 const PROACTIVE_FALSE = () => false;
 const SUGGEST_BG_PR_NOOP = (_p: string, _n: string): boolean => false;
 const useProactive = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/useProactive.js').useProactive : null;
-const useScheduledTasks = require('../hooks/useScheduledTasks.js').useScheduledTasks as typeof import('../hooks/useScheduledTasks.js').useScheduledTasks;
 /* eslint-enable @typescript-eslint/no-require-imports */
+// useScheduledTasks must be a static import: it (transitively) contains a
+// top-level await, and Bun forbids require()'ing async modules with:
+//   TypeError: require() async module ... is unsupported. use 'await import()' instead.
+// This previously crashed the REPL on first render under Bun.
+import { useScheduledTasks } from '../hooks/useScheduledTasks.js';
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
 import { useTaskListWatcher } from '../hooks/useTaskListWatcher.js';
 import type { SandboxAskCallback, NetworkHostPattern } from '../utils/sandbox/sandbox-adapter.js';

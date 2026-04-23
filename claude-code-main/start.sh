@@ -18,11 +18,16 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$DIR/.." && pwd)"
 ROOT_ENV="$REPO_ROOT/.env"
 
+log() { echo "[start] $*" >&2; }
+
 if [ -f "$ROOT_ENV" ]; then
+  log "loading env from $ROOT_ENV"
   set -a
   # shellcheck disable=SC1091
   source "$ROOT_ENV"
   set +a
+else
+  log "no .env at $ROOT_ENV (using current shell env)"
 fi
 
 # Ensure bun is on PATH
@@ -35,7 +40,7 @@ if ! command -v bun &>/dev/null; then
   fi
 fi
 
-# ── Check for --gateway flag ──
+# ── Parse flags ──
 GATEWAY_ONLY=false
 HAS_PRINT=false
 HAS_HELP_OR_VERSION=false
@@ -80,8 +85,13 @@ require_env EDGECLAW_MODEL
 
 PROXY_PORT="${EDGECLAW_PROXY_PORT:-18080}"
 
-if [ "$GATEWAY_ONLY" = false ] && [ "$HAS_PRINT" = false ] && [ ! -t 1 ]; then
-  cat >&2 <<'EOF'
+# ── TTY sanity check for interactive mode ──
+# Some embedded terminals (Cursor, VS Code) report a TTY but the Ink/React TUI
+# can still misbehave (silent exits, key events not delivered). Warn loudly so
+# users don't think the script is "stuck".
+if [ "$GATEWAY_ONLY" = false ] && [ "$HAS_PRINT" = false ]; then
+  if [ ! -t 1 ]; then
+    cat >&2 <<'EOF'
 Error: stdout is not a TTY — interactive UI needs a real terminal.
 
   Examples: Terminal.app, iTerm2, Warp, Alacritty.
@@ -93,7 +103,18 @@ Error: stdout is not a TTY — interactive UI needs a real terminal.
   Gateway-only (飞书/Telegram etc):
     ./start.sh --gateway
 EOF
-  exit 1
+    exit 1
+  fi
+  case "${TERM_PROGRAM:-}" in
+    vscode|cursor|Cursor)
+      cat >&2 <<EOF
+[start] WARNING: TERM_PROGRAM=$TERM_PROGRAM detected (Cursor/VS Code embedded terminal).
+[start]          The interactive Ink TUI may behave unexpectedly here.
+[start]          If you only see the prompt come back, run from Terminal.app / iTerm2 instead,
+[start]          or use:  ./start.sh -p "your prompt"   |   ./start.sh --gateway
+EOF
+      ;;
+  esac
 fi
 
 export OPENAI_API_KEY="${OPENAI_API_KEY:-$EDGECLAW_API_KEY}"
@@ -102,11 +123,15 @@ export OPENAI_MODEL="${OPENAI_MODEL:-$EDGECLAW_MODEL}"
 export PROXY_PORT="$PROXY_PORT"
 
 # ── Start local proxy (if not already running) ──
-if ! curl -s "http://127.0.0.1:$PROXY_PORT/health" >/dev/null 2>&1; then
+if curl -s "http://127.0.0.1:$PROXY_PORT/health" >/dev/null 2>&1; then
+  log "proxy already healthy on http://127.0.0.1:$PROXY_PORT (skipping launch)"
+else
+  log "starting proxy: bun run $DIR/proxy.ts (log: $DIR/.proxy.log)"
   bun run "$DIR/proxy.ts" > "$DIR/.proxy.log" 2>&1 &
   PROXY_PID=$!
-  for _ in $(seq 1 30); do
+  for i in $(seq 1 30); do
     if curl -s "http://127.0.0.1:$PROXY_PORT/health" >/dev/null 2>&1; then
+      log "proxy ready after ${i} attempts"
       break
     fi
     sleep 0.3
@@ -150,4 +175,26 @@ if [ "$GATEWAY_ENABLED" = "true" ] || [ "$GATEWAY_ENABLED" = "1" ]; then
 fi
 
 # ── Claude Code interactive CLI ──
-exec bun run "$DIR/src/entrypoints/cli.tsx" "$@"
+# PLUGIN_DIR must point at a Claude Code plugin (a directory containing
+# .claude-plugin/plugin.json). The default is this repo's bundled turnkey
+# plugin. To disable plugin loading entirely, set PLUGIN_DIR= (empty).
+DEFAULT_PLUGIN_DIR="$REPO_ROOT/packages/turnkey-cc-plugin"
+if [ -z "${PLUGIN_DIR+x}" ]; then
+  PLUGIN_DIR="$DEFAULT_PLUGIN_DIR"
+fi
+
+PLUGIN_ARGS=()
+if [ -n "$PLUGIN_DIR" ]; then
+  if [ -f "$PLUGIN_DIR/.claude-plugin/plugin.json" ]; then
+    PLUGIN_ARGS=(--plugin-dir "$PLUGIN_DIR")
+    log "plugin OK: $PLUGIN_DIR"
+  else
+    log "WARNING: PLUGIN_DIR=$PLUGIN_DIR is not a valid CC plugin"
+    log "         (missing .claude-plugin/plugin.json) — skipping --plugin-dir."
+    log "         Passing an invalid plugin dir to cli.tsx silently aborts the TUI."
+  fi
+else
+  log "PLUGIN_DIR explicitly empty — skipping --plugin-dir."
+fi
+
+exec bun run "$DIR/src/entrypoints/cli.tsx" "$@" "${PLUGIN_ARGS[@]}"

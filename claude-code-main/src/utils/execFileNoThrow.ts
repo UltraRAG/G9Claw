@@ -109,7 +109,11 @@ export function execFileNoThrowWithCwd(
     // Use execa for cross-platform .bat/.cmd compatibility on Windows
     execa(file, args, {
       maxBuffer,
-      signal: abortSignal,
+      // execa renamed `signal` -> `cancelSignal` in v9. Passing the old name
+      // throws TypeError synchronously inside the promise chain (surfaces as
+      // unhandledRejection). The AutoUpdater calls this on every render, so
+      // any handler that escalates rejections would silently kill the TUI.
+      cancelSignal: abortSignal,
       timeout: finalTimeout,
       cwd: finalCwd,
       env: finalEnv,
