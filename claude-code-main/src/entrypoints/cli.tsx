@@ -1,4 +1,28 @@
 import { feature } from 'bun:bundle';
+import * as __bisectFs from 'node:fs';
+
+// ── DIAGNOSTIC SCAFFOLDING ──
+// Opt-in file logger for bisecting TUI startup hangs. OFF by default:
+//   CC_BISECT_FILE=/path/to/log   → write bisect markers to that file
+//   CC_INPUT_TRACE=1              → also enables byte-level input traces in
+//                                   App.tsx / useTextInput.ts (those check
+//                                   typeof globalThis.__bisect === 'function')
+// We use raw fs.writeSync so it bypasses Ink's patchStderr / TTY wrappers.
+// When CC_BISECT_FILE is unset, FD stays -1 and __bisect is a no-op — no
+// stderr noise, no I/O, no perf cost beyond a single fd check per call.
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+const __BISECT_FD: number = process.env.CC_BISECT_FILE
+  ? (() => { try { return __bisectFs.openSync(process.env.CC_BISECT_FILE!, 'a'); } catch { return -1; } })()
+  : -1;
+function __bisect(msg: string): void {
+  if (__BISECT_FD < 0) return;
+  try { __bisectFs.writeSync(__BISECT_FD, `[${Date.now()}] [bisect] ${msg}\n`); } catch {}
+}
+// Expose to dynamically-imported modules (main.tsx, ink.ts, App.tsx, ...)
+// so they all share one FD instead of opening their own.
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+(globalThis as any).__bisect = __bisect;
+__bisect('cli.tsx module load (pid=' + process.pid + ' tty.stdin=' + String(process.stdin.isTTY) + ' tty.stdout=' + String(process.stdout.isTTY) + ' TERM_PROGRAM=' + (process.env.TERM_PROGRAM || '') + ')');
 
 // Bugfix for corepack auto-pinning, which adds yarnpkg to peoples' package.jsons
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
@@ -278,16 +302,21 @@ async function main(): Promise<void> {
   }
 
   // No special flags detected, load and run the full CLI
+  __bisect('cli.tsx T1: about to import earlyInput');
   const {
     startCapturingEarlyInput
   } = await import('../utils/earlyInput.js');
+  __bisect('cli.tsx T2: earlyInput imported, starting capture');
   startCapturingEarlyInput();
   profileCheckpoint('cli_before_main_import');
+  __bisect('cli.tsx T3: about to import main.js');
   const {
     main: cliMain
   } = await import('../main.js');
+  __bisect('cli.tsx T4: main.js imported, awaiting cliMain()');
   profileCheckpoint('cli_after_main_import');
   await cliMain();
+  __bisect('cli.tsx T5: cliMain() resolved (unusual for interactive)');
   profileCheckpoint('cli_after_main_complete');
 }
 
@@ -299,18 +328,18 @@ async function main(): Promise<void> {
 // comes back immediately and the TUI never appears".
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 process.on('uncaughtException', (err) => {
+  const msg = err && err.stack ? err.stack : String(err);
+  __bisect('cli.tsx uncaughtException: ' + msg);
   try {
-    process.stderr.write(
-      `[cc] uncaughtException (logged, not fatal): ${err && err.stack ? err.stack : String(err)}\n`,
-    );
+    process.stderr.write(`[cc] uncaughtException (logged, not fatal): ${msg}\n`);
   } catch { /* stderr may be closed */ }
 });
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error && reason.stack ? reason.stack : String(reason);
+  __bisect('cli.tsx unhandledRejection: ' + msg);
   try {
-    process.stderr.write(
-      `[cc] unhandledRejection (logged, not fatal): ${reason instanceof Error && reason.stack ? reason.stack : String(reason)}\n`,
-    );
+    process.stderr.write(`[cc] unhandledRejection (logged, not fatal): ${msg}\n`);
   } catch { /* stderr may be closed */ }
 });
 

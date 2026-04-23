@@ -23,7 +23,19 @@ export async function render(
 }
 
 export async function createRoot(options?: RenderOptions): Promise<Root> {
-  const root = await inkCreateRoot(options)
+  const __b = (globalThis as any).__bisect as undefined | ((m: string) => void)
+  __b?.('ink.ts createRoot: enter')
+  let root: Root
+  try {
+    root = await inkCreateRoot(options)
+  } catch (e) {
+    __b?.(
+      'ink.ts createRoot: inkCreateRoot threw: ' +
+        (e && (e as Error).stack ? (e as Error).stack : String(e)),
+    )
+    throw e
+  }
+  __b?.('ink.ts createRoot: inkCreateRoot resolved (root=' + typeof root + ')')
   return {
     ...root,
     render: node => root.render(withTheme(node)),

@@ -197,4 +197,28 @@ else
   log "PLUGIN_DIR explicitly empty — skipping --plugin-dir."
 fi
 
+# ── Diagnostics: pass --debug to enable file-based startup tracing ──
+# OFF by default. When enabled:
+#   /tmp/cc-bisect.log : high-cardinality bisect markers (cli.tsx, main.tsx,
+#                        ink.ts, App.tsx, useTextInput.ts) — bypasses Ink's
+#                        patchStderr via raw fs.writeSync.
+#   /tmp/cc-trace.log  : low-cardinality phase checkpoints (main/run/preAction)
+# CC_INPUT_TRACE=1 also enables byte-level keyboard input traces.
+# IMPORTANT: do NOT tee stdout from the bun process — it turns the TTY into a
+# pipe and Ink falls back to non-interactive mode. Always use file FDs.
+HAS_DEBUG=false
+REMAINING_AFTER_DEBUG=()
+for a in "$@"; do
+  if [ "$a" = "--debug" ]; then HAS_DEBUG=true; else REMAINING_AFTER_DEBUG+=("$a"); fi
+done
+set -- "${REMAINING_AFTER_DEBUG[@]}"
+if [ "$HAS_DEBUG" = "true" ]; then
+  export CC_TRACE_FILE="${CC_TRACE_FILE:-/tmp/cc-trace.log}"
+  export CC_BISECT_FILE="${CC_BISECT_FILE:-/tmp/cc-bisect.log}"
+  export CC_INPUT_TRACE="${CC_INPUT_TRACE:-1}"
+  : > "$CC_TRACE_FILE"
+  : > "$CC_BISECT_FILE"
+  log "DEBUG MODE — traces: $CC_TRACE_FILE  bisect: $CC_BISECT_FILE  input-trace: on"
+fi
+
 exec bun run "$DIR/src/entrypoints/cli.tsx" "$@" "${PLUGIN_ARGS[@]}"
