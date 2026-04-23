@@ -48,7 +48,7 @@
           "description": "Deep reasoning, novel algorithm design, complex system architecture, security analysis"
         }
       },
-      "subagentPolicy": "inherit",
+      "subagentPolicy": "skip",
       "rules": [
         "Short prompts (<20 words) with no technical depth → SIMPLE",
         "Single-file edits, straightforward code review, explanations → MEDIUM",

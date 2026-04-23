@@ -167,14 +167,9 @@ const getUseModel = async (
     const isSubagent = detectAndCleanSubagentTag(req);
 
     // Sub-agent differential routing via subagentPolicy
-    // When orchestrating, always inherit the orchestrator's tier model
     if (isSubagent) {
-      let policy = tokenSaverConfig.subagentPolicy ?? "skip";
+      const policy = tokenSaverConfig.subagentPolicy ?? "skip";
       req.isSubagent = true;
-
-      if (req.sessionId && isOrchestrating(req.sessionId) && policy === "skip") {
-        policy = "inherit";
-      }
 
       if (policy === "skip") {
         req.log.info(`[TokenSaver] subagent policy=skip → using default model`);
