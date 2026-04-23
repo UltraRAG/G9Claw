@@ -49,6 +49,36 @@ Claude Code 启动时从该路径加载 plugin manifest（`.claude-plugin/plugin
 
 > 一般你只需调 `/turnkey:start "<ticket 描述>"`，主 skill 会按阶段路由到子 skill。
 
+### 2.1 从源码 dogfood `claude-code-main`（贡献者用）
+
+如果你不是用安装好的 `claude` 二进制，而是直接跑本仓库的 `claude-code-main`（典型场景：同一个 PR 里既改 plugin 又改 host），可以把 `--plugin-dir` 透传给 dev script：
+
+```bash
+cd claude-code-main
+
+# bun（推荐，dev script 本身就是 bun --watch）
+bun run dev --plugin-dir /Users/da/ws/edgeclaw-test-0422/packages/turnkey-cc-plugin
+
+# npm（必须用 -- 把后续参数转发给 script）
+npm run dev -- --plugin-dir /Users/da/ws/edgeclaw-test-0422/packages/turnkey-cc-plugin
+```
+
+`--plugin-dir` 可重复，多个 plugin 叠加：
+
+```bash
+bun run dev \
+  --plugin-dir /abs/path/to/edgeclaw-opc/packages/turnkey-cc-plugin \
+  --plugin-dir /abs/path/to/another-plugin
+```
+
+排错时配 `--debug` 看 plugin 加载日志：
+
+```bash
+bun run dev --debug --plugin-dir /abs/path/to/edgeclaw-opc/packages/turnkey-cc-plugin
+```
+
+⚠️ **路径必须是当前机器能 `ls` 到的绝对路径**，否则 plugin 静默不加载，错误只出现在对话里的 `/plugin` Errors tab（见 §7）。
+
 ---
 
 ## 3. 团队共享（project settings）
