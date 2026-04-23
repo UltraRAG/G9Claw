@@ -499,6 +499,8 @@ export const router = async (req: any, _res: any, context: RouterContext) => {
           // with a minimal version to save ~20K input tokens per request.
           // The orchestration prompt (injected as user message above) provides all
           // the behavioral instructions the orchestrator needs.
+          // Memory recall blocks are preserved so the orchestrator retains long-term
+          // context when deciding how to decompose and delegate tasks.
           if (autoOrch.slimSystemPrompt !== false && Array.isArray(req.body.system)) {
             const originalBlocks = req.body.system.length;
             let originalTokensEstimate = 0;
@@ -506,19 +508,28 @@ export const router = async (req: any, _res: any, context: RouterContext) => {
               if (block.text) originalTokensEstimate += block.text.length;
             }
 
-            // Keep only a minimal identity block. Preserve cache_control from
-            // the first block so Anthropic's prompt caching still works.
             const firstBlock = req.body.system[0];
             const cacheControl = firstBlock?.cache_control;
-            req.body.system = [{
+
+            const memoryKeywords = ["ClawXMemory", "memory_search", "memory_overview", "memory_get", "memory_list", "memory_flush", "memory_dream"];
+            const preservedBlocks = req.body.system.filter((block: any) =>
+              block.text && memoryKeywords.some((kw: string) => block.text.includes(kw))
+            );
+
+            const slimBlock = {
               type: "text",
               text: "You are Claude Code, an orchestration agent. Use the Agent tool to delegate all work to sub-agents.",
               ...(cacheControl ? { cache_control: cacheControl } : {}),
-            }];
+            };
+            req.body.system = [slimBlock, ...preservedBlocks];
 
-            const savedChars = originalTokensEstimate - req.body.system[0].text.length;
+            let newTokensEstimate = 0;
+            for (const block of req.body.system) {
+              if (block.text) newTokensEstimate += block.text.length;
+            }
+            const savedChars = originalTokensEstimate - newTokensEstimate;
             req.log.info(
-              `[AutoOrchestrate] slimmed system prompt: ${originalBlocks} blocks (~${Math.round(originalTokensEstimate / 4)} tokens) → 1 block (~25 tokens), saved ~${Math.round(savedChars / 4)} tokens`
+              `[AutoOrchestrate] slimmed system prompt: ${originalBlocks} blocks (~${Math.round(originalTokensEstimate / 4)} tokens) → ${req.body.system.length} blocks (~${Math.round(newTokensEstimate / 4)} tokens), saved ~${Math.round(savedChars / 4)} tokens${preservedBlocks.length > 0 ? `, preserved ${preservedBlocks.length} memory block(s)` : ""}`
             );
           }
         }
