@@ -39,7 +39,18 @@ plugin({
 // Skip with CCR_DISABLED=1 or when ANTHROPIC_BASE_URL is already set externally.
 const CCR_SENTINEL = 'http://ccr.local';
 
+function isDaemonPreloadContext(): boolean {
+  const runtimeArgs = [...process.argv, ...process.execArgv];
+  return runtimeArgs.some((arg) => (
+    arg === 'daemon' ||
+    arg === '--daemon-worker' ||
+    arg.includes('daemonMain([') ||
+    arg.includes('runDaemonWorker(')
+  ));
+}
+
 if (
+  !isDaemonPreloadContext() &&
   process.env.CCR_DISABLED !== '1' &&
   process.env.CCR_DISABLED !== 'true' &&
   (!process.env.ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL === CCR_SENTINEL)
