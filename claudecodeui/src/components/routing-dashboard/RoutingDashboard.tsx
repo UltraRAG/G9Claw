@@ -1,10 +1,10 @@
 import { RefreshCw, AlertCircle, Zap, DollarSign, Layers, Users } from 'lucide-react';
+import { useState } from 'react';
 import { useRoutingDashboard } from '../../hooks/useRoutingDashboard';
 import TierDistributionBar from './TierDistributionBar';
 import RoleSplitIndicator from './RoleSplitIndicator';
 import ProjectRoutingCard from './ProjectRoutingCard';
 import SessionRoutingRow from './SessionRoutingRow';
-import { useState } from 'react';
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;

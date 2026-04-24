@@ -205,7 +205,7 @@ export default function ChangesView({
               )}
             </div>
             {selectedFiles.size === 0 ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground italic">No staged files</div>
+              <div className="px-3 py-2 text-xs italic text-muted-foreground">No staged files</div>
             ) : (
               <FileChangeList
                 gitStatus={gitStatus}
@@ -238,7 +238,7 @@ export default function ChangesView({
               )}
             </div>
             {unstagedFiles.size === 0 ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground italic">All changes staged</div>
+              <div className="px-3 py-2 text-xs italic text-muted-foreground">All changes staged</div>
             ) : (
               <FileChangeList
                 gitStatus={gitStatus}

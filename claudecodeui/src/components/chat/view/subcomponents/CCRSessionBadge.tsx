@@ -41,7 +41,7 @@ export default function CCRSessionBadge({ sessionId }: CCRSessionBadgeProps) {
     <div className="flex items-center gap-1.5 text-[10px] leading-none">
       {primaryTier && (
         <span
-          className={`inline-flex items-center rounded px-1.5 py-0.5 font-medium border ${TIER_STYLES[primaryTier] || 'bg-muted text-muted-foreground border-border'}`}
+          className={`inline-flex items-center rounded border px-1.5 py-0.5 font-medium ${TIER_STYLES[primaryTier] || 'border-border bg-muted text-muted-foreground'}`}
           title={`Most-used tier: ${primaryTier} (${stats.byTier[primaryTier]?.requestCount || 0} requests)`}
         >
           {primaryTier}

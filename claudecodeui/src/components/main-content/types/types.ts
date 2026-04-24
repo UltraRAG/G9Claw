@@ -54,6 +54,12 @@ export type MainContentProps = {
   onStartNewSession: (project: Project) => void;
   onShowSettings: () => void;
   externalMessageUpdate: number;
+  /**
+   * When true, MainContent renders without its own header / pill bar so the
+   * outer shell (AppShellV2) can supply its own breadcrumb-style chrome.
+   * Empty and loading states still render, just without the legacy header.
+   */
+  chromeless?: boolean;
 };
 
 export type MainContentHeaderProps = {
@@ -70,6 +76,7 @@ export type MainContentStateViewProps = {
   mode: 'loading' | 'empty';
   isMobile: boolean;
   onMenuClick: () => void;
+  chromeless?: boolean;
 };
 
 export type MobileMenuButtonProps = {

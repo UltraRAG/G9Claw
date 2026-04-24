@@ -32,9 +32,9 @@ import type {
   SessionProvider,
 } from '../../../types/app';
 import { escapeRegExp } from '../utils/chatFormatting';
+import { handleAlwaysOnSlashAction } from '../utils/alwaysOnSlashActions';
 import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
-import { handleAlwaysOnSlashAction } from '../utils/alwaysOnSlashActions';
 
 type PendingViewSession = {
   sessionId: string | null;

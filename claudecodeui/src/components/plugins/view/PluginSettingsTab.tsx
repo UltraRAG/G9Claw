@@ -213,12 +213,12 @@ function StarterPluginCard({ onInstall, installing }: { onInstall: () => void; i
   const { t } = useTranslation('settings');
 
   return (
-    <div className="relative flex overflow-hidden rounded-lg border border-dashed border-border bg-card transition-all duration-200 hover:border-blue-400 dark:hover:border-blue-500">
-      <div className="w-[3px] flex-shrink-0 bg-blue-500/30" />
+    <div className="relative flex overflow-hidden rounded-lg border border-dashed border-border bg-card transition-all duration-200 hover:border-neutral-400 dark:hover:border-neutral-600">
+      <div className="w-[3px] flex-shrink-0 bg-neutral-300 dark:bg-neutral-700" />
       <div className="min-w-0 flex-1 p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2.5">
-            <div className="h-5 w-5 flex-shrink-0 text-blue-500">
+            <div className="h-5 w-5 flex-shrink-0 text-neutral-500 dark:text-neutral-400">
               <BarChart3 className="h-5 w-5" />
             </div>
             <div className="min-w-0">
@@ -226,7 +226,7 @@ function StarterPluginCard({ onInstall, installing }: { onInstall: () => void; i
                 <span className="text-sm font-semibold leading-none text-foreground">
                   {t('pluginSettings.starterPlugin.name')}
                 </span>
-                <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-950/50 dark:text-blue-400">
+                <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
                   {t('pluginSettings.starterPlugin.badge')}
                 </span>
                 <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
@@ -250,7 +250,7 @@ function StarterPluginCard({ onInstall, installing }: { onInstall: () => void; i
           <button
             onClick={onInstall}
             disabled={installing}
-            className="flex flex-shrink-0 items-center gap-1.5 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+            className="flex flex-shrink-0 items-center gap-1.5 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
           >
             {installing ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -270,12 +270,12 @@ function TerminalPluginCard({ onInstall, installing }: { onInstall: () => void; 
   const { t } = useTranslation('settings');
 
   return (
-    <div className="relative flex overflow-hidden rounded-lg border border-dashed border-border bg-card transition-all duration-200 hover:border-blue-400 dark:hover:border-blue-500">
-      <div className="w-[3px] flex-shrink-0 bg-blue-500/30" />
+    <div className="relative flex overflow-hidden rounded-lg border border-dashed border-border bg-card transition-all duration-200 hover:border-neutral-400 dark:hover:border-neutral-600">
+      <div className="w-[3px] flex-shrink-0 bg-neutral-300 dark:bg-neutral-700" />
       <div className="min-w-0 flex-1 p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2.5">
-            <div className="h-5 w-5 flex-shrink-0 text-blue-500">
+            <div className="h-5 w-5 flex-shrink-0 text-neutral-500 dark:text-neutral-400">
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
                 <rect x="3" y="3" width="18" height="18" rx="2"/>
                 <path d="M7 8l4 4-4 4"/>
@@ -287,7 +287,7 @@ function TerminalPluginCard({ onInstall, installing }: { onInstall: () => void; 
                 <span className="text-sm font-semibold leading-none text-foreground">
                   {t('pluginSettings.terminalPlugin.name')}
                 </span>
-                <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-950/50 dark:text-blue-400">
+                <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
                   {t('pluginSettings.terminalPlugin.badge')}
                 </span>
                 <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
@@ -311,7 +311,7 @@ function TerminalPluginCard({ onInstall, installing }: { onInstall: () => void; 
           <button
             onClick={onInstall}
             disabled={installing}
-            className="flex flex-shrink-0 items-center gap-1.5 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+            className="flex flex-shrink-0 items-center gap-1.5 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
           >
             {installing ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
