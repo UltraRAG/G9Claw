@@ -14,6 +14,7 @@ import type {
 import type { HeartbeatStats } from "../pipeline/heartbeat.js";
 import {
   LlmMemoryExtractor,
+  type LlmGeneralProjectMetaMergeGroup,
   type LlmDreamCluster,
   type LlmDreamClusterHeaderInput,
   type LlmDreamClusterPlanOutput,
@@ -22,7 +23,6 @@ import {
 } from "../skills/llm-extraction.js";
 import { MemoryRepository } from "../storage/sqlite.js";
 import { traceI18n } from "../trace-i18n.js";
-import { normalizeWorkspacePath } from "../general-projects.js";
 import { hashText, nowIso } from "../utils/id.js";
 
 type LoggerLike = {
@@ -243,13 +243,6 @@ function sortProjectMetas(entries: ProjectMetaRecord[]): ProjectMetaRecord[] {
   });
 }
 
-function buildGeneralProjectMergeKey(meta: ProjectMetaRecord): string {
-  if (meta.sourceKind === "workspace_external_mirror" && meta.sourceWorkspacePath && meta.sourceProjectId) {
-    return `external:${normalizeWorkspacePath(meta.sourceWorkspacePath)}::${meta.sourceProjectId}`;
-  }
-  return `local:${normalizeWhitespace(meta.projectName).toLowerCase()}`;
-}
-
 function toDreamMetaInput(meta: ProjectMetaRecord): LlmDreamFileProjectMetaInput {
   return {
     projectId: meta.projectId,
@@ -258,6 +251,9 @@ function toDreamMetaInput(meta: ProjectMetaRecord): LlmDreamFileProjectMetaInput
     status: meta.status,
     updatedAt: meta.updatedAt,
     ...(meta.dreamUpdatedAt ? { dreamUpdatedAt: meta.dreamUpdatedAt } : {}),
+    ...(meta.sourceKind ? { sourceKind: meta.sourceKind } : {}),
+    ...(meta.sourceWorkspacePath ? { sourceWorkspacePath: meta.sourceWorkspacePath } : {}),
+    ...(meta.sourceProjectId ? { sourceProjectId: meta.sourceProjectId } : {}),
   };
 }
 
@@ -473,13 +469,65 @@ type GeneralProjectMergeResult = {
   mergedProjects: number;
   deletedProjects: number;
   relinkedFiles: number;
+  planSummary: string;
+  droppedWarnings: string[];
   groups: Array<{
     keeperProjectId: string;
     keeperProjectName: string;
     mergedProjectIds: string[];
+    reason: string;
     relinkedFiles: string[];
   }>;
 };
+
+function validateGeneralProjectMergeGroups(input: {
+  metas: ProjectMetaRecord[];
+  groups: LlmGeneralProjectMetaMergeGroup[];
+}): { acceptedGroups: LlmGeneralProjectMetaMergeGroup[]; droppedWarnings: string[] } {
+  const projectById = new Map(input.metas.map((meta) => [meta.projectId, meta] as const));
+  const usedProjectIds = new Set<string>();
+  const acceptedGroups: LlmGeneralProjectMetaMergeGroup[] = [];
+  const droppedWarnings: string[] = [];
+
+  for (const [index, group] of input.groups.entries()) {
+    const groupLabel = `group ${index + 1}`;
+    const keeperProjectId = normalizeWhitespace(group.keeperProjectId);
+    const duplicateProjectIds = Array.from(new Set(
+      group.duplicateProjectIds.map((projectId) => normalizeWhitespace(projectId)).filter(Boolean),
+    ));
+    if (!projectById.has(keeperProjectId)) {
+      droppedWarnings.push(`Dropped ${groupLabel}: unknown keeper project id ${keeperProjectId || "(empty)"}.`);
+      continue;
+    }
+    const unknownDuplicate = duplicateProjectIds.find((projectId) => !projectById.has(projectId));
+    if (unknownDuplicate) {
+      droppedWarnings.push(`Dropped ${groupLabel}: unknown duplicate project id ${unknownDuplicate}.`);
+      continue;
+    }
+    if (duplicateProjectIds.includes(keeperProjectId)) {
+      droppedWarnings.push(`Dropped ${groupLabel}: keeper project id was also listed as a duplicate.`);
+      continue;
+    }
+    if (duplicateProjectIds.length === 0) {
+      droppedWarnings.push(`Dropped ${groupLabel}: no duplicate project ids were supplied.`);
+      continue;
+    }
+    const allProjectIds = [keeperProjectId, ...duplicateProjectIds];
+    const reusedProjectId = allProjectIds.find((projectId) => usedProjectIds.has(projectId));
+    if (reusedProjectId) {
+      droppedWarnings.push(`Dropped ${groupLabel}: project id ${reusedProjectId} was already used in another merge group.`);
+      continue;
+    }
+    allProjectIds.forEach((projectId) => usedProjectIds.add(projectId));
+    acceptedGroups.push({
+      keeperProjectId,
+      duplicateProjectIds,
+      reason: group.reason || "Model identified these project metas as duplicates.",
+    });
+  }
+
+  return { acceptedGroups, droppedWarnings };
+}
 
 export class DreamRewriteRunner {
   private readonly logger?: LoggerLike;
@@ -690,12 +738,15 @@ export class DreamRewriteRunner {
         markdown: refined.file.markdown,
         sourceRecord,
       });
+      const scopedCandidate = projectMeta
+        ? { ...candidate, projectId: projectMeta.projectId }
+        : candidate;
 
       this.repository.deleteMemoryEntries(cluster.memberRelativePaths);
       for (const relativePath of cluster.memberRelativePaths) {
         trace.mutations.push(mutation("delete", relativePath));
       }
-      const writtenRecord = this.repository.getFileMemoryStore().upsertCandidate(candidate);
+      const writtenRecord = this.repository.getFileMemoryStore().upsertCandidate(scopedCandidate);
       trace.mutations.push(mutation("write", writtenRecord.relativePath, {
         candidateType: kind,
         name: writtenRecord.name,
@@ -746,29 +797,56 @@ export class DreamRewriteRunner {
     };
   }
 
-  private mergeGeneralProjectMetas(
+  private async mergeGeneralProjectMetas(
     trace: DreamTraceRecord,
     workspaceStore: MemoryRepository["getFileMemoryStore"] extends () => infer T ? T : never,
-  ): GeneralProjectMergeResult {
+  ): Promise<GeneralProjectMergeResult> {
     const metas = sortProjectMetas(workspaceStore.listProjectMetas());
-    const grouped = new Map<string, ProjectMetaRecord[]>();
-    for (const meta of metas) {
-      const key = buildGeneralProjectMergeKey(meta);
-      const current = grouped.get(key) ?? [];
-      current.push(meta);
-      grouped.set(key, current);
-    }
-
     const result: GeneralProjectMergeResult = {
       mergedProjects: 0,
       deletedProjects: 0,
       relinkedFiles: 0,
+      planSummary: metas.length < 2
+        ? "Fewer than two General project nodes were available for merge planning."
+        : "",
+      droppedWarnings: [],
       groups: [],
     };
 
-    for (const group of grouped.values()) {
-      if (group.length < 2) continue;
-      const [keeper, ...duplicates] = sortProjectMetas(group);
+    let plannerGroups: LlmGeneralProjectMetaMergeGroup[] = [];
+    let acceptedPlannerGroups: LlmGeneralProjectMetaMergeGroup[] = [];
+    let mergePlanDebug: DreamTraceStep["promptDebug"];
+    if (metas.length >= 2) {
+      try {
+        const plan = await this.extractor.planGeneralProjectMetaMerges({
+          projectMetas: metas.map(toDreamMetaInput),
+          debugTrace: (debug) => {
+            mergePlanDebug = debug;
+          },
+        });
+        result.planSummary = plan.summary;
+        plannerGroups = plan.mergeGroups;
+        const validated = validateGeneralProjectMergeGroups({
+          metas,
+          groups: plannerGroups,
+        });
+        result.droppedWarnings = validated.droppedWarnings;
+        acceptedPlannerGroups = validated.acceptedGroups;
+      } catch (error) {
+        result.planSummary = `Dream skipped General project merge planning because the model request failed: ${error instanceof Error ? error.message : String(error)}`;
+        result.droppedWarnings.push(result.planSummary);
+        this.logger?.warn?.(`[clawxmemory] General project meta merge planning failed: ${String(error)}`);
+      }
+    }
+
+    const projectById = new Map(metas.map((meta) => [meta.projectId, meta] as const));
+    for (const group of acceptedPlannerGroups) {
+      const keeper = projectById.get(group.keeperProjectId);
+      if (!keeper) continue;
+      const duplicates = group.duplicateProjectIds
+        .map((projectId) => projectById.get(projectId))
+        .filter((meta): meta is ProjectMetaRecord => Boolean(meta));
+      if (duplicates.length === 0) continue;
       const relinkedFiles: string[] = [];
       for (const duplicate of duplicates) {
         const relinked = workspaceStore.reassignProjectEntries({
@@ -795,6 +873,7 @@ export class DreamRewriteRunner {
         keeperProjectId: keeper.projectId,
         keeperProjectName: keeper.projectName,
         mergedProjectIds: duplicates.map((item) => item.projectId),
+        reason: group.reason,
         relinkedFiles,
       });
     }
@@ -803,24 +882,30 @@ export class DreamRewriteRunner {
       trace,
       "general_project_merge",
       "General Project Merge",
-      result.groups.length > 0 ? "success" : "skipped",
+      result.groups.length > 0 ? "success" : result.droppedWarnings.length > 0 ? "warning" : "skipped",
       `${metas.length} local general projects`,
       result.groups.length > 0
         ? `Merged ${result.deletedProjects} duplicate General project nodes and relinked ${result.relinkedFiles} memory files.`
-        : "No duplicate General project nodes required merging.",
+        : result.planSummary || "No duplicate General project nodes required merging.",
       {
         titleI18n: traceI18n("trace.step.general_project_merge", "General Project Merge"),
         details: [
           kvDetail("general-project-merge-summary", "General Project Merge Summary", [
             { label: "projectNodes", value: metas.length },
+            { label: "plannerGroups", value: plannerGroups.length },
+            { label: "droppedGroups", value: result.droppedWarnings.length },
             { label: "mergedProjects", value: result.mergedProjects },
             { label: "deletedProjects", value: result.deletedProjects },
             { label: "relinkedFiles", value: result.relinkedFiles },
           ]),
-          ...(result.groups.length > 0
-            ? [jsonDetail("general-project-merge-groups", "General Project Merge Groups", result.groups)]
-            : []),
+          jsonDetail("general-project-merge-plan", "General Project Merge Plan", {
+            summary: result.planSummary,
+            plannerGroups,
+            acceptedGroups: result.groups,
+            droppedWarnings: result.droppedWarnings,
+          }),
         ],
+        ...(mergePlanDebug ? { promptDebug: mergePlanDebug } : {}),
       },
     );
 
@@ -1122,7 +1207,7 @@ export class DreamRewriteRunner {
     let deletedProjects = 0;
 
     if (isGeneralMode) {
-      const mergeResult = this.mergeGeneralProjectMetas(trace, workspaceStore);
+      const mergeResult = await this.mergeGeneralProjectMetas(trace, workspaceStore);
       deletedProjects = mergeResult.deletedProjects;
       const currentProjectMetas = sortProjectMetas(workspaceStore.listProjectMetas());
       for (const currentMeta of currentProjectMetas) {

@@ -35,6 +35,9 @@ export interface LlmDreamFileProjectMetaInput {
     status: string;
     updatedAt: string;
     dreamUpdatedAt?: string;
+    sourceKind?: string;
+    sourceWorkspacePath?: string;
+    sourceProjectId?: string;
 }
 export interface LlmDreamFileRecordInput {
     entryId: string;
@@ -125,6 +128,21 @@ export interface LlmDreamFileProjectRewriteOutput {
     };
     files: LlmDreamFileProjectRewriteOutputFile[];
     deletedEntryIds: string[];
+}
+export interface LlmGeneralProjectMetaMergeInput {
+    projectMetas: LlmDreamFileProjectMetaInput[];
+    agentId?: string;
+    timeoutMs?: number;
+    debugTrace?: PromptDebugSink;
+}
+export interface LlmGeneralProjectMetaMergeGroup {
+    keeperProjectId: string;
+    duplicateProjectIds: string[];
+    reason: string;
+}
+export interface LlmGeneralProjectMetaMergeOutput {
+    summary: string;
+    mergeGroups: LlmGeneralProjectMetaMergeGroup[];
 }
 export interface LlmDreamClusterHeaderInput {
     relativePath: string;
@@ -241,6 +259,7 @@ export declare class LlmMemoryExtractor {
     }): Promise<MemoryCandidate | null>;
     planDreamClusters(input: LlmDreamClusterPlanInput): Promise<LlmDreamClusterPlanOutput>;
     refineDreamCluster(input: LlmDreamClusterRefineInput): Promise<LlmDreamClusterRefineOutput>;
+    planGeneralProjectMetaMerges(input: LlmGeneralProjectMetaMergeInput): Promise<LlmGeneralProjectMetaMergeOutput>;
     reviewDreamProjectMeta(input: LlmDreamProjectMetaReviewInput): Promise<LlmDreamProjectMetaReviewOutput>;
     planDreamFileMemory(input: LlmDreamFileGlobalPlanInput): Promise<LlmDreamFileGlobalPlanOutput>;
     rewriteDreamFileProject(input: LlmDreamFileProjectRewriteInput): Promise<LlmDreamFileProjectRewriteOutput>;

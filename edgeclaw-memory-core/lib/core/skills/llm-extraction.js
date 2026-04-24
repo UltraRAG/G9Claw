@@ -42,6 +42,7 @@ const DEFAULT_DREAM_FILE_PROJECT_REWRITE_TIMEOUT_MS = 300_000;
 const DEFAULT_DREAM_CLUSTER_PLAN_TIMEOUT_MS = 180_000;
 const DEFAULT_DREAM_CLUSTER_REFINE_TIMEOUT_MS = 180_000;
 const DEFAULT_DREAM_PROJECT_META_REVIEW_TIMEOUT_MS = 120_000;
+const DEFAULT_GENERAL_PROJECT_META_MERGE_TIMEOUT_MS = 120_000;
 const DEFAULT_USER_PROFILE_REWRITE_TIMEOUT_MS = 45_000;
 const DEFAULT_FILE_MEMORY_GATE_TIMEOUT_MS = 45_000;
 const DEFAULT_FILE_MEMORY_PROJECT_SELECTION_TIMEOUT_MS = 45_000;
@@ -328,6 +329,38 @@ Use this exact JSON shape:
     }
   ],
   "deleted_entry_ids": ["Project/obsolete.md"]
+}
+`.trim();
+const GENERAL_PROJECT_META_MERGE_SYSTEM_PROMPT = `
+You are the General Dream project-meta merge planner for a file-memory system.
+
+Your job is to inspect all General project metadata records and decide which project nodes clearly describe the same real project.
+
+Rules:
+- Use only the supplied project metadata records as evidence.
+- Be conservative. If there is any meaningful uncertainty, do not merge.
+- Merge only when multiple project metas clearly refer to the same real project, same ongoing workstream, same external mirrored project identity, or an obvious alias/rename of the same project.
+- Do not merge merely because projects share a domain, platform, customer type, content format, date, model, workflow, or broad business category.
+- Do not merge separate named workstreams with different goals or deliverables.
+- Example: "GBX-A 20260423 HoneydewPulse" and "GBX-B 20260423 ClinicFlow" must remain separate because they name different projects with different targets.
+- For external mirrors, matching source_workspace_path plus source_project_id is strong evidence for merging.
+- keeper_project_id and every duplicate_project_id must be one of the supplied project ids.
+- A project id may appear in at most one merge group.
+- The keeper must not appear in duplicate_project_ids.
+- Return an empty merge_groups array when no merge is clearly justified.
+- Natural-language output fields should follow the dominant language already present in the supplied project metas.
+- Return valid JSON only.
+
+Use this exact JSON shape:
+{
+  "summary": "short merge planning summary",
+  "merge_groups": [
+    {
+      "keeper_project_id": "project id to keep",
+      "duplicate_project_ids": ["project id to merge into keeper"],
+      "reason": "specific evidence that these metas are the same real project"
+    }
+  ]
 }
 `.trim();
 function buildDreamClusterPlanSystemPrompt(kind) {
@@ -849,6 +882,27 @@ function buildDreamProjectMetaReviewPrompt(input) {
         })),
     }, null, 2);
 }
+function buildGeneralProjectMetaMergePrompt(input) {
+    return JSON.stringify({
+        governance_scope: {
+            mode: "general_project_meta_merge_plan",
+            primary_truth: "supplied_general_project_meta_only",
+            writable_targets: ["GeneralProjects/*.md"],
+            forbidden_outputs: ["new project meta", "project memory rewrite", "feedback memory rewrite", "user profile rewrite"],
+        },
+        project_metas: input.projectMetas.map((project) => ({
+            project_id: project.projectId,
+            project_name: project.projectName,
+            description: truncateForPrompt(project.description, 260),
+            status: project.status,
+            updated_at: project.updatedAt,
+            dream_updated_at: project.dreamUpdatedAt ?? "",
+            source_kind: project.sourceKind ?? "",
+            source_workspace_path: project.sourceWorkspacePath ?? "",
+            source_project_id: project.sourceProjectId ?? "",
+        })),
+    }, null, 2);
+}
 function extractFirstJsonObject(raw) {
     const trimmed = raw.trim();
     if (!trimmed)
@@ -1093,6 +1147,26 @@ function normalizeDreamCluster(item, allowedRelativePaths) {
         : "";
     return {
         memberRelativePaths,
+        reason,
+    };
+}
+function normalizeGeneralProjectMetaMergeGroup(item) {
+    if (!isRecord(item))
+        return null;
+    const keeperProjectId = typeof item.keeper_project_id === "string"
+        ? normalizeWhitespace(item.keeper_project_id)
+        : "";
+    const duplicateProjectIds = normalizeStringArray(item.duplicate_project_ids, 100)
+        .map((projectId) => normalizeWhitespace(projectId))
+        .filter(Boolean);
+    if (!keeperProjectId || duplicateProjectIds.length === 0)
+        return null;
+    const reason = typeof item.reason === "string"
+        ? truncate(normalizeWhitespace(item.reason), 320)
+        : "";
+    return {
+        keeperProjectId,
+        duplicateProjectIds: Array.from(new Set(duplicateProjectIds)),
         reason,
     };
 }
@@ -1951,6 +2025,33 @@ export class LlmMemoryExtractor {
             file: name && description && markdown
                 ? { name, description, markdown }
                 : null,
+        };
+    }
+    async planGeneralProjectMetaMerges(input) {
+        if (input.projectMetas.length < 2) {
+            return {
+                summary: "Fewer than two General project metadata records were available for merge planning.",
+                mergeGroups: [],
+            };
+        }
+        const parsed = await this.callStructuredJsonWithDebug({
+            systemPrompt: GENERAL_PROJECT_META_MERGE_SYSTEM_PROMPT,
+            userPrompt: buildGeneralProjectMetaMergePrompt(input),
+            requestLabel: "General project meta merge plan",
+            timeoutMs: input.timeoutMs ?? DEFAULT_GENERAL_PROJECT_META_MERGE_TIMEOUT_MS,
+            ...(input.agentId ? { agentId: input.agentId } : {}),
+            ...(input.debugTrace ? { debugTrace: input.debugTrace } : {}),
+            parse: (raw) => JSON.parse(extractFirstJsonObject(raw)),
+        });
+        return {
+            summary: typeof parsed.summary === "string"
+                ? truncate(normalizeWhitespace(parsed.summary), 320)
+                : "General project meta merge planning completed.",
+            mergeGroups: Array.isArray(parsed.merge_groups)
+                ? parsed.merge_groups
+                    .map((group) => normalizeGeneralProjectMetaMergeGroup(group))
+                    .filter((group) => Boolean(group))
+                : [],
         };
     }
     async reviewDreamProjectMeta(input) {
