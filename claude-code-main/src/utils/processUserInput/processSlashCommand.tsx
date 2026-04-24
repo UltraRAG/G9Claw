@@ -43,6 +43,7 @@ import { recordSkillUsage } from '../suggestions/skillUsageTracking.js';
 import { logOTelEvent, redactIfDisabled } from '../telemetry/events.js';
 import { buildPluginCommandTelemetryFields } from '../telemetry/pluginTelemetry.js';
 import { getAssistantMessageContentLength } from '../tokens.js';
+import { routeTurnkeySubcommand } from '../turnkeySubcommandRouting.js';
 import { createAgentId } from '../uuid.js';
 import { getWorkload } from '../workloadContext.js';
 import type { ProcessUserInputBaseResult, ProcessUserInputContext } from './processUserInput.js';
@@ -322,11 +323,14 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
       resultText: errorMessage
     };
   }
-  const {
+  let {
     commandName,
     args: parsedArgs,
     isMcp
   } = parsed;
+  const routedTurnkeyCommand = routeTurnkeySubcommand(commandName, parsedArgs, candidate => hasCommand(candidate, context.options.commands));
+  commandName = routedTurnkeyCommand.commandName;
+  parsedArgs = routedTurnkeyCommand.args;
   const sanitizedCommandName = isMcp ? 'mcp' : !builtInCommandNames().has(commandName) ? 'custom' : commandName;
 
   // Check if it's a real command before processing

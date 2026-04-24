@@ -1,5 +1,5 @@
 ---
-name: onboard
+name: turnkey:onboard
 description: Phase 0 of turnkey workflow — codebase 体检 + 三盲基线扫描. 给一个 30 分钟内可完成的"我现在站在哪"的快照, 包含技术栈识别 / 测试入口 / lint 配置 / 关键 entry point / 最近变更热区 / convention 信号清单. 不做需求理解, 不写代码. 触发: turnkey 主 skill 路由到 onboard, 或用户直接调用 /turnkey:onboard.
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: test
+name: turnkey:test
 description: Phase 6 of turnkey — 测试 (unit / integration / e2e). 跑全套测试 (不只 develop 阶段触动的部分), 补缺口测试, 跑 CI 模拟 (lint+type+test+build), 录测试报告. 区别于 develop 阶段的 step-level test, 这阶段是 ticket-level overall verification. 触发: turnkey 主 skill 路由到 test.
 ---
 

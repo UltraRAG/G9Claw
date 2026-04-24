@@ -1,6 +1,7 @@
 ---
-name: start
+name: turnkey
 description: Turnkey workflow for "三新 junior" (new to the codebase, new to the stack, new to the team conventions) tackling a new feature ticket on an unfamiliar codebase. Routes through 8-stage funnel — onboard → clarify → design → [spec] → [tdd] → develop → test → review → ship — with senior-gate checkpoints and three-blindness (convention/trust/context) scans. Use when the user types `/turnkey:start "<ticket>"` or asks to start a turnkey workflow on a new ticket. NOT for senior solo flow (use Claude Code's normal agent), NOT for codebase exploration alone (use `/turnkey:onboard` directly), NOT for fixing existing bugs (use Claude Code's debug flow).
+argument-hint: "[start <ticket> | onboard | clarify | design | spec | tdd | develop | test | review | ship]"
 ---
 
 # turnkey — main orchestrator

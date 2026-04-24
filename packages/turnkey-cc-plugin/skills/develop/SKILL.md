@@ -1,5 +1,5 @@
 ---
-name: develop
+name: turnkey:develop
 description: Phase 5 of turnkey — 实现. 按 design / spec / tdd 的 step list 分块写代码, 每块跑现有 lint + test, 每块写 atomic commit. 关键: 主动对 trust-blindness 高风险区做 verification (二次跑 / 看真实输出 / 对比文档). 不一次性写一大坨. 触发: turnkey 主 skill 路由到 develop.
 ---
 

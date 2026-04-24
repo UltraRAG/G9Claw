@@ -1,5 +1,5 @@
 ---
-name: ship
+name: turnkey:ship
 description: Phase 8 of turnkey — 部署上线 + 7 天 regression 监控. 不自动部署 (NG-05 + 安全). 检测项目部署模式 (CI auto-merge / manual / fly/render/vercel/k8s/...), 生成 deploy checklist, 在 PR merge 后启动 7d 软监控 (定时 reminder + 关键 metric 提示). 收尾时把 8 阶段 process funnel 导出为 5 阶段 outcome funnel 初始填表 (给 R1 研究用). 触发: turnkey 主 skill 路由到 ship.
 ---
 

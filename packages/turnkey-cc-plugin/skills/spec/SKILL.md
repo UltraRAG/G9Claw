@@ -1,5 +1,5 @@
 ---
-name: spec
+name: turnkey:spec
 description: Phase 3 of turnkey (OPTIONAL) — spec-driven 工程. 在写实现前先把"接口契约"钉死 (输入/输出/错误码/状态机). 适合接口边界复杂或有外部 consumer 的 ticket. 跳过条件: design 阶段 junior 选了"不走 spec". 触发: turnkey 主 skill 路由到 spec.
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: design
+name: turnkey:design
 description: Phase 2 of turnkey — 方案设计 + senior 待审包. 产出 design-doc.md (技术方案 + 1-3 个 alternatives + trade-off + risk + rollback). 关键产物是"senior 异步审核包" — 一个 senior 5 分钟能扫完决策点的紧凑版本. 触发: turnkey 主 skill 路由到 design.
 ---
 

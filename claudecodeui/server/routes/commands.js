@@ -7,6 +7,7 @@ import { CURSOR_MODELS, CODEX_MODELS } from '../../shared/modelConstants.js';
 import { parseFrontmatter } from '../utils/frontmatter.js';
 import { getClaudeRuntimeModelConfig, getClaudeRuntimeModelValues } from '../utils/claude-runtime-config.js';
 import { executeAlwaysOnSlashCommand } from '../always-on-slash.js';
+import { executeTurnkeySlashCommand } from '../turnkey-slash.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -132,6 +133,12 @@ const builtInCommands = [
   {
     name: '/ao',
     description: 'List, run, or inspect Always-On cron jobs and discovery plans',
+    namespace: 'builtin',
+    metadata: { type: 'builtin' }
+  },
+  {
+    name: '/turnkey',
+    description: 'Run turnkey workflow subcommands (for example: /turnkey start)',
     namespace: 'builtin',
     metadata: { type: 'builtin' }
   }
@@ -409,7 +416,9 @@ Custom commands can be created in:
 
   '/ao': async (args, context) => {
     return await executeAlwaysOnSlashCommand(args, context);
-  }
+  },
+
+  '/turnkey': async (args) => executeTurnkeySlashCommand(args)
 };
 
 /**

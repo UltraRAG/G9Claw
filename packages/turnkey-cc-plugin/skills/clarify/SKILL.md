@@ -1,5 +1,5 @@
 ---
-name: clarify
+name: turnkey:clarify
 description: Phase 1 of turnkey workflow — junior-answerable 需求澄清. 不复用 v1 的 PM 7 题问卷 (那个 junior 答不出 problem/impact/scope). 用一份 v2 自己的"junior 能答 + 答了有用"的问卷, 答不出的题 agent 帮 junior 用 grep/git log/read 文件去找答案. 触发: turnkey 主 skill 路由到 clarify, 或用户直接 /turnkey:clarify.
 ---
 

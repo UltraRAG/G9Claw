@@ -1,5 +1,5 @@
 ---
-name: review
+name: turnkey:review
 description: Phase 7 of turnkey — 自审 + PR 准备. 跑机器自审 (diff size / convention check / 与 design doc 一致性), 生成 PR description (含 design summary / test report / 已知 deferred / risk / rollback), 等 senior async review (如果 design 阶段有 senior packet). 不替代 senior review (NG-03), 目标是减少 senior 喷点. 触发: turnkey 主 skill 路由到 review.
 ---
 

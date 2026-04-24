@@ -1,5 +1,5 @@
 ---
-name: tdd
+name: turnkey:tdd
 description: Phase 4 of turnkey (OPTIONAL) — TDD plan. 把 spec (或 design) 拆成"先写哪几个测试 / 这些测试应该 fail / 然后逐个让它们 pass"的 micro-step list. 适合核心业务逻辑或有现成测试框架的 codebase. 跳过条件: design 阶段 junior 选"不走 tdd". 触发: turnkey 主 skill 路由到 tdd.
 ---
 
