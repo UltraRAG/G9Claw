@@ -101,18 +101,47 @@ function processChunk(str: string): void {
       continue
     }
 
-    // Skip escape sequences (arrow keys, function keys, focus events, etc.)
-    // All escape sequences start with ESC (0x1B) and end with a byte in 0x40-0x7E
+    // Skip escape sequences (arrow keys, function keys, focus events, paste
+    // markers, mouse reports, kitty CSI u, etc). The previous "skip until any
+    // byte in 0x40-0x7E" heuristic was wrong because the CSI introducer '['
+    // (0x5B) and the SS3 introducer 'O' (0x4F) themselves fall inside that
+    // range — the loop exited at the introducer, the introducer was skipped
+    // by the trailing i++, and every byte after it (params + final) leaked
+    // verbatim into the buffer. Concretely: `\x1b[A` → "A", `\x1b[200~` →
+    // "200~", focus-in `\x1b[I` → "I". Now we dispatch on the byte after
+    // ESC and follow the actual ECMA-48 framing for each form.
     if (code === 27) {
       i++ // Skip the ESC character
-      // Skip until the terminating byte (@ to ~) or end of string
-      while (
-        i < str.length &&
-        !(str.charCodeAt(i) >= 64 && str.charCodeAt(i) <= 126)
-      ) {
+      if (i >= str.length) continue // Lone ESC — drop
+      const next = str.charCodeAt(i)
+      // CSI: ESC '[' (params 0x20-0x3F)* (final 0x40-0x7E)
+      if (next === 0x5b) {
         i++
+        while (
+          i < str.length &&
+          str.charCodeAt(i) >= 0x20 &&
+          str.charCodeAt(i) <= 0x3f
+        ) {
+          i++
+        }
+        if (
+          i < str.length &&
+          str.charCodeAt(i) >= 0x40 &&
+          str.charCodeAt(i) <= 0x7e
+        ) {
+          i++
+        }
+        continue
       }
-      if (i < str.length) i++ // Skip the terminating byte
+      // SS3: ESC 'O' <single byte>
+      if (next === 0x4f) {
+        i++
+        if (i < str.length) i++
+        continue
+      }
+      // ESC + single char (META modifier, e.g. Alt+B). Drop both — this is a
+      // hotkey, not text. Keeps parity with the old behavior for this case.
+      i++
       continue
     }
 
@@ -188,4 +217,16 @@ export function seedEarlyInput(text: string): void {
  */
 export function isCapturingEarlyInput(): boolean {
   return isCapturing
+}
+
+// Test-only hook so the regression script can drive the parser without
+// owning a real TTY. Not part of the public API.
+export const __testInternals = {
+  processChunk,
+  reset() {
+    earlyInputBuffer = ''
+    isCapturing = false
+    readableHandler = null
+  },
+  buffer: () => earlyInputBuffer,
 }
