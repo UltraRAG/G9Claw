@@ -34,6 +34,7 @@ export declare class HeartbeatIndexer {
     constructor(repository: MemoryRepository, extractor: LlmMemoryExtractor, options: HeartbeatOptions);
     getSettings(): IndexingSettings;
     setSettings(settings: IndexingSettings): void;
+    private routeGeneralCandidate;
     captureL0Session(input: {
         sessionKey: string;
         timestamp?: string;

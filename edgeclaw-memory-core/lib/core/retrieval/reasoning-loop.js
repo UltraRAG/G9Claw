@@ -5,6 +5,7 @@ const RECALL_CACHE_TTL_MS = 30_000;
 const MANIFEST_LIMIT = 200;
 const DEFAULT_SELECTION_LIMIT = 5;
 const RECALL_FILE_MAX_LINES = 200;
+const GENERAL_RECALL_PROJECT_CANDIDATE_LIMIT = 30;
 function normalizeQueryKey(query) {
     return query.toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -68,7 +69,7 @@ function renderProjectMetaBlock(projectMeta) {
     if (!projectMeta)
         return [];
     const lines = [
-        `### [project_meta] project.meta.md (${projectMeta.updatedAt})`,
+        `### [project_meta] ${projectMeta.relativePath} (${projectMeta.updatedAt})`,
         "## Project Name",
         projectMeta.projectName,
         "",
@@ -137,6 +138,93 @@ function buildEmptyResult(query, trace, elapsedMs, cacheHit = false) {
 }
 function recentUserMessages(messages) {
     return (messages ?? []).filter((message) => message.role === "user").slice(-4);
+}
+const CJK_TOKEN_STOPWORDS = new Set([
+    "项目",
+    "当前",
+    "这个",
+    "那个",
+    "现在",
+    "一下",
+    "关于",
+    "里面",
+    "这里",
+    "那里",
+    "怎么",
+    "怎样",
+    "如何",
+    "什么",
+    "哪些",
+    "进展",
+    "情况",
+    "默认",
+    "应该",
+    "需要",
+    "general",
+]);
+function expandCjkSearchToken(token) {
+    if (!/[\p{Script=Han}]/u.test(token))
+        return [token];
+    const pieces = token.match(/[\p{Script=Han}]+|[^\p{Script=Han}]+/gu) ?? [token];
+    const expanded = [];
+    for (const piece of pieces) {
+        if (!/[\p{Script=Han}]/u.test(piece)) {
+            expanded.push(piece);
+            continue;
+        }
+        if (piece.length <= 8)
+            expanded.push(piece);
+        for (const size of [2, 3]) {
+            if (piece.length < size)
+                continue;
+            for (let index = 0; index <= piece.length - size; index += 1) {
+                expanded.push(piece.slice(index, index + size));
+            }
+        }
+    }
+    return expanded;
+}
+function tokenizeSearchText(value) {
+    return Array.from(new Set(value
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .split(/\s+/)
+        .map((item) => item.trim())
+        .flatMap((item) => expandCjkSearchToken(item))
+        .filter((item) => item.length >= 2))).filter((item) => !CJK_TOKEN_STOPWORDS.has(item));
+}
+function buildProjectShortlist(catalog, query, recentMessages) {
+    const queryTokens = tokenizeSearchText(query);
+    const recentText = recentMessages.map((message) => message.content).join(" ");
+    const recencyTokens = tokenizeSearchText(recentText);
+    const allTokens = Array.from(new Set([...queryTokens, ...recencyTokens]));
+    return catalog
+        .map((entry) => {
+        const haystack = `${entry.projectName} ${entry.description}`.toLowerCase();
+        const exact = query.toLowerCase().includes(entry.projectName.toLowerCase()) ? 2 : 0;
+        const matchedTokens = allTokens.filter((token) => haystack.includes(token));
+        const score = exact * 10 + matchedTokens.length;
+        return {
+            projectId: entry.logicalProjectId,
+            projectName: entry.projectName,
+            description: entry.description,
+            status: entry.status,
+            updatedAt: entry.summary.latestMemoryAt || entry.updatedAt,
+            sourceType: entry.sourceType === "workspace_external" ? "workspace_external" : "general_local",
+            score,
+            exact,
+            source: exact > 0 || matchedTokens.length > 0 ? "query" : "recent",
+            matchedText: matchedTokens.join(", "),
+        };
+    })
+        .sort((left, right) => {
+        if (right.score !== left.score)
+            return right.score - left.score;
+        if (right.exact !== left.exact)
+            return right.exact - left.exact;
+        return right.updatedAt.localeCompare(left.updatedAt);
+    })
+        .slice(0, GENERAL_RECALL_PROJECT_CANDIDATE_LIMIT);
 }
 function createTrace(query, mode) {
     return {
@@ -260,12 +348,16 @@ export class ReasoningRetriever {
         });
         const needsUserSummary = route === "user" || route === "mix";
         const needsProjectMemory = route === "project" || route === "mix";
+        const isGeneralWorkspace = this.repository.getWorkspaceMode() === "general";
         const userSummary = needsUserSummary
             ? this.repository.getUserSummary()
             : { identityBackground: [], files: [] };
-        const projectMeta = needsProjectMemory
+        let projectMeta = needsProjectMemory
             ? (this.repository.getFileMemoryStore().getProjectMeta() ?? null)
             : null;
+        let selectedProject = null;
+        let selectedProjectReason = "";
+        let projectShortlist = [];
         pushStep(trace, "user_base_loaded", "User Base Loaded", !needsUserSummary ? "skipped" : hasUserSummary(userSummary) ? "success" : "warning", !needsUserSummary ? `route=${route}` : "global user profile", !needsUserSummary
             ? "Current route does not require user identity background."
             : hasUserSummary(userSummary)
@@ -283,6 +375,56 @@ export class ReasoningRetriever {
                     : []),
             ],
         });
+        if (needsProjectMemory && isGeneralWorkspace) {
+            const catalog = this.repository.listReadableProjectCatalog();
+            projectShortlist = buildProjectShortlist(catalog, query, recentUserMessages(options.recentMessages));
+            pushStep(trace, "project_shortlist_built", "Project Shortlist Built", projectShortlist.length > 0 ? "success" : "warning", `${catalog.length} readable projects`, projectShortlist.length > 0
+                ? `${projectShortlist.length} candidate projects are available for General recall.`
+                : "No readable projects were available for General recall.", {
+                details: [
+                    kvDetail("project-shortlist-summary", "Project Shortlist Summary", [
+                        { label: "catalog", value: catalog.length },
+                        { label: "shortlist", value: projectShortlist.length },
+                    ]),
+                    listDetail("project-shortlist-items", "Shortlist", projectShortlist.map((item) => `${item.projectName} | ${item.projectId} | ${item.sourceType ?? "unknown"} | score=${item.score} | exact=${item.exact} | ${item.matchedText || "no-match"}`)),
+                ],
+            });
+            if (projectShortlist.length > 0) {
+                let projectSelectionDebug;
+                const projectSelection = await this.extractor.selectRecallProject({
+                    query,
+                    recentUserMessages: recentUserMessages(options.recentMessages),
+                    shortlist: projectShortlist,
+                    allowEmpty: true,
+                    debugTrace: (debug) => {
+                        projectSelectionDebug = debug;
+                    },
+                });
+                const selectedProjectId = projectSelection.projectId;
+                selectedProject = selectedProjectId
+                    ? this.repository.getReadableProject(selectedProjectId) ?? null
+                    : null;
+                selectedProjectReason = projectSelection.reason || "";
+                if (selectedProject) {
+                    projectMeta = selectedProject;
+                }
+                pushStep(trace, "project_selected", "Project Selected", selectedProject ? "success" : "warning", `${projectShortlist.length} candidates`, selectedProject
+                    ? `${selectedProject.projectName} selected for General recall.`
+                    : "General recall could not resolve a readable project.", {
+                    details: [
+                        jsonDetail("project-selected", "Project Selection", {
+                            selectedProjectId: selectedProjectId ?? null,
+                            selectedProjectName: selectedProject?.projectName ?? null,
+                            selectedProjectSource: selectedProject
+                                ? selectedProject.sourceType === "workspace_external" ? "workspace_external" : "general_local"
+                                : null,
+                            reason: selectedProjectReason || null,
+                        }),
+                    ],
+                    ...(projectSelectionDebug ? { promptDebug: projectSelectionDebug } : {}),
+                });
+            }
+        }
         const manifest = route === "user"
             ? this.repository.listMemoryEntries({
                 kinds: ["user"],
@@ -290,21 +432,32 @@ export class ReasoningRetriever {
                 limit: MANIFEST_LIMIT,
                 includeDeprecated: false,
             })
-            : needsProjectMemory
-                ? this.repository.listMemoryEntries({
-                    kinds: ["project", "feedback"],
-                    scope: "project",
-                    limit: MANIFEST_LIMIT,
-                    includeDeprecated: false,
-                })
-                : [];
-        pushStep(trace, "manifest_scanned", "Manifest Scanned", manifest.length > 0 ? "success" : route === "none" ? "skipped" : "warning", needsProjectMemory ? "current workspace project memory" : `route=${route}`, manifest.length > 0 ? `${manifest.length} recall header entries ready.` : "No matching workspace memory files were available.", {
+            : needsProjectMemory && isGeneralWorkspace
+                ? selectedProject
+                    ? this.repository.listReadableProjectEntries(selectedProject.logicalProjectId, {
+                        kinds: ["project", "feedback"],
+                        includeDeprecated: false,
+                    }).slice(0, MANIFEST_LIMIT)
+                    : []
+                : needsProjectMemory
+                    ? this.repository.listMemoryEntries({
+                        kinds: ["project", "feedback"],
+                        scope: "project",
+                        limit: MANIFEST_LIMIT,
+                        includeDeprecated: false,
+                    })
+                    : [];
+        pushStep(trace, "manifest_scanned", "Manifest Scanned", manifest.length > 0 ? "success" : route === "none" ? "skipped" : "warning", needsProjectMemory
+            ? isGeneralWorkspace
+                ? `general project=${selectedProject?.projectName ?? "none"}`
+                : "current workspace project memory"
+            : `route=${route}`, manifest.length > 0 ? `${manifest.length} recall header entries ready.` : "No matching workspace memory files were available.", {
             titleI18n: traceI18n("trace.step.manifest_scanned", "Manifest Scanned"),
             details: [
                 kvDetail("manifest-scan-summary", "Manifest Scan", [
                     { label: "count", value: manifest.length },
                     { label: "route", value: route },
-                    { label: "scope", value: route === "user" ? "global" : needsProjectMemory ? "workspace_project" : "none" },
+                    { label: "scope", value: route === "user" ? "global" : needsProjectMemory ? isGeneralWorkspace ? "general_selected_project" : "workspace_project" : "none" },
                     { label: "limit", value: MANIFEST_LIMIT },
                     { label: "workspaceHint", value: options.workspaceHint ?? "" },
                 ], traceI18n("trace.detail.manifest_scan", "Manifest Scan")),
@@ -361,7 +514,8 @@ export class ReasoningRetriever {
                     { label: "route", value: route },
                     { label: "userBaseInjected", value: hasUserSummary(userSummary) ? "yes" : "no" },
                     { label: "projectMetaInjected", value: projectMeta ? "yes" : "no" },
-                    { label: "disambiguationRequired", value: "no" },
+                    { label: "selectedProject", value: selectedProject?.projectName ?? "" },
+                    { label: "disambiguationRequired", value: isGeneralWorkspace && needsProjectMemory ? "yes" : "no" },
                     { label: "fileCount", value: records.length },
                     { label: "characters", value: context.length },
                     { label: "lines", value: context ? context.split("\n").length : 0 },
@@ -393,6 +547,7 @@ export class ReasoningRetriever {
                     elapsedMs,
                     cacheHit: false,
                     path: mode,
+                    ...(selectedProject ? { resolvedProjectId: selectedProject.logicalProjectId } : {}),
                     route,
                     manifestCount: manifest.length,
                     selectedFileIds: selectedIds,

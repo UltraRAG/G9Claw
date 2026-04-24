@@ -255,10 +255,25 @@ export declare class LlmMemoryExtractor {
         query: string;
         recentUserMessages?: MemoryMessage[];
         shortlist: ProjectShortlistCandidate[];
+        allowEmpty?: boolean;
         agentId?: string;
         timeoutMs?: number;
         debugTrace?: PromptDebugSink;
     }): Promise<{
+        projectId?: string;
+        reason?: string;
+    }>;
+    selectIndexProject(input: {
+        candidate: MemoryCandidate;
+        candidatePreview: string;
+        focusTurn: MemoryMessage;
+        recentUserMessages?: MemoryMessage[];
+        shortlist: ProjectShortlistCandidate[];
+        agentId?: string;
+        timeoutMs?: number;
+        debugTrace?: PromptDebugSink;
+    }): Promise<{
+        decision: "attach_existing" | "create_new";
         projectId?: string;
         reason?: string;
     }>;

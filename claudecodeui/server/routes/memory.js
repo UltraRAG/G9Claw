@@ -37,7 +37,7 @@ function parseOffset(value, fallback = 0) {
 }
 
 function parseMemoryKind(value) {
-  return value === 'user' || value === 'feedback' || value === 'project'
+  return value === 'user' || value === 'feedback' || value === 'project' || value === 'general_project_meta'
     ? value
     : 'all';
 }
@@ -46,8 +46,118 @@ function normalizeSearchText(value) {
   return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-function buildWorkspaceSnapshot(repository, { query = '', limit = 100, offset = 0 } = {}) {
+function isExternalRecordPath(relativePath) {
+  return typeof relativePath === 'string' && relativePath.startsWith('external:');
+}
+
+function summarizeEntries(entries) {
+  const projectEntries = entries.filter((entry) => entry.type === 'project');
+  const feedbackEntries = entries.filter((entry) => entry.type === 'feedback');
+  const latestMemoryAt = entries
+    .map((entry) => entry.updatedAt)
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  return {
+    totalEntries: entries.length,
+    projectEntries: projectEntries.length,
+    feedbackEntries: feedbackEntries.length,
+    ...(latestMemoryAt ? { latestMemoryAt } : {}),
+  };
+}
+
+function normalizeGeneralDisplayProject(repository, project) {
+  const localEntries = repository.listReadableProjectEntries(project.logicalProjectId, {
+    kinds: ['project', 'feedback'],
+    includeDeprecated: false,
+    includeExternal: false,
+  });
+  const {
+    sourceWorkspacePath,
+    sourceProjectId,
+    externalLogicalProjectId,
+    localMirrorProjectId,
+    ...rest
+  } = project;
+  return {
+    ...rest,
+    sourceType: 'general_local',
+    readOnly: false,
+    hasLocalMirror: false,
+    summary: summarizeEntries(localEntries),
+  };
+}
+
+function annotateWorkspaceEntries(entries) {
+  return entries.map((entry) => ({
+    ...entry,
+    sourceType: 'general_local',
+    readOnly: false,
+  }));
+}
+
+function buildWorkspaceSnapshot(repository, { query = '', limit = 100, offset = 0, selectedProjectId = '' } = {}) {
   const store = repository.getFileMemoryStore();
+  const workspaceMode = typeof repository.getWorkspaceMode === 'function'
+    ? repository.getWorkspaceMode()
+    : store.getWorkspaceMode();
+  const manifestPath = path.join(store.getRootDir(), 'MEMORY.md');
+
+  if (workspaceMode === 'general') {
+    const generalProjects = repository
+      .listReadableProjectCatalog()
+      .filter((entry) => entry.sourceType !== 'workspace_external')
+      .map((entry) => normalizeGeneralDisplayProject(repository, entry));
+    const selectedProject = generalProjects.find((entry) => entry.logicalProjectId === selectedProjectId)
+      || generalProjects[0]
+      || null;
+    const allEntries = selectedProject
+      ? repository.listReadableProjectEntries(selectedProject.logicalProjectId, {
+          kinds: ['project', 'feedback'],
+          includeDeprecated: true,
+          includeExternal: false,
+          ...(query ? { query } : {}),
+        })
+      : [];
+    const activeEntries = allEntries.filter((entry) => !entry.deprecated);
+    const deprecatedEntries = allEntries.filter((entry) => entry.deprecated);
+    const activePage = annotateWorkspaceEntries(
+      activeEntries
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(offset, offset + limit),
+    );
+    const deprecatedPage = annotateWorkspaceEntries(
+      deprecatedEntries
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(offset, offset + limit),
+    );
+
+    return {
+      workspaceMode,
+      generalProjects,
+      selectedProjectId: selectedProject?.logicalProjectId ?? null,
+      selectedProjectSource: selectedProject ? 'general_local' : null,
+      selectedProject,
+      projectMetaPath: selectedProject && !selectedProject.readOnly ? selectedProject.relativePath : null,
+      projectMeta: selectedProject && !selectedProject.readOnly ? selectedProject : null,
+      manifestPath: 'MEMORY.md',
+      manifestContent: (() => {
+        try {
+          return fs.readFileSync(manifestPath, 'utf-8');
+        } catch {
+          return '';
+        }
+      })(),
+      totalFiles: activeEntries.length,
+      totalProjects: activeEntries.filter((record) => record.type === 'project').length,
+      totalFeedback: activeEntries.filter((record) => record.type === 'feedback').length,
+      projectEntries: activePage.filter((record) => record.type === 'project'),
+      feedbackEntries: activePage.filter((record) => record.type === 'feedback'),
+      deprecatedProjectEntries: deprecatedPage.filter((record) => record.type === 'project'),
+      deprecatedFeedbackEntries: deprecatedPage.filter((record) => record.type === 'feedback'),
+    };
+  }
+
   const projectMeta = store.getProjectMeta() ?? null;
   const manifestEntries = repository.listMemoryEntries({
     scope: 'project',
@@ -72,13 +182,13 @@ function buildWorkspaceSnapshot(repository, { query = '', limit = 100, offset = 
           ].join(' '),
         ).includes(normalizedQuery),
       );
+  const activeFiltered = filtered.filter((record) => !record.deprecated);
   const page = filtered
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(offset, offset + limit);
-  const activeFiltered = filtered.filter((record) => !record.deprecated);
-  const manifestPath = path.join(store.getRootDir(), 'MEMORY.md');
 
   return {
+    workspaceMode,
     projectMetaPath: projectMeta ? 'project.meta.md' : null,
     projectMeta,
     manifestPath: 'MEMORY.md',
@@ -99,7 +209,7 @@ function buildWorkspaceSnapshot(repository, { query = '', limit = 100, offset = 
   };
 }
 
-function buildDashboardSnapshot(service, repository, { query = '' } = {}) {
+function buildDashboardSnapshot(service, repository, { query = '', selectedProjectId = '' } = {}) {
   return {
     overview: service.overview(),
     settings: service.getSettings(),
@@ -107,6 +217,7 @@ function buildDashboardSnapshot(service, repository, { query = '' } = {}) {
       query,
       limit: 200,
       offset: 0,
+      selectedProjectId,
     }),
     userSummary: service.getUserSummary(),
     caseTraces: service.listCaseTraces(12),
@@ -117,6 +228,12 @@ function buildDashboardSnapshot(service, repository, { query = '' } = {}) {
 
 function getQuery(req) {
   return typeof req.query.q === 'string' ? req.query.q.trim() : '';
+}
+
+function getSelectedProjectId(req) {
+  return typeof req.query.selectedProjectId === 'string'
+    ? req.query.selectedProjectId.trim()
+    : '';
 }
 
 async function withMemoryService(req, res, fn) {
@@ -168,6 +285,7 @@ router.post('/index/run', async (req, res) =>
       ...result,
       dashboard: buildDashboardSnapshot(service, repository, {
         query: getQuery(req),
+        selectedProjectId: getSelectedProjectId(req),
       }),
     });
   }),
@@ -180,6 +298,7 @@ router.post('/dream/run', async (req, res) =>
       ...result,
       dashboard: buildDashboardSnapshot(service, repository, {
         query: getQuery(req),
+        selectedProjectId: getSelectedProjectId(req),
       }),
     });
   }),
@@ -192,6 +311,7 @@ router.post('/dream/rollback-last', async (req, res) =>
       ...result,
       dashboard: buildDashboardSnapshot(service, repository, {
         query: getQuery(req),
+        selectedProjectId: getSelectedProjectId(req),
       }),
     });
   }),
@@ -252,7 +372,15 @@ router.get('/memory/user-summary', async (req, res) =>
 
 router.route('/project-meta')
   .get(async (req, res) =>
-    withMemoryService(req, res, async ({ service }) => {
+    withMemoryService(req, res, async ({ service, repository }) => {
+      const selected = getSelectedProjectId(req);
+      if (service.getWorkspaceMode() === 'general' && selected) {
+        const readableProject = service.getReadableProject(selected);
+        if (!readableProject || readableProject.readOnly) {
+          return res.json(null);
+        }
+        return res.json(repository.getFileMemoryStore().getProjectMeta(readableProject.projectId) ?? readableProject);
+      }
       res.json(service.getProjectMeta());
     }))
   .post(async (req, res) =>
@@ -273,6 +401,7 @@ router.get('/workspace', async (req, res) =>
         query: getQuery(req),
         limit: parseLimit(req.query.limit, 100),
         offset: parseOffset(req.query.offset, 0),
+        selectedProjectId: getSelectedProjectId(req),
       }),
     );
   }),
@@ -407,6 +536,7 @@ router.post('/clear', async (req, res) => {
       ...result,
       dashboard: buildDashboardSnapshot(service, repository, {
         query: getQuery(req),
+        selectedProjectId: getSelectedProjectId(req),
       }),
     });
   });

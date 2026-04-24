@@ -1513,6 +1513,22 @@ function truncateForPrompt(value: string, maxLength: number): string {
   return truncate(normalizeWhitespace(value), maxLength);
 }
 
+function recallProjectSourcePriority(project: ProjectShortlistCandidate): number {
+  if (project.sourceType === "general_local" || project.sourceType === "workspace_external_mirror") return 2;
+  if (project.sourceType === "workspace_external") return 1;
+  return 0;
+}
+
+function chooseBestRecallProjectFallback(shortlist: ProjectShortlistCandidate[]): ProjectShortlistCandidate {
+  return [...shortlist].sort((left, right) => {
+    if (right.exact !== left.exact) return right.exact - left.exact;
+    if (right.score !== left.score) return right.score - left.score;
+    const sourcePriorityDelta = recallProjectSourcePriority(right) - recallProjectSourcePriority(left);
+    if (sourcePriorityDelta !== 0) return sourcePriorityDelta;
+    return right.updatedAt.localeCompare(left.updatedAt);
+  })[0] ?? shortlist[0];
+}
+
 function normalizeStringArray(items: unknown, maxItems: number): string[] {
   if (typeof items === "string" && items.trim()) {
     return [items.trim()].slice(0, maxItems);
@@ -2599,23 +2615,41 @@ export class LlmMemoryExtractor {
     query: string;
     recentUserMessages?: MemoryMessage[];
     shortlist: ProjectShortlistCandidate[];
+    allowEmpty?: boolean;
     agentId?: string;
     timeoutMs?: number;
     debugTrace?: PromptDebugSink;
   }): Promise<{ projectId?: string; reason?: string }> {
     if (input.shortlist.length === 0) return {};
+    const fallbackProject = chooseBestRecallProjectFallback(input.shortlist);
+    const allowEmpty = Boolean(input.allowEmpty);
     try {
       const parsed = await this.callStructuredJsonWithDebug<{ selected_project_id?: unknown; reason?: unknown }>({
         systemPrompt: [
-          "You choose the single most relevant formal project for long-term memory recall.",
+          allowEmpty
+            ? "You choose the most relevant existing formal project for long-term memory recall only when one clearly matches the current query."
+            : "You choose the single most relevant formal project for long-term memory recall.",
           "Return JSON only with selected_project_id and reason.",
-          "Select at most one project from the provided shortlist.",
+          allowEmpty
+            ? "Select at most one project from the provided shortlist."
+            : "You must select exactly one project from the provided shortlist.",
           "Use the current query first, then recent user messages only for continuation/disambiguation.",
           "Do not infer a project from assistant wording.",
           "Similar project names are distinct by default; shared domain, shared workflow, or shared feedback do not make them the same project.",
           "If the query explicitly names one shortlist project, prefer that exact project instead of broadening to a nearby or umbrella project.",
-          "If multiple shortlist projects remain plausible and the evidence is not decisive, return an empty selected_project_id.",
-          "If no shortlist project is clearly relevant, return an empty selected_project_id.",
+          allowEmpty
+            ? "If the current query introduces or switches to a new project that is not represented in the shortlist, return an empty selected_project_id."
+            : "If the current query introduces or switches to a new project, still choose the best shortlist project.",
+          allowEmpty
+            ? "If no shortlist project is clearly relevant, return an empty selected_project_id."
+            : "If multiple shortlist projects remain plausible, still choose the best one.",
+          allowEmpty
+            ? "If multiple shortlist projects are plausible but evidence is not decisive, return an empty selected_project_id."
+            : "When multiple shortlist projects are plausible, never return empty; choose the best match.",
+          "When relevance is comparable, prefer general_local over workspace_external.",
+          allowEmpty
+            ? "Use empty selected_project_id to skip project-scoped recall for a new or unrelated project; do not force unrelated memory into an existing project."
+            : "Never return an empty selected_project_id when the shortlist is non-empty.",
         ].join("\n"),
         userPrompt: JSON.stringify({
           query: input.query,
@@ -2625,6 +2659,7 @@ export class LlmMemoryExtractor {
             project_name: project.projectName,
             description: truncateForPrompt(project.description, 180),
             status: project.status,
+            source_type: project.sourceType ?? "unknown",
             updated_at: project.updatedAt,
             shortlist_score: project.score,
             shortlist_exact: project.exact,
@@ -2642,15 +2677,146 @@ export class LlmMemoryExtractor {
         ? parsed.selected_project_id.trim()
         : "";
       const matched = input.shortlist.find((project) => project.projectId === selectedProjectId);
+      if (matched) {
+        return {
+          projectId: matched.projectId,
+          ...(typeof parsed.reason === "string" && parsed.reason.trim()
+            ? { reason: truncateForPrompt(parsed.reason, 220) }
+            : {}),
+        };
+      }
+      if (allowEmpty) {
+        return {
+          ...(typeof parsed.reason === "string" && parsed.reason.trim()
+            ? { reason: truncateForPrompt(parsed.reason, 220) }
+            : { reason: selectedProjectId ? "Model returned a project id outside the shortlist." : "Model returned no matching project." }),
+        };
+      }
       return {
-        ...(matched ? { projectId: matched.projectId } : {}),
+        projectId: fallbackProject.projectId,
         ...(typeof parsed.reason === "string" && parsed.reason.trim()
           ? { reason: truncateForPrompt(parsed.reason, 220) }
-          : {}),
+          : { reason: `Fallback selected ${fallbackProject.projectName}; model returned no valid project id.` }),
       };
     } catch (error) {
       this.logger?.warn?.(`[clawxmemory] file memory project selection fallback: ${String(error)}`);
-      return {};
+      if (allowEmpty) {
+        return {
+          reason: "Project selection failed; no existing project was forced.",
+        };
+      }
+      return {
+        projectId: fallbackProject.projectId,
+        reason: `Fallback selected ${fallbackProject.projectName}; project selection failed.`,
+      };
+    }
+  }
+
+  async selectIndexProject(input: {
+    candidate: MemoryCandidate;
+    candidatePreview: string;
+    focusTurn: MemoryMessage;
+    recentUserMessages?: MemoryMessage[];
+    shortlist: ProjectShortlistCandidate[];
+    agentId?: string;
+    timeoutMs?: number;
+    debugTrace?: PromptDebugSink;
+  }): Promise<{ decision: "attach_existing" | "create_new"; projectId?: string; reason?: string }> {
+    if (input.shortlist.length === 0) {
+      return {
+        decision: "create_new",
+        reason: "No existing General projects are available for index assignment.",
+      };
+    }
+    try {
+      const parsed = await this.callStructuredJsonWithDebug<{
+        decision?: unknown;
+        selected_project_id?: unknown;
+        reason?: unknown;
+      }>({
+        systemPrompt: [
+          "You assign a newly generated long-term memory item to a General Chat project.",
+          "This is index-time memory assignment, not recall.",
+          "Return JSON only with decision, selected_project_id, and reason.",
+          "decision must be one of: attach_existing, create_new.",
+          "The primary evidence is candidate_memory_preview: the memory item that will be written.",
+          "Use the focus user turn and recent user messages only as supporting context for disambiguation.",
+          "Choose attach_existing only when the candidate clearly belongs to exactly one existing General project.",
+          "Choose create_new when the candidate is a new project, evidence is insufficient, multiple projects remain plausible, or the match is only a broad domain similarity.",
+          "Do not attach just because projects share a category such as SaaS, copywriting, Xiaohongshu, marketing, planning, or content creation.",
+          "All shortlist projects are General-local assignment targets; never infer or write to an external workspace.",
+          "If decision is attach_existing, selected_project_id must be one id from the shortlist.",
+          "If decision is create_new, selected_project_id must be an empty string.",
+        ].join("\n"),
+        userPrompt: JSON.stringify({
+          candidate: {
+            type: input.candidate.type,
+            name: truncateForPrompt(input.candidate.name, 120),
+            description: truncateForPrompt(input.candidate.description, 220),
+            rule: input.candidate.rule ? truncateForPrompt(input.candidate.rule, 220) : null,
+            summary: input.candidate.summary ? truncateForPrompt(input.candidate.summary, 220) : null,
+            why: input.candidate.why ? truncateForPrompt(input.candidate.why, 220) : null,
+            how_to_apply: input.candidate.howToApply ? truncateForPrompt(input.candidate.howToApply, 220) : null,
+            stage: input.candidate.stage ? truncateForPrompt(input.candidate.stage, 220) : null,
+            decisions: (input.candidate.decisions ?? []).slice(0, 10).map((item) => truncateForPrompt(item, 160)),
+            constraints: (input.candidate.constraints ?? []).slice(0, 10).map((item) => truncateForPrompt(item, 160)),
+            next_steps: (input.candidate.nextSteps ?? []).slice(0, 10).map((item) => truncateForPrompt(item, 160)),
+            blockers: (input.candidate.blockers ?? []).slice(0, 10).map((item) => truncateForPrompt(item, 160)),
+            timeline: (input.candidate.timeline ?? []).slice(0, 10).map((item) => truncateForPrompt(item, 160)),
+            notes: (input.candidate.notes ?? []).slice(0, 10).map((item) => truncateForPrompt(item, 160)),
+          },
+          candidate_memory_preview: truncateForPrompt(input.candidatePreview, 1600),
+          focus_user_turn: truncateForPrompt(input.focusTurn.content, 360),
+          recent_user_messages: (input.recentUserMessages ?? []).slice(-4).map((message) => truncateForPrompt(message.content, 220)),
+          shortlist: input.shortlist.map((project) => ({
+            project_id: project.projectId,
+            project_name: project.projectName,
+            description: truncateForPrompt(project.description, 180),
+            status: project.status,
+            updated_at: project.updatedAt,
+            shortlist_score: project.score,
+            shortlist_exact: project.exact,
+            shortlist_source: project.source,
+            matched_text: truncateForPrompt(project.matchedText, 180),
+          })),
+        }, null, 2),
+        requestLabel: "File memory project assignment",
+        timeoutMs: input.timeoutMs ?? DEFAULT_FILE_MEMORY_PROJECT_SELECTION_TIMEOUT_MS,
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+        ...(input.debugTrace ? { debugTrace: input.debugTrace } : {}),
+        parse: (raw) => JSON.parse(extractFirstJsonObject(raw)) as {
+          decision?: unknown;
+          selected_project_id?: unknown;
+          reason?: unknown;
+        },
+      });
+      const decision = parsed.decision === "attach_existing" ? "attach_existing" : "create_new";
+      const selectedProjectId = typeof parsed.selected_project_id === "string"
+        ? parsed.selected_project_id.trim()
+        : "";
+      const matched = input.shortlist.find((project) => project.projectId === selectedProjectId);
+      const reason = typeof parsed.reason === "string" && parsed.reason.trim()
+        ? truncateForPrompt(parsed.reason, 260)
+        : "";
+      if (decision === "attach_existing" && matched) {
+        return {
+          decision: "attach_existing",
+          projectId: matched.projectId,
+          ...(reason ? { reason } : {}),
+        };
+      }
+      return {
+        decision: "create_new",
+        ...(reason
+          ? { reason }
+          : { reason: decision === "attach_existing" ? "Model selected an invalid project id." : "Model chose to create a new General project." }),
+      };
+    } catch (error) {
+      this.logger?.warn?.(`[clawxmemory] file memory project assignment fallback: ${String(error)}`);
+      return {
+        decision: "create_new",
+        reason: "Project assignment failed; creating a new General project is safer than forcing an existing project.",
+      };
     }
   }
 

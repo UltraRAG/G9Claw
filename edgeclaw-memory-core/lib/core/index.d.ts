@@ -1,4 +1,5 @@
 export * from "./types.js";
+export * from "./general-projects.js";
 export * from "./utils/id.js";
 export * from "./utils/text.js";
 export * from "./skills/llm-extraction.js";

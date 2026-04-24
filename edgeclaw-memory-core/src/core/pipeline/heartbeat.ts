@@ -7,6 +7,9 @@ import type {
   MemoryCandidate,
   MemoryFileRecord,
   MemoryMessage,
+  ProjectMetaRecord,
+  ProjectShortlistCandidate,
+  ReadableProjectCatalogEntry,
   RetrievalPromptDebug,
   TraceI18nText,
 } from "../types.js";
@@ -20,6 +23,7 @@ import { buildL0IndexId, hashText, nowIso } from "../utils/id.js";
 import { decodeEscapedUnicodeText, decodeEscapedUnicodeValue } from "../utils/text.js";
 
 const LAST_INDEXED_AT_STATE_KEY = "lastIndexedAt" as const;
+const GENERAL_INDEX_PROJECT_CANDIDATE_LIMIT = 30;
 
 export interface HeartbeatOptions {
   batchSize?: number;
@@ -72,6 +76,139 @@ function emptyStats(): HeartbeatStats {
     userProfilesUpdated: 0,
     failedSessions: 0,
   };
+}
+
+function tokenizeSearchText(value: string): string[] {
+  const stopwords = new Set([
+    "项目",
+    "当前",
+    "这个",
+    "那个",
+    "现在",
+    "一下",
+    "关于",
+    "里面",
+    "这里",
+    "那里",
+    "怎么",
+    "怎样",
+    "如何",
+    "什么",
+    "哪些",
+    "进展",
+    "情况",
+    "默认",
+    "应该",
+    "需要",
+    "general",
+  ]);
+  const expandCjkToken = (token: string): string[] => {
+    if (!/[\p{Script=Han}]/u.test(token)) return [token];
+    const pieces = token.match(/[\p{Script=Han}]+|[^\p{Script=Han}]+/gu) ?? [token];
+    const expanded: string[] = [];
+    for (const piece of pieces) {
+      if (!/[\p{Script=Han}]/u.test(piece)) {
+        expanded.push(piece);
+        continue;
+      }
+      if (piece.length <= 8) expanded.push(piece);
+      for (const size of [2, 3]) {
+        if (piece.length < size) continue;
+        for (let index = 0; index <= piece.length - size; index += 1) {
+          expanded.push(piece.slice(index, index + size));
+        }
+      }
+    }
+    return expanded;
+  };
+  return Array.from(new Set(
+    value
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .map((item) => item.trim())
+      .flatMap((item) => expandCjkToken(item))
+      .filter((item) => item.length >= 2),
+  )).filter((item) => !stopwords.has(item));
+}
+
+function buildGeneralProjectShortlist(
+  catalog: ReadableProjectCatalogEntry[],
+  text: string,
+): ProjectShortlistCandidate[] {
+  const tokens = tokenizeSearchText(text);
+  return catalog
+    .map((project) => {
+      const haystack = `${project.projectName} ${project.description}`.toLowerCase();
+      const exact = text.toLowerCase().includes(project.projectName.toLowerCase()) ? 2 : 0;
+      const matchedTokens = tokens.filter((token) => haystack.includes(token));
+      const score = exact * 10 + matchedTokens.length;
+      return {
+        projectId: project.logicalProjectId,
+        projectName: project.projectName,
+        description: project.description,
+        status: project.status,
+        updatedAt: project.summary.latestMemoryAt || project.updatedAt,
+        sourceType: project.sourceType === "workspace_external" ? "workspace_external" : "general_local",
+        score,
+        exact,
+        source: exact > 0 || matchedTokens.length > 0 ? "query" : "recent",
+        matchedText: matchedTokens.join(", "),
+      } satisfies ProjectShortlistCandidate;
+    })
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      return right.updatedAt.localeCompare(left.updatedAt);
+    })
+    .slice(0, GENERAL_INDEX_PROJECT_CANDIDATE_LIMIT);
+}
+
+function buildCandidateRoutingQuery(candidate: MemoryCandidate, focusTurn: MemoryMessage): string {
+  return [
+    focusTurn.content,
+    candidate.name,
+    candidate.description,
+    candidate.rule,
+    candidate.summary,
+    candidate.stage,
+    ...(candidate.constraints ?? []),
+    ...(candidate.decisions ?? []),
+    ...(candidate.blockers ?? []),
+  ].filter(Boolean).join("\n");
+}
+
+function buildCandidateMemoryPreview(candidate: MemoryCandidate): string {
+  const lines: string[] = [
+    `# ${candidate.name}`,
+    "",
+    `type: ${candidate.type}`,
+    `description: ${candidate.description}`,
+  ];
+  if (candidate.type === "feedback") {
+    lines.push("", "## Rule", candidate.rule || candidate.description || candidate.summary || candidate.name);
+    if (candidate.why) lines.push("", "## Why", candidate.why);
+    if (candidate.howToApply) lines.push("", "## How To Apply", candidate.howToApply);
+  }
+  if (candidate.type === "project") {
+    if (candidate.stage) lines.push("", "## Current Stage", candidate.stage);
+    const sections: Array<[string, string[] | undefined]> = [
+      ["Decisions", candidate.decisions],
+      ["Constraints", candidate.constraints],
+      ["Next Steps", candidate.nextSteps],
+      ["Blockers", candidate.blockers],
+      ["Timeline", candidate.timeline],
+      ["Notes", candidate.notes],
+    ];
+    for (const [title, values] of sections) {
+      const normalized = (values ?? []).map((item) => item.trim()).filter(Boolean);
+      if (normalized.length === 0) continue;
+      lines.push("", `## ${title}`, ...normalized.map((item) => `- ${item}`));
+    }
+    if (candidate.summary) lines.push("", "## Summary", candidate.summary);
+  }
+  if (candidate.body) lines.push("", "## Body", candidate.body);
+  const preview = lines.join("\n").trim();
+  return preview.length <= 3000 ? preview : `${preview.slice(0, 3000)}...`;
 }
 
 function flattenBatchMessages(
@@ -154,6 +291,9 @@ function previewText(text: string, maxChars = 220): string {
 }
 
 function inferStorageKind(record: MemoryFileRecord): IndexTraceStoredResult["storageKind"] {
+  if (record.type === "general_project_meta") {
+    return "general_project_meta";
+  }
   if (record.type === "user") {
     return /\/?(UserNotes|UserIdentityNotes)\//.test(record.relativePath) ? "global_user_note" : "global_user";
   }
@@ -327,6 +467,84 @@ export class HeartbeatIndexer {
 
   setSettings(settings: IndexingSettings): void {
     this.settings = { ...settings };
+  }
+
+  private async routeGeneralCandidate(input: {
+    candidate: MemoryCandidate;
+    focusTurn: MemoryMessage;
+    batchContextMessages: MemoryMessage[];
+  }): Promise<{
+    candidate: MemoryCandidate;
+    createdProjectMeta?: ProjectMetaRecord;
+    selectedProject?: ReadableProjectCatalogEntry;
+    selectionDebug?: RetrievalPromptDebug;
+    routingDecision?: "attach_existing" | "create_new";
+    routingReason?: string;
+  }> {
+    const store = this.repository.getFileMemoryStore();
+    if (!store.isGeneralMode() || input.candidate.type === "user") {
+      return { candidate: input.candidate };
+    }
+
+    const routingText = buildCandidateRoutingQuery(input.candidate, input.focusTurn);
+    const candidatePreview = buildCandidateMemoryPreview(input.candidate);
+    const catalog = this.repository
+      .listReadableProjectCatalog()
+      .filter((entry) => entry.sourceType !== "workspace_external");
+    const shortlist = buildGeneralProjectShortlist(catalog, routingText);
+    let selectedProject: ReadableProjectCatalogEntry | undefined;
+    let selectionDebug: RetrievalPromptDebug | undefined;
+    let routingDecision: "attach_existing" | "create_new" = "create_new";
+    let routingReason = shortlist.length > 0
+      ? "No existing General project was clearly selected."
+      : "No existing General projects are available.";
+    if (shortlist.length > 0) {
+      const selection = await this.extractor.selectIndexProject({
+        candidate: input.candidate,
+        candidatePreview,
+        focusTurn: input.focusTurn,
+        recentUserMessages: input.batchContextMessages.filter((message) => message.role === "user").slice(-4),
+        shortlist,
+        debugTrace: (debug) => {
+          selectionDebug = debug;
+        },
+      });
+      routingDecision = selection.decision;
+      routingReason = selection.reason ?? routingReason;
+      const selectedProjectId = selection.decision === "attach_existing" ? selection.projectId : undefined;
+      selectedProject = selectedProjectId
+        ? this.repository.getReadableProject(selectedProjectId)
+        : undefined;
+      if (selectedProject?.sourceType === "workspace_external") {
+        selectedProject = undefined;
+        routingDecision = "create_new";
+        routingReason = "Selected project was outside General-local index scope.";
+      }
+    }
+
+    if (selectedProject) {
+      return {
+        candidate: { ...input.candidate, projectId: selectedProject.projectId },
+        selectedProject,
+        ...(selectionDebug ? { selectionDebug } : {}),
+        routingDecision,
+        routingReason,
+      };
+    }
+
+    const localProject = store.upsertProjectMeta({
+      projectName: input.candidate.type === "project" ? input.candidate.name : input.candidate.description || input.candidate.name,
+      description: input.candidate.description,
+      status: "in_progress",
+      sourceKind: "general_local",
+    });
+    return {
+      candidate: { ...input.candidate, projectId: localProject.projectId },
+      createdProjectMeta: localProject,
+      ...(selectionDebug ? { selectionDebug } : {}),
+      routingDecision: "create_new",
+      routingReason,
+    };
   }
 
   captureL0Session(input: {
@@ -615,24 +833,94 @@ export class HeartbeatIndexer {
             let wroteGlobalUserNote = false;
             for (const { candidate } of createdCandidates) {
               if (!candidate) continue;
-              const targetStore = candidate.type === "user"
+              const routed = await this.routeGeneralCandidate({
+                candidate,
+                focusTurn,
+                batchContextMessages,
+              });
+              if (routed.createdProjectMeta) {
+                trace.storedResults.push({
+                  candidateType: "general_project_meta",
+                  candidateName: routed.createdProjectMeta.projectName,
+                  scope: "project",
+                  projectId: routed.createdProjectMeta.projectId,
+                  sourceKind: routed.selectedProject?.sourceType ?? routed.createdProjectMeta.sourceKind ?? "general_local",
+                  relativePath: routed.createdProjectMeta.relativePath,
+                  storageKind: "general_project_meta",
+                });
+                stats.writtenFiles += 1;
+                createStep(
+                  trace,
+                  "project_routed",
+                  "Project Routed",
+                  "success",
+                  previewText(focusTurn.content, 180),
+                  `Created new General project ${routed.createdProjectMeta.projectName}.`,
+                  {
+                    details: [
+                      jsonDetail(
+                        `project-route-${session.l0IndexId}-${trace.storedResults.length}`,
+                        "Project Route",
+                        {
+                          decision: routed.routingDecision ?? "create_new",
+                          reason: routed.routingReason ?? null,
+                          candidateType: candidate.type,
+                          candidateName: candidate.name,
+                          selectedProject: routed.selectedProject?.projectName ?? null,
+                          assignedProjectId: routed.createdProjectMeta.projectId,
+                          createdProjectMeta: routed.createdProjectMeta.relativePath,
+                        },
+                      ),
+                    ],
+                    ...(routed.selectionDebug ? { promptDebug: routed.selectionDebug } : {}),
+                  },
+                );
+              } else if (routed.selectedProject) {
+                createStep(
+                  trace,
+                  "project_routed",
+                  "Project Routed",
+                  "success",
+                  previewText(focusTurn.content, 180),
+                  `Assigned to ${routed.selectedProject.projectName}.`,
+                  {
+                    details: [
+                      jsonDetail(
+                        `project-route-${session.l0IndexId}-${candidate.name}`,
+                        "Project Route",
+                        {
+                          decision: routed.routingDecision ?? "attach_existing",
+                          reason: routed.routingReason ?? null,
+                          candidateType: candidate.type,
+                          candidateName: candidate.name,
+                          selectedProject: routed.selectedProject.projectName,
+                          selectedSource: routed.selectedProject.sourceType === "workspace_external" ? "workspace_external" : "general_local",
+                          assignedProjectId: routed.selectedProject.projectId,
+                        },
+                      ),
+                    ],
+                    ...(routed.selectionDebug ? { promptDebug: routed.selectionDebug } : {}),
+                  },
+                );
+              }
+              const targetStore = routed.candidate.type === "user"
                 ? this.repository.getGlobalUserStore()
                 : store;
-              const record = targetStore.upsertCandidate(candidate);
-              if (candidate.type === "user") wroteGlobalUserNote = true;
+              const record = targetStore.upsertCandidate(routed.candidate);
+              if (routed.candidate.type === "user") wroteGlobalUserNote = true;
               persistedRecords.push(record);
               trace.storedResults.push({
-                candidateType: candidate.type,
-                candidateName: candidate.name,
-                scope: candidate.scope,
+                candidateType: routed.candidate.type,
+                candidateName: routed.candidate.name,
+                scope: routed.candidate.scope,
                 ...(record.projectId ? { projectId: record.projectId } : {}),
                 relativePath: exposeStoredRelativePath(record),
                 storageKind: inferStorageKind(record),
               });
               stats.writtenFiles += 1;
-              if (candidate.type === "user") stats.writtenUserFiles += 1;
-              if (candidate.type === "project") stats.writtenProjectFiles += 1;
-              if (candidate.type === "feedback") stats.writtenFeedbackFiles += 1;
+              if (routed.candidate.type === "user") stats.writtenUserFiles += 1;
+              if (routed.candidate.type === "project") stats.writtenProjectFiles += 1;
+              if (routed.candidate.type === "feedback") stats.writtenFeedbackFiles += 1;
             }
             if (wroteGlobalUserNote) {
               this.repository.repairWorkspaceManifest();
