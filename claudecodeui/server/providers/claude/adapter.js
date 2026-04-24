@@ -7,7 +7,7 @@
 
 import { getSessionMessages } from '../../projects.js';
 import { createNormalizedMessage, generateMessageId } from '../types.js';
-import { isInternalContent } from '../utils.js';
+import { extractSlashCommandInvocation, isInternalContent } from '../utils.js';
 
 const PROVIDER = 'claude';
 const TASK_NOTIFICATION_REGEX = /<task-notification>\s*<task-id>([\s\S]*?)<\/task-id>\s*<output-file>([\s\S]*?)<\/output-file>\s*<status>([\s\S]*?)<\/status>\s*<summary>([\s\S]*?)<\/summary>\s*<\/task-notification>/i;
@@ -127,8 +127,16 @@ export function normalizeMessage(raw, sessionId, options = {}) {
 
   // User message
   if (raw.message?.role === 'user' && raw.message?.content) {
+    // Messages flagged `isMeta` by the Claude Code SDK are internal prompts
+    // injected into the model's conversation (skill outputs, attachment
+    // reminders, system context, etc.). They must never render as user
+    // bubbles — that's what caused slash-command output like `/projects` to
+    // appear twice (once as a fake user message, once as the assistant's
+    // actual reply). We still have to let `tool_result` parts through.
+    const isMetaUserMessage = raw.isMeta === true;
+
     if (Array.isArray(raw.message.content)) {
-      // Handle tool_result parts
+      // Handle tool_result parts (these must flow through even when isMeta)
       for (const part of raw.message.content) {
         if (part.type === 'tool_result') {
           messages.push(createNormalizedMessage({
@@ -143,10 +151,29 @@ export function normalizeMessage(raw, sessionId, options = {}) {
             subagentTools: raw.subagentTools,
             toolUseResult: raw.toolUseResult,
           }));
-        } else if (part.type === 'text') {
+        } else if (part.type === 'text' && !isMetaUserMessage) {
           // Regular text parts from user
           const text = part.text || '';
-          if (includeUserText && text && !isInternalContent(text)) {
+          if (!includeUserText || !text) {
+            continue;
+          }
+          // `<command-message>…<command-name>/foo</command-name>` envelopes
+          // are the SDK's only record of what the user typed — surface them
+          // as a clean "/foo" bubble instead of dropping them.
+          const slashCommand = extractSlashCommandInvocation(text);
+          if (slashCommand) {
+            messages.push(createNormalizedMessage({
+              id: `${baseId}_slash`,
+              sessionId,
+              timestamp: ts,
+              provider: PROVIDER,
+              kind: 'text',
+              role: 'user',
+              content: slashCommand,
+            }));
+            continue;
+          }
+          if (!isInternalContent(text)) {
             messages.push(createNormalizedMessage({
               id: `${baseId}_text`,
               sessionId,
@@ -161,36 +188,62 @@ export function normalizeMessage(raw, sessionId, options = {}) {
       }
 
       // If no text parts were found, check if it's a pure user message
-      if (messages.length === 0) {
+      if (messages.length === 0 && !isMetaUserMessage) {
         const textParts = raw.message.content
           .filter(p => p.type === 'text')
           .map(p => p.text)
           .filter(Boolean)
           .join('\n');
-        if (includeUserText && textParts && !isInternalContent(textParts)) {
+        if (includeUserText && textParts) {
+          const slashCommand = extractSlashCommandInvocation(textParts);
+          if (slashCommand) {
+            messages.push(createNormalizedMessage({
+              id: `${baseId}_slash`,
+              sessionId,
+              timestamp: ts,
+              provider: PROVIDER,
+              kind: 'text',
+              role: 'user',
+              content: slashCommand,
+            }));
+          } else if (!isInternalContent(textParts)) {
+            messages.push(createNormalizedMessage({
+              id: `${baseId}_text`,
+              sessionId,
+              timestamp: ts,
+              provider: PROVIDER,
+              kind: 'text',
+              role: 'user',
+              content: textParts,
+            }));
+          }
+        }
+      }
+    } else if (typeof raw.message.content === 'string' && !isMetaUserMessage) {
+      const text = raw.message.content;
+      if (includeUserText && text) {
+        const slashCommand = extractSlashCommandInvocation(text);
+        if (slashCommand) {
           messages.push(createNormalizedMessage({
-            id: `${baseId}_text`,
+            id: baseId,
             sessionId,
             timestamp: ts,
             provider: PROVIDER,
             kind: 'text',
             role: 'user',
-            content: textParts,
+            content: slashCommand,
+          }));
+        } else if (!isInternalContent(text)) {
+          messages.push(createNormalizedMessage({
+            id: baseId,
+            sessionId,
+            timestamp: ts,
+            provider: PROVIDER,
+            kind: 'text',
+            role: 'user',
+            content: text,
           }));
         }
-      }
-    } else if (typeof raw.message.content === 'string') {
-      const text = raw.message.content;
-      if (includeUserText && text && !isInternalContent(text)) {
-        messages.push(createNormalizedMessage({
-          id: baseId,
-          sessionId,
-          timestamp: ts,
-          provider: PROVIDER,
-          kind: 'text',
-          role: 'user',
-          content: text,
-        }));
       }
     }
     return messages;

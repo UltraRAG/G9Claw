@@ -252,10 +252,8 @@ try {
   const s1 = store.getOrCreateSession(source)
   assert(!!s1.sessionId, `Session created: ${s1.sessionId}`)
 
-  store.addMessage(s1.sessionId, 'user', 'test message')
-  store.addMessage(s1.sessionId, 'assistant', 'test response')
-  const msgs = store.getMessages(s1.sessionId)
-  assert(msgs.length === 2, `Stored ${msgs.length} messages`)
+  // Message bodies are owned by the Claude Code SDK's .jsonl transcripts;
+  // the gateway no longer mirrors them, so addMessage/getMessages are no-ops.
 
   const s2 = store.getOrCreateSession(source)
   assert(s1.sessionId === s2.sessionId, 'Same session returned on re-access')

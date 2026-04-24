@@ -2,11 +2,9 @@
  * Gateway configuration loading and management.
  *
  * Loads configuration from:
- * 1. YAML config file (~/.hermes/config.yaml)
+ * 1. YAML config file ($GATEWAY_HOME/config.yaml, default ~/.claude/gateway)
  * 2. Environment variables (highest priority)
  * 3. Built-in defaults
- *
- * Ported from hermes-agent gateway/config.py.
  */
 
 import { readFileSync, existsSync } from 'fs'
@@ -34,8 +32,13 @@ try {
   // yaml package not installed — YAML configs will be skipped
 }
 
-function getHermesHome(): string {
-  return process.env.HERMES_HOME || join(homedir(), '.hermes')
+/**
+ * Resolve the gateway home directory.
+ *
+ *   $GATEWAY_HOME (if set) → ~/.claude/gateway
+ */
+export function getGatewayHome(): string {
+  return process.env.GATEWAY_HOME || join(homedir(), '.claude', 'gateway')
 }
 
 function coerceBool(value: unknown, defaultVal = true): boolean {
@@ -342,11 +345,13 @@ function applyEnvOverrides(config: GatewayConfig): void {
  */
 export function loadGatewayConfig(): GatewayConfig {
   const config = createDefaultGatewayConfig()
-  const hermesHome = getHermesHome()
-  config.sessionsDir = join(hermesHome, 'sessions')
+  const gatewayHome = getGatewayHome()
+  // Session metadata lives inside the Claude Code projects tree so all
+  // conversation state is rooted at a single location (~/.claude/projects/).
+  config.sessionsDir = join(homedir(), '.claude', 'projects', '.gateway')
 
   // Load YAML config if available
-  const yamlPath = join(hermesHome, 'config.yaml')
+  const yamlPath = join(gatewayHome, 'config.yaml')
   if (yamlParse && existsSync(yamlPath)) {
     try {
       const raw = readFileSync(yamlPath, 'utf-8')
