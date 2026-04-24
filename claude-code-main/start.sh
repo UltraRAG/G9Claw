@@ -8,27 +8,15 @@
 #   ./start.sh --version          # show version
 #
 # proxy.ts is the unified entry point:
-#   - With ccr-config.json present: advanced CCR routing (multi-provider, tokenSaver, etc.)
-#   - Without ccr-config.json (or CCR_DISABLED=1): legacy Anthropic→OpenAI conversion
+#   - With router.enabled=true in ~/.edgeclaw/config.yaml: advanced CCR routing
+#   - Otherwise: direct Anthropic→provider conversion
 #
-# Configuration: set EDGECLAW_* in the repository root .env or export them.
-# CCR routing config: ccr-config.json
+# Configuration: edit ~/.edgeclaw/config.yaml or use Settings -> Config in the UI.
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$DIR/.." && pwd)"
-ROOT_ENV="$REPO_ROOT/.env"
 
 log() { echo "[start] $*" >&2; }
-
-if [ -f "$ROOT_ENV" ]; then
-  log "loading env from $ROOT_ENV"
-  set -a
-  # shellcheck disable=SC1091
-  source "$ROOT_ENV"
-  set +a
-else
-  log "no .env at $ROOT_ENV (using current shell env)"
-fi
 
 # Ensure bun is on PATH
 if ! command -v bun &>/dev/null; then
@@ -37,6 +25,14 @@ if ! command -v bun &>/dev/null; then
   else
     echo "Error: bun is not installed. Install it with: curl -fsSL https://bun.sh/install | bash" >&2
     exit 1
+  fi
+fi
+
+# Load unified EdgeClaw YAML config after bun is available.
+if [ -f "$DIR/edgeclaw-config.ts" ]; then
+  EDGECLAW_CONFIG_EXPORTS="$(bun --config=/dev/null run "$DIR/edgeclaw-config.ts" shell-env 2>/dev/null || true)"
+  if [ -n "$EDGECLAW_CONFIG_EXPORTS" ]; then
+    eval "$EDGECLAW_CONFIG_EXPORTS"
   fi
 fi
 
@@ -74,7 +70,7 @@ fi
 require_env() {
   local key="$1"
   if [ -z "${!key:-}" ]; then
-    echo "Error: $key is not set. Configure it in $ROOT_ENV or export it before starting Claude Code." >&2
+    echo "Error: $key is not set. Configure ~/.edgeclaw/config.yaml before starting Claude Code." >&2
     exit 1
   fi
 }

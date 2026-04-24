@@ -1,4 +1,4 @@
-import { type CaseTraceRecord, type ClearMemoryScope, type DashboardOverview, type DreamRollbackResult, type DreamRuntimeStateSnapshot, type DreamTraceRecord, type IndexTraceRecord, type IndexingSettings, type LastDreamSnapshotMetadata, type LastDreamSnapshotOverview, type L0SessionRecord, type MemoryExportBundle, type MemoryEntryEditFields, type MemoryFileRecord, type MemoryImportResult, type MemoryImportableBundle, type MemoryManifestEntry, type MemoryMessage, type MemorySnapshotFileRecord, type MemoryTransferCounts, type MemoryUiSnapshot } from "../types.js";
+import { type CaseTraceRecord, type ClearMemoryScope, type DashboardOverview, type DreamRollbackResult, type DreamRuntimeStateSnapshot, type DreamTraceRecord, type IndexTraceRecord, type IndexingSettings, type LastDreamSnapshotMetadata, type LastDreamSnapshotOverview, type L0SessionRecord, type MemoryExportBundle, type MemoryEntryEditFields, type MemoryFileRecord, type MemoryImportResult, type MemoryImportableBundle, type MemoryManifestEntry, type MemoryMessage, type MemorySnapshotFileRecord, type ProjectMetaRecord, type MemoryTransferCounts, type MemoryUiSnapshot, type ReadableProjectCatalogEntry, type WorkspaceMemoryMode } from "../types.js";
 import { FileMemoryStore } from "../file-memory.js";
 export interface LiveMemorySnapshot {
     workspaceFiles: MemorySnapshotFileRecord[];
@@ -38,17 +38,39 @@ export interface RepairMemoryResult {
 export declare class MemoryRepository {
     private readonly dbPath;
     private readonly db;
+    private readonly workspaceDir;
+    private readonly workspaceMode;
+    private readonly memoryDir;
+    private readonly workspacesRoot;
+    private readonly globalRootDir;
     private readonly workspaceMemory;
     private readonly globalUserMemory;
+    private externalWorkspaceCache;
     constructor(dbPath: string, options?: {
         memoryDir?: string;
         globalRootDir?: string;
+        workspaceDir?: string;
     });
     private init;
     private migratePipelineStateTable;
     close(): void;
     getFileMemoryStore(): FileMemoryStore;
     getGlobalUserStore(): FileMemoryStore;
+    getWorkspaceMode(): WorkspaceMemoryMode;
+    private currentWorkspacePath;
+    private readWorkspaceDirFromDb;
+    private getExternalWorkspaceSnapshots;
+    private buildProjectSummary;
+    listReadableProjectCatalog(): ReadableProjectCatalogEntry[];
+    getReadableProject(logicalProjectId: string): ReadableProjectCatalogEntry | undefined;
+    private mapExternalManifestEntry;
+    private mapExternalFileRecord;
+    listReadableProjectEntries(logicalProjectId: string, options?: {
+        kinds?: Array<"project" | "feedback">;
+        includeDeprecated?: boolean;
+        query?: string;
+        includeExternal?: boolean;
+    }): MemoryManifestEntry[];
     repairWorkspaceManifest(): {
         changed: number;
         summary: string;
@@ -114,7 +136,7 @@ export declare class MemoryRepository {
     getOverview(): DashboardOverview;
     getUiSnapshot(limit?: number): MemoryUiSnapshot;
     listMemoryEntries(options?: {
-        kinds?: Array<"user" | "feedback" | "project">;
+        kinds?: Array<"user" | "feedback" | "project" | "general_project_meta">;
         query?: string;
         limit?: number;
         offset?: number;
@@ -124,7 +146,7 @@ export declare class MemoryRepository {
         includeDeprecated?: boolean;
     }): MemoryManifestEntry[];
     countMemoryEntries(options?: {
-        kinds?: Array<"user" | "feedback" | "project">;
+        kinds?: Array<"user" | "feedback" | "project" | "general_project_meta">;
         query?: string;
         scope?: "global" | "project";
         projectId?: string;
@@ -137,13 +159,13 @@ export declare class MemoryRepository {
         projectName: string;
         description: string;
         status: string;
-    }): import("../types.js").ProjectMetaRecord;
+    }): ProjectMetaRecord;
     ensureProjectMeta(input?: {
         projectName?: string;
         description?: string;
         status?: string;
-    }): import("../types.js").ProjectMetaRecord;
-    getProjectMeta(): import("../types.js").ProjectMetaRecord | undefined;
+    }): ProjectMetaRecord;
+    getProjectMeta(): ProjectMetaRecord | undefined;
     editMemoryEntry(input: {
         id: string;
         name: string;

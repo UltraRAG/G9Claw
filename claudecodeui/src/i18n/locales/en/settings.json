@@ -97,6 +97,7 @@
     "notifications": "Notifications",
     "plugins": "Plugins",
     "router": "Router",
+    "config": "Config",
     "about": "About"
   },
   "notifications": {

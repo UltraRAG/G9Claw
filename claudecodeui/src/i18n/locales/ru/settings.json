@@ -96,6 +96,7 @@
     "tasks": "Задачи",
     "plugins": "Плагины",
     "router": "Маршрутизатор",
+    "config": "Конфиг",
     "about": "О программе"
   },
   "appearanceSettings": {

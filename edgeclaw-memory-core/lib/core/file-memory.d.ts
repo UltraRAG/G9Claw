@@ -1,7 +1,8 @@
-import type { MemoryCandidate, MemoryEntryEditFields, MemoryFileExportRecord, MemoryFileRecord, MemoryManifestEntry, MemorySnapshotFileRecord, MemoryUserSummary, ProjectIdentityHint, ProjectMetaExportRecord, ProjectMetaRecord } from "./types.js";
+import type { GeneralProjectSourceKind, MemoryCandidate, MemoryEntryEditFields, MemoryFileExportRecord, MemoryFileRecord, MemoryManifestEntry, MemorySnapshotFileRecord, MemoryUserSummary, ProjectIdentityHint, ProjectMetaExportRecord, ProjectMetaRecord, WorkspaceMemoryMode } from "./types.js";
 export declare const TMP_PROJECT_ID = "_tmp";
 export declare const CURRENT_PROJECT_ID = "current_project";
 export interface FileMemoryStoreOptions {
+    workspaceMode?: WorkspaceMemoryMode;
     manageProjectMeta?: boolean;
     manageProjectFiles?: boolean;
     manageUserProfile?: boolean;
@@ -21,10 +22,12 @@ export interface FileMemoryOverview {
     tmpFeedbackMemories: number;
     tmpProjectMemories: number;
     projectMetaCount: number;
+    generalProjectMetaCount?: number;
     latestMemoryAt?: string;
 }
 export declare class FileMemoryStore {
     private readonly rootDir;
+    private readonly workspaceMode;
     private readonly manageProjectMeta;
     private readonly manageProjectFiles;
     private readonly manageUserProfile;
@@ -35,6 +38,8 @@ export declare class FileMemoryStore {
     private readonly manifestUserEntriesProvider?;
     constructor(rootDir: string, options?: FileMemoryStoreOptions);
     getRootDir(): string;
+    getWorkspaceMode(): WorkspaceMemoryMode;
+    isGeneralMode(): boolean;
     getUserProfileRelativePath(): string | null;
     private projectMetaPath;
     private requireUserProfileRelativePath;
@@ -48,16 +53,37 @@ export declare class FileMemoryStore {
     private collectAllEntries;
     private readProjectMetaFile;
     private buildProjectMetaSeed;
+    private generalProjectMetaRelativePath;
+    private toGeneralProjectMetaRecord;
+    private listGeneralProjectMetaEntries;
+    upsertGeneralProjectMeta(input: {
+        projectId?: string;
+        projectName: string;
+        description?: string;
+        status?: string;
+        sourceKind?: GeneralProjectSourceKind;
+        sourceWorkspacePath?: string;
+        sourceProjectId?: string;
+        dreamUpdatedAt?: string;
+    }): ProjectMetaRecord;
     upsertProjectMeta(input?: {
+        projectId?: string;
         projectName?: string;
         description?: string;
         status?: string;
+        sourceKind?: GeneralProjectSourceKind;
+        sourceWorkspacePath?: string;
+        sourceProjectId?: string;
         dreamUpdatedAt?: string;
     }): ProjectMetaRecord;
     ensureProjectMeta(input?: {
+        projectId?: string;
         projectName?: string;
         description?: string;
         status?: string;
+        sourceKind?: GeneralProjectSourceKind;
+        sourceWorkspacePath?: string;
+        sourceProjectId?: string;
     }): ProjectMetaRecord;
     private findExistingRecordForCandidate;
     private nextRecordRelativePath;
@@ -69,7 +95,7 @@ export declare class FileMemoryStore {
         memoryFileCount: number;
     };
     listMemoryEntries(options?: {
-        kinds?: Array<"user" | "feedback" | "project">;
+        kinds?: Array<"user" | "feedback" | "project" | "general_project_meta">;
         query?: string;
         limit?: number;
         offset?: number;
@@ -79,7 +105,7 @@ export declare class FileMemoryStore {
         includeDeprecated?: boolean;
     }): MemoryManifestEntry[];
     countMemoryEntries(options?: {
-        kinds?: Array<"user" | "feedback" | "project">;
+        kinds?: Array<"user" | "feedback" | "project" | "general_project_meta">;
         query?: string;
         scope?: "global" | "project";
         projectId?: string;
@@ -108,6 +134,12 @@ export declare class FileMemoryStore {
     deleteEntries(relativePaths: string[]): {
         mutatedIds: string[];
         deletedProjectIds: string[];
+    };
+    reassignProjectEntries(input: {
+        fromProjectId: string;
+        toProjectId: string;
+    }): {
+        mutatedIds: string[];
     };
     archiveTmpEntries(_: {
         relativePaths: string[];

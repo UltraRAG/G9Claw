@@ -1,11 +1,14 @@
 export type ChatRole = "user" | "assistant" | "system" | string;
+export type WorkspaceMemoryMode = "single" | "general";
+export type GeneralProjectSourceKind = "general_local" | "workspace_external_mirror";
+export type ReadableProjectSourceKind = GeneralProjectSourceKind | "workspace_external";
 export interface MemoryMessage {
     msgId?: string;
     role: ChatRole;
     content: string;
 }
 export type MemoryRoute = "none" | "user" | "project" | "mix";
-export type MemoryRecordType = "user" | "feedback" | "project";
+export type MemoryRecordType = "user" | "feedback" | "project" | "general_project_meta";
 export type MemoryScope = "global" | "project";
 export interface MemoryFileFrontmatter {
     name: string;
@@ -13,7 +16,11 @@ export interface MemoryFileFrontmatter {
     type: MemoryRecordType;
     scope: MemoryScope;
     projectId?: string;
+    sourceKind?: GeneralProjectSourceKind;
+    sourceWorkspacePath?: string;
+    sourceProjectId?: string;
     updatedAt: string;
+    dreamUpdatedAt?: string;
     capturedAt?: string;
     sourceSessionKey?: string;
     deprecated?: boolean;
@@ -46,6 +53,9 @@ export interface ProjectShortlistCandidate {
     description: string;
     status: string;
     updatedAt: string;
+    sourceType?: ReadableProjectSourceKind;
+    hasLocalMirror?: boolean;
+    externalLogicalProjectId?: string;
     score: number;
     exact: number;
     source: "query" | "recent";
@@ -80,6 +90,9 @@ export interface MemoryCandidate {
     type: MemoryRecordType;
     scope: MemoryScope;
     projectId?: string;
+    sourceKind?: GeneralProjectSourceKind;
+    sourceWorkspacePath?: string;
+    sourceProjectId?: string;
     name: string;
     description: string;
     body?: string;
@@ -105,11 +118,32 @@ export interface ProjectMetaRecord {
     projectName: string;
     description: string;
     status: string;
+    sourceKind?: GeneralProjectSourceKind;
+    sourceWorkspacePath?: string;
+    sourceProjectId?: string;
     createdAt: string;
     updatedAt: string;
     dreamUpdatedAt?: string;
     relativePath: string;
     absolutePath: string;
+}
+export interface ReadableProjectEntrySummary {
+    totalEntries: number;
+    projectEntries: number;
+    feedbackEntries: number;
+    latestMemoryAt?: string;
+}
+export interface ReadableProjectCatalogEntry extends ProjectMetaRecord {
+    workspaceMode: WorkspaceMemoryMode;
+    workspacePath: string;
+    workspaceName: string;
+    sourceType: ReadableProjectSourceKind;
+    logicalProjectId: string;
+    readOnly: boolean;
+    hasLocalMirror: boolean;
+    localMirrorProjectId?: string;
+    externalLogicalProjectId?: string;
+    summary: ReadableProjectEntrySummary;
 }
 export interface ProjectIdentityHint {
     identityKey: string;
@@ -337,7 +371,7 @@ export interface RetrievalPromptDebug {
 }
 export type IndexTraceTrigger = "manual_sync" | "scheduled";
 export type IndexTraceStatus = "running" | "completed" | "error";
-export type IndexTraceStorageKind = "global_user" | "global_user_note" | "project" | "feedback";
+export type IndexTraceStorageKind = "global_user" | "global_user_note" | "project" | "feedback" | "general_project_meta";
 export interface IndexTraceBatchSummary {
     l0Ids: string[];
     segmentCount: number;
@@ -350,10 +384,11 @@ export interface IndexTraceStoredResult {
     candidateName: string;
     scope: MemoryScope;
     projectId?: string;
+    sourceKind?: ReadableProjectSourceKind;
     relativePath: string;
     storageKind: IndexTraceStorageKind;
 }
-export type IndexTraceStepKind = "index_start" | "batch_loaded" | "focus_turns_selected" | "classification" | "user_create" | "project_create" | "feedback_create" | "persist" | "turn_classified" | "candidate_validated" | "candidate_grouped" | "candidate_persisted" | "user_profile_rewritten" | "index_finished";
+export type IndexTraceStepKind = "index_start" | "batch_loaded" | "focus_turns_selected" | "classification" | "user_create" | "project_create" | "feedback_create" | "persist" | "turn_classified" | "candidate_validated" | "candidate_grouped" | "project_routed" | "candidate_persisted" | "user_profile_rewritten" | "index_finished";
 export interface IndexTraceStep extends TraceStepI18nFields {
     stepId: string;
     kind: IndexTraceStepKind;
@@ -399,7 +434,7 @@ export interface DreamTraceMutation {
     description?: string;
     preview?: string;
 }
-export type DreamTraceStepKind = "dream_start" | "snapshot_loaded" | "project_header_scan" | "project_cluster_plan" | "project_cluster_refine" | "feedback_header_scan" | "feedback_cluster_plan" | "feedback_cluster_refine" | "user_profile_rewritten" | "project_meta_review" | "manifests_repaired" | "dream_finished";
+export type DreamTraceStepKind = "dream_start" | "snapshot_loaded" | "general_project_merge" | "project_header_scan" | "project_cluster_plan" | "project_cluster_refine" | "feedback_header_scan" | "feedback_cluster_plan" | "feedback_cluster_refine" | "user_profile_rewritten" | "project_meta_review" | "manifests_repaired" | "dream_finished";
 export interface DreamTraceStep extends TraceStepI18nFields {
     stepId: string;
     kind: DreamTraceStepKind;
@@ -517,6 +552,7 @@ export interface DashboardDiagnostics {
 }
 export interface DashboardOverview {
     pendingSessions: number;
+    workspaceMode?: WorkspaceMemoryMode;
     projectMetaPresent?: boolean;
     projectMemoryCount?: number;
     feedbackMemoryCount?: number;

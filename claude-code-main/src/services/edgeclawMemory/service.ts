@@ -5,6 +5,10 @@ import {
   summarizeTranscriptMessage,
   type MemoryMessage,
 } from '../../../../edgeclaw-memory-core/lib/index.js'
+import {
+  getEdgeClawMemoryServiceOptions,
+  loadEdgeClawConfig,
+} from '../../../edgeclaw-config'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
 
 const servicesByWorkspace = new Map<string, EdgeClawMemoryService>()
@@ -15,6 +19,11 @@ type ConversationTranscriptSummary = TranscriptSummary & {
 }
 
 export function isEdgeClawMemoryEnabled(): boolean {
+  try {
+    return loadEdgeClawConfig().memory?.enabled !== false
+  } catch {
+    // Fall back to legacy env handling below.
+  }
   const raw = process.env.EDGECLAW_MEMORY_ENABLED
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     return false
@@ -39,6 +48,7 @@ export function getEdgeClawMemoryService(
   const service = new EdgeClawMemoryService({
     workspaceDir,
     source: 'claude-code-main',
+    ...getEdgeClawMemoryServiceOptions(),
   })
   servicesByWorkspace.set(workspaceDir, service)
   return service

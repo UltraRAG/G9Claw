@@ -97,6 +97,7 @@
     "notifications": "通知",
     "plugins": "插件",
     "router": "路由",
+    "config": "配置",
     "about": "关于"
   },
   "notifications": {

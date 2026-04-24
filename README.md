@@ -1,13 +1,13 @@
 # edgeclaw-opc 使用说明
 
-本仓库把 `claude-code-main` 和 `claudecodeui` 收敛到一套统一配置。  
-用户只需要维护仓库根目录一份 `.env`，不再编辑 `claudecodeui/.env` 或 `claude-code-main/.env`。
+本仓库把 `claude-code-main`、`claudecodeui`、memory、router 和 gateway 收敛到一套统一配置。
+唯一用户配置入口是 `~/.edgeclaw/config.yaml`。UI、CLI、memory、router 和 gateway 都从这份 YAML 派生运行配置。
 
 ## 目录关系
 
 | 路径 | 作用 |
 |------|------|
-| `./.env` | 唯一用户配置入口 |
+| `~/.edgeclaw/config.yaml` | 唯一用户配置入口 |
 | `claude-code-main/` | Bun CLI、本地 Anthropic -> OpenAI 代理、`start.sh` |
 | `claudecodeui/` | Web UI 前后端 |
 | `edgeclaw-memory-core/` | 记忆检索 / 索引核心 |
@@ -19,33 +19,23 @@
 - npm
 - 一条可用的 OpenAI 兼容 API
 
-## 第一步：创建根目录 `.env`
+## 第一步：创建统一 YAML 配置
 
-```bash
-cp .env.example .env
-```
+启动 Web UI 后，进入 `Settings -> Config` 直接编辑 `~/.edgeclaw/config.yaml`。如果文件不存在，点击 `Reveal File` 会创建完整模板。
 
-至少填写这三个必填项：
+最小必填配置位于 YAML 的：
 
-- `EDGECLAW_API_BASE_URL`
-- `EDGECLAW_API_KEY`
-- `EDGECLAW_MODEL`
-
-常用可选项：
-
-- `EDGECLAW_PROXY_PORT=18080`
-- `SERVER_PORT=3001`
-- `VITE_PORT=5173`
-- `HOST=0.0.0.0`
-- `CONTEXT_WINDOW=160000`
-- `EDGECLAW_MEMORY_ENABLED=1`
-- `GATEWAY_ENABLED=1`
+- `models.providers.<provider>.baseUrl`
+- `models.providers.<provider>.apiKey`
+- `models.entries.<model>.name`
+- `agents.main.model`
 
 注意：
 
-- `EDGECLAW_API_BASE_URL` 不要带末尾 `/v1`
-- 根 `.env` 只在服务端读取，不会被前端静态暴露
-- 根 `.gitignore` 已忽略 `.env`
+- OpenAI 兼容 provider 的 `baseUrl` 推荐写到 `/v1`
+- Anthropic provider 的 `baseUrl` 写域名根路径
+- `agent`、`memory`、`router` 都引用 `models.entries` 里的模型 id，不重复配置 key/url
+- UI 返回配置时会 mask secret，保存 masked secret 会保留旧值
 
 ## 第二步：安装依赖
 
@@ -65,7 +55,7 @@ chmod +x start.sh
 ./start.sh
 ```
 
-`start.sh` 会读取仓库根目录 `.env`，派生内部 `OPENAI_*` / `ANTHROPIC_*` 变量，并在需要时自动拉起本地代理。
+`start.sh` 会读取 `~/.edgeclaw/config.yaml`，派生内部 `OPENAI_*` / `ANTHROPIC_*` 变量，并在需要时自动拉起本地代理。
 
 如果要只运行消息网关，不启动 CLI：
 
@@ -74,11 +64,7 @@ cd claude-code-main
 ./start.sh --gateway
 ```
 
-如果要在正常启动 CLI 的同时后台拉起 gateway，可以在根目录 `.env` 里设置：
-
-```bash
-GATEWAY_ENABLED=1
-```
+如果要在正常启动 CLI 的同时后台拉起 gateway，把 YAML 中的 `gateway.enabled` 设为 `true`。
 
 ## 第四步：启动 Web UI
 
@@ -92,19 +78,20 @@ npm run dev
 - Web UI: `http://localhost:5173`
 - API Server: `http://localhost:3001`
 
-前端和服务端都会从仓库根目录 `.env` 读取配置；不需要再创建子目录 `.env`。
+前端和服务端都会读取 `~/.edgeclaw/config.yaml`；不需要创建任何 `.env` 文件。
 
 ## Gateway 配置
 
-gateway 也统一读取仓库根目录 `.env`，不再单独维护 `claude-code-main/.env`。
+gateway 也统一读取 `~/.edgeclaw/config.yaml`，保存后 UI 会重新生成 gateway runtime YAML。
 
-常见入口变量：
+常见入口字段：
 
-- `GATEWAY_ENABLED=1`
-- `GATEWAY_ALLOW_ALL_USERS=true`
-- `GATEWAY_ALLOWED_USERS=user1,user2`
+- `gateway.enabled`
+- `gateway.allowAllUsers`
+- `gateway.allowedUsers`
+- `gateway.channels.<channel>.enabled`
 
-支持的平台变量示例可直接参考根目录 `.env.example`，其中已经包含：
+支持的 channel 在默认 YAML 中都会展示：
 
 - Telegram
 - Discord
@@ -119,37 +106,19 @@ gateway 也统一读取仓库根目录 `.env`，不再单独维护 `claude-code-
 
 memory 默认开启。只有显式设置以下值时才会关闭：
 
-```bash
-EDGECLAW_MEMORY_ENABLED=0
+```yaml
+memory:
+  enabled: false
 ```
 
-默认情况下，memory 继承主配置：
+默认情况下，memory 继承主模型：
 
-- `EDGECLAW_API_BASE_URL`
-- `EDGECLAW_API_KEY`
-- `EDGECLAW_MODEL`
-
-如果只想切换记忆模型，但继续复用同一套网关和密钥：
-
-```bash
-EDGECLAW_MEMORY_MODEL=your-memory-model
+```yaml
+memory:
+  model: inherit
 ```
 
-如果 memory 要独立走另一套模型服务，再填写完整覆盖项：
-
-```bash
-EDGECLAW_MEMORY_MODEL=
-EDGECLAW_MEMORY_BASE_URL=
-EDGECLAW_MEMORY_API_KEY=
-EDGECLAW_MEMORY_API_TYPE=openai-responses
-EDGECLAW_MEMORY_PROVIDER=edgeclaw_memory
-```
-
-默认规则：
-
-- 不设置任何 `EDGECLAW_MEMORY_*` 时，memory 继承主配置
-- 只设置 `EDGECLAW_MEMORY_MODEL` 时，仅切换记忆模型
-- 设置完整 `EDGECLAW_MEMORY_*` 时，memory 使用独立服务
+如果 memory 要独立走另一套模型，先在 `models.providers` / `models.entries` 中定义，再把 `memory.model` 指向该模型 id。
 
 ## 常见命令
 
@@ -169,6 +138,6 @@ cloudcli status
 
 ## 安全说明
 
-- 用户密钥只放在仓库根目录 `.env`
+- 用户密钥只放在 `~/.edgeclaw/config.yaml`
 - 不要把密钥写进任何 `VITE_*` 变量
-- `claudecodeui/.env.example` 和 `claude-code-main/.env.example` 现在只是提示文件，不再作为实际配置入口
+- API 返回给 UI 的 secret 会被 mask；保存 masked secret 会保留原值

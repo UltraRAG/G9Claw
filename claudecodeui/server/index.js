@@ -33,7 +33,7 @@ const c = {
 };
 
 assertRequiredEdgeClawEnv();
-console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
+console.log('SERVER_PORT from runtime config:', process.env.SERVER_PORT);
 
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -63,6 +63,7 @@ import memoryRoutes, { MEMORY_DASHBOARD_DIR } from './routes/memory.js';
 import mcpUtilsRoutes from './routes/mcp-utils.js';
 import commandsRoutes from './routes/commands.js';
 import settingsRoutes from './routes/settings.js';
+import configRoutes from './routes/config.js';
 import agentRoutes from './routes/agent.js';
 import projectsRoutes, { WORKSPACES_ROOT, validateWorkspacePath } from './routes/projects.js';
 import cliAuthRoutes from './routes/cli-auth.js';
@@ -163,7 +164,7 @@ async function ensureEdgeClawProxyRunning() {
     const upstreamApiKey = process.env.EDGECLAW_API_KEY?.trim();
 
     if (!proxyPort || !upstreamBaseUrl || !upstreamApiKey) {
-        console.warn('[WARN] EdgeClaw proxy not started: missing EDGECLAW_API_BASE_URL / EDGECLAW_API_KEY / proxy port');
+        console.warn('[WARN] EdgeClaw proxy not started: missing provider baseUrl/apiKey/proxyPort in ~/.edgeclaw/config.yaml');
         return;
     }
 
@@ -248,6 +249,20 @@ async function stopEdgeClawProxy() {
         proxyProcess.kill('SIGTERM');
     });
 }
+
+process.on('edgeclaw:restart-proxy', async (done) => {
+    try {
+        await stopEdgeClawProxy();
+        await ensureEdgeClawProxyRunning();
+        if (typeof done === 'function') {
+            done(null);
+        }
+    } catch (error) {
+        if (typeof done === 'function') {
+            done(error);
+        }
+    }
+});
 
 // Broadcast progress to all connected WebSocket clients
 function broadcastProgress(progress) {
@@ -535,6 +550,9 @@ app.use('/api/commands', authenticateToken, commandsRoutes);
 
 // Settings API Routes (protected)
 app.use('/api/settings', authenticateToken, settingsRoutes);
+
+// EdgeClaw unified YAML config routes (protected)
+app.use('/api/config', authenticateToken, configRoutes);
 
 // CLI Authentication API Routes (protected)
 app.use('/api/cli', authenticateToken, cliAuthRoutes);
@@ -2593,7 +2611,7 @@ async function startServer() {
                         }
                     } catch (err) {
                         console.warn(`${c.warn('[CCR]')} Skipped embedded router: ${err.message}`);
-                        console.warn(`${c.warn('[CCR]')} Falling back to ANTHROPIC_BASE_URL from .env`);
+                        console.warn(`${c.warn('[CCR]')} Falling back to the direct proxy from ~/.edgeclaw/config.yaml`);
                     }
                 }
 

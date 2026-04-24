@@ -1050,6 +1050,40 @@ button:disabled {
   gap: 6px;
 }
 
+.project-selector-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.project-selector-card {
+  text-align: left;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  padding: 12px 12px 10px 14px;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s, background 0.15s;
+}
+
+.project-selector-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+  border-color: var(--border-strong);
+}
+
+.project-selector-card.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.project-context-summary {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
 /* ── Board Groups ── */
 
 .board-group {

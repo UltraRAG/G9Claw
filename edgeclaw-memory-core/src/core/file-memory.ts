@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type {
+  GeneralProjectSourceKind,
   MemoryCandidate,
   MemoryEntryEditFields,
   MemoryFileExportRecord,
@@ -22,7 +23,9 @@ import type {
   ProjectIdentityHint,
   ProjectMetaExportRecord,
   ProjectMetaRecord,
+  WorkspaceMemoryMode,
 } from "./types.js";
+import { GENERAL_PROJECT_META_DIR } from "./general-projects.js";
 import { hashText, nowIso } from "./utils/id.js";
 
 const MANIFEST_FILE = "MEMORY.md";
@@ -40,6 +43,7 @@ export const TMP_PROJECT_ID = "_tmp";
 export const CURRENT_PROJECT_ID = "current_project";
 
 export interface FileMemoryStoreOptions {
+  workspaceMode?: WorkspaceMemoryMode;
   manageProjectMeta?: boolean;
   manageProjectFiles?: boolean;
   manageUserProfile?: boolean;
@@ -60,6 +64,7 @@ export interface FileMemoryOverview {
   tmpFeedbackMemories: number;
   tmpProjectMemories: number;
   projectMetaCount: number;
+  generalProjectMetaCount?: number;
   latestMemoryAt?: string;
 }
 
@@ -165,7 +170,7 @@ function parseFrontmatterBlock(raw: string): ParsedMarkdownFile | undefined {
   }
   const type = values.get("type");
   const scope = values.get("scope");
-  if ((type !== "user" && type !== "project" && type !== "feedback")
+  if ((type !== "user" && type !== "project" && type !== "feedback" && type !== "general_project_meta")
     || (scope !== "global" && scope !== "project")) {
     return undefined;
   }
@@ -176,7 +181,11 @@ function parseFrontmatterBlock(raw: string): ParsedMarkdownFile | undefined {
       type,
       scope,
       ...(values.get("project_id") ? { projectId: values.get("project_id") } : {}),
+      ...(values.get("source_kind") ? { sourceKind: values.get("source_kind") as GeneralProjectSourceKind } : {}),
+      ...(values.get("source_workspace_path") ? { sourceWorkspacePath: values.get("source_workspace_path") } : {}),
+      ...(values.get("source_project_id") ? { sourceProjectId: values.get("source_project_id") } : {}),
       updatedAt: values.get("updated_at") ?? nowIso(),
+      ...(values.get("dream_updated_at") ? { dreamUpdatedAt: values.get("dream_updated_at") } : {}),
       ...(values.get("captured_at") ? { capturedAt: values.get("captured_at") } : {}),
       ...(values.get("source_session_key") ? { sourceSessionKey: values.get("source_session_key") } : {}),
       ...(parseBoolean(values.get("deprecated")) !== undefined
@@ -198,7 +207,11 @@ function renderFrontmatter(frontmatter: MemoryFileFrontmatter): string {
     `type: ${frontmatter.type}`,
     `scope: ${frontmatter.scope}`,
     ...(frontmatter.projectId ? [`project_id: ${frontmatter.projectId}`] : []),
+    ...(frontmatter.sourceKind ? [`source_kind: ${frontmatter.sourceKind}`] : []),
+    ...(frontmatter.sourceWorkspacePath ? [`source_workspace_path: ${frontmatter.sourceWorkspacePath}`] : []),
+    ...(frontmatter.sourceProjectId ? [`source_project_id: ${frontmatter.sourceProjectId}`] : []),
     `updated_at: ${frontmatter.updatedAt}`,
+    ...(frontmatter.dreamUpdatedAt ? [`dream_updated_at: ${frontmatter.dreamUpdatedAt}`] : []),
     ...(frontmatter.capturedAt ? [`captured_at: ${frontmatter.capturedAt}`] : []),
     ...(frontmatter.sourceSessionKey ? [`source_session_key: ${frontmatter.sourceSessionKey}`] : []),
     ...(typeof frontmatter.deprecated === "boolean" ? [`deprecated: ${frontmatter.deprecated ? "true" : "false"}`] : []),
@@ -316,9 +329,52 @@ function buildFeedbackBody(candidate: MemoryCandidate): string {
   return `${lines.join("\n").trim()}\n`;
 }
 
+function buildGeneralProjectMetaBody(input: {
+  projectName: string;
+  description: string;
+  status: string;
+  sourceKind?: GeneralProjectSourceKind;
+  sourceWorkspacePath?: string;
+  sourceProjectId?: string;
+}): string {
+  const lines = [
+    "## Summary",
+    normalizeDescription(input.description, input.projectName),
+    "",
+    "## Status",
+    normalizeWhitespace(input.status) || DEFAULT_PROJECT_STATUS,
+    "",
+  ];
+  const sourceNotes = uniqueStrings([
+    input.sourceKind === "workspace_external_mirror" ? "This project mirrors a read-only external workspace project." : "",
+    input.sourceWorkspacePath ? `Source workspace: ${input.sourceWorkspacePath}` : "",
+    input.sourceProjectId ? `Source project id: ${input.sourceProjectId}` : "",
+  ]);
+  if (sourceNotes.length > 0) {
+    lines.push("## Source", ...sourceNotes.map((item) => `- ${item}`), "");
+  }
+  return `${lines.join("\n").trim()}\n`;
+}
+
 function buildRecordBody(candidate: MemoryCandidate): string {
   if (normalizeWhitespace(candidate.body)) {
     return `${candidate.body!.trim()}\n`;
+  }
+  if (candidate.type === "general_project_meta") {
+    return buildGeneralProjectMetaBody({
+      projectName: candidate.name,
+      description: candidate.description,
+      status: candidate.stage || DEFAULT_PROJECT_STATUS,
+      ...((candidate as MemoryCandidate & { sourceKind?: GeneralProjectSourceKind }).sourceKind
+        ? { sourceKind: (candidate as MemoryCandidate & { sourceKind?: GeneralProjectSourceKind }).sourceKind }
+        : {}),
+      ...((candidate as MemoryCandidate & { sourceWorkspacePath?: string }).sourceWorkspacePath
+        ? { sourceWorkspacePath: (candidate as MemoryCandidate & { sourceWorkspacePath?: string }).sourceWorkspacePath }
+        : {}),
+      ...((candidate as MemoryCandidate & { sourceProjectId?: string }).sourceProjectId
+        ? { sourceProjectId: (candidate as MemoryCandidate & { sourceProjectId?: string }).sourceProjectId }
+        : {}),
+    });
   }
   if (candidate.type === "user") return buildUserBody(candidate);
   if (candidate.type === "feedback") return buildFeedbackBody(candidate);
@@ -343,14 +399,30 @@ function candidateDescription(candidate: MemoryCandidate): string {
 }
 
 function buildFrontmatter(candidate: MemoryCandidate, existing?: Partial<MemoryFileFrontmatter>): MemoryFileFrontmatter {
-  const scope = candidate.type === "user" ? "global" : "project";
+  const scope = candidate.type === "user" ? "global" : candidate.scope || "project";
   return {
     name: normalizeWhitespace(candidate.name) || normalizeWhitespace(existing?.name) || "memory-item",
     description: candidateDescription(candidate) || normalizeWhitespace(existing?.description) || "memory-item",
     type: candidate.type,
     scope,
-    ...(scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+    ...(scope === "project" ? { projectId: normalizeWhitespace(candidate.projectId) || normalizeWhitespace(existing?.projectId) || CURRENT_PROJECT_ID } : {}),
+    ...(candidate.type === "general_project_meta" && (candidate as MemoryCandidate & { sourceKind?: GeneralProjectSourceKind }).sourceKind
+      ? { sourceKind: (candidate as MemoryCandidate & { sourceKind?: GeneralProjectSourceKind }).sourceKind }
+      : existing?.sourceKind
+        ? { sourceKind: existing.sourceKind }
+        : {}),
+    ...(candidate.type === "general_project_meta" && (candidate as MemoryCandidate & { sourceWorkspacePath?: string }).sourceWorkspacePath
+      ? { sourceWorkspacePath: (candidate as MemoryCandidate & { sourceWorkspacePath?: string }).sourceWorkspacePath }
+      : existing?.sourceWorkspacePath
+        ? { sourceWorkspacePath: existing.sourceWorkspacePath }
+        : {}),
+    ...(candidate.type === "general_project_meta" && (candidate as MemoryCandidate & { sourceProjectId?: string }).sourceProjectId
+      ? { sourceProjectId: (candidate as MemoryCandidate & { sourceProjectId?: string }).sourceProjectId }
+      : existing?.sourceProjectId
+        ? { sourceProjectId: existing.sourceProjectId }
+        : {}),
     updatedAt: nowIso(),
+    ...(existing?.dreamUpdatedAt ? { dreamUpdatedAt: existing.dreamUpdatedAt } : {}),
     ...(candidate.capturedAt || existing?.capturedAt ? { capturedAt: candidate.capturedAt || existing?.capturedAt } : {}),
     ...(candidate.sourceSessionKey || existing?.sourceSessionKey
       ? { sourceSessionKey: candidate.sourceSessionKey || existing?.sourceSessionKey }
@@ -381,6 +453,30 @@ function mergeCandidates(primary: MemoryCandidate, incoming: MemoryCandidate): M
       why: normalizeWhitespace(incoming.why || primary.why),
       howToApply: normalizeWhitespace(incoming.howToApply || primary.howToApply),
       notes: uniqueStrings([...(primary.notes ?? []), ...(incoming.notes ?? [])]),
+    };
+  }
+  if (primary.type === "general_project_meta") {
+    return {
+      ...primary,
+      projectId: normalizeWhitespace(incoming.projectId || primary.projectId),
+      name: normalizeWhitespace(incoming.name || primary.name),
+      description: normalizeDescription(incoming.description, primary.description),
+      stage: normalizeWhitespace(incoming.stage || primary.stage),
+      ...((incoming as MemoryCandidate & { sourceKind?: GeneralProjectSourceKind }).sourceKind
+        ? { sourceKind: (incoming as MemoryCandidate & { sourceKind?: GeneralProjectSourceKind }).sourceKind }
+        : (primary as MemoryCandidate & { sourceKind?: GeneralProjectSourceKind }).sourceKind
+          ? { sourceKind: (primary as MemoryCandidate & { sourceKind?: GeneralProjectSourceKind }).sourceKind }
+          : {}),
+      ...((incoming as MemoryCandidate & { sourceWorkspacePath?: string }).sourceWorkspacePath
+        ? { sourceWorkspacePath: (incoming as MemoryCandidate & { sourceWorkspacePath?: string }).sourceWorkspacePath }
+        : (primary as MemoryCandidate & { sourceWorkspacePath?: string }).sourceWorkspacePath
+          ? { sourceWorkspacePath: (primary as MemoryCandidate & { sourceWorkspacePath?: string }).sourceWorkspacePath }
+          : {}),
+      ...((incoming as MemoryCandidate & { sourceProjectId?: string }).sourceProjectId
+        ? { sourceProjectId: (incoming as MemoryCandidate & { sourceProjectId?: string }).sourceProjectId }
+        : (primary as MemoryCandidate & { sourceProjectId?: string }).sourceProjectId
+          ? { sourceProjectId: (primary as MemoryCandidate & { sourceProjectId?: string }).sourceProjectId }
+          : {}),
     };
   }
   return {
@@ -483,6 +579,7 @@ function normalizeProjectStatus(value: string | undefined): string {
 }
 
 export class FileMemoryStore {
+  private readonly workspaceMode: WorkspaceMemoryMode;
   private readonly manageProjectMeta: boolean;
   private readonly manageProjectFiles: boolean;
   private readonly manageUserProfile: boolean;
@@ -496,6 +593,7 @@ export class FileMemoryStore {
     private readonly rootDir: string,
     options: FileMemoryStoreOptions = {},
   ) {
+    this.workspaceMode = options.workspaceMode ?? "single";
     this.manageProjectMeta = options.manageProjectMeta ?? true;
     this.manageProjectFiles = options.manageProjectFiles ?? true;
     this.manageUserProfile = options.manageUserProfile ?? true;
@@ -517,6 +615,14 @@ export class FileMemoryStore {
 
   getRootDir(): string {
     return this.rootDir;
+  }
+
+  getWorkspaceMode(): WorkspaceMemoryMode {
+    return this.workspaceMode;
+  }
+
+  isGeneralMode(): boolean {
+    return this.workspaceMode === "general";
   }
 
   getUserProfileRelativePath(): string | null {
@@ -546,6 +652,9 @@ export class FileMemoryStore {
       ensureDir(join(this.rootDir, PROJECT_DIR));
       ensureDir(join(this.rootDir, FEEDBACK_DIR));
     }
+    if (this.manageProjectMeta && this.isGeneralMode()) {
+      ensureDir(join(this.rootDir, GENERAL_PROJECT_META_DIR));
+    }
   }
 
   private resolveRelativePath(relativePath: string): string {
@@ -570,7 +679,11 @@ export class FileMemoryStore {
     if (!parsed) return undefined;
     return {
       ...parsed.frontmatter,
-      ...(parsed.frontmatter.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+      ...(parsed.frontmatter.scope === "project"
+        ? {
+            projectId: normalizeWhitespace(parsed.frontmatter.projectId) || CURRENT_PROJECT_ID,
+          }
+        : {}),
       file: relativePath.split("/").pop() ?? relativePath,
       relativePath,
       absolutePath: this.resolveRelativePath(relativePath),
@@ -598,6 +711,9 @@ export class FileMemoryStore {
 
   private collectAllEntries(): MemoryManifestEntry[] {
     const entries: MemoryManifestEntry[] = [];
+    if (this.manageProjectMeta && this.isGeneralMode()) {
+      entries.push(...this.collectDirectoryRecords(GENERAL_PROJECT_META_DIR));
+    }
     if (this.manageProjectFiles) {
       entries.push(...this.collectDirectoryRecords(PROJECT_DIR));
       entries.push(...this.collectDirectoryRecords(FEEDBACK_DIR));
@@ -613,7 +729,7 @@ export class FileMemoryStore {
   }
 
   private readProjectMetaFile(): ProjectMetaRecord | undefined {
-    if (!this.manageProjectMeta) return undefined;
+    if (!this.manageProjectMeta || this.isGeneralMode()) return undefined;
     return parseProjectMeta(this.projectMetaPath());
   }
 
@@ -640,14 +756,114 @@ export class FileMemoryStore {
     };
   }
 
+  private generalProjectMetaRelativePath(projectId: string, projectName: string): string {
+    const normalizedProjectId = normalizeWhitespace(projectId) || hashText(`${projectName}:${nowIso()}`).slice(0, 12);
+    return join(
+      GENERAL_PROJECT_META_DIR,
+      `${slugify(projectName || normalizedProjectId)}-${normalizedProjectId.slice(0, 12)}.md`,
+    );
+  }
+
+  private toGeneralProjectMetaRecord(record: MemoryFileRecord): ProjectMetaRecord | undefined {
+    if (record.type !== "general_project_meta") return undefined;
+    return {
+      projectId: normalizeWhitespace(record.projectId) || CURRENT_PROJECT_ID,
+      projectName: record.name,
+      description: normalizeDescription(record.description, record.name),
+      status: parseParagraphSection(parseMarkdownSections(record.content).get("status")) || DEFAULT_PROJECT_STATUS,
+      ...(record.sourceKind ? { sourceKind: record.sourceKind } : {}),
+      ...(record.sourceWorkspacePath ? { sourceWorkspacePath: record.sourceWorkspacePath } : {}),
+      ...(record.sourceProjectId ? { sourceProjectId: record.sourceProjectId } : {}),
+      createdAt: record.capturedAt || record.updatedAt,
+      updatedAt: record.updatedAt,
+      ...(record.dreamUpdatedAt ? { dreamUpdatedAt: record.dreamUpdatedAt } : {}),
+      relativePath: record.relativePath,
+      absolutePath: record.absolutePath,
+    };
+  }
+
+  private listGeneralProjectMetaEntries(includeDeprecated = false): MemoryManifestEntry[] {
+    return this.collectAllEntries()
+      .filter((entry) => entry.type === "general_project_meta")
+      .filter((entry) => includeDeprecated || !entry.deprecated);
+  }
+
+  upsertGeneralProjectMeta(input: {
+    projectId?: string;
+    projectName: string;
+    description?: string;
+    status?: string;
+    sourceKind?: GeneralProjectSourceKind;
+    sourceWorkspacePath?: string;
+    sourceProjectId?: string;
+    dreamUpdatedAt?: string;
+  }): ProjectMetaRecord {
+    if (!this.manageProjectMeta || !this.isGeneralMode()) {
+      throw new Error("General project metadata is disabled for this store");
+    }
+    const normalizedProjectId = normalizeWhitespace(input.projectId) || hashText(
+      `${normalizeWhitespace(input.projectName)}:${normalizeWhitespace(input.sourceWorkspacePath)}:${normalizeWhitespace(input.sourceProjectId)}:${nowIso()}`,
+    ).slice(0, 16);
+    const existing = this.listProjectMetas().find((meta) => meta.projectId === normalizedProjectId);
+    const relativePath = existing?.relativePath ?? this.generalProjectMetaRelativePath(normalizedProjectId, input.projectName);
+    const frontmatter: MemoryFileFrontmatter = {
+      name: normalizeWhitespace(input.projectName) || existing?.projectName || DEFAULT_PROJECT_NAME,
+      description: normalizeDescription(input.description, existing?.description || input.projectName),
+      type: "general_project_meta",
+      scope: "project",
+      projectId: normalizedProjectId,
+      ...(input.sourceKind || existing?.sourceKind ? { sourceKind: input.sourceKind || existing?.sourceKind } : {}),
+      ...(input.sourceWorkspacePath || existing?.sourceWorkspacePath
+        ? { sourceWorkspacePath: input.sourceWorkspacePath || existing?.sourceWorkspacePath }
+        : {}),
+      ...(input.sourceProjectId || existing?.sourceProjectId
+        ? { sourceProjectId: input.sourceProjectId || existing?.sourceProjectId }
+        : {}),
+      updatedAt: nowIso(),
+      ...(existing?.createdAt ? { capturedAt: existing.createdAt } : {}),
+      ...(normalizeWhitespace(input.dreamUpdatedAt || existing?.dreamUpdatedAt)
+        ? { dreamUpdatedAt: normalizeWhitespace(input.dreamUpdatedAt || existing?.dreamUpdatedAt) }
+        : {}),
+    };
+    const record = this.writeRecord({
+      relativePath,
+      frontmatter,
+      body: buildGeneralProjectMetaBody({
+        projectName: frontmatter.name,
+        description: frontmatter.description,
+        status: normalizeProjectStatus(input.status || existing?.status || DEFAULT_PROJECT_STATUS),
+        ...(frontmatter.sourceKind ? { sourceKind: frontmatter.sourceKind } : {}),
+        ...(frontmatter.sourceWorkspacePath ? { sourceWorkspacePath: frontmatter.sourceWorkspacePath } : {}),
+        ...(frontmatter.sourceProjectId ? { sourceProjectId: frontmatter.sourceProjectId } : {}),
+      }),
+    });
+    return this.toGeneralProjectMetaRecord(record)!;
+  }
+
   upsertProjectMeta(input: {
+    projectId?: string;
     projectName?: string;
     description?: string;
     status?: string;
+    sourceKind?: GeneralProjectSourceKind;
+    sourceWorkspacePath?: string;
+    sourceProjectId?: string;
     dreamUpdatedAt?: string;
   } = {}): ProjectMetaRecord {
     if (!this.manageProjectMeta) {
       throw new Error("Project metadata is disabled for this store");
+    }
+    if (this.isGeneralMode()) {
+      return this.upsertGeneralProjectMeta({
+        projectId: input.projectId,
+        projectName: normalizeWhitespace(input.projectName) || DEFAULT_PROJECT_NAME,
+        description: input.description,
+        status: input.status,
+        ...(input.sourceKind ? { sourceKind: input.sourceKind } : {}),
+        ...(input.sourceWorkspacePath ? { sourceWorkspacePath: input.sourceWorkspacePath } : {}),
+        ...(input.sourceProjectId ? { sourceProjectId: input.sourceProjectId } : {}),
+        ...(input.dreamUpdatedAt ? { dreamUpdatedAt: input.dreamUpdatedAt } : {}),
+      });
     }
     const existing = this.readProjectMetaFile();
     const seed = this.buildProjectMetaSeed();
@@ -677,10 +893,19 @@ export class FileMemoryStore {
   }
 
   ensureProjectMeta(input: {
+    projectId?: string;
     projectName?: string;
     description?: string;
     status?: string;
+    sourceKind?: GeneralProjectSourceKind;
+    sourceWorkspacePath?: string;
+    sourceProjectId?: string;
   } = {}): ProjectMetaRecord {
+    if (this.isGeneralMode()) {
+      const normalizedProjectId = normalizeWhitespace(input.projectId);
+      const existing = normalizedProjectId ? this.getProjectMeta(normalizedProjectId) : undefined;
+      return existing ?? this.upsertProjectMeta(input);
+    }
     return this.readProjectMetaFile() ?? this.upsertProjectMeta(input);
   }
 
@@ -705,7 +930,7 @@ export class FileMemoryStore {
       return join(directory, `${slugify(candidate.name)}-${hashText(seed).slice(0, 10)}.md`);
     }
     const directory = candidate.type === "feedback" ? FEEDBACK_DIR : PROJECT_DIR;
-    const seed = `${candidate.type}:${candidate.name}:${candidate.description}:${candidate.capturedAt ?? ""}:${candidate.sourceSessionKey ?? nowIso()}`;
+    const seed = `${candidate.type}:${candidate.projectId ?? ""}:${candidate.name}:${candidate.description}:${candidate.capturedAt ?? ""}:${candidate.sourceSessionKey ?? nowIso()}`;
     return join(directory, `${slugify(candidate.name)}-${hashText(seed).slice(0, 10)}.md`);
   }
 
@@ -717,6 +942,7 @@ export class FileMemoryStore {
 
   private buildManifest(): string {
     const projectMeta = this.readProjectMetaFile();
+    const generalProjectMetas = this.isGeneralMode() ? this.listProjectMetas() : [];
     const allEntries = this.collectAllEntries();
     const active = allEntries.filter((entry) => !entry.deprecated);
     const deprecated = allEntries.filter((entry) => entry.deprecated);
@@ -734,6 +960,13 @@ export class FileMemoryStore {
         ? [
             "## Current Project Meta",
             `- [${projectMeta.projectName}](${PROJECT_META_FILE}) — ${projectMeta.description}`,
+            "",
+          ]
+        : []),
+      ...(generalProjectMetas.length > 0
+        ? [
+            "## General Projects",
+            ...generalProjectMetas.map((meta) => `- [${meta.projectName}](${meta.relativePath}) — ${meta.description}`),
             "",
           ]
         : []),
@@ -773,7 +1006,7 @@ export class FileMemoryStore {
   }
 
   listMemoryEntries(options: {
-    kinds?: Array<"user" | "feedback" | "project">;
+    kinds?: Array<"user" | "feedback" | "project" | "general_project_meta">;
     query?: string;
     limit?: number;
     offset?: number;
@@ -783,12 +1016,18 @@ export class FileMemoryStore {
     includeDeprecated?: boolean;
   } = {}): MemoryManifestEntry[] {
     const normalizedProjectId = normalizeWhitespace(options.projectId);
-    if (normalizedProjectId && normalizedProjectId !== CURRENT_PROJECT_ID) return [];
+    if (normalizedProjectId && !this.isGeneralMode() && normalizedProjectId !== CURRENT_PROJECT_ID) return [];
     const kinds = new Set(options.kinds ?? ["user", "feedback", "project"]);
     const normalizedQuery = normalizeWhitespace(options.query).toLowerCase();
     const filtered = this.collectAllEntries()
       .filter((entry) => kinds.has(entry.type))
       .filter((entry) => !options.scope || entry.scope === options.scope)
+      .filter((entry) => {
+        if (!normalizedProjectId) return true;
+        if (entry.type === "general_project_meta") return entry.projectId === normalizedProjectId;
+        if (entry.scope !== "project") return true;
+        return (entry.projectId || CURRENT_PROJECT_ID) === normalizedProjectId;
+      })
       .filter((entry) => options.includeDeprecated || !entry.deprecated)
       .filter((entry) => {
         if (!normalizedQuery) return true;
@@ -801,7 +1040,7 @@ export class FileMemoryStore {
   }
 
   countMemoryEntries(options: {
-    kinds?: Array<"user" | "feedback" | "project">;
+    kinds?: Array<"user" | "feedback" | "project" | "general_project_meta">;
     query?: string;
     scope?: "global" | "project";
     projectId?: string;
@@ -866,29 +1105,42 @@ export class FileMemoryStore {
   }
 
   upsertCandidate(candidate: MemoryCandidate): MemoryFileRecord {
+    let resolvedCandidate = candidate;
     if (candidate.type !== "user" && this.manageProjectMeta) {
-      this.ensureProjectMeta({
-        ...(candidate.type === "project" ? { projectName: candidate.name } : {}),
-        description: candidate.description,
-      });
+      if (this.isGeneralMode()) {
+        const projectId = normalizeWhitespace(candidate.projectId)
+          || this.ensureProjectMeta({
+            projectName: candidate.type === "project" ? candidate.name : candidate.description || candidate.name,
+            description: candidate.description,
+          }).projectId;
+        resolvedCandidate = {
+          ...candidate,
+          projectId,
+        };
+      } else {
+        this.ensureProjectMeta({
+          ...(candidate.type === "project" ? { projectName: candidate.name } : {}),
+          description: candidate.description,
+        });
+      }
     }
-    const existing = this.findExistingRecordForCandidate(candidate);
-    const frontmatter = buildFrontmatter(candidate, existing);
-    const relativePath = existing?.relativePath ?? this.nextRecordRelativePath(candidate);
+    const existing = this.findExistingRecordForCandidate(resolvedCandidate);
+    const frontmatter = buildFrontmatter(resolvedCandidate, existing);
+    const relativePath = existing?.relativePath ?? this.nextRecordRelativePath(resolvedCandidate);
     const record = this.writeRecord({
       relativePath,
       frontmatter,
-      body: buildRecordBody(candidate),
+      body: buildRecordBody(resolvedCandidate),
     });
-    if (candidate.type === "project") {
+    if (resolvedCandidate.type === "project" && !this.isGeneralMode()) {
       const projectMeta = this.readProjectMetaFile();
       if (projectMeta) {
         const autoSeedLike = normalizeWhitespace(projectMeta.projectName).toLowerCase() === DEFAULT_PROJECT_NAME.toLowerCase()
           || /workspace memory$/i.test(projectMeta.description)
           || normalizeWhitespace(projectMeta.description).toLowerCase() === "current project memory.";
         this.upsertProjectMeta({
-          ...(autoSeedLike ? { projectName: candidate.name } : {}),
-          ...(autoSeedLike && candidate.description ? { description: candidate.description } : {}),
+          ...(autoSeedLike ? { projectName: resolvedCandidate.name } : {}),
+          ...(autoSeedLike && resolvedCandidate.description ? { description: resolvedCandidate.description } : {}),
           status: projectMeta.status,
         });
       }
@@ -898,6 +1150,21 @@ export class FileMemoryStore {
 
   toCandidate(record: MemoryFileRecord): MemoryCandidate {
     const sections = parseMarkdownSections(record.content);
+    if (record.type === "general_project_meta") {
+      return {
+        type: "general_project_meta",
+        scope: "project",
+        projectId: record.projectId,
+        name: record.name,
+        description: record.description,
+        body: record.content,
+        ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
+        ...(record.sourceKind ? { sourceKind: record.sourceKind } : {}),
+        ...(record.sourceWorkspacePath ? { sourceWorkspacePath: record.sourceWorkspacePath } : {}),
+        ...(record.sourceProjectId ? { sourceProjectId: record.sourceProjectId } : {}),
+        stage: parseParagraphSection(sections.get("status")),
+      };
+    }
     if (record.type === "user") {
       const identityFacts = parseFactSection(sections.get("身份背景"));
       return {
@@ -916,6 +1183,7 @@ export class FileMemoryStore {
       return {
         type: "feedback",
         scope: "project",
+        ...(record.projectId ? { projectId: record.projectId } : {}),
         name: record.name,
         description: record.description,
         body: record.content,
@@ -930,6 +1198,7 @@ export class FileMemoryStore {
     return {
       type: "project",
       scope: "project",
+      ...(record.projectId ? { projectId: record.projectId } : {}),
       name: record.name,
       description: record.description,
       body: record.content,
@@ -977,7 +1246,7 @@ export class FileMemoryStore {
       relativePath: input.relativePath,
       frontmatter: {
         ...existing,
-        ...(existing.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+        ...(existing.scope === "project" && existing.projectId ? { projectId: existing.projectId } : {}),
         name: next.name,
         description: candidateDescription(next),
         updatedAt: nowIso(),
@@ -995,7 +1264,7 @@ export class FileMemoryStore {
         relativePath,
         frontmatter: {
           ...record,
-          ...(record.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+          ...(record.scope === "project" && record.projectId ? { projectId: record.projectId } : {}),
           updatedAt: nowIso(),
           deprecated: true,
         },
@@ -1015,7 +1284,7 @@ export class FileMemoryStore {
         relativePath,
         frontmatter: {
           ...record,
-          ...(record.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+          ...(record.scope === "project" && record.projectId ? { projectId: record.projectId } : {}),
           updatedAt: nowIso(),
           deprecated: false,
         },
@@ -1039,6 +1308,41 @@ export class FileMemoryStore {
     return { mutatedIds, deletedProjectIds: [] };
   }
 
+  reassignProjectEntries(input: {
+    fromProjectId: string;
+    toProjectId: string;
+  }): { mutatedIds: string[] } {
+    const fromProjectId = normalizeWhitespace(input.fromProjectId);
+    const toProjectId = normalizeWhitespace(input.toProjectId);
+    if (!fromProjectId || !toProjectId || fromProjectId === toProjectId) {
+      return { mutatedIds: [] };
+    }
+    const entries = this.listMemoryEntries({
+      kinds: ["project", "feedback"],
+      scope: "project",
+      projectId: fromProjectId,
+      includeDeprecated: true,
+      limit: 5000,
+      offset: 0,
+    });
+    const mutatedIds: string[] = [];
+    for (const entry of entries) {
+      const record = this.getMemoryRecordsByIds([entry.relativePath], 5000)[0];
+      if (!record) continue;
+      this.writeRecord({
+        relativePath: entry.relativePath,
+        frontmatter: {
+          ...record,
+          projectId: toProjectId,
+          updatedAt: nowIso(),
+        },
+        body: record.content,
+      });
+      mutatedIds.push(entry.relativePath);
+    }
+    return { mutatedIds };
+  }
+
   archiveTmpEntries(_: {
     relativePaths: string[];
     targetProjectId?: string;
@@ -1049,12 +1353,28 @@ export class FileMemoryStore {
 
   listProjectMetas(_options: { includeTmp?: boolean } = {}): ProjectMetaRecord[] {
     if (!this.manageProjectMeta) return [];
+    if (this.isGeneralMode()) {
+      const ids = this.listGeneralProjectMetaEntries().map((entry) => entry.relativePath);
+      return this.getMemoryRecordsByIds(ids, 5000)
+        .map((record) => this.toGeneralProjectMetaRecord(record))
+        .filter((record): record is ProjectMetaRecord => Boolean(record));
+    }
     const meta = this.readProjectMetaFile();
     return meta ? [meta] : [];
   }
 
   listProjectIdentityHints(_options: { includeTmp?: boolean; limit?: number } = {}): ProjectIdentityHint[] {
     if (!this.manageProjectMeta) return [];
+    if (this.isGeneralMode()) {
+      return this.listProjectMetas().map((projectMeta) => ({
+        identityKey: projectMeta.projectId,
+        projectId: projectMeta.projectId,
+        projectName: projectMeta.projectName,
+        description: projectMeta.description,
+        updatedAt: projectMeta.updatedAt,
+        scope: "formal",
+      }));
+    }
     const meta = this.readProjectMetaFile();
     if (!meta) return [];
     const projectMeta = meta;
@@ -1071,6 +1391,9 @@ export class FileMemoryStore {
   getProjectMeta(projectId = CURRENT_PROJECT_ID): ProjectMetaRecord | undefined {
     if (!this.manageProjectMeta) return undefined;
     const normalized = normalizeWhitespace(projectId);
+    if (this.isGeneralMode()) {
+      return this.listProjectMetas().find((meta) => meta.projectId === normalized);
+    }
     if (normalized && normalized !== CURRENT_PROJECT_ID) return undefined;
     return this.readProjectMetaFile();
   }
@@ -1078,8 +1401,13 @@ export class FileMemoryStore {
   hasVisibleProjectMemory(projectId = CURRENT_PROJECT_ID): boolean {
     if (!this.manageProjectFiles) return false;
     const normalized = normalizeWhitespace(projectId);
-    if (normalized && normalized !== CURRENT_PROJECT_ID) return false;
-    return this.collectAllEntries().some((entry) => entry.scope === "project" && !entry.deprecated);
+    if (normalized && !this.isGeneralMode() && normalized !== CURRENT_PROJECT_ID) return false;
+    return this.collectAllEntries().some((entry) => (
+      entry.scope === "project"
+      && entry.type !== "general_project_meta"
+      && !entry.deprecated
+      && (!normalized || (entry.projectId || CURRENT_PROJECT_ID) === normalized)
+    ));
   }
 
   listTmpEntries(_limit = 500): MemoryManifestEntry[] {
@@ -1096,6 +1424,25 @@ export class FileMemoryStore {
       throw new Error("Project metadata is disabled for this store");
     }
     const normalizedProjectId = normalizeWhitespace(input.projectId);
+    if (this.isGeneralMode()) {
+      if (!normalizedProjectId) {
+        throw new Error("projectId is required for General project metadata edits");
+      }
+      const existing = this.getProjectMeta(normalizedProjectId);
+      if (!existing) {
+        throw new Error(`Unknown projectId: ${input.projectId}`);
+      }
+      return this.upsertGeneralProjectMeta({
+        projectId: normalizedProjectId,
+        projectName: input.projectName,
+        description: input.description,
+        status: input.status,
+        ...(existing.sourceKind ? { sourceKind: existing.sourceKind } : {}),
+        ...(existing.sourceWorkspacePath ? { sourceWorkspacePath: existing.sourceWorkspacePath } : {}),
+        ...(existing.sourceProjectId ? { sourceProjectId: existing.sourceProjectId } : {}),
+        ...(existing.dreamUpdatedAt ? { dreamUpdatedAt: existing.dreamUpdatedAt } : {}),
+      });
+    }
     if (normalizedProjectId && normalizedProjectId !== CURRENT_PROJECT_ID) {
       throw new Error(`Unknown projectId: ${input.projectId}`);
     }
@@ -1110,7 +1457,7 @@ export class FileMemoryStore {
     memoryFiles: MemoryFileExportRecord[];
     projectMetas: ProjectMetaExportRecord[];
   } {
-    const projectMeta = this.readProjectMetaFile();
+    const projectMetas = this.listProjectMetas();
     return {
       memoryFiles: this.getMemoryRecordsByIds(
         this.collectAllEntries().map((entry) => entry.relativePath),
@@ -1120,8 +1467,12 @@ export class FileMemoryStore {
         description: record.description,
         type: record.type,
         scope: record.scope,
-        ...(record.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+        ...(record.scope === "project" && record.projectId ? { projectId: record.projectId } : {}),
+        ...(record.sourceKind ? { sourceKind: record.sourceKind } : {}),
+        ...(record.sourceWorkspacePath ? { sourceWorkspacePath: record.sourceWorkspacePath } : {}),
+        ...(record.sourceProjectId ? { sourceProjectId: record.sourceProjectId } : {}),
         updatedAt: record.updatedAt,
+        ...(record.dreamUpdatedAt ? { dreamUpdatedAt: record.dreamUpdatedAt } : {}),
         ...(record.capturedAt ? { capturedAt: record.capturedAt } : {}),
         ...(record.sourceSessionKey ? { sourceSessionKey: record.sourceSessionKey } : {}),
         ...(typeof record.deprecated === "boolean" ? { deprecated: record.deprecated } : {}),
@@ -1130,18 +1481,16 @@ export class FileMemoryStore {
         relativePath: record.relativePath,
         content: record.content,
       })),
-      projectMetas: projectMeta
-        ? [{
-            projectId: projectMeta.projectId,
-            projectName: projectMeta.projectName,
-            description: projectMeta.description,
-            status: projectMeta.status,
-            createdAt: projectMeta.createdAt,
-            updatedAt: projectMeta.updatedAt,
-            ...(projectMeta.dreamUpdatedAt ? { dreamUpdatedAt: projectMeta.dreamUpdatedAt } : {}),
-            relativePath: PROJECT_META_FILE,
-          }]
-        : [],
+      projectMetas: projectMetas.map((projectMeta) => ({
+        projectId: projectMeta.projectId,
+        projectName: projectMeta.projectName,
+        description: projectMeta.description,
+        status: projectMeta.status,
+        createdAt: projectMeta.createdAt,
+        updatedAt: projectMeta.updatedAt,
+        ...(projectMeta.dreamUpdatedAt ? { dreamUpdatedAt: projectMeta.dreamUpdatedAt } : {}),
+        relativePath: projectMeta.relativePath,
+      })),
     };
   }
 
@@ -1151,7 +1500,7 @@ export class FileMemoryStore {
     }
     const files = [
       ...(this.enableManifest ? [MANIFEST_FILE] : []),
-      ...(this.readProjectMetaFile() ? [PROJECT_META_FILE] : []),
+      ...(!this.isGeneralMode() && this.readProjectMetaFile() ? [PROJECT_META_FILE] : []),
       ...this.collectAllEntries().map((entry) => entry.relativePath),
     ];
     return files.map((relativePath) => ({
@@ -1171,6 +1520,7 @@ export class FileMemoryStore {
   getOverview(lastDreamAt?: string): FileMemoryOverview {
     const entries = this.collectAllEntries();
     const activeEntries = entries.filter((entry) => !entry.deprecated);
+    const generalProjectMetas = activeEntries.filter((entry) => entry.type === "general_project_meta");
     const changedFilesSinceLastDream = !lastDreamAt
       ? activeEntries.length
       : activeEntries.filter((entry) => entry.updatedAt > lastDreamAt).length;
@@ -1183,7 +1533,8 @@ export class FileMemoryStore {
       tmpTotalFiles: 0,
       tmpFeedbackMemories: 0,
       tmpProjectMemories: 0,
-      projectMetaCount: this.readProjectMetaFile() ? 1 : 0,
+      projectMetaCount: this.isGeneralMode() ? generalProjectMetas.length : this.readProjectMetaFile() ? 1 : 0,
+      ...(this.isGeneralMode() ? { generalProjectMetaCount: generalProjectMetas.length } : {}),
       ...(activeEntries[0]?.updatedAt ? { latestMemoryAt: activeEntries[0].updatedAt } : {}),
     };
   }
@@ -1202,7 +1553,7 @@ export class FileMemoryStore {
     deletedFiles: string[];
   } {
     const groups = new Map<string, MemoryManifestEntry[]>();
-    for (const entry of entries.filter((item) => !item.deprecated && item.type !== "user")) {
+    for (const entry of entries.filter((item) => !item.deprecated && item.type !== "user" && item.type !== "general_project_meta")) {
       const key = `${entry.type}:${slugify(entry.name)}`;
       const bucket = groups.get(key) ?? [];
       bucket.push(entry);
@@ -1229,7 +1580,7 @@ export class FileMemoryStore {
         relativePath: primary.relativePath,
         frontmatter: {
           ...primary,
-          ...(primary.scope === "project" ? { projectId: CURRENT_PROJECT_ID } : {}),
+          ...(primary.scope === "project" && primary.projectId ? { projectId: primary.projectId } : {}),
           updatedAt: nowIso(),
           description: candidateDescription(mergedCandidate),
           dreamAttempts: typeof primary.dreamAttempts === "number" ? primary.dreamAttempts + 1 : 1,

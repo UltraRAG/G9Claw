@@ -112,7 +112,17 @@ export declare class EdgeClawMemoryService {
     get(ids: string[], maxLines?: number): import("./core/types.js").MemoryFileRecord[];
     getUserSummary(): import("./core/types.js").MemoryUserSummary;
     getProjectMeta(): import("./core/types.js").ProjectMetaRecord | undefined;
+    getWorkspaceMode(): import("./core/types.js").WorkspaceMemoryMode;
+    listReadableProjectCatalog(): import("./core/types.js").ReadableProjectCatalogEntry[];
+    getReadableProject(logicalProjectId: string): import("./core/types.js").ReadableProjectCatalogEntry | undefined;
+    listReadableProjectEntries(logicalProjectId: string, options?: {
+        kinds?: Array<"project" | "feedback">;
+        includeDeprecated?: boolean;
+        query?: string;
+        includeExternal?: boolean;
+    }): import("./core/types.js").MemoryManifestEntry[];
     updateProjectMeta(input: {
+        projectId?: string;
         projectName: string;
         description: string;
         status: string;

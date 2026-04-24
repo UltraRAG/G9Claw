@@ -630,6 +630,7 @@ export class EdgeClawMemoryService {
     this.repository = new MemoryRepository(this.dbPath, {
       memoryDir: this.memoryDir,
       globalRootDir: join(rootDir, "global"),
+      workspaceDir: this.workspaceDir,
     });
     this.repository.setPipelineState("workspaceDir", this.workspaceDir);
     this.extractor = new LlmMemoryExtractor(
@@ -986,7 +987,32 @@ export class EdgeClawMemoryService {
     return this.repository.getProjectMeta();
   }
 
+  getWorkspaceMode() {
+    return this.repository.getWorkspaceMode();
+  }
+
+  listReadableProjectCatalog() {
+    return this.repository.listReadableProjectCatalog();
+  }
+
+  getReadableProject(logicalProjectId: string) {
+    return this.repository.getReadableProject(logicalProjectId);
+  }
+
+  listReadableProjectEntries(
+    logicalProjectId: string,
+    options: {
+      kinds?: Array<"project" | "feedback">;
+      includeDeprecated?: boolean;
+      query?: string;
+      includeExternal?: boolean;
+    } = {},
+  ) {
+    return this.repository.listReadableProjectEntries(logicalProjectId, options);
+  }
+
   updateProjectMeta(input: {
+    projectId?: string;
     projectName: string;
     description: string;
     status: string;

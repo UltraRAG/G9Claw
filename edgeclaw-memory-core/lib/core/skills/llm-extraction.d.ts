@@ -35,6 +35,9 @@ export interface LlmDreamFileProjectMetaInput {
     status: string;
     updatedAt: string;
     dreamUpdatedAt?: string;
+    sourceKind?: string;
+    sourceWorkspacePath?: string;
+    sourceProjectId?: string;
 }
 export interface LlmDreamFileRecordInput {
     entryId: string;
@@ -125,6 +128,21 @@ export interface LlmDreamFileProjectRewriteOutput {
     };
     files: LlmDreamFileProjectRewriteOutputFile[];
     deletedEntryIds: string[];
+}
+export interface LlmGeneralProjectMetaMergeInput {
+    projectMetas: LlmDreamFileProjectMetaInput[];
+    agentId?: string;
+    timeoutMs?: number;
+    debugTrace?: PromptDebugSink;
+}
+export interface LlmGeneralProjectMetaMergeGroup {
+    keeperProjectId: string;
+    duplicateProjectIds: string[];
+    reason: string;
+}
+export interface LlmGeneralProjectMetaMergeOutput {
+    summary: string;
+    mergeGroups: LlmGeneralProjectMetaMergeGroup[];
 }
 export interface LlmDreamClusterHeaderInput {
     relativePath: string;
@@ -241,6 +259,7 @@ export declare class LlmMemoryExtractor {
     }): Promise<MemoryCandidate | null>;
     planDreamClusters(input: LlmDreamClusterPlanInput): Promise<LlmDreamClusterPlanOutput>;
     refineDreamCluster(input: LlmDreamClusterRefineInput): Promise<LlmDreamClusterRefineOutput>;
+    planGeneralProjectMetaMerges(input: LlmGeneralProjectMetaMergeInput): Promise<LlmGeneralProjectMetaMergeOutput>;
     reviewDreamProjectMeta(input: LlmDreamProjectMetaReviewInput): Promise<LlmDreamProjectMetaReviewOutput>;
     planDreamFileMemory(input: LlmDreamFileGlobalPlanInput): Promise<LlmDreamFileGlobalPlanOutput>;
     rewriteDreamFileProject(input: LlmDreamFileProjectRewriteInput): Promise<LlmDreamFileProjectRewriteOutput>;
@@ -255,10 +274,25 @@ export declare class LlmMemoryExtractor {
         query: string;
         recentUserMessages?: MemoryMessage[];
         shortlist: ProjectShortlistCandidate[];
+        allowEmpty?: boolean;
         agentId?: string;
         timeoutMs?: number;
         debugTrace?: PromptDebugSink;
     }): Promise<{
+        projectId?: string;
+        reason?: string;
+    }>;
+    selectIndexProject(input: {
+        candidate: MemoryCandidate;
+        candidatePreview: string;
+        focusTurn: MemoryMessage;
+        recentUserMessages?: MemoryMessage[];
+        shortlist: ProjectShortlistCandidate[];
+        agentId?: string;
+        timeoutMs?: number;
+        debugTrace?: PromptDebugSink;
+    }): Promise<{
+        decision: "attach_existing" | "create_new";
         projectId?: string;
         reason?: string;
     }>;

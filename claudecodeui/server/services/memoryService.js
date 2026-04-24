@@ -9,6 +9,10 @@ import {
   hashText,
 } from '../../../edgeclaw-memory-core/lib/index.js';
 import { extractProjectDirectory } from '../projects.js';
+import {
+  buildMemoryDefaults,
+  readEdgeClawConfigFile,
+} from './edgeclawConfig.js';
 
 const MEMORY_ROOT_DIR = path.join(os.homedir(), '.edgeclaw', 'memory');
 const MEMORY_WORKSPACES_ROOT = path.join(MEMORY_ROOT_DIR, 'workspaces');
@@ -33,11 +37,18 @@ function resolveWorkspaceDataDir(projectPath) {
 }
 
 function buildServiceForDataDir(dataDir, workspaceDir = dataDir) {
+  let memoryDefaults = {};
+  try {
+    memoryDefaults = buildMemoryDefaults(readEdgeClawConfigFile().config);
+  } catch {
+    memoryDefaults = {};
+  }
   return new EdgeClawMemoryService({
     workspaceDir,
     dbPath: path.join(dataDir, 'control.sqlite'),
     memoryDir: path.join(dataDir, 'memory'),
     source: 'claudecodeui',
+    ...memoryDefaults,
   });
 }
 
@@ -374,6 +385,14 @@ export async function rollbackLastMemoryDream(service, dataDir) {
 }
 
 export async function runMemorySchedulerCycle() {
+  try {
+    if (!readEdgeClawConfigFile().config.memory?.enabled) {
+      return null;
+    }
+  } catch {
+    // If config cannot be read, keep the scheduler's default enabled behavior.
+  }
+
   if (schedulerCyclePromise) {
     return schedulerCyclePromise;
   }
@@ -395,6 +414,14 @@ export async function runMemorySchedulerCycle() {
 }
 
 export function startMemoryScheduler() {
+  try {
+    if (!readEdgeClawConfigFile().config.memory?.enabled) {
+      return;
+    }
+  } catch {
+    // If config cannot be read, keep the scheduler's default enabled behavior.
+  }
+
   if (schedulerTimer) {
     return;
   }
