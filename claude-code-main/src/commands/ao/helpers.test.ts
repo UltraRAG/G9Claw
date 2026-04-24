@@ -1,12 +1,47 @@
-import { expect, test } from 'bun:test'
+import { beforeEach, expect, mock, test } from 'bun:test'
 import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import {
+import { asSessionId } from '../../types/ids.js'
+import { readDiscoveryPlanIndex } from '../../utils/alwaysOnDiscoveryPlans.js'
+import type { DaemonListedCronTask } from '../../daemon/types.js'
+
+let mockProjectRoot = '/tmp/mock-project-root'
+let mockSessionId = asSessionId('00000000-0000-0000-0000-000000000000')
+let mockRuntimeTasks: DaemonListedCronTask[] = []
+
+mock.module('../../bootstrap/state.js', () => ({
+  getProjectRoot: () => mockProjectRoot,
+  getSessionId: () => mockSessionId,
+}))
+
+mock.module('../../daemon/client.js', () => ({
+  requestCronDaemon: async (request: { type: string }) => {
+    if (request.type === 'list_tasks') {
+      return {
+        ok: true as const,
+        data: {
+          type: 'list_tasks' as const,
+          tasks: mockRuntimeTasks,
+        },
+      }
+    }
+    throw new Error(`Unexpected mocked daemon request: ${request.type}`)
+  },
+}))
+
+const {
+  getAoCronJobStatus,
+  listAoCronJobs,
   parseAoArgs,
   prepareAoDiscoveryPlanExecution,
-} from './helpers.js'
-import { readDiscoveryPlanIndex } from '../../utils/alwaysOnDiscoveryPlans.js'
+} = await import('./helpers.js')
+
+beforeEach(() => {
+  mockProjectRoot = `/tmp/mock-project-root-${Date.now()}`
+  mockSessionId = asSessionId('00000000-0000-0000-0000-000000000000')
+  mockRuntimeTasks = []
+})
 
 async function writeDiscoveryPlan(
   projectRoot: string,
@@ -42,6 +77,19 @@ E
 ## Approval And Execution
 F
 `,
+    'utf8',
+  )
+}
+
+async function writeScheduledTasks(
+  projectRoot: string,
+  tasks: Array<Record<string, unknown>>,
+): Promise<void> {
+  const claudeDir = join(projectRoot, '.claude')
+  await mkdir(claudeDir, { recursive: true })
+  await writeFile(
+    join(claudeDir, 'scheduled_tasks.json'),
+    `${JSON.stringify({ tasks }, null, 2)}\n`,
     'utf8',
   )
 }
@@ -166,4 +214,101 @@ test('prepareAoDiscoveryPlanExecution marks the plan running and builds a prompt
   } finally {
     await rm(projectRoot, { recursive: true, force: true })
   }
+})
+
+test('listAoCronJobs includes daemon-only session cron tasks', async () => {
+  mockRuntimeTasks = [
+    {
+      id: 'cron-session-1234',
+      cron: '0 0 1 1 *',
+      prompt: 'Review daemon-backed cron',
+      createdAt: Date.now(),
+      durable: false,
+      originSessionId: mockSessionId,
+      running: false,
+    },
+  ]
+
+  const jobs = await listAoCronJobs()
+
+  expect(jobs).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: 'cron-session-1234',
+        prompt: 'Review daemon-backed cron',
+        durable: false,
+        status: 'scheduled',
+      }),
+    ]),
+  )
+})
+
+test('listAoCronJobs merges durable and daemon session cron tasks', async () => {
+  await writeScheduledTasks(mockProjectRoot, [
+    {
+      id: 'cron-durable-1234',
+      cron: '0 * * * *',
+      prompt: 'Check durable queue depth',
+      createdAt: Date.now() - 1_000,
+      recurring: true,
+      originSessionId: mockSessionId,
+    },
+  ])
+  mockRuntimeTasks = [
+    {
+      id: 'cron-durable-1234',
+      cron: '0 * * * *',
+      prompt: 'Check durable queue depth',
+      createdAt: Date.now() - 1_000,
+      recurring: true,
+      durable: true,
+      originSessionId: mockSessionId,
+      running: false,
+    },
+    {
+      id: 'cron-session-5678',
+      cron: '0 0 1 1 *',
+      prompt: 'Check daemon session queue depth',
+      createdAt: Date.now(),
+      durable: false,
+      originSessionId: mockSessionId,
+      running: false,
+    },
+  ]
+
+  const jobs = await listAoCronJobs()
+  const jobsById = new Map(jobs.map(job => [job.id, job]))
+
+  expect(jobsById.get('cron-durable-1234')).toMatchObject({
+    id: 'cron-durable-1234',
+    status: 'scheduled',
+  })
+  expect(jobsById.get('cron-session-5678')).toMatchObject({
+    id: 'cron-session-5678',
+    durable: false,
+    status: 'scheduled',
+  })
+})
+
+test('getAoCronJobStatus finds daemon-only session cron tasks', async () => {
+  mockRuntimeTasks = [
+    {
+      id: 'cron-session-status',
+      cron: '0 0 1 1 *',
+      prompt: 'Inspect daemon-only status',
+      createdAt: Date.now(),
+      durable: false,
+      originSessionId: mockSessionId,
+      running: false,
+    },
+  ]
+
+  const job = await getAoCronJobStatus('cron-session-status')
+
+  expect(job).toMatchObject({
+    id: 'cron-session-status',
+    prompt: 'Inspect daemon-only status',
+    durable: false,
+    status: 'scheduled',
+  })
 })

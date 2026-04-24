@@ -163,6 +163,24 @@ async function listRuntimeCronTasks(): Promise<Map<string, DaemonListedCronTask>
   return new Map(response.data.tasks.map(task => [task.id, task]))
 }
 
+function mergeAoCronTasksById(
+  tasks: readonly CronTask[],
+  runtimeTasks: ReadonlyMap<string, DaemonListedCronTask>,
+): CronTask[] {
+  const merged = new Map<string, CronTask>(tasks.map(task => [task.id, task]))
+
+  for (const runtimeTask of runtimeTasks.values()) {
+    if (merged.has(runtimeTask.id)) {
+      continue
+    }
+
+    const { running: _running, ...task } = runtimeTask
+    merged.set(task.id, task)
+  }
+
+  return [...merged.values()]
+}
+
 async function readCronTranscriptSummary(
   task: CronTask,
 ): Promise<{ latestSummary?: string; lastActivity?: string }> {
@@ -268,9 +286,10 @@ export async function listAoCronJobs(
     listAllCronTasks(),
     listRuntimeCronTasks(),
   ])
+  const allTasks = mergeAoCronTasksById(tasks, runtimeTasks)
 
   const jobs = await Promise.all(
-    tasks.map(async task => {
+    allTasks.map(async task => {
       const runtimeTask = runtimeTasks.get(task.id)
       const inProcessStatus = normalizeTaskStatus(
         taskStatusesByCronTaskId.get(task.id),
