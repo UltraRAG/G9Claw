@@ -20,39 +20,24 @@ type AgentVisualConfig = {
   description?: string;
 };
 
+const NEUTRAL_AGENT_CONFIG: AgentVisualConfig = {
+  name: '',
+  bgClass: 'bg-card',
+  borderClass: 'border-border',
+  textClass: 'text-foreground',
+  subtextClass: 'text-muted-foreground',
+  buttonClass:
+    'bg-neutral-900 hover:bg-neutral-800 active:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:active:bg-neutral-300',
+};
+
 const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
-  claude: {
-    name: 'Claude',
-    bgClass: 'bg-blue-50 dark:bg-blue-900/20',
-    borderClass: 'border-blue-200 dark:border-blue-800',
-    textClass: 'text-blue-900 dark:text-blue-100',
-    subtextClass: 'text-blue-700 dark:text-blue-300',
-    buttonClass: 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800',
-  },
-  cursor: {
-    name: 'Cursor',
-    bgClass: 'bg-purple-50 dark:bg-purple-900/20',
-    borderClass: 'border-purple-200 dark:border-purple-800',
-    textClass: 'text-purple-900 dark:text-purple-100',
-    subtextClass: 'text-purple-700 dark:text-purple-300',
-    buttonClass: 'bg-purple-600 hover:bg-purple-700 active:bg-purple-800',
-  },
-  codex: {
-    name: 'Codex',
-    bgClass: 'bg-muted/50',
-    borderClass: 'border-gray-300 dark:border-gray-600',
-    textClass: 'text-gray-900 dark:text-gray-100',
-    subtextClass: 'text-gray-700 dark:text-gray-300',
-    buttonClass: 'bg-gray-800 hover:bg-gray-900 active:bg-gray-950 dark:bg-gray-700 dark:hover:bg-gray-600 dark:active:bg-gray-500',
-  },
+  claude: { ...NEUTRAL_AGENT_CONFIG, name: 'Claude' },
+  cursor: { ...NEUTRAL_AGENT_CONFIG, name: 'Cursor' },
+  codex: { ...NEUTRAL_AGENT_CONFIG, name: 'Codex' },
   gemini: {
+    ...NEUTRAL_AGENT_CONFIG,
     name: 'Gemini',
     description: 'Google Gemini AI assistant',
-    bgClass: 'bg-indigo-50 dark:bg-indigo-900/20',
-    borderClass: 'border-indigo-200 dark:border-indigo-800',
-    textClass: 'text-indigo-900 dark:text-indigo-100',
-    subtextClass: 'text-indigo-700 dark:text-indigo-300',
-    buttonClass: 'bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800',
   },
 };
 

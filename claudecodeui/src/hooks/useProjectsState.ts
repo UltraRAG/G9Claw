@@ -109,7 +109,17 @@ const isUpdateAdditive = (
   );
 };
 
-const VALID_TABS: Set<string> = new Set(['chat', 'always-on', 'files', 'shell', 'git', 'tasks', 'memory', 'preview', 'dashboard']);
+const VALID_TABS: Set<string> = new Set([
+  'chat',
+  'always-on',
+  'files',
+  'shell',
+  'git',
+  'tasks',
+  'memory',
+  'preview',
+  'dashboard',
+]);
 
 const isValidTab = (tab: string): tab is AppTab => {
   return VALID_TABS.has(tab) || tab.startsWith('plugin:');

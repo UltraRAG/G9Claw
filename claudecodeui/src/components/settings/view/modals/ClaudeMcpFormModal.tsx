@@ -166,8 +166,8 @@ export default function ClaudeMcpFormModal({
                 onClick={() => setFormData((prev) => ({ ...prev, importMode: 'form' }))}
                 className={`rounded-lg px-4 py-2 font-medium transition-colors ${
                   formData.importMode === 'form'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                    : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700'
                 }`}
               >
                 {t('mcpForm.importMode.form')}
@@ -177,8 +177,8 @@ export default function ClaudeMcpFormModal({
                 onClick={() => setFormData((prev) => ({ ...prev, importMode: 'json' }))}
                 className={`rounded-lg px-4 py-2 font-medium transition-colors ${
                   formData.importMode === 'json'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                    : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700'
                 }`}
               >
                 {t('mcpForm.importMode.json')}
@@ -187,7 +187,7 @@ export default function ClaudeMcpFormModal({
           )}
 
           {formData.importMode === 'form' && isEditing && (
-            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/50">
+            <div className="rounded-lg border border-border bg-muted/40 p-3">
               <label className="mb-2 block text-sm font-medium text-foreground">
                 {t('mcpForm.scope.label')}
               </label>
@@ -216,8 +216,8 @@ export default function ClaudeMcpFormModal({
                     onClick={() => setFormData((prev) => ({ ...prev, scope: 'user', projectPath: '' }))}
                     className={`flex-1 rounded-lg px-4 py-2 font-medium transition-colors ${
                       formData.scope === 'user'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                        ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                        : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700'
                     }`}
                   >
                     <div className="flex items-center justify-center gap-2">
@@ -230,8 +230,8 @@ export default function ClaudeMcpFormModal({
                     onClick={() => setFormData((prev) => ({ ...prev, scope: 'local' }))}
                     className={`flex-1 rounded-lg px-4 py-2 font-medium transition-colors ${
                       formData.scope === 'local'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                        ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                        : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700'
                     }`}
                   >
                     <div className="flex items-center justify-center gap-2">
@@ -257,7 +257,7 @@ export default function ClaudeMcpFormModal({
                     onChange={(event) => {
                       setFormData((prev) => ({ ...prev, projectPath: event.target.value }));
                     }}
-                    className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground focus:border-foreground/50 focus:ring-foreground/20"
                     required
                   >
                     <option value="">{t('mcpForm.fields.selectProject')}...</option>
@@ -303,7 +303,7 @@ export default function ClaudeMcpFormModal({
                       type: getSafeTransportType(event.target.value),
                     }));
                   }}
-                  className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground focus:border-foreground/50 focus:ring-foreground/20"
                 >
                   <option value="stdio">stdio</option>
                   <option value="sse">SSE</option>
@@ -340,8 +340,8 @@ export default function ClaudeMcpFormModal({
                     handleJsonValidation(value);
                   }}
                   className={`w-full border px-3 py-2 ${
-                    jsonValidationError ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'
-                  } rounded-lg bg-gray-50 font-mono text-sm text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-800 dark:text-gray-100`}
+                    jsonValidationError ? 'border-red-500' : 'border-border'
+                  } rounded-lg bg-background font-mono text-sm text-foreground focus:border-foreground/50 focus:ring-foreground/20`}
                   rows={8}
                   placeholder={'{\n  "type": "stdio",\n  "command": "/path/to/server",\n  "args": ["--api-key", "abc123"],\n  "env": {\n    "CACHE_DIR": "/tmp"\n  }\n}'}
                   required
@@ -384,7 +384,7 @@ export default function ClaudeMcpFormModal({
                     const args = event.target.value.split('\n').filter((arg) => arg.trim());
                     updateConfig('args', args);
                   }}
-                  className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground focus:border-foreground/50 focus:ring-foreground/20"
                   rows={3}
                   placeholder="--api-key&#10;abc123"
                 />
@@ -424,7 +424,7 @@ export default function ClaudeMcpFormModal({
                   });
                   updateConfig('env', env);
                 }}
-                className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground focus:border-foreground/50 focus:ring-foreground/20"
                 rows={3}
                 placeholder="API_KEY=your-key&#10;DEBUG=true"
               />
@@ -448,7 +448,7 @@ export default function ClaudeMcpFormModal({
                   });
                   updateConfig('headers', headers);
                 }}
-                className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground focus:border-foreground/50 focus:ring-foreground/20"
                 rows={3}
                 placeholder="Authorization=Bearer token&#10;X-API-Key=your-key"
               />

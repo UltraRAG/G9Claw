@@ -1,18 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useTheme } from '../../../contexts/ThemeContext';
 import {
   CODE_EDITOR_DEFAULTS,
   CODE_EDITOR_SETTINGS_CHANGED_EVENT,
   CODE_EDITOR_STORAGE_KEYS,
 } from '../constants/settings';
-
-const readTheme = () => {
-  const savedTheme = localStorage.getItem(CODE_EDITOR_STORAGE_KEYS.theme);
-  if (!savedTheme) {
-    return CODE_EDITOR_DEFAULTS.isDarkMode;
-  }
-
-  return savedTheme === 'dark';
-};
 
 const readBoolean = (storageKey: string, defaultValue: boolean, falseValue = 'false') => {
   const value = localStorage.getItem(storageKey);
@@ -32,8 +24,13 @@ const readFontSize = () => {
   return Number(stored ?? CODE_EDITOR_DEFAULTS.fontSize);
 };
 
+type ThemeContextValue = { isDarkMode: boolean; toggleDarkMode: () => void };
+
 export const useCodeEditorSettings = () => {
-  const [isDarkMode, setIsDarkMode] = useState(readTheme);
+  // Editor theme mirrors the app theme — one source of truth prevents the editor
+  // from rendering dark after the user switches the app to light mode.
+  const { isDarkMode, toggleDarkMode } = useTheme() as ThemeContextValue;
+
   const [wordWrap, setWordWrap] = useState(readWordWrap);
   const [minimapEnabled, setMinimapEnabled] = useState(() => (
     readBoolean(CODE_EDITOR_STORAGE_KEYS.showMinimap, CODE_EDITOR_DEFAULTS.minimapEnabled)
@@ -43,7 +40,8 @@ export const useCodeEditorSettings = () => {
   ));
   const [fontSize, setFontSize] = useState(readFontSize);
 
-  // Keep legacy behavior where the editor writes theme and wrap settings directly.
+  // Mirror app theme into the legacy codeEditorTheme key so any remaining
+  // localStorage readers stay in sync.
   useEffect(() => {
     localStorage.setItem(CODE_EDITOR_STORAGE_KEYS.theme, isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
@@ -54,7 +52,6 @@ export const useCodeEditorSettings = () => {
 
   useEffect(() => {
     const refreshFromStorage = () => {
-      setIsDarkMode(readTheme());
       setWordWrap(readWordWrap());
       setMinimapEnabled(readBoolean(CODE_EDITOR_STORAGE_KEYS.showMinimap, CODE_EDITOR_DEFAULTS.minimapEnabled));
       setShowLineNumbers(readBoolean(CODE_EDITOR_STORAGE_KEYS.lineNumbers, CODE_EDITOR_DEFAULTS.showLineNumbers));
@@ -69,6 +66,12 @@ export const useCodeEditorSettings = () => {
       window.removeEventListener(CODE_EDITOR_SETTINGS_CHANGED_EVENT, refreshFromStorage);
     };
   }, []);
+
+  const setIsDarkMode = useCallback((next: boolean) => {
+    if (next !== isDarkMode) {
+      toggleDarkMode();
+    }
+  }, [isDarkMode, toggleDarkMode]);
 
   return {
     isDarkMode,

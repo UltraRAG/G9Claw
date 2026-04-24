@@ -140,7 +140,9 @@ const toCodexPermissionMode = (value: unknown): CodexPermissionMode => {
 };
 
 const readCodeEditorSettings = (): CodeEditorSettingsState => ({
-  theme: localStorage.getItem('codeEditorTheme') === 'light' ? 'light' : 'dark',
+  // `theme` is kept in the state shape for backwards compatibility but the editor
+  // now always mirrors the global app theme (see useCodeEditorSettings).
+  theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
   wordWrap: localStorage.getItem('codeEditorWordWrap') === 'true',
   showMinimap: localStorage.getItem('codeEditorShowMinimap') !== 'false',
   lineNumbers: localStorage.getItem('codeEditorLineNumbers') !== 'false',

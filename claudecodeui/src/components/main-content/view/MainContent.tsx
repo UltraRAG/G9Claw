@@ -1,12 +1,19 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import ChatInterface from '../../chat/view/ChatInterface';
+import ChatInterfaceV2 from '../../chat-v2/ChatInterfaceV2';
 import AlwaysOnPanel from '../../always-on/view/AlwaysOnPanel';
+import AlwaysOnV2 from '../../main-content-v2/AlwaysOnV2';
 import FileTree from '../../file-tree/view/FileTree';
+import FilesV2 from '../../main-content-v2/FilesV2';
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
+import ShellV2 from '../../main-content-v2/ShellV2';
 import GitPanel from '../../git-panel/view/GitPanel';
+import GitV2 from '../../main-content-v2/GitV2';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
 import RoutingDashboard from '../../routing-dashboard/RoutingDashboard';
-import MemoryPanel from './memory/MemoryPanel';
+import DashboardV2 from '../../main-content-v2/DashboardV2';
+import TasksV2 from '../../main-content-v2/TasksV2';
+import MemoryV2 from '../../main-content-v2/MemoryV2';
 import {
   getStoredClaudePermissionMode,
   startClaudeSessionCommand,
@@ -25,10 +32,11 @@ import type {
   ProjectDiscoveryPlansResponse,
 } from '../../../types/app';
 import { TaskMasterPanel } from '../../task-master';
+import { api } from '../../../utils/api';
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
 import ErrorBoundary from './ErrorBoundary';
-import { api } from '../../../utils/api';
+import MemoryPanel from './memory/MemoryPanel';
 
 type TaskMasterContextValue = {
   currentProject?: Project | null;
@@ -163,6 +171,7 @@ function MainContent({
   onStartNewSession,
   onShowSettings,
   externalMessageUpdate,
+  chromeless = false,
 }: MainContentProps) {
   const { preferences } = useUiPreferences();
   const { autoExpandTools, showRawParameters, showThinking, autoScrollToBottom, sendByCtrlEnter } = preferences;
@@ -455,102 +464,188 @@ function MainContent({
   ]);
 
   if (isLoading) {
-    return <MainContentStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
+    return (
+      <MainContentStateView
+        mode="loading"
+        isMobile={isMobile}
+        onMenuClick={onMenuClick}
+        chromeless={chromeless}
+      />
+    );
   }
 
   if (!selectedProject) {
-    return <MainContentStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />;
+    return (
+      <MainContentStateView
+        mode="empty"
+        isMobile={isMobile}
+        onMenuClick={onMenuClick}
+        chromeless={chromeless}
+      />
+    );
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <MainContentHeader
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        selectedProject={selectedProject}
-        selectedSession={selectedSession}
-        shouldShowTasksTab={shouldShowTasksTab}
-        isMobile={isMobile}
-        onMenuClick={onMenuClick}
-      />
+    <div
+      className={
+        chromeless
+          ? 'flex h-full flex-col bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100'
+          : 'flex h-full flex-col'
+      }
+    >
+      {!chromeless && (
+        <MainContentHeader
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          selectedProject={selectedProject}
+          selectedSession={selectedSession}
+          shouldShowTasksTab={shouldShowTasksTab}
+          isMobile={isMobile}
+          onMenuClick={onMenuClick}
+        />
+      )}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>
           <div className={`h-full ${activeTab === 'chat' ? 'block' : 'hidden'}`}>
             <ErrorBoundary showDetails>
-              <ChatInterface
-                selectedProject={selectedProject}
-                selectedSession={selectedSession}
-                ws={ws}
-                sendMessage={sendMessage}
-                latestMessage={latestMessage}
-                onFileOpen={handleFileOpen}
-                onInputFocusChange={onInputFocusChange}
-                onSessionActive={onSessionActive}
-                onSessionInactive={onSessionInactive}
-                onSessionProcessing={onSessionProcessing}
-                onSessionNotProcessing={onSessionNotProcessing}
-                processingSessions={processingSessions}
-                onReplaceTemporarySession={onReplaceTemporarySession}
-                onNavigateToSession={onNavigateToSession}
-                onShowSettings={onShowSettings}
-                onLaunchAlwaysOnPlanExecution={launchQueuedDiscoveryPlanExecution}
-                autoExpandTools={autoExpandTools}
-                showRawParameters={showRawParameters}
-                showThinking={showThinking}
-                autoScrollToBottom={autoScrollToBottom}
-                sendByCtrlEnter={sendByCtrlEnter}
-                externalMessageUpdate={externalMessageUpdate}
-                onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
-              />
+              {chromeless ? (
+                <ChatInterfaceV2
+                  selectedProject={selectedProject}
+                  selectedSession={selectedSession}
+                  ws={ws}
+                  sendMessage={sendMessage}
+                  latestMessage={latestMessage}
+                  onFileOpen={handleFileOpen}
+                  onInputFocusChange={onInputFocusChange}
+                  onSessionActive={onSessionActive}
+                  onSessionInactive={onSessionInactive}
+                  onSessionProcessing={onSessionProcessing}
+                  onSessionNotProcessing={onSessionNotProcessing}
+                  processingSessions={processingSessions}
+                  onReplaceTemporarySession={onReplaceTemporarySession}
+                  onNavigateToSession={onNavigateToSession}
+                  onShowSettings={onShowSettings}
+                  onLaunchAlwaysOnPlanExecution={launchQueuedDiscoveryPlanExecution}
+                  autoExpandTools={autoExpandTools}
+                  showRawParameters={showRawParameters}
+                  showThinking={showThinking}
+                  autoScrollToBottom={autoScrollToBottom}
+                  sendByCtrlEnter={sendByCtrlEnter}
+                  externalMessageUpdate={externalMessageUpdate}
+                  onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
+                />
+              ) : (
+                <ChatInterface
+                  selectedProject={selectedProject}
+                  selectedSession={selectedSession}
+                  ws={ws}
+                  sendMessage={sendMessage}
+                  latestMessage={latestMessage}
+                  onFileOpen={handleFileOpen}
+                  onInputFocusChange={onInputFocusChange}
+                  onSessionActive={onSessionActive}
+                  onSessionInactive={onSessionInactive}
+                  onSessionProcessing={onSessionProcessing}
+                  onSessionNotProcessing={onSessionNotProcessing}
+                  processingSessions={processingSessions}
+                  onReplaceTemporarySession={onReplaceTemporarySession}
+                  onNavigateToSession={onNavigateToSession}
+                  onShowSettings={onShowSettings}
+                  onLaunchAlwaysOnPlanExecution={launchQueuedDiscoveryPlanExecution}
+                  autoExpandTools={autoExpandTools}
+                  showRawParameters={showRawParameters}
+                  showThinking={showThinking}
+                  autoScrollToBottom={autoScrollToBottom}
+                  sendByCtrlEnter={sendByCtrlEnter}
+                  externalMessageUpdate={externalMessageUpdate}
+                  onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
+                />
+              )}
             </ErrorBoundary>
           </div>
 
           {activeTab === 'files' && (
             <div className="h-full overflow-hidden">
-              <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+              {chromeless ? (
+                <FilesV2 selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+              ) : (
+                <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+              )}
             </div>
           )}
 
           {activeTab === 'always-on' && (
             <div className="h-full overflow-hidden">
-              <AlwaysOnPanel
-                selectedProject={selectedProject}
-                onStartDiscoverySession={handleStartDiscoverySession}
-                onExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
-                onOpenDiscoverySession={onNavigateToSession}
-              />
+              {chromeless ? (
+                <AlwaysOnV2
+                  selectedProject={selectedProject}
+                  onStartDiscoverySession={handleStartDiscoverySession}
+                  onExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
+                  onOpenDiscoverySession={onNavigateToSession}
+                />
+              ) : (
+                <AlwaysOnPanel
+                  selectedProject={selectedProject}
+                  onStartDiscoverySession={handleStartDiscoverySession}
+                  onExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
+                  onOpenDiscoverySession={onNavigateToSession}
+                />
+              )}
             </div>
           )}
 
           {activeTab === 'shell' && (
             <div className="h-full w-full overflow-hidden">
-              <StandaloneShell
-                project={selectedProject}
-                session={selectedSession}
-                showHeader={false}
-                isActive={activeTab === 'shell'}
-              />
+              {chromeless ? (
+                <ShellV2
+                  selectedProject={selectedProject}
+                  selectedSession={selectedSession}
+                  isActive={activeTab === 'shell'}
+                />
+              ) : (
+                <StandaloneShell
+                  project={selectedProject}
+                  session={selectedSession}
+                  showHeader={false}
+                  isActive={activeTab === 'shell'}
+                />
+              )}
             </div>
           )}
 
           {activeTab === 'git' && (
             <div className="h-full overflow-hidden">
-              <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
+              {chromeless ? (
+                <GitV2 selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+              ) : (
+                <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
+              )}
             </div>
           )}
 
-          {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
+          {shouldShowTasksTab &&
+            (chromeless ? (
+              <div className={`h-full ${activeTab === 'tasks' ? 'block' : 'hidden'}`}>
+                <TasksV2 isVisible={activeTab === 'tasks'} />
+              </div>
+            ) : (
+              <TaskMasterPanel isVisible={activeTab === 'tasks'} />
+            ))}
 
           {activeTab === 'dashboard' && (
             <div className="h-full overflow-auto">
-              <RoutingDashboard />
+              {chromeless ? <DashboardV2 /> : <RoutingDashboard />}
             </div>
           )}
 
           {activeTab === 'memory' && (
             <div className="h-full overflow-hidden">
-              <MemoryPanel selectedProject={selectedProject} />
+              {chromeless ? (
+                <MemoryV2 selectedProject={selectedProject} />
+              ) : (
+                <MemoryPanel selectedProject={selectedProject} />
+              )}
             </div>
           )}
 
