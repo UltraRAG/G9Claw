@@ -123,6 +123,19 @@ const UI_STRINGS = {
     "project.context.feedbackChip": "协作反馈 {0}",
     "project.context.pathChip": "项目路径 {0}",
     "project.currentProject": "当前项目",
+    "project.general.title": "General 项目目录",
+    "project.general.subtitle": "",
+    "project.general.empty": "当前 General 还没有形成项目。",
+    "project.general.noneSelected": "当前没有选中的项目。",
+    "project.general.selected": "当前选中",
+    "project.general.source.general_local": "General 本地",
+    "project.general.source.workspace_external": "外部只读",
+    "project.general.source.workspace_external_mirror": "General 本地",
+    "project.general.source.externalEntry": "外部来源",
+    "project.general.source.localOverlay": "General 本地",
+    "project.general.readOnly": "只读",
+    "project.general.hasLocalMirror": "已有本地镜像",
+    "project.general.select": "查看",
     "user.identityBackground": "身份背景",
     "user.emptySummary": "当前还没有汇总后的用户画像；User Notes 会在 Dream 后合并到这里。",
     "workspace.empty.project": "当前没有项目记忆。",
@@ -306,6 +319,19 @@ const UI_STRINGS = {
     "project.context.feedbackChip": "Collaboration Feedback {0}",
     "project.context.pathChip": "Project Path {0}",
     "project.currentProject": "Current Project",
+    "project.general.title": "General Project Catalog",
+    "project.general.subtitle": "",
+    "project.general.empty": "No projects have been formed in General yet.",
+    "project.general.noneSelected": "No project is currently selected.",
+    "project.general.selected": "Selected",
+    "project.general.source.general_local": "General Local",
+    "project.general.source.workspace_external": "External Read-only",
+    "project.general.source.workspace_external_mirror": "General Local",
+    "project.general.source.externalEntry": "External Source",
+    "project.general.source.localOverlay": "General Local",
+    "project.general.readOnly": "Read-only",
+    "project.general.hasLocalMirror": "Local Mirror",
+    "project.general.select": "Open",
     "user.identityBackground": "Identity Background",
     "user.emptySummary": "No consolidated user profile yet. User Notes will be merged here after Dream.",
     "workspace.empty.project": "No project memory yet.",
@@ -400,6 +426,7 @@ const TRACE_LOCALES = {
     "trace.step.context_rendered": "上下文已渲染",
     "trace.step.dream_start": "开始 Dream",
     "trace.step.snapshot_loaded": "快照已加载",
+    "trace.step.general_project_merge": "General 项目合并",
     "trace.step.dream_finished": "Dream 完成",
     "trace.step.project_meta_review": "项目元信息审查",
     "trace.step.user_profile_rewritten": "用户画像已重写",
@@ -460,6 +487,7 @@ function t(key, ...args) {
 const state = {
   token: params.get("token") || "",
   projectPath: params.get("projectPath") || "",
+  selectedProjectId: params.get("selectedProjectId") || "",
   locale: MEMORY_LOCALE,
   workspaceQuery: "",
   activePage: "project",
@@ -893,11 +921,72 @@ function formatEntryType(type) {
       return t("record.badge.feedback");
     case "project":
       return t("record.badge.project");
+    case "general_project_meta":
+      return t("project.general.title");
     default:
       return type || t("status.unknown");
   }
 }
 
+function isGeneralWorkspace() {
+  return state.workspace?.workspaceMode === "general";
+}
+
+function getGeneralProjects() {
+  return Array.isArray(state.workspace?.generalProjects) ? state.workspace.generalProjects : [];
+}
+
+function getVisibleGeneralProjects() {
+  return getGeneralProjects().filter((project) => project?.sourceType !== "workspace_external");
+}
+
+function syncSelectedProjectIdFromWorkspace() {
+  if (isGeneralWorkspace()) {
+    const visibleProjects = getVisibleGeneralProjects();
+    const selectedFromWorkspace = typeof state.workspace?.selectedProjectId === "string"
+      ? state.workspace.selectedProjectId
+      : "";
+    const nextSelectedProject = visibleProjects.find((project) => project.logicalProjectId === selectedFromWorkspace)
+      || visibleProjects.find((project) => project.logicalProjectId === state.selectedProjectId)
+      || visibleProjects[0]
+      || null;
+    const nextSelectedProjectId = nextSelectedProject?.logicalProjectId || "";
+    const changed = nextSelectedProjectId !== (selectedFromWorkspace || state.selectedProjectId || "");
+    state.selectedProjectId = nextSelectedProjectId;
+    return changed;
+  }
+
+  if (typeof state.workspace?.selectedProjectId === "string") {
+    state.selectedProjectId = state.workspace.selectedProjectId;
+  } else if (!state.selectedProjectId && getGeneralProjects()[0]?.logicalProjectId) {
+    state.selectedProjectId = getGeneralProjects()[0].logicalProjectId;
+  }
+  return false;
+}
+
+function getProjectCardCount() {
+  return isGeneralWorkspace()
+    ? getVisibleGeneralProjects().length
+    : state.workspace?.projectEntries?.length || 0;
+}
+
+function formatProjectSource(sourceType) {
+  const displaySource = sourceType === "workspace_external" ? "workspace_external" : "general_local";
+  return t(`project.general.source.${displaySource}`);
+}
+
+function formatEntrySource(record) {
+  if (!isGeneralWorkspace()) return t("project.currentProject");
+  return t("project.general.source.general_local");
+}
+
+function buildWorkspaceRequestPath(basePath) {
+  const search = new URLSearchParams();
+  if (state.workspaceQuery) search.set("q", state.workspaceQuery);
+  if (state.selectedProjectId) search.set("selectedProjectId", state.selectedProjectId);
+  const query = search.toString();
+  return query ? `${basePath}${basePath.includes("?") ? "&" : "?"}${query}` : basePath;
+}
 function countUserSummaryRecords(s) {
   if (!s) return 0;
   return s.identityBackground?.length ? 1 : 0;
@@ -930,8 +1019,6 @@ function syncMaintenanceActionState() {
     rollbackLastDreamBtn.title = buildRollbackLastDreamTitle(snapshot);
   }
 }
-
-function getProjectCardCount() { return state.workspace?.projectEntries?.length || 0; }
 
 function updateCounts() {
   navProjectCountEl.textContent = String(getProjectCardCount());
@@ -1075,6 +1162,86 @@ function closeEditorModal() {
 
 function renderProjectContext() {
   clearNode(projectContextSectionEl);
+  if (isGeneralWorkspace()) {
+    const projects = getVisibleGeneralProjects();
+    const selectedProject = projects.find((project) => project.logicalProjectId === state.selectedProjectId)
+      || projects[0]
+      || null;
+
+    const header = el("div", "project-context-head");
+    const copy = el("div", "project-context-copy");
+    copy.append(el("h4", "", t("project.general.title")));
+    const subtitle = t("project.general.subtitle");
+    if (subtitle) copy.append(el("p", "", subtitle));
+    header.append(copy);
+    projectContextSectionEl.append(header);
+
+    if (!projects.length) {
+      projectContextSectionEl.append(el("div", "empty-state", t("project.general.empty")));
+      return;
+    }
+
+    const picker = el("div", "project-selector-grid");
+    projects.forEach((project) => {
+      const card = el("button", "project-selector-card");
+      card.type = "button";
+      if (project.logicalProjectId === state.selectedProjectId) card.classList.add("active");
+
+      const cardHead = el("div", "entry-head");
+      cardHead.append(el("h4", "", project.projectName));
+      card.append(cardHead);
+
+      card.append(el("div", "entry-meta", `${formatDateTime(project.updatedAt)} · ${project.workspaceName}`));
+      card.append(el("div", "", project.description || t("detail.noDescription")));
+
+      const chips = el("div", "project-context-meta");
+      [
+        t("project.context.projectMemoryChip", project.summary?.projectEntries || 0),
+        t("project.context.feedbackChip", project.summary?.feedbackEntries || 0),
+        project.readOnly ? t("project.general.readOnly") : "",
+        project.hasLocalMirror ? t("project.general.hasLocalMirror") : "",
+      ].filter(Boolean).forEach((text) => chips.append(el("span", "context-chip", text)));
+      card.append(chips);
+
+      card.addEventListener("click", () => {
+        state.selectedProjectId = project.logicalProjectId;
+        void loadWorkspace();
+      });
+      picker.append(card);
+    });
+    projectContextSectionEl.append(picker);
+
+    if (!selectedProject) {
+      projectContextSectionEl.append(el("div", "empty-state", t("project.general.noneSelected")));
+      return;
+    }
+
+    const selectedCard = el("div", "project-context-summary");
+    const selectedHead = el("div", "project-context-head");
+    const selectedCopy = el("div", "project-context-copy");
+    selectedCopy.append(el("h4", "", `${t("project.general.selected")} · ${selectedProject.projectName}`));
+    selectedCopy.append(el("p", "", selectedProject.description || t("detail.noDescription")));
+    selectedHead.append(selectedCopy);
+    if (!selectedProject.readOnly) {
+      const editBtn = el("button", "action-btn", t("actions.edit"));
+      editBtn.addEventListener("click", () => void editProjectMeta());
+      selectedHead.append(editBtn);
+    }
+    selectedCard.append(selectedHead);
+
+    const meta = el("div", "project-context-meta");
+    [
+      t("project.context.statusChip", formatProjectStatusLabel(selectedProject.status || "in_progress")),
+      t("project.context.projectMemoryChip", state.workspace?.projectEntries?.length || 0),
+      t("project.context.feedbackChip", state.workspace?.feedbackEntries?.length || 0),
+      t("project.context.pathChip", basename(selectedProject.workspacePath || state.projectPath)),
+      selectedProject.readOnly ? t("project.general.readOnly") : "",
+    ].filter(Boolean).forEach((text) => meta.append(el("span", "context-chip", text)));
+    selectedCard.append(meta);
+    projectContextSectionEl.append(selectedCard);
+    return;
+  }
+
   const pm = state.workspace?.projectMeta;
   const projectName = pm?.projectName || basename(state.projectPath);
 
@@ -1189,7 +1356,7 @@ function buildEntryCard(record) {
   badge.dataset.kind = record.deprecated ? "deprecated" : record.type;
   head.append(badge);
   card.append(head);
-  card.append(el("div", "entry-meta", `${formatDateTime(record.updatedAt)} · ${record.relativePath}`));
+  card.append(el("div", "entry-meta", `${formatDateTime(record.updatedAt)} · ${formatEntrySource(record)} · ${record.relativePath}`));
   card.append(el("div", "", record.description || t("detail.noDescription")));
   card.addEventListener("click", () => void openMemoryDetail(record.relativePath));
   return card;
@@ -1471,7 +1638,15 @@ async function loadDreamDetail(traceId) {
 
 async function loadOverview() { state.overview = await fetchJson("/api/memory/overview"); updateCounts(); applyPageChrome(); }
 async function loadSettings() { state.settings = await fetchJson("/api/memory/settings"); }
-async function loadWorkspace() { const q = state.workspaceQuery ? `&q=${encodeURIComponent(state.workspaceQuery)}` : ""; state.workspace = await fetchJson(`/api/memory/workspace?limit=200${q}`); renderWorkspace(); }
+async function loadWorkspace() {
+  state.workspace = await fetchJson(buildWorkspaceRequestPath("/api/memory/workspace?limit=200"));
+  const selectionChanged = syncSelectedProjectIdFromWorkspace();
+  if (isGeneralWorkspace() && selectionChanged && state.selectedProjectId) {
+    state.workspace = await fetchJson(buildWorkspaceRequestPath("/api/memory/workspace?limit=200"));
+    syncSelectedProjectIdFromWorkspace();
+  }
+  renderWorkspace();
+}
 async function loadUserSummary() { state.userSummary = await fetchJson("/api/memory/memory/user-summary"); renderUserSummary(); }
 async function loadCaseTraces() { const c = await fetchJson("/api/memory/cases?limit=12"); state.caseTraces = Array.isArray(c) ? c : []; renderRecallCaseList(); updateCounts(); }
 async function loadTraces() {
@@ -1488,6 +1663,10 @@ function applyDashboardSnapshot(snapshot) {
   state.overview = snapshot.overview ?? null;
   state.settings = snapshot.settings ?? null;
   state.workspace = snapshot.workspace ?? null;
+  const selectionChanged = syncSelectedProjectIdFromWorkspace();
+  if (selectionChanged && isGeneralWorkspace()) {
+    return false;
+  }
   state.userSummary = snapshot.userSummary ?? null;
   state.caseTraces = Array.isArray(snapshot.caseTraces) ? snapshot.caseTraces : [];
   state.indexTraces = Array.isArray(snapshot.indexTraces) ? snapshot.indexTraces : [];
@@ -1518,9 +1697,7 @@ async function runAction(label, path, body = {}, options = {}) {
   if (options.maintenance) setMaintenanceBusy(true);
   setStatus(t("status.running", label));
   try {
-    const actionPath = state.workspaceQuery
-      ? `${path}${path.includes("?") ? "&" : "?"}q=${encodeURIComponent(state.workspaceQuery)}`
-      : path;
+    const actionPath = buildWorkspaceRequestPath(path);
     const r = await fetchJson(actionPath, { method: "POST", headers: { "Content-Type": "application/json" }, body });
     setStatus(t("status.done", label));
     if (!applyDashboardSnapshot(r?.dashboard)) {
@@ -1663,9 +1840,10 @@ async function rollbackLastDream() {
 }
 
 async function editProjectMeta() {
-  const c = state.workspace?.projectMeta || {};
+  const c = state.workspace?.projectMeta || state.workspace?.selectedProject || {};
   openEditorModal({
     kind: "project-meta",
+    projectId: c.projectId || "",
     projectName: c.projectName || basename(state.projectPath),
     description: c.description || "",
     status: c.status || "in_progress",
@@ -1681,6 +1859,7 @@ async function saveProjectMetaFromEditor() {
   }
 
   const payload = {
+    ...(state.editorSession?.projectId ? { projectId: state.editorSession.projectId } : {}),
     projectName,
     description: editorProjectDescriptionEl.value,
     status: editorProjectStatusEl.value || "in_progress",
@@ -1688,7 +1867,7 @@ async function saveProjectMetaFromEditor() {
 
   try {
     editorSaveBtn.disabled = true;
-    await fetchJson("/api/memory/project-meta", {
+    await fetchJson(buildWorkspaceRequestPath("/api/memory/project-meta"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: payload,

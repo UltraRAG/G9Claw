@@ -1,4 +1,4 @@
-// Ensure .env is applied before reading flags (any importer may load this module before index.js runs).
+// Ensure unified YAML config is applied before reading flags.
 import '../load-env.js';
 
 /**

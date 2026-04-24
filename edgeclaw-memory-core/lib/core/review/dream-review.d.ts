@@ -37,6 +37,8 @@ export declare class DreamRewriteRunner {
     private readonly logger?;
     constructor(repository: MemoryRepository, extractor: LlmMemoryExtractor, options?: DreamReviewRunnerOptions);
     private runCategoryDream;
+    private mergeGeneralProjectMetas;
+    private runProjectMetaReview;
     run(trigger?: DreamTraceRecord["trigger"]): Promise<DreamExecutionResult>;
 }
 export {};

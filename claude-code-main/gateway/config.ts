@@ -35,7 +35,7 @@ try {
 }
 
 function getHermesHome(): string {
-  return process.env.HERMES_HOME || join(homedir(), '.hermes')
+  return process.env.GATEWAY_HOME || process.env.HERMES_HOME || join(homedir(), '.edgeclaw', 'gateway')
 }
 
 function coerceBool(value: unknown, defaultVal = true): boolean {

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { MEMORY_EXPORT_FORMAT_VERSION, } from "../types.js";
 import { FileMemoryStore } from "../file-memory.js";
+import { buildExternalProjectLogicalId, buildExternalRecordId, getWorkspaceMemoryMode, isExternalRecordId, parseExternalRecordId, } from "../general-projects.js";
 import { hashText, nowIso } from "../utils/id.js";
 const INDEXING_SETTINGS_STATE_KEY = "indexingSettings";
 const LAST_INDEXED_AT_STATE_KEY = "lastIndexedAt";
@@ -322,17 +323,27 @@ function sameDreamRuntimeState(left, right) {
 export class MemoryRepository {
     dbPath;
     db;
+    workspaceDir;
+    workspaceMode;
+    memoryDir;
+    workspacesRoot;
+    globalRootDir;
     workspaceMemory;
     globalUserMemory;
+    externalWorkspaceCache = new Map();
     constructor(dbPath, options = {}) {
         mkdirSync(dirname(dbPath), { recursive: true });
         this.dbPath = resolve(dbPath);
-        const memoryDir = options.memoryDir ?? join(dirname(dbPath), "memory");
-        const globalRootDir = options.globalRootDir ?? join(dirname(dirname(memoryDir)), "global");
-        mkdirSync(memoryDir, { recursive: true });
-        mkdirSync(globalRootDir, { recursive: true });
+        this.memoryDir = resolve(options.memoryDir ?? join(dirname(dbPath), "memory"));
+        this.workspacesRoot = dirname(dirname(this.memoryDir));
+        this.globalRootDir = resolve(options.globalRootDir ?? join(dirname(this.workspacesRoot), "global"));
+        this.workspaceDir = resolve(options.workspaceDir
+            ?? dirname(dirname(this.memoryDir)));
+        this.workspaceMode = getWorkspaceMemoryMode(this.workspaceDir);
+        mkdirSync(this.memoryDir, { recursive: true });
+        mkdirSync(this.globalRootDir, { recursive: true });
         this.db = createSqlDatabase(dbPath);
-        this.globalUserMemory = new FileMemoryStore(globalRootDir, {
+        this.globalUserMemory = new FileMemoryStore(this.globalRootDir, {
             manageProjectMeta: false,
             manageProjectFiles: false,
             manageUserProfile: true,
@@ -341,7 +352,8 @@ export class MemoryRepository {
             appendOnlyUserEntries: true,
             enableManifest: false,
         });
-        this.workspaceMemory = new FileMemoryStore(memoryDir, {
+        this.workspaceMemory = new FileMemoryStore(this.memoryDir, {
+            workspaceMode: this.workspaceMode,
             manageProjectMeta: true,
             manageProjectFiles: true,
             manageUserProfile: false,
@@ -398,6 +410,7 @@ export class MemoryRepository {
     `);
     }
     close() {
+        this.externalWorkspaceCache.clear();
         this.db.close();
     }
     getFileMemoryStore() {
@@ -405,6 +418,236 @@ export class MemoryRepository {
     }
     getGlobalUserStore() {
         return this.globalUserMemory;
+    }
+    getWorkspaceMode() {
+        return this.workspaceMode;
+    }
+    currentWorkspacePath() {
+        return this.getWorkspaceDir() || this.workspaceDir;
+    }
+    readWorkspaceDirFromDb(dbPath) {
+        try {
+            const db = createSqlDatabase(dbPath);
+            try {
+                const row = db.prepare("SELECT state_json FROM pipeline_state WHERE state_key = ?").get("workspaceDir");
+                if (!row || typeof row.state_json !== "string")
+                    return null;
+                const parsed = parseJson(row.state_json, undefined);
+                return typeof parsed === "string" && parsed.trim() ? resolve(parsed.trim()) : null;
+            }
+            finally {
+                db.close();
+            }
+        }
+        catch {
+            return null;
+        }
+    }
+    getExternalWorkspaceSnapshots() {
+        if (this.workspaceMode !== "general")
+            return [];
+        const currentWorkspacePath = this.currentWorkspacePath();
+        const currentMemoryDir = this.workspaceMemory.getRootDir();
+        const nextCache = new Map();
+        const snapshots = [];
+        const entries = existsSync(this.workspacesRoot)
+            ? readdirSync(this.workspacesRoot, { withFileTypes: true })
+            : [];
+        for (const entry of entries) {
+            if (!entry.isDirectory())
+                continue;
+            const dataDir = join(this.workspacesRoot, entry.name);
+            const memoryDir = join(dataDir, "memory");
+            const dbPath = join(dataDir, "control.sqlite");
+            if (!existsSync(memoryDir) || !existsSync(dbPath) || resolve(memoryDir) === resolve(currentMemoryDir)) {
+                continue;
+            }
+            const workspacePath = this.readWorkspaceDirFromDb(dbPath);
+            if (!workspacePath || resolve(workspacePath) === resolve(currentWorkspacePath))
+                continue;
+            const workspaceMode = getWorkspaceMemoryMode(workspacePath);
+            if (workspaceMode !== "single")
+                continue;
+            const workspaceKey = hashText(resolve(workspacePath)).slice(0, 16);
+            const cached = this.externalWorkspaceCache.get(workspaceKey);
+            const snapshot = cached && cached.workspacePath === workspacePath
+                ? cached
+                : {
+                    workspacePath,
+                    workspaceName: basename(workspacePath),
+                    workspaceMode,
+                    workspaceKey,
+                    store: new FileMemoryStore(memoryDir, {
+                        workspaceMode,
+                        manageProjectMeta: true,
+                        manageProjectFiles: true,
+                        manageUserProfile: false,
+                        enableManifest: true,
+                    }),
+                };
+            nextCache.set(workspaceKey, snapshot);
+            snapshots.push(snapshot);
+        }
+        this.externalWorkspaceCache = nextCache;
+        return snapshots;
+    }
+    buildProjectSummary(store, projectId) {
+        const entries = store.listMemoryEntries({
+            kinds: ["project", "feedback"],
+            scope: "project",
+            projectId,
+            includeDeprecated: false,
+            limit: 5000,
+            offset: 0,
+        });
+        const projectEntries = entries.filter((entry) => entry.type === "project");
+        const feedbackEntries = entries.filter((entry) => entry.type === "feedback");
+        return {
+            totalEntries: entries.length,
+            projectEntries: projectEntries.length,
+            feedbackEntries: feedbackEntries.length,
+            ...(entries[0]?.updatedAt ? { latestMemoryAt: entries[0].updatedAt } : {}),
+        };
+    }
+    listReadableProjectCatalog() {
+        if (this.workspaceMode !== "general") {
+            const meta = this.workspaceMemory.getProjectMeta();
+            if (!meta)
+                return [];
+            return [{
+                    ...meta,
+                    workspaceMode: this.workspaceMode,
+                    workspacePath: this.currentWorkspacePath(),
+                    workspaceName: basename(this.currentWorkspacePath()),
+                    sourceType: "general_local",
+                    logicalProjectId: meta.projectId,
+                    readOnly: false,
+                    hasLocalMirror: false,
+                    summary: this.buildProjectSummary(this.workspaceMemory, meta.projectId),
+                }];
+        }
+        const localMetas = this.workspaceMemory.listProjectMetas();
+        const localByExternalKey = new Map();
+        const catalog = [];
+        for (const meta of localMetas) {
+            if (meta.sourceKind === "workspace_external_mirror" && meta.sourceWorkspacePath && meta.sourceProjectId) {
+                localByExternalKey.set(`${resolve(meta.sourceWorkspacePath)}::${meta.sourceProjectId}`, meta);
+            }
+        }
+        const externalSnapshots = this.getExternalWorkspaceSnapshots();
+        for (const snapshot of externalSnapshots) {
+            const meta = snapshot.store.getProjectMeta();
+            if (!meta)
+                continue;
+            const summary = this.buildProjectSummary(snapshot.store, meta.projectId);
+            const externalLogicalProjectId = buildExternalProjectLogicalId(snapshot.workspacePath, meta.projectId);
+            const mirror = localByExternalKey.get(`${resolve(snapshot.workspacePath)}::${meta.projectId}`);
+            if (!mirror) {
+                catalog.push({
+                    ...meta,
+                    workspaceMode: snapshot.workspaceMode,
+                    workspacePath: snapshot.workspacePath,
+                    workspaceName: snapshot.workspaceName,
+                    sourceType: "workspace_external",
+                    logicalProjectId: externalLogicalProjectId,
+                    readOnly: true,
+                    hasLocalMirror: false,
+                    externalLogicalProjectId,
+                    summary,
+                });
+                continue;
+            }
+            catalog.push({
+                ...mirror,
+                workspaceMode: "general",
+                workspacePath: this.currentWorkspacePath(),
+                workspaceName: basename(this.currentWorkspacePath()),
+                sourceType: "workspace_external_mirror",
+                logicalProjectId: mirror.projectId,
+                readOnly: false,
+                hasLocalMirror: true,
+                localMirrorProjectId: mirror.projectId,
+                externalLogicalProjectId,
+                summary: {
+                    totalEntries: summary.totalEntries + this.buildProjectSummary(this.workspaceMemory, mirror.projectId).totalEntries,
+                    projectEntries: summary.projectEntries + this.buildProjectSummary(this.workspaceMemory, mirror.projectId).projectEntries,
+                    feedbackEntries: summary.feedbackEntries + this.buildProjectSummary(this.workspaceMemory, mirror.projectId).feedbackEntries,
+                    latestMemoryAt: [summary.latestMemoryAt, this.buildProjectSummary(this.workspaceMemory, mirror.projectId).latestMemoryAt]
+                        .filter(Boolean)
+                        .sort()
+                        .at(-1),
+                },
+            });
+        }
+        for (const meta of localMetas.filter((entry) => entry.sourceKind !== "workspace_external_mirror")) {
+            catalog.push({
+                ...meta,
+                workspaceMode: "general",
+                workspacePath: this.currentWorkspacePath(),
+                workspaceName: basename(this.currentWorkspacePath()),
+                sourceType: "general_local",
+                logicalProjectId: meta.projectId,
+                readOnly: false,
+                hasLocalMirror: false,
+                summary: this.buildProjectSummary(this.workspaceMemory, meta.projectId),
+            });
+        }
+        return catalog.sort((left, right) => {
+            if ((right.summary.latestMemoryAt || "") !== (left.summary.latestMemoryAt || "")) {
+                return (right.summary.latestMemoryAt || "").localeCompare(left.summary.latestMemoryAt || "");
+            }
+            return left.projectName.localeCompare(right.projectName);
+        });
+    }
+    getReadableProject(logicalProjectId) {
+        return this.listReadableProjectCatalog().find((entry) => entry.logicalProjectId === logicalProjectId);
+    }
+    mapExternalManifestEntry(snapshot, entry) {
+        return {
+            ...entry,
+            relativePath: buildExternalRecordId(snapshot.workspacePath, entry.relativePath),
+        };
+    }
+    mapExternalFileRecord(snapshot, record) {
+        return {
+            ...record,
+            relativePath: buildExternalRecordId(snapshot.workspacePath, record.relativePath),
+        };
+    }
+    listReadableProjectEntries(logicalProjectId, options = {}) {
+        const project = this.getReadableProject(logicalProjectId);
+        if (!project)
+            return [];
+        const kinds = options.kinds ?? ["project", "feedback"];
+        const includeExternal = options.includeExternal ?? true;
+        const entries = [];
+        if (project.sourceType === "general_local" || project.sourceType === "workspace_external_mirror") {
+            entries.push(...this.workspaceMemory.listMemoryEntries({
+                kinds,
+                scope: "project",
+                projectId: project.projectId,
+                includeDeprecated: options.includeDeprecated,
+                ...(options.query ? { query: options.query } : {}),
+                limit: 5000,
+                offset: 0,
+            }));
+        }
+        if (includeExternal && (project.sourceType === "workspace_external" || project.sourceType === "workspace_external_mirror")) {
+            const snapshot = this.getExternalWorkspaceSnapshots().find((item) => resolve(item.workspacePath) === resolve(project.sourceWorkspacePath || project.workspacePath));
+            if (snapshot) {
+                const sourceProjectId = project.sourceProjectId || project.projectId;
+                entries.push(...snapshot.store.listMemoryEntries({
+                    kinds,
+                    scope: "project",
+                    projectId: sourceProjectId,
+                    includeDeprecated: options.includeDeprecated,
+                    ...(options.query ? { query: options.query } : {}),
+                    limit: 5000,
+                    offset: 0,
+                }).map((entry) => this.mapExternalManifestEntry(snapshot, entry)));
+            }
+        }
+        return sortManifestEntries(entries);
     }
     repairWorkspaceManifest() {
         return this.workspaceMemory.repairManifests();
@@ -649,6 +892,7 @@ export class MemoryRepository {
     }
     workspaceStoreOptions() {
         return {
+            workspaceMode: this.workspaceMode,
             manageProjectMeta: true,
             manageProjectFiles: true,
             manageUserProfile: false,
@@ -830,6 +1074,7 @@ export class MemoryRepository {
             stageRepository = new MemoryRepository(stagedDbPath, {
                 memoryDir: stagedWorkspaceRoot,
                 globalRootDir: stagedGlobalRoot,
+                workspaceDir: this.currentWorkspacePath(),
             });
             stageRepository.repairWorkspaceManifest();
             return {
@@ -1105,6 +1350,9 @@ export class MemoryRepository {
         const pendingSessions = Number(this.db.prepare("SELECT COUNT(DISTINCT session_key) AS count FROM l0_sessions WHERE indexed = 0").get()?.count ?? 0);
         const lastDreamAt = this.getPipelineState(LAST_DREAM_AT_STATE_KEY);
         const fileOverview = this.workspaceMemory.getOverview(typeof lastDreamAt === "string" ? lastDreamAt : undefined);
+        const readableProjects = this.workspaceMode === "general"
+            ? this.listReadableProjectCatalog().filter((entry) => entry.sourceType !== "workspace_external")
+            : [];
         const recentRecallTraceCount = this.listRecentCaseTraces(12).length;
         const recentIndexTraceCount = this.listRecentIndexTraces(30).length;
         const recentDreamTraceCount = this.listRecentDreamTraces(30).length;
@@ -1119,7 +1367,10 @@ export class MemoryRepository {
             : 0;
         return {
             pendingSessions,
-            currentProjectCount: workspaceHasProjectMemory || fileOverview.projectMetaCount > 0 ? 1 : 0,
+            workspaceMode: this.workspaceMode,
+            currentProjectCount: this.workspaceMode === "general"
+                ? readableProjects.length
+                : workspaceHasProjectMemory || fileOverview.projectMetaCount > 0 ? 1 : 0,
             projectMetaPresent: fileOverview.projectMetaCount > 0,
             projectMemoryCount: fileOverview.projectMemories,
             feedbackMemoryCount: fileOverview.feedbackMemories,
@@ -1192,7 +1443,8 @@ export class MemoryRepository {
     }
     getMemoryRecordsByIds(ids, maxLines = 80) {
         const uniqueIds = Array.from(new Set(ids.filter((item) => typeof item === "string" && item.trim().length > 0)));
-        const workspaceIds = uniqueIds.filter((id) => !isGlobalRelativePath(id));
+        const externalIds = uniqueIds.filter((id) => isExternalRecordId(id));
+        const workspaceIds = uniqueIds.filter((id) => !isGlobalRelativePath(id) && !isExternalRecordId(id));
         const globalIds = uniqueIds
             .filter((id) => isGlobalRelativePath(id))
             .map((id) => toInternalGlobalRelativePath(id));
@@ -1200,9 +1452,30 @@ export class MemoryRepository {
         const globalRecords = this.globalUserMemory
             .getMemoryRecordsByIds(globalIds, maxLines)
             .map((record) => this.mapGlobalFileRecord(record));
+        const externalGroups = new Map();
+        for (const id of externalIds) {
+            const parsed = parseExternalRecordId(id);
+            if (!parsed)
+                continue;
+            const bucket = externalGroups.get(parsed.workspaceKey) ?? [];
+            bucket.push(parsed.relativePath);
+            externalGroups.set(parsed.workspaceKey, bucket);
+        }
+        const externalRecords = [];
+        if (externalGroups.size > 0) {
+            const snapshots = this.getExternalWorkspaceSnapshots();
+            for (const [workspaceKey, relativePaths] of externalGroups.entries()) {
+                const snapshot = snapshots.find((item) => item.workspaceKey === workspaceKey);
+                if (!snapshot)
+                    continue;
+                externalRecords.push(...snapshot.store.getMemoryRecordsByIds(relativePaths, maxLines)
+                    .map((record) => this.mapExternalFileRecord(snapshot, record)));
+            }
+        }
         const byId = new Map([
             ...workspaceRecords.map((record) => [record.relativePath, record]),
             ...globalRecords.map((record) => [record.relativePath, record]),
+            ...externalRecords.map((record) => [record.relativePath, record]),
         ]);
         return ids
             .map((id) => byId.get(id))
