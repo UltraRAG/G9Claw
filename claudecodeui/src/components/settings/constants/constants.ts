@@ -18,7 +18,10 @@ export const SETTINGS_MAIN_TABS: SettingsMainTab[] = [
   'git',
   'api',
   'tasks',
+  'plugins',
+  'config',
   'notifications',
+  'about',
 ];
 
 export const AGENT_PROVIDERS: AgentProvider[] = ['claude', 'cursor', 'codex'];

@@ -97,6 +97,7 @@
     "notifications": "通知",
     "plugins": "プラグイン",
     "router": "ルーター",
+    "config": "設定ファイル",
     "about": "概要"
   },
   "notifications": {

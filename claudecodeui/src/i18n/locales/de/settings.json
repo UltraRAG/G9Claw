@@ -96,6 +96,7 @@
     "tasks": "Aufgaben",
     "plugins": "Plugins",
     "router": "Router",
+    "config": "Konfig",
     "about": "Info"
   },
   "appearanceSettings": {

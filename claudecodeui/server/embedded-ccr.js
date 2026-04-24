@@ -5,20 +5,18 @@
  * initializes services in-process (no HTTP server, no port), and exposes
  * direct access to CCR services for the Express routes.
  *
- * Config resolution order:
- *   1. <claudecodeui>/ccr-config.json  (local override)
- *   2. <claude-code-main>/ccr-config.json  (upstream default)
- *
- * Env vars:
- *   CCR_ENABLED  – set to "0" or "false" to skip (default: enabled)
+ * Router config is built from ~/.edgeclaw/config.yaml. ccr-config.json is
+ * generated only as an internal compatibility artifact for router consumers.
  */
 
 import { createRequire } from 'module';
 import { execSync } from 'child_process';
+import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { resolveClaudeCodeMainRoot } from './claude-code-main-path.js';
+import { buildCcrConfig, readEdgeClawConfigFile } from './services/edgeclawConfig.js';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -32,19 +30,17 @@ let ccrServices = null;
 // ---------------------------------------------------------------------------
 
 function getLocalConfigPath() {
-  return path.resolve(__dirname, '..', 'ccr-config.json');
+  return path.join(os.homedir(), '.edgeclaw', 'router', 'ccr-config.generated.json');
 }
 
 export function loadCCRConfig(ccrRoot) {
-  const localPath = getLocalConfigPath();
-  if (fs.existsSync(localPath)) {
-    return JSON.parse(fs.readFileSync(localPath, 'utf-8'));
-  }
-  if (ccrRoot) {
-    const remotePath = path.join(ccrRoot, 'ccr-config.json');
-    if (fs.existsSync(remotePath)) {
-      return JSON.parse(fs.readFileSync(remotePath, 'utf-8'));
+  try {
+    const { config } = readEdgeClawConfigFile();
+    if (config.router?.enabled) {
+      return buildCcrConfig(config);
     }
+  } catch {
+    return null;
   }
   return null;
 }
@@ -52,19 +48,9 @@ export function loadCCRConfig(ccrRoot) {
 export function saveCCRConfig(config) {
   const json = JSON.stringify(config, null, 2) + '\n';
   const localPath = getLocalConfigPath();
+  fs.mkdirSync(path.dirname(localPath), { recursive: true });
   fs.writeFileSync(localPath, json, 'utf-8');
-
-  // Sync to claude-code-main so proxy.ts / gateway pick up the same config
-  const ccrRoot = resolveClaudeCodeMainRoot();
-  if (ccrRoot) {
-    const upstreamPath = path.join(ccrRoot, 'ccr-config.json');
-    try {
-      fs.writeFileSync(upstreamPath, json, 'utf-8');
-      console.log(`[CCR] Config synced → ${upstreamPath}`);
-    } catch (err) {
-      console.warn(`[CCR] Failed to sync config to ${upstreamPath}: ${err.message}`);
-    }
-  }
+  console.log(`[CCR] Generated config snapshot → ${localPath}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +106,7 @@ export async function startEmbeddedCCR(options = {}) {
   const ccrRoot = resolveClaudeCodeMainRoot();
   const config = loadCCRConfig(ccrRoot);
   if (!config) {
-    throw new Error('No ccr-config.json found (checked local + claude-code-main)');
+    throw new Error('router.enabled is false or ~/.edgeclaw/config.yaml has no router config');
   }
 
   const routerDir = ccrRoot ? path.join(ccrRoot, 'src', 'router') : null;

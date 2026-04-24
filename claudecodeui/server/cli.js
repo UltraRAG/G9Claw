@@ -18,9 +18,9 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import {
+    getEdgeClawConfigFilePath,
     getMissingEdgeClawEnvKeys,
-    getRootEnvPath,
-    hasRootEnvFile,
+    hasEdgeClawConfigFile,
     loadRootEdgeClawEnv,
 } from './load-env.js';
 
@@ -118,11 +118,11 @@ function showStatus() {
     console.log(`       Status: ${projectsExists ? c.ok('[OK] Exists') : c.warn('[WARN] Not found')}`);
 
     // Config file location
-    const envFilePath = getRootEnvPath();
-    const envExists = hasRootEnvFile();
+    const configFilePath = getEdgeClawConfigFilePath();
+    const configExists = hasEdgeClawConfigFile();
     console.log(`\n${c.info('[INFO]')} Configuration File:`);
-    console.log(`       ${c.dim(envFilePath)}`);
-    console.log(`       Status: ${envExists ? c.ok('[OK] Exists') : c.warn('[WARN] Not found (using exported environment only)')}`);
+    console.log(`       ${c.dim(configFilePath)}`);
+    console.log(`       Status: ${configExists ? c.ok('[OK] Exists') : c.warn('[WARN] Not found (create it from Settings -> Config)')}`);
 
     console.log('\n' + c.dim('═'.repeat(60)));
     console.log(`\n${c.tip('[TIP]')} Hints:`);
@@ -163,17 +163,10 @@ Examples:
   $ cloudcli start --port 4000      # Explicit start command
   $ cloudcli status                 # Show configuration
 
-Environment Variables:
-  EDGECLAW_API_BASE_URL      Upstream OpenAI-compatible API base URL
-  EDGECLAW_API_KEY           Upstream API key
-  EDGECLAW_MODEL             Main chat model
-  EDGECLAW_PROXY_PORT        Local proxy port (default: 18080)
-  EDGECLAW_MEMORY_ENABLED    Enable memory (default: 1)
-  CONTEXT_WINDOW             Set context window size (default: 160000)
-  SERVER_PORT                Set server port (default: 3001)
-  PORT                       Set server port (default: 3001) (LEGACY)
-  DATABASE_PATH              Set custom database location
-  CLAUDE_CLI_PATH            Set custom Claude CLI path
+Configuration:
+  Edit ~/.edgeclaw/config.yaml directly or from Settings -> Config in the UI.
+  Runtime EDGECLAW_* / OPENAI_* / ANTHROPIC_* variables are derived from YAML
+  internally and are no longer a user-facing configuration source.
 
 Documentation:
   ${packageJson.homepage || 'https://github.com/siteboon/claudecodeui'}

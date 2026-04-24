@@ -97,6 +97,7 @@
     "notifications": "알림",
     "plugins": "플러그인",
     "router": "라우터",
+    "config": "구성",
     "about": "정보"
   },
   "notifications": {
