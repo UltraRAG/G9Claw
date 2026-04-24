@@ -177,12 +177,14 @@ export default function CodeEditor({
 
   const outerContainerClassName = isSidebar
     ? 'w-full h-full flex flex-col'
-    : `fixed inset-0 z-[9999] md:bg-black/50 md:flex md:items-center md:justify-center md:p-4 ${isFullscreen ? 'md:p-0' : ''}`;
+    : `fixed inset-0 z-[9999] md:bg-black/40 md:backdrop-blur-sm md:flex md:items-center md:justify-center md:p-4 ${isFullscreen ? 'md:p-0' : ''}`;
 
   const innerContainerClassName = isSidebar
-    ? 'bg-background flex flex-col w-full h-full'
-    : `bg-background shadow-2xl flex flex-col w-full h-full md:rounded-lg md:shadow-2xl${
-      isFullscreen ? ' md:w-full md:h-full md:rounded-none' : ' md:w-full md:max-w-6xl md:h-[80vh] md:max-h-[80vh]'
+    ? 'bg-white dark:bg-neutral-950 flex flex-col w-full h-full'
+    : `bg-white dark:bg-neutral-950 flex flex-col w-full h-full md:rounded-xl md:border md:border-neutral-200 dark:md:border-neutral-800${
+      isFullscreen
+        ? ' md:w-full md:h-full md:rounded-none md:border-0'
+        : ' md:w-full md:max-w-6xl md:h-[80vh] md:max-h-[80vh] md:shadow-xl'
     }`;
 
   return (
@@ -220,7 +222,7 @@ export default function CodeEditor({
           />
 
           {saveError && (
-            <div className="border-b border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
+            <div className="text-xxs border-b border-red-200/60 bg-red-50 px-4 py-1.5 text-red-700 dark:border-red-900/40 dark:bg-red-900/10 dark:text-red-300">
               {saveError}
             </div>
           )}

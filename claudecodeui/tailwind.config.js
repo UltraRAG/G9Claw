@@ -58,6 +58,18 @@ export default {
         'safe-area-inset-bottom': 'env(safe-area-inset-bottom)',
         'mobile-nav': 'var(--mobile-nav-total)',
       },
+      fontFamily: {
+        sans: [
+          '"InterVariable"',
+          'Inter',
+          'ui-sans-serif',
+          'system-ui',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          'Segoe UI',
+          'sans-serif',
+        ],
+      },
     },
   },
   plugins: [require('@tailwindcss/typography')],

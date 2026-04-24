@@ -1,5 +1,5 @@
-import type { Project } from '../../../../types/app';
 import { useTranslation } from 'react-i18next';
+import type { Project } from '../../../../types/app';
 import { AUTH_TOKEN_STORAGE_KEY } from '../../../auth/constants';
 import { useTheme } from '../../../../contexts/ThemeContext';
 

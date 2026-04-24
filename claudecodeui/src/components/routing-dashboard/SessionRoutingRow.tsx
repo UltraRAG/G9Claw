@@ -77,7 +77,7 @@ export default function SessionRoutingRow({ session }: SessionRoutingRowProps) {
             {tiers.map((t) => (
               <span
                 key={t}
-                className={`inline-flex rounded border px-1.5 py-0.5 text-[10px] font-medium ${TIER_BADGE[t] || 'bg-muted text-muted-foreground border-border'}`}
+                className={`inline-flex rounded border px-1.5 py-0.5 text-[10px] font-medium ${TIER_BADGE[t] || 'border-border bg-muted text-muted-foreground'}`}
               >
                 {t}
               </span>

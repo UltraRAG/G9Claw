@@ -280,7 +280,7 @@ function TokenSaverSection({ config, onChange }: { config: CCRConfig; onChange: 
                   value={ts.rules.join('\n')}
                   onChange={(e) => updateTS({ rules: e.target.value.split('\n').filter((l) => l.trim()) })}
                   rows={5}
-                  className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-1.5 text-xs text-foreground font-mono"
+                  className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-1.5 font-mono text-xs text-foreground"
                 />
               </label>
             )}

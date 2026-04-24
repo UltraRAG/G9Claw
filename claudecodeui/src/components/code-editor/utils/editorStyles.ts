@@ -1,11 +1,11 @@
 export const getEditorLoadingStyles = (isDarkMode: boolean) => {
   return `
     .code-editor-loading {
-      background-color: ${isDarkMode ? '#111827' : '#ffffff'} !important;
+      background-color: ${isDarkMode ? '#0a0a0a' : '#ffffff'} !important;
     }
 
     .code-editor-loading:hover {
-      background-color: ${isDarkMode ? '#111827' : '#ffffff'} !important;
+      background-color: ${isDarkMode ? '#0a0a0a' : '#ffffff'} !important;
     }
   `;
 };
@@ -41,38 +41,39 @@ export const getEditorStyles = (isDarkMode: boolean) => {
     }
 
     .cm-gutter.cm-gutter-minimap {
-      background-color: ${isDarkMode ? '#1e1e1e' : '#f5f5f5'};
+      background-color: ${isDarkMode ? '#0a0a0a' : '#fafafa'};
     }
 
     .cm-editor-toolbar-panel {
-      padding: 4px 10px;
-      background-color: ${isDarkMode ? '#1f2937' : '#ffffff'};
-      border-bottom: 1px solid ${isDarkMode ? '#374151' : '#e5e7eb'};
-      color: ${isDarkMode ? '#d1d5db' : '#374151'};
-      font-size: 12px;
+      padding: 6px 14px;
+      background-color: ${isDarkMode ? '#0a0a0a' : '#ffffff'};
+      border-bottom: 1px solid ${isDarkMode ? '#262626' : '#e5e5e5'};
+      color: ${isDarkMode ? '#a3a3a3' : '#525252'};
+      font-size: 11px;
     }
 
     .cm-diff-nav-btn,
     .cm-toolbar-btn {
-      padding: 3px;
+      padding: 4px;
       background: transparent;
       border: none;
       cursor: pointer;
-      border-radius: 4px;
+      border-radius: 6px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       color: inherit;
-      transition: background-color 0.2s;
+      transition: background-color 0.15s, color 0.15s;
     }
 
     .cm-diff-nav-btn:hover,
     .cm-toolbar-btn:hover {
-      background-color: ${isDarkMode ? '#374151' : '#f3f4f6'};
+      background-color: ${isDarkMode ? '#262626' : '#f5f5f5'};
+      color: ${isDarkMode ? '#fafafa' : '#171717'};
     }
 
     .cm-diff-nav-btn:disabled {
-      opacity: 0.5;
+      opacity: 0.4;
       cursor: not-allowed;
     }
   `;

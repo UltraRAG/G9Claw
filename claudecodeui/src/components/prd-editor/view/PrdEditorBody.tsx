@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
 import { markdown } from '@codemirror/lang-markdown';
-import { oneDark } from '@codemirror/theme-one-dark';
 import { EditorView } from '@codemirror/view';
 import CodeMirror from '@uiw/react-codemirror';
+import { zincDarkTheme, zincLightTheme } from '../../code-editor/utils/zincThemes';
 import MarkdownPreview from '../../code-editor/view/subcomponents/markdown/MarkdownPreview';
 
 type PrdEditorBodyProps = {
@@ -27,7 +27,7 @@ export default function PrdEditorBody({
 
   if (previewMode) {
     return (
-      <div className="prose prose-gray h-full max-w-none overflow-y-auto p-6 dark:prose-invert">
+      <div className="prose prose-sm prose-neutral h-full max-w-none overflow-y-auto bg-white p-6 dark:prose-invert dark:bg-neutral-950">
         <MarkdownPreview content={content} />
       </div>
     );
@@ -38,7 +38,7 @@ export default function PrdEditorBody({
       value={content}
       onChange={onContentChange}
       extensions={extensions}
-      theme={isDarkMode ? oneDark : undefined}
+      theme={isDarkMode ? zincDarkTheme : zincLightTheme}
       height="100%"
       style={{
         fontSize: '14px',
