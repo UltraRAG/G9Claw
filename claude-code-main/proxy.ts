@@ -29,6 +29,17 @@ const DIR = __dirname
 const EDGECLAW_CONFIG: EdgeClawConfig = loadEdgeClawConfig()
 applyEdgeClawConfigToEnv(EDGECLAW_CONFIG)
 
+// Propagate HTTPS proxy from YAML / env so Bun's native fetch honours it
+const _httpsProxy = (EDGECLAW_CONFIG as any)?.runtime?.httpsProxy
+  || EDGECLAW_CONFIG?.router?.httpsProxy
+  || process.env.HTTPS_PROXY
+  || process.env.https_proxy
+  || ''
+if (_httpsProxy) {
+  process.env.HTTPS_PROXY = _httpsProxy
+  process.env.https_proxy = _httpsProxy
+}
+
 const EDGECLAW_MODEL = getEdgeClawProxyModel(EDGECLAW_CONFIG)
 if (!EDGECLAW_MODEL?.provider.baseUrl || !EDGECLAW_MODEL.provider.apiKey || !EDGECLAW_MODEL.model) {
   throw new Error(`[proxy] Missing required provider/model settings in ${getEdgeClawConfigPath()}`)

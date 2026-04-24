@@ -112,7 +112,7 @@ router.get('/config', (_req, res) => {
   try {
     const ccrRoot = resolveClaudeCodeMainRoot();
     const config = loadCCRConfig(ccrRoot);
-    if (!config) return res.status(404).json({ error: 'No ccr-config.json found' });
+    if (!config) return res.status(404).json({ error: 'Router not enabled — set router.enabled: true in ~/.edgeclaw/config.yaml' });
     res.json(sanitizeConfigForClient(config));
   } catch (err) {
     res.status(500).json({ error: err.message });

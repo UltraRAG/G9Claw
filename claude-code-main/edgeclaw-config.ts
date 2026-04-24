@@ -88,6 +88,7 @@ function defaultConfig(): EdgeClawConfig {
       proxyPort: 18080,
       contextWindow: 160000,
       apiTimeoutMs: 120000,
+      httpsProxy: '',
     },
     models: {
       providers: {
@@ -195,6 +196,11 @@ export function buildRuntimeEnvFromConfig(config: EdgeClawConfig): Record<string
     env.EDGECLAW_MEMORY_BASE_URL = memory.provider.baseUrl ?? ''
     env.EDGECLAW_MEMORY_API_KEY = memory.provider.apiKey ?? ''
     env.EDGECLAW_MEMORY_API_TYPE = memory.provider.type === 'openai-responses' ? 'openai-responses' : 'openai-completions'
+  }
+  const httpsProxy = (config.runtime as any)?.httpsProxy || config.router?.httpsProxy || ''
+  if (httpsProxy) {
+    env.HTTPS_PROXY = httpsProxy
+    env.https_proxy = httpsProxy
   }
   return env
 }

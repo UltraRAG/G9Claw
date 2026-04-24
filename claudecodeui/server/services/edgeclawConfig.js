@@ -191,6 +191,7 @@ export function buildDefaultEdgeClawConfig() {
       proxyPort: 18080,
       contextWindow: 160000,
       apiTimeoutMs: 120000,
+      httpsProxy: '',
       databasePath: path.join(os.homedir(), '.cloudcli', 'auth.db'),
       workspacesRoot: os.homedir(),
     },
@@ -505,6 +506,12 @@ export function buildRuntimeEnv(config) {
 
   if (runtime.databasePath) env.DATABASE_PATH = expandTilde(runtime.databasePath);
   if (runtime.workspacesRoot) env.WORKSPACES_ROOT = expandTilde(runtime.workspacesRoot);
+
+  const httpsProxy = runtime.httpsProxy || normalized.router?.httpsProxy || '';
+  if (httpsProxy) {
+    env.HTTPS_PROXY = httpsProxy;
+    env.https_proxy = httpsProxy;
+  }
 
   if (main) {
     env.EDGECLAW_API_BASE_URL = main.provider.baseUrl;

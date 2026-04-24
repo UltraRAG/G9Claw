@@ -384,7 +384,7 @@ export default function RouterSettingsTab() {
       <SettingsSection title="Router">
         <SettingsCard>
           <div className="p-4 text-sm text-muted-foreground">
-            CCR configuration not found. Create a <code className="rounded bg-muted px-1 py-0.5 text-xs">ccr-config.json</code> in the project root to enable the embedded router.
+            CCR configuration not found. Set <code className="rounded bg-muted px-1 py-0.5 text-xs">router.enabled: true</code> in <code className="rounded bg-muted px-1 py-0.5 text-xs">~/.edgeclaw/config.yaml</code> (Settings &gt; Unified Config).
           </div>
         </SettingsCard>
       </SettingsSection>

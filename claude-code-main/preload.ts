@@ -56,9 +56,24 @@ if (
   (!process.env.ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL === CCR_SENTINEL)
 ) {
   const DIR = dirname(new URL(import.meta.url).pathname);
-  const configPath = resolve(DIR, 'ccr-config.json');
 
-  if (existsSync(configPath)) {
+  // Resolve CCR config: YAML (~/.edgeclaw/config.yaml) first, ccr-config.json fallback
+  let config: any = null;
+  try {
+    const { loadEdgeClawConfig, buildCcrConfigFromEdgeClawConfig } = await import('./edgeclaw-config');
+    const yamlConfig = loadEdgeClawConfig();
+    if (yamlConfig?.router?.enabled) {
+      config = buildCcrConfigFromEdgeClawConfig(yamlConfig);
+    }
+  } catch {}
+  if (!config) {
+    const configPath = resolve(DIR, 'ccr-config.json');
+    if (existsSync(configPath)) {
+      try { config = JSON.parse(readFileSync(configPath, 'utf-8')); } catch {}
+    }
+  }
+
+  if (config) {
     const routerDir = resolve(DIR, 'src/router');
     const cjsPath = resolve(routerDir, 'server.cjs');
     const buildScript = resolve(routerDir, 'build.mjs');
@@ -90,7 +105,6 @@ if (
 
     if (existsSync(cjsPath)) {
       try {
-        const config = JSON.parse(readFileSync(configPath, 'utf-8'));
         const CCR = require(cjsPath);
         const Server = CCR.default;
 
