@@ -30,11 +30,7 @@ const SleepTool =
     : null
 // Cron tools are now always compiled into repo builds; runtime gating lives in
 // ScheduleCronTool/prompt.ts so all entrypoints see the same availability.
-const cronTools = [
-  require('./tools/ScheduleCronTool/CronCreateTool.js').CronCreateTool,
-  require('./tools/ScheduleCronTool/CronDeleteTool.js').CronDeleteTool,
-  require('./tools/ScheduleCronTool/CronListTool.js').CronListTool,
-]
+const cronTools = [CronCreateTool, CronDeleteTool, CronListTool]
 const RemoteTriggerTool = feature('AGENT_TRIGGERS_REMOTE')
   ? require('./tools/RemoteTriggerTool/RemoteTriggerTool.js').RemoteTriggerTool
   : null
@@ -62,6 +58,9 @@ import { MemorySearchTool } from './tools/MemorySearchTool/MemorySearchTool.js'
 import { MemoryGetTool } from './tools/MemoryGetTool/MemoryGetTool.js'
 import { MemoryFlushTool } from './tools/MemoryFlushTool/MemoryFlushTool.js'
 import { MemoryDreamTool } from './tools/MemoryDreamTool/MemoryDreamTool.js'
+import { CronCreateTool } from './tools/ScheduleCronTool/CronCreateTool.js'
+import { CronDeleteTool } from './tools/ScheduleCronTool/CronDeleteTool.js'
+import { CronListTool } from './tools/ScheduleCronTool/CronListTool.js'
 import { AlwaysOnDiscoveryPlanTool } from './tools/AlwaysOnDiscoveryPlanTool/AlwaysOnDiscoveryPlanTool.js'
 import { ExitPlanModeV2Tool } from './tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
 import { TestingPermissionTool } from './tools/testing/TestingPermissionTool.js'

@@ -1,8 +1,5 @@
-import { getFeatureValue_CACHED_WITH_REFRESH } from '../../services/analytics/growthbook.js'
 import { DEFAULT_CRON_JITTER_CONFIG } from '../../utils/cronTasks.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-
-const KAIROS_CRON_REFRESH_MS = 5 * 60 * 1000
 
 export const DEFAULT_MAX_AGE_DAYS =
   DEFAULT_CRON_JITTER_CONFIG.recurringMaxAgeMs / (24 * 60 * 60 * 1000)
@@ -22,24 +19,12 @@ export const DEFAULT_MAX_AGE_DAYS =
  * imperative setup, never at module scope — so the disk cache has had a
  * chance to populate.
  *
- * The default is `true` — /loop is GA (announced in changelog). GrowthBook
- * is disabled for Bedrock/Vertex/Foundry and when DISABLE_TELEMETRY /
- * CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC are set; a `false` default would
- * break /loop for those users (GH #31759). The GB gate now serves purely as
- * a fleet-wide kill switch — flipping it to `false` stops already-running
- * schedulers on their next isKilled poll tick, not just new ones.
- *
- * `CLAUDE_CODE_DISABLE_CRON` is a local override that wins over GB.
+ * Cron now bypasses GrowthBook entirely. The local env var remains the single
+ * explicit kill switch so operators can still disable the feature without
+ * editing code.
  */
 export function isKairosCronEnabled(): boolean {
-  return (
-    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON) &&
-    getFeatureValue_CACHED_WITH_REFRESH(
-      'tengu_kairos_cron',
-      true,
-      KAIROS_CRON_REFRESH_MS,
-    )
-  )
+  return !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON)
 }
 
 /**
@@ -47,16 +32,12 @@ export function isKairosCronEnabled(): boolean {
  * {@link isKairosCronEnabled} — flipping this off forces `durable: false` at
  * the call() site, leaving session-only cron (in-memory, GA) untouched.
  *
- * Defaults to `true` so Bedrock/Vertex/Foundry and DISABLE_TELEMETRY users get
- * durable cron. Does NOT consult CLAUDE_CODE_DISABLE_CRON (that kills the whole
- * scheduler via isKairosCronEnabled).
+ * Durable cron also bypasses GrowthBook. Keep the same local kill switch as the
+ * broader cron feature so a local disable cleanly suppresses both regular and
+ * durable task creation paths.
  */
 export function isDurableCronEnabled(): boolean {
-  return getFeatureValue_CACHED_WITH_REFRESH(
-    'tengu_kairos_cron_durable',
-    true,
-    KAIROS_CRON_REFRESH_MS,
-  )
+  return !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON)
 }
 
 export const CRON_CREATE_TOOL_NAME = 'CronCreate'
