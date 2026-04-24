@@ -28,11 +28,12 @@ process.env.GATEWAY_ALLOW_ALL_USERS = 'true'
 
 // Clear old sessions
 const { rmSync } = await import('node:fs')
-const { homedir } = await import('node:os')
 const { join } = await import('node:path')
+const { getGatewayHome } = await import('./config')
 try {
-  rmSync(join(homedir(), '.hermes', 'sessions', 'sessions.db'), { force: true })
-  rmSync(join(homedir(), '.hermes', 'sessions', 'sessions.json'), { force: true })
+  const sessionsDir = join(getGatewayHome(), 'sessions')
+  rmSync(join(sessionsDir, 'sessions.db'), { force: true })
+  rmSync(join(sessionsDir, 'sessions.json'), { force: true })
   console.log('✓ Session data cleared')
 } catch {}
 

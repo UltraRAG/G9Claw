@@ -12,16 +12,16 @@
 
 import { mkdirSync, writeFileSync } from 'fs'
 import { join, dirname } from 'path'
-import { homedir } from 'os'
 import type { GatewayConfig, DeliveryTarget, SessionSource } from './types'
 import { Platform } from './types'
 import type { BasePlatformAdapter } from './platforms/base'
+import { getGatewayHome } from './config'
 
 const MAX_PLATFORM_OUTPUT = 4000
 const TRUNCATED_VISIBLE = 3800
 
 function getOutputDir(): string {
-  return join(process.env.HERMES_HOME || join(homedir(), '.hermes'), 'cron', 'output')
+  return join(getGatewayHome(), 'cron', 'output')
 }
 
 export function parseDeliveryTarget(

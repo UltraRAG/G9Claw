@@ -42,7 +42,7 @@ try {
 }
 
 function getGeneralCwd(): string {
-  const dir = join(homedir(), '.claude-gateway', 'general')
+  const dir = join(homedir(), 'Claude', 'general')
   mkdirSync(dir, { recursive: true })
   return dir
 }
@@ -327,7 +327,6 @@ export class GatewayRunner {
       console.log(`[gateway] Session: ${session.sessionId}`)
 
       await adapter.sendTyping(source.chatId)
-      this.sessionStore.addMessage(session.sessionId, 'user', event.text)
 
       if (sdkQuery) {
         return await this.runWithSDK(adapter, event, session.sessionId)
@@ -485,10 +484,6 @@ export class GatewayRunner {
       if (consumer) {
         consumer.finish()
         await consumerPromise
-      }
-
-      if (fullResponse) {
-        this.sessionStore.addMessage(sessionId, 'assistant', fullResponse)
       }
 
       if (consumer?.finalResponseSent || consumer?.alreadySent) {

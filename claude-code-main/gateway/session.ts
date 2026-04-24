@@ -1,14 +1,17 @@
 /**
  * Session management for the gateway.
  *
- * Handles session tracking, SQLite persistence, reset policy evaluation,
- * and session key construction.
- *
- * Ported from hermes-agent gateway/session.py.
+ * Handles session tracking (JSON-backed), reset policy evaluation, and
+ * session-key construction. Message bodies themselves live in the Claude
+ * Code SDK's own `.jsonl` transcript files under
+ * `~/.claude/projects/<project>/` — this module only stores the metadata
+ * needed to route IM users to those transcripts (origin platform,
+ * token totals, reset state, SDK-session bindings).
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import { homedir } from 'os'
 import { randomUUID } from 'crypto'
 import { createHash } from 'crypto'
 import type {
@@ -21,6 +24,12 @@ import type {
 import { Platform } from './types'
 import { getResetPolicy } from './config'
 import type { ProjectInfo } from './projects'
+
+/** Canonical location for gateway metadata. Co-located with projects so
+ * all conversation state lives under a single root (`~/.claude/projects/`). */
+export function getGatewayMetaDir(): string {
+  return join(homedir(), '.claude', 'projects', '.gateway')
+}
 
 // ─── Per-user project selection ───
 
@@ -36,19 +45,6 @@ export interface UserProjectState {
   cachedProjects?: ProjectInfo[]
   /** Maps projectKey ('general' | project name) -> SDK session UUID for resume */
   sdkSessions?: Record<string, string>
-}
-
-// ─── SQLite (bun:sqlite or better-sqlite3) ───
-
-let Database: any = null
-try {
-  Database = require('bun:sqlite').Database
-} catch {
-  try {
-    Database = require('better-sqlite3')
-  } catch {
-    // SQLite unavailable — session persistence will use JSON only
-  }
 }
 
 // ─── PII redaction helpers ───
@@ -178,67 +174,6 @@ export function buildSessionContextPrompt(
   return lines.join('\n')
 }
 
-// ─── Session database (SQLite) ───
-
-class SessionDB {
-  private db: any
-
-  constructor(dbPath: string) {
-    if (!Database) throw new Error('SQLite not available')
-    this.db = new Database(dbPath)
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        session_id TEXT PRIMARY KEY,
-        source TEXT,
-        user_id TEXT,
-        created_at TEXT DEFAULT (datetime('now')),
-        ended_at TEXT,
-        end_reason TEXT
-      );
-      CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
-      );
-    `)
-  }
-
-  createSession(sessionId: string, source: string, userId?: string): void {
-    this.db
-      .prepare('INSERT OR IGNORE INTO sessions (session_id, source, user_id) VALUES (?, ?, ?)')
-      .run(sessionId, source, userId ?? null)
-  }
-
-  endSession(sessionId: string, reason: string): void {
-    this.db
-      .prepare("UPDATE sessions SET ended_at = datetime('now'), end_reason = ? WHERE session_id = ?")
-      .run(reason, sessionId)
-  }
-
-  addMessage(sessionId: string, role: string, content: string): void {
-    this.db
-      .prepare('INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)')
-      .run(sessionId, role, content)
-  }
-
-  getMessages(sessionId: string): Array<{ role: string; content: string; createdAt: string }> {
-    return this.db
-      .prepare('SELECT role, content, created_at as createdAt FROM messages WHERE session_id = ? ORDER BY id')
-      .all(sessionId)
-  }
-
-  sessionCount(): number {
-    return this.db.prepare('SELECT COUNT(*) as count FROM sessions').get().count
-  }
-
-  close(): void {
-    this.db.close()
-  }
-}
-
 // ─── Session store ───
 
 function now(): Date {
@@ -256,19 +191,14 @@ export class SessionStore {
   private config: GatewayConfig
   private entries = new Map<string, SessionEntry>()
   private loaded = false
-  private db: SessionDB | null = null
 
   constructor(sessionsDir: string, config: GatewayConfig) {
     this.sessionsDir = sessionsDir
     this.config = config
-
-    if (Database) {
-      try {
-        mkdirSync(sessionsDir, { recursive: true })
-        this.db = new SessionDB(join(sessionsDir, 'sessions.db'))
-      } catch (err) {
-        console.warn('[gateway] SQLite session store unavailable:', err)
-      }
+    try {
+      mkdirSync(sessionsDir, { recursive: true })
+    } catch {
+      // created lazily on first write
     }
   }
 
@@ -355,11 +285,6 @@ export class SessionStore {
         this.save()
         return entry
       }
-
-      // End old session in DB
-      if (this.db) {
-        try { this.db.endSession(entry.sessionId, 'session_reset') } catch {}
-      }
     }
 
     const sessionId = generateSessionId()
@@ -390,14 +315,6 @@ export class SessionStore {
     this.entries.set(sessionKey, entry)
     this.save()
 
-    if (this.db) {
-      try {
-        this.db.createSession(sessionId, source.platform, source.userId)
-      } catch (err) {
-        console.warn('[gateway] Failed to create SQLite session:', err)
-      }
-    }
-
     return entry
   }
 
@@ -419,16 +336,17 @@ export class SessionStore {
     return true
   }
 
-  addMessage(sessionId: string, role: string, content: string): void {
-    if (this.db) {
-      try { this.db.addMessage(sessionId, role, content) } catch {}
-    }
+  /**
+   * Messages themselves are persisted by the Claude Code SDK into
+   * `~/.claude/projects/<project>/<sdk-session-id>.jsonl`; the gateway no
+   * longer maintains a duplicate transcript. These stubs remain so external
+   * callers can be migrated incrementally.
+   */
+  addMessage(_sessionId: string, _role: string, _content: string): void {
+    /* no-op: messages live in SDK .jsonl transcripts */
   }
 
-  getMessages(sessionId: string): Array<{ role: string; content: string }> {
-    if (this.db) {
-      try { return this.db.getMessages(sessionId) } catch {}
-    }
+  getMessages(_sessionId: string): Array<{ role: string; content: string }> {
     return []
   }
 
@@ -540,7 +458,7 @@ export class SessionStore {
   }
 
   close(): void {
-    if (this.db) this.db.close()
+    /* no persistent handles left to release */
   }
 
   // ─── Serialization ───
@@ -619,4 +537,39 @@ export class SessionStore {
       resetHadActivity: false,
     }
   }
+}
+
+// ─── Origin lookup ───
+
+/**
+ * Resolve the "origin" label for a given SDK session id.
+ *
+ * Sessions that the gateway routed (from Feishu, Telegram, …) have a
+ * mapping recorded in `user-projects.json`; those return
+ * `gateway:<platform>`. Everything else — native TUI and claudecodeui
+ * sessions that never passed through the gateway — falls through to
+ * `"default"`, which is the catch-all label for locally-initiated chats.
+ */
+export function getSessionOrigin(sdkSessionId: string): string {
+  if (!sdkSessionId) return 'default'
+  const userProjectsFile = join(getGatewayMetaDir(), 'user-projects.json')
+  if (!existsSync(userProjectsFile)) return 'default'
+  try {
+    const data = JSON.parse(readFileSync(userProjectsFile, 'utf-8')) as Record<
+      string,
+      { project?: unknown; sdkSessions?: Record<string, string> }
+    >
+    for (const [userKey, entry] of Object.entries(data)) {
+      const sessions = entry.sdkSessions ?? {}
+      for (const id of Object.values(sessions)) {
+        if (id === sdkSessionId) {
+          const platform = userKey.split(':')[0] ?? 'unknown'
+          return `gateway:${platform}`
+        }
+      }
+    }
+  } catch {
+    // fall through
+  }
+  return 'default'
 }
