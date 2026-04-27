@@ -62,6 +62,7 @@ export default function AppShellV2() {
     isLoadingProjects,
     externalMessageUpdate,
     setActiveTab,
+    setSelectedSession,
     setSidebarOpen,
     setIsInputFocused,
     setShowSettings,
@@ -283,9 +284,22 @@ export default function AppShellV2() {
 
   const handleSelectTab = useCallback(
     (tab: AppTab) => {
+      // Home is the "true welcome" entry — drop any previously-selected
+      // session (and the /session/<id> URL that would re-resolve it via
+      // useProjectsState) so the next message submitted from Home creates
+      // a fresh session instead of being appended to the previous one.
+      if (tab === 'home') {
+        setSelectedSession(null);
+        const target = selectedProject
+          ? `/p/${encodeURIComponent(selectedProject.name)}`
+          : '/';
+        if (window.location.pathname !== target) {
+          navigate(target);
+        }
+      }
       setActiveTab(tab);
     },
-    [setActiveTab],
+    [navigate, selectedProject, setActiveTab, setSelectedSession],
   );
 
   const handleStartNewSession = useCallback(
@@ -355,7 +369,7 @@ export default function AppShellV2() {
           selectedProject={selectedProject}
           selectedSession={selectedSession}
           activeTab={activeTab}
-          setActiveTab={setActiveTab}
+          setActiveTab={handleSelectTab}
           ws={ws}
           sendMessage={sendMessage}
           latestMessage={latestMessage}

@@ -136,6 +136,16 @@
     "clearInput": "Clear input",
     "scrollToBottom": "Scroll to bottom"
   },
+  "commandMenu": {
+    "empty": "No commands available",
+    "groups": {
+      "frequent": "Frequently used",
+      "builtin": "Built-in",
+      "project": "Project",
+      "user": "User",
+      "other": "Other"
+    }
+  },
   "thinkingMode": {
     "selector": {
       "title": "Thinking Mode",

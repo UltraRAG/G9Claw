@@ -356,6 +356,20 @@ export function useChatSessionState({
   // Main session loading effect — store-based
   useEffect(() => {
     if (!selectedSession || !selectedProject) {
+      // When the welcome → first-message flow lands a `session_created`
+      // from the backend, `useChatRealtimeHandlers` calls
+      // `setCurrentSessionId(newId)` *before* the projects list refreshes
+      // and `selectedSession` resolves. Because `currentSessionId` is in
+      // this effect's dep array, that update re-fires this effect with
+      // `selectedSession` still null — and the reset below would yank
+      // `currentSessionId` back to null, dropping `activeSessionId` to
+      // null, emptying chatMessages, and re-triggering welcome mode for
+      // ~1s until selectedSession finally catches up. Skip the reset in
+      // that exact transient state so the user message + streaming
+      // response stay rendered through the handoff.
+      if (!selectedSession && currentSessionId) {
+        return;
+      }
       resetStreamingState();
       pendingViewSessionRef.current = null;
       setClaudeStatus(null);

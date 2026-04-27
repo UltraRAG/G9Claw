@@ -588,6 +588,7 @@ export function useProjectsState({
     settingsInitialTab,
     externalMessageUpdate,
     setActiveTab,
+    setSelectedSession,
     setSidebarOpen,
     setIsInputFocused,
     setShowSettings,
