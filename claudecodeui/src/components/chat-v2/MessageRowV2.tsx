@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react';
-import { AlertTriangle, Bot } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import type {
   ChatMessage,
   ClaudePermissionSuggestion,
@@ -9,7 +9,33 @@ import type { Project, SessionProvider } from '../../types/app';
 import MessageComponent from '../chat/view/subcomponents/MessageComponent';
 import { Markdown } from '../chat/view/subcomponents/Markdown';
 import { formatUsageLimitText } from '../chat/utils/chatFormatting';
-import { cn } from '../../lib/utils.js';
+
+/**
+ * Tiny EdgeClaw mark used as the assistant avatar — a stylised "EC"
+ * monogram on a black square. Matches the brand mark shipped in
+ * /public/favicon.svg so the chat avatar reads like a miniature app icon.
+ */
+function EdgeClawMark({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className={className}
+      role="img"
+    >
+      <rect width="24" height="24" rx="6" className="fill-neutral-900 dark:fill-neutral-50" />
+      <text
+        x="12"
+        y="16"
+        textAnchor="middle"
+        className="fill-neutral-50 dark:fill-neutral-900"
+        style={{ fontSize: 11, fontWeight: 700, fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif', letterSpacing: '-0.02em' }}
+      >
+        EC
+      </text>
+    </svg>
+  );
+}
 
 type DiffLine = { type: string; content: string; lineNum: number };
 
@@ -46,10 +72,6 @@ const shouldDelegate = (message: ChatMessage): boolean => {
   if (t === 'assistant' && message.isThinking && !message.content) return true;
   return false;
 };
-
-function getUserInitials(providerLabel?: string): string {
-  return (providerLabel || 'You').slice(0, 2).toUpperCase();
-}
 
 function MessageRowV2({
   message,
@@ -97,58 +119,47 @@ function MessageRowV2({
   const isUser = message.type === 'user';
   const isError = message.type === 'error';
 
-  const roleLabel = isUser
-    ? 'You'
-    : isError
-      ? 'Error'
-      : provider === 'cursor'
-        ? 'Cursor'
-        : provider === 'codex'
-          ? 'Codex'
-          : provider === 'gemini'
-            ? 'Gemini'
-            : 'edgeclaw';
-
-  return (
-    <div className="flex gap-4">
-      <div
-        className={cn(
-          'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xxs font-medium',
-          isError
-            ? 'bg-red-500/10 text-red-500'
-            : isUser
-              ? 'bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200'
-              : 'bg-neutral-900 text-neutral-50 dark:bg-neutral-50 dark:text-neutral-900',
-        )}
-      >
-        {isError ? (
-          <AlertTriangle className="h-3.5 w-3.5" strokeWidth={2} />
-        ) : isUser ? (
-          getUserInitials('You')
-        ) : provider === 'claude' ? (
-          'E'
-        ) : (
-          <Bot className="h-3.5 w-3.5" strokeWidth={1.75} />
-        )}
-      </div>
-      <div className="min-w-0 flex-1 pt-0.5">
-        <div className="mb-1 text-[13px] font-medium text-neutral-900 dark:text-neutral-100">
-          {roleLabel}
-        </div>
-        <div
-          className={cn(
-            'text-[14px] leading-relaxed',
-            isError
-              ? 'text-red-500'
-              : 'text-neutral-800 dark:text-neutral-200',
-          )}
-        >
+  // ── User: right-aligned grey bubble (ChatGPT style) ─────────────────────
+  if (isUser) {
+    return (
+      <div className="flex w-full justify-end">
+        <div className="max-w-[80%] rounded-2xl rounded-br-md bg-neutral-100 px-4 py-2.5 text-[14px] leading-relaxed text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100">
           {message.isStreaming && !formattedContent ? (
             <span className="inline-block h-4 w-2 animate-pulse bg-neutral-400 dark:bg-neutral-500" />
           ) : (
             <Markdown>{formattedContent}</Markdown>
           )}
         </div>
+      </div>
+    );
+  }
+
+  // ── Error: full-width red banner with warning glyph ──────────────────────
+  if (isError) {
+    return (
+      <div className="flex gap-3">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-red-500/10 text-red-500">
+          <AlertTriangle className="h-3.5 w-3.5" strokeWidth={2} />
+        </div>
+        <div className="min-w-0 flex-1 pt-0.5 text-[14px] leading-relaxed text-red-500">
+          <Markdown>{formattedContent}</Markdown>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Assistant: full-width prose with EdgeClaw mark on the left ──────────
+  // No bubble — long markdown / fenced code blocks render edge-to-edge so
+  // diffs and snippets stay legible.
+  return (
+    <div className="flex gap-3">
+      <EdgeClawMark className="h-7 w-7 shrink-0 rounded-md" />
+      <div className="min-w-0 flex-1 pt-0.5 text-[14px] leading-relaxed text-neutral-800 dark:text-neutral-200">
+        {message.isStreaming && !formattedContent ? (
+          <span className="inline-block h-4 w-2 animate-pulse bg-neutral-400 dark:bg-neutral-500" />
+        ) : (
+          <Markdown>{formattedContent}</Markdown>
+        )}
       </div>
     </div>
   );

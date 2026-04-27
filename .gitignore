@@ -23,3 +23,8 @@ build/
 claude
 bun.lock
 test-results/
+
+# Local dev tooling (Lark / Feishu CLI skill caches, agent runtime)
+.agents/
+skills/
+skills-lock.json

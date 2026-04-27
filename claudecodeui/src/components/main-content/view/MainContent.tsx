@@ -13,7 +13,7 @@ import PluginTabContent from '../../plugins/view/PluginTabContent';
 import RoutingDashboard from '../../routing-dashboard/RoutingDashboard';
 import DashboardV2 from '../../main-content-v2/DashboardV2';
 import TasksV2 from '../../main-content-v2/TasksV2';
-import MemoryV2 from '../../main-content-v2/MemoryV2';
+import { cn } from '../../../lib/utils.js';
 import {
   getStoredClaudePermissionMode,
   startClaudeSessionCommand,
@@ -169,6 +169,7 @@ function MainContent({
   onReplaceTemporarySession,
   onNavigateToSession,
   onStartNewSession,
+  onSelectSession,
   onShowSettings,
   externalMessageUpdate,
   chromeless = false,
@@ -506,36 +507,43 @@ function MainContent({
       )}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>
-          <div className={`h-full ${activeTab === 'chat' ? 'block' : 'hidden'}`}>
-            <ErrorBoundary showDetails>
-              {chromeless ? (
-                <ChatInterfaceV2
-                  selectedProject={selectedProject}
-                  selectedSession={selectedSession}
-                  ws={ws}
-                  sendMessage={sendMessage}
-                  latestMessage={latestMessage}
-                  onFileOpen={handleFileOpen}
-                  onInputFocusChange={onInputFocusChange}
-                  onSessionActive={onSessionActive}
-                  onSessionInactive={onSessionInactive}
-                  onSessionProcessing={onSessionProcessing}
-                  onSessionNotProcessing={onSessionNotProcessing}
-                  processingSessions={processingSessions}
-                  onReplaceTemporarySession={onReplaceTemporarySession}
-                  onNavigateToSession={onNavigateToSession}
-                  onShowSettings={onShowSettings}
-                  onLaunchAlwaysOnPlanExecution={launchQueuedDiscoveryPlanExecution}
-                  autoExpandTools={autoExpandTools}
-                  showRawParameters={showRawParameters}
-                  showThinking={showThinking}
-                  autoScrollToBottom={autoScrollToBottom}
-                  sendByCtrlEnter={sendByCtrlEnter}
-                  externalMessageUpdate={externalMessageUpdate}
-                  onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
-                />
-              ) : (
+        {chromeless ? (
+          <SplitBody
+            selectedProject={selectedProject}
+            selectedSession={selectedSession}
+            activeTab={activeTab}
+            shouldShowTasksTab={shouldShowTasksTab}
+            tasksEnabled={tasksEnabled}
+            setActiveTab={setActiveTab}
+            ws={ws}
+            sendMessage={sendMessage}
+            latestMessage={latestMessage}
+            isMobile={isMobile}
+            handleFileOpen={handleFileOpen}
+            onInputFocusChange={onInputFocusChange}
+            onSessionActive={onSessionActive}
+            onSessionInactive={onSessionInactive}
+            onSessionProcessing={onSessionProcessing}
+            onSessionNotProcessing={onSessionNotProcessing}
+            processingSessions={processingSessions}
+            onReplaceTemporarySession={onReplaceTemporarySession}
+            onNavigateToSession={onNavigateToSession}
+            onShowSettings={onShowSettings}
+            externalMessageUpdate={externalMessageUpdate}
+            autoExpandTools={autoExpandTools}
+            showRawParameters={showRawParameters}
+            showThinking={showThinking}
+            autoScrollToBottom={autoScrollToBottom}
+            sendByCtrlEnter={sendByCtrlEnter}
+            launchQueuedDiscoveryPlanExecution={launchQueuedDiscoveryPlanExecution}
+            handleStartDiscoverySession={handleStartDiscoverySession}
+            handleExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
+            editorExpanded={editorExpanded}
+          />
+        ) : (
+          <div className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>
+            <div className={`h-full ${activeTab === 'chat' ? 'block' : 'hidden'}`}>
+              <ErrorBoundary showDetails>
                 <ChatInterface
                   selectedProject={selectedProject}
                   selectedSession={selectedSession}
@@ -561,106 +569,68 @@ function MainContent({
                   externalMessageUpdate={externalMessageUpdate}
                   onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
                 />
-              )}
-            </ErrorBoundary>
-          </div>
-
-          {activeTab === 'files' && (
-            <div className="h-full overflow-hidden">
-              {chromeless ? (
-                <FilesV2 selectedProject={selectedProject} onFileOpen={handleFileOpen} />
-              ) : (
-                <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
-              )}
+              </ErrorBoundary>
             </div>
-          )}
 
-          {activeTab === 'always-on' && (
-            <div className="h-full overflow-hidden">
-              {chromeless ? (
-                <AlwaysOnV2
-                  selectedProject={selectedProject}
-                  onStartDiscoverySession={handleStartDiscoverySession}
-                  onExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
-                  onOpenDiscoverySession={onNavigateToSession}
-                />
-              ) : (
+            {activeTab === 'files' && (
+              <div className="h-full overflow-hidden">
+                <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+              </div>
+            )}
+
+            {activeTab === 'always-on' && (
+              <div className="h-full overflow-hidden">
                 <AlwaysOnPanel
                   selectedProject={selectedProject}
                   onStartDiscoverySession={handleStartDiscoverySession}
                   onExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
                   onOpenDiscoverySession={onNavigateToSession}
                 />
-              )}
-            </div>
-          )}
+              </div>
+            )}
 
-          {activeTab === 'shell' && (
-            <div className="h-full w-full overflow-hidden">
-              {chromeless ? (
-                <ShellV2
-                  selectedProject={selectedProject}
-                  selectedSession={selectedSession}
-                  isActive={activeTab === 'shell'}
-                />
-              ) : (
+            {activeTab === 'shell' && (
+              <div className="h-full w-full overflow-hidden">
                 <StandaloneShell
                   project={selectedProject}
                   session={selectedSession}
                   showHeader={false}
                   isActive={activeTab === 'shell'}
                 />
-              )}
-            </div>
-          )}
-
-          {activeTab === 'git' && (
-            <div className="h-full overflow-hidden">
-              {chromeless ? (
-                <GitV2 selectedProject={selectedProject} onFileOpen={handleFileOpen} />
-              ) : (
-                <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
-              )}
-            </div>
-          )}
-
-          {shouldShowTasksTab &&
-            (chromeless ? (
-              <div className={`h-full ${activeTab === 'tasks' ? 'block' : 'hidden'}`}>
-                <TasksV2 isVisible={activeTab === 'tasks'} />
               </div>
-            ) : (
-              <TaskMasterPanel isVisible={activeTab === 'tasks'} />
-            ))}
+            )}
 
-          {activeTab === 'dashboard' && (
-            <div className="h-full overflow-auto">
-              {chromeless ? <DashboardV2 /> : <RoutingDashboard />}
-            </div>
-          )}
+            {activeTab === 'git' && (
+              <div className="h-full overflow-hidden">
+                <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
+              </div>
+            )}
 
-          {activeTab === 'memory' && (
-            <div className="h-full overflow-hidden">
-              {chromeless ? (
-                <MemoryV2 selectedProject={selectedProject} />
-              ) : (
+            {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
+
+            {activeTab === 'dashboard' && (
+              <div className="h-full overflow-auto">
+                <RoutingDashboard />
+              </div>
+            )}
+
+            {activeTab === 'memory' && (
+              <div className="h-full overflow-hidden">
                 <MemoryPanel selectedProject={selectedProject} />
-              )}
-            </div>
-          )}
+              </div>
+            )}
 
-          <div className={`h-full overflow-hidden ${activeTab === 'preview' ? 'block' : 'hidden'}`} />
-
-          {activeTab.startsWith('plugin:') && (
-            <div className="h-full overflow-hidden">
-              <PluginTabContent
-                pluginName={activeTab.replace('plugin:', '')}
-                selectedProject={selectedProject}
-                selectedSession={selectedSession}
-              />
-            </div>
-          )}
-        </div>
+            {activeTab.startsWith('plugin:') && (
+              <div className="h-full overflow-hidden">
+                <PluginTabContent
+                  pluginName={activeTab.replace('plugin:', '')}
+                  selectedProject={selectedProject}
+                  selectedSession={selectedSession}
+                />
+              </div>
+            )}
+          </div>
+        )}
 
         <EditorSidebar
           editingFile={editingFile}
@@ -676,6 +646,212 @@ function MainContent({
           fillSpace={activeTab === 'files'}
         />
       </div>
+    </div>
+  );
+}
+
+// V2 split body: left half is always Chat (anchored, like ChatGPT-style
+// conversation pane), right half hosts the active tool. When the user is on
+// the Home or Chat tab the right pane collapses entirely so the Chat takes
+// the full width — Home shows the welcome layout, Chat shows the active
+// session in a roomy 1-column thread. For every other tab (Files, Shell,
+// Git, Always-On, Dashboard, Tasks, Memory, plugins) the right half gets a
+// vertical splitter and the corresponding tool view.
+type SplitBodyProps = {
+  selectedProject: Project;
+  selectedSession: any;
+  activeTab: string;
+  shouldShowTasksTab: boolean;
+  tasksEnabled: boolean;
+  setActiveTab: (tab: any) => void;
+  ws: any;
+  sendMessage: any;
+  latestMessage: any;
+  isMobile: boolean;
+  handleFileOpen: (filePath: string, diffInfo?: unknown) => void;
+  onInputFocusChange: any;
+  onSessionActive: any;
+  onSessionInactive: any;
+  onSessionProcessing: any;
+  onSessionNotProcessing: any;
+  processingSessions: any;
+  onReplaceTemporarySession: any;
+  onNavigateToSession: (sessionId: string) => void;
+  onShowSettings: any;
+  externalMessageUpdate: any;
+  autoExpandTools: any;
+  showRawParameters: any;
+  showThinking: any;
+  autoScrollToBottom: any;
+  sendByCtrlEnter: any;
+  launchQueuedDiscoveryPlanExecution: any;
+  handleStartDiscoverySession: any;
+  handleExecuteDiscoveryPlan: any;
+  editorExpanded: boolean;
+};
+
+function SplitBody(props: SplitBodyProps) {
+  const {
+    selectedProject,
+    selectedSession,
+    activeTab,
+    shouldShowTasksTab,
+    tasksEnabled,
+    setActiveTab,
+    ws,
+    sendMessage,
+    latestMessage,
+    isMobile,
+    handleFileOpen,
+    onInputFocusChange,
+    onSessionActive,
+    onSessionInactive,
+    onSessionProcessing,
+    onSessionNotProcessing,
+    processingSessions,
+    onReplaceTemporarySession,
+    onNavigateToSession,
+    onShowSettings,
+    externalMessageUpdate,
+    autoExpandTools,
+    showRawParameters,
+    showThinking,
+    autoScrollToBottom,
+    sendByCtrlEnter,
+    launchQueuedDiscoveryPlanExecution,
+    handleStartDiscoverySession,
+    handleExecuteDiscoveryPlan,
+    editorExpanded,
+  } = props;
+
+  // Render-mode taxonomy:
+  //   - 'welcome': Home tab. Chat in welcome (centered) mode, full width.
+  //   - 'chat':    Chat tab. Single full-width chat surface.
+  //   - 'split':   Files tab only. Chat on the left, file tree/editor on right.
+  //   - 'tool':    Always-On / Dashboard / Memory / Tasks / Shell / Git /
+  //                plugin tabs. Tool fills the whole main area, no chat
+  //                alongside — matches the legacy single-pane layout users
+  //                expect when they tab into a focused tool.
+  //
+  // Note: Shell + Git aren't surfaced in the V2 top tab bar (see TABS in
+  // MainAreaV2.tsx) but plugins / programmatic activeTab values still hit
+  // those code paths, so we keep them here as full-screen tool views.
+  const isPlugin = typeof activeTab === 'string' && activeTab.startsWith('plugin:');
+  const fullScreenToolTabs = new Set([
+    'shell',
+    'git',
+    'always-on',
+    'dashboard',
+    'memory',
+    'tasks',
+  ]);
+  const isFullScreenTool = fullScreenToolTabs.has(activeTab) || isPlugin;
+  // Tasks tab is conditional — fall back to chat if the project hasn't
+  // enabled it yet so we don't render a black hole.
+  const renderTasksAsTool = activeTab === 'tasks' && shouldShowTasksTab;
+  const isFiles = activeTab === 'files';
+
+  const renderTool = () => {
+    if (activeTab === 'shell') {
+      return (
+        <ShellV2
+          selectedProject={selectedProject}
+          selectedSession={selectedSession}
+          isActive
+        />
+      );
+    }
+    if (activeTab === 'git') {
+      return <GitV2 selectedProject={selectedProject} onFileOpen={handleFileOpen} />;
+    }
+    if (activeTab === 'always-on') {
+      return (
+        <AlwaysOnV2
+          selectedProject={selectedProject}
+          onStartDiscoverySession={handleStartDiscoverySession}
+          onExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
+          onOpenDiscoverySession={onNavigateToSession}
+        />
+      );
+    }
+    if (activeTab === 'dashboard') return <DashboardV2 />;
+    if (activeTab === 'memory') return <MemoryPanel selectedProject={selectedProject} />;
+    if (renderTasksAsTool) return <TasksV2 isVisible />;
+    if (isPlugin) {
+      return (
+        <PluginTabContent
+          pluginName={activeTab.replace('plugin:', '')}
+          selectedProject={selectedProject}
+          selectedSession={selectedSession}
+        />
+      );
+    }
+    return null;
+  };
+
+  // Full-screen tools branch out before the chat surface so we don't
+  // mount ChatInterfaceV2 at all on those tabs — that drops the websocket
+  // listeners + composer from the tree, which is what makes Memory's iframe
+  // and the dashboards feel "back to legacy" full-screen.
+  if (isFullScreenTool && (activeTab !== 'tasks' || shouldShowTasksTab)) {
+    return (
+      <div className={cn('flex min-h-0 min-w-0 flex-1 overflow-hidden', editorExpanded && 'hidden')}>
+        <div className="flex h-full w-full min-w-0 flex-col overflow-hidden">
+          {renderTool()}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn('flex min-h-0 min-w-0 flex-1 overflow-hidden', editorExpanded && 'hidden')}>
+      {/* Chat surface. Left half when split (files), full width otherwise.
+          Welcome mode kicks in on Home; first submit auto-flips to Chat. */}
+      <div
+        className={cn(
+          'flex min-h-0 min-w-0 flex-col',
+          isFiles ? 'w-1/2 border-r border-neutral-200 dark:border-neutral-800' : 'flex-1',
+        )}
+      >
+        <ErrorBoundary showDetails>
+          <ChatInterfaceV2
+            selectedProject={selectedProject}
+            selectedSession={selectedSession}
+            ws={ws}
+            sendMessage={sendMessage}
+            latestMessage={latestMessage}
+            onFileOpen={handleFileOpen}
+            onInputFocusChange={onInputFocusChange}
+            onSessionActive={onSessionActive}
+            onSessionInactive={onSessionInactive}
+            onSessionProcessing={onSessionProcessing}
+            onSessionNotProcessing={onSessionNotProcessing}
+            processingSessions={processingSessions}
+            onReplaceTemporarySession={onReplaceTemporarySession}
+            onNavigateToSession={onNavigateToSession}
+            onShowSettings={onShowSettings}
+            onLaunchAlwaysOnPlanExecution={launchQueuedDiscoveryPlanExecution}
+            autoExpandTools={autoExpandTools}
+            showRawParameters={showRawParameters}
+            showThinking={showThinking}
+            autoScrollToBottom={autoScrollToBottom}
+            sendByCtrlEnter={sendByCtrlEnter}
+            externalMessageUpdate={externalMessageUpdate}
+            onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
+            forceWelcome={activeTab === 'home'}
+            onExitWelcome={() => setActiveTab('chat')}
+          />
+        </ErrorBoundary>
+      </div>
+
+      {/* Right half — only mounted when the user is on Files (chat-paired
+          file tree + editor). All other tools render in the full-screen
+          branch above. */}
+      {isFiles ? (
+        <div className="flex min-h-0 w-1/2 min-w-0 flex-col overflow-hidden">
+          <FilesV2 selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+        </div>
+      ) : null}
     </div>
   );
 }

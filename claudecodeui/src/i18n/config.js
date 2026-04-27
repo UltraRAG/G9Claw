@@ -21,6 +21,8 @@ import enAuth from './locales/en/auth.json';
 import enSidebar from './locales/en/sidebar.json';
 import enChat from './locales/en/chat.json';
 import enCodeEditor from './locales/en/codeEditor.json';
+import enAlwaysOn from './locales/en/alwaysOn.json';
+import enRouting from './locales/en/routing.json';
 // eslint-disable-next-line import-x/order
 import enTasks from './locales/en/tasks.json';
 
@@ -37,6 +39,8 @@ import zhSettings from './locales/zh-CN/settings.json';
 import zhAuth from './locales/zh-CN/auth.json';
 import zhSidebar from './locales/zh-CN/sidebar.json';
 import zhChat from './locales/zh-CN/chat.json';
+import zhAlwaysOn from './locales/zh-CN/alwaysOn.json';
+import zhRouting from './locales/zh-CN/routing.json';
 // eslint-disable-next-line import-x/order
 import zhCodeEditor from './locales/zh-CN/codeEditor.json';
 
@@ -99,6 +103,8 @@ i18n
         chat: enChat,
         codeEditor: enCodeEditor,
         tasks: enTasks,
+        alwaysOn: enAlwaysOn,
+        routing: enRouting,
       },
       ko: {
         common: koCommon,
@@ -115,6 +121,8 @@ i18n
         sidebar: zhSidebar,
         chat: zhChat,
         codeEditor: zhCodeEditor,
+        alwaysOn: zhAlwaysOn,
+        routing: zhRouting,
       },
       ja: {
         common: jaCommon,
@@ -155,7 +163,7 @@ i18n
     debug: import.meta.env.DEV,
 
     // Namespaces - load only what's needed
-    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'tasks'],
+    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'tasks', 'alwaysOn', 'routing'],
     defaultNS: 'common',
 
     // Key separator for nested keys (default: '.')

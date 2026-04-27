@@ -1,49 +1,64 @@
+// Regenerate the EdgeClaw "EC" letter-mark assets used as the favicon,
+// in-app logo, and PWA icons. Output covers both .svg vectors and .png
+// rasters (rendered with sharp). Run from the project root:
+//
+//   node claudecodeui/public/generate-icons.js
+//
+// or from claudecodeui/:
+//
+//   node public/generate-icons.js
+//
+// Update the mark in `ecMarkSvg()` below — every output file pulls from
+// that one function so the mark stays consistent across all sizes.
+
 const fs = require('fs');
 const path = require('path');
+const sharp = require('sharp');
 
-// Icon sizes needed
-const sizes = [72, 96, 128, 144, 152, 192, 384, 512];
+const PUBLIC = __dirname;
 
-// SVG template function
-function createIconSVG(size) {
-  const cornerRadius = Math.round(size * 0.25); // 25% corner radius
-  const strokeWidth = Math.max(2, Math.round(size * 0.06)); // Scale stroke width
-  
-  // MessageSquare path scaled to size
-  const padding = Math.round(size * 0.25);
-  const iconSize = size - (padding * 2);
-  const startX = padding;
-  const startY = Math.round(padding * 0.7);
-  const endX = startX + iconSize;
-  const endY = startY + Math.round(iconSize * 0.6);
-  const tailX = startX;
-  const tailY = endY + Math.round(iconSize * 0.3);
-  
-  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Background with rounded corners -->
-  <rect width="${size}" height="${size}" rx="${cornerRadius}" fill="hsl(262.1 83.3% 57.8%)"/>
-  
-  <!-- MessageSquare icon -->
-  <path d="M${startX} ${startY}C${startX} ${startY - 10} ${startX + 10} ${startY - 20} ${startX + 20} ${startY - 20}H${endX - 20}C${endX - 10} ${startY - 20} ${endX} ${startY - 10} ${endX} ${startY}V${endY - 20}C${endX} ${endY - 10} ${endX - 10} ${endY} ${endX - 20} ${endY}H${startX + Math.round(iconSize * 0.4)}L${tailX} ${tailY}V${startY}Z" 
-        stroke="white" 
-        stroke-width="${strokeWidth}" 
-        stroke-linecap="round" 
-        stroke-linejoin="round" 
-        fill="none"/>
+function ecMarkSvg({ size = 512 } = {}) {
+  const r = Math.round(size * 0.18);
+  const fontSize = Math.round(size * 0.46);
+  const baselineY = Math.round(size * 0.62);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">
+  <rect width="${size}" height="${size}" rx="${r}" fill="#0A0A0A"/>
+  <text x="${size / 2}" y="${baselineY}" text-anchor="middle"
+        font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+        font-weight="800" font-size="${fontSize}" letter-spacing="${(-fontSize * 0.05).toFixed(2)}"
+        fill="#FAFAFA">EC</text>
 </svg>`;
 }
 
-// Generate SVG files for each size
-sizes.forEach(size => {
-  const svgContent = createIconSVG(size);
-  const filename = `icon-${size}x${size}.svg`;
-  const filepath = path.join(__dirname, 'icons', filename);
-  
-  fs.writeFileSync(filepath, svgContent);
-  console.log(`Created ${filename}`);
-});
+const PWA_SIZES = [72, 96, 128, 144, 152, 192, 384, 512];
+const LOGO_PNG_SIZES = [32, 64, 128, 256, 512];
 
-console.log('\nSVG icons created! To convert to PNG, you can use:');
-console.log('1. Online converter like cloudconvert.com');
-console.log('2. If you have ImageMagick: convert icon.svg icon.png');
-console.log('3. If you have Inkscape: inkscape --export-type=png icon.svg');
+async function writePng(outPath, svg, size) {
+  const buf = await sharp(Buffer.from(svg)).resize(size, size).png().toBuffer();
+  fs.writeFileSync(outPath, buf);
+}
+
+(async () => {
+  const tasks = [];
+  tasks.push(['favicon.svg', ecMarkSvg({ size: 64 }), null]);
+  tasks.push(['logo.svg', ecMarkSvg({ size: 512 }), null]);
+  tasks.push(['favicon.png', ecMarkSvg({ size: 64 }), 64]);
+  for (const s of LOGO_PNG_SIZES) {
+    tasks.push([`logo-${s}.png`, ecMarkSvg({ size: s }), s]);
+  }
+  for (const s of PWA_SIZES) {
+    tasks.push([`icons/icon-${s}x${s}.svg`, ecMarkSvg({ size: s }), null]);
+    tasks.push([`icons/icon-${s}x${s}.png`, ecMarkSvg({ size: s }), s]);
+  }
+
+  for (const [rel, svg, pngSize] of tasks) {
+    const out = path.join(PUBLIC, rel);
+    if (pngSize === null) {
+      fs.writeFileSync(out, svg, 'utf8');
+    } else {
+      await writePng(out, svg, pngSize);
+    }
+    console.log('wrote', rel);
+  }
+  console.log(`Done — ${tasks.length} files written.`);
+})();

@@ -863,6 +863,11 @@ async function queryClaudeSDK(command, options = {}, ws) {
       return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };
     };
 
+    // Stream assistant text deltas to the frontend. Without this the SDK
+    // only emits one whole `assistant` message per turn — users see the
+    // reply land as a single block instead of typing in real time.
+    sdkOptions.includePartialMessages = true;
+
     // Set stream-close timeout for interactive tools (Query constructor reads it synchronously). Claude Agent SDK has a default of 5s and this overrides it
     const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
     process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '300000';
@@ -944,9 +949,15 @@ async function queryClaudeSDK(command, options = {}, ws) {
       const transformedMessage = transformMessage(message);
       const sid = capturedSessionId || sessionId || null;
 
-      // Use adapter to normalize SDK events into NormalizedMessage[]
+      // Use adapter to normalize SDK events into NormalizedMessage[].
+      // `skipStreamedText: true` tells the adapter to drop text/thinking
+      // parts from the final assistant SDKMessage — those have already
+      // been streamed out as `stream_delta` events via the partial
+      // message wrapper, so re-emitting them as a fresh text bubble
+      // would duplicate everything once streaming finalizes.
       const normalized = claudeAdapter.normalizeMessage(transformedMessage, sid, {
         includeUserText: false,
+        skipStreamedText: true,
       });
       for (const msg of normalized) {
         // Preserve parentToolUseId from SDK wrapper for subagent tool grouping

@@ -1,0 +1,35 @@
+{
+  "title": "Always-On",
+  "subtitle": "Background discovery agent for this project.",
+  "emptyProject": "Pick a project to view Always-On.",
+  "actions": {
+    "refresh": "Refresh",
+    "discover": "Discover",
+    "open": "Open",
+    "run": "Run"
+  },
+  "status": {
+    "running": "Running",
+    "ready": "Ready",
+    "idle": "Idle"
+  },
+  "summary": {
+    "running_one": "{{count}} running",
+    "running_other": "{{count}} running",
+    "ready_one": "{{count}} plan ready",
+    "ready_other": "{{count}} plans ready"
+  },
+  "loading": {
+    "plans": "Loading plans…"
+  },
+  "empty": {
+    "plans": "No discovery plans yet. Run Discover to let Always-On scan this project."
+  },
+  "relative": {
+    "justNow": "just now",
+    "minutes": "{{count}}m ago",
+    "hours": "{{count}}h ago",
+    "days": "{{count}}d ago"
+  },
+  "updatedAt": "Updated {{relative}}"
+}

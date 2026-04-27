@@ -148,22 +148,23 @@ export default function ProjectCreationWizard({
 
   return (
     <div className="fixed bottom-0 left-0 right-0 top-0 z-[60] flex items-center justify-center bg-black/50 p-0 backdrop-blur-sm sm:p-4">
-      <div className="h-full w-full overflow-y-auto rounded-none border-0 border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800 sm:h-auto sm:max-w-2xl sm:rounded-lg sm:border">
-        <div className="flex items-center justify-between border-b border-gray-200 p-6 dark:border-gray-700">
+      <div className="h-full w-full overflow-y-auto border-0 bg-card text-card-foreground shadow-xl sm:h-auto sm:max-w-2xl sm:rounded-xl sm:border sm:border-border">
+        <div className="flex items-center justify-between border-b border-border p-6">
           <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-900/50">
-              <FolderPlus className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-foreground">
+              <FolderPlus className="h-4 w-4" strokeWidth={1.75} />
             </div>
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+            <h3 className="text-lg font-semibold text-foreground">
               {t('projectWizard.title')}
             </h3>
           </div>
           <button
             onClick={onClose}
-            className="rounded-md p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+            className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
             disabled={isCreating}
+            aria-label="Close"
           >
-            <X className="h-5 w-5" />
+            <X className="h-5 w-5" strokeWidth={1.75} />
           </button>
         </div>
 

@@ -64,6 +64,7 @@ import mcpUtilsRoutes from './routes/mcp-utils.js';
 import commandsRoutes from './routes/commands.js';
 import settingsRoutes from './routes/settings.js';
 import configRoutes from './routes/config.js';
+import { startEdgeClawConfigWatcher, stopEdgeClawConfigWatcher } from './services/edgeclawConfigWatcher.js';
 import agentRoutes from './routes/agent.js';
 import projectsRoutes, { WORKSPACES_ROOT, validateWorkspacePath } from './routes/projects.js';
 import cliAuthRoutes from './routes/cli-auth.js';
@@ -276,6 +277,18 @@ function broadcastProgress(progress) {
         }
     });
 }
+
+// Broadcasts ~/.edgeclaw/config.yaml reload events (from UI saves or external file edits)
+// to every connected WebSocket client so open Settings tabs refresh instantly.
+function broadcastConfigReloaded(payload) {
+    const message = JSON.stringify({ type: 'config:reloaded', ...payload });
+    connectedClients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(message);
+        }
+    });
+}
+process.on('edgeclaw:config-broadcast', broadcastConfigReloaded);
 
 // Setup file system watchers for Claude, Cursor, and Codex project/session folders
 async function setupProjectsWatcher() {
@@ -2642,6 +2655,15 @@ async function startServer() {
                     startEnabledPluginServers().catch(err => {
                         console.error('[Plugins] Error during startup:', err.message);
                     });
+
+                    // Hot-reload watcher: external edits to ~/.edgeclaw/config.yaml
+                    // (vim, Cursor, another process) trigger a validate+reload and push
+                    // a "config:reloaded" event to every connected WebSocket client.
+                    await startEdgeClawConfigWatcher({
+                        onEvent: (payload) => {
+                            process.emit('edgeclaw:config-broadcast', payload);
+                        },
+                    });
                 });
             }
         });
@@ -2656,6 +2678,7 @@ async function startServer() {
                 try {
                     stopMemoryScheduler();
                     closeMemoryServices();
+                    stopEdgeClawConfigWatcher();
                     await stopEdgeClawProxy();
                     await stopAllPlugins();
                     try {

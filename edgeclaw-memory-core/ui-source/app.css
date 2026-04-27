@@ -1,20 +1,32 @@
+/*
+ * Memory dashboard tokens — aligned with V2 (claudecodeui) neutral palette.
+ * Light/dark backgrounds + borders + text mirror Tailwind `neutral-*` so this
+ * iframe blends visually with the parent shell (white / neutral-950 surfaces,
+ * neutral-200 / neutral-800 borders, dark-on-light primary actions).
+ *
+ * Status colors (project / feedback / deprecated / trace) are intentionally
+ * kept — they encode kind on small badges + card spines, and V2 doesn't have
+ * a one-to-one analog. Hue is preserved but shades are gentler so they read
+ * as data labels rather than UI accents.
+ */
 :root {
   color-scheme: light;
-  --bg: #f5f5f5;
-  --bg-raised: #fafafa;
-  --bg-inset: #eeeeee;
-  --bg-hover: #e8e8e8;
-  --bg-active: #e0e0e0;
-  --bg-scrim: rgba(0, 0, 0, 0.32);
-  --text: #1a1a1a;
-  --text-2: #555555;
-  --text-3: #888888;
-  --border: #e0e0e0;
-  --border-strong: #cccccc;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-soft: #eff6ff;
-  --accent-on: #fff;
+  --bg: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-inset: #fafafa;
+  --bg-hover: #f5f5f5;
+  --bg-active: #e5e5e5;
+  --bg-scrim: rgba(10, 10, 10, 0.42);
+  --text: #171717;
+  --text-2: #525252;
+  --text-3: #737373;
+  --border: #e5e5e5;
+  --border-strong: #d4d4d4;
+  --accent: #171717;
+  --accent-hover: #000000;
+  --accent-soft: #f5f5f5;
+  --accent-on: #ffffff;
+  --accent-ring: rgba(23, 23, 23, 0.12);
   --card: #ffffff;
   --danger: #dc2626;
   --danger-soft: #fef2f2;
@@ -38,22 +50,23 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0b1220;
-  --bg-raised: #111a2b;
-  --bg-inset: #162033;
-  --bg-hover: #1d2940;
-  --bg-active: #243450;
-  --bg-scrim: rgba(2, 6, 23, 0.72);
-  --text: #e5edf8;
-  --text-2: #c0ccdd;
-  --text-3: #8fa0b8;
-  --border: #22304a;
-  --border-strong: #334766;
-  --accent: #60a5fa;
-  --accent-hover: #3b82f6;
-  --accent-soft: rgba(96, 165, 250, 0.18);
-  --accent-on: #eff6ff;
-  --card: #0f1727;
+  --bg: #0a0a0a;
+  --bg-raised: #0a0a0a;
+  --bg-inset: #171717;
+  --bg-hover: #171717;
+  --bg-active: #262626;
+  --bg-scrim: rgba(0, 0, 0, 0.6);
+  --text: #fafafa;
+  --text-2: #a3a3a3;
+  --text-3: #737373;
+  --border: #262626;
+  --border-strong: #404040;
+  --accent: #fafafa;
+  --accent-hover: #ffffff;
+  --accent-soft: #171717;
+  --accent-on: #0a0a0a;
+  --accent-ring: rgba(250, 250, 250, 0.14);
+  --card: #0a0a0a;
   --danger: #f87171;
   --danger-soft: rgba(248, 113, 113, 0.14);
   --danger-border-soft: rgba(248, 113, 113, 0.26);
@@ -66,9 +79,9 @@
   --status-deprecated-soft: rgba(148, 163, 184, 0.18);
   --status-trace: #a78bfa;
   --status-trace-soft: rgba(167, 139, 250, 0.18);
-  --shadow-sm: 0 1px 2px rgba(2, 6, 23, 0.36);
-  --shadow-md: 0 8px 24px rgba(2, 6, 23, 0.34);
-  --shadow-lg: 0 16px 40px rgba(2, 6, 23, 0.48);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.36);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.34);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.48);
 }
 
 *,
@@ -161,10 +174,15 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 0 16px;
-  height: 44px;
+  padding: 8px 16px;
+  min-height: 44px;
   border-bottom: 1px solid var(--border);
   background: var(--card);
+  /* Allow controls to wrap to a second row at narrower widths so the
+     toolbar doesn't crash into the nav tabs when this iframe is paired
+     with a chat surface in split mode. */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .topbar-left {
@@ -172,6 +190,8 @@ button:disabled {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .topbar-right {
@@ -179,6 +199,9 @@ button:disabled {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  justify-content: flex-end;
 }
 
 .topbar-sep {
@@ -566,12 +589,8 @@ button:disabled {
 
 .settings-input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+  box-shadow: 0 0 0 3px var(--accent-ring);
   outline: none;
-}
-
-:root[data-theme="dark"] .settings-input:focus {
-  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.15);
 }
 
 .settings-input--with-unit {
@@ -608,7 +627,7 @@ button:disabled {
 
 .settings-save-btn:hover {
   background: var(--accent-hover);
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+  box-shadow: 0 2px 8px var(--accent-ring);
 }
 
 .settings-save-btn:active {

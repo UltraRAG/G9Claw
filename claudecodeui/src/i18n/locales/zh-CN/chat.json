@@ -105,10 +105,14 @@
     "placeholder": "输入 / 调用命令，@ 选择文件，或向 {{provider}} 提问...",
     "placeholderDefault": "输入您的消息...",
     "disabled": "输入已禁用",
+    "attachFile": "上传附件",
     "attachFiles": "附加文件",
     "attachImages": "附加图片",
+    "mentionFile": "引用文件",
     "send": "发送",
     "stop": "停止",
+    "disclaimer": "EdgeClaw 输出可能存在不准确，回车发送。",
+    "disclaimerCtrlEnter": "EdgeClaw 输出可能存在不准确，⌘↩ 发送。",
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",
       "enter": "Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令"
@@ -250,5 +254,13 @@
   },
   "tasks": {
     "nextTaskPrompt": "开始下一个任务"
+  },
+  "composer": {
+    "welcomePlaceholder": "随便聊聊…"
+  },
+  "welcome": {
+    "greetingWithProject": "今天想做点什么？",
+    "noProject": "从左侧选择一个项目开始",
+    "hint": "输入消息后我们会帮你创建一个新会话。"
   }
 }

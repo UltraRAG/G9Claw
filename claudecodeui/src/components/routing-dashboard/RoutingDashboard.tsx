@@ -18,17 +18,21 @@ function formatCost(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+// Typography mirrors the V2 dashboard surfaces (`DashboardV2`,
+// etc.): label = uppercase 10px tracker, value = 28px semibold tracking-tight,
+// sub = 12px muted. Keeps the legacy panel visually aligned with V2 even when
+// the chromeless V2 shell isn't active.
 function StatCard({ icon: Icon, label, value, sub }: { icon: any; label: string; value: string; sub?: string }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-card px-4 py-3">
-      <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted">
-        <Icon className="h-4 w-4 text-muted-foreground" />
+    <div className="rounded-xl border border-border/60 bg-card p-5">
+      <div className="text-xxs flex items-center gap-2 uppercase tracking-wide text-muted-foreground">
+        <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />
+        <span>{label}</span>
       </div>
-      <div>
-        <div className="text-lg font-semibold tabular-nums text-foreground">{value}</div>
-        <div className="text-xs text-muted-foreground">{label}</div>
-        {sub && <div className="text-[10px] text-muted-foreground/70">{sub}</div>}
+      <div className="mt-2 text-[28px] font-semibold tracking-tight tabular-nums text-foreground">
+        {value}
       </div>
+      <div className="text-xxs mt-1 text-muted-foreground">{sub ?? ' '}</div>
     </div>
   );
 }
@@ -70,8 +74,15 @@ export default function RoutingDashboard() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-foreground">Routing Dashboard</h2>
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="text-[20px] font-semibold tracking-tight text-foreground">
+            Routing Dashboard
+          </h2>
+          <p className="mt-0.5 text-[13px] text-muted-foreground">
+            Tier, role, and cost breakdown across projects.
+          </p>
+        </div>
         <button
           onClick={refresh}
           disabled={loading}
@@ -113,7 +124,9 @@ export default function RoutingDashboard() {
       {Object.keys(overall.byTier || {}).length > 0 && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">Tier Distribution</span>
+            <span className="text-xxs font-medium uppercase tracking-wide text-muted-foreground">
+              Tier Distribution
+            </span>
             <RoleSplitIndicator byRole={overall.byRole || {}} />
           </div>
           <TierDistributionBar byTier={overall.byTier} height="h-3" />
@@ -135,7 +148,7 @@ export default function RoutingDashboard() {
 
       {/* Projects */}
       <div className="space-y-2">
-        <h3 className="text-sm font-medium text-foreground">
+        <h3 className="text-xxs font-medium uppercase tracking-wide text-muted-foreground">
           Projects ({sortedProjects.length})
         </h3>
         {sortedProjects.length === 0 ? (

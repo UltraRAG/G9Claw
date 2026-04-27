@@ -18,6 +18,7 @@
     "browse": "Browse"
   },
   "tabs": {
+    "home": "Home",
     "chat": "Chat",
     "alwaysOn": "Always-On",
     "shell": "Shell",
@@ -27,6 +28,8 @@
     "dashboard": "Dashboard",
     "memory": "Memory"
   },
+  "newSessionInProject": "New session",
+  "deleteProject": "Delete project",
   "status": {
     "loading": "Loading...",
     "success": "Success",
@@ -87,7 +90,7 @@
     "openInEditor": "Open in Editor"
   },
   "mainContent": {
-    "loading": "Loading CloudCLI",
+    "loading": "Loading EdgeClaw",
     "settingUpWorkspace": "Setting up your workspace...",
     "chooseProject": "Choose Your Project",
     "selectProjectDescription": "Select a project from the sidebar to start coding with Claude. Each project contains your chat sessions and file history.",

@@ -52,6 +52,10 @@ export type MainContentProps = {
   onReplaceTemporarySession: SessionLifecycleHandler;
   onNavigateToSession: (targetSessionId: string) => void;
   onStartNewSession: (project: Project) => void;
+  // Used by the Home tab to resume a session: jumps to the Chat tab AND
+  // selects (project, sessionId). Optional because legacy MainContent
+  // consumers don't need it.
+  onSelectSession?: (project: Project, sessionId: string) => void;
   onShowSettings: () => void;
   externalMessageUpdate: number;
   /**

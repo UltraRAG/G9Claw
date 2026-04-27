@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   AlertCircle,
   ChevronRight,
@@ -25,19 +26,19 @@ type AlwaysOnV2Props = {
 
 const POLL_INTERVAL_MS = 15_000;
 
-function formatRelative(iso?: string): string {
+function formatRelative(iso: string | undefined, t: (k: string, opts?: object) => string): string {
   if (!iso) return '—';
   const parsed = Date.parse(iso);
   if (Number.isNaN(parsed)) return '—';
   const diff = Date.now() - parsed;
   const sec = Math.round(diff / 1000);
-  if (sec < 60) return 'just now';
+  if (sec < 60) return t('relative.justNow', { defaultValue: 'just now' });
   const min = Math.round(sec / 60);
-  if (min < 60) return `${min}m ago`;
+  if (min < 60) return t('relative.minutes', { count: min, defaultValue: `${min}m ago` });
   const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h ago`;
+  if (hr < 24) return t('relative.hours', { count: hr, defaultValue: `${hr}h ago` });
   const day = Math.round(hr / 24);
-  return `${day}d ago`;
+  return t('relative.days', { count: day, defaultValue: `${day}d ago` });
 }
 
 function formatTime(iso?: string): string {
@@ -57,6 +58,7 @@ export default function AlwaysOnV2({
   onExecuteDiscoveryPlan,
   onOpenDiscoverySession,
 }: AlwaysOnV2Props) {
+  const { t } = useTranslation('alwaysOn');
   const [plans, setPlans] = useState<DiscoveryPlanOverview[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +110,7 @@ export default function AlwaysOnV2({
   if (!selectedProject) {
     return (
       <div className="flex h-full items-center justify-center bg-white text-[13px] text-neutral-500 dark:bg-neutral-950 dark:text-neutral-400">
-        Pick a project to view Always-On.
+        {t('emptyProject', { defaultValue: 'Pick a project to view Always-On.' })}
       </div>
     );
   }
@@ -138,10 +140,10 @@ export default function AlwaysOnV2({
         <div className="flex items-start justify-between">
           <div>
             <h2 className="text-[20px] font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
-              Always-On
+              {t('title', { defaultValue: 'Always-On' })}
             </h2>
             <p className="mt-0.5 text-[13px] text-neutral-500 dark:text-neutral-400">
-              Background discovery agent for this project.
+              {t('subtitle', { defaultValue: 'Background discovery agent for this project.' })}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -152,7 +154,7 @@ export default function AlwaysOnV2({
               className="text-xxs inline-flex h-8 items-center gap-1.5 rounded-md border border-neutral-200 px-2.5 text-neutral-600 transition hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-900"
             >
               <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} strokeWidth={1.75} />
-              <span>Refresh</span>
+              <span>{t('actions.refresh', { defaultValue: 'Refresh' })}</span>
             </button>
             <button
               type="button"
@@ -167,7 +169,11 @@ export default function AlwaysOnV2({
               ) : (
                 <Play className="h-3.5 w-3.5" strokeWidth={1.75} />
               )}
-              <span>{isRunning ? 'Running' : 'Discover'}</span>
+              <span>
+                {isRunning
+                  ? t('status.running', { defaultValue: 'Running' })
+                  : t('actions.discover', { defaultValue: 'Discover' })}
+              </span>
             </button>
           </div>
         </div>
@@ -185,10 +191,23 @@ export default function AlwaysOnV2({
               )}
             </span>
             <span className="text-[13px] font-medium text-neutral-900 dark:text-neutral-100">
-              {isRunning ? 'Running' : readyPlans.length ? 'Ready' : 'Idle'}
+              {isRunning
+                ? t('status.running', { defaultValue: 'Running' })
+                : readyPlans.length
+                  ? t('status.ready', { defaultValue: 'Ready' })
+                  : t('status.idle', { defaultValue: 'Idle' })}
             </span>
             <span className="text-xxs text-neutral-500 dark:text-neutral-400">
-              · {runningPlans.length ? `${runningPlans.length} running` : `${readyPlans.length} plans ready`}
+              ·{' '}
+              {runningPlans.length
+                ? t('summary.running', {
+                    count: runningPlans.length,
+                    defaultValue: `${runningPlans.length} running`,
+                  })
+                : t('summary.ready', {
+                    count: readyPlans.length,
+                    defaultValue: `${readyPlans.length} plans ready`,
+                  })}
             </span>
           </div>
 
@@ -202,11 +221,14 @@ export default function AlwaysOnV2({
           ) : loading && plans.length === 0 ? (
             <div className="flex items-center gap-2 text-[13px] text-neutral-500 dark:text-neutral-400">
               <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.75} />
-              <span>Loading plans…</span>
+              <span>{t('loading.plans', { defaultValue: 'Loading plans…' })}</span>
             </div>
           ) : recent.length === 0 ? (
             <div className="text-[13px] text-neutral-500 dark:text-neutral-400">
-              No discovery plans yet. Run Discover to let Always-On scan this project.
+              {t('empty.plans', {
+                defaultValue:
+                  'No discovery plans yet. Run Discover to let Always-On scan this project.',
+              })}
             </div>
           ) : (
             <ul className="space-y-3 text-[13px]">
@@ -230,7 +252,7 @@ export default function AlwaysOnV2({
                       onClick={() => onOpenDiscoverySession(plan.executionSessionId!)}
                       className="text-xxs inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-neutral-600 transition hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-900"
                     >
-                      Open
+                      {t('actions.open', { defaultValue: 'Open' })}
                       <ChevronRight className="h-3 w-3" strokeWidth={1.75} />
                     </button>
                   ) : plan.status === 'ready' ? (
@@ -245,7 +267,7 @@ export default function AlwaysOnV2({
                       ) : (
                         <Sparkles className="h-3 w-3" strokeWidth={1.75} />
                       )}
-                      Run
+                      {t('actions.run', { defaultValue: 'Run' })}
                     </button>
                   ) : null}
                 </li>
@@ -256,7 +278,10 @@ export default function AlwaysOnV2({
 
         {plans.length > 0 ? (
           <p className="text-xxs text-center text-neutral-500 dark:text-neutral-500">
-            Updated {formatRelative(plans[0]?.updatedAt)}
+            {t('updatedAt', {
+              relative: formatRelative(plans[0]?.updatedAt, t),
+              defaultValue: `Updated ${formatRelative(plans[0]?.updatedAt, t)}`,
+            })}
           </p>
         ) : null}
       </div>

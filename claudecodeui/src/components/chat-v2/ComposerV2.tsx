@@ -93,6 +93,14 @@ export type ComposerV2Props = {
   }) => { success: boolean };
 
   sendByCtrlEnter?: boolean;
+
+  /**
+   * When true, the outer "footer" chrome (top divider, page bg, page padding)
+   * is suppressed so this composer can be embedded inside a centered card —
+   * notably the welcome / Home tab. The inner rounded textarea card is the
+   * only border in that mode, avoiding the doubled-divider artifact.
+   */
+  chromeless?: boolean;
 };
 
 export default function ComposerV2({
@@ -135,6 +143,7 @@ export default function ComposerV2({
   handlePermissionDecision,
   handleGrantToolPermission,
   sendByCtrlEnter,
+  chromeless = false,
 }: ComposerV2Props) {
   const { t } = useTranslation('chat');
 
@@ -152,8 +161,16 @@ export default function ComposerV2({
   const disabled = !input.trim() && !(isLoading && canAbortSession);
 
   return (
-    <div className="shrink-0 border-t border-neutral-200 bg-white px-6 pb-6 pt-3 dark:border-neutral-800 dark:bg-neutral-950">
-      <div className="mx-auto max-w-[720px]">
+    <div
+      className={cn(
+        'shrink-0',
+        // No top divider — the rounded textarea card is the only border, giving
+        // the composer a flat ChatGPT-style look. Keeps page bg + padding so
+        // it still anchors the bottom of the chat surface.
+        chromeless ? '' : 'bg-white px-6 pb-6 pt-3 dark:bg-neutral-950',
+      )}
+    >
+      <div className={cn(chromeless ? '' : 'mx-auto max-w-[720px]')}>
         {pendingPermissionRequests.length > 0 ? (
           <div className="mb-3">
             <PermissionRequestsBanner
@@ -320,12 +337,13 @@ export default function ComposerV2({
         ) : null}
 
         <div className="mt-2 text-center text-[11px] text-neutral-500 dark:text-neutral-400">
-          {t('input.disclaimer', {
-            defaultValue:
-              sendByCtrlEnter
-                ? 'edgeclaw may produce inaccurate information. ⌘↩ to send.'
-                : 'edgeclaw may produce inaccurate information. ↩ to send.',
-          })}
+          {sendByCtrlEnter
+            ? (t('input.disclaimerCtrlEnter', {
+                defaultValue: 'EdgeClaw may produce inaccurate information. ⌘↩ to send.',
+              }) as string)
+            : (t('input.disclaimer', {
+                defaultValue: 'EdgeClaw may produce inaccurate information. ↩ to send.',
+              }) as string)}
         </div>
       </div>
     </div>

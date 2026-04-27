@@ -57,7 +57,7 @@ export default function MemoryPanel({ selectedProject }: MemoryPanelProps) {
 
   if (!selectedProject) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      <div className="flex h-full items-center justify-center bg-white text-[13px] text-neutral-500 dark:bg-neutral-950 dark:text-neutral-400">
         {text.emptyProject}
       </div>
     );
@@ -66,19 +66,23 @@ export default function MemoryPanel({ selectedProject }: MemoryPanelProps) {
   const dashboardUrl = buildMemoryDashboardUrl(selectedProject, memoryLocale, memoryTheme);
   if (!dashboardUrl) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      <div className="flex h-full items-center justify-center bg-white text-[13px] text-neutral-500 dark:bg-neutral-950 dark:text-neutral-400">
         {text.unavailable}
       </div>
     );
   }
 
+  // Outer shell mirrors MainAreaV2's chrome (white / neutral-950) so the
+  // iframe blends seamlessly when the V2 dashboard is rendered full-screen
+  // — avoids the dark-mode "two-tone" line + legacy overlap that showed up
+  // when Memory was previously paired with chat in a split pane.
   return (
-    <div className="h-full w-full bg-background">
+    <div className="h-full w-full bg-white dark:bg-neutral-950">
       <iframe
         key={`${selectedProject.fullPath || selectedProject.path || 'memory'}:${memoryLocale}:${memoryTheme}`}
         title={text.title}
         src={dashboardUrl}
-        className="h-full w-full border-0"
+        className="block h-full w-full border-0 bg-white dark:bg-neutral-950"
       />
     </div>
   );

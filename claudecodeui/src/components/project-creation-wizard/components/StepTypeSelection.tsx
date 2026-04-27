@@ -15,28 +15,28 @@ export default function StepTypeSelection({
 
   return (
     <div className="space-y-4">
-      <h4 className="mb-3 text-sm font-medium text-gray-700 dark:text-gray-300">
+      <h4 className="mb-3 text-sm font-medium text-muted-foreground">
         {t('projectWizard.step1.question')}
       </h4>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <button
           onClick={() => onWorkspaceTypeChange('existing')}
-          className={`rounded-lg border-2 p-4 text-left transition-all ${
+          className={`rounded-lg border p-4 text-left transition-colors ${
             workspaceType === 'existing'
-              ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-              : 'border-gray-200 hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600'
+              ? 'border-foreground bg-accent/50'
+              : 'border-border hover:bg-accent/30'
           }`}
         >
           <div className="flex items-start gap-3">
-            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-green-100 dark:bg-green-900/50">
-              <FolderPlus className="h-5 w-5 text-green-600 dark:text-green-400" />
+            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
+              <FolderPlus className="h-5 w-5" strokeWidth={1.75} />
             </div>
             <div className="flex-1">
-              <h5 className="mb-1 font-semibold text-gray-900 dark:text-white">
+              <h5 className="mb-1 font-semibold text-foreground">
                 {t('projectWizard.step1.existing.title')}
               </h5>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
+              <p className="text-sm text-muted-foreground">
                 {t('projectWizard.step1.existing.description')}
               </p>
             </div>
@@ -45,21 +45,21 @@ export default function StepTypeSelection({
 
         <button
           onClick={() => onWorkspaceTypeChange('new')}
-          className={`rounded-lg border-2 p-4 text-left transition-all ${
+          className={`rounded-lg border p-4 text-left transition-colors ${
             workspaceType === 'new'
-              ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-              : 'border-gray-200 hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600'
+              ? 'border-foreground bg-accent/50'
+              : 'border-border hover:bg-accent/30'
           }`}
         >
           <div className="flex items-start gap-3">
-            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-purple-100 dark:bg-purple-900/50">
-              <GitBranch className="h-5 w-5 text-purple-600 dark:text-purple-400" />
+            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
+              <GitBranch className="h-5 w-5" strokeWidth={1.75} />
             </div>
             <div className="flex-1">
-              <h5 className="mb-1 font-semibold text-gray-900 dark:text-white">
+              <h5 className="mb-1 font-semibold text-foreground">
                 {t('projectWizard.step1.new.title')}
               </h5>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
+              <p className="text-sm text-muted-foreground">
                 {t('projectWizard.step1.new.description')}
               </p>
             </div>

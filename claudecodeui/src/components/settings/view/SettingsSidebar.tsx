@@ -1,4 +1,4 @@
-import { Bell, Bot, FileCog, GitBranch, Info, Key, ListChecks, Palette, Puzzle } from 'lucide-react';
+import { FileCog, Palette, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../../lib/utils';
 import { PillBar, Pill } from '../../../shared/view/ui';
@@ -12,19 +12,15 @@ type SettingsSidebarProps = {
 type NavItem = {
   id: SettingsMainTab;
   labelKey: string;
-  icon: typeof Bot;
+  icon: LucideIcon;
 };
 
+// Trimmed to the two tabs the product still surfaces. Adding a new tab?
+// Update this list, the SettingsMainTab union, SETTINGS_MAIN_TABS in
+// constants.ts, and the switch in Settings.tsx.
 const NAV_ITEMS: NavItem[] = [
-  { id: 'agents', labelKey: 'mainTabs.agents', icon: Bot },
   { id: 'appearance', labelKey: 'mainTabs.appearance', icon: Palette },
-  { id: 'git', labelKey: 'mainTabs.git', icon: GitBranch },
-  { id: 'api', labelKey: 'mainTabs.apiTokens', icon: Key },
-  { id: 'tasks', labelKey: 'mainTabs.tasks', icon: ListChecks },
-  { id: 'plugins', labelKey: 'mainTabs.plugins', icon: Puzzle },
   { id: 'config', labelKey: 'mainTabs.config', icon: FileCog },
-  { id: 'notifications', labelKey: 'mainTabs.notifications', icon: Bell },
-  { id: 'about', labelKey: 'mainTabs.about', icon: Info },
 ];
 
 export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebarProps) {

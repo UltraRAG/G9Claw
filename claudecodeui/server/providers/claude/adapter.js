@@ -91,12 +91,54 @@ function normalizeHistoryMessages(rawMessages, sessionId) {
  * realtime streaming events (`content_block_delta`, `content_block_stop`, etc.).
  * @param {object} raw - A single entry from JSONL or a live SDK event
  * @param {string} sessionId
- * @param {{ includeUserText?: boolean }} [options]
+ * @param {{ includeUserText?: boolean, skipStreamedText?: boolean }} [options]
+ *   - skipStreamedText: when true, drop `text` and `thinking` parts from
+ *     the final assistant SDKMessage. Use this when streaming is enabled
+ *     (`includePartialMessages: true`) so the streamed deltas are the
+ *     only source of truth for assistant prose — otherwise the same
+ *     content lands twice in the chat.
  * @returns {import('../types.js').NormalizedMessage[]}
  */
 export function normalizeMessage(raw, sessionId, options = {}) {
-  const { includeUserText = true } = options;
-  // ── Streaming events (realtime) ──────────────────────────────────────────
+  const { includeUserText = true, skipStreamedText = false } = options;
+
+  // ── SDK partial message wrapper ──────────────────────────────────────────
+  // Shape: { type: 'stream_event', event: BetaRawMessageStreamEvent, ... }
+  // emitted when `includePartialMessages: true` is set on query options.
+  // Unwrap and forward as `stream_delta` / `stream_end` so the frontend
+  // 100ms-flush buffer can render typing-indicator style streaming.
+  if (raw.type === 'stream_event' && raw.event) {
+    const ev = raw.event;
+    if (ev.type === 'content_block_delta' && ev.delta) {
+      // Anthropic deltas: text_delta { text } | thinking_delta { thinking }
+      // Tool-use input_json_delta is intentionally ignored — its partial
+      // JSON is not human-readable and would confuse the chat surface.
+      const text = ev.delta.type === 'text_delta'
+        ? ev.delta.text
+        : ev.delta.type === 'thinking_delta'
+          ? ev.delta.thinking
+          : '';
+      if (text) {
+        return [createNormalizedMessage({
+          kind: 'stream_delta',
+          content: text,
+          sessionId,
+          provider: PROVIDER,
+        })];
+      }
+      return [];
+    }
+    if (ev.type === 'content_block_stop') {
+      return [createNormalizedMessage({
+        kind: 'stream_end',
+        sessionId,
+        provider: PROVIDER,
+      })];
+    }
+    return [];
+  }
+
+  // ── Legacy/raw streaming events (defensive — direct shape, unwrapped) ────
   if (raw.type === 'content_block_delta' && raw.delta?.text) {
     return [createNormalizedMessage({ kind: 'stream_delta', content: raw.delta.text, sessionId, provider: PROVIDER })];
   }
@@ -297,6 +339,13 @@ export function normalizeMessage(raw, sessionId, options = {}) {
       let partIndex = 0;
       for (const part of raw.message.content) {
         if (part.type === 'text' && part.text) {
+          // When streaming is on we already shipped this prose as
+          // stream_delta chunks and finalizeStreaming converted them
+          // into a text message — re-emitting here would duplicate it.
+          if (skipStreamedText) {
+            partIndex++;
+            continue;
+          }
           messages.push(createNormalizedMessage({
             id: `${baseId}_${partIndex}`,
             sessionId,
@@ -318,6 +367,12 @@ export function normalizeMessage(raw, sessionId, options = {}) {
             toolId: part.id,
           }));
         } else if (part.type === 'thinking' && part.thinking) {
+          // Same dedupe rule as text above — thinking_delta streams
+          // through the same stream_delta channel.
+          if (skipStreamedText) {
+            partIndex++;
+            continue;
+          }
           messages.push(createNormalizedMessage({
             id: `${baseId}_${partIndex}`,
             sessionId,
@@ -330,15 +385,17 @@ export function normalizeMessage(raw, sessionId, options = {}) {
         partIndex++;
       }
     } else if (typeof raw.message.content === 'string') {
-      messages.push(createNormalizedMessage({
-        id: baseId,
-        sessionId,
-        timestamp: ts,
-        provider: PROVIDER,
-        kind: 'text',
-        role: 'assistant',
-        content: raw.message.content,
-      }));
+      if (!skipStreamedText) {
+        messages.push(createNormalizedMessage({
+          id: baseId,
+          sessionId,
+          timestamp: ts,
+          provider: PROVIDER,
+          kind: 'text',
+          role: 'assistant',
+          content: raw.message.content,
+        }));
+      }
     }
     return messages;
   }

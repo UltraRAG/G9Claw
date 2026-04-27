@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMatch, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import ReactDOM from 'react-dom';
+import { Loader2, Trash2 } from 'lucide-react';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import Settings from '../settings/view/Settings';
+import ProjectCreationWizard from '../project-creation-wizard';
 import { normalizeProjectForSettings } from '../sidebar/utils/utils';
 import type { SettingsProject } from '../sidebar/types/types';
 import type { AppTab, Project } from '../../types/app';
+import { api } from '../../utils/api';
 import SidebarV2 from './SidebarV2';
 import MainAreaV2 from './MainAreaV2';
 
@@ -101,6 +104,40 @@ export default function AppShellV2() {
     navigate,
   ]);
 
+  // Default selection: prefer a project named "general" so the project-centric
+  // sidebar always has something useful surfaced. Falls back to the first
+  // project when "general" is missing. Runs only when there's no URL hint and
+  // no current selection — never overrides user navigation.
+  const didDefaultProjectRef = useRef(false);
+  useEffect(() => {
+    if (didDefaultProjectRef.current) return;
+    if (isLoadingProjects) return;
+    if (selectedProject) {
+      didDefaultProjectRef.current = true;
+      return;
+    }
+    if (projectNameParam || sessionId) {
+      didDefaultProjectRef.current = true;
+      return;
+    }
+    if (sidebarSharedProps.projects.length === 0) return;
+    const general = sidebarSharedProps.projects.find(
+      (p) => p.name === 'general' || p.displayName === 'general',
+    );
+    const target = general ?? sidebarSharedProps.projects[0];
+    handleProjectSelect(target);
+    navigate(`/p/${encodeURIComponent(target.name)}`, { replace: true });
+    didDefaultProjectRef.current = true;
+  }, [
+    isLoadingProjects,
+    selectedProject,
+    projectNameParam,
+    sessionId,
+    sidebarSharedProps.projects,
+    handleProjectSelect,
+    navigate,
+  ]);
+
   useEffect(() => {
     window.refreshProjects = refreshProjectsSilently;
     return () => {
@@ -169,6 +206,53 @@ export default function AppShellV2() {
   const onCloseSettings = useCallback(() => setShowSettings(false), [setShowSettings]);
   const onMenuClick = useCallback(() => setSidebarOpen(true), [setSidebarOpen]);
 
+  // Project creation wizard (local existing / new local / github clone). The
+  // sidebar's Projects-section "+" opens this; row-level "+" is for new sessions.
+  const [showNewProject, setShowNewProject] = useState(false);
+  const handleOpenNewProject = useCallback(() => setShowNewProject(true), []);
+  const handleCloseNewProject = useCallback(() => setShowNewProject(false), []);
+  const handleProjectCreated = useCallback(() => {
+    void refreshProjectsSilently();
+    setShowNewProject(false);
+  }, [refreshProjectsSilently]);
+
+  // Project deletion (V2): hover-revealed trash button on each row -> confirm dialog
+  // -> DELETE /api/projects/:name (force=true). Reuses the shared cleanup callback
+  // from useProjectsState to clear selection + redirect when the deleted project
+  // was active.
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+  const [isDeletingProject, setIsDeletingProject] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const handleRequestDeleteProject = useCallback((project: Project) => {
+    setDeleteError(null);
+    setDeleteTarget(project);
+  }, []);
+  const handleCancelDelete = useCallback(() => {
+    if (isDeletingProject) return;
+    setDeleteTarget(null);
+    setDeleteError(null);
+  }, [isDeletingProject]);
+  const handleConfirmDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setIsDeletingProject(true);
+    setDeleteError(null);
+    try {
+      const response = await api.deleteProject(target.name, true);
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || `Failed (HTTP ${response.status})`);
+      }
+      sidebarSharedProps.onProjectDelete?.(target.name);
+      await refreshProjectsSilently();
+      setDeleteTarget(null);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete project');
+    } finally {
+      setIsDeletingProject(false);
+    }
+  }, [deleteTarget, refreshProjectsSilently, sidebarSharedProps]);
+
   const handleSelectProject = useCallback(
     (project: Project) => {
       handleProjectSelect(project);
@@ -234,6 +318,8 @@ export default function AppShellV2() {
       onSelectProject={handleSelectProject}
       onSelectSession={handleSelectSession}
       onStartNewSession={handleStartNewSession}
+      onCreateProject={handleOpenNewProject}
+      onRequestDeleteProject={handleRequestDeleteProject}
       onShowSettings={onShowSettings}
     />
   );
@@ -286,6 +372,7 @@ export default function AppShellV2() {
           onReplaceTemporarySession={replaceTemporarySession}
           onNavigateToSession={(sid: string) => navigate(`/session/${sid}`)}
           onStartNewSession={handleNewSession}
+          onSelectSession={handleSelectSession}
           onShowSettings={onShowSettings}
           externalMessageUpdate={externalMessageUpdate}
         />
@@ -297,11 +384,119 @@ export default function AppShellV2() {
               isOpen={sidebarSharedProps.showSettings}
               onClose={onCloseSettings}
               projects={sidebarSharedProps.projects.map(normalizeProjectForSettings)}
-              initialTab={sidebarSharedProps.settingsInitialTab || 'agents'}
+              initialTab={sidebarSharedProps.settingsInitialTab || 'appearance'}
             />,
             document.body,
           )
         : null}
+
+      {showNewProject
+        ? ReactDOM.createPortal(
+            <ProjectCreationWizard
+              onClose={handleCloseNewProject}
+              onProjectCreated={handleProjectCreated}
+            />,
+            document.body,
+          )
+        : null}
+
+      {deleteTarget
+        ? ReactDOM.createPortal(
+            <DeleteProjectDialog
+              project={deleteTarget}
+              isDeleting={isDeletingProject}
+              error={deleteError}
+              onCancel={handleCancelDelete}
+              onConfirm={handleConfirmDelete}
+            />,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
+type DeleteProjectDialogProps = {
+  project: Project;
+  isDeleting: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+};
+
+function DeleteProjectDialog({
+  project,
+  isDeleting,
+  error,
+  onCancel,
+  onConfirm,
+}: DeleteProjectDialogProps) {
+  const sessionCount =
+    (project.sessions?.length ?? 0) +
+    (project.codexSessions?.length ?? 0) +
+    (project.cursorSessions?.length ?? 0) +
+    (project.geminiSessions?.length ?? 0);
+  const displayName = project.displayName || project.name;
+
+  return (
+    <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-xl border border-border bg-card text-card-foreground shadow-xl">
+        <div className="flex items-start gap-3 border-b border-border p-5">
+          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-destructive/15 text-destructive">
+            <Trash2 className="h-5 w-5" strokeWidth={1.75} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-base font-semibold text-foreground">Delete project?</h3>
+            <p className="mt-1 break-all text-sm text-muted-foreground">
+              <span className="font-mono text-xs">{displayName}</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3 p-5">
+          <p className="text-sm text-foreground">
+            This removes the project from EdgeClaw and deletes its session metadata.
+            {sessionCount > 0 ? (
+              <>
+                {' '}
+                <span className="font-medium">
+                  {sessionCount} session{sessionCount === 1 ? '' : 's'}
+                </span>{' '}
+                will also be removed.
+              </>
+            ) : null}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Files on disk are <span className="font-medium text-foreground">not</span> deleted —
+            only EdgeClaw&apos;s reference to them.
+          </p>
+          {error ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/30 px-5 py-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isDeleting}
+            className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground hover:bg-accent disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={isDeleting}
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-destructive px-3 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-60"
+          >
+            {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" strokeWidth={1.75} />}
+            {isDeleting ? 'Deleting…' : 'Delete project'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

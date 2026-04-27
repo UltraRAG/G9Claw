@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { cn } from '../../lib/utils.js';
 import { useTasksSettings } from '../../contexts/TasksSettingsContext';
 import type { ChatInterfaceProps, Provider } from '../chat/types/types';
 import {
@@ -50,6 +51,8 @@ function ChatInterfaceV2({
   autoScrollToBottom,
   sendByCtrlEnter,
   externalMessageUpdate,
+  forceWelcome,
+  onExitWelcome,
 }: ChatInterfaceProps) {
   const { t } = useTranslation('chat');
   const { tasksEnabled: _tasksEnabled, isTaskMasterInstalled: _isTaskMasterInstalled } =
@@ -279,6 +282,122 @@ function ChatInterfaceV2({
           ? 'Gemini'
           : 'edgeclaw';
 
+  // ChatGPT-style empty state. Triggered explicitly via `forceWelcome` (Home
+  // tab) and implicitly when nothing has been started yet (no session, no
+  // messages, not in the middle of loading). The composer floats in the
+  // middle with a welcome headline above it; once the user sends, we drop
+  // into the normal layout (composer at bottom, messages on top) on the
+  // next render.
+  const isWelcomeMode =
+    !!forceWelcome ||
+    (!selectedSession && !isLoadingSessionMessages && chatMessages.length === 0);
+
+  // Fire onExitWelcome the moment the user submits from welcome mode so the
+  // parent can flip the active tab from "home" to "chat" — otherwise we'd
+  // keep forcing the welcome layout over a live session. Wraps handleSubmit
+  // so we don't have to thread state through useChatComposerState.
+  const wrappedSubmit = useCallback(
+    (...args: unknown[]) => {
+      if (isWelcomeMode && onExitWelcome) onExitWelcome();
+      return (handleSubmit as (...a: unknown[]) => unknown)(...args);
+    },
+    [handleSubmit, isWelcomeMode, onExitWelcome],
+  );
+
+  // The composer is identical in welcome / normal mode — just rendered in a
+  // different parent container. Pulled out so we don't drift between the two.
+  const composer = isReadOnlyBackgroundSession ? (
+    <div className="mx-auto w-full max-w-[720px] px-6 pb-6 pt-3">
+      <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-[13px] text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
+        {t('session.readonlyBackground', {
+          defaultValue: 'This background task transcript is read-only.',
+        })}
+      </div>
+    </div>
+  ) : (
+    <ComposerV2
+      input={input}
+      placeholder={
+        isWelcomeMode
+          ? (t('composer.welcomePlaceholder', {
+              defaultValue: 'Ask anything…',
+            }) as string)
+          : `Message ${providerLabel}…`
+      }
+      textareaRef={textareaRef}
+      inputHighlightRef={inputHighlightRef}
+      renderInputWithMentions={renderInputWithMentions}
+      onInputChange={handleInputChange}
+      onTextareaClick={handleTextareaClick}
+      onTextareaKeyDown={handleKeyDown}
+      onTextareaPaste={handlePaste}
+      onTextareaScrollSync={syncInputOverlayScroll}
+      onTextareaInput={handleTextareaInput}
+      onInputFocusChange={handleInputFocusChange}
+      onSubmit={wrappedSubmit as typeof handleSubmit}
+      onAbortSession={handleAbortSession}
+      openImagePicker={openImagePicker}
+      attachedImages={attachedImages}
+      onRemoveImage={(index) =>
+        setAttachedImages((previous) =>
+          previous.filter((_, currentIndex) => currentIndex !== index),
+        )
+      }
+      uploadingImages={uploadingImages}
+      imageErrors={imageErrors}
+      showFileDropdown={showFileDropdown}
+      filteredFiles={filteredFiles}
+      selectedFileIndex={selectedFileIndex}
+      onSelectFile={selectFile}
+      filteredCommands={filteredCommands}
+      selectedCommandIndex={selectedCommandIndex}
+      onCommandSelect={handleCommandSelect}
+      onCloseCommandMenu={resetCommandMenuState}
+      isCommandMenuOpen={showCommandMenu}
+      frequentCommands={commandQuery ? [] : frequentCommands}
+      onToggleCommandMenu={handleToggleCommandMenu}
+      getRootProps={getRootProps as (...args: unknown[]) => Record<string, unknown>}
+      getInputProps={getInputProps as (...args: unknown[]) => Record<string, unknown>}
+      isDragActive={isDragActive}
+      isLoading={isLoading}
+      canAbortSession={canAbortSession}
+      pendingPermissionRequests={pendingPermissionRequests}
+      handlePermissionDecision={handlePermissionDecision}
+      handleGrantToolPermission={handleGrantToolPermission}
+      sendByCtrlEnter={sendByCtrlEnter}
+      chromeless={isWelcomeMode}
+    />
+  );
+
+  if (isWelcomeMode) {
+    const projectName = selectedProject?.displayName || selectedProject?.name || '';
+    return (
+      <div className="flex h-full flex-col bg-white dark:bg-neutral-950">
+        <div className="flex flex-1 flex-col items-center justify-center px-6">
+          <div className="w-full max-w-[720px]">
+            <h1 className="mb-8 text-center text-[26px] font-medium tracking-tight text-neutral-900 dark:text-neutral-100">
+              {selectedProject
+                ? t('welcome.greetingWithProject', {
+                    project: projectName,
+                    defaultValue: `What's on the plan today?`,
+                  })
+                : t('welcome.noProject', {
+                    defaultValue: 'Pick a project from the sidebar to get started',
+                  })}
+            </h1>
+            {composer}
+            <p className="mt-4 text-center text-[12px] text-neutral-500 dark:text-neutral-400">
+              {t('welcome.hint', {
+                defaultValue:
+                  'Type a message and we\u2019ll spin up a fresh session for you.',
+              })}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col bg-white dark:bg-neutral-950">
       <MessagesPaneV2
@@ -308,62 +427,7 @@ function ChatInterfaceV2({
         showThinking={showThinking}
         setInput={setInput}
       />
-
-      {isReadOnlyBackgroundSession ? (
-        <div className="mx-auto w-full max-w-[720px] px-6 pb-6 pt-3">
-          <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-[13px] text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
-            {t('session.readonlyBackground', {
-              defaultValue: 'This background task transcript is read-only.',
-            })}
-          </div>
-        </div>
-      ) : (
-        <ComposerV2
-          input={input}
-          placeholder={`Message ${providerLabel}…`}
-          textareaRef={textareaRef}
-          inputHighlightRef={inputHighlightRef}
-          renderInputWithMentions={renderInputWithMentions}
-          onInputChange={handleInputChange}
-          onTextareaClick={handleTextareaClick}
-          onTextareaKeyDown={handleKeyDown}
-          onTextareaPaste={handlePaste}
-          onTextareaScrollSync={syncInputOverlayScroll}
-          onTextareaInput={handleTextareaInput}
-          onInputFocusChange={handleInputFocusChange}
-          onSubmit={handleSubmit}
-          onAbortSession={handleAbortSession}
-          openImagePicker={openImagePicker}
-          attachedImages={attachedImages}
-          onRemoveImage={(index) =>
-            setAttachedImages((previous) =>
-              previous.filter((_, currentIndex) => currentIndex !== index),
-            )
-          }
-          uploadingImages={uploadingImages}
-          imageErrors={imageErrors}
-          showFileDropdown={showFileDropdown}
-          filteredFiles={filteredFiles}
-          selectedFileIndex={selectedFileIndex}
-          onSelectFile={selectFile}
-          filteredCommands={filteredCommands}
-          selectedCommandIndex={selectedCommandIndex}
-          onCommandSelect={handleCommandSelect}
-          onCloseCommandMenu={resetCommandMenuState}
-          isCommandMenuOpen={showCommandMenu}
-          frequentCommands={commandQuery ? [] : frequentCommands}
-          onToggleCommandMenu={handleToggleCommandMenu}
-          getRootProps={getRootProps as (...args: unknown[]) => Record<string, unknown>}
-          getInputProps={getInputProps as (...args: unknown[]) => Record<string, unknown>}
-          isDragActive={isDragActive}
-          isLoading={isLoading}
-          canAbortSession={canAbortSession}
-          pendingPermissionRequests={pendingPermissionRequests}
-          handlePermissionDecision={handlePermissionDecision}
-          handleGrantToolPermission={handleGrantToolPermission}
-          sendByCtrlEnter={sendByCtrlEnter}
-        />
-      )}
+      {composer}
     </div>
   );
 }

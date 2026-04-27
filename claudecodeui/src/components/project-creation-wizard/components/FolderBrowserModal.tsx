@@ -98,13 +98,13 @@ export default function FolderBrowserModal({
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800">
-        <div className="flex items-center justify-between border-b border-gray-200 p-4 dark:border-gray-700">
+      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-xl border border-border bg-card text-card-foreground shadow-xl">
+        <div className="flex items-center justify-between border-b border-border p-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-900/50">
-              <FolderOpen className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-foreground">
+              <FolderOpen className="h-4 w-4" strokeWidth={1.75} />
             </div>
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Select Folder</h3>
+            <h3 className="text-lg font-semibold text-foreground">Select Folder</h3>
           </div>
 
           <div className="flex items-center gap-2">
@@ -112,35 +112,36 @@ export default function FolderBrowserModal({
               onClick={() => setShowHiddenFolders((previous) => !previous)}
               className={`rounded-md p-2 transition-colors ${
                 showHiddenFolders
-                  ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
-                  : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300'
+                  ? 'bg-accent text-foreground'
+                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
               }`}
               title={showHiddenFolders ? 'Hide hidden folders' : 'Show hidden folders'}
             >
-              {showHiddenFolders ? <Eye className="h-5 w-5" /> : <EyeOff className="h-5 w-5" />}
+              {showHiddenFolders ? <Eye className="h-5 w-5" strokeWidth={1.75} /> : <EyeOff className="h-5 w-5" strokeWidth={1.75} />}
             </button>
             <button
               onClick={() => setShowNewFolderInput((previous) => !previous)}
               className={`rounded-md p-2 transition-colors ${
                 showNewFolderInput
-                  ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
-                  : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300'
+                  ? 'bg-accent text-foreground'
+                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
               }`}
               title="Create new folder"
             >
-              <Plus className="h-5 w-5" />
+              <Plus className="h-5 w-5" strokeWidth={1.75} />
             </button>
             <button
               onClick={handleClose}
-              className="rounded-md p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+              className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label="Close"
             >
-              <X className="h-5 w-5" />
+              <X className="h-5 w-5" strokeWidth={1.75} />
             </button>
           </div>
         </div>
 
         {showNewFolderInput && (
-          <div className="border-b border-gray-200 bg-blue-50 px-4 py-3 dark:border-gray-700 dark:bg-blue-900/20">
+          <div className="border-b border-border bg-muted/40 px-4 py-3">
             <div className="flex items-center gap-2">
               <Input
                 type="text"
@@ -174,29 +175,29 @@ export default function FolderBrowserModal({
 
         {error && (
           <div className="px-4 pt-3">
-            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+            <p className="text-sm text-destructive">{error}</p>
           </div>
         )}
 
         <div className="flex-1 overflow-y-auto p-4">
           {loadingFolders ? (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
           ) : (
             <div className="space-y-1">
               {parentPath && (
                 <button
                   onClick={() => loadFolders(parentPath)}
-                  className="flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left hover:bg-gray-100 dark:hover:bg-gray-700"
+                  className="flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left hover:bg-accent hover:text-accent-foreground"
                 >
-                  <FolderOpen className="h-5 w-5 text-gray-400" />
-                  <span className="font-medium text-gray-700 dark:text-gray-300">..</span>
+                  <FolderOpen className="h-5 w-5 text-muted-foreground" strokeWidth={1.75} />
+                  <span className="font-medium text-foreground">..</span>
                 </button>
               )}
 
               {visibleFolders.length === 0 ? (
-                <div className="py-8 text-center text-gray-500 dark:text-gray-400">
+                <div className="py-8 text-center text-muted-foreground">
                   No subfolders found
                 </div>
               ) : (
@@ -204,10 +205,10 @@ export default function FolderBrowserModal({
                   <div key={folder.path} className="flex items-center gap-2">
                     <button
                       onClick={() => loadFolders(folder.path)}
-                      className="flex flex-1 items-center gap-3 rounded-lg px-4 py-3 text-left hover:bg-gray-100 dark:hover:bg-gray-700"
+                      className="flex flex-1 items-center gap-3 rounded-lg px-4 py-3 text-left hover:bg-accent hover:text-accent-foreground"
                     >
-                      <FolderPlus className="h-5 w-5 text-blue-500" />
-                      <span className="font-medium text-gray-900 dark:text-white">
+                      <FolderPlus className="h-5 w-5 text-muted-foreground" strokeWidth={1.75} />
+                      <span className="font-medium text-foreground">
                         {folder.name}
                       </span>
                     </button>
@@ -226,10 +227,10 @@ export default function FolderBrowserModal({
           )}
         </div>
 
-        <div className="border-t border-gray-200 dark:border-gray-700">
-          <div className="flex items-center gap-2 bg-gray-50 px-4 py-3 dark:bg-gray-900/50">
-            <span className="text-sm text-gray-600 dark:text-gray-400">Path:</span>
-            <code className="flex-1 truncate font-mono text-sm text-gray-900 dark:text-white">
+        <div className="border-t border-border">
+          <div className="flex items-center gap-2 bg-muted/40 px-4 py-3">
+            <span className="text-sm text-muted-foreground">Path:</span>
+            <code className="flex-1 truncate font-mono text-sm text-foreground">
               {currentPath}
             </code>
           </div>

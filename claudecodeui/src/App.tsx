@@ -6,34 +6,13 @@ import { TaskMasterProvider } from './contexts/TaskMasterContext';
 import { TasksSettingsProvider } from './contexts/TasksSettingsContext';
 import { WebSocketProvider } from './contexts/WebSocketContext';
 import { PluginsProvider } from './contexts/PluginsContext';
-import AppContent from './components/app/AppContent';
 import AppShellV2 from './components/app-shell/AppShellV2';
-import { isUiV2Enabled } from './hooks/useIsUiV2';
 import i18n from './i18n/config.js';
 
-function V2Routes() {
+export default function App() {
   // Single wildcard so URL changes don't remount the shell. Params are
   // resolved inside AppShellV2 via useMatch so navigation between
   // /, /p/:name, /p/:name/c/:id, and /session/:id preserves all state.
-  return (
-    <Routes>
-      <Route path="*" element={<AppShellV2 />} />
-    </Routes>
-  );
-}
-
-function LegacyRoutes() {
-  return (
-    <Routes>
-      <Route path="/" element={<AppContent />} />
-      <Route path="/session/:sessionId" element={<AppContent />} />
-    </Routes>
-  );
-}
-
-export default function App() {
-  const useV2 = isUiV2Enabled();
-
   return (
     <I18nextProvider i18n={i18n}>
       <ThemeProvider>
@@ -44,7 +23,9 @@ export default function App() {
                 <TaskMasterProvider>
                   <ProtectedRoute>
                     <Router basename={window.__ROUTER_BASENAME__ || ''}>
-                      {useV2 ? <V2Routes /> : <LegacyRoutes />}
+                      <Routes>
+                        <Route path="*" element={<AppShellV2 />} />
+                      </Routes>
                     </Router>
                   </ProtectedRoute>
                 </TaskMasterProvider>

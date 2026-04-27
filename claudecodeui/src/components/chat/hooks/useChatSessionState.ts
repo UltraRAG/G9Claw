@@ -144,7 +144,35 @@ export function useChatSessionState({
   /*  Derive chatMessages from the store                              */
   /* ---------------------------------------------------------------- */
 
-  const activeSessionId = selectedSession?.id || currentSessionId || null;
+  // Bug fix (was: `selectedSession?.id || currentSessionId || null`): when the
+  // user clicks "+ session" the parent flips `selectedSession` to null, but
+  // `currentSessionId` still holds the previous session's id for one render
+  // tick — so storeMessages would briefly read the OLD session's messages
+  // and bleed them into the freshly-cleared chat view.
+  //
+  // Strategy:
+  //   1. Mirror `selectedSession.id` into `currentSessionId` during render
+  //      whenever the selection changes — drops any stale carryover.
+  //   2. Expose an `effectiveCurrentSessionId` ref so the *current* render
+  //      uses the cleared value, not the lagging React state.
+  //   3. While the selection is stable but `currentSessionId` advances
+  //      (e.g. backend emits `session_created` for a from-welcome submit
+  //      before the parent navigates), keep mirroring forward so the new
+  //      id is visible immediately.
+  const selSid = selectedSession?.id ?? null;
+  const lastSeenSelSidRef = useRef<string | null>(selSid);
+  const effectiveCurrentRef = useRef<string | null>(selSid);
+  if (lastSeenSelSidRef.current !== selSid) {
+    lastSeenSelSidRef.current = selSid;
+    effectiveCurrentRef.current = selSid;
+    if (currentSessionId !== selSid) {
+      setCurrentSessionId(selSid);
+    }
+  } else if (currentSessionId !== effectiveCurrentRef.current) {
+    effectiveCurrentRef.current = currentSessionId;
+  }
+
+  const activeSessionId = selSid ?? effectiveCurrentRef.current;
   const isReadOnlyBackgroundSession = isBackgroundTaskSession(selectedSession);
   const sessionRequestParams = useMemo(
     () => getSessionRequestParams(selectedSession),

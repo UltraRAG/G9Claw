@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Activity, AlertCircle, DollarSign, Loader2, RefreshCw, Sigma, TrendingUp } from 'lucide-react';
 import { useRoutingDashboard } from '../../hooks/useRoutingDashboard';
 import type { DashboardData, DashboardProject, DashboardSession } from '../../hooks/useRoutingDashboard';
@@ -103,6 +104,7 @@ function collectRecentRoutes(
 }
 
 export default function DashboardV2() {
+  const { t } = useTranslation('routing');
   const { data, loading, error, refresh } = useRoutingDashboard();
 
   const recent = useMemo<RecentRoute[]>(() => {
@@ -114,7 +116,9 @@ export default function DashboardV2() {
     return (
       <div className="flex h-full items-center justify-center bg-white text-neutral-500 dark:bg-neutral-950 dark:text-neutral-400">
         <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.75} />
-        <span className="ml-2 text-[13px]">Loading dashboard…</span>
+        <span className="ml-2 text-[13px]">
+          {t('dashboard.loading', { defaultValue: 'Loading dashboard…' })}
+        </span>
       </div>
     );
   }
@@ -128,7 +132,7 @@ export default function DashboardV2() {
           onClick={refresh}
           className="text-xxs rounded-md bg-neutral-900 px-3 py-1.5 text-white transition hover:opacity-90 dark:bg-neutral-50 dark:text-neutral-900"
         >
-          Retry
+          {t('dashboard.retry', { defaultValue: 'Retry' })}
         </button>
       </div>
     );
@@ -149,10 +153,10 @@ export default function DashboardV2() {
         <div className="flex items-start justify-between">
           <div>
             <h2 className="text-[20px] font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
-              Dashboard
+              {t('dashboard.title', { defaultValue: 'Dashboard' })}
             </h2>
             <p className="mt-0.5 text-[13px] text-neutral-500 dark:text-neutral-400">
-              Usage across all projects and sessions.
+              {t('dashboard.subtitle', { defaultValue: 'Usage across all projects and sessions.' })}
             </p>
           </div>
           <button
@@ -162,22 +166,34 @@ export default function DashboardV2() {
             className="text-xxs inline-flex h-8 items-center gap-1.5 rounded-md border border-neutral-200 px-2.5 text-neutral-600 transition hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-900"
           >
             <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} strokeWidth={1.75} />
-            <span>Refresh</span>
+            <span>{t('dashboard.refresh', { defaultValue: 'Refresh' })}</span>
           </button>
         </div>
 
         <div className="mt-6 grid grid-cols-1 gap-3 md:grid-cols-3">
           <StatCard
             icon={<Activity className="h-3.5 w-3.5" strokeWidth={1.75} />}
-            label="Requests"
+            label={t('dashboard.stats.requests', { defaultValue: 'Requests' })}
             value={totalRequests.toLocaleString()}
-            sub={overall.sessionCount ? `${overall.sessionCount} sessions` : undefined}
+            sub={
+              overall.sessionCount
+                ? (t('dashboard.stats.sessions', {
+                    count: overall.sessionCount,
+                    defaultValue: `${overall.sessionCount} sessions`,
+                  }) as string)
+                : undefined
+            }
             hint={
               overall.projectCount
                 ? (
                     <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
                       <TrendingUp className="h-3 w-3" strokeWidth={1.75} />
-                      <span>{overall.projectCount} active projects</span>
+                      <span>
+                        {t('dashboard.stats.activeProjects', {
+                          count: overall.projectCount,
+                          defaultValue: `${overall.projectCount} active projects`,
+                        })}
+                      </span>
                     </span>
                   )
                 : undefined
@@ -185,34 +201,58 @@ export default function DashboardV2() {
           />
           <StatCard
             icon={<Sigma className="h-3.5 w-3.5" strokeWidth={1.75} />}
-            label="Tokens"
+            label={t('dashboard.stats.tokens', { defaultValue: 'Tokens' })}
             value={formatTokens(totalTokens)}
-            sub={`${formatTokens(inputTokens)} in · ${formatTokens(outputTokens)} out`}
+            sub={
+              t('dashboard.stats.inOut', {
+                in: formatTokens(inputTokens),
+                out: formatTokens(outputTokens),
+                defaultValue: `${formatTokens(inputTokens)} in · ${formatTokens(outputTokens)} out`,
+              }) as string
+            }
           />
           <StatCard
             icon={<DollarSign className="h-3.5 w-3.5" strokeWidth={1.75} />}
-            label="Cost"
+            label={t('dashboard.stats.cost', { defaultValue: 'Cost' })}
             value={formatCost(totalCost)}
-            sub={totalRequests > 0 ? `≈ ${formatCost(totalCost / totalRequests)} / request` : undefined}
+            sub={
+              totalRequests > 0
+                ? (t('dashboard.stats.perRequest', {
+                    value: formatCost(totalCost / totalRequests),
+                    defaultValue: `≈ ${formatCost(totalCost / totalRequests)} / request`,
+                  }) as string)
+                : undefined
+            }
           />
         </div>
 
         <div className="mt-6 rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-950">
           <div className="text-xxs mb-4 uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-            Recent routes
+            {t('dashboard.recent.title', { defaultValue: 'Recent routes' })}
           </div>
           {recent.length === 0 ? (
             <p className="py-6 text-center text-[13px] text-neutral-500 dark:text-neutral-400">
-              No routing activity yet. Start a conversation to see stats here.
+              {t('dashboard.recent.empty', {
+                defaultValue:
+                  'No routing activity yet. Start a conversation to see stats here.',
+              })}
             </p>
           ) : (
             <table className="w-full text-[13px]">
               <thead className="text-xxs text-neutral-500 dark:text-neutral-400">
                 <tr className="text-left">
-                  <th className="pb-2 font-normal">Time</th>
-                  <th className="pb-2 font-normal">Provider</th>
-                  <th className="pb-2 font-normal">Model</th>
-                  <th className="pb-2 text-right font-normal">Tokens</th>
+                  <th className="pb-2 font-normal">
+                    {t('dashboard.recent.columns.time', { defaultValue: 'Time' })}
+                  </th>
+                  <th className="pb-2 font-normal">
+                    {t('dashboard.recent.columns.provider', { defaultValue: 'Provider' })}
+                  </th>
+                  <th className="pb-2 font-normal">
+                    {t('dashboard.recent.columns.model', { defaultValue: 'Model' })}
+                  </th>
+                  <th className="pb-2 text-right font-normal">
+                    {t('dashboard.recent.columns.tokens', { defaultValue: 'Tokens' })}
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800">
