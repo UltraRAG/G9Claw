@@ -111,7 +111,7 @@ pwd
 
 ```text
 claude-code-main/
-claudecodeui/
+ui/
 edgeclaw-memory-core/
 .env.example
 ```
@@ -122,7 +122,7 @@ edgeclaw-memory-core/
 
 不要创建这些文件：
 
-- `claudecodeui/.env`
+- `ui/.env`
 - `claude-code-main/.env`
 - `edgeclaw-memory-core/.env`
 
@@ -217,10 +217,10 @@ bun install
 cd ..
 ```
 
-### 3. 安装 `claudecodeui` 依赖
+### 3. 安装 `ui` 依赖
 
 ```bash
-cd claudecodeui
+cd ui
 npm install
 cd ..
 ```
@@ -251,7 +251,7 @@ bun run proxy.ts
 重新打开一个终端，进入项目根目录后执行：
 
 ```bash
-cd claudecodeui
+cd ui
 npm run build
 npm run server
 ```
@@ -323,7 +323,7 @@ bun run proxy.ts
 终端 2：
 
 ```bash
-cd claudecodeui
+cd ui
 npm run build
 npm run server
 ```
@@ -333,7 +333,7 @@ npm run server
 如果你不是单纯使用，而是要改前端页面，可以把第二个终端换成开发模式：
 
 ```bash
-cd claudecodeui
+cd ui
 npm run dev
 ```
 
@@ -380,7 +380,7 @@ EDGECLAW_MODEL=...
 先检查这两个终端是不是都还在运行：
 
 - `claude-code-main` 的代理终端
-- `claudecodeui` 的 Web 终端
+- `ui` 的 Web 终端
 
 然后执行：
 
@@ -422,7 +422,7 @@ SERVER_PORT=3002
 你必须通过下面两个宿主之一来用它：
 
 - `claude-code-main`
-- `claudecodeui`
+- `ui`
 
 在这个仓库里，最常见的实际启动方式就是本文写的：
 
@@ -459,7 +459,7 @@ cd claude-code-main
 bun install
 cd ..
 
-cd claudecodeui
+cd ui
 npm install
 cd ..
 ```
@@ -476,7 +476,7 @@ bun run proxy.ts
 终端 2：
 
 ```bash
-cd claudecodeui
+cd ui
 npm run build
 npm run server
 ```

@@ -3,7 +3,7 @@
  *
  * Lists projects from ~/.claude/projects/ and ~/.claude/project-config.json,
  * resolving each to its real filesystem path. Ported (simplified) from
- * claudecodeui/server/projects.js.
+ * ui/server/projects.js.
  */
 
 import { promises as fs } from 'node:fs'

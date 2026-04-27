@@ -1,6 +1,6 @@
 # edgeclaw-opc 使用说明
 
-本仓库把 `claude-code-main`、`claudecodeui`、memory、router 和 gateway 收敛到一套统一配置。
+本仓库把 `claude-code-main`、`ui`、memory、router 和 gateway 收敛到一套统一配置。
 唯一用户配置入口是 `~/.edgeclaw/config.yaml`。UI、CLI、memory、router 和 gateway 都从这份 YAML 派生运行配置。
 
 ## 目录关系
@@ -9,7 +9,7 @@
 |------|------|
 | `~/.edgeclaw/config.yaml` | 唯一用户配置入口 |
 | `claude-code-main/` | Bun CLI、本地 Anthropic -> OpenAI 代理、`start.sh` |
-| `claudecodeui/` | Web UI 前后端 |
+| `ui/` | Web UI 前后端 |
 | `edgeclaw-memory-core/` | 记忆检索 / 索引核心 |
 
 ## 前置条件
@@ -43,7 +43,7 @@
 cd claude-code-main
 bun install
 
-cd ../claudecodeui
+cd ../ui
 npm install
 ```
 
@@ -69,7 +69,7 @@ cd claude-code-main
 ## 第四步：启动 Web UI
 
 ```bash
-cd claudecodeui
+cd ui
 npm run dev
 ```
 
@@ -125,14 +125,14 @@ memory:
 查看当前配置入口和状态：
 
 ```bash
-cd claudecodeui
+cd ui
 node server/cli.js status
 ```
 
 或：
 
 ```bash
-cd claudecodeui
+cd ui
 cloudcli status
 ```
 
