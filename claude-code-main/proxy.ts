@@ -713,6 +713,19 @@ const server = Bun.serve({
       return new Response('ok')
     }
 
+    // ── CCR stats endpoints (consumed by Express dashboard) ──
+    if (url.pathname === '/ccr-stats/sessions' && req.method === 'GET') {
+      const collector = ccrModule?.getGlobalStatsCollector?.()
+      if (!collector) return Response.json({ error: 'no collector' }, { status: 503 })
+      return Response.json(collector.getSessionStats())
+    }
+    if (url.pathname === '/ccr-stats/flush' && req.method === 'POST') {
+      const collector = ccrModule?.getGlobalStatsCollector?.()
+      if (!collector) return Response.json({ error: 'no collector' }, { status: 503 })
+      await collector.flush()
+      return Response.json({ flushed: true, sessions: collector.getSessionStats() })
+    }
+
     // Only intercept messages endpoint (handles both /v1/messages and beta paths)
     if (!url.pathname.includes('/messages')) {
       // Forward non-messages requests as pass-through to upstream

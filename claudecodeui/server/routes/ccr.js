@@ -177,9 +177,22 @@ function mergeRecordBuckets(target, source) {
 
 router.get('/dashboard', async (_req, res) => {
   try {
-    const collector = getCollector();
-    const ccrSessions = collector ? collector.getSessionStats() : [];
-    const allSessions = Array.isArray(ccrSessions) ? ccrSessions : [];
+    // Prefer live stats from proxy subprocess over in-process collector
+    let allSessions = [];
+    const proxyPort = process.env.PROXY_PORT || process.env.EDGECLAW_PROXY_PORT || '18080';
+    try {
+      const resp = await fetch(`http://127.0.0.1:${proxyPort}/ccr-stats/sessions`, { signal: AbortSignal.timeout(2000) });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (Array.isArray(data) && data.length > 0) allSessions = data;
+      }
+    } catch { /* proxy unreachable, fall through to in-process collector */ }
+
+    if (allSessions.length === 0) {
+      const collector = getCollector();
+      const ccrSessions = collector ? collector.getSessionStats() : [];
+      allSessions = Array.isArray(ccrSessions) ? ccrSessions : [];
+    }
 
     const projectsData = await getProjects().catch(() => []);
 
@@ -262,6 +275,11 @@ router.get('/dashboard', async (_req, res) => {
     overall.projectCount = projects.length;
 
     const unmatchedSessions = allSessions.filter((s) => !matchedIds.has(s.sessionId));
+    for (const s of unmatchedSessions) {
+      mergeBuckets(overall.total, s.total || {});
+      mergeRecordBuckets(overall.byTier, s.byTier);
+      mergeRecordBuckets(overall.byRole, s.byRole);
+    }
 
     res.json({ projects, overall, unmatchedSessions });
   } catch (err) {

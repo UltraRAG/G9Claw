@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { useMemo } from 'react';
 import { Activity, AlertCircle, DollarSign, Loader2, RefreshCw, Sigma, TrendingUp } from 'lucide-react';
 import { useRoutingDashboard } from '../../hooks/useRoutingDashboard';
-import type { DashboardProject, DashboardSession } from '../../hooks/useRoutingDashboard';
+import type { DashboardData, DashboardProject, DashboardSession } from '../../hooks/useRoutingDashboard';
 import { cn } from '../../lib/utils.js';
 
 function formatTokens(n: number): string {
@@ -40,12 +40,39 @@ type RecentRoute = {
   tokens: number;
 };
 
-function collectRecentRoutes(projects: DashboardProject[]): RecentRoute[] {
+function collectRecentRoutes(
+  projects: DashboardProject[],
+  unmatchedSessions?: DashboardData['unmatchedSessions'],
+): RecentRoute[] {
   const sessions: Array<{ project: DashboardProject; session: DashboardSession }> = [];
   for (const project of projects) {
     for (const session of project.sessions) {
       if (!session.routing) continue;
       sessions.push({ project, session });
+    }
+  }
+
+  if (unmatchedSessions) {
+    const placeholder = { name: 'unmatched', displayName: 'Other', fullPath: '', sessions: [], aggregated: {} } as unknown as DashboardProject;
+    for (const u of unmatchedSessions) {
+      sessions.push({
+        project: placeholder,
+        session: {
+          sessionId: u.sessionId,
+          title: u.sessionId,
+          provider: Object.keys(u.byScenario || {})[0] || 'routed',
+          lastActivity: new Date(u.lastActiveAt).toISOString(),
+          routing: {
+            total: u.total,
+            byTier: u.byTier,
+            byScenario: u.byScenario,
+            byRole: u.byRole,
+            byModel: u.byModel,
+            firstSeenAt: u.firstSeenAt,
+            lastActiveAt: u.lastActiveAt,
+          },
+        },
+      });
     }
   }
 
@@ -80,7 +107,7 @@ export default function DashboardV2() {
 
   const recent = useMemo<RecentRoute[]>(() => {
     if (!data) return [];
-    return collectRecentRoutes(data.projects);
+    return collectRecentRoutes(data.projects, data.unmatchedSessions);
   }, [data]);
 
   if (loading && !data) {
