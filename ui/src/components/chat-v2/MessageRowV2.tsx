@@ -84,6 +84,7 @@ function MessageRowV2({
           showThinking={showThinking}
           selectedProject={selectedProject ?? null}
           provider={provider}
+          hideHeader
         />
       </div>
     );

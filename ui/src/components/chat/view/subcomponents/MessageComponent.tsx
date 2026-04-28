@@ -32,6 +32,7 @@ type MessageComponentProps = {
   showThinking?: boolean;
   selectedProject?: Project | null;
   provider: Provider | string;
+  hideHeader?: boolean;
 };
 
 type InteractiveOption = {
@@ -53,7 +54,7 @@ const stringifyMessageContent = (content: unknown): string => {
   }
 };
 
-const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, onShowSettings, onGrantToolPermission, autoExpandTools, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, onShowSettings, onGrantToolPermission, autoExpandTools, showRawParameters, showThinking, selectedProject, provider, hideHeader = false }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
@@ -155,7 +156,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
               <span>{formattedTime}</span>
             </div>
           </div>
-          {!isGrouped && (
+          {!hideHeader && !isGrouped && (
             <div className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm text-white sm:flex">
               U
             </div>
@@ -192,7 +193,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
       ) : (
         /* Claude/Error/Tool messages on the left */
         <div className="w-full">
-          {!isGrouped && (
+          {!hideHeader && !isGrouped && (
             <div className="mb-2 flex items-center space-x-3">
               {message.type === 'error' ? (
                 <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-red-600 text-sm text-white">
