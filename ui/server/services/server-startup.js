@@ -2,14 +2,12 @@ import {
   initializeCronDaemonOwnerEnv,
   persistCurrentCronDaemonOwner
 } from './cron-daemon-owner.js';
-import { startCronDaemonClientLease } from './cron-daemon-client-lease.js';
 import { ensureCronDaemonForUiStartup } from './cron-daemon-startup.js';
 
 export async function runServerStartupBeforeListen({
   initializeCronDaemonOwnerEnvFn = initializeCronDaemonOwnerEnv,
   persistCurrentCronDaemonOwnerFn = persistCurrentCronDaemonOwner,
   ensureCronDaemonForUiStartupFn = ensureCronDaemonForUiStartup,
-  startCronDaemonClientLeaseFn = startCronDaemonClientLease,
   initializeDatabaseFn,
   ensureLocalUserWhenAuthDisabledFn,
   configureWebPushFn
@@ -30,7 +28,6 @@ export async function runServerStartupBeforeListen({
     if (cronDaemonStartup?.started) {
       await persistCurrentCronDaemonOwnerFn();
     }
-    await startCronDaemonClientLeaseFn();
   } catch (err) {
     console.warn('[server-startup] Cron daemon unavailable, continuing without it:', err.message);
   }
