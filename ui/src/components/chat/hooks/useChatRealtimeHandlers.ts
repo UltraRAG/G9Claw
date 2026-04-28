@@ -1,8 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { PendingPermissionRequest } from '../types/types';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
+import { useWebSocket } from '../../../contexts/WebSocketContext';
 
 type PendingViewSession = {
   sessionId: string | null;
@@ -47,7 +48,6 @@ type LatestChatMessage = {
 };
 
 interface UseChatRealtimeHandlersArgs {
-  latestMessage: LatestChatMessage | null;
   provider: SessionProvider;
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
@@ -76,7 +76,6 @@ interface UseChatRealtimeHandlersArgs {
 /* ------------------------------------------------------------------ */
 
 export function useChatRealtimeHandlers({
-  latestMessage,
   provider,
   selectedProject,
   selectedSession,
@@ -99,12 +98,13 @@ export function useChatRealtimeHandlers({
   onWebSocketReconnect,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
-  const lastProcessedMessageRef = useRef<LatestChatMessage | null>(null);
+  const { subscribe } = useWebSocket();
 
-  useEffect(() => {
+  // The handler runs synchronously inside the WebSocket onmessage callback
+  // (see WebSocketContext.subscribe) so every message is observed in arrival
+  // order without React 18 state-batching collapsing intermediate values.
+  const handleMessage = useCallback((latestMessage: LatestChatMessage) => {
     if (!latestMessage) return;
-    if (lastProcessedMessageRef.current === latestMessage) return;
-    lastProcessedMessageRef.current = latestMessage;
 
     const pendingSessionId = pendingViewSessionRef.current?.sessionId ?? null;
     const activeCurrentSessionId =
@@ -351,7 +351,6 @@ export function useChatRealtimeHandlers({
         break;
     }
   }, [
-    latestMessage,
     provider,
     selectedProject,
     selectedSession,
@@ -374,4 +373,9 @@ export function useChatRealtimeHandlers({
     onWebSocketReconnect,
     sessionStore,
   ]);
+
+  useEffect(() => {
+    if (!subscribe) return;
+    return subscribe(handleMessage as (msg: any) => void);
+  }, [subscribe, handleMessage]);
 }

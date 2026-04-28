@@ -372,7 +372,15 @@ const MODEL_MAP: Record<string, string> = {
   'claude-3-haiku':             'anthropic/claude-3-haiku',
 }
 
+// In direct (non-CCR) mode the YAML's agents.main.model is the single source
+// of truth. Any incoming body.model from the SDK is overridden so a stale
+// localStorage selection (e.g. "opus") can't bypass the configured upstream.
+// Set EDGECLAW_RESPECT_REQUEST_MODEL=1 to fall back to legacy behavior.
+const FORCE_UPSTREAM_MODEL = process.env.EDGECLAW_RESPECT_REQUEST_MODEL !== '1'
+
 function toUpstreamModel(model: string): string {
+  if (FORCE_UPSTREAM_MODEL) return EDGECLAW_MODEL.model
+
   const normalized = model.trim()
   if (!normalized) return normalized
   if (!IS_OPENROUTER_UPSTREAM) return normalized
@@ -703,6 +711,14 @@ async function forwardToUpstream(
 
 const server = Bun.serve({
   port: PORT,
+  // Bun.serve default idleTimeout is 10s. Long streaming completions (slow
+  // models, slow networks, long thinking) easily exceed that and the
+  // connection gets killed mid-stream. The Anthropic SDK then silently
+  // retries the same request with stream:false, which is why the UI seemed
+  // to "wait then dump the whole reply at the end" instead of streaming.
+  // 0 disables the idle timeout entirely; we still cap total request time
+  // upstream via apiTimeoutMs.
+  idleTimeout: 0,
   async fetch(req) {
     const url = new URL(req.url)
 

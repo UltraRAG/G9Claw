@@ -2,11 +2,21 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useAuth } from '../components/auth/context/AuthContext';
 import { DISABLE_LOCAL_AUTH, IS_PLATFORM } from '../constants/config';
 
+type WSSubscriber = (msg: any) => void;
+
 type WebSocketContextType = {
   ws: WebSocket | null;
   sendMessage: (message: any) => void;
   latestMessage: any | null;
   isConnected: boolean;
+  /**
+   * Subscribe to every incoming WebSocket message synchronously, bypassing
+   * React state batching. Returns an unsubscribe function. Use this for
+   * high-frequency event streams (chat stream_delta, etc.) where dropping
+   * intermediate values is not acceptable. For low-frequency one-shot events
+   * the `latestMessage` state is still fine.
+   */
+  subscribe: (handler: WSSubscriber) => () => void;
 };
 
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
@@ -33,6 +43,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
   const [latestMessage, setLatestMessage] = useState<any>(null);
   const [isConnected, setIsConnected] = useState(false);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const subscribersRef = useRef<Set<WSSubscriber>>(new Set());
   const { token } = useAuth();
 
   useEffect(() => {
@@ -72,6 +83,21 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       websocket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          // Synchronously fan out to subscribers BEFORE the React state
+          // update. React 18 auto-batches setLatestMessage across multiple
+          // onmessage calls in the same task, so consumers that need every
+          // single message (e.g. stream_delta accumulators) must subscribe
+          // here instead of reading `latestMessage`.
+          const subs = subscribersRef.current;
+          if (subs.size > 0) {
+            subs.forEach((sub) => {
+              try {
+                sub(data);
+              } catch (err) {
+                console.error('WebSocket subscriber error:', err);
+              }
+            });
+          }
           setLatestMessage(data);
         } catch (error) {
           console.error('Error parsing WebSocket message:', error);
@@ -107,13 +133,21 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     }
   }, []);
 
+  const subscribe = useCallback<WebSocketContextType['subscribe']>((handler) => {
+    subscribersRef.current.add(handler);
+    return () => {
+      subscribersRef.current.delete(handler);
+    };
+  }, []);
+
   const value: WebSocketContextType = useMemo(() =>
   ({
     ws: wsRef.current,
     sendMessage,
     latestMessage,
-    isConnected
-  }), [sendMessage, latestMessage, isConnected]);
+    isConnected,
+    subscribe,
+  }), [sendMessage, latestMessage, isConnected, subscribe]);
 
   return value;
 };
