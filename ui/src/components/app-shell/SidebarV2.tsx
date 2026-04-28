@@ -46,11 +46,14 @@ type FlatSession = {
 };
 
 const collectSessionsForProject = (project: Project): FlatSession[] => {
+  const asSessionList = (sessions: unknown): ProjectSession[] =>
+    Array.isArray(sessions) ? sessions : [];
+
   const all: Array<[SessionProvider, ProjectSession[]]> = [
-    ['claude', project.sessions ?? []],
-    ['codex', project.codexSessions ?? []],
-    ['cursor', project.cursorSessions ?? []],
-    ['gemini', project.geminiSessions ?? []],
+    ['claude', asSessionList(project.sessions)],
+    ['codex', asSessionList(project.codexSessions)],
+    ['cursor', asSessionList(project.cursorSessions)],
+    ['gemini', asSessionList(project.geminiSessions)],
   ];
   const entries: FlatSession[] = [];
   for (const [provider, sessions] of all) {
@@ -154,6 +157,7 @@ export default function SidebarV2({
   const { t } = useTranslation();
   const navigate = useNavigate();
   useCustomNamesVersion();
+  const safeProjects = Array.isArray(projects) ? projects : [];
 
   const [renamingProject, setRenamingProject] = useState<string | null>(null);
   const [renamingSession, setRenamingSession] = useState<string | null>(null);
@@ -201,8 +205,8 @@ export default function SidebarV2({
   }, [selectedProject?.name]);
 
   const generalProject =
-    projects.find((project) => project.name === 'general' || project.displayName === 'general') ?? null;
-  const otherProjects = projects.filter((project) => project !== generalProject);
+    safeProjects.find((project) => project.name === 'general' || project.displayName === 'general') ?? null;
+  const otherProjects = safeProjects.filter((project) => project !== generalProject);
 
   const navToProject = useCallback(
     (name: string) => navigate(`/p/${encodeURIComponent(name)}`),
@@ -581,7 +585,7 @@ export default function SidebarV2({
       </div>
 
       <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-        {isLoading && projects.length === 0 ? (
+        {isLoading && safeProjects.length === 0 ? (
           <div className="px-2 py-4 text-xs text-neutral-500 dark:text-neutral-400">
             {t('sidebar:sessions.loading', { defaultValue: 'Loading...' })}
           </div>
