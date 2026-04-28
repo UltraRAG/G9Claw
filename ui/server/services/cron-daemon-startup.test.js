@@ -43,7 +43,7 @@ test('ensureCronDaemonForUiStartup reuses a healthy daemon without spawning a ne
   const requests = [];
   let spawnCalled = false;
 
-  const result = await ensureCronDaemonForUiStartup({
+  const response = await ensureCronDaemonForUiStartup({
     sendCronDaemonRequestFn: async (request) => {
       requests.push(request);
       return { ok: true, data: { type: 'pong', runtimes: [] } };
@@ -54,8 +54,7 @@ test('ensureCronDaemonForUiStartup reuses a healthy daemon without spawning a ne
     }
   });
 
-  assert.equal(result.response.data.type, 'pong');
-  assert.equal(result.started, false);
+  assert.equal(response.data.type, 'pong');
   assert.deepEqual(requests, [{ type: 'ping' }]);
   assert.equal(spawnCalled, false);
 });
@@ -65,7 +64,7 @@ test('ensureCronDaemonForUiStartup starts the daemon when the socket is unavaila
   const spawnCalls = [];
   let requestCount = 0;
 
-  const result = await ensureCronDaemonForUiStartup({
+  const response = await ensureCronDaemonForUiStartup({
     sendCronDaemonRequestFn: async (request) => {
       requests.push(request);
       requestCount += 1;
@@ -95,8 +94,7 @@ test('ensureCronDaemonForUiStartup starts the daemon when the socket is unavaila
     sleepFn: async () => {}
   });
 
-  assert.equal(result.response.data.type, 'pong');
-  assert.equal(result.started, true);
+  assert.equal(response.data.type, 'pong');
   assert.deepEqual(requests, [{ type: 'ping' }, { type: 'ping' }]);
   assert.equal(spawnCalls.length, 1);
   assert.equal(spawnCalls[0].command, 'bun');

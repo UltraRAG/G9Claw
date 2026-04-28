@@ -21,12 +21,6 @@ function getCronDaemonSocketPath() {
   return path.join(getClaudeConfigHomeDir(), 'cron-daemon.sock');
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 export function initializeCronDaemonOwnerEnv() {
   if (!process.env[CRON_DAEMON_OWNER_TOKEN_ENV]) {
     process.env[CRON_DAEMON_OWNER_TOKEN_ENV] = crypto.randomUUID();
@@ -34,27 +28,6 @@ export function initializeCronDaemonOwnerEnv() {
   process.env[CRON_DAEMON_OWNER_KIND_ENV] = CRON_DAEMON_OWNER_KIND;
   process.env[CRON_DAEMON_OWNER_PROCESS_PID_ENV] = String(process.pid);
   return process.env[CRON_DAEMON_OWNER_TOKEN_ENV];
-}
-
-export async function persistCurrentCronDaemonOwner() {
-  const kind = process.env[CRON_DAEMON_OWNER_KIND_ENV];
-  const token = process.env[CRON_DAEMON_OWNER_TOKEN_ENV];
-  if (!kind || !token) {
-    throw new Error('Cron daemon owner environment is not initialized');
-  }
-
-  const ownerPath = getCronDaemonOwnerPath();
-  await fs.mkdir(path.dirname(ownerPath), { recursive: true });
-  await fs.writeFile(
-    ownerPath,
-    JSON.stringify({
-      kind,
-      token,
-      processId: process.pid,
-      createdAt: Date.now()
-    }, null, 2) + '\n',
-    'utf-8'
-  );
 }
 
 async function readCronDaemonOwner() {
@@ -89,21 +62,17 @@ function sendCronDaemonRequest(request) {
     const socket = net.createConnection(getCronDaemonSocketPath());
     let settled = false;
     let buffer = '';
-    let timeout = null;
 
     const finalize = (callback, value) => {
       if (settled) return;
       settled = true;
-      if (timeout) {
-        clearTimeout(timeout);
-      }
       socket.destroy();
       callback(value);
     };
 
-    timeout = setTimeout(() => {
+    socket.setTimeout(1000, () => {
       finalize(reject, new Error('Timed out waiting for Cron daemon response'));
-    }, 1000);
+    });
 
     socket.on('connect', () => {
       socket.write(`${JSON.stringify(request)}\n`);
@@ -129,37 +98,6 @@ function sendCronDaemonRequest(request) {
   });
 }
 
-function isCronDaemonUnavailableError(error) {
-  return Boolean(
-    error instanceof Error &&
-    (
-      ('code' in error && (error.code === 'ENOENT' || error.code === 'ECONNREFUSED')) ||
-      error.message.includes('closed') ||
-      error.message.includes('socket hang up')
-    )
-  );
-}
-
-export async function waitForCronDaemonShutdown({
-  sendCronDaemonRequestFn = sendCronDaemonRequest,
-  sleepFn = sleep,
-  timeoutMs = 5000,
-  intervalMs = 100
-} = {}) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      await sendCronDaemonRequestFn({ type: 'ping' });
-    } catch (error) {
-      if (isCronDaemonUnavailableError(error)) {
-        return true;
-      }
-    }
-    await sleepFn(intervalMs);
-  }
-  return false;
-}
-
 export async function shutdownOwnedCronDaemon() {
   const owner = await readCronDaemonOwner();
   if (!isCurrentProcessCronDaemonOwner(owner)) {
@@ -168,10 +106,7 @@ export async function shutdownOwnedCronDaemon() {
 
   try {
     const response = await sendCronDaemonRequest({ type: 'shutdown' });
-    if (!response?.ok) {
-      return false;
-    }
-    return await waitForCronDaemonShutdown();
+    return Boolean(response?.ok);
   } catch {
     return false;
   }

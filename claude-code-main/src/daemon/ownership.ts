@@ -101,9 +101,6 @@ export async function reconcileCronDaemonOwnerForCurrentProcess(): Promise<void>
   }
 
   const requestedOwner = getRequestedCronDaemonOwnerFromEnv()
-  if (!requestedOwner) {
-    return
-  }
   if (isSameOwner(currentOwner, requestedOwner)) {
     return
   }
