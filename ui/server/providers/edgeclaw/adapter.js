@@ -1,10 +1,13 @@
 /**
- * Claude provider adapter.
+ * EdgeClaw provider adapter.
  *
- * Normalizes Claude Code SDK events and JSONL session history into the
- * provider-neutral NormalizedMessage format used by the UI.
+ * Normalizes Claude Agent SDK events and JSONL session history into the
+ * provider-neutral NormalizedMessage format used by the UI. The folder is
+ * named `edgeclaw` to match the project, but the SessionProvider key on the
+ * wire is still `'claude'` (see PROVIDER below) so renaming the folder does
+ * not break protocol compatibility with the frontend.
  *
- * @module adapters/claude
+ * @module adapters/edgeclaw
  */
 
 import { getSessionMessages } from '../../projects.js';
@@ -280,9 +283,49 @@ function normalizeAssistantMessage(raw, sessionId, options) {
   return normalizeContentPart(content, raw, sessionId, 0, options);
 }
 
+// Claude Agent SDK wraps every Anthropic SSE delta in `{ type: 'stream_event', event }`
+// when `includePartialMessages: true` is set. Without unwrapping the inner `event`
+// the UI only renders the final assistant message in one shot, so we surface
+// `text_delta` parts as `stream_delta` NormalizedMessages here.
+function normalizeStreamEvent(raw, sessionId) {
+  const inner = raw?.event;
+  if (!inner || typeof inner !== 'object') return [];
+
+  const timestamp = getTimestamp(raw);
+  const baseId = getBaseId(raw);
+  const blockIndex = typeof inner.index === 'number' ? inner.index : 0;
+
+  if (inner.type === 'content_block_delta') {
+    const delta = inner.delta;
+    if (!delta || typeof delta !== 'object') return [];
+
+    if (delta.type === 'text_delta' && typeof delta.text === 'string' && delta.text.length > 0) {
+      return [createNormalizedMessage({
+        id: `${baseId}_${blockIndex}_text`,
+        sessionId,
+        timestamp,
+        provider: PROVIDER,
+        kind: 'stream_delta',
+        content: delta.text,
+      })];
+    }
+  }
+
+  // Other inner events (message_start / content_block_start / content_block_stop /
+  // message_delta / message_stop / thinking_delta / input_json_delta) are not
+  // consumed by the current UI streaming path. The final SDKAssistantMessage
+  // delivered after `message_stop` already carries the complete content for
+  // tool_use / thinking blocks, so dropping them here is safe.
+  return [];
+}
+
 function normalizeDirectEvent(raw, sessionId, options) {
   const timestamp = getTimestamp(raw);
   const id = getBaseId(raw);
+
+  if (raw.type === 'stream_event') {
+    return normalizeStreamEvent(raw, sessionId);
+  }
 
   if (raw.type === 'stream_delta' || raw.type === 'content_block_delta' || raw.type === 'assistant_delta') {
     const content = stringifyContent(raw.text ?? raw.delta?.text ?? raw.delta ?? raw.content);
@@ -388,7 +431,7 @@ export function normalizeMessage(raw, sessionId, options = {}) {
 /**
  * @type {import('../types.js').ProviderAdapter}
  */
-export const claudeAdapter = {
+export const edgeclawAdapter = {
   normalizeMessage,
 
   /**

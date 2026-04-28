@@ -7,7 +7,7 @@
  * @module providers/registry
  */
 
-import { claudeAdapter } from './claude/adapter.js';
+import { edgeclawAdapter } from './edgeclaw/adapter.js';
 import { cursorAdapter } from './cursor/adapter.js';
 import { codexAdapter } from './codex/adapter.js';
 import { geminiAdapter } from './gemini/adapter.js';
@@ -21,7 +21,7 @@ import { geminiAdapter } from './gemini/adapter.js';
 const providers = new Map();
 
 // Register built-in providers
-providers.set('claude', claudeAdapter);
+providers.set('claude', edgeclawAdapter);
 providers.set('cursor', cursorAdapter);
 providers.set('codex', codexAdapter);
 providers.set('gemini', geminiAdapter);

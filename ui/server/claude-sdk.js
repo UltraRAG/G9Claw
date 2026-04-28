@@ -23,7 +23,7 @@ import {
   notifyRunStopped,
   notifyUserIfEnabled
 } from './services/notification-orchestrator.js';
-import { claudeAdapter } from './providers/claude/adapter.js';
+import { edgeclawAdapter } from './providers/edgeclaw/adapter.js';
 import { createNormalizedMessage } from './providers/types.js';
 import { getLeakedClaudeSdkSpawnOptions } from './claude-code-main-path.js';
 import { getClaudeRuntimeModelConfig } from './utils/claude-runtime-config.js';
@@ -414,7 +414,7 @@ function updateSessionRuntime(sessionId, fields = {}) {
 }
 
 function createCronTaskNotificationMessage(sessionId, notification) {
-  const normalizedMessages = claudeAdapter.normalizeMessage({
+  const normalizedMessages = edgeclawAdapter.normalizeMessage({
     uuid: notification.id,
     timestamp: new Date(notification.createdAt).toISOString(),
     message: {
@@ -955,7 +955,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
       // been streamed out as `stream_delta` events via the partial
       // message wrapper, so re-emitting them as a fresh text bubble
       // would duplicate everything once streaming finalizes.
-      const normalized = claudeAdapter.normalizeMessage(transformedMessage, sid, {
+      const normalized = edgeclawAdapter.normalizeMessage(transformedMessage, sid, {
         includeUserText: false,
         skipStreamedText: true,
       });
