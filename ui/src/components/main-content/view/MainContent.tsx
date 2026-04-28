@@ -19,6 +19,7 @@ import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
 import { useEditorSidebar } from '../../code-editor/hooks/useEditorSidebar';
 import EditorSidebar from '../../code-editor/view/EditorSidebar';
+import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
 import type {
   ExecuteDiscoveryPlanResponse,
   Project,
@@ -161,7 +162,6 @@ function MainContent({
   onReplaceTemporarySession,
   onNavigateToSession,
   onStartNewSession,
-  onSelectSession,
   onShowSettings,
   externalMessageUpdate,
 }: MainContentProps) {
@@ -488,7 +488,6 @@ function MainContent({
           ws={ws}
           sendMessage={sendMessage}
           latestMessage={latestMessage}
-          isMobile={isMobile}
           handleFileOpen={handleFileOpen}
           onInputFocusChange={onInputFocusChange}
           onSessionActive={onSessionActive}
@@ -529,13 +528,9 @@ function MainContent({
   );
 }
 
-// V2 split body: left half is always Chat (anchored, like ChatGPT-style
-// conversation pane), right half hosts the active tool. When the user is on
-// the Home or Chat tab the right pane collapses entirely so the Chat takes
-// the full width — Home shows the welcome layout, Chat shows the active
-// session in a roomy 1-column thread. For every other tab (Files, Shell,
-// Git, Always-On, Dashboard, Tasks, Memory, plugins) the right half gets a
-// vertical splitter and the corresponding tool view.
+// V2 split body: the Agent surface owns both the new-session welcome state
+// and existing transcripts. Files can pair with Agent in split view; focused
+// tools such as Always-On, Dashboard, Tasks, and Memory render full-screen.
 type SplitBodyProps = {
   selectedProject: Project;
   selectedSession: any;
@@ -546,8 +541,7 @@ type SplitBodyProps = {
   ws: any;
   sendMessage: any;
   latestMessage: any;
-  isMobile: boolean;
-  handleFileOpen: (filePath: string, diffInfo?: unknown) => void;
+  handleFileOpen: (filePath: string, diffInfo?: CodeEditorDiffInfo | null) => void;
   onInputFocusChange: any;
   onSessionActive: any;
   onSessionInactive: any;
@@ -580,7 +574,6 @@ function SplitBody(props: SplitBodyProps) {
     ws,
     sendMessage,
     latestMessage,
-    isMobile,
     handleFileOpen,
     onInputFocusChange,
     onSessionActive,
@@ -604,8 +597,8 @@ function SplitBody(props: SplitBodyProps) {
   } = props;
 
   // Render-mode taxonomy:
-  //   - 'welcome': Home tab. Chat in welcome (centered) mode, full width.
-  //   - 'chat':    Chat tab. Single full-width chat surface.
+  //   - 'chat':    Agent surface. No session shows the welcome composer;
+  //                existing sessions show the transcript.
   //   - 'split':   Files tab only. Chat on the left, file tree/editor on right.
   //   - 'tool':    Always-On / Dashboard / Memory / Tasks / Shell / Git /
   //                plugin tabs. Tool fills the whole main area, no chat
@@ -684,8 +677,8 @@ function SplitBody(props: SplitBodyProps) {
 
   return (
     <div className={cn('flex min-h-0 min-w-0 flex-1 overflow-hidden', editorExpanded && 'hidden')}>
-      {/* Chat surface. Left half when split (files), full width otherwise.
-          Welcome mode kicks in on Home; first submit auto-flips to Chat. */}
+      {/* Agent surface. Left half when split (files), full width otherwise.
+          With no selected session, ChatInterfaceV2 shows the welcome composer. */}
       <div
         className={cn(
           'flex min-h-0 min-w-0 flex-col',
@@ -717,7 +710,7 @@ function SplitBody(props: SplitBodyProps) {
             sendByCtrlEnter={sendByCtrlEnter}
             externalMessageUpdate={externalMessageUpdate}
             onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
-            forceWelcome={activeTab === 'home'}
+            forceWelcome={false}
             onExitWelcome={() => setActiveTab('chat')}
           />
         </ErrorBoundary>
