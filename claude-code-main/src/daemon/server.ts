@@ -6,7 +6,6 @@ import { clearCronDaemonOwner } from './ownership.js'
 import { ProjectRuntime } from './projectRuntime.js'
 import { DaemonSessionTaskStore } from './sessionTaskStore.js'
 import { getCronDaemonSocketPath } from './paths.js'
-import { DiscoveryScheduler } from './discoveryScheduler/index.js'
 import type {
   CronDaemonRequest,
   CronDaemonResponse,
@@ -30,9 +29,6 @@ export class CronDaemonServer {
   private readonly runtimes = new Map<string, ProjectRuntime>()
   private readonly sessionTaskStore = new DaemonSessionTaskStore()
   private readonly registry = new CronDaemonProjectRegistry()
-  private readonly discoveryScheduler = new DiscoveryScheduler({
-    listProjectRoots: () => this.registry.list(),
-  })
   private stopping = false
 
   async start(): Promise<void> {
@@ -54,7 +50,6 @@ export class CronDaemonServer {
     })
 
     logForDebugging(`[CronDaemon] listening on ${socketPath}`)
-    this.discoveryScheduler.start()
   }
 
   async stop(): Promise<void> {
@@ -63,7 +58,6 @@ export class CronDaemonServer {
     for (const runtime of this.runtimes.values()) {
       runtime.stop()
     }
-    this.discoveryScheduler.stop()
     await this.sessionTaskStore.persistProjects(this.runtimes.keys())
     await new Promise<void>(resolvePromise => {
       this.server.close(() => resolvePromise())
@@ -116,10 +110,6 @@ export class CronDaemonServer {
         }
         case 'shutdown':
           return { ok: true, data: { type: 'shutdown' } }
-        case 'register_project': {
-          const projectRoot = await this.ensureRuntime(request.projectRoot)
-          return { ok: true, data: { type: 'register_project', projectRoot } }
-        }
         case 'create_task': {
           const projectRoot = await this.ensureRuntime(request.projectRoot)
           let createdSessionTask: DaemonCronTask | null = null
@@ -263,13 +253,6 @@ export class CronDaemonServer {
             },
           }
         }
-        case 'discovery_fire_complete': {
-          const accepted = await this.discoveryScheduler.completeFire(request)
-          return {
-            ok: true,
-            data: { type: 'discovery_fire_complete', accepted },
-          }
-        }
       }
     } catch (error) {
       return {
@@ -295,7 +278,6 @@ export class CronDaemonServer {
       this.runtimes.set(normalized, runtime)
     }
     runtime.start()
-    this.discoveryScheduler.ensureProjectTimer(normalized)
     return runtime
   }
 }

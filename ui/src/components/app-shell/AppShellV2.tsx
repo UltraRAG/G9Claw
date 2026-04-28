@@ -16,7 +16,6 @@ import {
 } from '../../lib/customNames';
 import type { AppTab, Project, ProjectSession, SessionProvider } from '../../types/app';
 import { api } from '../../utils/api';
-import { useAlwaysOnPresence } from '../../utils/alwaysOnPresence';
 import SidebarV2 from './SidebarV2';
 import MainAreaV2 from './MainAreaV2';
 
@@ -90,12 +89,6 @@ export default function AppShellV2() {
     latestMessage,
     isMobile,
     activeSessions,
-  });
-
-  useAlwaysOnPresence({
-    selectedProject,
-    processingSessions,
-    sendMessage,
   });
 
   // Sync URL projectName -> selectedProject for deep links like /p/:projectName.

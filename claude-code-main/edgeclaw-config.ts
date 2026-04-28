@@ -29,7 +29,6 @@ export interface EdgeClawConfig {
     apiTimeoutMs?: number
     databasePath?: string
     workspacesRoot?: string
-    httpsProxy?: string
   }
   models?: {
     providers?: Record<string, EdgeClawProviderConfig>
@@ -38,19 +37,6 @@ export interface EdgeClawConfig {
   agents?: {
     main?: { model?: string; params?: Record<string, unknown> }
     subagents?: { default?: string; params?: Record<string, unknown> }
-    alwaysOn?: {
-      discovery?: {
-        trigger?: {
-          enabled?: boolean
-          tickIntervalMinutes?: number
-          cooldownMinutes?: number
-          dailyBudget?: number
-          heartbeatStaleSeconds?: number
-          recentUserMsgMinutes?: number
-          preferClient?: 'webui' | 'tui'
-        }
-      }
-    }
   }
   memory?: {
     enabled?: boolean
@@ -64,7 +50,7 @@ export interface EdgeClawConfig {
     maxMessageChars?: number
     heartbeatBatchSize?: number
   }
-  router?: { enabled?: boolean; httpsProxy?: string }
+  router?: { enabled?: boolean }
   gateway?: { enabled?: boolean; home?: string }
 }
 
@@ -112,23 +98,7 @@ function defaultConfig(): EdgeClawConfig {
         default: { provider: 'edgeclaw', name: '', contextWindow: 160000 },
       },
     },
-    agents: {
-      main: { model: 'default', params: {} },
-      subagents: { default: 'inherit', params: {} },
-      alwaysOn: {
-        discovery: {
-          trigger: {
-            enabled: false,
-            tickIntervalMinutes: 5,
-            cooldownMinutes: 60,
-            dailyBudget: 4,
-            heartbeatStaleSeconds: 90,
-            recentUserMsgMinutes: 5,
-            preferClient: 'webui',
-          },
-        },
-      },
-    },
+    agents: { main: { model: 'default', params: {} }, subagents: { default: 'inherit', params: {} } },
     memory: {
       enabled: true,
       model: 'inherit',
