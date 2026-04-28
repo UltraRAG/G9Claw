@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ChatInterfaceV2 from '../../chat-v2/ChatInterfaceV2';
 import AlwaysOnV2 from '../../main-content-v2/AlwaysOnV2';
 import FilesV2 from '../../main-content-v2/FilesV2';
@@ -48,6 +48,9 @@ type PendingDiscoveryExecution = {
 };
 
 const AUTO_EXECUTION_POLL_INTERVAL_MS = 15000;
+const FILES_CHAT_DEFAULT_WIDTH = 460;
+const FILES_CHAT_MIN_WIDTH = 320;
+const FILES_TREE_MIN_WIDTH = 280;
 
 function getClaudeProjectStorePath(project: Project): string {
   const projectPath = project.fullPath || project.path || '';
@@ -622,6 +625,55 @@ function SplitBody(props: SplitBodyProps) {
   // enabled it yet so we don't render a black hole.
   const renderTasksAsTool = activeTab === 'tasks' && shouldShowTasksTab;
   const isFiles = activeTab === 'files';
+  const filesSplitContainerRef = useRef<HTMLDivElement | null>(null);
+  const [filesChatWidth, setFilesChatWidth] = useState(FILES_CHAT_DEFAULT_WIDTH);
+  const [isFilesSplitResizing, setIsFilesSplitResizing] = useState(false);
+
+  const clampFilesChatWidth = useCallback((width: number, containerWidth: number) => {
+    const maxWidth = Math.max(FILES_CHAT_MIN_WIDTH, containerWidth - FILES_TREE_MIN_WIDTH);
+    return Math.min(Math.max(width, FILES_CHAT_MIN_WIDTH), maxWidth);
+  }, []);
+
+  const handleFilesSplitResizeStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (!isFiles) {
+      return;
+    }
+
+    setIsFilesSplitResizing(true);
+    event.preventDefault();
+  }, [isFiles]);
+
+  useEffect(() => {
+    if (!isFilesSplitResizing) {
+      return undefined;
+    }
+
+    const handleMouseMove = (event: globalThis.MouseEvent) => {
+      const container = filesSplitContainerRef.current;
+      if (!container) {
+        return;
+      }
+
+      const rect = container.getBoundingClientRect();
+      setFilesChatWidth(clampFilesChatWidth(event.clientX - rect.left, rect.width));
+    };
+
+    const handleMouseUp = () => {
+      setIsFilesSplitResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [clampFilesChatWidth, isFilesSplitResizing]);
 
   const renderTool = () => {
     if (activeTab === 'shell') {
@@ -676,14 +728,23 @@ function SplitBody(props: SplitBodyProps) {
   }
 
   return (
-    <div className={cn('flex min-h-0 min-w-0 flex-1 overflow-hidden', editorExpanded && 'hidden')}>
+    <div
+      ref={isFiles ? filesSplitContainerRef : undefined}
+      className={cn('flex min-h-0 min-w-0 flex-1 overflow-hidden', editorExpanded && 'hidden')}
+    >
       {/* Agent surface. Left half when split (files), full width otherwise.
           With no selected session, ChatInterfaceV2 shows the welcome composer. */}
       <div
         className={cn(
           'flex min-h-0 min-w-0 flex-col',
-          isFiles ? 'w-1/2 border-r border-neutral-200 dark:border-neutral-800' : 'flex-1',
+          isFiles ? 'flex-shrink-0' : 'flex-1',
         )}
+        style={isFiles
+          ? {
+              minWidth: `${FILES_CHAT_MIN_WIDTH}px`,
+              width: `min(${filesChatWidth}px, calc(100% - ${FILES_TREE_MIN_WIDTH}px))`,
+            }
+          : undefined}
       >
         <ErrorBoundary showDetails>
           <ChatInterfaceV2
@@ -720,9 +781,22 @@ function SplitBody(props: SplitBodyProps) {
           file tree + editor). All other tools render in the full-screen
           branch above. */}
       {isFiles ? (
-        <div className="flex min-h-0 w-1/2 min-w-0 flex-col overflow-hidden">
-          <FilesV2 selectedProject={selectedProject} onFileOpen={handleFileOpen} />
-        </div>
+        <>
+          <div
+            onMouseDown={handleFilesSplitResizeStart}
+            className="group relative z-10 w-px flex-shrink-0 cursor-col-resize bg-neutral-200 transition-colors hover:bg-neutral-400 dark:bg-neutral-800 dark:hover:bg-neutral-600"
+            title="Drag to resize"
+          >
+            <div className="absolute inset-y-0 left-1/2 w-3 -translate-x-1/2" />
+            <div className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-neutral-400 opacity-0 transition-opacity group-hover:opacity-100 dark:bg-neutral-600" />
+          </div>
+          <div
+            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+            style={{ minWidth: `${FILES_TREE_MIN_WIDTH}px` }}
+          >
+            <FilesV2 selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+          </div>
+        </>
       ) : null}
     </div>
   );
