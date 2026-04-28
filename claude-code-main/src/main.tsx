@@ -7,6 +7,39 @@
 //    sequentially via sync spawn inside applySafeConfigEnvironmentVariables()
 //    (~65ms on every macOS startup)
 import { profileCheckpoint, profileReport } from './utils/startupProfiler.js';
+// ── DIAGNOSTIC SCAFFOLDING ──
+// Two file-based loggers, both opt-in via env vars (off by default):
+//   CC_TRACE_FILE  → low-cardinality "_trace" checkpoints (entry/exit of
+//                    big phases — main, run, preAction, createRoot, ...)
+//   CC_BISECT_FILE → high-cardinality "__bisect" markers used to bisect
+//                    where the TUI hangs/crashes during startup.
+// Writes go through fs.writeSync to bypass Ink's patchStderr / SIGPIPE.
+// When neither env var is set AND cli.tsx hasn't installed a global helper,
+// both functions are no-ops — no stderr noise in normal operation.
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+import * as __debugFs from 'fs';
+const __DEBUG_TRACE_FD = process.env.CC_TRACE_FILE
+  ? (() => { try { return __debugFs.openSync(process.env.CC_TRACE_FILE!, 'a'); } catch { return -1; } })()
+  : -1;
+const __BISECT_FD_MAIN: number = process.env.CC_BISECT_FILE
+  ? (() => { try { return __debugFs.openSync(process.env.CC_BISECT_FILE!, 'a'); } catch { return -1; } })()
+  : -1;
+function _trace(msg: string): void {
+  if (__DEBUG_TRACE_FD < 0) return;
+  try { __debugFs.writeSync(__DEBUG_TRACE_FD, `[trace ${Date.now()}] ${msg}\n`); } catch {}
+}
+// Prefer the helper installed by cli.tsx (single shared FD); otherwise
+// only write to our own FD. Never spam stderr unconditionally.
+function __bisect(msg: string): void {
+  const g = (globalThis as any).__bisect;
+  if (typeof g === 'function' && g !== __bisect) { try { g(msg); return; } catch {} }
+  if (__BISECT_FD_MAIN < 0 && __DEBUG_TRACE_FD < 0) return;
+  const line = `[${Date.now()}] [bisect] ${msg}\n`;
+  if (__BISECT_FD_MAIN >= 0) { try { __debugFs.writeSync(__BISECT_FD_MAIN, line); } catch {} }
+  else if (__DEBUG_TRACE_FD >= 0) { try { __debugFs.writeSync(__DEBUG_TRACE_FD, line); } catch {} }
+}
+_trace('main_tsx_entry');
+__bisect('main.tsx module load');
 
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 profileCheckpoint('main_tsx_entry');
@@ -26,6 +59,7 @@ import mapValues from 'lodash-es/mapValues.js';
 import pickBy from 'lodash-es/pickBy.js';
 import uniqBy from 'lodash-es/uniqBy.js';
 import React from 'react';
+import { PassThrough } from 'stream';
 import { getOauthConfig } from './constants/oauth.js';
 import { getRemoteSessionUrl } from './constants/product.js';
 import { getSystemContext, getUserContext } from './context.js';
@@ -101,7 +135,7 @@ import { getActiveAgentsFromList, getAgentDefinitionsWithOverrides, isBuiltInAge
 import type { LogOption } from './types/logs.js';
 import type { Message as MessageType } from './types/message.js';
 import { assertMinVersion } from './utils/autoUpdater.js';
-import { CLAUDE_IN_CHROME_SKILL_HINT, CLAUDE_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER } from './utils/claudeInChrome/prompt.js';
+import { CLAUDE_IN_CHROME_SKILL_HINT } from './utils/claudeInChrome/prompt.js';
 import { setupClaudeInChrome, shouldAutoEnableClaudeInChrome, shouldEnableClaudeInChrome } from './utils/claudeInChrome/setup.js';
 import { getContextWindowForModel } from './utils/context.js';
 import { loadConversationForResume } from './utils/conversationRecovery.js';
@@ -583,6 +617,7 @@ const _pendingSSH: PendingSSH | undefined = feature('SSH_REMOTE') ? {
   extraCliArgs: []
 } : undefined;
 export async function main() {
+  _trace('[trace main.tsx] M1: cliMain() entered\n');
   profileCheckpoint('main_function_start');
 
   // SECURITY: Prevent Windows from executing commands from current directory
@@ -591,7 +626,9 @@ export async function main() {
   process.env.NoDefaultCurrentDirectoryInExePath = '1';
 
   // Initialize warning handler early to catch warnings
+  _trace('[trace main.tsx] M2: about to initializeWarningHandler()\n');
   initializeWarningHandler();
+  _trace('[trace main.tsx] M3: warning handler installed, installing exit/SIGINT handlers');
   process.on('exit', () => {
     resetCursor();
   });
@@ -604,6 +641,7 @@ export async function main() {
     }
     process.exit(0);
   });
+  _trace('[trace main.tsx] M4: SIGINT handler installed (Ctrl+C now graceful)\n');
   profileCheckpoint('main_warning_handler_initialized');
 
   // Check for cc:// or cc+unix:// URL in argv — rewrite so the main command
@@ -849,17 +887,44 @@ export async function main() {
   profileCheckpoint('main_client_type_determined');
 
   // Parse and load settings flags early, before init()
+  _trace('[trace main.tsx] M5: about to eagerLoadSettings()\n');
   eagerLoadSettings();
+  _trace('[trace main.tsx] M6: eagerLoadSettings done, about to await run()\n');
   profileCheckpoint('main_before_run');
   await run();
+  _trace('[trace main.tsx] M7: run() resolved\n');
   profileCheckpoint('main_after_run');
+}
+function createStructuredStdinStream(): AsyncIterable<string> {
+  const inputStream = new PassThrough({
+    encoding: 'utf8'
+  });
+  process.stdin.setEncoding('utf8');
+  const flushReadable = () => {
+    let chunk = process.stdin.read();
+    while (chunk !== null) {
+      inputStream.write(typeof chunk === 'string' ? chunk : String(chunk));
+      chunk = process.stdin.read();
+    }
+  };
+  process.stdin.on('readable', flushReadable);
+  process.stdin.on('end', () => {
+    flushReadable();
+    inputStream.end();
+  });
+  process.stdin.on('error', error => {
+    const streamError = error instanceof Error ? error : new Error(String(error));
+    inputStream.destroy(streamError);
+  });
+  flushReadable();
+  return inputStream;
 }
 async function getInputPrompt(prompt: string, inputFormat: 'text' | 'stream-json'): Promise<string | AsyncIterable<string>> {
   if (!process.stdin.isTTY &&
   // Input hijacking breaks MCP.
   !process.argv.includes('mcp')) {
     if (inputFormat === 'stream-json') {
-      return process.stdin;
+      return createStructuredStdinStream();
     }
     process.stdin.setEncoding('utf8');
     let data = '';
@@ -882,6 +947,7 @@ async function getInputPrompt(prompt: string, inputFormat: 'text' | 'stream-json
   return prompt;
 }
 async function run(): Promise<CommanderCommand> {
+  _trace('[trace main.tsx] R0: run() entered\n');
   profileCheckpoint('run_function_start');
 
   // Create help config that sorts options by long option name.
@@ -905,10 +971,13 @@ async function run(): Promise<CommanderCommand> {
   // Use preAction hook to run initialization only when executing a command,
   // not when displaying help. This avoids the need for env variable signaling.
   program.hook('preAction', async thisCommand => {
+    _trace('[trace main.tsx] P0: preAction hook entered');
     profileCheckpoint('preAction_start');
     await Promise.all([ensureMdmSettingsLoaded(), ensureKeychainPrefetchCompleted()]);
+    _trace('[trace main.tsx] P1: preAction after mdm+keychain prefetch');
     profileCheckpoint('preAction_after_mdm');
     await init();
+    _trace('[trace main.tsx] P2: preAction after init()\n');
     profileCheckpoint('preAction_after_init');
 
     // process.title on Windows sets the console title directly; on POSIX,
@@ -998,7 +1067,8 @@ async function run(): Promise<CommanderCommand> {
   // `mcp` and `add` as paths, then choked on --transport as an unknown
   // top-level option. Single-value + collect accumulator means each
   // --plugin-dir takes exactly one arg; repeat the flag for multiple dirs.
-  .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Claude in Chrome integration').option('--no-chrome', 'Disable Claude in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
+  .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Claude in Chrome integration').option('--no-chrome', 'Disable Claude in Chrome integration')  .option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
+    _trace('[trace main.tsx] A0: default action handler entered');
     profileCheckpoint('action_handler_start');
 
     // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
@@ -1469,14 +1539,10 @@ async function run(): Promise<CommanderCommand> {
         let reservedNameError: string | null = null;
         if (nonSdkConfigNames.some(isClaudeInChromeMCPServer)) {
           reservedNameError = `Invalid MCP configuration: "${CLAUDE_IN_CHROME_MCP_SERVER_NAME}" is a reserved MCP name.`;
-        } else if (feature('CHICAGO_MCP')) {
-          const {
-            isComputerUseMCPServer,
-            COMPUTER_USE_MCP_SERVER_NAME
-          } = await import('src/utils/computerUse/common.js');
-          if (nonSdkConfigNames.some(isComputerUseMCPServer)) {
-            reservedNameError = `Invalid MCP configuration: "${COMPUTER_USE_MCP_SERVER_NAME}" is a reserved MCP name.`;
-          }
+        } else if (nonSdkConfigNames.includes('computer-use')) {
+          reservedNameError = `Invalid MCP configuration: "computer-use" is a reserved MCP name.`;
+        } else if (nonSdkConfigNames.includes('browser-use')) {
+          reservedNameError = `Invalid MCP configuration: "browser-use" is a reserved MCP name.`;
         }
         if (reservedNameError) {
           // stderr+exit(1) — a throw here becomes a silent unhandled
@@ -1563,7 +1629,7 @@ async function run(): Promise<CommanderCommand> {
           ...dynamicMcpConfig,
           ...chromeMcpConfig
         };
-        const hint = feature('WEB_BROWSER_TOOL') && typeof Bun !== 'undefined' && 'WebView' in Bun ? CLAUDE_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER : CLAUDE_IN_CHROME_SKILL_HINT;
+        const hint = CLAUDE_IN_CHROME_SKILL_HINT;
         appendSystemPrompt = appendSystemPrompt ? `${appendSystemPrompt}\n\n${hint}` : hint;
       } catch (error) {
         // Silently skip any errors for the auto-enable
@@ -1589,38 +1655,41 @@ async function run(): Promise<CommanderCommand> {
       }
     }
 
-    // chicago MCP: guarded Computer Use (app allowlist + frontmost gate +
-    // SCContentFilter screenshots). Ant-only, GrowthBook-gated — failures
-    // are silent (this is dogfooding). Platform + interactive checks inline
-    // so non-macOS / print-mode ants skip the heavy @ant/computer-use-mcp
-    // import entirely. gates.js is light (type-only package import).
-    //
-    // Placed AFTER the enterprise-MCP-config check: that check rejects any
-    // dynamicMcpConfig entry with `type !== 'sdk'`, and our config is
-    // `type: 'stdio'`. An enterprise-config ant with the GB gate on would
-    // otherwise process.exit(1). Chrome has the same latent issue but has
-    // shipped without incident; chicago places itself correctly.
-    if (feature('CHICAGO_MCP') && getPlatform() === 'macos' && !getIsNonInteractiveSession()) {
+    // Browser Use MCP: in-process playwright-core browser automation.
+    // Available on all platforms when playwright-core can find a browser.
+    try {
+      const { setupBrowserUseMCP } = await import(
+        'src/services/mcp/builtin/browserUse/setup.js'
+      )
+      const { mcpConfig: browserMcpConfig, allowedTools: browserTools } =
+        setupBrowserUseMCP()
+      dynamicMcpConfig = { ...dynamicMcpConfig, ...browserMcpConfig }
+      allowedTools.push(...browserTools)
+    } catch (error) {
+      logForDebugging(
+        `[Browser Use MCP] Setup failed: ${errorMessage(error)}`,
+      )
+    }
+
+    // Computer Use MCP: peekaboo-backed macOS desktop automation.
+    // Only enabled on macOS when peekaboo CLI is available.
+    if (getPlatform() === 'macos') {
       try {
-        const {
-          getChicagoEnabled
-        } = await import('src/utils/computerUse/gates.js');
-        if (getChicagoEnabled()) {
-          const {
-            setupComputerUseMCP
-          } = await import('src/utils/computerUse/setup.js');
-          const {
-            mcpConfig,
-            allowedTools: cuTools
-          } = setupComputerUseMCP();
-          dynamicMcpConfig = {
-            ...dynamicMcpConfig,
-            ...mcpConfig
-          };
-          allowedTools.push(...cuTools);
+        const { isPeekabooAvailable } = await import(
+          'src/services/mcp/builtin/computerUse/peekaboo.js'
+        )
+        if (await isPeekabooAvailable()) {
+          const { setupComputerUseMCP } = await import(
+            'src/services/mcp/builtin/computerUse/setup.js'
+          )
+          const { mcpConfig, allowedTools: cuTools } = setupComputerUseMCP()
+          dynamicMcpConfig = { ...dynamicMcpConfig, ...mcpConfig }
+          allowedTools.push(...cuTools)
         }
       } catch (error) {
-        logForDebugging(`[Computer Use MCP] Setup failed: ${errorMessage(error)}`);
+        logForDebugging(
+          `[Computer Use MCP] Setup failed: ${errorMessage(error)}`,
+        )
       }
     }
 
@@ -1895,12 +1964,14 @@ async function run(): Promise<CommanderCommand> {
       }
     }
 
+    _trace('[trace main.tsx] A1: action handler reached pre-setup section');
     profileCheckpoint('action_before_setup');
     logForDebugging('[STARTUP] Running setup()...');
     const setupStart = Date.now();
     const {
       setup
     } = await import('./setup.js');
+    _trace('[trace main.tsx] A2: setup.js imported, about to call setup()\n');
     const messagingSocketPath = feature('UDS_INBOX') ? (options as {
       messagingSocketPath?: string;
     }).messagingSocketPath : undefined;
@@ -1916,7 +1987,7 @@ async function run(): Promise<CommanderCommand> {
     // await points, so the parallel getCommands() memoized an empty list.
     if (process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent') {
       initBuiltinPlugins();
-      initBundledSkills();
+      await initBundledSkills();
     }
     const setupPromise = setup(preSetupCwd, permissionMode, allowDangerouslySkipPermissions, worktreeEnabled, worktreeName, tmuxEnabled, sessionId ? validateUuid(sessionId) : undefined, worktreePRNumber, messagingSocketPath);
     const commandsPromise = worktreeEnabled ? null : getCommands(preSetupCwd);
@@ -1926,6 +1997,7 @@ async function run(): Promise<CommanderCommand> {
     commandsPromise?.catch(() => {});
     agentDefsPromise?.catch(() => {});
     await setupPromise;
+    _trace('[trace main.tsx] A3: setup() resolved\n');
     logForDebugging(`[STARTUP] setup() completed in ${Date.now() - setupStart}ms`);
     profileCheckpoint('action_after_setup');
 
@@ -2022,6 +2094,8 @@ async function run(): Promise<CommanderCommand> {
     // worktreeEnabled gated the early kick). Both memoized by cwd.
     const [commands, agentDefinitionsResult] = await Promise.all([commandsPromise ?? getCommands(currentCwd), agentDefsPromise ?? getAgentDefinitionsWithOverrides(currentCwd)]);
     logForDebugging(`[STARTUP] Commands and agents loaded in ${Date.now() - commandsStart}ms`);
+    _trace('[trace main.tsx] B1: action_commands_loaded');
+    __bisect('main.tsx B1: action_commands_loaded');
     profileCheckpoint('action_commands_loaded');
 
     // Parse CLI agents if provided via --agents flag
@@ -2056,7 +2130,9 @@ async function run(): Promise<CommanderCommand> {
     }
 
     // Store the main thread agent type in bootstrap state so hooks can access it
+    __bisect('main.tsx B1.1: pre setMainThreadAgentType');
     setMainThreadAgentType(mainThreadAgentDefinition?.agentType);
+    __bisect('main.tsx B1.2: post setMainThreadAgentType');
 
     // Log agent flag usage — only log agent name for built-in agents to avoid leaking custom agent names
     if (mainThreadAgentDefinition) {
@@ -2098,16 +2174,20 @@ async function run(): Promise<CommanderCommand> {
 
     // Compute effective model early so hooks can run in parallel with MCP
     // If user didn't specify a model but agent has one, use the agent's model
+    __bisect('main.tsx B1.3: pre model setup');
     let effectiveModel = userSpecifiedModel;
     if (!effectiveModel && mainThreadAgentDefinition?.model && mainThreadAgentDefinition.model !== 'inherit') {
       effectiveModel = parseUserSpecifiedModel(mainThreadAgentDefinition.model);
     }
     setMainLoopModelOverride(effectiveModel);
+    __bisect('main.tsx B1.4: post setMainLoopModelOverride');
 
     // Compute resolved model for hooks (use user-specified model at launch)
     setInitialMainLoopModel(getUserSpecifiedModelSetting() || null);
+    __bisect('main.tsx B1.5: post setInitialMainLoopModel');
     const initialMainLoopModel = getInitialMainLoopModel();
     const resolvedInitialModel = parseUserSpecifiedModel(initialMainLoopModel ?? getDefaultMainLoopModel());
+    __bisect('main.tsx B1.6: post parseUserSpecifiedModel resolvedInitialModel=' + resolvedInitialModel);
     let advisorModel: string | undefined;
     if (isAdvisorEnabled()) {
       const advisorOption = canUserConfigureAdvisor() ? (options as {
@@ -2130,6 +2210,7 @@ async function run(): Promise<CommanderCommand> {
         logForDebugging(`[AdvisorTool] Advisor model: ${advisorModel}`);
       }
     }
+    __bisect('main.tsx B1.7: post advisor block');
 
     // For tmux teammates with --agent-type, append the custom agent's prompt
     if (isAgentSwarmsEnabled() && storedTeammateOpts?.agentId && storedTeammateOpts?.agentName && storedTeammateOpts?.teamName && storedTeammateOpts?.agentType) {
@@ -2165,7 +2246,9 @@ async function run(): Promise<CommanderCommand> {
         logForDebugging(`[teammate] Custom agent ${storedTeammateOpts.agentType} not found in available agents`);
       }
     }
+    __bisect('main.tsx B1.8: pre maybeActivateBrief');
     maybeActivateBrief(options);
+    __bisect('main.tsx B1.9: post maybeActivateBrief');
     // defaultView: 'chat' is a persisted opt-in — check entitlement and set
     // userMsgOptIn so the tool + prompt section activate. Interactive-only:
     // defaultView is a display preference; SDK sessions have no display, and
@@ -2175,6 +2258,7 @@ async function run(): Promise<CommanderCommand> {
     // BEFORE any isBriefEnabled() read below (proactive prompt's
     // briefVisibility). A persisted 'chat' after a GB kill-switch falls
     // through (entitlement fails).
+    __bisect('main.tsx B1.10: pre KAIROS defaultView block');
     if ((feature('KAIROS') || feature('KAIROS_BRIEF')) && !getIsNonInteractiveSession() && !getUserMsgOptIn() && getInitialSettings().defaultView === 'chat') {
       /* eslint-disable @typescript-eslint/no-require-imports */
       const {
@@ -2185,6 +2269,7 @@ async function run(): Promise<CommanderCommand> {
         setUserMsgOptIn(true);
       }
     }
+    __bisect('main.tsx B1.11: post KAIROS defaultView block');
     // Coordinator mode has its own system prompt and filters out Sleep, so
     // the generic proactive prompt would tell it to call a tool it can't
     // access and conflict with delegation instructions.
@@ -2197,10 +2282,13 @@ async function run(): Promise<CommanderCommand> {
       const proactivePrompt = `\n# Proactive Mode\n\nYou are in proactive mode. Take initiative — explore, act, and make progress without waiting for instructions.\n\nStart by briefly greeting the user.\n\nYou will receive periodic <tick> prompts. These are check-ins. Do whatever seems most useful, or call Sleep if there's nothing to do. ${briefVisibility}`;
       appendSystemPrompt = appendSystemPrompt ? `${appendSystemPrompt}\n\n${proactivePrompt}` : proactivePrompt;
     }
+    __bisect('main.tsx B1.12: post proactive block');
+    __bisect('main.tsx B1.13: pre KAIROS assistant block');
     if (feature('KAIROS') && kairosEnabled && assistantModule) {
       const assistantAddendum = assistantModule.getAssistantSystemPromptAddendum();
       appendSystemPrompt = appendSystemPrompt ? `${appendSystemPrompt}\n\n${assistantAddendum}` : assistantAddendum;
     }
+    __bisect('main.tsx B1.14: post KAIROS assistant block');
 
     // Ink root is only needed for interactive sessions — patchConsole in the
     // Ink constructor would swallow console output in headless mode.
@@ -2208,19 +2296,56 @@ async function run(): Promise<CommanderCommand> {
     let getFpsMetrics!: () => FpsMetrics | undefined;
     let stats!: StatsStore;
 
+    __bisect('main.tsx B1.15: pre C1 trace');
+    _trace('[trace main.tsx] C1: pre showSetupScreens (isNonInteractive=' + isNonInteractiveSession + ')\n');
+    __bisect('main.tsx C1: pre showSetupScreens (isNonInteractive=' + isNonInteractiveSession + ')');
     // Show setup screens after commands are loaded
     if (!isNonInteractiveSession) {
-      const ctx = getRenderContext(false);
+      __bisect('main.tsx C1.1: pre getRenderContext');
+      let ctx: ReturnType<typeof getRenderContext>;
+      try {
+        ctx = getRenderContext(false);
+      } catch (e) {
+        __bisect('main.tsx C1.1.E: getRenderContext threw: ' + (e && (e as Error).stack ? (e as Error).stack : String(e)));
+        throw e;
+      }
+      __bisect('main.tsx C1.2: post getRenderContext (stdout.isTTY=' + String(process.stdout.isTTY) + ' stdin.isTTY=' + String(process.stdin.isTTY) + ' renderOptions=' + JSON.stringify(Object.keys(ctx.renderOptions || {})) + ')');
       getFpsMetrics = ctx.getFpsMetrics;
       stats = ctx.stats;
       // Install asciicast recorder before Ink mounts (ant-only, opt-in via CLAUDE_CODE_TERMINAL_RECORDING=1)
       if ("external" === 'ant') {
+        __bisect('main.tsx C1.2.5: pre installAsciicastRecorder');
         installAsciicastRecorder();
+        __bisect('main.tsx C1.2.6: post installAsciicastRecorder');
       }
-      const {
-        createRoot
-      } = await import('./ink.js');
-      root = await createRoot(ctx.renderOptions);
+      __bisect('main.tsx C1.3: pre import ink.js');
+      let createRoot: typeof import('./ink.js').createRoot;
+      try {
+        ({ createRoot } = await import('./ink.js'));
+      } catch (e) {
+        __bisect('main.tsx C1.3.E: import ink.js threw: ' + (e && (e as Error).stack ? (e as Error).stack : String(e)));
+        throw e;
+      }
+      __bisect('main.tsx C1.4: post import ink.js (createRoot=' + typeof createRoot + ')');
+      _trace('[trace main.tsx] C2: ink.js imported, about to createRoot');
+      __bisect('main.tsx C2: about to await createRoot');
+
+      // Race createRoot against a heartbeat timer so we can detect hangs.
+      let __ticks = 0;
+      const __heart = setInterval(() => {
+        __ticks++;
+        __bisect('main.tsx C2.heartbeat tick=' + __ticks + ' (createRoot still pending)');
+      }, 1000);
+      try {
+        root = await createRoot(ctx.renderOptions);
+        __bisect('main.tsx C3: createRoot resolved (root=' + (root ? typeof root : 'null') + ')');
+      } catch (e) {
+        __bisect('main.tsx C3.E: createRoot threw: ' + (e && (e as Error).stack ? (e as Error).stack : String(e)));
+        throw e;
+      } finally {
+        clearInterval(__heart);
+      }
+      _trace('[trace main.tsx] C3: createRoot resolved');
 
       // Log startup time now, before any blocking dialog renders. Logging
       // from REPL's first render (the old location) included however long
@@ -2232,7 +2357,9 @@ async function run(): Promise<CommanderCommand> {
       });
       logForDebugging('[STARTUP] Running showSetupScreens()...');
       const setupScreensStart = Date.now();
+      _trace('[trace main.tsx] C4: about to call showSetupScreens()\n');
       const onboardingShown = await showSetupScreens(root, permissionMode, allowDangerouslySkipPermissions, commands, enableClaudeInChrome, devChannels);
+      _trace('[trace main.tsx] C5: showSetupScreens returned (onboardingShown=' + onboardingShown + ')\n');
       logForDebugging(`[STARTUP] showSetupScreens() completed in ${Date.now() - setupScreensStart}ms`);
 
       // Now that trust is established and GrowthBook has auth headers,
@@ -2293,7 +2420,9 @@ async function run(): Promise<CommanderCommand> {
       // Validate that the active token's org matches forceLoginOrgUUID (if set
       // in managed settings). Runs after onboarding so managed settings and
       // login state are fully loaded.
+      _trace('[trace main.tsx] C6: about to validateForceLoginOrg()\n');
       const orgValidation = await validateForceLoginOrg();
+      _trace('[trace main.tsx] C7: validateForceLoginOrg returned');
       if (!orgValidation.valid) {
         await exitWithError(root, orgValidation.message);
       }
@@ -2371,10 +2500,12 @@ async function run(): Promise<CommanderCommand> {
       void refreshExampleCommands(); // Pre-fetch example commands (runs git log, no API call)
     }
 
+    _trace('[trace main.tsx] C8: about to await mcpConfigPromise');
     // Resolve MCP configs (started early, overlaps with setup/trust dialog work)
     const {
       servers: existingMcpConfigs
     } = await mcpConfigPromise;
+    _trace('[trace main.tsx] C9: mcpConfigPromise resolved');
     logForDebugging(`[STARTUP] MCP configs resolved in ${mcpConfigResolvedMs}ms (awaited at +${Date.now() - mcpConfigStart}ms)`);
     // CLI flag (--mcp-config) should override file-based configs, matching settings precedence
     const allMcpConfigs = {
@@ -2393,6 +2524,7 @@ async function run(): Promise<CommanderCommand> {
         regularMcpConfigs[name] = typedConfig as ScopedMcpServerConfig;
       }
     }
+    _trace('[trace main.tsx] B2: action_mcp_configs_loaded');
     profileCheckpoint('action_mcp_configs_loaded');
 
     // Prefetch MCP resources after trust dialog (this is where execution happens).
@@ -2546,10 +2678,12 @@ async function run(): Promise<CommanderCommand> {
     // are install/upgrade bookkeeping that scripted calls don't need —
     // the next interactive session will reconcile. The await here was
     // blocking -p on a marketplace round-trip.
+    _trace('[trace main.tsx] B3a: about to handle plugin version sync (bare=' + isBareMode() + ' nonInteractive=' + isNonInteractiveSession + ')\n');
     if (isBareMode()) {
       // skip — no-op
     } else if (isNonInteractiveSession) {
       await initializeVersionedPlugins();
+      _trace('[trace main.tsx] B3b: action_after_plugins_init (non-interactive)\n');
       profileCheckpoint('action_after_plugins_init');
       void cleanupOrphanedPluginVersionsInBackground().then(() => getGlobExclusionsForPluginCache());
     } else {
@@ -2601,8 +2735,10 @@ async function run(): Promise<CommanderCommand> {
       // loadInitialMessages awaits it. Downstream await still observes the
       // rejection — this just prevents the spurious global handler fire.
       sessionStartHooksPromise?.catch(() => {});
+      _trace('[trace main.tsx] B4: before_validateForceLoginOrg');
       profileCheckpoint('before_validateForceLoginOrg');
       const orgValidation = await validateForceLoginOrg();
+      _trace('[trace main.tsx] B4b: validateForceLoginOrg returned');
       if (!orgValidation.valid) {
         process.stderr.write(orgValidation.message + '\n');
         process.exit(1);
@@ -2718,8 +2854,10 @@ async function run(): Promise<CommanderCommand> {
       // (processBatched with Promise.all). claude.ai is awaited too — its
       // fetch was kicked off early (line ~2558) so only residual time blocks
       // here. --bare skips claude.ai entirely for perf-sensitive scripts.
+      _trace('[trace main.tsx] B5: before_connectMcp');
       profileCheckpoint('before_connectMcp');
       await connectMcpBatch(regularMcpConfigs, 'regular');
+      _trace('[trace main.tsx] B6: after_connectMcp');
       profileCheckpoint('after_connectMcp');
       // Dedup: suppress plugin MCP servers that duplicate a claude.ai
       // connector (connector wins), then connect claude.ai servers.
@@ -3758,6 +3896,7 @@ async function run(): Promise<CommanderCommand> {
       // REPL will inject hook messages when they resolve and await them before
       // the first API call so the model always sees hook context.
       const pendingHookMessages = hooksPromise && hookMessages.length === 0 ? hooksPromise : undefined;
+      _trace('[trace main.tsx] B7: action_after_hooks (interactive REPL path entered)\n');
       profileCheckpoint('action_after_hooks');
       maybeActivateProactive(options);
       maybeActivateBrief(options);
@@ -3790,6 +3929,7 @@ async function run(): Promise<CommanderCommand> {
         }
       }
       const initialMessages = deepLinkBanner ? [deepLinkBanner, ...hookMessages] : hookMessages.length > 0 ? hookMessages : undefined;
+      _trace('[trace main.tsx] B8: about to launchRepl (fresh session, no resume)\n');
       await launchRepl(root, {
         getFpsMetrics,
         stats,
@@ -3799,6 +3939,7 @@ async function run(): Promise<CommanderCommand> {
         initialMessages,
         pendingHookMessages
       }, renderAndRun);
+      _trace('[trace main.tsx] B9: launchRepl resolved');
     }
   }).version(`${MACRO.VERSION} (Claude Code)`, '-v, --version', 'Output the version number');
 
@@ -4495,8 +4636,10 @@ Examples:
       await completionHandler(shell, opts, program);
     });
   }
+  _trace('[trace main.tsx] R1: about to call program.parseAsync()\n');
   profileCheckpoint('run_before_parse');
   await program.parseAsync(process.argv);
+  _trace('[trace main.tsx] R2: program.parseAsync() resolved\n');
   profileCheckpoint('run_after_parse');
 
   // Record final checkpoint for total_time calculation

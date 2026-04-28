@@ -298,18 +298,20 @@ function simpleHash(str: string): string {
 
 /**
  * Makes a string safe for use as a directory or file name.
- * Replaces all non-alphanumeric characters with hyphens.
- * This ensures compatibility across all platforms, including Windows
- * where characters like colons are reserved.
+ *
+ * Preserve Unicode letters/numbers so non-ASCII paths like Chinese project
+ * names do not collapse into indistinguishable hyphen-only directory names.
+ * Only replace filesystem separators, control characters, and punctuation
+ * that is unsafe or awkward across platforms.
  *
  * For deeply nested paths that would exceed filesystem limits (255 bytes),
  * truncates and appends a hash suffix for uniqueness.
  *
  * @param name - The string to make safe (e.g., '/Users/foo/my-project' or 'plugin:name:server')
- * @returns A safe name (e.g., '-Users-foo-my-project' or 'plugin-name-server')
+ * @returns A safe name (e.g., '-Users-foo-my-project' or '-Users-foo-小红书项目')
  */
 export function sanitizePath(name: string): string {
-  const sanitized = name.replace(/[^a-zA-Z0-9]/g, '-')
+  const sanitized = name.replace(/[^\p{L}\p{N}._-]/gu, '-')
   if (sanitized.length <= MAX_SANITIZED_LENGTH) {
     return sanitized
   }

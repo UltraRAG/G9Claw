@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+ccr-config.json
 
 # Dependencies
 node_modules/
@@ -17,3 +18,15 @@ build/
 .DS_Store
 .idea/
 .vscode/
+.cursor/
+.claude/
+claude
+!ui/server/providers/claude/
+!ui/server/providers/claude/adapter.js
+bun.lock
+test-results/
+
+# Local dev tooling (Lark / Feishu CLI skill caches, agent runtime)
+.agents/
+skills/
+skills-lock.json

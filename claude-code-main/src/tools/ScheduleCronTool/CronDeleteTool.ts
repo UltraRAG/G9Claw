@@ -1,13 +1,12 @@
 import { z } from 'zod/v4'
+import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import type { ValidationResult } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
-import {
-  getCronFilePath,
-  listAllCronTasks,
-  removeCronTasks,
-} from '../../utils/cronTasks.js'
+import { getCronFilePath } from '../../utils/cronTasks.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getTeammateContext } from '../../utils/teammateContext.js'
+import { requestCronDaemon } from '../../daemon/client.js'
+import { assertCronDaemonOk } from '../../daemon/ipc.js'
 import {
   buildCronDeletePrompt,
   CRON_DELETE_DESCRIPTION,
@@ -59,7 +58,16 @@ export const CronDeleteTool = buildTool({
     return getCronFilePath()
   },
   async validateInput(input): Promise<ValidationResult> {
-    const tasks = await listAllCronTasks()
+    const response = await requestCronDaemon({
+      type: 'list_tasks',
+      projectRoot: getProjectRoot(),
+      originSessionId: getSessionId(),
+    })
+    assertCronDaemonOk(response)
+    if (response.data.type !== 'list_tasks') {
+      throw new Error('Unexpected Cron daemon list response')
+    }
+    const tasks = response.data.tasks
     const task = tasks.find(t => t.id === input.id)
     if (!task) {
       return {
@@ -80,7 +88,16 @@ export const CronDeleteTool = buildTool({
     return { result: true }
   },
   async call({ id }) {
-    await removeCronTasks([id])
+    const response = await requestCronDaemon({
+      type: 'delete_task',
+      projectRoot: getProjectRoot(),
+      originSessionId: getSessionId(),
+      taskId: id,
+    })
+    assertCronDaemonOk(response)
+    if (response.data.type !== 'delete_task') {
+      throw new Error('Unexpected Cron daemon delete response')
+    }
     return { data: { id } }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {

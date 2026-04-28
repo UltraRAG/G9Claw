@@ -36,7 +36,17 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     wheelDown: keypress.name === 'wheeldown',
     home: keypress.name === 'home',
     end: keypress.name === 'end',
-    return: keypress.name === 'return',
+    // Treat both CR (\r, parsed as 'return') and LF (\n, parsed as 'enter')
+    // as Enter. Some hosts (notably Cursor / VS Code's xterm.js terminal in
+    // certain shell-integration modes, and any TTY in raw-but-LF-translated
+    // mode) deliver Enter as \n instead of \r. Without this, the keystroke
+    // misses every `case key.return` branch (TextInput submit, typeahead
+    // accept, modal "OK", etc.) and silently falls through to the default
+    // handler, which inserts a literal '\n' into the input — which looks
+    // like "Enter does nothing" to the user. Newline-insertion remains
+    // available via Shift/Meta+Enter and the "\\<Enter>" sequence handled
+    // inside handleEnter().
+    return: keypress.name === 'return' || keypress.name === 'enter',
     escape: keypress.name === 'escape',
     fn: keypress.fn,
     ctrl: keypress.ctrl,

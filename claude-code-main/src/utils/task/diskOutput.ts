@@ -86,6 +86,12 @@ function track<T>(p: Promise<T>): Promise<T> {
   return p
 }
 
+export async function waitForPendingTaskOutputOps(): Promise<void> {
+  while (_pendingOps.size > 0) {
+    await Promise.allSettled([..._pendingOps])
+  }
+}
+
 /**
  * Encapsulates async disk writes for a single task's output.
  *
@@ -246,9 +252,7 @@ export async function _clearOutputsForTest(): Promise<void> {
   for (const output of outputs.values()) {
     output.cancel()
   }
-  while (_pendingOps.size > 0) {
-    await Promise.allSettled([..._pendingOps])
-  }
+  await waitForPendingTaskOutputOps()
   outputs.clear()
 }
 

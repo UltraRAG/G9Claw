@@ -1,107 +1,143 @@
 # edgeclaw-opc 使用说明
 
-本仓库中的 **`claude-code-main`** 是本地运行的 Claude Code（Bun + 源码树），通过 **`proxy.ts`** 把 Anthropic协议转成上游的 **OpenAI 兼容**接口。**`claudecodeui`**（CloudCLI UI）提供 Web 前后端，可与同一套代理和模型配合使用。
+本仓库把 `claude-code-main`、`ui`、memory、router 和 gateway 收敛到一套统一配置。
+唯一用户配置入口是 `~/.edgeclaw/config.yaml`。UI、CLI、memory、router 和 gateway 都从这份 YAML 派生运行配置。
 
 ## 目录关系
 
 | 路径 | 作用 |
 |------|------|
-| `claude-code-main/` | Bun CLI、`proxy.ts`、`start.sh`、`.env` |
-| `claudecodeui/` | Node 后端 + Vite 前端（`npm run dev`） |
-
-Agent 子进程会继承 Node 进程里的 **`ANTHROPIC_*`**。在 `claudecodeui` 与 `claude-code-main` 的 `.env` 中填同一套上游配置最省事。若存在同级目录 `claude-code-main`，UI 后端会优先用其中的 `cli.tsx` 与 `preload.ts`（见 `claudecodeui/server/claude-code-main-path.js`）。
+| `~/.edgeclaw/config.yaml` | 唯一用户配置入口 |
+| `claude-code-main/` | Bun CLI、本地 Anthropic -> OpenAI 代理、`start.sh` |
+| `ui/` | Web UI 前后端 |
+| `edgeclaw-memory-core/` | 记忆检索 / 索引核心 |
 
 ## 前置条件
 
-- **Bun**：运行 CLI 与 `proxy.ts`，见 [bun.sh](https://bun.sh)
-- **Node.js 22+** 与 **npm**：运行 `claudecodeui`
-- 一条可用的 **OpenAI 兼容 API**（示例为 OpenRouter，可换成你的网关）
+- Bun
+- Node.js 22+
+- npm
+- 一条可用的 OpenAI 兼容 API
 
-## Clone 之后：被 Git 忽略内容的「再生」
+## 第一步：创建统一 YAML 配置
 
-根目录 `.gitignore` 里不提交的东西，在本机可以这样恢复：
+启动 Web UI 后，进入 `Settings -> Config` 直接编辑 `~/.edgeclaw/config.yaml`。如果文件不存在，点击 `Reveal File` 会创建完整模板。
 
-| 忽略项 | 如何再生 |
-|--------|----------|
-| **`node_modules/`** | `claude-code-main`：`cd claude-code-main && bun install`（使用仓库内 `bun.lock`）。`claudecodeui`：`cd claudecodeui && npm install`。 |
-| **`.env`** | 两处各执行：`cp .env.example .env`，再按下文填写密钥与模型。 |
-| **`dist/`、`build/`** | 仅在你需要生产构建时：`cd claudecodeui && npm run build`（开发模式 `npm run dev` 不依赖已存在的 `dist/`）。 |
-| **`.cache/`** | 工具缓存（如 Vite）；一般不用管。若前端异常可删 `claudecodeui/node_modules/.vite` 后重新 `npm run dev`。 |
-| **`*.log`、`.proxy.log`** | 运行日志；可删。下次 `./start.sh` 后台起代理时会再生成 `.proxy.log`。 |
+最小必填配置位于 YAML 的：
 
-CloudCLI 的本地数据库（默认 `~/.cloudcli/auth.db`等）也不在仓库里；首次启动后端会自动建库，无需从 Git 恢复。
+- `models.providers.<provider>.baseUrl`
+- `models.providers.<provider>.apiKey`
+- `models.entries.<model>.name`
+- `agents.main.model`
 
-## 第一步：配置 `claude-code-main/.env`
+注意：
+
+- OpenAI 兼容 provider 的 `baseUrl` 推荐写到 `/v1`
+- Anthropic provider 的 `baseUrl` 写域名根路径
+- `agent`、`memory`、`router` 都引用 `models.entries` 里的模型 id，不重复配置 key/url
+- UI 返回配置时会 mask secret，保存 masked secret 会保留旧值
+
+## 第二步：安装依赖
 
 ```bash
 cd claude-code-main
 bun install
-cp .env.example .env
+
+cd ../ui
+npm install
 ```
 
-编辑 `.env`，至少设置：
-
-- **`OPENAI_BASE_URL`** — 上游根地址。**不要**带末尾的 `/v1`：本仓库的 `proxy.ts` 会自行拼接 `/v1/chat/completions`（与 OpenRouter 的 `https://openrouter.ai/api` 一类写法一致）。
-- **`OPENAI_API_KEY`** — 上游 API Key
-- **`ANTHROPIC_API_KEY`** — 可与 `OPENAI_API_KEY` 相同（请求经本地代理再转发上游）
-- **`ANTHROPIC_MODEL`** — 上游实际提供的模型 id
-
-可选：`PROXY_PORT`（默认 `18080`）、`ANTHROPIC_BASE_URL`（不设时 `start.sh` 使用 `http://127.0.0.1:$PROXY_PORT`）、`DISABLE_TELEMETRY`。
-
-勿将真实密钥提交到 Git；`claude-code-main/.gitignore` 已忽略 `.env`。
-
-## 第二步：启动终端 CLI（可选）
-
-在**真实终端**（需要 TTY）中：
+## 第三步：启动 Claude Code 链路
 
 ```bash
 cd claude-code-main
-chmod +x start.sh   # 首次
+chmod +x start.sh
 ./start.sh
 ```
 
-非交互示例：`./start.sh -p "你好" --bare`。若本地代理未在运行，`start.sh` 会在后台启动 `proxy.ts`，日志写入 `.proxy.log`。
+`start.sh` 会读取 `~/.edgeclaw/config.yaml`，派生内部 `OPENAI_*` / `ANTHROPIC_*` 变量，并在需要时自动拉起本地代理。
 
-## 第三步：启动 Web UI（前后端）
+如果要只运行消息网关，不启动 CLI：
 
 ```bash
-cd claudecodeui
-npm install
-cp .env.example .env   # 若尚未创建
+cd claude-code-main
+./start.sh --gateway
 ```
 
-在 **`claudecodeui/.env`** 中写入与代理一致的 **`ANTHROPIC_API_KEY`**、**`ANTHROPIC_BASE_URL`**（例如 `http://127.0.0.1:18080`）、**`ANTHROPIC_MODEL`**。建议先保证 `claude-code-main` 侧代理已可访问，再启动 UI。
+如果要在正常启动 CLI 的同时后台拉起 gateway，把 YAML 中的 `gateway.enabled` 设为 `true`。
+
+## 第四步：启动 Web UI
 
 ```bash
+cd ui
 npm run dev
 ```
 
-- 前端：一般为 `http://localhost:5173`（以 Vite 终端输出为准）
-- API / WebSocket：由 Vite 代理到后端 **`SERVER_PORT`**（默认 `3001`）
+默认地址：
 
-## UI 里为什么可能没有 Project？
+- Web UI: `http://localhost:5173`
+- API Server: `http://localhost:3001`
 
-项目列表来自 **`~/.claude/projects/`** 以及 **`~/.claude/project-config.json`** 中的手动条目，**不会**扫描整台机器上的所有仓库。若目录为空，可先在某个目录里用 Claude Code 跑几次产生会话，或在 UI 里添加项目路径。
+前端和服务端都会读取 `~/.edgeclaw/config.yaml`；不需要创建任何 `.env` 文件。
 
-## 恢复 Web UI 登录（可选）
+## Gateway 配置
 
-默认关闭本地账号。若要用户名与密码，在 **`claudecodeui/.env`** 中设置：
+gateway 也统一读取 `~/.edgeclaw/config.yaml`，保存后 UI 会重新生成 gateway runtime YAML。
 
-```bash
-CLOUDCLI_DISABLE_LOCAL_AUTH=0
+常见入口字段：
+
+- `gateway.enabled`
+- `gateway.allowAllUsers`
+- `gateway.allowedUsers`
+- `gateway.channels.<channel>.enabled`
+
+支持的 channel 在默认 YAML 中都会展示：
+
+- Telegram
+- Discord
+- Slack
+- Feishu / Lark
+- WeCom / DingTalk
+- Matrix / Signal / Mattermost
+- Email / SMS / Home Assistant
+- API Server / Webhook / Weixin / WhatsApp
+
+## Memory 配置
+
+memory 默认开启。只有显式设置以下值时才会关闭：
+
+```yaml
+memory:
+  enabled: false
 ```
 
-保存后重启 `npm run dev`。
+默认情况下，memory 继承主模型：
 
-## 环境变量速查
+```yaml
+memory:
+  model: inherit
+```
 
-| 位置 | 变量 | 说明 |
-|------|------|------|
-| `claude-code-main/.env` | `OPENAI_BASE_URL`, `OPENAI_API_KEY` | 上游；供 `proxy.ts` |
-| | `PROXY_PORT` | 本地代理端口 |
-| | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL` | CLI 使用 |
-| `claudecodeui/.env` | 同上 `ANTHROPIC_*` | Agent SDK 子进程继承 |
-| | `SERVER_PORT`, `VITE_PORT`, `HOST` | 后端 / 前端端口 |
-| | `CLOUDCLI_DISABLE_LOCAL_AUTH` | 设为 `0` 则要求登录 |
+如果 memory 要独立走另一套模型，先在 `models.providers` / `models.entries` 中定义，再把 `memory.model` 指向该模型 id。
 
-更多 CloudCLI 变量见 **`claudecodeui/.env.example`**。
+## 常见命令
+
+查看当前配置入口和状态：
+
+```bash
+cd ui
+node server/cli.js status
+```
+
+或：
+
+```bash
+cd ui
+cloudcli status
+```
+
+## 安全说明
+
+- 用户密钥只放在 `~/.edgeclaw/config.yaml`
+- 不要把密钥写进任何 `VITE_*` 变量
+- API 返回给 UI 的 secret 会被 mask；保存 masked secret 会保留原值

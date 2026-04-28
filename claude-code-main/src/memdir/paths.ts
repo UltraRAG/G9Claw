@@ -11,6 +11,7 @@ import {
   isEnvDefinedFalsy,
   isEnvTruthy,
 } from '../utils/envUtils.js'
+import { isEdgeClawMemoryEnabled } from '../services/edgeclawMemory/index.js'
 import { findCanonicalGitRoot } from '../utils/git.js'
 import { sanitizePath } from '../utils/path.js'
 import {
@@ -28,6 +29,9 @@ import {
  *   5. Default: enabled
  */
 export function isAutoMemoryEnabled(): boolean {
+  if (isEdgeClawMemoryEnabled()) {
+    return false
+  }
   const envVal = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
   if (isEnvTruthy(envVal)) {
     return false

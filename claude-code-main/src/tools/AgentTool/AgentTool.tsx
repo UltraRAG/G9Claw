@@ -49,6 +49,7 @@ import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extra
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES } from './constants.js';
 import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild } from './forkSubagent.js';
+import { shouldForceMainAgentAsyncSpawn } from './asyncSpawnPolicy.js';
 import type { AgentDefinition } from './loadAgentsDir.js';
 import { filterAgentsByMcpRequirements, hasRequiredMcpServers, isBuiltInAgent } from './loadAgentsDir.js';
 import { getPrompt } from './prompt.js';
@@ -112,14 +113,10 @@ export const inputSchema = lazySchema(() => {
     cwd: true
   });
 
-  // GrowthBook-in-lazySchema is acceptable here (unlike subagent_type, which
-  // was removed in 906da6c723): the divergence window is one-session-per-
-  // gate-flip via _CACHED_MAY_BE_STALE disk read, and worst case is either
-  // "schema shows a no-op param" (gate flips on mid-session: param ignored
-  // by forceAsync) or "schema hides a param that would've worked" (gate
-  // flips off mid-session: everything still runs async via memoized
-  // forceAsync). No Zod rejection, no crash — unlike required→optional.
-  return isBackgroundTasksDisabled || isForkSubagentEnabled() ? schema.omit({
+  // Keep run_in_background visible whenever background tasks are enabled.
+  // Main-thread Agent spawns may still run async by default, but hiding the
+  // parameter would prevent non-main contexts from explicitly opting in.
+  return isBackgroundTasksDisabled ? schema.omit({
     run_in_background: true
   }) : schema;
 });
@@ -414,6 +411,26 @@ export const AgentTool = buildTool({
       setAgentColor(selectedAgent.agentType, selectedAgent.color);
     }
 
+    // Use inline env check instead of coordinatorModule to avoid circular
+    // dependency issues during test module loading.
+    const isCoordinator = feature('COORDINATOR_MODE') ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE) : false;
+
+    // Main-thread Agent invocations now default to background execution.
+    // Keep forks async too so their notification-based interaction model
+    // remains intact even when spawned from another agent context.
+    const forceMainAgentAsync = shouldForceMainAgentAsyncSpawn();
+    const forceAsync = isForkPath || forceMainAgentAsync;
+
+    // Assistant mode: force all agents async. Synchronous subagents hold the
+    // main loop's turn open until they complete — the daemon's inputQueue
+    // backs up, and the first overdue cron catch-up on spawn becomes N
+    // serial subagent turns blocking all user input. Same gate as
+    // executeForkedSlashCommand's fire-and-forget path; the
+    // <task-notification> re-entry there is handled by the else branch
+    // below (registerAsyncAgentTask + notifyOnCompletion).
+    const assistantForceAsync = feature('KAIROS') ? appState.kairosEnabled : false;
+    const shouldRunAsync = (run_in_background === true || selectedAgent.background === true || isCoordinator || forceAsync || assistantForceAsync || (proactiveModule?.isProactiveActive() ?? false)) && !isBackgroundTasksDisabled;
+
     // Resolve agent params for logging (these are already resolved in runAgent)
     const resolvedAgentModel = getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, isForkPath ? undefined : model, permissionMode);
     logEvent('tengu_agent_tool_selected', {
@@ -423,7 +440,7 @@ export const AgentTool = buildTool({
       color: selectedAgent.color as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       is_built_in_agent: isBuiltInAgent(selectedAgent),
       is_resume: false,
-      is_async: (run_in_background === true || selectedAgent.background === true) && !isBackgroundTasksDisabled,
+      is_async: shouldRunAsync,
       is_fork: isForkPath
     });
 
@@ -545,26 +562,8 @@ export const AgentTool = buildTool({
       isBuiltInAgent: isBuiltInAgent(selectedAgent),
       startTime,
       agentType: selectedAgent.agentType,
-      isAsync: (run_in_background === true || selectedAgent.background === true) && !isBackgroundTasksDisabled
+      isAsync: shouldRunAsync
     };
-
-    // Use inline env check instead of coordinatorModule to avoid circular
-    // dependency issues during test module loading.
-    const isCoordinator = feature('COORDINATOR_MODE') ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE) : false;
-
-    // Fork subagent experiment: force ALL spawns async for a unified
-    // <task-notification> interaction model (not just fork spawns — all of them).
-    const forceAsync = isForkSubagentEnabled();
-
-    // Assistant mode: force all agents async. Synchronous subagents hold the
-    // main loop's turn open until they complete — the daemon's inputQueue
-    // backs up, and the first overdue cron catch-up on spawn becomes N
-    // serial subagent turns blocking all user input. Same gate as
-    // executeForkedSlashCommand's fire-and-forget path; the
-    // <task-notification> re-entry there is handled by the else branch
-    // below (registerAsyncAgentTask + notifyOnCompletion).
-    const assistantForceAsync = feature('KAIROS') ? appState.kairosEnabled : false;
-    const shouldRunAsync = (run_in_background === true || selectedAgent.background === true || isCoordinator || forceAsync || assistantForceAsync || (proactiveModule?.isProactiveActive() ?? false)) && !isBackgroundTasksDisabled;
     // Assemble the worker's tool pool independently of the parent's.
     // Workers always get their tools from assembleToolPool with their own
     // permission mode, so they aren't affected by the parent's tool
@@ -747,7 +746,7 @@ export const AgentTool = buildTool({
         toolUseContext,
         rootSetAppState,
         agentIdForCleanup: asyncAgentId,
-        enableSummarization: isCoordinator || isForkSubagentEnabled() || getSdkAgentProgressSummariesEnabled(),
+        enableSummarization: isCoordinator || forceAsync || getSdkAgentProgressSummariesEnabled(),
         getWorktreeResult: cleanupWorktreeIfNeeded
       })));
       const canReadOutputFile = toolUseContext.options.tools.some(t => toolMatchesName(t, FILE_READ_TOOL_NAME) || toolMatchesName(t, BASH_TOOL_NAME));

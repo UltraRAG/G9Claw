@@ -429,6 +429,18 @@ export function useTextInput({
   }
 
   function onInput(input: string, key: Key): void {
+    try {
+      const g: any = globalThis as any
+      if (process.env.CC_INPUT_TRACE === '1' && typeof g.__bisect === 'function') {
+        const safe = (s: string) => s.replace(/\x1b/g, '\\x1b').replace(/\r/g, '\\r').replace(/\n/g, '\\n').slice(0, 80)
+        const flags: string[] = []
+        for (const k of ['return','meta','shift','ctrl','escape','tab','backspace','delete','upArrow','downArrow','leftArrow','rightArrow','home','end','pageUp','pageDown']) {
+          if ((key as any)[k]) flags.push(k)
+        }
+        g.__bisect(`useTextInput.onInput input=${JSON.stringify(safe(input))} keys=[${flags.join(',')}] hasOnSubmit=${!!onSubmit}`)
+      }
+    } catch {}
+
     // Note: Image paste shortcut (chat:imagePaste) is handled via useKeybindings in PromptInput
 
     // Apply filter if provided

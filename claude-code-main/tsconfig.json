@@ -11,10 +11,13 @@
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
+    "ignoreDeprecations": "6.0",
     "types": ["bun-types"],
     "baseUrl": ".",
     "paths": {
-      "src/*": ["./src/*"]
+      "src/*": ["./src/*"],
+      "@/*": ["./src/router/src/*"],
+      "@CCR/shared": ["./src/router/shared/index.ts"]
     }
   },
   "include": ["src/**/*", "preload.ts"]

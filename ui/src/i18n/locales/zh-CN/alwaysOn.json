@@ -1,0 +1,35 @@
+{
+  "title": "常驻代理",
+  "subtitle": "为该项目持续运行的后台发现代理。",
+  "emptyProject": "选择一个项目以查看 Always-On。",
+  "actions": {
+    "refresh": "刷新",
+    "discover": "扫描",
+    "open": "打开",
+    "run": "执行"
+  },
+  "status": {
+    "running": "运行中",
+    "ready": "就绪",
+    "idle": "空闲"
+  },
+  "summary": {
+    "running_one": "{{count}} 个进行中",
+    "running_other": "{{count}} 个进行中",
+    "ready_one": "{{count}} 个待执行",
+    "ready_other": "{{count}} 个待执行"
+  },
+  "loading": {
+    "plans": "正在加载方案…"
+  },
+  "empty": {
+    "plans": "还没有发现方案。点击「扫描」让 Always-On 检视当前项目。"
+  },
+  "relative": {
+    "justNow": "刚刚",
+    "minutes": "{{count}} 分钟前",
+    "hours": "{{count}} 小时前",
+    "days": "{{count}} 天前"
+  },
+  "updatedAt": "更新于 {{relative}}"
+}

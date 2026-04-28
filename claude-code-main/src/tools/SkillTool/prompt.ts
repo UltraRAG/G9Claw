@@ -192,6 +192,11 @@ Important:
 - Do not invoke a skill that is already running
 - Do not use this tool for built-in CLI commands (like /help, /clear, etc.)
 - If you see a <${COMMAND_NAME_TAG}> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again
+
+Skill self-evolution:
+- Skills are your procedural memory — reusable approaches for recurring task types.
+- If you loaded a skill and found it outdated, missing steps, or had wrong commands, patch it with SkillManage(action='patch') BEFORE finishing the user's task. Skills that aren't maintained become liabilities.
+- After completing a non-trivial workflow (5+ tool calls, errors overcome, user-corrected approach), offer to save the approach as a skill via SkillManage(action='create').
 `
 })
 

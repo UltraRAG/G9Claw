@@ -2,6 +2,7 @@
 import { toolMatchesName, type Tool, type Tools } from './Tool.js'
 import { AgentTool } from './tools/AgentTool/AgentTool.js'
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
+import { SkillManageTool } from './tools/SkillManageTool/SkillManageTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
 import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
 import { FileReadTool } from './tools/FileReadTool/FileReadTool.js'
@@ -11,6 +12,7 @@ import { NotebookEditTool } from './tools/NotebookEditTool/NotebookEditTool.js'
 import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
+import { SendMessageTool } from './tools/SendMessageTool/SendMessageTool.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const REPLTool =
@@ -26,13 +28,9 @@ const SleepTool =
   feature('PROACTIVE') || feature('KAIROS')
     ? require('./tools/SleepTool/SleepTool.js').SleepTool
     : null
-const cronTools = feature('AGENT_TRIGGERS')
-  ? [
-      require('./tools/ScheduleCronTool/CronCreateTool.js').CronCreateTool,
-      require('./tools/ScheduleCronTool/CronDeleteTool.js').CronDeleteTool,
-      require('./tools/ScheduleCronTool/CronListTool.js').CronListTool,
-    ]
-  : []
+// Cron tools are now always compiled into repo builds; runtime gating lives in
+// ScheduleCronTool/prompt.ts so all entrypoints see the same availability.
+const cronTools = [CronCreateTool, CronDeleteTool, CronListTool]
 const RemoteTriggerTool = feature('AGENT_TRIGGERS_REMOTE')
   ? require('./tools/RemoteTriggerTool/RemoteTriggerTool.js').RemoteTriggerTool
   : null
@@ -54,6 +52,16 @@ const SubscribePRTool = feature('KAIROS_GITHUB_WEBHOOKS')
 import { TaskOutputTool } from './tools/TaskOutputTool/TaskOutputTool.js'
 import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'
 import { TodoWriteTool } from './tools/TodoWriteTool/TodoWriteTool.js'
+import { MemoryOverviewTool } from './tools/MemoryOverviewTool/MemoryOverviewTool.js'
+import { MemoryListTool } from './tools/MemoryListTool/MemoryListTool.js'
+import { MemorySearchTool } from './tools/MemorySearchTool/MemorySearchTool.js'
+import { MemoryGetTool } from './tools/MemoryGetTool/MemoryGetTool.js'
+import { MemoryFlushTool } from './tools/MemoryFlushTool/MemoryFlushTool.js'
+import { MemoryDreamTool } from './tools/MemoryDreamTool/MemoryDreamTool.js'
+import { CronCreateTool } from './tools/ScheduleCronTool/CronCreateTool.js'
+import { CronDeleteTool } from './tools/ScheduleCronTool/CronDeleteTool.js'
+import { CronListTool } from './tools/ScheduleCronTool/CronListTool.js'
+import { AlwaysOnDiscoveryPlanTool } from './tools/AlwaysOnDiscoveryPlanTool/AlwaysOnDiscoveryPlanTool.js'
 import { ExitPlanModeV2Tool } from './tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
 import { TestingPermissionTool } from './tools/testing/TestingPermissionTool.js'
 import { GrepTool } from './tools/GrepTool/GrepTool.js'
@@ -66,9 +74,6 @@ const getTeamCreateTool = () =>
 const getTeamDeleteTool = () =>
   require('./tools/TeamDeleteTool/TeamDeleteTool.js')
     .TeamDeleteTool as typeof import('./tools/TeamDeleteTool/TeamDeleteTool.js').TeamDeleteTool
-const getSendMessageTool = () =>
-  require('./tools/SendMessageTool/SendMessageTool.js')
-    .SendMessageTool as typeof import('./tools/SendMessageTool/SendMessageTool.js').SendMessageTool
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { AskUserQuestionTool } from './tools/AskUserQuestionTool/AskUserQuestionTool.js'
 import { LSPTool } from './tools/LSPTool/LSPTool.js'
@@ -113,9 +118,6 @@ const CtxInspectTool = feature('CONTEXT_COLLAPSE')
 const TerminalCaptureTool = feature('TERMINAL_PANEL')
   ? require('./tools/TerminalCaptureTool/TerminalCaptureTool.js')
       .TerminalCaptureTool
-  : null
-const WebBrowserTool = feature('WEB_BROWSER_TOOL')
-  ? require('./tools/WebBrowserTool/WebBrowserTool.js').WebBrowserTool
   : null
 const coordinatorModeModule = feature('COORDINATOR_MODE')
   ? (require('./coordinator/coordinatorMode.js') as typeof import('./coordinator/coordinatorMode.js'))
@@ -206,15 +208,22 @@ export function getAllBaseTools(): Tools {
     NotebookEditTool,
     WebFetchTool,
     TodoWriteTool,
+    MemoryOverviewTool,
+    MemoryListTool,
+    MemorySearchTool,
+    MemoryGetTool,
+    MemoryFlushTool,
+    MemoryDreamTool,
+    AlwaysOnDiscoveryPlanTool,
     WebSearchTool,
     TaskStopTool,
     AskUserQuestionTool,
     SkillTool,
+    SkillManageTool,
     EnterPlanModeTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),
     ...(SuggestBackgroundPRTool ? [SuggestBackgroundPRTool] : []),
-    ...(WebBrowserTool ? [WebBrowserTool] : []),
     ...(isTodoV2Enabled()
       ? [TaskCreateTool, TaskGetTool, TaskUpdateTool, TaskListTool]
       : []),
@@ -223,7 +232,7 @@ export function getAllBaseTools(): Tools {
     ...(TerminalCaptureTool ? [TerminalCaptureTool] : []),
     ...(isEnvTruthy(process.env.ENABLE_LSP_TOOL) ? [LSPTool] : []),
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
-    getSendMessageTool(),
+    SendMessageTool,
     ...(ListPeersTool ? [ListPeersTool] : []),
     ...(isAgentSwarmsEnabled()
       ? [getTeamCreateTool(), getTeamDeleteTool()]
@@ -280,7 +289,7 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
         feature('COORDINATOR_MODE') &&
         coordinatorModeModule?.isCoordinatorMode()
       ) {
-        replSimple.push(TaskStopTool, getSendMessageTool())
+        replSimple.push(TaskStopTool, SendMessageTool)
       }
       return filterToolsByDenyRules(replSimple, permissionContext)
     }
@@ -292,7 +301,7 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
       feature('COORDINATOR_MODE') &&
       coordinatorModeModule?.isCoordinatorMode()
     ) {
-      simpleTools.push(AgentTool, TaskStopTool, getSendMessageTool())
+      simpleTools.push(AgentTool, TaskStopTool, SendMessageTool)
     }
     return filterToolsByDenyRules(simpleTools, permissionContext)
   }

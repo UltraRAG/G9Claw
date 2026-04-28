@@ -36,6 +36,7 @@ import type {
 } from 'src/utils/permissions/PermissionResult.js'
 import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
 import { writeToStdout } from 'src/utils/process.js'
+import { writeToStderr } from 'src/utils/process.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
 import { z } from 'zod/v4'
 import { notifyCommandLifecycle } from '../utils/commandLifecycle.js'
@@ -60,6 +61,15 @@ import { ndjsonSafeStringify } from './ndjsonSafeStringify.js'
  * see this as a normal tool permission prompt.
  */
 export const SANDBOX_NETWORK_ACCESS_TOOL_NAME = 'SandboxNetworkAccess'
+
+const DEBUG_STRUCTURED_IO = process.env.CLOUDCLI_DEBUG_STRUCTURED_IO === '1'
+
+function structuredIoDebug(message: string): void {
+  if (!DEBUG_STRUCTURED_IO) {
+    return
+  }
+  writeToStderr(`[structured-io] ${message}\n`)
+}
 
 function serializeDecisionReason(
   reason: PermissionDecisionReason | undefined,
@@ -231,6 +241,7 @@ export class StructuredIO {
         content = content.slice(newline + 1)
         const message = await this.processLine(line)
         if (message) {
+          structuredIoDebug(`in ${message.type}`)
           logForDiagnosticsNoPII('info', 'cli_stdin_message_parsed', {
             type: message.type,
           })
@@ -248,6 +259,7 @@ export class StructuredIO {
     if (content) {
       const message = await this.processLine(content)
       if (message) {
+        structuredIoDebug(`in ${message.type}`)
         yield message
       }
     }
@@ -463,6 +475,7 @@ export class StructuredIO {
   }
 
   async write(message: StdoutMessage): Promise<void> {
+    structuredIoDebug(`out ${message.type}`)
     writeToStdout(ndjsonSafeStringify(message) + '\n')
   }
 

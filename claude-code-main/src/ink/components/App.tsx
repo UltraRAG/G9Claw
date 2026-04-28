@@ -307,9 +307,42 @@ export default class App extends PureComponent<Props, State> {
 
   // Process input through the parser and handle the results
   processInput = (input: string | Buffer | null): void => {
+    // Diagnostic: log raw stdin bytes when CC_INPUT_TRACE=1.
+    // Useful for figuring out what byte sequence a given terminal actually
+    // sends for a given key (e.g. Enter -> \r vs \n vs \r\n vs CSI u).
+    try {
+      const g: any = globalThis as any
+      if (process.env.CC_INPUT_TRACE === '1' && typeof g.__bisect === 'function' && input !== null) {
+        const buf = typeof input === 'string' ? Buffer.from(input, 'utf8') : input
+        const hex = Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join(' ')
+        const safe = buf.toString('utf8').replace(/\x1b/g, '\\x1b').replace(/\r/g, '\\r').replace(/\n/g, '\\n').slice(0, 80)
+        g.__bisect(`App.processInput bytes=[${hex}] str=${JSON.stringify(safe)} parseState=${this.keyParseState.mode ?? 'NORMAL'}`)
+      }
+    } catch {}
+
     // Parse input using our state machine
     const [keys, newState] = parseMultipleKeypresses(this.keyParseState, input);
     this.keyParseState = newState;
+
+    // Diagnostic: log what the parser produced (key.name + sequence).
+    try {
+      const g: any = globalThis as any
+      if (process.env.CC_INPUT_TRACE === '1' && typeof g.__bisect === 'function' && keys.length > 0) {
+        const summary = keys.map((k: any) => {
+          if (k.kind === 'response') return `response`
+          if (k.kind === 'mouse') return `mouse`
+          const seq = (k.sequence ?? '').replace(/\x1b/g, '\\x1b').replace(/\r/g, '\\r').replace(/\n/g, '\\n')
+          const flags: string[] = []
+          if (k.ctrl) flags.push('ctrl')
+          if (k.meta) flags.push('meta')
+          if (k.shift) flags.push('shift')
+          if (k.option) flags.push('option')
+          if (k.super) flags.push('super')
+          return `{name=${k.name ?? '?'} seq=${JSON.stringify(seq)} flags=[${flags.join(',')}]}`
+        }).join(' ')
+        g.__bisect(`App.processInput parsed ${keys.length} key(s): ${summary}`)
+      }
+    } catch {}
 
     // Process ALL keys in a SINGLE discreteUpdates call to prevent
     // "Maximum update depth exceeded" error when many keys arrive at once

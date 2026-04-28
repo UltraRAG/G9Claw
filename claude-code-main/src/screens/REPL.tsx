@@ -49,7 +49,7 @@ import { useLogMessages } from '../hooks/useLogMessages.js';
 import { useReplBridge } from '../hooks/useReplBridge.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../commands.js';
 import type { PromptInputMode, QueuedCommand, VimMode } from '../types/textInputTypes.js';
-import { MessageSelector, selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../components/MessageSelector.js';
+import { MessageSelector } from '../components/MessageSelector.js';
 import { useIdeLogging } from '../hooks/useIdeLogging.js';
 import { PermissionRequest, type ToolUseConfirm } from '../components/permissions/PermissionRequest.js';
 import { ElicitationDialog } from '../components/mcp/ElicitationDialog.js';
@@ -142,6 +142,7 @@ import { handlePromptSubmit, type PromptInputHelpers } from '../utils/handleProm
 import { useQueueProcessor } from '../hooks/useQueueProcessor.js';
 import { useMailboxBridge } from '../hooks/useMailboxBridge.js';
 import { queryCheckpoint, logQueryProfileReport } from '../utils/queryProfiler.js';
+import { messagesAfterAreOnlySynthetic, selectableUserMessagesFilter } from '../utils/messageSelectorHelpers.js';
 import type { Message as MessageType, UserMessage, ProgressMessage, HookResultMessage, PartialCompactDirection } from '../types/message.js';
 import { query } from '../query.js';
 import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js';
@@ -189,15 +190,20 @@ import { isBgSession, updateSessionName, updateSessionActivity } from '../utils/
 import { isInProcessTeammateTask, type InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js';
 import { restoreRemoteAgentTasks } from '../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { useInboxPoller } from '../hooks/useInboxPoller.js';
-// Dead code elimination: conditional import for loop mode
+import { useCronDaemonNotificationBridge } from '../hooks/useCronDaemonNotificationBridge.js';
+// Dead code elimination: proactive-only imports remain conditional.
 /* eslint-disable @typescript-eslint/no-require-imports */
 const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/index.js') : null;
 const PROACTIVE_NO_OP_SUBSCRIBE = (_cb: () => void) => () => {};
 const PROACTIVE_FALSE = () => false;
 const SUGGEST_BG_PR_NOOP = (_p: string, _n: string): boolean => false;
 const useProactive = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/useProactive.js').useProactive : null;
-const useScheduledTasks = feature('AGENT_TRIGGERS') ? require('../hooks/useScheduledTasks.js').useScheduledTasks : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
+// useScheduledTasks must be a static import: it (transitively) contains a
+// top-level await, and Bun forbids require()'ing async modules with:
+//   TypeError: require() async module ... is unsupported. use 'await import()' instead.
+// This previously crashed the REPL on first render under Bun.
+import { useScheduledTasks } from '../hooks/useScheduledTasks.js';
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
 import { useTaskListWatcher } from '../hooks/useTaskListWatcher.js';
 import type { SandboxAskCallback, NetworkHostPattern } from '../utils/sandbox/sandbox-adapter.js';
@@ -210,6 +216,7 @@ import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQ
 import { useCommandQueue } from '../hooks/useCommandQueue.js';
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js';
+import { CRON_BACKGROUND_AGENT_TYPE, startCronBackgroundTask } from '../tasks/CronBackgroundTask.js';
 import { useSessionBackgrounding } from '../hooks/useSessionBackgrounding.js';
 import { diagnosticTracker } from '../services/diagnosticTracking.js';
 import { handleSpeculationAccept, type ActiveSpeculationState } from '../services/PromptSuggestion/speculation.js';
@@ -217,6 +224,7 @@ import { IdeOnboardingDialog } from '../components/IdeOnboardingDialog.js';
 import { EffortCallout, shouldShowEffortCallout } from '../components/EffortCallout.js';
 import type { EffortValue } from '../utils/effort.js';
 import { RemoteCallout } from '../components/RemoteCallout.js';
+import type { QuerySource } from '../constants/querySource.js';
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const AntModelSwitchCallout = "external" === 'ant' ? require('../components/AntModelSwitchCallout.js').AntModelSwitchCallout : null;
 const shouldShowAntModelSwitch = "external" === 'ant' ? require('../components/AntModelSwitchCallout.js').shouldShowModelSwitchCallout : (): boolean => false;
@@ -268,9 +276,6 @@ import { useFastModeNotification } from 'src/hooks/notifs/useFastModeNotificatio
 import { AutoRunIssueNotification, shouldAutoRunIssue, getAutoRunIssueReasonText, getAutoRunCommand, type AutoRunIssueReason } from '../utils/autoRunIssue.js';
 import type { HookProgress } from '../types/hooks.js';
 import { TungstenLiveMonitor } from '../tools/TungstenTool/TungstenLiveMonitor.js';
-/* eslint-disable @typescript-eslint/no-require-imports */
-const WebBrowserPanelModule = feature('WEB_BROWSER_TOOL') ? require('../tools/WebBrowserTool/WebBrowserPanel.js') as typeof import('../tools/WebBrowserTool/WebBrowserPanel.js') : null;
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { IssueFlagBanner } from '../components/PromptInput/IssueFlagBanner.js';
 import { useIssueFlagBanner } from '../hooks/useIssueFlagBanner.js';
 import { CompanionSprite, CompanionFloatingBubble, MIN_COLS_FOR_FULL_SPRITE } from '../buddy/CompanionSprite.js';
@@ -2522,6 +2527,52 @@ export function REPL({
     };
   }, [commands, combinedInitialTools, mainThreadAgentDefinition, debug, initialMcpClients, ideInstallationStatus, dynamicMcpConfig, theme, allowedAgentTypes, store, setAppState, reverify, addNotification, setMessages, onChangeDynamicMcpConfig, resume, requestPrompt, disabled, customSystemPrompt, appendSystemPrompt, setConversationId]);
 
+  const buildDetachedQueryParams = useCallback(async ({
+    messages,
+    abortController,
+    querySource,
+    agentId,
+    agentType
+  }: {
+    messages: MessageType[];
+    abortController: AbortController;
+    querySource: QuerySource;
+    agentId?: string;
+    agentType?: string;
+  }) => {
+    const baseToolUseContext = getToolUseContext(messages, [], abortController, mainLoopModel);
+    const toolUseContext = {
+      ...baseToolUseContext,
+      abortController,
+      messages,
+      ...(agentId ? {
+        agentId: asAgentId(agentId),
+        agentType
+      } : {}),
+      options: {
+        ...baseToolUseContext.options,
+        querySource
+      }
+    };
+    const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([getSystemPrompt(toolUseContext.options.tools, mainLoopModel, Array.from(toolPermissionContext.additionalWorkingDirectories.keys()), toolUseContext.options.mcpClients), getUserContext(), getSystemContext()]);
+    const systemPrompt = buildEffectiveSystemPrompt({
+      mainThreadAgentDefinition,
+      toolUseContext,
+      customSystemPrompt,
+      defaultSystemPrompt,
+      appendSystemPrompt
+    });
+    toolUseContext.renderedSystemPrompt = systemPrompt;
+    return {
+      systemPrompt,
+      userContext,
+      systemContext,
+      canUseTool,
+      toolUseContext,
+      querySource
+    };
+  }, [mainLoopModel, getToolUseContext, toolPermissionContext, mainThreadAgentDefinition, customSystemPrompt, appendSystemPrompt, canUseTool]);
+
   // Session backgrounding (Ctrl+B to background/foreground)
   const handleBackgroundQuery = useCallback(() => {
     // Stop the foreground query so the background one takes over
@@ -2531,16 +2582,6 @@ export function REPL({
     // start a new foreground query; forward them to the background session.
     const removedNotifications = removeByFilter(cmd => cmd.mode === 'task-notification');
     void (async () => {
-      const toolUseContext = getToolUseContext(messagesRef.current, [], new AbortController(), mainLoopModel);
-      const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([getSystemPrompt(toolUseContext.options.tools, mainLoopModel, Array.from(toolPermissionContext.additionalWorkingDirectories.keys()), toolUseContext.options.mcpClients), getUserContext(), getSystemContext()]);
-      const systemPrompt = buildEffectiveSystemPrompt({
-        mainThreadAgentDefinition,
-        toolUseContext,
-        customSystemPrompt,
-        defaultSystemPrompt,
-        appendSystemPrompt
-      });
-      toolUseContext.renderedSystemPrompt = systemPrompt;
       const notificationAttachments = await getQueuedCommandAttachments(removedNotifications).catch(() => []);
       const notificationMessages = notificationAttachments.map(createAttachmentMessage);
 
@@ -2556,22 +2597,43 @@ export function REPL({
         }
       }
       const uniqueNotifications = notificationMessages.filter(m => m.attachment.type === 'queued_command' && (typeof m.attachment.prompt !== 'string' || !existingPrompts.has(m.attachment.prompt)));
+      const detachedMessages = [...messagesRef.current, ...uniqueNotifications];
+      const queryParams = await buildDetachedQueryParams({
+        messages: detachedMessages,
+        abortController: new AbortController(),
+        querySource: getQuerySourceForREPL()
+      });
       startBackgroundSession({
-        messages: [...messagesRef.current, ...uniqueNotifications],
-        queryParams: {
-          systemPrompt,
-          userContext,
-          systemContext,
-          canUseTool,
-          toolUseContext,
-          querySource: getQuerySourceForREPL()
-        },
+        messages: detachedMessages,
+        queryParams,
         description: terminalTitle,
         setAppState,
         agentDefinition: mainThreadAgentDefinition
       });
     })();
-  }, [abortController, mainLoopModel, toolPermissionContext, mainThreadAgentDefinition, getToolUseContext, customSystemPrompt, appendSystemPrompt, canUseTool, setAppState]);
+  }, [abortController, buildDetachedQueryParams, setAppState]);
+  const runLeadCronTask = useCallback(
+    async (task: import('../utils/cronTasks.js').CronTask) => {
+      await startCronBackgroundTask({
+        task,
+        setAppState,
+        createQueryParams: ({
+          messages,
+          abortController,
+          transcriptKey,
+          querySource,
+        }) =>
+          buildDetachedQueryParams({
+            messages,
+            abortController,
+            querySource,
+            agentId: transcriptKey,
+            agentType: CRON_BACKGROUND_AGENT_TYPE,
+          }),
+      })
+    },
+    [buildDetachedQueryParams, setAppState],
+  );
   const {
     handleBackgroundSession
   } = useSessionBackgrounding({
@@ -4041,23 +4103,16 @@ export function REPL({
     isLoading,
     onSubmitMessage: handleIncomingPrompt
   });
+  useCronDaemonNotificationBridge();
 
   // Scheduled tasks from .claude/scheduled_tasks.json (CronCreate/Delete/List)
-  if (feature('AGENT_TRIGGERS')) {
-    // Assistant mode bypasses the isLoading gate (the proactive tick →
-    // Sleep → tick loop would otherwise starve the scheduler).
-    // kairosEnabled is set once in initialState (main.tsx) and never mutated — no
-    // subscription needed. The tengu_kairos_cron runtime gate is checked inside
-    // useScheduledTasks's effect (not here) since wrapping a hook call in a dynamic
-    // condition would break rules-of-hooks.
-    const assistantMode = store.getState().kairosEnabled;
-    // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-    useScheduledTasks!({
-      isLoading,
-      assistantMode,
-      setMessages
-    });
-  }
+  // are always wired up. The hook itself decides at runtime whether cron is
+  // enabled, so every entrypoint shares the same gate.
+  const assistantMode = store.getState().kairosEnabled;
+  useScheduledTasks({
+    assistantMode,
+    runLeadCronTask
+  });
 
   // Note: Permission polling is now handled by useInboxPoller
   // - Workers receive permission responses via mailbox messages
@@ -4582,7 +4637,6 @@ export function REPL({
                     {toolJSX.jsx}
                   </Box>}
               {"external" === 'ant' && <TungstenLiveMonitor />}
-              {feature('WEB_BROWSER_TOOL') ? WebBrowserPanelModule && <WebBrowserPanelModule.WebBrowserPanel /> : null}
               <Box flexGrow={1} />
               {showSpinner && <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} />}
               {!showSpinner && !isLoading && !userInputOnProcessing && !hasRunningTeammates && isBriefOnly && !viewedAgentTask && <BriefIdleStatus />}

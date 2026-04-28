@@ -1,14 +1,20 @@
 import { feature } from 'bun:bundle'
 import { shouldAutoEnableClaudeInChrome } from 'src/utils/claudeInChrome/setup.js'
+import { registerAddProjectSkill } from './addProject.js'
 import { registerBatchSkill } from './batch.js'
 import { registerClaudeInChromeSkill } from './claudeInChrome.js'
+import { registerCloneRepoSkill } from './cloneRepo.js'
 import { registerDebugSkill } from './debug.js'
+import { registerImportOpenClawSkill } from './importOpenClaw.js'
 import { registerKeybindingsSkill } from './keybindings.js'
+import { registerListProjectsSkill } from './listProjects.js'
 import { registerLoremIpsumSkill } from './loremIpsum.js'
+import { registerPwdSkill } from './pwd.js'
 import { registerRememberSkill } from './remember.js'
 import { registerSimplifySkill } from './simplify.js'
 import { registerSkillifySkill } from './skillify.js'
 import { registerStuckSkill } from './stuck.js'
+import { registerSwitchProjectSkill } from './switchProject.js'
 import { registerUpdateConfigSkill } from './updateConfig.js'
 import { registerVerifySkill } from './verify.js'
 
@@ -21,7 +27,7 @@ import { registerVerifySkill } from './verify.js'
  * 2. Export a register function that calls registerBundledSkill()
  * 3. Import and call that function here
  */
-export function initBundledSkills(): void {
+export async function initBundledSkills(): Promise<void> {
   registerUpdateConfigSkill()
   registerKeybindingsSkill()
   registerVerifySkill()
@@ -32,6 +38,12 @@ export function initBundledSkills(): void {
   registerSimplifySkill()
   registerBatchSkill()
   registerStuckSkill()
+  registerImportOpenClawSkill()
+  registerListProjectsSkill()
+  registerAddProjectSkill()
+  registerSwitchProjectSkill()
+  registerPwdSkill()
+  registerCloneRepoSkill()
   if (feature('KAIROS') || feature('KAIROS_DREAM')) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { registerDreamSkill } = require('./dream.js')
@@ -44,15 +56,11 @@ export function initBundledSkills(): void {
     /* eslint-enable @typescript-eslint/no-require-imports */
     registerHunterSkill()
   }
-  if (feature('AGENT_TRIGGERS')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const { registerLoopSkill } = require('./loop.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
-    // /loop's isEnabled delegates to isKairosCronEnabled() — same lazy
-    // per-invocation pattern as the cron tools. Registered unconditionally;
-    // the skill's own isEnabled callback decides visibility.
-    registerLoopSkill()
-  }
+  const { registerLoopSkill } = await import('./loop.js')
+  // /loop's isEnabled delegates to isKairosCronEnabled() — same lazy
+  // per-invocation pattern as the cron tools. Register it unconditionally so
+  // all entrypoints share the same runtime gate.
+  registerLoopSkill()
   if (feature('AGENT_TRIGGERS_REMOTE')) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const {

@@ -1,14 +1,183 @@
 /**
  * Local proxy: Anthropic API format ↔ OpenAI API format
  *
- * Claude Code SDK sends Anthropic-native requests.
- * This proxy converts them to OpenAI chat/completions format
- * for compatibility with OpenAI-style API proxies (e.g. yeysai.com).
+ * Dual-mode entry point:
+ *   1. CCR mode  — delegates to the embedded Claude Code Router pipeline
+ *                  (multi-provider routing, tokenSaver, autoOrchestrate, etc.)
+ *   2. Direct mode — simple Anthropic→provider conversion + single upstream forward
+ *
+ * Router enablement and provider settings are derived from ~/.edgeclaw/config.yaml.
  */
 
-const UPSTREAM_URL = process.env.OPENAI_BASE_URL || 'https://yeysai.com'
-const UPSTREAM_KEY = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || ''
+import { readdirSync, statSync, existsSync } from 'fs'
+import { execSync } from 'child_process'
+import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'node:url'
+import {
+  applyEdgeClawConfigToEnv,
+  buildCcrConfigFromEdgeClawConfig,
+  type EdgeClawConfig,
+  getEdgeClawConfigPath,
+  getEdgeClawProxyModel,
+  loadEdgeClawConfig,
+} from './edgeclaw-config'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const DIR = __dirname
+
+const EDGECLAW_CONFIG: EdgeClawConfig = loadEdgeClawConfig()
+applyEdgeClawConfigToEnv(EDGECLAW_CONFIG)
+
+// Propagate HTTPS proxy from YAML / env so Bun's native fetch honours it
+const _httpsProxy = (EDGECLAW_CONFIG as any)?.runtime?.httpsProxy
+  || EDGECLAW_CONFIG?.router?.httpsProxy
+  || process.env.HTTPS_PROXY
+  || process.env.https_proxy
+  || ''
+if (_httpsProxy) {
+  process.env.HTTPS_PROXY = _httpsProxy
+  process.env.https_proxy = _httpsProxy
+}
+
+const EDGECLAW_MODEL = getEdgeClawProxyModel(EDGECLAW_CONFIG)
+if (!EDGECLAW_MODEL?.provider.baseUrl || !EDGECLAW_MODEL.provider.apiKey || !EDGECLAW_MODEL.model) {
+  throw new Error(`[proxy] Missing required provider/model settings in ${getEdgeClawConfigPath()}`)
+}
+
+const UPSTREAM_URL = EDGECLAW_MODEL.provider.baseUrl
+const UPSTREAM_KEY = EDGECLAW_MODEL.provider.apiKey
+const UPSTREAM_TYPE = EDGECLAW_MODEL.provider.type || 'openai-chat'
+const UPSTREAM_HEADERS = EDGECLAW_MODEL.provider.headers || {}
 const PORT = parseInt(process.env.PROXY_PORT || '18080', 10)
+
+// OpenRouter app attribution. Only injected when the upstream is openrouter.ai
+// so we don't leak the header through unrelated upstreams.
+const IS_OPENROUTER_UPSTREAM = (() => {
+  try {
+    return /(^|\.)openrouter\.ai$/i.test(new URL(UPSTREAM_URL).hostname)
+  } catch {
+    return false
+  }
+})()
+const ATTRIBUTION_HEADERS: Record<string, string> = IS_OPENROUTER_UPSTREAM
+  ? {
+      'HTTP-Referer': 'https://edgeclaw.ai',
+      'X-Title': 'EdgeClaw',
+      'X-OpenRouter-Title': 'EdgeClaw',
+      'X-OpenRouter-Categories': 'cli-agent',
+    }
+  : {}
+
+function joinEndpoint(baseUrl: string, endpoint: string): string {
+  const normalized = baseUrl.replace(/\/+$/, '')
+  if (normalized.endsWith(endpoint)) return normalized
+  return `${normalized}${endpoint}`
+}
+
+function providerChatUrl(): string {
+  if (UPSTREAM_TYPE === 'anthropic') return joinEndpoint(UPSTREAM_URL, '/v1/messages')
+  if (UPSTREAM_TYPE === 'openai-responses') return joinEndpoint(UPSTREAM_URL, '/responses')
+  return joinEndpoint(UPSTREAM_URL, '/chat/completions')
+}
+
+// ─── CCR (Claude Code Router) integration ───
+
+interface CCRServices {
+  configService: any
+  providerService: any
+  transformerService: any
+  tokenizerService: any
+  logger: any
+}
+
+let ccrProcessRequest: ((url: string, init: RequestInit | undefined, services: CCRServices, realFetch: typeof fetch) => Promise<Response>) | null = null
+let ccrServices: CCRServices | null = null
+let ccrModule: any = null
+
+const ROUTER_DIR = resolve(DIR, 'src/router')
+const CJS_PATH = resolve(ROUTER_DIR, 'server.cjs')
+
+function newestMtime(dir: string, ext = '.ts'): number {
+  let newest = 0
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = `${dir}/${entry.name}`
+      if (entry.isDirectory()) newest = Math.max(newest, newestMtime(full, ext))
+      else if (entry.name.endsWith(ext)) newest = Math.max(newest, statSync(full).mtimeMs)
+    }
+  } catch {}
+  return newest
+}
+
+function ensureCjsBuilt(): boolean {
+  const buildScript = resolve(ROUTER_DIR, 'build.mjs')
+  if (existsSync(resolve(ROUTER_DIR, 'src/server.ts')) && existsSync(buildScript)) {
+    const cjsMtime = existsSync(CJS_PATH) ? statSync(CJS_PATH).mtimeMs : 0
+    const srcMtime = Math.max(
+      newestMtime(resolve(ROUTER_DIR, 'src')),
+      newestMtime(resolve(ROUTER_DIR, 'shared')),
+    )
+    if (srcMtime > cjsMtime || cjsMtime === 0) {
+      console.log('[proxy] CCR source newer than bundle — rebuilding...')
+      execSync('node build.mjs', { cwd: ROUTER_DIR, stdio: 'inherit' })
+      console.log('[proxy] CCR rebuild complete')
+    }
+  }
+  return existsSync(CJS_PATH)
+}
+
+async function loadCCR(): Promise<boolean> {
+  if (!EDGECLAW_CONFIG?.router?.enabled) return false
+  if (!ensureCjsBuilt()) return false
+
+  const config = buildCcrConfigFromEdgeClawConfig(EDGECLAW_CONFIG)
+  if (!ccrModule) ccrModule = require(CJS_PATH)
+  const Server = ccrModule.default
+
+  const server = new Server({
+    initialConfig: {
+      providers: config.Providers,
+      Router: config.Router,
+      tokenStats: config.tokenStats,
+      API_TIMEOUT_MS: config.API_TIMEOUT_MS,
+      HOST: '127.0.0.1',
+      PORT: 0,
+      LOG: config.LOG ?? false,
+    },
+    logger: config.LOG !== false && process.env.CCR_LOG === '1',
+  })
+
+  await server.init()
+
+  ccrProcessRequest = ccrModule.processRequest
+  ccrServices = {
+    configService: server.configService,
+    providerService: server.providerService,
+    transformerService: server.transformerService,
+    tokenizerService: server.tokenizerService,
+    logger: process.env.CCR_LOG === '1' ? undefined : {
+      info: () => {},
+      warn: (...a: any[]) => console.warn('[CCR]', ...a),
+      error: (...a: any[]) => console.error('[CCR]', ...a),
+      debug: () => {},
+    },
+  }
+  return true
+}
+
+// Initial load
+if (process.env.CCR_DISABLED !== '1' && process.env.CCR_DISABLED !== 'true') {
+  try {
+    if (await loadCCR()) {
+      console.log('[proxy] CCR router loaded — advanced routing enabled')
+    }
+  } catch (err: any) {
+    console.warn(`[proxy] CCR unavailable (${err.message}), using direct proxy mode`)
+  }
+}
+
+let ccrEnabled = ccrProcessRequest !== null && ccrServices !== null
 
 // ─── Request conversion: Anthropic → OpenAI ───
 
@@ -203,16 +372,21 @@ const MODEL_MAP: Record<string, string> = {
   'claude-3-haiku':             'anthropic/claude-3-haiku',
 }
 
-function toOpenRouterModel(model: string): string {
-  if (model.startsWith('anthropic/')) return model
-  const stripped = model.replace(/-\d{8}$/, '')
+function toUpstreamModel(model: string): string {
+  const normalized = model.trim()
+  if (!normalized) return normalized
+  if (!IS_OPENROUTER_UPSTREAM) return normalized
+  if (normalized.includes('/')) return normalized
+
+  const stripped = normalized.replace(/-\d{8}$/, '')
+  if (MODEL_MAP[normalized]) return MODEL_MAP[normalized]
   if (MODEL_MAP[stripped]) return MODEL_MAP[stripped]
   return `anthropic/${stripped}`
 }
 
 function buildOpenAIRequest(body: AnthropicRequest): Record<string, unknown> {
   const req: Record<string, unknown> = {
-    model: toOpenRouterModel(body.model),
+    model: toUpstreamModel(body.model),
     max_tokens: body.max_tokens,
     messages: convertMessages(body.messages, body.system),
     stream: body.stream ?? false,
@@ -499,6 +673,7 @@ class StreamConverter {
 
   /** Call after the stream ends to flush any remaining events */
   flush(): string {
+    console.log(`[proxy] tokens: in=${this.inputTokens} out=${this.outputTokens} model=${this.model}`)
     if (this.pendingFinish && !this.finished) {
       return this.emitFinish()
     }
@@ -512,12 +687,14 @@ async function forwardToUpstream(
   openaiBody: Record<string, unknown>,
   streaming: boolean,
 ): Promise<Response> {
-  const url = `${UPSTREAM_URL}/v1/chat/completions`
+  const url = providerChatUrl()
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${UPSTREAM_KEY}`,
+      ...UPSTREAM_HEADERS,
+      ...ATTRIBUTION_HEADERS,
     },
     body: JSON.stringify(openaiBody),
   })
@@ -536,6 +713,19 @@ const server = Bun.serve({
       return new Response('ok')
     }
 
+    // ── CCR stats endpoints (consumed by Express dashboard) ──
+    if (url.pathname === '/ccr-stats/sessions' && req.method === 'GET') {
+      const collector = ccrModule?.getGlobalStatsCollector?.()
+      if (!collector) return Response.json({ error: 'no collector' }, { status: 503 })
+      return Response.json(collector.getSessionStats())
+    }
+    if (url.pathname === '/ccr-stats/flush' && req.method === 'POST') {
+      const collector = ccrModule?.getGlobalStatsCollector?.()
+      if (!collector) return Response.json({ error: 'no collector' }, { status: 503 })
+      await collector.flush()
+      return Response.json({ flushed: true, sessions: collector.getSessionStats() })
+    }
+
     // Only intercept messages endpoint (handles both /v1/messages and beta paths)
     if (!url.pathname.includes('/messages')) {
       // Forward non-messages requests as pass-through to upstream
@@ -543,7 +733,12 @@ const server = Bun.serve({
       try {
         const upResp = await fetch(`${UPSTREAM_URL}${url.pathname}${url.search}`, {
           method: req.method,
-          headers: { 'Authorization': `Bearer ${UPSTREAM_KEY}`, 'Content-Type': 'application/json' },
+          headers: {
+            Authorization: `Bearer ${UPSTREAM_KEY}`,
+            'Content-Type': 'application/json',
+            ...UPSTREAM_HEADERS,
+            ...ATTRIBUTION_HEADERS,
+          },
           body: req.method !== 'GET' ? await req.text() : undefined,
         })
         return new Response(await upResp.text(), {
@@ -569,9 +764,49 @@ const server = Bun.serve({
       return new Response('method not allowed', { status: 405 })
     }
 
+    // ── CCR mode: delegate to embedded router pipeline ──
+    if (ccrEnabled) {
+      try {
+        const reqUrl = url.toString()
+        const reqInit: RequestInit = {
+          method: req.method,
+          headers: Object.fromEntries(req.headers.entries()),
+          body: await req.text(),
+        }
+        return await ccrProcessRequest!(reqUrl, reqInit, ccrServices!, fetch)
+      } catch (err) {
+        console.error('[proxy] CCR pipeline error:', err)
+        return new Response(
+          JSON.stringify({ type: 'error', error: { type: 'api_error', message: `CCR error: ${err}` } }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+    }
+
+    // ── Legacy mode: Anthropic → OpenAI conversion ──
     try {
       const body: AnthropicRequest = await req.json()
       const isStreaming = body.stream === true
+      if (UPSTREAM_TYPE === 'anthropic') {
+        const upstreamResp = await fetch(providerChatUrl(), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': UPSTREAM_KEY,
+            'anthropic-version': req.headers.get('anthropic-version') || '2023-06-01',
+            ...UPSTREAM_HEADERS,
+          },
+          body: JSON.stringify(body),
+        })
+        return new Response(upstreamResp.body, {
+          status: upstreamResp.status,
+          headers: {
+            'Content-Type': upstreamResp.headers.get('content-type') || (isStreaming ? 'text/event-stream' : 'application/json'),
+            'Cache-Control': upstreamResp.headers.get('cache-control') || 'no-cache',
+          },
+        })
+      }
+
       const openaiBody = buildOpenAIRequest(body)
       const toolCount = (openaiBody.tools as any[])?.length ?? 0
       console.error(`[proxy] ${isStreaming ? 'stream' : 'sync'} model=${body.model} tools=${toolCount} msgs=${body.messages?.length}`)
@@ -602,6 +837,8 @@ const server = Bun.serve({
           oaiResp as Record<string, unknown>,
           body.model,
         )
+        const u = (anthropicResp as Record<string, unknown>).usage as Record<string, number> | undefined
+        console.log(`[proxy] tokens: in=${u?.input_tokens || 0} out=${u?.output_tokens || 0} model=${body.model}`)
         return new Response(JSON.stringify(anthropicResp), {
           headers: { 'Content-Type': 'application/json' },
         })
@@ -679,5 +916,7 @@ const server = Bun.serve({
   },
 })
 
-console.log(`[proxy] Anthropic→OpenAI proxy listening on http://localhost:${PORT}`)
-console.log(`[proxy] Upstream: ${UPSTREAM_URL}`)
+console.log(`[proxy] listening on http://localhost:${PORT}  mode=${ccrEnabled ? 'CCR' : 'direct'}`)
+if (!ccrEnabled) {
+  console.log(`[proxy] Upstream: ${UPSTREAM_URL} (${UPSTREAM_TYPE})`)
+}

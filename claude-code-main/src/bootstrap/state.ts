@@ -1283,6 +1283,12 @@ export type SessionCronTask = {
   prompt: string
   createdAt: number
   recurring?: boolean
+  /** Stable sidechain transcript key for recurring cron runs. */
+  transcriptKey?: string
+  /** Session that owns the recurring sidechain transcript. */
+  originSessionId?: string
+  /** Runtime-only: latest running background task instance for this cron. */
+  lastRunTaskId?: string
   /**
    * When set, the task was created by an in-process teammate (not the team lead).
    * The scheduler routes fires to that teammate's pendingUserMessages queue
@@ -1297,6 +1303,17 @@ export function getSessionCronTasks(): SessionCronTask[] {
 
 export function addSessionCronTask(task: SessionCronTask): void {
   STATE.sessionCronTasks.push(task)
+}
+
+export function updateSessionCronTask(
+  id: string,
+  updater: (task: SessionCronTask) => SessionCronTask,
+): SessionCronTask | null {
+  const index = STATE.sessionCronTasks.findIndex(task => task.id === id)
+  if (index === -1) return null
+  const updated = updater(STATE.sessionCronTasks[index]!)
+  STATE.sessionCronTasks[index] = updated
+  return updated
 }
 
 /**

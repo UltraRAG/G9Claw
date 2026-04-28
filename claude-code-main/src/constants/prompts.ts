@@ -58,6 +58,10 @@ import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
 import { loadMemoryPrompt } from '../memdir/memdir.js'
+import {
+  getEdgeClawMemoryPromptSection,
+  isEdgeClawMemoryEnabled,
+} from '../services/edgeclawMemory/index.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 
@@ -131,6 +135,13 @@ function getHooksSection(): string {
 function getSystemRemindersSection(): string {
   return `- Tool results and user messages may include <system-reminder> tags. <system-reminder> tags contain useful information and reminders. They are automatically added by the system, and bear no direct relation to the specific tool results or user messages in which they appear.
 - The conversation has unlimited context through automatic summarization.`
+}
+
+async function loadConfiguredMemoryPrompt(tools: Tools): Promise<string | null> {
+  if (isEdgeClawMemoryEnabled()) {
+    return getEdgeClawMemoryPromptSection(tools.map(tool => tool.name))
+  }
+  return loadMemoryPrompt()
 }
 
 function getAntModelOverrideSection(): string | null {
@@ -316,7 +327,7 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
 function getAgentToolSection(): string {
   return isForkSubagentEnabled()
     ? `Calling ${AGENT_TOOL_NAME} without a subagent_type creates a fork, which runs in the background and keeps its tool output out of your context \u2014 so you can keep chatting with the user while it works. Reach for it when research or multi-step implementation work would otherwise fill your context with raw output you won't need again. **If you ARE the fork** \u2014 execute directly; do not re-delegate.`
-    : `Use the ${AGENT_TOOL_NAME} tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.`
+    : `Use the ${AGENT_TOOL_NAME} tool with specialized agents when the task at hand matches the agent's description. From the main conversation, spawned subagents run in the background and notify when complete unless background tasks are disabled. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.`
 }
 
 /**
@@ -473,7 +484,7 @@ export async function getSystemPrompt(
 
 ${CYBER_RISK_INSTRUCTION}`,
       getSystemRemindersSection(),
-      await loadMemoryPrompt(),
+      await loadConfiguredMemoryPrompt(tools),
       envInfo,
       getLanguageSection(settings.language),
       // When delta enabled, instructions are announced via persisted
@@ -492,7 +503,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     systemPromptSection('session_guidance', () =>
       getSessionSpecificGuidanceSection(enabledTools, skillToolCommands),
     ),
-    systemPromptSection('memory', () => loadMemoryPrompt()),
+    systemPromptSection('memory', () => loadConfiguredMemoryPrompt(tools)),
     systemPromptSection('ant_model_override', () =>
       getAntModelOverrideSection(),
     ),

@@ -1,10 +1,12 @@
 import { z } from 'zod/v4'
+import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { cronToHuman } from '../../utils/cron.js'
-import { listAllCronTasks } from '../../utils/cronTasks.js'
 import { truncate } from '../../utils/format.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getTeammateContext } from '../../utils/teammateContext.js'
+import { requestCronDaemon } from '../../daemon/client.js'
+import { assertCronDaemonOk } from '../../daemon/ipc.js'
 import {
   buildCronListPrompt,
   CRON_LIST_DESCRIPTION,
@@ -27,6 +29,7 @@ const outputSchema = lazySchema(() =>
         prompt: z.string(),
         recurring: z.boolean().optional(),
         durable: z.boolean().optional(),
+        manualOnly: z.boolean().optional(),
       }),
     ),
   }),
@@ -61,7 +64,16 @@ export const CronListTool = buildTool({
     return buildCronListPrompt(isDurableCronEnabled())
   },
   async call() {
-    const allTasks = await listAllCronTasks()
+    const response = await requestCronDaemon({
+      type: 'list_tasks',
+      projectRoot: getProjectRoot(),
+      originSessionId: getSessionId(),
+    })
+    assertCronDaemonOk(response)
+    if (response.data.type !== 'list_tasks') {
+      throw new Error('Unexpected Cron daemon list response')
+    }
+    const allTasks = response.data.tasks
     // Teammates only see their own crons; team lead (no ctx) sees all.
     const ctx = getTeammateContext()
     const tasks = ctx
@@ -74,6 +86,7 @@ export const CronListTool = buildTool({
       prompt: t.prompt,
       ...(t.recurring ? { recurring: true } : {}),
       ...(t.durable === false ? { durable: false } : {}),
+      ...(t.manualOnly ? { manualOnly: true } : {}),
     }))
     return { data: { jobs } }
   },
@@ -86,7 +99,7 @@ export const CronListTool = buildTool({
           ? output.jobs
               .map(
                 j =>
-                  `${j.id} — ${j.humanSchedule}${j.recurring ? ' (recurring)' : ' (one-shot)'}${j.durable === false ? ' [session-only]' : ''}: ${truncate(j.prompt, 80, true)}`,
+                  `${j.id} — ${j.humanSchedule}${j.recurring ? ' (recurring)' : ' (one-shot)'}${j.durable === false ? ' [session-only]' : ''}${j.manualOnly ? ' [manual-only]' : ''}: ${truncate(j.prompt, 80, true)}`,
               )
               .join('\n')
           : 'No scheduled jobs.',
