@@ -188,6 +188,9 @@ export class AnthropicTransformer implements Transformer {
         : undefined,
       tool_choice: request.tool_choice,
     };
+    if (request.stream) {
+      (result as any).stream_options = { include_usage: true };
+    }
     if (request.thinking) {
       result.reasoning = {
         effort: getThinkLevel(request.thinking.budget_tokens),
@@ -908,7 +911,7 @@ export class AnthropicTransformer implements Transformer {
                     };
                   }
 
-                  break;
+                  continue;
                 }
               } catch (parseError: any) {
                 this.logger?.error(
