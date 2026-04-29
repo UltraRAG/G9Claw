@@ -613,7 +613,12 @@ app.get('/api/agents/runtime-config', authenticateToken, (_req, res) => {
 });
 
 app.get('/memory-dashboard', authenticateToken, (req, res) => {
-    res.sendFile(path.join(MEMORY_DASHBOARD_DIR, 'index.html'));
+    const indexPath = path.join(MEMORY_DASHBOARD_DIR, 'index.html');
+    if (!fs.existsSync(indexPath)) {
+        res.status(404).type('text/plain').send('Memory dashboard assets not bundled.');
+        return;
+    }
+    res.sendFile(indexPath);
 });
 
 app.use('/memory-dashboard', authenticateToken, express.static(MEMORY_DASHBOARD_DIR, {
@@ -625,6 +630,15 @@ app.use('/memory-dashboard', authenticateToken, express.static(MEMORY_DASHBOARD_
         }
     }
 }));
+
+// Hard 404 boundary: anything still asking for /memory-dashboard/* after the
+// static middleware is a missing asset. Without this, the request would fall
+// through to the SPA wildcard below and return the EdgeClaw shell index.html,
+// which the MemoryPanel iframe then renders — recursively nesting the entire
+// app inside itself (see bug: "嵌套显示 + general memory 多次出现").
+app.use('/memory-dashboard', (_req, res) => {
+    res.status(404).type('text/plain').send('Not found in memory-dashboard.');
+});
 
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(__dirname, '../public')));

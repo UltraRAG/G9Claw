@@ -257,12 +257,16 @@ rm -f "$CCM_BUNDLE"
 CCM_MB=$(du -sm "$CCM_BUNDLE" | awk '{print $1}')
 ok "claude-code-main bundle: ${CCM_MB}MB → $(basename "$CCM_BUNDLE")"
 
-# edgeclaw-memory-core bundle: package.json + lib/ (prebuilt JS)
+# edgeclaw-memory-core bundle: package.json + lib/ (prebuilt JS) + ui-source/
+# (UI dashboard served by claudecodeui /memory-dashboard route — without it the
+#  iframe falls through to the SPA index and recursively renders the whole app).
 # 注意：claudecodeui/server 和 claude-code-main 都通过 ../../../edgeclaw-memory-core 找它
 rm -f "$MEM_BUNDLE"
+[[ -f "${MEMORY_CORE_DIR}/ui-source/index.html" ]] \
+  || fail "edgeclaw-memory-core/ui-source/index.html missing — required for /memory-dashboard"
 (cd "$MEMORY_CORE_DIR" && tar cf "$MEM_BUNDLE" \
   --exclude='*.map' --exclude='**/*.md' \
-  package.json lib/) \
+  package.json lib/ ui-source/) \
   || fail "edgeclaw-memory-core tar creation failed"
 MEM_MB=$(du -sm "$MEM_BUNDLE" | awk '{print $1}')
 ok "edgeclaw-memory-core bundle: ${MEM_MB}MB → $(basename "$MEM_BUNDLE")"
