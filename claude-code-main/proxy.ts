@@ -392,6 +392,189 @@ function toUpstreamModel(model: string): string {
   return `anthropic/${stripped}`
 }
 
+// ─── Request conversion: OpenAI → Anthropic (for /chat/completions → CCR) ───
+
+function convertOpenAIRequestToAnthropic(oai: Record<string, unknown>): Record<string, unknown> {
+  const messages = oai.messages as Array<Record<string, unknown>> || []
+  const systemMsgs: string[] = []
+  const anthropicMsgs: Array<Record<string, unknown>> = []
+
+  for (const msg of messages) {
+    if (msg.role === 'system') {
+      systemMsgs.push(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content))
+    } else if (msg.role === 'tool') {
+      anthropicMsgs.push({
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: msg.tool_call_id,
+          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+        }],
+      })
+    } else if (msg.role === 'assistant' && msg.tool_calls) {
+      const content: unknown[] = []
+      if (msg.content) content.push({ type: 'text', text: msg.content })
+      for (const tc of msg.tool_calls as Array<Record<string, unknown>>) {
+        const fn = tc.function as Record<string, string>
+        let input: unknown = {}
+        try { input = JSON.parse(fn.arguments || '{}') } catch { input = { raw: fn.arguments } }
+        content.push({ type: 'tool_use', id: tc.id, name: fn.name, input })
+      }
+      anthropicMsgs.push({ role: 'assistant', content })
+    } else {
+      anthropicMsgs.push({ role: msg.role as string, content: msg.content })
+    }
+  }
+
+  // Ensure metadata with session_id exists for CCR stats collection
+  let metadata = oai.metadata as Record<string, unknown> | undefined
+  if (!metadata?.user_id) {
+    const sessionId = `chat-completions-${Date.now()}`
+    metadata = { ...metadata, user_id: JSON.stringify({ session_id: sessionId }) }
+  }
+
+  const result: Record<string, unknown> = {
+    model: oai.model,
+    max_tokens: oai.max_tokens || oai.max_completion_tokens || 4096,
+    messages: anthropicMsgs,
+    stream: oai.stream ?? false,
+    metadata,
+  }
+  if (systemMsgs.length > 0) result.system = systemMsgs.join('\n')
+  if (oai.temperature !== undefined) result.temperature = oai.temperature
+  if (oai.top_p !== undefined) result.top_p = oai.top_p
+  if (oai.tools) {
+    result.tools = (oai.tools as Array<Record<string, unknown>>).map(t => {
+      const fn = t.function as Record<string, unknown>
+      return { name: fn.name, description: fn.description, input_schema: fn.parameters }
+    })
+  }
+  return result
+}
+
+async function convertAnthropicResponseToOpenAI(resp: Response): Promise<Response> {
+  const contentType = resp.headers.get('content-type') || ''
+
+  if (contentType.includes('text/event-stream')) {
+    // Streaming: convert Anthropic SSE → OpenAI SSE
+    const reader = resp.body!.getReader()
+    const decoder = new TextDecoder()
+    let model = ''
+    let buffer = ''
+
+    const stream = new ReadableStream({
+      async pull(controller) {
+        const { done, value } = await reader.read()
+        if (done) {
+          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+          controller.close()
+          return
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice(6).trim()
+          if (data === '[DONE]') {
+            controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+            continue
+          }
+          try {
+            const evt = JSON.parse(data)
+            if (evt.type === 'message_start' && evt.message) {
+              model = evt.message.model || ''
+              continue
+            }
+            if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+              const chunk = {
+                id: `chatcmpl-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                model,
+                choices: [{ index: 0, delta: { content: evt.delta.text }, finish_reason: null }],
+              }
+              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(chunk)}\n\n`))
+            }
+            if (evt.type === 'message_delta') {
+              const chunk: Record<string, unknown> = {
+                id: `chatcmpl-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                model,
+                choices: [{ index: 0, delta: {}, finish_reason: evt.delta?.stop_reason === 'end_turn' ? 'stop' : evt.delta?.stop_reason || 'stop' }],
+              }
+              if (evt.usage) {
+                chunk.usage = {
+                  prompt_tokens: evt.usage.input_tokens || 0,
+                  completion_tokens: evt.usage.output_tokens || 0,
+                  total_tokens: (evt.usage.input_tokens || 0) + (evt.usage.output_tokens || 0),
+                }
+              }
+              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(chunk)}\n\n`))
+            }
+          } catch { /* skip unparseable lines */ }
+        }
+      },
+    })
+
+    return new Response(stream, {
+      status: resp.status,
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  }
+
+  // Non-streaming: convert Anthropic JSON → OpenAI JSON
+  const anthResp = await resp.json() as Record<string, unknown>
+  const content = (anthResp.content as Array<Record<string, string>> || [])
+    .filter(c => c.type === 'text')
+    .map(c => c.text)
+    .join('')
+  const usage = anthResp.usage as Record<string, number> || {}
+  const toolUseBlocks = (anthResp.content as Array<Record<string, unknown>> || [])
+    .filter(c => c.type === 'tool_use')
+  const toolCalls = toolUseBlocks.length > 0
+    ? toolUseBlocks.map(t => ({
+        id: t.id,
+        type: 'function',
+        function: { name: t.name, arguments: JSON.stringify(t.input || {}) },
+      }))
+    : undefined
+
+  const oaiResp = {
+    id: anthResp.id || `chatcmpl-${Date.now()}`,
+    object: 'chat.completion',
+    model: anthResp.model,
+    choices: [{
+      index: 0,
+      message: {
+        role: 'assistant',
+        content: content || null,
+        ...(toolCalls ? { tool_calls: toolCalls } : {}),
+      },
+      finish_reason: anthResp.stop_reason === 'end_turn' ? 'stop' : (anthResp.stop_reason || 'stop'),
+    }],
+    usage: {
+      prompt_tokens: usage.input_tokens || 0,
+      completion_tokens: usage.output_tokens || 0,
+      total_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
+    },
+  }
+
+  return new Response(JSON.stringify(oaiResp), {
+    status: resp.status,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    },
+  })
+}
+
 function buildOpenAIRequest(body: AnthropicRequest): Record<string, unknown> {
   const req: Record<string, unknown> = {
     model: toUpstreamModel(body.model),
@@ -742,9 +925,12 @@ const server = Bun.serve({
       return Response.json({ flushed: true, sessions: collector.getSessionStats() })
     }
 
-    // Only intercept messages endpoint (handles both /v1/messages and beta paths)
-    if (!url.pathname.includes('/messages')) {
-      // Forward non-messages requests as pass-through to upstream
+    // Intercept both /v1/messages (Anthropic) and /chat/completions (OpenAI) for CCR routing
+    const isChatCompletions = url.pathname.includes('/chat/completions')
+    const isMessages = url.pathname.includes('/messages')
+
+    if (!isMessages && !isChatCompletions) {
+      // Forward non-LLM requests as pass-through to upstream
       console.log(`[proxy] pass-through: ${url.pathname}`)
       try {
         const upResp = await fetch(`${UPSTREAM_URL}${url.pathname}${url.search}`, {
@@ -783,13 +969,30 @@ const server = Bun.serve({
     // ── CCR mode: delegate to embedded router pipeline ──
     if (ccrEnabled) {
       try {
-        const reqUrl = url.toString()
+        let bodyText = await req.text()
+        let ccrUrl = url.toString()
+
+        // Convert OpenAI /chat/completions → Anthropic /v1/messages for CCR pipeline
+        if (isChatCompletions) {
+          console.log('[proxy] converting /chat/completions → /v1/messages for CCR')
+          const openaiBody = JSON.parse(bodyText)
+          const anthropicBody = convertOpenAIRequestToAnthropic(openaiBody)
+          bodyText = JSON.stringify(anthropicBody)
+          ccrUrl = ccrUrl.replace(/\/chat\/completions/, '/v1/messages')
+        }
+
         const reqInit: RequestInit = {
           method: req.method,
           headers: Object.fromEntries(req.headers.entries()),
-          body: await req.text(),
+          body: bodyText,
         }
-        return await ccrProcessRequest!(reqUrl, reqInit, ccrServices!, fetch)
+        const ccrResp = await ccrProcessRequest!(ccrUrl, reqInit, ccrServices!, fetch)
+
+        // Convert response back to OpenAI format if the original request was /chat/completions
+        if (isChatCompletions) {
+          return convertAnthropicResponseToOpenAI(ccrResp)
+        }
+        return ccrResp
       } catch (err) {
         console.error('[proxy] CCR pipeline error:', err)
         return new Response(
