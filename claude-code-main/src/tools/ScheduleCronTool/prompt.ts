@@ -71,6 +71,15 @@ Pass manualOnly: true when the job should be created as a proposal rather than a
 
 Uses standard 5-field cron in the user's local timezone: minute hour day-of-month month day-of-week. "0 9 * * *" means 9am local — no timezone conversion needed.
 
+## Prompt title
+
+The scheduled prompt must start with a short Markdown H1 title on the first line, followed by a blank line and then the task instructions. The title is used by Always-On as the visible job name, so keep it specific and concise.
+
+Example prompt:
+# Daily PR check
+
+Check open PRs, CI status, and unresolved review comments. Report blockers first and do not make changes unless explicitly asked.
+
 ## One-shot tasks (recurring: false)
 
 For "remind me at X" or "at <time>, do Y" requests — fire once then auto-delete.

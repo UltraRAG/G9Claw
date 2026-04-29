@@ -107,6 +107,12 @@ function truncateText(value: string | undefined, maxLength = CRON_TITLE_MAX_LENG
   return `${text.slice(0, maxLength - 1)}…`;
 }
 
+function getCronPromptTitle(prompt: string | undefined): string {
+  const firstLine = prompt?.trimStart().split(/\r?\n/, 1)[0]?.trim() || '';
+  const match = firstLine.match(/^#(?!#)\s+(.+)$/);
+  return match?.[1]?.replace(/\s+#+\s*$/, '').trim() || '';
+}
+
 function getCronTypeLabel(job: CronJobOverview, t: TFunction<'alwaysOn'>): string {
   const key =
     job.durable === false
@@ -250,7 +256,7 @@ function getRows(
     return {
       kind: 'cron',
       id: `cron:${job.id}`,
-      title: truncateText(job.prompt) || job.cron,
+      title: truncateText(getCronPromptTitle(job.prompt) || job.prompt) || job.cron,
       typeLabel: getCronTypeLabel(job, t),
       statusLabel: job.status,
       createdAt,
