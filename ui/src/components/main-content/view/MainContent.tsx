@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import ChatInterfaceV2 from '../../chat-v2/ChatInterfaceV2';
 import AlwaysOnV2 from '../../main-content-v2/AlwaysOnV2';
 import FilesV2 from '../../main-content-v2/FilesV2';
@@ -30,6 +31,10 @@ import type {
 } from '../../../types/app';
 import { api } from '../../../utils/api';
 import {
+  buildAlwaysOnDiscoveryPrompt,
+  normalizeDiscoveryPromptLanguage,
+} from '../../../utils/alwaysOnDiscoveryPrompt';
+import {
   clearAlwaysOnPresence,
   sendAlwaysOnPresence,
 } from '../../../utils/alwaysOnPresence';
@@ -59,59 +64,6 @@ const AUTO_EXECUTION_POLL_INTERVAL_MS = 15000;
 const FILES_CHAT_DEFAULT_WIDTH = 460;
 const FILES_CHAT_MIN_WIDTH = 320;
 const FILES_TREE_MIN_WIDTH = 280;
-
-function getClaudeProjectStorePath(project: Project): string {
-  const projectPath = project.fullPath || project.path || '';
-  const unixHomeMatch = projectPath.match(/^(\/Users\/[^/]+|\/home\/[^/]+)/);
-  if (unixHomeMatch?.[1]) {
-    return `${unixHomeMatch[1]}/.claude/projects/${project.name}`;
-  }
-
-  const windowsHomeMatch = projectPath.match(/^([A-Za-z]:\\Users\\[^\\]+)/);
-  if (windowsHomeMatch?.[1]) {
-    return `${windowsHomeMatch[1]}\\.claude\\projects\\${project.name}`;
-  }
-
-  return `~/.claude/projects/${project.name}`;
-}
-
-function buildAlwaysOnDiscoveryPrompt(
-  project: Project,
-  context: ProjectDiscoveryContextResponse,
-): string {
-  const workspacePath = project.fullPath || project.path || project.name;
-  const claudeProjectStorePath = getClaudeProjectStorePath(project);
-  const displayName = project.displayName || project.name;
-
-  return [
-    `Always-On discovery planning for project "${displayName}".`,
-    '',
-    'Your job is discovery only.',
-    'Inspect the provided context, decide whether there are worthwhile follow-up tasks, and persist up to 3 structured discovery plans.',
-    '',
-    'Requirements:',
-    `1. Inspect the current workspace at \`${workspacePath}\`.`,
-    `2. Use the project store at \`${claudeProjectStorePath}\` as supporting context if needed.`,
-    '3. Read the structured discovery context below instead of inventing your own context window.',
-    '4. If there is no worthwhile follow-up work, explain why and stop without saving any plans.',
-    '5. If there is worthwhile work, use `AlwaysOnDiscoveryPlan` to persist up to 3 plans.',
-    '6. Every saved plan must include these markdown sections exactly:',
-    '   - `## Context`',
-    '   - `## Signals Reviewed`',
-    '   - `## Proposed Work`',
-    '   - `## Execution Steps`',
-    '   - `## Verification`',
-    '   - `## Approval And Execution`',
-    '7. Use `approvalMode: "manual"` unless the work is clearly safe and suitable for auto-execution.',
-    '8. Do not call `CronCreate`, do not execute the work now, and do not start background tasks.',
-    '9. In your final reply, summarize what you reviewed and which discovery plan IDs were created or updated.',
-    '',
-    'Structured discovery context:',
-    '```json',
-    JSON.stringify(context, null, 2),
-    '```',
-  ].join('\n');
-}
 
 async function readJsonPayload<T>(response: Response): Promise<T | null> {
   try {
@@ -177,8 +129,10 @@ function MainContent({
   onShowSettings,
   externalMessageUpdate,
 }: MainContentProps) {
+  const { i18n } = useTranslation();
   const { preferences } = useUiPreferences();
   const { autoExpandTools, showRawParameters, showThinking, autoScrollToBottom, sendByCtrlEnter } = preferences;
+  const discoveryPromptLanguage = normalizeDiscoveryPromptLanguage(i18n.language);
 
   const { currentProject, setCurrentProject } = useTaskMaster() as TaskMasterContextValue;
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings() as TasksSettingsContextValue;
@@ -533,7 +487,11 @@ function MainContent({
       // Fall back to a minimal context payload if the API call fails.
     }
 
-    const discoveryPrompt = buildAlwaysOnDiscoveryPrompt(selectedProject, discoveryContext);
+    const discoveryPrompt = buildAlwaysOnDiscoveryPrompt(
+      selectedProject,
+      discoveryContext,
+      discoveryPromptLanguage,
+    );
     const pendingSessionId = startClaudeSessionCommand({
       sendMessage: trackedSendMessage,
       selectedProject,
@@ -547,6 +505,7 @@ function MainContent({
   }, [
     onSessionActive,
     onStartNewSession,
+    discoveryPromptLanguage,
     selectedProject,
     selectedSession,
     trackedSendMessage,

@@ -17,6 +17,7 @@ Rules:
   - ## Verification
   - ## Approval And Execution
 - Use \`approvalMode: "manual"\` unless the work is clearly safe and valuable to auto-run.
+- Language: if \`contextRefs.recentChats\` or the provided discovery context includes recent chat records, infer the primary language of those recent chats. Use that language for each saved plan markdown body and for the final discovery reply. If it differs from the UI or prompt language, recent chats win. If no recent chat language is discernible, use the active prompt language.
 - If a new plan replaces older discovery plans, list their IDs in \`supersedesPlanIds\`.
 - If there is no worthwhile work, do not call this tool.
 
