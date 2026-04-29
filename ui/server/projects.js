@@ -1198,11 +1198,13 @@ async function getProjectCronJobsOverview(projectName) {
       continue;
     }
 
-    const existing = backgroundSessionsByTranscriptKey.get(session.transcriptKey);
-    const existingTimestamp = toTimestampValue(existing?.lastActivity) ?? 0;
-    const candidateTimestamp = toTimestampValue(session.lastActivity) ?? 0;
-    if (!existing || candidateTimestamp >= existingTimestamp) {
-      backgroundSessionsByTranscriptKey.set(session.transcriptKey, session);
+    for (const lookupKey of getCronTranscriptLookupKeys(session.transcriptKey)) {
+      const existing = backgroundSessionsByTranscriptKey.get(lookupKey);
+      const existingTimestamp = toTimestampValue(existing?.lastActivity) ?? 0;
+      const candidateTimestamp = toTimestampValue(session.lastActivity) ?? 0;
+      if (!existing || candidateTimestamp >= existingTimestamp) {
+        backgroundSessionsByTranscriptKey.set(lookupKey, session);
+      }
     }
   }
 
@@ -1223,10 +1225,13 @@ async function getProjectCronJobsOverview(projectName) {
       status: mapCronJobStatus(task, backgroundSession, runtimeTask),
       latestRun: backgroundSession
         ? {
+            sessionId: typeof backgroundSession.id === 'string' ? backgroundSession.id : '',
             summary: typeof backgroundSession.summary === 'string' ? backgroundSession.summary : '',
             lastActivity: typeof backgroundSession.lastActivity === 'string' ? backgroundSession.lastActivity : '',
             taskId: typeof backgroundSession.taskId === 'string' ? backgroundSession.taskId : '',
             outputFile: typeof backgroundSession.outputFile === 'string' ? backgroundSession.outputFile : '',
+            parentSessionId: typeof backgroundSession.parentSessionId === 'string' ? backgroundSession.parentSessionId : '',
+            transcriptKey: typeof backgroundSession.transcriptKey === 'string' ? backgroundSession.transcriptKey : '',
             relativeTranscriptPath: typeof backgroundSession.parentSessionId === 'string' &&
               typeof backgroundSession.transcriptKey === 'string'
               ? normalizePathSeparators(
@@ -1455,6 +1460,23 @@ async function parseAgentTools(filePath) {
 
 const TASK_NOTIFICATION_REGEX = /<task-notification>\s*<task-id>([\s\S]*?)<\/task-id>\s*<output-file>([\s\S]*?)<\/output-file>\s*<status>([\s\S]*?)<\/status>\s*<summary>([\s\S]*?)<\/summary>\s*<\/task-notification>/i;
 const CRON_TRANSCRIPT_FILENAME_REGEX = /^agent-cron[^/]*\.jsonl$/i;
+
+function getCronTranscriptLookupKeys(value) {
+  const key = typeof value === 'string' ? value.trim() : '';
+  if (!key) {
+    return [];
+  }
+
+  const keys = new Set([key]);
+  if (key.endsWith('.jsonl')) {
+    if (key.startsWith('agent-')) {
+      keys.add(key.slice('agent-'.length).replace(/\.jsonl$/i, ''));
+    }
+  } else {
+    keys.add(`agent-${key}.jsonl`);
+  }
+  return Array.from(keys);
+}
 
 function extractTextContent(messageContent) {
   if (typeof messageContent === 'string') {

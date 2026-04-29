@@ -369,7 +369,7 @@ export async function startCronBackgroundTask({
   }
 }
 
-async function ensureRecurringTranscript(
+export async function ensureRecurringTranscript(
   task: CronTask,
   dir?: string,
   updateTask?: CronTaskUpdater,
@@ -380,10 +380,23 @@ async function ensureRecurringTranscript(
 }> {
   const existingSessionId = task.originSessionId ?? getSessionId()
   if (task.transcriptKey) {
+    const updated = task.originSessionId
+      ? task
+      : ((await (updateTask ?? ((id, updater) => updateCronTask(id, updater, dir)))(
+          task.id,
+          currentTask => ({
+            ...currentTask,
+            originSessionId: currentTask.originSessionId ?? existingSessionId,
+          }),
+        )) ?? {
+          ...task,
+          originSessionId: existingSessionId,
+        })
+
     return {
-      task,
-      transcriptKey: task.transcriptKey,
-      transcriptSessionId: existingSessionId,
+      task: updated,
+      transcriptKey: updated.transcriptKey ?? task.transcriptKey,
+      transcriptSessionId: updated.originSessionId ?? existingSessionId,
     }
   }
 

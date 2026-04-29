@@ -54,7 +54,7 @@ export type MainContentProps = {
   // Used by session lists to jump to the Agent tab and select
   // (project, sessionId). Optional because legacy MainContent
   // consumers don't need it.
-  onSelectSession?: (project: Project, sessionId: string) => void;
+  onSelectSession?: (project: Project, sessionId: string, fallbackSession?: ProjectSession) => void;
   onShowSettings: () => void;
   externalMessageUpdate: number;
 };

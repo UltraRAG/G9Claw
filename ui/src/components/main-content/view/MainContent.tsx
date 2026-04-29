@@ -21,10 +21,12 @@ import { useEditorSidebar } from '../../code-editor/hooks/useEditorSidebar';
 import EditorSidebar from '../../code-editor/view/EditorSidebar';
 import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
 import type {
+  CronJobOverview,
   ExecuteDiscoveryPlanResponse,
   Project,
   ProjectDiscoveryContextResponse,
   ProjectDiscoveryPlansResponse,
+  ProjectSession,
 } from '../../../types/app';
 import { api } from '../../../utils/api';
 import {
@@ -169,6 +171,7 @@ function MainContent({
   onReplaceTemporarySession,
   onNavigateToSession,
   onStartNewSession,
+  onSelectSession,
   onShowSettings,
   externalMessageUpdate,
 }: MainContentProps) {
@@ -320,6 +323,48 @@ function MainContent({
 
     await launchQueuedDiscoveryPlanExecution(payload);
   }, [launchQueuedDiscoveryPlanExecution, selectedProject]);
+
+  const handleOpenCronSession = useCallback((job: CronJobOverview) => {
+    if (!selectedProject) {
+      return;
+    }
+
+    const latestRun = job.latestRun;
+    if (
+      !latestRun?.sessionId ||
+      !latestRun.parentSessionId ||
+      !latestRun.relativeTranscriptPath
+    ) {
+      return;
+    }
+
+    const existingSession = selectedProject.sessions?.find(
+      session => session.id === latestRun.sessionId,
+    );
+    const fallbackSession: ProjectSession = existingSession ?? {
+      id: latestRun.sessionId,
+      title: latestRun.summary || job.prompt || job.cron,
+      summary: latestRun.summary || job.prompt || job.cron,
+      lastActivity: latestRun.lastActivity,
+      sessionKind: 'background_task',
+      parentSessionId: latestRun.parentSessionId,
+      relativeTranscriptPath: latestRun.relativeTranscriptPath,
+      transcriptKey: latestRun.transcriptKey || job.transcriptKey,
+      taskId: latestRun.taskId,
+      taskStatus: job.status,
+      outputFile: latestRun.outputFile,
+      isReadOnly: true,
+      __provider: 'claude',
+      __projectName: selectedProject.name,
+    };
+
+    setActiveTab('chat');
+    if (onSelectSession) {
+      onSelectSession(selectedProject, latestRun.sessionId, fallbackSession);
+      return;
+    }
+    onNavigateToSession(latestRun.sessionId);
+  }, [onNavigateToSession, onSelectSession, selectedProject, setActiveTab]);
 
   useEffect(() => {
     const message = latestMessage as {
@@ -590,6 +635,7 @@ function MainContent({
           launchQueuedDiscoveryPlanExecution={launchQueuedDiscoveryPlanExecution}
           handleStartDiscoverySession={handleStartDiscoverySession}
           handleExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
+          handleOpenCronSession={handleOpenCronSession}
           editorExpanded={editorExpanded}
         />
 
@@ -643,6 +689,7 @@ type SplitBodyProps = {
   launchQueuedDiscoveryPlanExecution: any;
   handleStartDiscoverySession: any;
   handleExecuteDiscoveryPlan: any;
+  handleOpenCronSession: (job: CronJobOverview) => void;
   editorExpanded: boolean;
 };
 
@@ -676,6 +723,7 @@ function SplitBody(props: SplitBodyProps) {
     launchQueuedDiscoveryPlanExecution,
     handleStartDiscoverySession,
     handleExecuteDiscoveryPlan,
+    handleOpenCronSession,
     editorExpanded,
   } = props;
 
@@ -774,6 +822,7 @@ function SplitBody(props: SplitBodyProps) {
           selectedProject={selectedProject}
           onStartDiscoverySession={handleStartDiscoverySession}
           onExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
+          onOpenCronSession={handleOpenCronSession}
         />
       );
     }

@@ -410,7 +410,7 @@ export default function AppShellV2() {
   );
 
   const handleSelectSession = useCallback(
-    (project: Project, sessId: string) => {
+    (project: Project, sessId: string, fallbackSession?: ProjectSession) => {
       setUnreadSessionIds((previous) => {
         if (!previous.has(sessId)) return previous;
         const next = new Set(previous);
@@ -428,6 +428,8 @@ export default function AppShellV2() {
       ].find((s) => s.id === sessId);
       if (target) {
         handleSessionSelect(target);
+      } else if (fallbackSession) {
+        handleSessionSelect(fallbackSession);
       } else {
         navigate(`/session/${sessId}`);
       }

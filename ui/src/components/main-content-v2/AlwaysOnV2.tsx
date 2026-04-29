@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
   AlertCircle,
+  Eye,
   Loader2,
   Pause,
   Play,
@@ -24,12 +25,13 @@ type AlwaysOnV2Props = {
   selectedProject: Project | null;
   onStartDiscoverySession: () => void | Promise<void>;
   onExecuteDiscoveryPlan: (planId: string, source?: 'manual' | 'auto') => void | Promise<void>;
+  onOpenCronSession: (job: CronJobOverview) => void;
 };
 
 const POLL_INTERVAL_MS = 15_000;
 const CRON_TITLE_MAX_LENGTH = 56;
 const TABLE_GRID_COLUMNS =
-  'grid-cols-[minmax(280px,1.8fr)_minmax(120px,0.8fr)_88px_112px_96px_96px_132px]';
+  'grid-cols-[minmax(280px,1.8fr)_minmax(120px,0.8fr)_88px_112px_96px_96px_196px]';
 
 type AlwaysOnRow =
   | {
@@ -177,6 +179,7 @@ export default function AlwaysOnV2({
   selectedProject,
   onStartDiscoverySession,
   onExecuteDiscoveryPlan,
+  onOpenCronSession,
 }: AlwaysOnV2Props) {
   const { t } = useTranslation('alwaysOn');
   const [plans, setPlans] = useState<DiscoveryPlanOverview[]>([]);
@@ -420,6 +423,12 @@ export default function AlwaysOnV2({
                     const canRun =
                       row.kind === 'cron' ||
                       (row.plan.status === 'ready' && !row.plan.executionSessionId);
+                    const canOpenCronSession = Boolean(
+                      row.kind === 'cron' &&
+                        row.cronJob.latestRun?.sessionId &&
+                        row.cronJob.latestRun?.parentSessionId &&
+                        row.cronJob.latestRun?.relativeTranscriptPath,
+                    );
                     const canArchiveOrDelete =
                       row.kind === 'cron' ||
                       (row.plan.executionStatus !== 'running' &&
@@ -453,6 +462,24 @@ export default function AlwaysOnV2({
                           {formatTime(row.completedAt)}
                         </div>
                         <div className="flex items-center justify-end gap-1.5">
+                          {row.kind === 'cron' ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenCronSession(row.cronJob)}
+                              disabled={!canOpenCronSession || isBusyRunning || isBusyDeleting}
+                              title={
+                                canOpenCronSession
+                                  ? undefined
+                                  : t('actions.openDisabled', {
+                                      defaultValue: 'This cron job has not produced a session yet.',
+                                    })
+                              }
+                              className="text-xxs inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-neutral-600 transition hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
+                            >
+                              <Eye className="h-3 w-3" strokeWidth={1.75} />
+                              {t('actions.view', { defaultValue: 'View' })}
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             onClick={() =>

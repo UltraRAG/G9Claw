@@ -327,6 +327,7 @@ test('getProjectCronJobsOverview matches recurring cron jobs to completed backgr
   const projectRoot = path.join(homeDir, 'workspace-completed');
   const parentSessionId = 'parent-session-completed';
   const transcriptFileName = 'agent-cron-completed.jsonl';
+  const taskTranscriptKey = 'cron-completed';
 
   await fs.mkdir(projectRoot, { recursive: true });
   await writeProjectConfig(homeDir, projectName, projectRoot);
@@ -347,7 +348,7 @@ test('getProjectCronJobsOverview matches recurring cron jobs to completed backgr
       lastFiredAt: 1713512000000,
       recurring: true,
       originSessionId: parentSessionId,
-      transcriptKey: transcriptFileName
+      transcriptKey: taskTranscriptKey
     }
   ]);
 
@@ -355,6 +356,13 @@ test('getProjectCronJobsOverview matches recurring cron jobs to completed backgr
 
   assert.equal(overview.jobs.length, 1);
   assert.equal(overview.jobs[0].status, 'completed');
+  assert.equal(overview.jobs[0].transcriptKey, taskTranscriptKey);
+  assert.equal(
+    overview.jobs[0].latestRun?.sessionId,
+    `background-${parentSessionId}-agent-cron-completed`
+  );
+  assert.equal(overview.jobs[0].latestRun?.parentSessionId, parentSessionId);
+  assert.equal(overview.jobs[0].latestRun?.transcriptKey, transcriptFileName);
   assert.equal(overview.jobs[0].latestRun?.summary, 'Cron task "Recurring cron cron-5678" completed');
   assert.equal(
     overview.jobs[0].latestRun?.relativeTranscriptPath,

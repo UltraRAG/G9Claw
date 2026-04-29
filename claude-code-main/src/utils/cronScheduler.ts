@@ -82,9 +82,13 @@ type CronSchedulerOptions = {
    * NOT called for that fire). Lets daemon callers see the task id/cron/etc
    * instead of just the prompt string. File-backed recurring tasks await this
    * callback before lastFiredAt is persisted so transcript metadata can land
-   * first.
+   * first. The second argument identifies whether the fired task came from the
+   * file-backed schedule or from a runtime-owned session task source.
    */
-  onFireTask?: (task: CronTask) => void | Promise<void>
+  onFireTask?: (
+    task: CronTask,
+    context: { isSession: boolean },
+  ) => void | Promise<void>
   /**
    * When provided, receives the missed one-shot tasks on initial load (and
    * onFire is NOT called with the pre-formatted notification). Daemon decides
@@ -354,9 +358,10 @@ export function createCronScheduler(
           taskId:
             t.id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
+        let fireTaskPromise: Promise<void> | null = null
         if (onFireTask) {
-          const fireTaskPromise = Promise.resolve()
-            .then(() => onFireTask(t))
+          fireTaskPromise = Promise.resolve()
+            .then(() => onFireTask(t, { isSession }))
             .catch(error => {
               logForDebugging(
                 `[ScheduledTasks] failed to start cron task ${t.id}: ${String(error)}`,
@@ -393,7 +398,13 @@ export function createCronScheduler(
           // via runtimeTaskSource.markTasksFired (daemon restart recovery).
           if (!isSession) firedFileRecurring.push(t.id)
           if (isSession) {
-            mergedRuntimeTaskSource?.markTasksFired?.([t.id], now)
+            if (fireTaskPromise) {
+              void fireTaskPromise.finally(() => {
+                mergedRuntimeTaskSource?.markTasksFired?.([t.id], now)
+              })
+            } else {
+              mergedRuntimeTaskSource?.markTasksFired?.([t.id], now)
+            }
           }
         } else if (isSession) {
           // One-shot (or aged-out recurring) runtime-owned task: synchronous

@@ -5,6 +5,65 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { ProjectRuntime } from './projectRuntime.js'
 import { DaemonSessionTaskStore } from './sessionTaskStore.js'
+import type { DaemonCronTask } from './types.js'
+import { sleep } from '../utils/sleep.js'
+
+describe('ProjectRuntime', () => {
+  let projectRoot: string
+
+  beforeEach(async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), 'project-runtime-cron-'))
+  })
+
+  afterEach(async () => {
+    await rm(projectRoot, { recursive: true, force: true })
+  })
+
+  test('persists transcriptKey for automatically fired session-only recurring tasks', async () => {
+    const store = new DaemonSessionTaskStore()
+    store.addTask(projectRoot, {
+      id: 'task-1',
+      cron: '* * * * *',
+      prompt: 'ping',
+      createdAt: Date.now() - 2 * 60_000,
+      recurring: true,
+      originSessionId: 'session-a',
+      durable: false,
+    })
+
+    const runtime = new ProjectRuntime(projectRoot, store)
+    const spawnedTasks: DaemonCronTask[] = []
+    ;(
+      runtime as unknown as {
+        spawnWorkerForTask: (task: DaemonCronTask) => Promise<boolean>
+      }
+    ).spawnWorkerForTask = async task => {
+      spawnedTasks.push(task)
+      return true
+    }
+
+    try {
+      runtime.start()
+      await sleep(1800)
+    } finally {
+      await runtime.stop()
+    }
+
+    const spawnedTask = spawnedTasks[0]
+    expect(spawnedTask?.durable).toBe(false)
+    expect(spawnedTask?.transcriptKey?.startsWith('cron-thread-')).toBe(true)
+    expect(store.getTask(projectRoot, 'task-1')?.transcriptKey).toBe(
+      spawnedTask?.transcriptKey,
+    )
+
+    const raw = await readFile(
+      join(projectRoot, '.claude', 'session_scheduled_tasks.json'),
+      'utf-8',
+    )
+    expect(raw).toContain(`"transcriptKey": "${spawnedTask?.transcriptKey}"`)
+    expect(raw).not.toContain('"durable"')
+  })
+})
 
 class FakeChild extends EventEmitter {
   pid = 1234

@@ -6,11 +6,14 @@ export type AppTab = 'home' | 'chat' | 'always-on' | 'files' | 'shell' | 'git' |
 export type CronJobOverviewStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'unknown';
 
 export interface CronJobLatestRun {
+  sessionId?: string;
   summary?: string;
   lastActivity?: string;
   taskId?: string;
   outputFile?: string;
+  parentSessionId?: string;
   relativeTranscriptPath?: string;
+  transcriptKey?: string;
 }
 
 export interface CronJobOverview {

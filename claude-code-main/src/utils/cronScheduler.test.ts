@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { createCronScheduler, persistFiredRecurringTasks } from './cronScheduler.js'
+import {
+  createCronScheduler,
+  persistFiredRecurringTasks,
+} from './cronScheduler.js'
 import { readCronTasks, updateCronTask, writeCronTasks } from './cronTasks.js'
 import { sleep } from './sleep.js'
 
@@ -130,5 +133,63 @@ describe('createCronScheduler', () => {
       manualOnly: true,
       originSessionId: 'session-1',
     })
+  })
+
+  test('passes fire source context to onFireTask', async () => {
+    const createdAt = Date.now() - 2 * 60_000
+    await writeCronTasks(
+      [
+        {
+          id: 'filetask',
+          cron: '* * * * *',
+          prompt: 'file-backed',
+          createdAt,
+          recurring: true,
+          originSessionId: 'session-1',
+        },
+      ],
+      dir,
+    )
+
+    const contexts: Array<{ id: string; isSession: boolean }> = []
+    const scheduler = createCronScheduler({
+      dir,
+      runtimeTaskSource: {
+        listTasks: () => [
+          {
+            id: 'runtime1',
+            cron: '* * * * *',
+            prompt: 'runtime',
+            createdAt,
+            recurring: true,
+            originSessionId: 'session-1',
+          },
+        ],
+        removeTasks: () => {},
+        markTasksFired: () => {},
+      },
+      getJitterConfig: () => ({
+        recurringFrac: 0,
+        recurringCapMs: 0,
+        oneShotMaxMs: 0,
+        oneShotFloorMs: 0,
+        oneShotMinuteMod: 1,
+        recurringMaxAgeMs: 0,
+      }),
+      onFire: () => {},
+      onFireTask: (task, context) => {
+        contexts.push({ id: task.id, isSession: context.isSession })
+      },
+    })
+
+    try {
+      scheduler.start()
+      await sleep(1800)
+    } finally {
+      scheduler.stop()
+    }
+
+    expect(contexts).toContainEqual({ id: 'filetask', isSession: false })
+    expect(contexts).toContainEqual({ id: 'runtime1', isSession: true })
   })
 })
