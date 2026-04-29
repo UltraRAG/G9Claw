@@ -57,6 +57,20 @@ export function isInternalContent(content) {
 }
 
 /**
+ * Detect the SDK-injected "[Request interrupted by user ...]" follow-up that
+ * Claude Agents writes into the conversation history right after the user
+ * presses the pause button. We surface these as an explicit `interrupted`
+ * NormalizedMessage so the UI can render a divider, instead of letting them
+ * fall through `isInternalContent` and disappear entirely.
+ *
+ * @param {string} content
+ * @returns {boolean}
+ */
+export function isInterruptedNotice(content) {
+  return typeof content === 'string' && content.startsWith('[Request interrupted');
+}
+
+/**
  * Detect the Claude Code CLI slash-command "metadata" envelope that the SDK
  * emits whenever a user runs `/foo` in the REPL. It looks like:
  *

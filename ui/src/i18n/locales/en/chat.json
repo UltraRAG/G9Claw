@@ -20,6 +20,9 @@
     "codex": "Codex",
     "gemini": "Gemini"
   },
+  "interrupted": {
+    "label": "Interrupted by user"
+  },
   "tools": {
     "settings": "Tool Settings",
     "error": "Tool Error",
@@ -125,6 +128,8 @@
     "disabled": "Input disabled",
     "attachFiles": "Attach files",
     "attachImages": "Attach images",
+    "mentionFile": "Mention a file",
+    "slashCommand": "Run a slash command",
     "send": "Send",
     "stop": "Stop",
     "hintText": {

@@ -166,6 +166,7 @@ function ChatInterfaceV2({
     openImagePicker,
     handleSubmit,
     handleInputChange,
+    insertAtCursor,
     handleKeyDown,
     handlePaste,
     handleTextareaClick,
@@ -341,6 +342,8 @@ function ChatInterfaceV2({
       isCommandMenuOpen={showCommandMenu}
       frequentCommands={commandQuery ? [] : frequentCommands}
       onToggleCommandMenu={handleToggleCommandMenu}
+      onInsertMention={() => insertAtCursor('@')}
+      onInsertSlash={() => insertAtCursor('/')}
       getRootProps={getRootProps as (...args: unknown[]) => Record<string, unknown>}
       getInputProps={getInputProps as (...args: unknown[]) => Record<string, unknown>}
       isDragActive={isDragActive}

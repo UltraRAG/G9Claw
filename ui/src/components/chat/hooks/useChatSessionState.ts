@@ -211,13 +211,24 @@ export function useChatSessionState({
     sessionStore.setActiveSession(activeSessionId);
   }
 
-  // When a real session ID arrives and we have a pending user message, flush it to the store
+  // When a real session ID arrives and we have a pending user message, flush
+  // it to the store. The flush MUST be gated on `pendingViewSessionRef`: that
+  // ref is what the composer + the session_created handler use to record the
+  // sessionId that this pending message was actually queued for. Without that
+  // gate, a user who types in welcome mode and then clicks an existing
+  // session in the sidebar before session_created arrives would have their
+  // pending text leaked into the unrelated session's realtime slot — and
+  // because realtime slots are not cleared on session switch, that ghost
+  // message would re-appear on every subsequent reopen.
   const prevActiveSessionRef = useRef<string | null>(null);
   if (activeSessionId && activeSessionId !== prevActiveSessionRef.current && pendingUserMessage) {
-    const prov = (localStorage.getItem('selected-provider') as SessionProvider) || 'claude';
-    const normalized = chatMessageToNormalized(pendingUserMessage, activeSessionId, prov);
-    if (normalized) {
-      sessionStore.appendRealtime(activeSessionId, normalized);
+    const expectedSessionId = pendingViewSessionRef.current?.sessionId ?? null;
+    if (expectedSessionId && activeSessionId === expectedSessionId) {
+      const prov = (localStorage.getItem('selected-provider') as SessionProvider) || 'claude';
+      const normalized = chatMessageToNormalized(pendingUserMessage, activeSessionId, prov);
+      if (normalized) {
+        sessionStore.appendRealtime(activeSessionId, normalized);
+      }
     }
     setPendingUserMessage(null);
   }

@@ -9,7 +9,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ArrowUp, AtSign, Paperclip, Square } from 'lucide-react';
+import { ArrowUp, AtSign, Command, Paperclip, Square } from 'lucide-react';
 import type { PendingPermissionRequest } from '../chat/types/types';
 import CommandMenu from '../chat/view/subcomponents/CommandMenu';
 import PermissionRequestsBanner from '../chat/view/subcomponents/PermissionRequestsBanner';
@@ -70,6 +70,8 @@ export type ComposerV2Props = {
   frequentCommands: SlashCommand[];
 
   onToggleCommandMenu: () => void;
+  onInsertMention: () => void;
+  onInsertSlash: () => void;
   getRootProps: (...args: unknown[]) => Record<string, unknown>;
   getInputProps: (...args: unknown[]) => Record<string, unknown>;
   isDragActive: boolean;
@@ -133,7 +135,9 @@ export default function ComposerV2({
   onCloseCommandMenu,
   isCommandMenuOpen,
   frequentCommands,
-  onToggleCommandMenu,
+  onToggleCommandMenu: _onToggleCommandMenu,
+  onInsertMention,
+  onInsertSlash,
   getRootProps,
   getInputProps,
   isDragActive,
@@ -293,11 +297,19 @@ export default function ComposerV2({
                   </button>
                   <button
                     type="button"
-                    onClick={onToggleCommandMenu}
+                    onClick={onInsertMention}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
                     title={t('input.mentionFile', { defaultValue: 'Mention a file' }) as string}
                   >
                     <AtSign className="h-4 w-4" strokeWidth={1.75} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onInsertSlash}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                    title={t('input.slashCommand', { defaultValue: 'Run a command' }) as string}
+                  >
+                    <Command className="h-4 w-4" strokeWidth={1.75} />
                   </button>
                 </div>
 

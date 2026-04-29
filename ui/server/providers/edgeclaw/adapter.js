@@ -12,7 +12,7 @@
 
 import { getSessionMessages } from '../../projects.js';
 import { createNormalizedMessage, generateMessageId } from '../types.js';
-import { extractSlashCommandInvocation, isInternalContent } from '../utils.js';
+import { extractSlashCommandInvocation, isInternalContent, isInterruptedNotice } from '../utils.js';
 
 const PROVIDER = 'claude';
 const TASK_NOTIFICATION_REGEX = /<task-notification>\s*<task-id>([\s\S]*?)<\/task-id>\s*<output-file>([\s\S]*?)<\/output-file>\s*<status>([\s\S]*?)<\/status>\s*<summary>([\s\S]*?)<\/summary>\s*<\/task-notification>/i;
@@ -103,6 +103,19 @@ function createTextMessage({ id, sessionId, timestamp, role, content }) {
       summary: taskNotification.summary || 'Background task update',
       taskId: taskNotification.taskId,
       outputFile: taskNotification.outputFile,
+    });
+  }
+
+  // Surface SDK-injected "[Request interrupted by user]" notices as a dedicated
+  // message kind so the UI can show a visible divider where the user paused.
+  if (isInterruptedNotice(content)) {
+    return createNormalizedMessage({
+      id,
+      sessionId,
+      timestamp,
+      provider: PROVIDER,
+      kind: 'interrupted',
+      content,
     });
   }
 
@@ -274,6 +287,16 @@ function normalizeUserMessage(raw, sessionId, options) {
 }
 
 function normalizeAssistantMessage(raw, sessionId, options) {
+  // The Claude Agent SDK uses `model: '<synthetic>'` to mark assistant
+  // placeholders that it injects to keep the user/assistant turn pairing
+  // valid for the API (e.g. `No response requested.` after an interrupted
+  // turn, see conversationRecovery in claude-code-main). These have no real
+  // model output and would otherwise render as a confusing empty/duplicate
+  // assistant bubble alongside our `interrupted` divider, so drop them.
+  if (raw?.message?.model === '<synthetic>') {
+    return [];
+  }
+
   const content = raw?.message?.content ?? raw?.content ?? '';
 
   if (Array.isArray(content)) {

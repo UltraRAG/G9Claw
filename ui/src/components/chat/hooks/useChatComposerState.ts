@@ -783,6 +783,39 @@ export function useChatComposerState({
     [handleCommandInputChange, resetCommandMenuState, setCursorPosition],
   );
 
+  const insertAtCursor = useCallback(
+    (char: string) => {
+      const textarea = textareaRef.current;
+      const current = inputValueRef.current ?? input;
+      const selectionStart = textarea?.selectionStart ?? current.length;
+      const selectionEnd = textarea?.selectionEnd ?? selectionStart;
+      const nextValue = `${current.slice(0, selectionStart)}${char}${current.slice(selectionEnd)}`;
+      const nextCursor = selectionStart + char.length;
+
+      setInput(nextValue);
+      inputValueRef.current = nextValue;
+      setCursorPosition(nextCursor);
+
+      if (char === '/') {
+        handleCommandInputChange(nextValue, nextCursor);
+      }
+
+      requestAnimationFrame(() => {
+        const node = textareaRef.current;
+        if (!node) return;
+        if (!node.matches(':focus')) {
+          node.focus();
+        }
+        try {
+          node.setSelectionRange(nextCursor, nextCursor);
+        } catch {
+          // ignore: textarea may have been unmounted between frames
+        }
+      });
+    },
+    [handleCommandInputChange, input, setCursorPosition, setInput, textareaRef],
+  );
+
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
       if (handleCommandMenuKeyDown(event)) {
@@ -974,6 +1007,7 @@ export function useChatComposerState({
     openImagePicker: open,
     handleSubmit,
     handleInputChange,
+    insertAtCursor,
     handleKeyDown,
     handlePaste,
     handleTextareaClick,

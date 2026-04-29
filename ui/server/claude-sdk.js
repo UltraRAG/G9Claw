@@ -1068,6 +1068,27 @@ async function abortClaudeSDKSession(sessionId) {
     // Update session status
     session.status = 'aborted';
 
+    // Push a synthetic "interrupted" marker to the session's writer so the UI
+    // can render the divider immediately. The Claude Agent SDK only persists
+    // the "[Request interrupted by user]" text into the JSONL during the next
+    // user turn, which means without this push the user wouldn't see any
+    // visible feedback in the chat after pressing pause until they sent
+    // another message. The id is prefixed `local_interrupt_` so the frontend
+    // store can dedupe it against the JSONL replay (see useSessionStore).
+    if (session.writer && typeof session.writer.send === 'function') {
+      try {
+        session.writer.send(createNormalizedMessage({
+          id: `local_interrupt_${sessionId}_${Date.now()}`,
+          provider: 'claude',
+          sessionId,
+          kind: 'interrupted',
+          content: '[Request interrupted by user]',
+        }));
+      } catch (sendError) {
+        console.warn(`Failed to push interrupted notice for ${sessionId}:`, sendError?.message || sendError);
+      }
+    }
+
     // Clean up temporary image files
     await cleanupTempFiles(session.tempImagePaths, session.tempDir);
 

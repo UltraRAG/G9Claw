@@ -27,7 +27,8 @@ export type MessageKind =
   | 'permission_cancelled'
   | 'session_created'
   | 'interactive_prompt'
-  | 'task_notification';
+  | 'task_notification'
+  | 'interrupted';
 
 export interface NormalizedMessage {
   id: string;
@@ -154,6 +155,37 @@ function isConfirmedUserMessageDuplicate(
 }
 
 /**
+ * The backend pushes a synthetic `interrupted` notice the moment abort fires
+ * (id: `local_interrupt_…`), but the Claude SDK also persists a matching
+ * "[Request interrupted by user]" entry into the JSONL during the next user
+ * turn. Once that JSONL entry is replayed via the server, drop the locally
+ * pushed one to avoid stacking two dividers in the conversation.
+ */
+function isLocalInterruptDuplicate(
+  realtimeMessage: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+): boolean {
+  if (
+    realtimeMessage.kind !== 'interrupted'
+    || !realtimeMessage.id.startsWith('local_interrupt_')
+  ) {
+    return false;
+  }
+
+  const realtimeTimestamp = parseTimestampMs(realtimeMessage.timestamp);
+
+  return serverMessages.some((serverMessage) => {
+    if (serverMessage.kind !== 'interrupted') return false;
+    if (realtimeTimestamp == null) return true;
+    const serverTimestamp = parseTimestampMs(serverMessage.timestamp);
+    if (serverTimestamp == null) return true;
+    // Be generous on the window — the JSONL timestamp is when the SDK wrote
+    // it on the next turn, which can be many minutes after the actual abort.
+    return Math.abs(serverTimestamp - realtimeTimestamp) <= 30 * 60_000;
+  });
+}
+
+/**
  * Compute merged messages: server + realtime, deduped by id.
  * Server messages take priority (they're the persisted source of truth).
  * Realtime messages that aren't yet in server stay (in-flight streaming).
@@ -165,6 +197,7 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
   const extra = realtime.filter((message) => {
     if (serverIds.has(message.id)) return false;
     if (isConfirmedUserMessageDuplicate(message, server)) return false;
+    if (isLocalInterruptDuplicate(message, server)) return false;
     return true;
   });
   if (extra.length === 0) return server;

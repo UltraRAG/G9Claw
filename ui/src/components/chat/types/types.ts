@@ -51,6 +51,7 @@ export interface ChatMessage {
   outputFile?: string;
   isSubagentContainer?: boolean;
   isTaskNotification?: boolean;
+  isInterruptedNotice?: boolean;
   subagentState?: {
     childTools: SubagentChildTool[];
     currentToolIndex: number;

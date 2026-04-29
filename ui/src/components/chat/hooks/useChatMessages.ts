@@ -137,6 +137,16 @@ function convertNormalizedMessages(messages: NormalizedMessage[]): ChatMessage[]
         });
         break;
 
+      case 'interrupted':
+        converted.push({
+          id: msg.id,
+          type: 'system',
+          content: msg.content || '[Request interrupted by user]',
+          timestamp: msg.timestamp,
+          isInterruptedNotice: true,
+        });
+        break;
+
       case 'stream_delta':
         if (msg.content) {
           converted.push({
