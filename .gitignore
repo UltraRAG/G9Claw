@@ -34,6 +34,8 @@ test-results/
 .agents/
 skills/
 skills-lock.json
+# gstack scratch dir (browse audit logs, demo recordings, qa reports — local only)
+.gstack/
 
 # codesign rewrites these in-place during release.sh signing step
 # (we do not vendor codesigned binaries; the unsigned originals come from npm install)
