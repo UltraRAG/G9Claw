@@ -27,7 +27,10 @@ ENTITLEMENTS="${RESOURCES}/entitlements.mac.plist"
 NODE_BIN="${RESOURCES}/node-bin/node"
 BUN_BIN="${RESOURCES}/bun-bin/bun"
 
-CLAUDECODEUI_DIR="${REPO_ROOT}/claudecodeui"
+# Source tree path: this repo names the UI dir `ui/`; spike originally used
+# `claudecodeui/`. Bundle filename + extracted runtime dir name remain
+# `claudecodeui` because server-manager.ts / electron-builder.yml hardcode it.
+CLAUDECODEUI_DIR="${REPO_ROOT}/ui"
 CLAUDE_CODE_MAIN_DIR="${REPO_ROOT}/claude-code-main"
 MEMORY_CORE_DIR="${REPO_ROOT}/edgeclaw-memory-core"
 
