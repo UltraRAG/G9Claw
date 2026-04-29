@@ -3,7 +3,12 @@ import { EventEmitter } from 'events'
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { appendCronRunHistoryEvent, ProjectRuntime } from './projectRuntime.js'
+import {
+  appendCronRunHistoryEvent,
+  appendCronRunLog,
+  formatAlwaysOnCronLogLine,
+  ProjectRuntime,
+} from './projectRuntime.js'
 import { DaemonSessionTaskStore } from './sessionTaskStore.js'
 import type { DaemonCronTask } from './types.js'
 import { sleep } from '../utils/sleep.js'
@@ -103,6 +108,33 @@ describe('ProjectRuntime', () => {
       status: 'completed',
       finishedAt: '2026-04-20T10:02:00.000Z',
     })
+  })
+
+  test('appends cron run logs with fixed prefix', async () => {
+    const line = formatAlwaysOnCronLogLine({
+      timestamp: '2026-04-20T10:00:00.000Z',
+      runId: 'run-1',
+      taskId: 'cron-1',
+      phase: 'worker_start',
+      message: 'Cron worker started',
+    })
+    expect(line).toBe(
+      '[AlwaysOnCronRun] ts=2026-04-20T10:00:00.000Z level=info runId=run-1 taskId=cron-1 phase=worker_start message="Cron worker started"',
+    )
+
+    await appendCronRunLog(
+      projectRoot,
+      'cron-1',
+      'run-1',
+      'worker_start',
+      'Cron worker started',
+    )
+
+    const raw = await readFile(join(projectRoot, '.claude', 'always-on', 'runs', 'run-1.log'), 'utf-8')
+    expect(raw).toContain('[AlwaysOnCronRun]')
+    expect(raw).toContain('runId=run-1')
+    expect(raw).toContain('taskId=cron-1')
+    expect(raw).toContain('phase=worker_start')
   })
 })
 

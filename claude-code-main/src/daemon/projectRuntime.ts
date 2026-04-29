@@ -26,6 +26,90 @@ type ActiveWorker = {
 const WORKER_SHUTDOWN_GRACE_MS = 5_000
 
 type AlwaysOnRunStatus = 'running' | 'completed' | 'failed'
+type AlwaysOnCronLogLevel = 'info' | 'warn' | 'error'
+
+function getAlwaysOnRunsDir(projectRoot: string): string {
+  return join(resolve(projectRoot), '.claude', 'always-on', 'runs')
+}
+
+function quoteLogValue(value: string): string {
+  return JSON.stringify(value.replace(/\s+/g, ' ').trim())
+}
+
+export function formatAlwaysOnCronLogLine({
+  timestamp = new Date().toISOString(),
+  level = 'info',
+  runId,
+  taskId,
+  phase,
+  message,
+}: {
+  timestamp?: string
+  level?: AlwaysOnCronLogLevel
+  runId: string
+  taskId: string
+  phase: string
+  message: string
+}): string {
+  return `[AlwaysOnCronRun] ts=${timestamp} level=${level} runId=${runId} taskId=${taskId} phase=${phase} message=${quoteLogValue(message)}`
+}
+
+export async function appendCronRunLogLine(
+  projectRoot: string,
+  runId: string,
+  line: string,
+): Promise<void> {
+  try {
+    await mkdir(getAlwaysOnRunsDir(projectRoot), { recursive: true })
+    await appendFile(join(getAlwaysOnRunsDir(projectRoot), `${runId}.log`), `${line}\n`, 'utf-8')
+  } catch (error) {
+    logForDebugging(
+      `[CronDaemon] failed to append run log for ${runId}: ${String(error)}`,
+    )
+  }
+}
+
+export async function appendCronRunLogEvent(
+  projectRoot: string,
+  runId: string,
+  event: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await mkdir(getAlwaysOnRunsDir(projectRoot), { recursive: true })
+    await appendFile(
+      join(getAlwaysOnRunsDir(projectRoot), `${runId}.events.jsonl`),
+      `${jsonStringify({ timestamp: new Date().toISOString(), runId, ...event })}\n`,
+      'utf-8',
+    )
+  } catch (error) {
+    logForDebugging(
+      `[CronDaemon] failed to append run log event for ${runId}: ${String(error)}`,
+    )
+  }
+}
+
+export async function appendCronRunLog(
+  projectRoot: string,
+  taskId: string,
+  runId: string,
+  phase: string,
+  message: string,
+  level: AlwaysOnCronLogLevel = 'info',
+): Promise<void> {
+  const timestamp = new Date().toISOString()
+  await appendCronRunLogLine(
+    projectRoot,
+    runId,
+    formatAlwaysOnCronLogLine({ timestamp, level, runId, taskId, phase, message }),
+  )
+  await appendCronRunLogEvent(projectRoot, runId, {
+    kind: 'cron',
+    taskId,
+    phase,
+    level,
+    message,
+  })
+}
 
 export async function appendCronRunHistoryEvent(
   projectRoot: string,
@@ -267,6 +351,8 @@ export class ProjectRuntime {
     const payload: CronWorkerPayload = {
       projectRoot: this.projectRoot,
       task,
+      runId: workerId,
+      startedAt: startedAtIso,
     }
     await writeFile(payloadPath, jsonStringify(payload), 'utf-8')
 
@@ -291,15 +377,37 @@ export class ProjectRuntime {
       startedAt: Date.now(),
     })
     void appendCronRunHistoryEvent(this.projectRoot, task, workerId, 'running', startedAtIso)
+    void appendCronRunLog(
+      this.projectRoot,
+      task.id,
+      workerId,
+      'worker_start',
+      `Cron worker started for ${task.id}`,
+    )
 
     child.stderr?.on('data', chunk => {
-      logForDebugging(
-        `[CronDaemonWorker:${task.id}] ${chunk.toString('utf-8').trim()}`,
+      const stderr = chunk.toString('utf-8').trim()
+      logForDebugging(`[CronDaemonWorker:${task.id}] ${stderr}`)
+      void appendCronRunLog(
+        this.projectRoot,
+        task.id,
+        workerId,
+        'worker_stderr',
+        stderr,
+        'warn',
       )
     })
 
     child.on('error', error => {
       cleanupWorker()
+      void appendCronRunLog(
+        this.projectRoot,
+        task.id,
+        workerId,
+        'worker_exit',
+        `Cron worker failed to start or crashed: ${String(error)}`,
+        'error',
+      )
       void appendCronRunHistoryEvent(this.projectRoot, task, workerId, 'failed', startedAtIso, {
         finishedAt: new Date().toISOString(),
         error: String(error),
@@ -310,6 +418,16 @@ export class ProjectRuntime {
     child.on('exit', code => {
       cleanupWorker()
       const failed = code !== 0
+      void appendCronRunLog(
+        this.projectRoot,
+        task.id,
+        workerId,
+        'worker_exit',
+        failed
+          ? `Cron worker exited with code ${code ?? 'unknown'}`
+          : 'Cron worker completed',
+        failed ? 'error' : 'info',
+      )
       void appendCronRunHistoryEvent(
         this.projectRoot,
         task,

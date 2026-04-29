@@ -129,4 +129,6 @@ export type CronDaemonResponse =
 export type CronWorkerPayload = {
   projectRoot: string
   task: DaemonCronTask
+  runId?: string
+  startedAt?: string
 }

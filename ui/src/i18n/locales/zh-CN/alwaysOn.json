@@ -113,6 +113,11 @@
     "session": {
       "available": "可用"
     },
+    "log": {
+      "source": "来源",
+      "updatedAt": "最后更新",
+      "truncated": "已截断"
+    },
     "table": {
       "title": "标题",
       "kind": "类型",

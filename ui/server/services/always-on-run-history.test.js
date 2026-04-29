@@ -10,6 +10,7 @@ import {
   getAlwaysOnRunHistoryDetail,
   getRunHistoryPath,
 } from './always-on-run-history.js';
+import { appendAlwaysOnRunLog } from './always-on-run-logs.js';
 
 const tempDirs = [];
 
@@ -71,6 +72,44 @@ test('run history detail returns not found for unknown run id', async () => {
     () => getAlwaysOnRunHistoryDetail(projectRoot, 'missing-run'),
     /Run history entry not found/,
   );
+});
+
+test('run history detail prefers dedicated log file over history output', async () => {
+  const projectRoot = await createTempDir('always-on-run-history-log-');
+
+  await appendAlwaysOnRunEvent(projectRoot, {
+    runId: 'run-log',
+    kind: 'plan',
+    sourceId: 'plan-log',
+    title: 'Plan Log',
+    status: 'completed',
+    timestamp: '2026-04-20T10:00:00.000Z',
+    output: 'history output',
+  });
+  await appendAlwaysOnRunLog(projectRoot, 'run-log', 'dedicated log output');
+
+  const detail = await getAlwaysOnRunHistoryDetail(projectRoot, 'run-log');
+  assert.equal(detail.outputLog, 'dedicated log output\n');
+  assert.equal(detail.metadata.logSource, 'log-file');
+  assert.equal(detail.metadata.logSize, 'dedicated log output\n'.length);
+});
+
+test('run history detail falls back to history output without log file', async () => {
+  const projectRoot = await createTempDir('always-on-run-history-fallback-');
+
+  await appendAlwaysOnRunEvent(projectRoot, {
+    runId: 'run-fallback',
+    kind: 'plan',
+    sourceId: 'plan-fallback',
+    title: 'Plan Fallback',
+    status: 'failed',
+    timestamp: '2026-04-20T10:00:00.000Z',
+    output: 'history fallback output',
+  });
+
+  const detail = await getAlwaysOnRunHistoryDetail(projectRoot, 'run-fallback');
+  assert.equal(detail.outputLog, 'history fallback output');
+  assert.equal(detail.metadata.logSource, 'history');
 });
 
 test('run history list filters unknown status entries', async () => {

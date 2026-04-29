@@ -11,6 +11,11 @@ import {
   getSessions
 } from './projects.js';
 import { appendAlwaysOnRunEvent } from './services/always-on-run-history.js';
+import {
+  appendAlwaysOnRunLog,
+  appendAlwaysOnRunLogEvent,
+  formatAlwaysOnPlanLogLine
+} from './services/always-on-run-logs.js';
 
 const ALWAYS_ON_DISCOVERY_INDEX_VERSION = 1;
 const ALWAYS_ON_DISCOVERY_STRUCTURE_VERSION = 1;
@@ -597,6 +602,30 @@ export async function queueDiscoveryPlanExecution(projectName, planId, { source 
       source,
     },
   });
+  await appendAlwaysOnRunLog(projectRoot, executionToken, [
+    formatAlwaysOnPlanLogLine({
+      timestamp: now,
+      runId: executionToken,
+      planId: updatedPlan.id,
+      phase: 'queued',
+      message: `Queued plan "${updatedPlan.title}" from ${source}`,
+    }),
+    formatAlwaysOnPlanLogLine({
+      timestamp: now,
+      runId: executionToken,
+      planId: updatedPlan.id,
+      phase: 'plan_file',
+      message: `Plan file: ${updatedPlan.planFilePath}`,
+    }),
+  ]);
+  await appendAlwaysOnRunLogEvent(projectRoot, executionToken, {
+    kind: 'plan',
+    planId: updatedPlan.id,
+    phase: 'queued',
+    status: 'queued',
+    source,
+    planFilePath: updatedPlan.planFilePath,
+  });
 
   return {
     plan: buildDiscoveryPlanOverview(updatedPlan, content, null),
@@ -659,6 +688,32 @@ export async function updateProjectDiscoveryPlanExecution(projectName, planId, u
         planId: nextPlan.id,
         planFilePath: nextPlan.planFilePath,
       },
+    });
+    await appendAlwaysOnRunLog(projectRoot, executionRunId, [
+      formatAlwaysOnPlanLogLine({
+        timestamp: now,
+        level: normalizedStatus === 'failed' ? 'error' : 'info',
+        runId: executionRunId,
+        planId: nextPlan.id,
+        phase: normalizedStatus,
+        message: `Plan execution ${normalizedStatus}`,
+      }),
+      nextPlan.latestSummary
+        ? formatAlwaysOnPlanLogLine({
+            timestamp: now,
+            runId: executionRunId,
+            planId: nextPlan.id,
+            phase: 'summary',
+            message: nextPlan.latestSummary,
+          })
+        : '',
+    ].filter(Boolean));
+    await appendAlwaysOnRunLogEvent(projectRoot, executionRunId, {
+      kind: 'plan',
+      planId: nextPlan.id,
+      phase: normalizedStatus,
+      status: normalizedStatus,
+      sessionId: nextPlan.executionSessionId,
     });
   }
 

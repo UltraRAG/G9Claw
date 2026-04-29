@@ -113,6 +113,11 @@
     "session": {
       "available": "Available"
     },
+    "log": {
+      "source": "Source",
+      "updatedAt": "Last updated",
+      "truncated": "truncated"
+    },
     "table": {
       "title": "Title",
       "kind": "Kind",

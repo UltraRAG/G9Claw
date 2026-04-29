@@ -19,6 +19,7 @@ import { applyConfigEnvironmentVariables } from '../utils/managedEnv.js'
 import { hasPermissionsToUseTool } from '../utils/permissions/permissions.js'
 import { initializeToolPermissionContext } from '../utils/permissions/permissionSetup.js'
 import { getAgentDefinitionsWithOverrides } from '../tools/AgentTool/loadAgentsDir.js'
+import { appendCronRunLog } from './projectRuntime.js'
 import {
   setClientType,
   setCwdState,
@@ -94,6 +95,14 @@ async function createWorkerStore(projectRoot: string) {
 }
 
 export async function runCronWorker(payload: CronWorkerPayload): Promise<void> {
+  const runId = payload.runId ?? payload.task.id
+  await appendCronRunLog(
+    payload.projectRoot,
+    payload.task.id,
+    runId,
+    'executor_bootstrap',
+    'Configuring cron worker bootstrap',
+  )
   configureWorkerBootstrap(payload.projectRoot, payload.task.originSessionId)
 
   const readFileState = createFileStateCacheWithSizeLimit(100)
@@ -117,6 +126,14 @@ export async function runCronWorker(payload: CronWorkerPayload): Promise<void> {
       assistantMessage,
       toolUseID,
     ))
+
+  await appendCronRunLog(
+    payload.projectRoot,
+    payload.task.id,
+    runId,
+    'executor_start',
+    'Starting background task',
+  )
 
   const result = await startCronBackgroundTask({
     task: payload.task,
@@ -167,6 +184,14 @@ export async function runCronWorker(payload: CronWorkerPayload): Promise<void> {
   })
 
   if (result.status === 'skipped') {
+    await appendCronRunLog(
+      payload.projectRoot,
+      payload.task.id,
+      runId,
+      'executor_skipped',
+      'Background task skipped because it is already running',
+      'warn',
+    )
     logForDebugging(
       `[CronDaemonWorker] skipped ${payload.task.id}: already running`,
     )
@@ -176,10 +201,25 @@ export async function runCronWorker(payload: CronWorkerPayload): Promise<void> {
   try {
     await result.completion
   } catch (error) {
+    await appendCronRunLog(
+      payload.projectRoot,
+      payload.task.id,
+      runId,
+      'executor_error',
+      String(error),
+      'error',
+    )
     logError(error)
     throw error
   }
 
+  await appendCronRunLog(
+    payload.projectRoot,
+    payload.task.id,
+    runId,
+    'executor_complete',
+    `Completed ${payload.task.id} (${CRON_BACKGROUND_QUERY_SOURCE})`,
+  )
   logForDebugging(
     `[CronDaemonWorker] completed ${payload.task.id} (${CRON_BACKGROUND_QUERY_SOURCE})`,
   )

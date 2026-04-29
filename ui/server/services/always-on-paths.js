@@ -23,3 +23,7 @@ export function getAlwaysOnDiscoveryStatePath(projectRoot) {
 export function getAlwaysOnRunHistoryPath(projectRoot) {
   return path.join(getAlwaysOnRoot(projectRoot), 'run-history.jsonl');
 }
+
+export function getAlwaysOnRunsDir(projectRoot) {
+  return path.join(getAlwaysOnRoot(projectRoot), 'runs');
+}

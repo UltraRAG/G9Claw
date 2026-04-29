@@ -16,6 +16,8 @@ import {
 import type {
   AlwaysOnRunHistoryDetail,
   AlwaysOnRunHistoryEntry,
+  AlwaysOnRunHistoryStatus,
+  AlwaysOnRunLogResponse,
   CronJobOverview,
   DiscoveryPlanOverview,
   Project,
@@ -36,6 +38,7 @@ type AlwaysOnV2Props = {
 };
 
 const POLL_INTERVAL_MS = 15_000;
+const LOG_POLL_INTERVAL_MS = 2_000;
 const CRON_TITLE_MAX_LENGTH = 56;
 const TABLE_GRID_COLUMNS =
   'grid-cols-[minmax(280px,1.8fr)_minmax(120px,0.8fr)_88px_112px_96px_96px_196px]';
@@ -193,6 +196,12 @@ function getHistorySessionLabel(run: AlwaysOnRunHistoryEntry, t: TFunction<'alwa
   return '—';
 }
 
+function getLogSourceLabel(log: AlwaysOnRunLogResponse | null, detail: AlwaysOnRunHistoryDetail): string {
+  if (log?.source) return log.source;
+  const metadataSource = detail.metadata?.logSource;
+  return typeof metadataSource === 'string' ? metadataSource : 'history';
+}
+
 function canRunRow(row: AlwaysOnRow): boolean {
   return row.kind === 'cron' || (row.plan.status === 'ready' && !row.plan.executionSessionId);
 }
@@ -217,6 +226,10 @@ export function isActiveCronJob(job: CronJobOverview): boolean {
 
 export function isVisibleRunHistoryEntry(run: AlwaysOnRunHistoryEntry): boolean {
   return run.status !== 'unknown';
+}
+
+export function shouldPollRunLog(status: AlwaysOnRunHistoryStatus | undefined): boolean {
+  return status === 'queued' || status === 'running';
 }
 
 function DetailSection({
@@ -327,6 +340,8 @@ export default function AlwaysOnV2({
   const [historyDetailRunId, setHistoryDetailRunId] = useState<string | null>(null);
   const [historyDetail, setHistoryDetail] = useState<AlwaysOnRunHistoryDetail | null>(null);
   const [historyDetailLoading, setHistoryDetailLoading] = useState(false);
+  const [historyLog, setHistoryLog] = useState<AlwaysOnRunLogResponse | null>(null);
+  const [historyLogLoading, setHistoryLogLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
@@ -395,13 +410,44 @@ export default function AlwaysOnV2({
     setDetailRowId(null);
     setHistoryDetailRunId(null);
     setHistoryDetail(null);
+    setHistoryLog(null);
   }, [projectName]);
 
   useEffect(() => {
     setDetailRowId(null);
     setHistoryDetailRunId(null);
     setHistoryDetail(null);
+    setHistoryLog(null);
   }, [activeSubTab]);
+
+  const refreshHistoryLog = useCallback(async (runId: string) => {
+    if (!projectName) return;
+    setHistoryLogLoading(true);
+    try {
+      const response = await api.projectAlwaysOnRunLog(projectName, runId);
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body?.error || `HTTP ${response.status}`);
+      }
+      const payload = (await response.json()) as AlwaysOnRunLogResponse;
+      setHistoryLog(payload);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setHistoryLogLoading(false);
+    }
+  }, [projectName]);
+
+  useEffect(() => {
+    if (!historyDetailRunId || !historyDetail) return undefined;
+    if (!shouldPollRunLog(historyDetail.status)) return undefined;
+
+    const timer = window.setInterval(() => {
+      void refreshHistoryLog(historyDetailRunId);
+    }, LOG_POLL_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [historyDetail, historyDetailRunId, refreshHistoryLog]);
 
   const runningPlans = plans.filter(
     (plan) => plan.status === 'running' || plan.executionStatus === 'running',
@@ -501,6 +547,7 @@ export default function AlwaysOnV2({
     if (!projectName) return;
     setHistoryDetailRunId(runId);
     setHistoryDetail(null);
+    setHistoryLog(null);
     setHistoryDetailLoading(true);
     setError(null);
     try {
@@ -511,6 +558,19 @@ export default function AlwaysOnV2({
       }
       const payload = (await response.json()) as ProjectAlwaysOnRunHistoryDetailResponse;
       setHistoryDetail(payload.run);
+      setHistoryLog({
+        runId,
+        content: payload.run.outputLog || '',
+        truncated: Boolean(payload.run.metadata?.logTruncated),
+        updatedAt: typeof payload.run.metadata?.logUpdatedAt === 'string'
+          ? payload.run.metadata.logUpdatedAt
+          : undefined,
+        size: typeof payload.run.metadata?.logSize === 'number' ? payload.run.metadata.logSize : 0,
+        source: payload.run.metadata?.logSource === 'log-file' ||
+          payload.run.metadata?.logSource === 'session'
+          ? payload.run.metadata.logSource
+          : 'history',
+      });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -792,8 +852,30 @@ export default function AlwaysOnV2({
         ) : historyDetail ? (
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
             <DetailSection title={t('history.sections.outputLog', { defaultValue: 'Output Log' })}>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xxs text-neutral-500 dark:text-neutral-400">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span>
+                    {t('history.log.source', { defaultValue: 'Source' })}: {getLogSourceLabel(historyLog, historyDetail)}
+                  </span>
+                  <span>
+                    {t('history.log.updatedAt', { defaultValue: 'Last updated' })}: {formatTime(historyLog?.updatedAt)}
+                  </span>
+                  {historyLog?.truncated ? (
+                    <span>{t('history.log.truncated', { defaultValue: 'truncated' })}</span>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => historyDetailRunId ? void refreshHistoryLog(historyDetailRunId) : undefined}
+                  disabled={historyLogLoading}
+                  className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xxs text-neutral-600 transition hover:bg-neutral-100 disabled:opacity-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
+                >
+                  <RefreshCw className={cn('h-3 w-3', historyLogLoading && 'animate-spin')} strokeWidth={1.75} />
+                  {t('actions.refresh', { defaultValue: 'Refresh' })}
+                </button>
+              </div>
               <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-neutral-50 p-4 text-[12px] leading-6 text-neutral-800 dark:bg-neutral-900 dark:text-neutral-200">
-                {historyDetail.outputLog || t('history.emptyLog', { defaultValue: 'No output log was captured for this run.' })}
+                {historyLog?.content || historyDetail.outputLog || t('history.emptyLog', { defaultValue: 'No output log was captured for this run.' })}
               </pre>
             </DetailSection>
             <aside>

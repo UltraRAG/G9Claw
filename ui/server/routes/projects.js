@@ -19,6 +19,7 @@ import {
   getAlwaysOnRunHistory,
   getAlwaysOnRunHistoryDetail
 } from '../services/always-on-run-history.js';
+import { getAlwaysOnRunLog } from '../services/always-on-run-logs.js';
 import { sendCronDaemonRequest } from '../services/cron-daemon-owner.js';
 
 const router = express.Router();
@@ -439,7 +440,34 @@ export async function handleGetProjectAlwaysOnRunHistoryDetail(req, res) {
   }
 }
 
+export async function handleGetProjectAlwaysOnRunLog(req, res) {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    const runId = getTrimmedParam(req.params?.runId);
+    if (!projectName) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+    if (!runId) {
+      return res.status(400).json({ error: 'runId is required' });
+    }
+
+    const projectRoot = await extractProjectDirectory(projectName);
+    const tailBytes = Number.parseInt(req.query?.tailBytes || '', 10);
+    const log = await getAlwaysOnRunLog(projectRoot, runId, {
+      tailBytes: Number.isFinite(tailBytes) ? tailBytes : undefined
+    });
+    return res.json({
+      runId,
+      ...log,
+      source: log.content ? 'log-file' : 'history'
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
 router.get('/:projectName/always-on/run-history', handleGetProjectAlwaysOnRunHistory);
+router.get('/:projectName/always-on/run-history/:runId/log', handleGetProjectAlwaysOnRunLog);
 router.get('/:projectName/always-on/run-history/:runId', handleGetProjectAlwaysOnRunHistoryDetail);
 router.get('/:projectName/cron-jobs', handleGetProjectCronJobs);
 router.delete('/:projectName/cron-jobs/:taskId', handleDeleteProjectCronJob);

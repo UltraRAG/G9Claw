@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { AlwaysOnRunHistoryEntry, CronJobOverview, DiscoveryPlanOverview } from '../../types/app';
-import { getPlanRowTitle, isActiveCronJob, isActivePlan, isVisibleRunHistoryEntry } from './AlwaysOnV2';
+import {
+  getPlanRowTitle,
+  isActiveCronJob,
+  isActivePlan,
+  isVisibleRunHistoryEntry,
+  shouldPollRunLog,
+} from './AlwaysOnV2';
 
 const basePlan: DiscoveryPlanOverview = {
   id: 'plan-alpha',
@@ -82,5 +88,13 @@ describe('AlwaysOnV2 active item filtering', () => {
 
     expect(isVisibleRunHistoryEntry(baseRun)).toBe(true);
     expect(isVisibleRunHistoryEntry({ ...baseRun, status: 'unknown' })).toBe(false);
+  });
+
+  it('polls run logs only while queued or running', () => {
+    expect(shouldPollRunLog('queued')).toBe(true);
+    expect(shouldPollRunLog('running')).toBe(true);
+    expect(shouldPollRunLog('completed')).toBe(false);
+    expect(shouldPollRunLog('failed')).toBe(false);
+    expect(shouldPollRunLog('unknown')).toBe(false);
   });
 });

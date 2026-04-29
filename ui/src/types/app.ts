@@ -79,6 +79,17 @@ export interface ProjectAlwaysOnRunHistoryDetailResponse {
   run: AlwaysOnRunHistoryDetail;
 }
 
+export type AlwaysOnRunLogSource = 'log-file' | 'session' | 'history';
+
+export interface AlwaysOnRunLogResponse {
+  runId: string;
+  content: string;
+  truncated: boolean;
+  updatedAt?: string;
+  size: number;
+  source: AlwaysOnRunLogSource;
+}
+
 export type DiscoveryPlanApprovalMode = 'auto' | 'manual';
 export type DiscoveryPlanStatus =
   | 'draft'

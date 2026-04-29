@@ -58,6 +58,8 @@ export const api = {
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/always-on/run-history?limit=${encodeURIComponent(limit)}`),
   projectAlwaysOnRunHistoryDetail: (projectName, runId) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/always-on/run-history/${encodeURIComponent(runId)}`),
+  projectAlwaysOnRunLog: (projectName, runId, tailBytes = 60000) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/always-on/run-history/${encodeURIComponent(runId)}/log?tailBytes=${encodeURIComponent(tailBytes)}`),
   projectDiscoveryContext: (projectName) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-context`),
   projectDiscoveryPlans: (projectName) =>

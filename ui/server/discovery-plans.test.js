@@ -15,6 +15,7 @@ import {
   clearProjectDirectoryCache,
 } from './projects.js';
 import { getAlwaysOnRunHistory } from './services/always-on-run-history.js';
+import { getAlwaysOnRunLog } from './services/always-on-run-logs.js';
 
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
@@ -158,6 +159,12 @@ test('discovery plans can be listed, queued, updated, and archived', async () =>
   assert.equal(history.runs[0].runId, execution.executionToken);
   assert.equal(history.runs[0].status, 'completed');
   assert.equal(history.runs[0].sourceId, 'plan-alpha');
+
+  const runLog = await getAlwaysOnRunLog(projectRoot, execution.executionToken);
+  assert.match(runLog.content, /\[AlwaysOnPlanRun\]/);
+  assert.match(runLog.content, /phase=queued/);
+  assert.match(runLog.content, /phase=completed/);
+  assert.match(runLog.content, /Tests were stabilized/);
 
   const archiveResult = await archiveProjectDiscoveryPlan(projectName, 'plan-alpha');
   assert.deepEqual(archiveResult, { archived: true });

@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { getAlwaysOnRoot } from './always-on-paths.js';
+import { getAlwaysOnRunLog } from './always-on-run-logs.js';
 
 const RUN_HISTORY_FILE_NAME = 'run-history.jsonl';
 const RUN_HISTORY_MAX_ITEMS = 500;
@@ -258,9 +259,12 @@ export async function getAlwaysOnRunHistoryDetail(projectRoot, runId, { projectN
   }
 
   const sessionOutput = await buildSessionOutputLog(projectName, record);
+  const fileLog = await getAlwaysOnRunLog(projectRoot, runId);
+  const outputLog = fileLog.content || sessionOutput || record.outputLog || record.error || '';
+  const logSource = fileLog.content ? 'log-file' : (sessionOutput ? 'session' : 'history');
   return {
     ...toHistoryEntry(record),
-    outputLog: sessionOutput || record.outputLog || record.error || '',
+    outputLog,
     metadata: {
       ...record.metadata,
       runId: record.runId,
@@ -272,7 +276,10 @@ export async function getAlwaysOnRunHistoryDetail(projectRoot, runId, { projectN
       parentSessionId: record.parentSessionId,
       relativeTranscriptPath: record.relativeTranscriptPath,
       transcriptKey: record.transcriptKey,
-      logSource: sessionOutput ? 'session' : 'history',
+      logSource,
+      logUpdatedAt: fileLog.updatedAt,
+      logSize: fileLog.size,
+      logTruncated: fileLog.truncated,
     },
   };
 }
