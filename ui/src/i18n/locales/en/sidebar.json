@@ -42,7 +42,9 @@
     "loadingSessions": "Loading sessions...",
     "unnamed": "Unnamed",
     "loading": "Loading...",
-    "showMore": "Show more sessions"
+    "loadingMore": "Loading more…",
+    "showMore": "Show more sessions",
+    "showMoreCount": "Show more ({{count}})"
   },
   "tooltips": {
     "viewEnvironments": "View Environments",

@@ -134,6 +134,8 @@ export default function AppShellV2() {
     handleProjectSelect,
     handleSessionSelect,
     handleNewSession,
+    loadMoreSessions,
+    loadingMoreProjectIds,
   } = useProjectsState({
     sessionId,
     navigate,
@@ -507,6 +509,8 @@ export default function AppShellV2() {
 	      onRequestDeleteSession={handleRequestDeleteSession}
 	      onShowSettings={onShowSettings}
 	      onCollapse={onCollapseSidebar}
+	      onLoadMoreSessions={loadMoreSessions}
+	      loadingMoreProjectIds={loadingMoreProjectIds}
 	    />
   );
 
