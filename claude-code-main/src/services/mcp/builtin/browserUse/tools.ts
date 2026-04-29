@@ -10,8 +10,12 @@ export const BROWSER_TOOLS: Tool[] = [
         url: { type: 'string', description: 'The URL to navigate to' },
         waitUntil: {
           type: 'string',
-          enum: ['load', 'domcontentloaded', 'networkidle', 'commit'],
-          description: 'When to consider navigation finished. Default: domcontentloaded',
+          enum: ['load', 'domcontentloaded', 'commit'],
+          description: 'When to consider navigation finished. Default: domcontentloaded. Prefer domcontentloaded for SPA sites (Twitter/X, etc.).',
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'Navigation timeout in milliseconds. Default: 60000',
         },
       },
       required: ['url'],

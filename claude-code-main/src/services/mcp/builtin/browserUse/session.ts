@@ -1,6 +1,10 @@
 import { join } from 'path'
 import { homedir } from 'os'
 import type { Browser, BrowserContext, Page } from 'playwright-core'
+import { ensureGlobalChrome, restartGlobalChrome, isCDPHealthy } from './globalChrome.js'
+
+const CDP_CONNECT_TIMEOUT = 60_000
+const MAX_CDP_RETRIES = 2
 
 let browserInstance: Browser | null = null
 let contextInstance: BrowserContext | null = null
@@ -16,70 +20,104 @@ function getUserDataDir(): string {
   return join(configDir, 'browser-use-profile')
 }
 
-/**
- * Connects to an existing Chrome/Chromium via CDP, or launches a persistent
- * browser context locally. The persistent context stores cookies and
- * localStorage across sessions in ~/.claude/browser-use-profile/.
- */
+function resetSingletons() {
+  browserInstance = null
+  contextInstance = null
+  isPersistent = false
+}
+
+function isContextAlive(): boolean {
+  if (!contextInstance) return false
+  try {
+    contextInstance.pages()
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function connectCDP(chromium: typeof import('playwright-core').chromium, cdpUrl: string): Promise<void> {
+  browserInstance = await chromium.connectOverCDP(cdpUrl, { timeout: CDP_CONNECT_TIMEOUT })
+  const contexts = browserInstance.contexts()
+  contextInstance = contexts[0] ?? await browserInstance.newContext()
+  isPersistent = false
+  browserInstance.on('disconnected', () => resetSingletons())
+}
+
 export async function getOrCreateSession(): Promise<BrowserSession> {
   if (contextInstance && (isPersistent || browserInstance?.isConnected())) {
-    return { browser: browserInstance, context: contextInstance }
+    if (!isContextAlive()) {
+      resetSingletons()
+    } else {
+      return { browser: browserInstance, context: contextInstance }
+    }
   }
 
   const { chromium } = await import('playwright-core')
   const cdpUrl = process.env.CDP_URL
 
-  if (cdpUrl) {
-    isPersistent = false
-    browserInstance = await chromium.connectOverCDP(cdpUrl)
-    const contexts = browserInstance.contexts()
-    contextInstance = contexts[0] ?? await browserInstance.newContext()
+  const resolvedCdpUrl = cdpUrl ?? await ensureGlobalChrome()
 
-    browserInstance.on('disconnected', () => {
-      browserInstance = null
-      contextInstance = null
-    })
-  } else {
-    isPersistent = true
-    const executablePath = findChromePath()
-    const userDataDir = getUserDataDir()
-
-    const { mkdirSync, unlinkSync, existsSync } = await import('fs')
-    mkdirSync(userDataDir, { recursive: true })
-
-    // Clean up stale lock files left by crashed Chrome instances
-    for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
-      const lockPath = join(userDataDir, lockFile)
-      if (existsSync(lockPath)) {
-        try { unlinkSync(lockPath) } catch { /* ignore */ }
+  if (resolvedCdpUrl) {
+    let lastErr: unknown
+    for (let attempt = 0; attempt <= MAX_CDP_RETRIES; attempt++) {
+      // Health check before expensive connectOverCDP
+      if (attempt > 0 || !(await isCDPHealthy())) {
+        const freshUrl = await restartGlobalChrome()
+        if (!freshUrl) break
+      }
+      try {
+        await connectCDP(chromium, resolvedCdpUrl)
+        return { browser: browserInstance, context: contextInstance }
+      } catch (err) {
+        lastErr = err
+        resetSingletons()
       }
     }
-
-    contextInstance = await chromium.launchPersistentContext(userDataDir, {
-      headless: false,
-      executablePath,
-      args: [
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-features=ProfilePicker',
-      ],
-    })
-    browserInstance = contextInstance.browser()
-
-    contextInstance.on('close', () => {
-      browserInstance = null
-      contextInstance = null
-      isPersistent = false
-    })
+    // All CDP retries exhausted — fall through to persistent context fallback
+    console.warn(`[browser-use] CDP connect failed after ${MAX_CDP_RETRIES + 1} attempts, falling back to local launch`, lastErr)
   }
+
+  // Fallback: launch persistent context directly
+  isPersistent = true
+  const executablePath = findChromePath()
+  const userDataDir = getUserDataDir()
+
+  const { mkdirSync, unlinkSync, existsSync } = await import('fs')
+  mkdirSync(userDataDir, { recursive: true })
+
+  for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    const lockPath = join(userDataDir, lockFile)
+    if (existsSync(lockPath)) {
+      try { unlinkSync(lockPath) } catch { /* ignore */ }
+    }
+  }
+
+  contextInstance = await chromium.launchPersistentContext(userDataDir, {
+    headless: false,
+    executablePath,
+    args: [
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-features=ProfilePicker',
+    ],
+  })
+  browserInstance = contextInstance.browser()
+  contextInstance.on('close', () => resetSingletons())
 
   return { browser: browserInstance, context: contextInstance }
 }
 
 export async function getActivePage(): Promise<Page> {
-  const { context } = await getOrCreateSession()
-  const pages = context.pages()
-  return pages[pages.length - 1] ?? await context.newPage()
+  try {
+    const { context } = await getOrCreateSession()
+    const pages = context.pages()
+    return pages[pages.length - 1] ?? await context.newPage()
+  } catch {
+    resetSingletons()
+    const { context } = await getOrCreateSession()
+    return context.pages()[0] ?? await context.newPage()
+  }
 }
 
 export async function getPageByTargetId(targetId: string): Promise<Page | null> {
@@ -106,9 +144,7 @@ export async function closeSession(): Promise<void> {
   } else if (browserInstance) {
     await browserInstance.close().catch(() => {})
   }
-  browserInstance = null
-  contextInstance = null
-  isPersistent = false
+  resetSingletons()
 }
 
 function findChromePath(): string | undefined {

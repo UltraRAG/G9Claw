@@ -77,44 +77,92 @@ async function handleToolCall(
   }
 }
 
+function isSessionError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /target.closed|session.closed|browser.has.been.closed|disconnected|protocol.error/i.test(msg)
+}
+
 async function handleNavigate(args: Record<string, unknown>) {
-  const page = await getActivePage()
   const url = args.url as string
-  const waitUntil = (args.waitUntil as string) ?? 'domcontentloaded'
-  await page.goto(url, {
-    waitUntil: waitUntil as 'load' | 'domcontentloaded' | 'networkidle' | 'commit',
-  })
-  return [
-    {
-      type: 'text' as const,
-      text: JSON.stringify({
-        url: page.url(),
-        title: await page.title(),
-      }),
-    },
+  const requestedWait = (args.waitUntil as string) ?? 'domcontentloaded'
+  const timeout = (args.timeoutMs as number) ?? 60000
+  const warnings: string[] = []
+
+  // Graduated fallback: requested → domcontentloaded → commit
+  const fallbackChain: Array<'networkidle' | 'load' | 'domcontentloaded' | 'commit'> = [
+    requestedWait as 'networkidle' | 'load' | 'domcontentloaded' | 'commit',
   ]
+  if (requestedWait === 'networkidle' && !fallbackChain.includes('domcontentloaded')) {
+    fallbackChain.push('domcontentloaded')
+  }
+  if (requestedWait !== 'commit' && !fallbackChain.includes('commit')) {
+    fallbackChain.push('commit')
+  }
+
+  for (let retry = 0; retry < 2; retry++) {
+    const page = await getActivePage()
+
+    for (let i = 0; i < fallbackChain.length; i++) {
+      const waitUntil = fallbackChain[i]!
+      try {
+        await page.goto(url, { waitUntil, timeout })
+
+        if (i > 0) {
+          warnings.push(`${fallbackChain[0]} timed out, fell back to ${waitUntil}`)
+        }
+        const result: Record<string, unknown> = {
+          url: page.url(),
+          title: await page.title(),
+        }
+        if (warnings.length > 0) result.warning = warnings.join('; ')
+        return [{ type: 'text' as const, text: JSON.stringify(result) }]
+      } catch (err) {
+        if (isSessionError(err)) {
+          warnings.push(`session error on attempt ${retry + 1}, reconnecting`)
+          break
+        }
+        const isTimeout = err instanceof Error && /timeout/i.test(err.message)
+        if (isTimeout && i < fallbackChain.length - 1) {
+          warnings.push(`${waitUntil} timed out (${timeout}ms)`)
+          continue
+        }
+        throw err
+      }
+    }
+  }
+
+  throw new Error(`navigate to ${url} failed after retries. ${warnings.join('; ')}`)
 }
 
 async function handleScreenshot(args: Record<string, unknown>) {
-  const page = await getActivePage()
-  let buffer: Buffer
+  const timeout = (args.timeoutMs as number) ?? 30000
 
-  if (args.selector) {
-    const el = page.locator(args.selector as string)
-    buffer = await el.screenshot()
-  } else {
-    buffer = await page.screenshot({
-      fullPage: (args.fullPage as boolean) ?? false,
-    })
+  for (let retry = 0; retry < 2; retry++) {
+    const page = await getActivePage()
+    try {
+      let buffer: Buffer
+      if (args.selector) {
+        const el = page.locator(args.selector as string)
+        buffer = await el.screenshot({ timeout })
+      } else {
+        buffer = await page.screenshot({
+          fullPage: (args.fullPage as boolean) ?? false,
+          timeout,
+        })
+      }
+      return [
+        {
+          type: 'image' as const,
+          data: buffer.toString('base64'),
+          mimeType: 'image/png',
+        },
+      ]
+    } catch (err) {
+      if (isSessionError(err) && retry === 0) continue
+      throw err
+    }
   }
-
-  return [
-    {
-      type: 'image' as const,
-      data: buffer.toString('base64'),
-      mimeType: 'image/png',
-    },
-  ]
+  throw new Error('screenshot failed after retries')
 }
 
 async function handleSnapshot(args: Record<string, unknown>) {

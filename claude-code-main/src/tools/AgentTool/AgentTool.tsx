@@ -599,6 +599,15 @@ export const AgentTool = buildTool({
         content: buildWorktreeNotice(getCwd(), worktreeInfo.worktreePath)
       }));
     }
+    // Inherit parent's session-level tool permissions so sub-agents can use
+    // tools the user already approved (e.g. Bash, WebFetch) without re-prompting.
+    // Only session rules are passed here; cliArg rules are preserved separately
+    // by runAgent.ts from the global state.
+    const parentSessionRules = appState.toolPermissionContext.alwaysAllowRules.session;
+    const inheritedAllowedTools = parentSessionRules && parentSessionRules.length > 0
+      ? [...parentSessionRules]
+      : undefined;
+
     const runAgentParams: Parameters<typeof runAgent>[0] = {
       agentDefinition: selectedAgent,
       promptMessages,
@@ -624,6 +633,7 @@ export const AgentTool = buildTool({
         systemPrompt: asSystemPrompt(enhancedSystemPrompt)
       } : undefined,
       availableTools: isForkPath ? toolUseContext.options.tools : workerTools,
+      allowedTools: inheritedAllowedTools,
       // Pass parent conversation when the fork-subagent path needs full
       // context. useExactTools inherits thinkingConfig (runAgent.ts:624).
       forkContextMessages: isForkPath ? toolUseContext.messages : undefined,

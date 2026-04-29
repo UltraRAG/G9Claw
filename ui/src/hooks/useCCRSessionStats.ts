@@ -17,11 +17,13 @@ export function useCCRSessionStats(sessionId: string | null | undefined) {
   const [stats, setStats] = useState<CCRSessionStats | null>(null);
   const [loading, setLoading] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hasFetchedRef = useRef(false);
 
   const fetchStats = useCallback(async () => {
     if (!sessionId) return;
+    const isInitial = !hasFetchedRef.current;
+    if (isInitial) setLoading(true);
     try {
-      setLoading(true);
       const res = await authenticatedFetch(`/api/ccr/stats/sessions/${sessionId}`);
       if (res.ok) {
         setStats(await res.json());
@@ -31,13 +33,13 @@ export function useCCRSessionStats(sessionId: string | null | undefined) {
     } catch {
       setStats(null);
     } finally {
-      setLoading(false);
+      hasFetchedRef.current = true;
+      if (isInitial) setLoading(false);
     }
   }, [sessionId]);
 
   useEffect(() => {
     fetchStats();
-
     intervalRef.current = setInterval(fetchStats, POLL_INTERVAL_MS);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);

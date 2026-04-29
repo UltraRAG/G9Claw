@@ -226,6 +226,8 @@ export type SidebarV2Props = {
   onRequestDeleteSession: (project: Project, session: ProjectSession, provider: SessionProvider) => void;
   onShowSettings: () => void;
   onCollapse?: () => void;
+  onLoadMoreSessions?: (projectName: string) => void;
+  loadingMoreProjectIds?: Set<string>;
 };
 
 type SidebarContextMenu =
@@ -273,6 +275,8 @@ export default function SidebarV2({
   onRequestDeleteSession,
   onShowSettings,
   onCollapse,
+  onLoadMoreSessions,
+  loadingMoreProjectIds,
 }: SidebarV2Props) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -570,9 +574,19 @@ export default function SidebarV2({
   );
 
   const renderSessionRows = (project: Project) => {
-    const sessions = collectSessionsForProject(project).slice(0, 30);
+    // 500 is a defensive ceiling — if a user holds down Load more their DOM
+    // doesn't grow unboundedly. Backend pages 30 at a time so this caps at
+    // ~17 clicks worth of history; sessionMeta.total is shown in the button
+    // so they always know how much is still on disk.
+    const sessions = collectSessionsForProject(project).slice(0, 500);
     const showDraftSession =
       selectedProject?.name === project.name && activeTab === 'chat' && !selectedSession;
+    const hasMoreSessions = Boolean(project.sessionMeta?.hasMore);
+    const isLoadingMore = Boolean(loadingMoreProjectIds?.has(project.name));
+    const totalSessions =
+      typeof project.sessionMeta?.total === 'number' ? project.sessionMeta.total : null;
+    const remaining =
+      totalSessions !== null ? Math.max(0, totalSessions - sessions.length) : null;
 
     return (
       <div className="ml-6 space-y-0.5">
@@ -665,6 +679,33 @@ export default function SidebarV2({
             {t('sidebar:sessions.noSessions', { defaultValue: 'No sessions yet' })}
           </div>
         )}
+
+        {hasMoreSessions && onLoadMoreSessions ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              if (isLoadingMore) return;
+              onLoadMoreSessions(project.name);
+            }}
+            disabled={isLoadingMore}
+            className={cn(
+              'block w-full rounded-md px-2 py-1 text-left text-[11px] transition-colors',
+              isLoadingMore
+                ? 'text-neutral-400 dark:text-neutral-500'
+                : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200',
+            )}
+          >
+            {isLoadingMore
+              ? t('sidebar:sessions.loadingMore', { defaultValue: 'Loading more…' })
+              : remaining !== null && remaining > 0
+                ? t('sidebar:sessions.showMoreCount', {
+                    count: remaining,
+                    defaultValue: `Show more (${remaining})`,
+                  })
+                : t('sidebar:sessions.showMore', { defaultValue: 'Show more sessions' })}
+          </button>
+        ) : null}
       </div>
     );
   };

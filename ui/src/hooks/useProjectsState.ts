@@ -171,6 +171,26 @@ export function useProjectsState({
 
   const loadingProgressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Track when a session was first selected so the projects_updated handler
+  // can avoid clearing a brand-new session that the file watcher hasn't
+  // indexed yet (race between `complete` removing the session from
+  // activeSessions and a stale `projects_updated` arriving).
+  const sessionSelectedAtRef = useRef<number>(0);
+  const prevTrackedSessionIdRef = useRef<string | null>(null);
+  if (selectedSession?.id !== prevTrackedSessionIdRef.current) {
+    prevTrackedSessionIdRef.current = selectedSession?.id ?? null;
+    if (selectedSession?.id) {
+      sessionSelectedAtRef.current = Date.now();
+    }
+  }
+
+  // Mirror `projects` into a ref so async callbacks can read the latest list
+  // without closing over stale state (e.g. loadMoreSessions early-bail check).
+  const projectsRef = useRef<Project[]>([]);
+  useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
+
   const fetchProjects = useCallback(async ({ showLoadingState = true }: FetchProjectsOptions = {}) => {
     try {
       if (showLoadingState) {
@@ -316,6 +336,15 @@ export function useProjectsState({
     );
 
     if (!updatedSelectedSession) {
+      // Grace period: a just-created session may not appear in the file
+      // watcher's projects_updated yet. If we clear selectedSession now,
+      // the UI briefly flashes back to the welcome/greet page until the
+      // next refresh re-discovers the session. Protect for 10 s after
+      // the session was first selected.
+      const SESSION_GRACE_MS = 10_000;
+      if (Date.now() - sessionSelectedAtRef.current < SESSION_GRACE_MS) {
+        return;
+      }
       setSelectedSession(null);
       return;
     }
@@ -496,6 +525,82 @@ export function useProjectsState({
     [navigate, selectedSession?.id],
   );
 
+  // The /api/projects payload caps each project's sessions array at 5 for a
+  // snappy first paint. Sidebar exposes a "Load more" affordance backed by
+  // this action: it pages through /api/projects/:name/sessions?limit=&offset=
+  // and appends the new claude sessions in place. We track in-flight project
+  // names so the button can render a loading state and reject re-entrancy.
+  const PAGE_SIZE = 30;
+  const loadingMoreSessionsRef = useRef<Set<string>>(new Set());
+  const [loadingMoreProjectIds, setLoadingMoreProjectIds] = useState<Set<string>>(new Set());
+
+  const setProjectLoading = useCallback((projectName: string, loading: boolean) => {
+    if (loading) loadingMoreSessionsRef.current.add(projectName);
+    else loadingMoreSessionsRef.current.delete(projectName);
+    setLoadingMoreProjectIds(new Set(loadingMoreSessionsRef.current));
+  }, []);
+
+  const loadMoreSessions = useCallback(
+    async (projectName: string) => {
+      if (!projectName) return;
+      if (loadingMoreSessionsRef.current.has(projectName)) return;
+
+      const project = projectsRef.current.find((p) => p.name === projectName);
+      if (!project) return;
+      if (project.sessionMeta?.hasMore === false) return;
+
+      const offset = (project.sessions ?? []).length;
+      setProjectLoading(projectName, true);
+
+      try {
+        const response = await api.sessions(projectName, PAGE_SIZE, offset);
+        if (!response.ok) {
+          throw new Error(`Failed to load sessions: ${response.status}`);
+        }
+        const data = (await response.json()) as {
+          sessions?: ProjectSession[];
+          hasMore?: boolean;
+          total?: number;
+        };
+        const incoming = Array.isArray(data.sessions) ? data.sessions : [];
+
+        const mergeSessions = (existing: ProjectSession[]): ProjectSession[] => {
+          const seen = new Set(existing.map((s) => s.id));
+          const merged = [...existing];
+          for (const session of incoming) {
+            if (!session?.id || seen.has(session.id)) continue;
+            seen.add(session.id);
+            merged.push(session);
+          }
+          return merged;
+        };
+
+        const applyToProject = (target: Project): Project => ({
+          ...target,
+          sessions: mergeSessions(target.sessions ?? []),
+          sessionMeta: {
+            ...(target.sessionMeta ?? {}),
+            hasMore: Boolean(data.hasMore),
+            total: typeof data.total === 'number' ? data.total : target.sessionMeta?.total,
+          },
+        });
+
+        setProjects((prevProjects) =>
+          prevProjects.map((p) => (p.name === projectName ? applyToProject(p) : p)),
+        );
+
+        setSelectedProject((prev) =>
+          prev && prev.name === projectName ? applyToProject(prev) : prev,
+        );
+      } catch (error) {
+        console.error('loadMoreSessions failed for project', projectName, error);
+      } finally {
+        setProjectLoading(projectName, false);
+      }
+    },
+    [setProjectLoading],
+  );
+
   const handleSidebarRefresh = useCallback(async () => {
     try {
       const response = await api.projects();
@@ -619,5 +724,7 @@ export function useProjectsState({
     handleSessionDelete,
     handleProjectDelete,
     handleSidebarRefresh,
+    loadMoreSessions,
+    loadingMoreProjectIds,
   };
 }

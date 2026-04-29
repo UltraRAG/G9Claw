@@ -134,6 +134,8 @@ export default function AppShellV2() {
     handleProjectSelect,
     handleSessionSelect,
     handleNewSession,
+    loadMoreSessions,
+    loadingMoreProjectIds,
   } = useProjectsState({
     sessionId,
     navigate,
@@ -507,6 +509,8 @@ export default function AppShellV2() {
 	      onRequestDeleteSession={handleRequestDeleteSession}
 	      onShowSettings={onShowSettings}
 	      onCollapse={onCollapseSidebar}
+	      onLoadMoreSessions={loadMoreSessions}
+	      loadingMoreProjectIds={loadingMoreProjectIds}
 	    />
   );
 
@@ -556,7 +560,11 @@ export default function AppShellV2() {
           onSessionNotProcessing={markSessionAsNotProcessing}
           processingSessions={processingSessions}
           onReplaceTemporarySession={replaceTemporarySession}
-          onNavigateToSession={(sid: string) => navigate(`/session/${sid}`)}
+          onNavigateToSession={(sid: string) => {
+            const provider = (localStorage.getItem('selected-provider') || 'claude') as SessionProvider;
+            setSelectedSession((prev) => prev?.id === sid ? prev : { id: sid, __provider: provider } as ProjectSession);
+            navigate(`/session/${sid}`);
+          }}
           onStartNewSession={handleNewSession}
           onSelectSession={handleSelectSession}
           onShowSettings={onShowSettings}
