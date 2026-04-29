@@ -24,24 +24,75 @@ import * as path from "node:path";
 
 const DEFAULT_PORT_START = 18790;
 const DEFAULT_PORT_END = 18799;
+const PROXY_PORT = 18080;
 const HEALTH_POLL_MS = 1500;
 const HEALTH_REQUEST_TIMEOUT_MS = 2000;
 const STARTUP_HEALTH_TIMEOUT_MS = 60_000;
 const SHUTDOWN_SIGTERM_WAIT_MS = 5000;
+const ORPHAN_TERM_WAIT_MS = 3000;
 const STABLE_RUN_RESET_MS = 60_000;
 const MAX_RESTART_ATTEMPTS = 3;
 const RESTART_BACKOFF_MS = [2000, 4000, 8000] as const;
+
+// Reasoning models (e.g. MiniMax-M2.7-highspeed, DeepSeek-R1) emit large
+// <think>/reasoning blocks that consume the output budget BEFORE the actual
+// answer. Anthropic SDK's getMaxOutputTokensForModel falls back to 32_000 for
+// unknown model names but a downstream GrowthBook gate (tengu_otk_slot_v1) can
+// silently cap that to 8_000. 8k is barely enough room for thinking + a short
+// answer; 16k leaves headroom without risking provider rejections (MiniMax
+// caps at ~64k, OpenAI-compatible Chat caps at 32k for most providers).
+//
+// User can override via CLAUDE_CODE_MAX_OUTPUT_TOKENS env or
+// agents.main.params.maxOutputTokens in ~/.edgeclaw/config.yaml (the latter is
+// wired up in ui/server/services/edgeclawConfig.js → buildRuntimeEnv).
+const REASONING_FRIENDLY_MAX_OUTPUT_TOKENS = "16000";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function getEdgeClawDir(): string {
+  return path.join(os.homedir(), ".edgeclaw");
+}
+
 function getPidFilePath(): string {
-  return path.join(os.homedir(), ".edgeclaw", "desktop.server.pid");
+  return path.join(getEdgeClawDir(), "desktop.server.pid");
 }
 
 async function ensureEdgeClawDir(): Promise<void> {
-  await fs.mkdir(path.join(os.homedir(), ".edgeclaw"), { recursive: true });
+  await fs.mkdir(getEdgeClawDir(), { recursive: true });
+}
+
+/**
+ * Per-version runtime extraction root.
+ *
+ * macOS protects `/Applications/<App>.app/Contents/Resources/` via SIP+TCC
+ * (App Management gate, macOS 14+); writing extracted bundles there works on
+ * first launch but can be wiped silently on app upgrade and is technically a
+ * violation of Apple's "app bundle is read-only after install" guideline.
+ *
+ * The proper home is `~/Library/Application Support/<App>/runtime/<version>/`,
+ * which is per-user, writable, survives macOS upgrades, and is the standard
+ * location Electron's `app.getPath('userData')` resolves to.
+ *
+ * We key on the EdgeClaw bundle version so that upgrading the app forces a
+ * fresh extraction (otherwise stale source files from the previous version
+ * would silently win). Old version dirs are GC'd on next startup via
+ * `cleanupStaleRuntimeVersions()`.
+ */
+function getRuntimeBaseDir(version: string): string {
+  return path.join(
+    os.homedir(),
+    "Library",
+    "Application Support",
+    "EdgeClaw",
+    "runtime",
+    version,
+  );
+}
+
+function getCronDaemonSocketPath(): string {
+  return path.join(os.homedir(), ".claude", "cron-daemon.sock");
 }
 
 async function isPortFree(port: number): Promise<boolean> {
@@ -185,6 +236,13 @@ export type ServerManagerOptions = {
    * Required when `dev: true`.
    */
   devRepoRoot?: string;
+  /**
+   * Bundle version (typically `app.getVersion()`). Used to pick the per-version
+   * runtime extraction directory under `~/Library/Application Support/EdgeClaw/
+   * runtime/<version>/`. Required when `dev: false` so that upgrading the app
+   * forces a fresh re-extraction of bundled tarballs.
+   */
+  appVersion?: string;
 };
 
 export type ServerManagerEvents = {
@@ -197,6 +255,7 @@ export type ServerManagerEvents = {
 export class ServerManager extends EventEmitter<ServerManagerEvents> {
   private readonly dev: boolean;
   private readonly devRepoRoot: string | undefined;
+  private readonly appVersion: string | undefined;
 
   private child: ChildProcess | null = null;
   private port: number | null = null;
@@ -211,33 +270,78 @@ export class ServerManager extends EventEmitter<ServerManagerEvents> {
     super();
     this.dev = options.dev ?? false;
     this.devRepoRoot = options.devRepoRoot;
+    this.appVersion = options.appVersion;
   }
 
   /**
-   * Extract a tarball into `<resources>/<destDirName>/`, idempotent via marker.
+   * Extract a tarball into `<runtimeBaseDir>/<destDirName>/`, idempotent via
+   * marker. The marker stores the source tarball mtime+size so that if the
+   * bundled tar is updated (e.g. after an in-place reinstall over the same
+   * version) we re-extract automatically.
    */
   private ensureBundleExtracted(
-    resources: string,
+    tarballSourceDir: string,
+    runtimeBaseDir: string,
     tarballName: string,
     destDirName: string,
   ): string {
-    const destDir = path.join(resources, destDirName);
-    const tarball = path.join(resources, tarballName);
+    const destDir = path.join(runtimeBaseDir, destDirName);
+    const tarball = path.join(tarballSourceDir, tarballName);
     const marker = path.join(destDir, ".extracted");
-
-    if (fsSync.existsSync(marker)) return destDir;
 
     if (!fsSync.existsSync(tarball)) {
       throw new Error(`Bundle not found: ${tarball}`);
     }
 
+    const tarStat = fsSync.statSync(tarball);
+    const expectedMarker = `${tarStat.mtimeMs.toFixed(0)}-${tarStat.size}`;
+
+    if (fsSync.existsSync(marker)) {
+      try {
+        const recorded = fsSync.readFileSync(marker, "utf8").trim();
+        if (recorded === expectedMarker) return destDir;
+      } catch {
+        /* fall through and re-extract */
+      }
+    }
+
+    // Fresh extract: nuke any partial leftover so we don't merge stale + new
+    // payloads (could happen if a previous extraction was interrupted).
+    if (fsSync.existsSync(destDir)) {
+      fsSync.rmSync(destDir, { recursive: true, force: true });
+    }
     fsSync.mkdirSync(destDir, { recursive: true });
     execSync(`tar xf "${tarball}" -C "${destDir}"`, {
       stdio: "ignore",
-      timeout: 120_000,
+      timeout: 180_000,
     });
-    fsSync.writeFileSync(marker, new Date().toISOString());
+    fsSync.writeFileSync(marker, expectedMarker);
     return destDir;
+  }
+
+  /**
+   * Best-effort cleanup of `~/Library/Application Support/EdgeClaw/runtime/`
+   * subdirectories belonging to other versions. Called at startup so that
+   * upgrading the app reclaims disk (~1GB per stale version).
+   */
+  private cleanupStaleRuntimeVersions(currentVersion: string): void {
+    const runtimeRoot = path.dirname(getRuntimeBaseDir(currentVersion));
+    if (!fsSync.existsSync(runtimeRoot)) return;
+    let entries: string[];
+    try {
+      entries = fsSync.readdirSync(runtimeRoot);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry === currentVersion) continue;
+      const stalePath = path.join(runtimeRoot, entry);
+      try {
+        fsSync.rmSync(stalePath, { recursive: true, force: true });
+      } catch {
+        /* ignore — best-effort GC */
+      }
+    }
   }
 
   private resolvePaths(): {
@@ -281,30 +385,183 @@ export class ServerManager extends EventEmitter<ServerManagerEvents> {
         "ServerManager: process.resourcesPath unavailable; pass dev/devRepoRoot or run under Electron",
       );
     }
-    // Order matters only for clarity; resolution at runtime is via ../../../ path
-    // walks so all three must end up as siblings inside `resources/`.
+    if (!this.appVersion) {
+      throw new Error(
+        "ServerManager: appVersion is required for packaged mode (pass app.getVersion() into the constructor)",
+      );
+    }
+    const runtimeBaseDir = getRuntimeBaseDir(this.appVersion);
+    fsSync.mkdirSync(runtimeBaseDir, { recursive: true });
+    this.cleanupStaleRuntimeVersions(this.appVersion);
+
+    // Order matters only for clarity; resolution at runtime is via ../../../
+    // path walks so all three must end up as siblings inside runtimeBaseDir.
     this.ensureBundleExtracted(
       resources,
+      runtimeBaseDir,
       "edgeclaw-memory-core-bundle.tar",
       "edgeclaw-memory-core",
     );
     const claudeCodeUiDir = this.ensureBundleExtracted(
       resources,
+      runtimeBaseDir,
       "claudecodeui-bundle.tar",
       "claudecodeui",
     );
     const claudeCodeMainDir = this.ensureBundleExtracted(
       resources,
+      runtimeBaseDir,
       "claude-code-main-bundle.tar",
       "claude-code-main",
     );
     return {
+      // Native binaries stay under the read-only Resources/ — no need to copy
+      // them out (they're already executable + signed in place).
       nodeBin: path.join(resources, "node-bin", "node"),
       bunBin: path.join(resources, "bun-bin", "bun"),
       serverEntry: path.join(claudeCodeUiDir, "server", "index.js"),
       serverCwd: claudeCodeUiDir,
       claudeCodeMainDir,
     };
+  }
+
+  // ───────────────────────── Orphan-process cleanup ───────────────────────
+  //
+  // The claudecodeui server spawns a Bun "cron daemon" as a *detached* sibling
+  // (so multiple UI servers across different windows can share state) AND a
+  // Bun "proxy" child that listens on PROXY_PORT. Neither is automatically
+  // killed when our top-level Node child dies; both can leak across app
+  // restarts.
+  //
+  // We clean up in two places:
+  //   • before each spawn (`cleanupOrphanRuntimeProcesses`) so a fresh start
+  //     never silently reuses a stale upstream
+  //   • after `stop()` so quitting Electron leaves no background processes
+  //
+  // Strategy: read the cron-daemon `owner.json` for a recorded processId, and
+  // probe PROXY_PORT for whoever is listening. Both go through SIGTERM with a
+  // short grace period before SIGKILL.
+
+  private async killPidGracefully(pid: number): Promise<void> {
+    if (!processExists(pid)) return;
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === "ESRCH") return;
+    }
+    await waitForProcessExit(pid, ORPHAN_TERM_WAIT_MS);
+    if (processExists(pid)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * Politely shut down the bun cron-daemon via its UNIX socket protocol.
+   * Returns true if the daemon acknowledged shutdown (or wasn't running).
+   *
+   * NOTE: owner.json.processId records the *ui-server* PID (the process that
+   * spawned the daemon), NOT the daemon's own PID, so we can't just kill it.
+   * The daemon listens on `~/.claude/cron-daemon.sock` and accepts a JSON
+   * `{ type: "shutdown" }` request which triggers its own clean exit.
+   */
+  private async shutdownCronDaemonViaSocket(): Promise<boolean> {
+    const socketPath = getCronDaemonSocketPath();
+    if (!fsSync.existsSync(socketPath)) return true;
+    return await new Promise<boolean>((resolve) => {
+      const socket = net.createConnection(socketPath);
+      let settled = false;
+      let buffer = "";
+      const finish = (ok: boolean): void => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        resolve(ok);
+      };
+      socket.setTimeout(2000, () => finish(false));
+      socket.once("connect", () => {
+        socket.write(JSON.stringify({ type: "shutdown" }) + "\n");
+      });
+      socket.once("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        const nl = buffer.indexOf("\n");
+        if (nl < 0) return;
+        try {
+          const reply = JSON.parse(buffer.slice(0, nl)) as { ok?: boolean };
+          finish(Boolean(reply.ok));
+        } catch {
+          finish(false);
+        }
+      });
+      socket.once("error", () => finish(false));
+    });
+  }
+
+  /**
+   * pgrep-fallback: if the socket-based shutdown fails (daemon hung, socket
+   * stale, etc.), find any bun process whose argv contains the unique
+   * "daemonMain(['serve'])" snippet and SIGTERM/SIGKILL it.
+   */
+  private async killOrphanCronDaemonByPgrep(): Promise<void> {
+    let out = "";
+    try {
+      out = execSync(
+        `/usr/bin/pgrep -f "daemonMain\\(\\['serve'\\]\\)" || true`,
+        { stdio: ["ignore", "pipe", "ignore"], timeout: 3000 },
+      ).toString("utf8");
+    } catch {
+      return;
+    }
+    const pids = out
+      .split("\n")
+      .map((s) => Number.parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid);
+    for (const pid of pids) {
+      await this.killPidGracefully(pid);
+    }
+  }
+
+  private async killOrphanCronDaemon(): Promise<void> {
+    const ok = await this.shutdownCronDaemonViaSocket();
+    if (!ok) {
+      await this.killOrphanCronDaemonByPgrep();
+    }
+  }
+
+  private listenerPidForPort(port: number): number | null {
+    try {
+      // -t = terse (PID only); -i :port -sTCP:LISTEN = TCP LISTEN sockets only.
+      const out = execSync(`/usr/sbin/lsof -nP -t -i :${port} -sTCP:LISTEN`, {
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 3000,
+      })
+        .toString("utf8")
+        .trim();
+      if (!out) return null;
+      const first = Number.parseInt(out.split("\n")[0] ?? "", 10);
+      return Number.isFinite(first) && first > 0 ? first : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async killOrphanProxy(): Promise<void> {
+    const pid = this.listenerPidForPort(PROXY_PORT);
+    if (pid === null) return;
+    // Avoid suicide: if the listener is the current process tree (shouldn't
+    // happen, but be defensive), skip.
+    if (pid === process.pid) return;
+    await this.killPidGracefully(pid);
+  }
+
+  private async cleanupOrphanRuntimeProcesses(): Promise<void> {
+    // Order: proxy first (its parent is the cron daemon's child of the
+    // previous UI server), then cron daemon.
+    await this.killOrphanProxy();
+    await this.killOrphanCronDaemon();
   }
 
   private clearStableTimer(): void {
@@ -381,6 +638,12 @@ export class ServerManager extends EventEmitter<ServerManagerEvents> {
 
   private async startProcessAndWaitReady(): Promise<{ port: number }> {
     await cleanupStaleOrOrphanPid();
+    // Kill leftover proxy/cron-daemon from a previous (crashed or
+    // SIGKILL'd-by-Activity-Monitor) run. ensureEdgeClawProxyRunning() in the
+    // ui server otherwise short-circuits when port 18080 is occupied and
+    // never gets a chance to attach its stdout pipe, so logs from the stale
+    // proxy never reach desktop.server.log.
+    await this.cleanupOrphanRuntimeProcesses();
 
     const chosenPort = await pickAvailablePort();
     // NOTE: proxy port is intentionally NOT overridden here. claudecodeui
@@ -415,6 +678,14 @@ export class ServerManager extends EventEmitter<ServerManagerEvents> {
       PATH: `${path.dirname(nodeBin)}:${path.dirname(bunBin)}:${
         process.env.PATH ?? ""
       }`,
+      // Reasoning-friendly default. Anything already present (env passthrough
+      // from launchctl, user shell, or buildRuntimeEnv() reading
+      // agents.main.params.maxOutputTokens) wins via the spread above… except
+      // process.env doesn't normally carry this var, so this default applies
+      // unless overridden. See REASONING_FRIENDLY_MAX_OUTPUT_TOKENS docstring.
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS:
+        process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ??
+        REASONING_FRIENDLY_MAX_OUTPUT_TOKENS,
     };
 
     // Mirror server stdout/stderr to ~/.edgeclaw/desktop.server.log so failures
@@ -528,6 +799,12 @@ export class ServerManager extends EventEmitter<ServerManagerEvents> {
     this.port = null;
 
     await this.removePidFile();
+    // The ui-server's SIGTERM handler stops the proxy and (after our
+    // edgeclawConfig.js patch) the cron daemon. As a belt-and-suspenders
+    // safety net — in case the parent died via SIGKILL, hung past the SIGTERM
+    // grace, or the user used `kill -9` from Activity Monitor — sweep any
+    // remaining orphans now so quitting EdgeClaw really leaves zero processes.
+    await this.cleanupOrphanRuntimeProcesses();
     this.stopRequested = false;
   }
 

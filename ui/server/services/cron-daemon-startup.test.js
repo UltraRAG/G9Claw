@@ -112,6 +112,10 @@ test('ensureCronDaemonForUiStartup starts the daemon when the socket is unavaila
         `const { daemonMain } = await import(${JSON.stringify('/tmp/claude-code-main/src/daemon/main.ts')}); await daemonMain(['serve'])`
       ]
     }),
+    // Simulate "log file unavailable" so we exercise the fd=null branch and
+    // keep the historical stdio:'ignore' contract (used by tests that don't
+    // care about logging).
+    openLogFdFn: () => ({ fd: null, logPath: '/tmp/cron-daemon.log' }),
     sleepFn: async () => {}
   });
 
@@ -134,6 +138,37 @@ test('ensureCronDaemonForUiStartup starts the daemon when the socket is unavaila
   assert.equal(spawnCalls[0].unrefCalled, true);
 });
 
+test('ensureCronDaemonForUiStartup pipes daemon stdio to the resolved log fd when available', async () => {
+  const spawnCalls = [];
+  let requestCount = 0;
+
+  await ensureCronDaemonForUiStartup({
+    sendCronDaemonRequestFn: async () => {
+      requestCount += 1;
+      // First two pings (probe + post-lock probe) are unavailable so we go
+      // through the spawn branch; subsequent pings succeed.
+      if (requestCount <= 2) throw createUnavailableError('ENOENT');
+      return { ok: true, data: { type: 'pong', runtimes: [] } };
+    },
+    spawnFn: (command, args, options) => {
+      spawnCalls.push({ command, args, options });
+      return { unref() {} };
+    },
+    buildCronDaemonSpawnCommandFn: () => ({
+      command: 'bun',
+      args: ['--preload', '/tmp/preload.ts', '-e', 'noop']
+    }),
+    // Pretend openSync returned fd=42 — startCronDaemonDetached should hand it
+    // to spawn as both stdout and stderr (stdin remains 'ignore').
+    openLogFdFn: () => ({ fd: 42, logPath: '/tmp/cron-daemon.log' }),
+    sleepFn: async () => {}
+  });
+
+  assert.equal(spawnCalls.length, 1);
+  assert.deepEqual(spawnCalls[0].options.stdio, ['ignore', 42, 42]);
+  assert.equal(spawnCalls[0].options.detached, true);
+});
+
 test('ensureCronDaemonForUiStartup fails fast when the daemon never becomes healthy', async () => {
   let requestCount = 0;
   let sleepCount = 0;
@@ -152,6 +187,7 @@ test('ensureCronDaemonForUiStartup fails fast when the daemon never becomes heal
         command: 'claude',
         args: ['daemon', 'serve']
       }),
+      openLogFdFn: () => ({ fd: null, logPath: '/tmp/cron-daemon.log' }),
       sleepFn: async () => {
         sleepCount += 1;
       },

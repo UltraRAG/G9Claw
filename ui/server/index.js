@@ -81,7 +81,7 @@ import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './util
 import { getClaudeRuntimeModelConfig } from './utils/claude-runtime-config.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, userDb } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
-import { sendCronDaemonRequest } from './services/cron-daemon-owner.js';
+import { sendCronDaemonRequest, shutdownOwnedCronDaemon } from './services/cron-daemon-owner.js';
 import { startCronDaemonClientLease } from './services/cron-daemon-client-lease.js';
 import { createAlwaysOnHeartbeatManager } from './always-on-heartbeat.js';
 import { startDiscoveryTriggerClient } from './services/discovery-trigger-client.js';
@@ -2688,6 +2688,14 @@ async function startServer() {
                         stopChromeHealthCheck();
                         shutdownGlobalChrome();
                     } catch { /* Chrome may not have been started */ }
+                    // Politely shut down the cron daemon WE spawned (token-checked
+                    // inside shutdownOwnedCronDaemon, so we don't kill a daemon
+                    // that another ui server owns). Without this, the detached
+                    // bun daemon survives Electron quit and shows up as an
+                    // orphaned process in Activity Monitor.
+                    try {
+                        await shutdownOwnedCronDaemon();
+                    } catch { /* already-down / not owner / socket closed */ }
                 } finally {
                     process.exit(0);
                 }

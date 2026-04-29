@@ -541,6 +541,32 @@ export function buildRuntimeEnv(config) {
   }
   env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxyPort}`;
 
+  // Reasoning models (MiniMax-M2.7, DeepSeek-R1, etc.) emit large thinking
+  // blocks BEFORE the answer, so the default upper-tokens budget needs to
+  // accommodate (thinking + answer). User can pin a value in
+  // ~/.edgeclaw/config.yaml under `agents.main.params.maxOutputTokens` (or
+  // `max_tokens`); we propagate it as CLAUDE_CODE_MAX_OUTPUT_TOKENS which the
+  // claude-code-main API layer (services/api/claude.ts) honours via its
+  // validateBoundedIntEnvVar fence (capped to provider's upperLimit).
+  // See docs/desktop-app/runtime-tuning.md for sizing guidance.
+  const mainParams = normalized.agents?.main?.params ?? {};
+  const requestedMaxOutput = Number.parseInt(
+    String(
+      mainParams.maxOutputTokens ??
+        mainParams.max_output_tokens ??
+        mainParams.max_tokens ??
+        ''
+    ).trim(),
+    10
+  );
+  if (Number.isFinite(requestedMaxOutput) && requestedMaxOutput > 0) {
+    env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(requestedMaxOutput);
+  } else if (process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS) {
+    // Pre-existing env wins over our default (allows ServerManager-injected
+    // 16000 fallback to flow through unchanged).
+    env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+  }
+
   const memory = resolveModel(normalized, normalized.memory.model, { allowMissing: true });
   if (memory) {
     env.EDGECLAW_MEMORY_MODEL = memory.model;

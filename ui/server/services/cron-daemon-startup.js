@@ -1,5 +1,6 @@
 import path from 'path';
-import { promises as fs } from 'fs';
+import { promises as fs, openSync } from 'fs';
+import { mkdirSync } from 'fs';
 import os from 'os';
 import { spawn } from 'child_process';
 import { resolveClaudeCodeMainRoot } from '../claude-code-main-path.js';
@@ -15,6 +16,38 @@ function getClaudeConfigHomeDir() {
 
 function getCronDaemonStartLockPath() {
   return path.join(getClaudeConfigHomeDir(), 'cron-daemon', 'start.lock');
+}
+
+/**
+ * Resolve a log file path for the detached cron daemon.
+ *
+ * Prior to this, the daemon spawned with `stdio: 'ignore'` so all of its
+ * lifecycle output, errors, and discovery-scheduler trace was silently
+ * discarded — making post-mortem debugging on the EdgeClaw Desktop install
+ * basically impossible (`~/.edgeclaw/desktop.server.log` only captured the
+ * UI server's own output, not its detached children).
+ *
+ * We honour an explicit override via `EDGECLAW_CRON_DAEMON_LOG`; otherwise we
+ * default to `~/.edgeclaw/cron-daemon.log` (parallel to `desktop.server.log`).
+ * The directory is created on demand so this works pre-onboarding too.
+ */
+function resolveCronDaemonLogPath() {
+  const override = process.env.EDGECLAW_CRON_DAEMON_LOG?.trim();
+  if (override) return override;
+  return path.join(os.homedir(), '.edgeclaw', 'cron-daemon.log');
+}
+
+function openCronDaemonLogFd() {
+  const logPath = resolveCronDaemonLogPath();
+  try {
+    mkdirSync(path.dirname(logPath), { recursive: true });
+    const fd = openSync(logPath, 'a');
+    return { fd, logPath };
+  } catch (err) {
+    // Fall back to ignore — better to lose stdout than to fail to spawn.
+    console.warn(`[WARN] Cron daemon log unavailable (${logPath}): ${err?.message ?? err}`);
+    return { fd: null, logPath };
+  }
 }
 
 function sleep(ms) {
@@ -94,17 +127,27 @@ export async function pingCronDaemon({
 
 export function startCronDaemonDetached({
   spawnFn = spawn,
-  buildCronDaemonSpawnCommandFn = buildCronDaemonSpawnCommand
+  buildCronDaemonSpawnCommandFn = buildCronDaemonSpawnCommand,
+  openLogFdFn = openCronDaemonLogFd
 } = {}) {
   const { command, args } = buildCronDaemonSpawnCommandFn();
+  const { fd, logPath } = openLogFdFn();
+  // Detach so multiple ui servers (e.g. dev + EdgeClaw Desktop side-by-side)
+  // can share state through ~/.claude/cron-daemon.sock, but pipe stdout/stderr
+  // into a real log file instead of /dev/null so the daemon is debuggable
+  // post-mortem. Stdin stays 'ignore' (the daemon never reads input).
+  const stdio = fd === null ? 'ignore' : ['ignore', fd, fd];
   const child = spawnFn(command, args, {
     cwd: process.cwd(),
     env: process.env,
     detached: true,
-    stdio: 'ignore'
+    stdio
   });
   if (typeof child?.unref === 'function') {
     child.unref();
+  }
+  if (fd !== null) {
+    console.log(`[INFO] Cron daemon spawned, output → ${logPath}`);
   }
   return child;
 }
@@ -113,6 +156,7 @@ export async function ensureCronDaemonForUiStartup({
   sendCronDaemonRequestFn = sendCronDaemonRequest,
   spawnFn = spawn,
   buildCronDaemonSpawnCommandFn = buildCronDaemonSpawnCommand,
+  openLogFdFn = openCronDaemonLogFd,
   sleepFn = sleep,
   retryAttempts = DEFAULT_RETRY_ATTEMPTS,
   retryDelayMs = DEFAULT_RETRY_DELAY_MS
@@ -136,7 +180,8 @@ export async function ensureCronDaemonForUiStartup({
 
       startCronDaemonDetached({
         spawnFn,
-        buildCronDaemonSpawnCommandFn
+        buildCronDaemonSpawnCommandFn,
+        openLogFdFn
       });
 
       let lastError = null;

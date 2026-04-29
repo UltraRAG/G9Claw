@@ -26,6 +26,7 @@ const configPath = path.join(os.homedir(), ".edgeclaw", "config.yaml");
 const serverManager = new ServerManager({
   dev: isDev,
   devRepoRoot: isDev ? devRepoRoot : undefined,
+  appVersion: app.getVersion(),
 });
 
 let mainWindow: BrowserWindow | null = null;
