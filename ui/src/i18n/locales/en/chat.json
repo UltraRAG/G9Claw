@@ -150,6 +150,7 @@
   "commandMenu": {
     "empty": "No commands available",
     "groups": {
+      "pinned": "Pinned",
       "frequent": "Frequently used",
       "builtin": "Built-in",
       "project": "Project",

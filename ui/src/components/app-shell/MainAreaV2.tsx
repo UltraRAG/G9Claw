@@ -7,6 +7,7 @@ import {
   Folder,
   PanelLeftOpen,
   Radio,
+  Sparkles,
   type LucideIcon,
 } from 'lucide-react';
 import type { AppTab, Project, ProjectDiscoveryPlansResponse, ProjectSession } from '../../types/app';
@@ -28,6 +29,7 @@ type Tab = { id: AppTab; labelKey: string; icon: LucideIcon };
 const TABS: Tab[] = [
   { id: 'chat',      labelKey: 'tabs.chat',      icon: Bot },
   { id: 'files',     labelKey: 'tabs.files',     icon: Folder },
+  { id: 'skills',    labelKey: 'tabs.skills',    icon: Sparkles },
   { id: 'dashboard', labelKey: 'tabs.dashboard', icon: BarChart3 },
   { id: 'memory',    labelKey: 'tabs.memory',    icon: Database },
   { id: 'always-on', labelKey: 'tabs.alwaysOn',  icon: Radio },

@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Loader2,
   RefreshCw,
+  X,
 } from 'lucide-react';
 import type { Project } from '../../types/app';
 import { useFileTreeData } from '../file-tree/hooks/useFileTreeData';
@@ -18,6 +19,7 @@ import { cn } from '../../lib/utils.js';
 type FilesV2Props = {
   selectedProject: Project | null;
   onFileOpen?: (filePath: string) => void;
+  onClose?: () => void;
 };
 
 type FlattenedNode = {
@@ -42,7 +44,7 @@ function flatten(
   return out;
 }
 
-export default function FilesV2({ selectedProject, onFileOpen }: FilesV2Props) {
+export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV2Props) {
   const { t } = useTranslation();
   const { files, loading, refreshFiles } = useFileTreeData(selectedProject);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -113,6 +115,17 @@ export default function FilesV2({ selectedProject, onFileOpen }: FilesV2Props) {
           >
             <ChevronsDownUp className="h-3.5 w-3.5" strokeWidth={1.75} />
           </button>
+          {onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-neutral-600 transition hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-900"
+              title={t('fileTree.close', { defaultValue: 'Close file tree' }) as string}
+              aria-label={t('fileTree.close', { defaultValue: 'Close file tree' }) as string}
+            >
+              <X className="h-3.5 w-3.5" strokeWidth={1.75} />
+            </button>
+          ) : null}
         </div>
       </div>
 

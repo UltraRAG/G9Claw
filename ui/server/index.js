@@ -62,6 +62,7 @@ import taskmasterRoutes from './routes/taskmaster.js';
 import memoryRoutes, { MEMORY_DASHBOARD_DIR } from './routes/memory.js';
 import mcpUtilsRoutes from './routes/mcp-utils.js';
 import commandsRoutes from './routes/commands.js';
+import skillsRoutes from './routes/skills.js';
 import settingsRoutes from './routes/settings.js';
 import configRoutes from './routes/config.js';
 import { startEdgeClawConfigWatcher, stopEdgeClawConfigWatcher } from './services/edgeclawConfigWatcher.js';
@@ -570,6 +571,10 @@ app.use('/api/mcp-utils', authenticateToken, mcpUtilsRoutes);
 
 // Commands API Routes (protected)
 app.use('/api/commands', authenticateToken, commandsRoutes);
+
+// Skills API Routes (protected) — list/edit/install skills surfaced in the
+// top-right Skills tab. Backed by ~/.claude/skills/ and <project>/.claude/skills/.
+app.use('/api/skills', authenticateToken, skillsRoutes);
 
 // Settings API Routes (protected)
 app.use('/api/settings', authenticateToken, settingsRoutes);

@@ -3,16 +3,54 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { CURSOR_MODELS, CODEX_MODELS } from '../../shared/modelConstants.js';
 import { parseFrontmatter } from '../utils/frontmatter.js';
 import { getClaudeRuntimeModelConfig, getClaudeRuntimeModelValues } from '../utils/claude-runtime-config.js';
 import { executeAlwaysOnSlashCommand } from '../always-on-slash.js';
 import { executeTurnkeySlashCommand } from '../turnkey-slash.js';
 
+const execFileAsync = promisify(execFile);
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const router = express.Router();
+
+/**
+ * Slash commands curated to always appear at the top of the menu in this exact
+ * order, regardless of usage history. Names that don't resolve to a real
+ * on-disk command/skill or a bundled stub below are silently dropped.
+ */
+const PINNED_COMMAND_NAMES = [
+  '/skill_install',
+  '/projects',
+  '/switch-project',
+];
+
+/**
+ * Bundled skills that live inside the claude-code CLI binary (registered via
+ * `registerBundledSkill` in claude-code-main/src/skills/bundled/*.ts). They are
+ * not on disk, so the directory scanners can't see them — we surface stub
+ * entries so the UI menu can suggest them. The actual execution still happens
+ * agent-side: typing `/projects` sends the slash text through, the proxy hands
+ * it to the bundled-skill registry, and the result streams back.
+ */
+const BUNDLED_SKILL_STUBS = [
+  {
+    name: '/projects',
+    description:
+      'List every Claude Code project visible to the TUI, gateway, and claudecodeui (read from ~/.claude/projects and ~/.claude/project-config.json).',
+    metadata: { type: 'bundled-skill' },
+  },
+  {
+    name: '/switch-project',
+    description:
+      'Switch the active project for the current gateway/IM conversation (no-op in TUI / claudecodeui — those manage active project themselves).',
+    metadata: { type: 'bundled-skill', argumentHint: '<project name>' },
+  },
+];
 
 /**
  * Recursively scan directory for command files (.md)
@@ -79,6 +117,73 @@ async function scanCommandsDirectory(dir, baseDir, namespace) {
 }
 
 /**
+ * Scan `.claude/skills/` for skill-format slash commands. Each immediate
+ * subdirectory `<dir>/<name>/SKILL.md` becomes the slash command `/<name>`.
+ * Mirrors claude-code-main's `loadSkillsFromSkillsDir` (loadSkillsDir.ts:407)
+ * so disk semantics stay aligned: directory format only, name = parent dir,
+ * frontmatter parsed for description/metadata.
+ *
+ * @param {string} dir - Path to the `.claude/skills/` directory
+ * @param {string} namespace - 'project' or 'user'
+ * @returns {Promise<Array>} Skill command objects
+ */
+async function scanSkillsDirectory(dir, namespace) {
+  const skills = [];
+
+  try {
+    await fs.access(dir);
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) {
+        continue;
+      }
+
+      const skillDir = path.join(dir, entry.name);
+      const skillFile = path.join(skillDir, 'SKILL.md');
+
+      let content;
+      try {
+        content = await fs.readFile(skillFile, 'utf8');
+      } catch (err) {
+        if (err.code !== 'ENOENT') {
+          console.error(`Error reading SKILL.md at ${skillFile}:`, err.message);
+        }
+        continue;
+      }
+
+      try {
+        const { data: frontmatter, content: skillContent } = parseFrontmatter(content);
+
+        const skillName = '/' + entry.name;
+        let description = frontmatter.description || '';
+        if (!description) {
+          const firstLine = skillContent.trim().split('\n')[0];
+          description = firstLine.replace(/^#+\s*/, '').trim();
+        }
+
+        skills.push({
+          name: skillName,
+          path: skillFile,
+          relativePath: path.join(entry.name, 'SKILL.md'),
+          description,
+          namespace,
+          metadata: { ...frontmatter, type: 'skill' },
+        });
+      } catch (err) {
+        console.error(`Error parsing skill ${skillFile}:`, err.message);
+      }
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT' && err.code !== 'EACCES') {
+      console.error(`Error scanning skills directory ${dir}:`, err.message);
+    }
+  }
+
+  return skills;
+}
+
+/**
  * Built-in commands that are always available
  */
 const builtInCommands = [
@@ -141,7 +246,23 @@ const builtInCommands = [
     description: 'Run turnkey workflow subcommands (for example: /turnkey start)',
     namespace: 'builtin',
     metadata: { type: 'builtin' }
-  }
+  },
+  {
+    name: '/switch-project',
+    description: 'Switch to another project by name (for example: /switch-project xhs-voxcpm)',
+    namespace: 'builtin',
+    metadata: { type: 'builtin' }
+  },
+  {
+    name: '/skill_install',
+    description:
+      'Install a skill from clawhub.com. Auto-targets ~/.claude/skills/<slug> in general chat and <project>/.claude/skills/<slug> when a project is active. Use --global / --project to override.',
+    namespace: 'builtin',
+    metadata: {
+      type: 'builtin',
+      argumentHint: '<slug> [--version <v>] [--force] [--global|--project] [--registry <url>]',
+    },
+  },
 ];
 
 /**
@@ -418,55 +539,340 @@ Custom commands can be created in:
     return await executeAlwaysOnSlashCommand(args, context);
   },
 
-  '/turnkey': async (args) => executeTurnkeySlashCommand(args)
+  '/turnkey': async (args) => executeTurnkeySlashCommand(args),
+
+  '/switch-project': async (args) => {
+    // Trim quotes / whitespace; the rest of the project resolution (matching
+    // against the user's project list, navigating, expanding the sidebar
+    // entry) happens on the client where we already have the projects state.
+    const requested = (args || []).join(' ').trim().replace(/^["']|["']$/g, '');
+    if (!requested) {
+      return {
+        type: 'builtin',
+        action: 'switchProject',
+        data: {
+          error: true,
+          message: 'Usage: /switch-project <project-name>'
+        }
+      };
+    }
+    return {
+      type: 'builtin',
+      action: 'switchProject',
+      data: {
+        projectName: requested,
+        message: `Switching to project: ${requested}`
+      }
+    };
+  },
+
+  // /skill_install — server-side clawhub install. Deterministic, no model in
+  // the loop.
+  //
+  // Scope policy (auto-detected, override-able):
+  //   - In general chat (no projectPath in context) → user scope:
+  //         workdir = ~/.claude     dir = skills      → ~/.claude/skills/<slug>/
+  //   - In a project's chat (projectPath set)        → project scope:
+  //         workdir = <projectPath> dir = .claude/skills → <project>/.claude/skills/<slug>/
+  //   - Explicit override: --global forces user scope, --project forces project
+  //     scope (errors out if no projectPath available).
+  //
+  // Any positional after slug is rejected. Slug is validated against a strict
+  // regex to block path traversal — execFile already prevents shell injection
+  // since args are passed as an array, but we also refuse `..` defensively.
+  '/skill_install': async (args, context) => {
+    const argList = Array.isArray(args) ? args : [];
+
+    let slug = null;
+    let version = null;
+    let force = false;
+    let scopeOverride = null; // 'user' | 'project' | null
+    let registry = null;
+
+    for (let i = 0; i < argList.length; i++) {
+      const token = argList[i];
+      if (token === '--version' && i + 1 < argList.length) {
+        version = argList[++i];
+        continue;
+      }
+      if (token === '--force') { force = true; continue; }
+      if (token === '--project') { scopeOverride = 'project'; continue; }
+      if (token === '--global' || token === '--user') { scopeOverride = 'user'; continue; }
+      if (token === '--registry' && i + 1 < argList.length) {
+        registry = argList[++i];
+        continue;
+      }
+      if (token.startsWith('--')) {
+        return {
+          type: 'builtin',
+          action: 'skillInstall',
+          data: { error: true, message: `Unknown flag: ${token}` },
+        };
+      }
+      if (slug === null) { slug = token; continue; }
+      return {
+        type: 'builtin',
+        action: 'skillInstall',
+        data: { error: true, message: `Unexpected positional argument: ${token}` },
+      };
+    }
+
+    if (!slug) {
+      return {
+        type: 'builtin',
+        action: 'skillInstall',
+        data: {
+          error: true,
+          message:
+            'Usage: /skill_install <slug> [--version <ver>] [--force] [--global|--project] [--registry <url>]',
+        },
+      };
+    }
+
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(slug) || slug.includes('..')) {
+      return {
+        type: 'builtin',
+        action: 'skillInstall',
+        data: {
+          error: true,
+          message: `Invalid slug "${slug}". Allowed: [a-zA-Z0-9][a-zA-Z0-9._-]{0,99}, no "..".`,
+        },
+      };
+    }
+
+    const projectPath = context?.projectPath || null;
+
+    // Some "projects" are actually the general-chat synthetic cwd (configured
+    // in edgeclaw runtimePaths.generalCwd). They look like a real projectPath
+    // but the user's mental model is "I'm in general chat" → user/global scope.
+    // Detect the two known general-cwd patterns. If a user re-points generalCwd
+    // elsewhere, they can still force user scope with --global.
+    const GENERAL_CWD_PATHS = [
+      path.join(os.homedir(), 'Claude', 'general'),
+      path.join(os.homedir(), '.claude-gateway', 'general'),
+    ].map((p) => path.resolve(p));
+    const isGeneralCwd =
+      projectPath && GENERAL_CWD_PATHS.includes(path.resolve(projectPath));
+    const effectiveProjectPath = isGeneralCwd ? null : projectPath;
+
+    const scope = scopeOverride || (effectiveProjectPath ? 'project' : 'user');
+
+    let workdir;
+    let dir;
+    if (scope === 'project') {
+      if (!effectiveProjectPath) {
+        return {
+          type: 'builtin',
+          action: 'skillInstall',
+          data: {
+            error: true,
+            message: isGeneralCwd
+              ? '--project cannot be used in general chat (no real project active). Drop --project to install globally, or open a project chat first.'
+              : '--project requires an active project (no projectPath in context).',
+          },
+        };
+      }
+      workdir = effectiveProjectPath;
+      dir = path.join('.claude', 'skills');
+    } else {
+      workdir = path.join(os.homedir(), '.claude');
+      dir = 'skills';
+    }
+    const installPath = path.join(workdir, dir, slug);
+
+    // --no-input is a global flag, must come BEFORE the subcommand.
+    const clawArgs = ['--no-input', '--workdir', workdir, '--dir', dir];
+    if (registry) clawArgs.push('--registry', registry);
+    clawArgs.push('install', slug);
+    if (version) clawArgs.push('--version', version);
+    if (force) clawArgs.push('--force');
+
+    let stdout = '';
+    let stderr = '';
+    let runError = null;
+    try {
+      const result = await execFileAsync('clawhub', clawArgs, {
+        timeout: 120_000,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      stdout = result.stdout || '';
+      stderr = result.stderr || '';
+    } catch (e) {
+      runError = e;
+      stdout = e.stdout || '';
+      stderr = e.stderr || '';
+    }
+
+    let installed = false;
+    let skillMeta = null;
+    try {
+      await fs.access(path.join(installPath, 'SKILL.md'));
+      installed = true;
+      try {
+        const content = await fs.readFile(path.join(installPath, 'SKILL.md'), 'utf8');
+        const { data: fm } = parseFrontmatter(content);
+        skillMeta = {
+          name: fm.name || slug,
+          description: fm.description || '',
+          version: fm.version || null,
+        };
+      } catch {
+        /* SKILL.md exists but unreadable/unparseable — keep installed=true */
+      }
+    } catch {
+      /* SKILL.md missing — installed stays false */
+    }
+
+    if (runError && runError.code === 'ENOENT') {
+      return {
+        type: 'builtin',
+        action: 'skillInstall',
+        data: {
+          error: true,
+          message:
+            'clawhub CLI not found in PATH. Install it with `npm install -g clawhub`, then retry.',
+        },
+      };
+    }
+
+    // Detect "suspicious skill, --force required" — clawhub's --no-input mode
+    // refuses VirusTotal-flagged skills without explicit consent. Surface a
+    // copy-pasteable retry command instead of burying the hint in stderr.
+    const needsForce =
+      !installed &&
+      !force &&
+      (stderr || stdout).match(/Use --force to install suspicious/i) !== null;
+
+    let retryCommand = null;
+    if (needsForce) {
+      const overrideFlag =
+        scopeOverride === 'user'
+          ? ' --global'
+          : scopeOverride === 'project'
+            ? ' --project'
+            : '';
+      const versionFlag = version ? ` --version ${version}` : '';
+      const registryFlag = registry ? ` --registry ${registry}` : '';
+      retryCommand = `/skill_install ${slug}${overrideFlag} --force${versionFlag}${registryFlag}`;
+    }
+
+    return {
+      type: 'builtin',
+      action: 'skillInstall',
+      data: {
+        slug,
+        version: version || null,
+        scope,
+        scopeAutoDetected: scopeOverride === null,
+        projectPath: effectiveProjectPath,
+        rawProjectPath: projectPath,
+        isGeneralCwd,
+        installPath,
+        installed,
+        skillMeta,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        exitCode: runError ? (runError.code === undefined ? 1 : runError.code) : 0,
+        errorMessage: runError ? (runError.shortMessage || runError.message) : null,
+        needsForce,
+        retryCommand,
+      },
+    };
+  },
 };
 
 /**
  * POST /api/commands/list
  * List all available commands from project and user directories
+ *
+ * Discovery layout (mirrors claude-code-main where possible):
+ *   - Built-in commands: hardcoded in this file (handled by builtInHandlers).
+ *   - Bundled skills: hardcoded stubs (BUNDLED_SKILL_STUBS) — actual handlers
+ *     live in claude-code-main; we only surface them so the UI menu shows them.
+ *   - On-disk commands: `.claude/commands/**\/*.md` (project + user).
+ *   - On-disk skills:   `.claude/skills/<name>/SKILL.md` (project + user).
+ *
+ * Dedup: when the same `/<name>` exists in multiple places, project wins over
+ * user, and `commands/` wins over `skills/` (mirrors claude-code's first-seen
+ * preference). Bundled stubs only surface when no on-disk override exists.
+ *
+ * Pinning: PINNED_COMMAND_NAMES are reassigned `namespace: 'pinned'` so the
+ * frontend menu pulls them into a curated top group, in fixed order.
  */
 router.post('/list', async (req, res) => {
   try {
     const { projectPath } = req.body;
-    const allCommands = [...builtInCommands];
+    const homeDir = os.homedir();
 
-    // Scan project-level commands (.claude/commands/)
+    const customCommandSources = [];
+
     if (projectPath) {
       const projectCommandsDir = path.join(projectPath, '.claude', 'commands');
-      const projectCommands = await scanCommandsDirectory(
-        projectCommandsDir,
-        projectCommandsDir,
-        'project'
-      );
-      allCommands.push(...projectCommands);
+      const projectSkillsDir = path.join(projectPath, '.claude', 'skills');
+      const [projectCommands, projectSkills] = await Promise.all([
+        scanCommandsDirectory(projectCommandsDir, projectCommandsDir, 'project'),
+        scanSkillsDirectory(projectSkillsDir, 'project'),
+      ]);
+      customCommandSources.push(...projectCommands, ...projectSkills);
     }
 
-    // Scan user-level commands (~/.claude/commands/)
-    const homeDir = os.homedir();
     const userCommandsDir = path.join(homeDir, '.claude', 'commands');
-    const userCommands = await scanCommandsDirectory(
-      userCommandsDir,
-      userCommandsDir,
-      'user'
-    );
-    allCommands.push(...userCommands);
+    const userSkillsDir = path.join(homeDir, '.claude', 'skills');
+    const [userCommands, userSkills] = await Promise.all([
+      scanCommandsDirectory(userCommandsDir, userCommandsDir, 'user'),
+      scanSkillsDirectory(userSkillsDir, 'user'),
+    ]);
+    customCommandSources.push(...userCommands, ...userSkills);
 
-    // Separate built-in and custom commands
-    const customCommands = allCommands.filter(cmd => cmd.namespace !== 'builtin');
+    // Track every name we've committed so far to a single namespace. Built-in
+    // names take precedence over disk customs and bundled stubs (their server-
+    // side handlers in `builtInHandlers` are authoritative).
+    const seenNames = new Set(builtInCommands.map((cmd) => cmd.name));
 
-    // Sort commands alphabetically by name
-    customCommands.sort((a, b) => a.name.localeCompare(b.name));
+    const dedupedCustom = [];
+    for (const cmd of customCommandSources) {
+      if (seenNames.has(cmd.name)) continue;
+      seenNames.add(cmd.name);
+      dedupedCustom.push(cmd);
+    }
+
+    const builtInsWithBundled = [...builtInCommands];
+    for (const stub of BUNDLED_SKILL_STUBS) {
+      if (seenNames.has(stub.name)) continue;
+      builtInsWithBundled.push({
+        ...stub,
+        namespace: 'builtin',
+      });
+      seenNames.add(stub.name);
+    }
+
+    dedupedCustom.sort((a, b) => a.name.localeCompare(b.name));
+
+    const pinnedSet = new Set(PINNED_COMMAND_NAMES);
+    const promote = (cmd) =>
+      pinnedSet.has(cmd.name) ? { ...cmd, namespace: 'pinned' } : cmd;
+    const builtIn = builtInsWithBundled.map(promote);
+    const custom = dedupedCustom.map(promote);
+
+    const indexByName = new Map();
+    for (const cmd of [...builtIn, ...custom]) {
+      if (!indexByName.has(cmd.name)) indexByName.set(cmd.name, cmd);
+    }
+    const pinnedOrdered = PINNED_COMMAND_NAMES
+      .map((name) => indexByName.get(name))
+      .filter(Boolean);
 
     res.json({
-      builtIn: builtInCommands,
-      custom: customCommands,
-      count: allCommands.length
+      builtIn,
+      custom,
+      pinned: pinnedOrdered,
+      count: builtIn.length + custom.length,
     });
   } catch (error) {
     console.error('Error listing commands:', error);
     res.status(500).json({
       error: 'Failed to list commands',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -485,13 +891,15 @@ router.post('/load', async (req, res) => {
       });
     }
 
-    // Security: Prevent path traversal
+    // Security: Prevent path traversal. Allow paths under any
+    // `.claude/commands` or `.claude/skills` directory (project or user).
     const resolvedPath = path.resolve(commandPath);
-    if (!resolvedPath.startsWith(path.resolve(os.homedir())) &&
-        !resolvedPath.includes('.claude/commands')) {
+    const inHome = resolvedPath.startsWith(path.resolve(os.homedir()));
+    const inClaudeSubdir = /\.claude\/(commands|skills)\//.test(resolvedPath);
+    if (!inHome && !inClaudeSubdir) {
       return res.status(403).json({
         error: 'Access denied',
-        message: 'Command must be in .claude/commands directory'
+        message: 'Command must be in a .claude/commands or .claude/skills directory'
       });
     }
 
@@ -555,7 +963,49 @@ router.post('/execute', async (req, res) => {
       }
     }
 
-    // Handle custom commands
+    // Bundled-skill stubs (e.g. /projects, /add-project) have no on-disk
+    // file — claude-code-main's `registerBundledSkill` registry handles the
+    // actual execution. Send the raw `/<name> <args>` text back as a
+    // passthrough so the frontend submits it as normal user input; the proxy's
+    // slash parser then routes to the bundled skill.
+    const isBundledStub = BUNDLED_SKILL_STUBS.some(
+      (stub) => stub.name === commandName,
+    );
+    if (isBundledStub) {
+      const argsString = args.join(' ').trim();
+      const passthroughContent = argsString
+        ? `${commandName} ${argsString}`
+        : commandName;
+      return res.json({
+        type: 'custom',
+        command: commandName,
+        content: passthroughContent,
+        metadata: { type: 'bundled-skill', passthrough: true },
+        hasFileIncludes: false,
+        hasBashCommands: false,
+      });
+    }
+
+    // On-disk skills (`.claude/skills/<name>/SKILL.md`) must NOT be expanded
+    // server-side and submitted as raw user input — that would dump the whole
+    // SKILL.md body into chat. Instead, passthrough the slash text so the
+    // proxy's slash parser invokes SkillTool with the procedural body.
+    if (commandPath && /\/\.claude\/skills\/[^/]+\/SKILL\.md$/i.test(commandPath)) {
+      const argsString = args.join(' ').trim();
+      const passthroughContent = argsString
+        ? `${commandName} ${argsString}`
+        : commandName;
+      return res.json({
+        type: 'custom',
+        command: commandName,
+        content: passthroughContent,
+        metadata: { type: 'skill', passthrough: true },
+        hasFileIncludes: false,
+        hasBashCommands: false,
+      });
+    }
+
+    // Handle custom commands (legacy `.claude/commands/<name>.md` only)
     if (!commandPath) {
       return res.status(400).json({
         error: 'Command path is required for custom commands'
@@ -563,21 +1013,28 @@ router.post('/execute', async (req, res) => {
     }
 
     // Load command content
-    // Security: validate commandPath is within allowed directories
+    // Security: validate commandPath is within allowed directories.
+    // Allow `.claude/{commands,skills}/` for both user (~) and project scopes.
     {
       const resolvedPath = path.resolve(commandPath);
-      const userBase = path.resolve(path.join(os.homedir(), '.claude', 'commands'));
-      const projectBase = context?.projectPath
-        ? path.resolve(path.join(context.projectPath, '.claude', 'commands'))
-        : null;
+      const allowedBases = [
+        path.resolve(path.join(os.homedir(), '.claude', 'commands')),
+        path.resolve(path.join(os.homedir(), '.claude', 'skills')),
+      ];
+      if (context?.projectPath) {
+        allowedBases.push(
+          path.resolve(path.join(context.projectPath, '.claude', 'commands')),
+          path.resolve(path.join(context.projectPath, '.claude', 'skills')),
+        );
+      }
       const isUnder = (base) => {
         const rel = path.relative(base, resolvedPath);
         return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
       };
-      if (!(isUnder(userBase) || (projectBase && isUnder(projectBase)))) {
+      if (!allowedBases.some(isUnder)) {
         return res.status(403).json({
           error: 'Access denied',
-          message: 'Command must be in .claude/commands directory'
+          message: 'Command must be in a .claude/commands or .claude/skills directory'
         });
       }
     }

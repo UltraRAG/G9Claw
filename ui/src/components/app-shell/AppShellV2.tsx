@@ -220,6 +220,51 @@ export default function AppShellV2() {
     };
   }, [openSettings]);
 
+  // Resolve a project by name (exact match first, then case-insensitive on
+  // both the directory name and the user-facing displayName, then a relaxed
+  // case-insensitive substring) and select it via the same handler the
+  // sidebar uses, so the chat slash command `/switch-project xxx` can hop
+  // between projects without a manual click.
+  const switchProject = useCallback(
+    (projectName: string): boolean => {
+      const trimmed = (projectName ?? '').trim();
+      if (!trimmed) return false;
+
+      const list = sidebarSharedProps.projects;
+      const exact = list.find((p) => p.name === trimmed);
+      const ciExact =
+        exact ??
+        list.find(
+          (p) =>
+            p.name.toLowerCase() === trimmed.toLowerCase() ||
+            (p.displayName ?? '').toLowerCase() === trimmed.toLowerCase(),
+        );
+      const fuzzy =
+        ciExact ??
+        list.find(
+          (p) =>
+            p.name.toLowerCase().includes(trimmed.toLowerCase()) ||
+            (p.displayName ?? '').toLowerCase().includes(trimmed.toLowerCase()),
+        );
+      const target = fuzzy;
+      if (!target) return false;
+
+      handleProjectSelect(target);
+      navigate(`/p/${encodeURIComponent(target.name)}`);
+      return true;
+    },
+    [handleProjectSelect, navigate, sidebarSharedProps.projects],
+  );
+
+  useEffect(() => {
+    window.switchProject = switchProject;
+    return () => {
+      if (window.switchProject === switchProject) {
+        delete window.switchProject;
+      }
+    };
+  }, [switchProject]);
+
   useEffect(() => {
     const selectedSessionId = selectedSession?.id;
     if (!selectedSessionId) return;

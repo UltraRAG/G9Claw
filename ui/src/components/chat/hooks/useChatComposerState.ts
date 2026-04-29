@@ -87,6 +87,15 @@ interface CommandExecutionResult {
   content?: string;
   hasBashCommands?: boolean;
   hasFileIncludes?: boolean;
+  // Set by /api/commands/execute for bundled-skill stubs and on-disk
+  // SKILL.md commands. When passthrough=true, the frontend re-submits the
+  // raw `/<name> <args>` text as user input so the agent's SkillTool runs it.
+  metadata?: {
+    type?: string;
+    passthrough?: boolean;
+    [key: string]: unknown;
+  };
+  command?: string;
 }
 
 const createFakeSubmitEvent = () => {
@@ -144,6 +153,13 @@ export function useChatComposerState({
     ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
   const inputValueRef = useRef(input);
+
+  // One-shot flag set by `handleCustomCommand` when re-submitting passthrough
+  // slash content (e.g. `/projects` for bundled stubs, `/canvas` for skills).
+  // Without this, handleSubmit would see the leading `/`, match the command
+  // again, call executeCommand, get the same passthrough back, and loop —
+  // user-visibly: the input keeps deleting/refilling.
+  const skipSlashDetectionOnceRef = useRef(false);
 
   const handleBuiltInCommand = useCallback(
     async (result: CommandExecutionResult) => {
@@ -229,6 +245,102 @@ export function useChatComposerState({
           });
           break;
 
+        case 'skillInstall': {
+          if (data.error) {
+            addMessage({
+              type: 'assistant',
+              content: `**Skill install failed**\n\n${data.message || data.errorMessage || 'Unknown error'}${
+                data.stderr ? `\n\n\`\`\`\n${data.stderr}\n\`\`\`` : ''
+              }`,
+              timestamp: Date.now(),
+            });
+            break;
+          }
+          const lines: string[] = [];
+
+          if (data.needsForce) {
+            lines.push(
+              `⚠️ **\`${data.slug}\` is flagged as suspicious by VirusTotal.** clawhub refused to install without explicit consent.`,
+            );
+            lines.push('');
+            lines.push('Review the skill before retrying. If you trust the source, rerun:');
+            lines.push('');
+            lines.push('```');
+            lines.push(data.retryCommand || `/skill_install ${data.slug} --force`);
+            lines.push('```');
+          } else if (data.installed) {
+            const versionTag = data.skillMeta?.version ? ` v${data.skillMeta.version}` : '';
+            const displayName = data.skillMeta?.name || data.slug;
+            lines.push(`✅ **Installed** \`${displayName}\`${versionTag} (${data.scope === 'project' ? 'project' : 'user'} scope)`);
+            lines.push(`Path: \`${data.installPath}\``);
+            if (data.skillMeta?.description) {
+              lines.push('');
+              lines.push(data.skillMeta.description);
+            }
+          } else {
+            lines.push(
+              `⚠️ clawhub finished but \`SKILL.md\` was not found at \`${data.installPath}\`.`,
+            );
+          }
+
+          if (data.stdout) {
+            lines.push('');
+            lines.push('```');
+            lines.push(data.stdout);
+            lines.push('```');
+          }
+          if (data.stderr) {
+            lines.push('');
+            lines.push('**stderr**');
+            lines.push('```');
+            lines.push(data.stderr);
+            lines.push('```');
+          }
+          if (data.exitCode && data.exitCode !== 0 && !data.needsForce) {
+            lines.push('');
+            lines.push(`Exit code: \`${data.exitCode}\`. ${data.errorMessage || ''}`);
+          }
+          if (data.installed) {
+            lines.push('');
+            lines.push('_New skill is on disk — open a fresh chat (or `/clear-caches`) to make Claude Code see it. The UI slash menu picks it up next time you open `/`._');
+          }
+          addMessage({
+            type: 'assistant',
+            content: lines.join('\n'),
+            timestamp: Date.now(),
+          });
+          break;
+        }
+
+        case 'switchProject': {
+          // The server validates that an arg was supplied; project lookup
+          // happens here because the client already holds the projects list.
+          // window.switchProject is registered by AppShellV2 and returns
+          // false when no project matches, letting us surface a helpful
+          // "not found" message in chat without leaving the page.
+          if (data.error) {
+            addMessage({
+              type: 'assistant',
+              content: data.message,
+              timestamp: Date.now(),
+            });
+            break;
+          }
+          const targetName = String(data.projectName ?? '').trim();
+          const switched =
+            typeof window !== 'undefined' && typeof window.switchProject === 'function'
+              ? window.switchProject(targetName)
+              : false;
+          addMessage({
+            type: 'assistant',
+            content: switched
+              ? `Switched to project: \`${targetName}\``
+              : `No project matched \`${targetName}\`. Try the project's directory name (sidebar tooltip).`,
+            timestamp: Date.now(),
+          });
+          break;
+        }
+
         default:
           console.warn('Unknown built-in command action:', action);
       }
@@ -244,7 +356,7 @@ export function useChatComposerState({
   );
 
   const handleCustomCommand = useCallback(async (result: CommandExecutionResult) => {
-    const { content, hasBashCommands } = result;
+    const { content, hasBashCommands, metadata } = result;
 
     if (hasBashCommands) {
       const confirmed = window.confirm(
@@ -263,6 +375,14 @@ export function useChatComposerState({
     const commandContent = content || '';
     setInput(commandContent);
     inputValueRef.current = commandContent;
+
+    // Passthrough commands (bundled-skill stubs, on-disk skills) return their
+    // own slash text as `content`. Suppress the next handleSubmit's slash
+    // re-detection, otherwise it loops: detect /, executeCommand, passthrough,
+    // setInput, submit, detect /, ... See skipSlashDetectionOnceRef.
+    if (metadata && (metadata as { passthrough?: unknown }).passthrough) {
+      skipSlashDetectionOnceRef.current = true;
+    }
 
     // Defer submit to next tick so the command text is reflected in UI before dispatching.
     setTimeout(() => {
@@ -475,9 +595,14 @@ export function useChatComposerState({
         return;
       }
 
-      // Intercept slash commands: if input starts with /commandName, execute as command with args
+      // Intercept slash commands: if input starts with /commandName, execute as command with args.
+      // Skip when handleCustomCommand just pushed a passthrough back into the
+      // input box — we already executed it once and want this submit to flow
+      // through as a normal user message.
       const trimmedInput = currentInput.trim();
-      if (trimmedInput.startsWith('/')) {
+      if (skipSlashDetectionOnceRef.current) {
+        skipSlashDetectionOnceRef.current = false;
+      } else if (trimmedInput.startsWith('/')) {
         const firstSpace = trimmedInput.indexOf(' ');
         const commandName = firstSpace > 0 ? trimmedInput.slice(0, firstSpace) : trimmedInput;
         const matchedCommand = slashCommands.find((cmd: SlashCommand) => cmd.name === commandName);

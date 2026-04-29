@@ -6,6 +6,7 @@ import {
   ChevronRight,
   FolderGit2,
   LayoutGrid,
+  Pin,
   Sparkles,
   User,
 } from 'lucide-react';
@@ -36,6 +37,7 @@ type CommandMenuProps = {
 // Match the V2 stroke-light look used elsewhere in the shell so the menu reads
 // as part of the same design language as the breadcrumb/tab strip/composer.
 const namespaceIcons: Record<string, LucideIcon> = {
+  pinned: Pin,
   frequent: Sparkles,
   builtin: Box,
   project: FolderGit2,
@@ -154,8 +156,8 @@ export default function CommandMenu({
   }
 
   const preferredOrder = hasFrequentCommands
-    ? ['frequent', 'builtin', 'project', 'user', 'other']
-    : ['builtin', 'project', 'user', 'other'];
+    ? ['pinned', 'frequent', 'builtin', 'project', 'user', 'other']
+    : ['pinned', 'builtin', 'project', 'user', 'other'];
   const extraNamespaces = Object.keys(groupedCommands).filter(
     (namespace) => !preferredOrder.includes(namespace),
   );
