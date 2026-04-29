@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   BarChart3,
@@ -9,11 +9,12 @@ import {
   Radio,
   type LucideIcon,
 } from 'lucide-react';
-import type { AppTab, Project, ProjectSession } from '../../types/app';
+import type { AppTab, Project, ProjectDiscoveryPlansResponse, ProjectSession } from '../../types/app';
 import MainContent from '../main-content/view/MainContent';
 import type { MainContentProps } from '../main-content/types/types';
 import { cn } from '../../lib/utils.js';
 import { projectDisplayName, sessionDisplayTitle, useCustomNamesVersion } from '../../lib/customNames';
+import { api } from '../../utils/api';
 
 type Tab = { id: AppTab; labelKey: string; icon: LucideIcon };
 
@@ -31,6 +32,8 @@ const TABS: Tab[] = [
   { id: 'memory',    labelKey: 'tabs.memory',    icon: Database },
   { id: 'always-on', labelKey: 'tabs.alwaysOn',  icon: Radio },
 ];
+
+const ALWAYS_ON_READY_PLAN_POLL_INTERVAL_MS = 15_000;
 
 // V2 main shell: breadcrumb on the left, tool switcher on the right, and the
 // active tool's content below. The sidebar stays focused on projects+sessions.
@@ -52,12 +55,65 @@ export default function MainAreaV2(props: MainAreaV2Props) {
     isSidebarCollapsed,
     onOpenSidebar,
   } = props;
+  const projectName = selectedProject?.name ?? null;
+  const [latestReadyPlanMarker, setLatestReadyPlanMarker] = useState<string | null>(null);
+  const [lastViewedReadyPlanMarker, setLastViewedReadyPlanMarker] = useState<string | null>(null);
 
   useEffect(() => {
     if (activeTab === 'home') {
       setActiveTab('chat');
     }
   }, [activeTab, setActiveTab]);
+
+  useEffect(() => {
+    if (!projectName) {
+      setLatestReadyPlanMarker(null);
+      setLastViewedReadyPlanMarker(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const refreshReadyPlanMarker = async () => {
+      try {
+        const response = await api.projectDiscoveryPlans(projectName);
+        if (!response.ok) {
+          return;
+        }
+
+        const payload = (await response.json()) as ProjectDiscoveryPlansResponse;
+        const latestReadyPlan = Array.isArray(payload.plans)
+          ? payload.plans
+              .filter((plan) => plan.status === 'ready')
+              .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]
+          : null;
+
+        if (!cancelled) {
+          setLatestReadyPlanMarker(
+            latestReadyPlan ? `${latestReadyPlan.updatedAt}:${latestReadyPlan.id}` : null,
+          );
+        }
+      } catch {
+        // Keep the previous marker when the lightweight notification poll fails.
+      }
+    };
+
+    void refreshReadyPlanMarker();
+    const timer = window.setInterval(() => {
+      void refreshReadyPlanMarker();
+    }, ALWAYS_ON_READY_PLAN_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [projectName]);
+
+  useEffect(() => {
+    if (activeTab === 'always-on' && latestReadyPlanMarker) {
+      setLastViewedReadyPlanMarker(latestReadyPlanMarker);
+    }
+  }, [activeTab, latestReadyPlanMarker]);
 
   // Re-render breadcrumb when the user renames a project/session via the
   // sidebar overlay (subscribes to localStorage + custom event).
@@ -75,6 +131,11 @@ export default function MainAreaV2(props: MainAreaV2Props) {
       ? displayActiveTab.replace('plugin:', '')
       : displayActiveTab;
   const sessionSummary = selectedSession ? sessionDisplayTitle(selectedSession) : '';
+  const alwaysOnUnread = Boolean(
+    latestReadyPlanMarker &&
+    activeTab !== 'always-on' &&
+    latestReadyPlanMarker !== lastViewedReadyPlanMarker,
+  );
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
@@ -128,7 +189,7 @@ export default function MainAreaV2(props: MainAreaV2Props) {
                 aria-selected={isActive}
                 onClick={() => setActiveTab(tab.id)}
                 className={cn(
-                  'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[13px] transition-colors',
+                  'relative inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[13px] transition-colors',
                   isActive
                     ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
                     : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100',
@@ -136,6 +197,12 @@ export default function MainAreaV2(props: MainAreaV2Props) {
               >
                 <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />
                 <span>{t(tab.labelKey)}</span>
+                {tab.id === 'always-on' && alwaysOnUnread ? (
+                  <span
+                    aria-hidden="true"
+                    className="absolute right-1 top-1 h-2 w-2 rounded-full bg-blue-500 ring-2 ring-white dark:ring-neutral-950"
+                  />
+                ) : null}
               </button>
             );
           })}
