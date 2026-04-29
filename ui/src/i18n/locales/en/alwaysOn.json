@@ -6,7 +6,12 @@
     "refresh": "Refresh",
     "discover": "Discover",
     "open": "Open",
-    "run": "Run"
+    "run": "Run",
+    "archive": "Archive",
+    "delete": "Delete",
+    "runDisabled": "This item cannot be run now.",
+    "deleteDisabled": "Running items cannot be deleted.",
+    "archiveDeleteDisabled": "Running items cannot be archived or deleted."
   },
   "status": {
     "running": "Running",
@@ -20,10 +25,32 @@
     "ready_other": "{{count}} plans ready"
   },
   "loading": {
-    "plans": "Loading plans…"
+    "plans": "Loading plans…",
+    "items": "Loading items…"
   },
   "empty": {
-    "plans": "No discovery plans yet. Run Discover to let Always-On scan this project."
+    "plans": "No discovery plans yet. Run Discover to let Always-On scan this project.",
+    "items": "No plans or cron jobs yet. Run Discover or create a scheduled task."
+  },
+  "tabs": {
+    "plansCron": "Plans & Cron Jobs"
+  },
+  "table": {
+    "title": "Title",
+    "type": "Type",
+    "status": "Status",
+    "created": "Created",
+    "triggered": "Triggered",
+    "completed": "Completed",
+    "actions": "Actions"
+  },
+  "types": {
+    "plan": "plan",
+    "cronPersistentRecurring": "persistent / recurring",
+    "cronPersistentOneShot": "persistent / one-shot",
+    "cronSessionRecurring": "session-scope / recurring",
+    "cronSessionOneShot": "session-scope / one-shot",
+    "manual": "manual"
   },
   "relative": {
     "justNow": "just now",

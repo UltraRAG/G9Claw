@@ -6,7 +6,12 @@
     "refresh": "刷新",
     "discover": "扫描",
     "open": "打开",
-    "run": "执行"
+    "run": "执行",
+    "archive": "归档",
+    "delete": "删除",
+    "runDisabled": "当前条目暂不能执行。",
+    "deleteDisabled": "运行中的条目不能删除。",
+    "archiveDeleteDisabled": "运行中的条目不能归档或删除。"
   },
   "status": {
     "running": "运行中",
@@ -20,10 +25,32 @@
     "ready_other": "{{count}} 个待执行"
   },
   "loading": {
-    "plans": "正在加载方案…"
+    "plans": "正在加载方案…",
+    "items": "正在加载条目…"
   },
   "empty": {
-    "plans": "还没有发现方案。点击「扫描」让 Always-On 检视当前项目。"
+    "plans": "还没有发现方案。点击「扫描」让 Always-On 检视当前项目。",
+    "items": "还没有方案或 cron job。点击「扫描」或创建一个定时任务。"
+  },
+  "tabs": {
+    "plansCron": "计划与定时任务"
+  },
+  "table": {
+    "title": "标题",
+    "type": "类型",
+    "status": "状态",
+    "created": "创建",
+    "triggered": "触发",
+    "completed": "完成",
+    "actions": "操作"
+  },
+  "types": {
+    "plan": "plan",
+    "cronPersistentRecurring": "persistent / recurring",
+    "cronPersistentOneShot": "persistent / one-shot",
+    "cronSessionRecurring": "session-scope / recurring",
+    "cronSessionOneShot": "session-scope / one-shot",
+    "manual": "manual"
   },
   "relative": {
     "justNow": "刚刚",

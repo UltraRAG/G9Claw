@@ -774,7 +774,6 @@ function SplitBody(props: SplitBodyProps) {
           selectedProject={selectedProject}
           onStartDiscoverySession={handleStartDiscoverySession}
           onExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
-          onOpenDiscoverySession={onNavigateToSession}
         />
       );
     }
