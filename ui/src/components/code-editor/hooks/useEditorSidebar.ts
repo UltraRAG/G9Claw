@@ -41,6 +41,15 @@ export const useEditorSidebar = ({
     setEditorExpanded(false);
   }, []);
 
+  // Close any open file tab when the user switches to a different project so
+  // we don't carry a Project A file across into Project B's view. Switching
+  // sessions within the same project keeps the editor open because
+  // `selectedProject?.name` stays the same.
+  useEffect(() => {
+    setEditingFile(null);
+    setEditorExpanded(false);
+  }, [selectedProject?.name]);
+
   const handleToggleEditorExpand = useCallback(() => {
     setEditorExpanded((previous) => !previous);
   }, []);
