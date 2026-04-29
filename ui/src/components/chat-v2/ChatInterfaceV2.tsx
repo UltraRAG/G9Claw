@@ -283,7 +283,7 @@ function ChatInterfaceV2({
   // next render.
   const isWelcomeMode =
     !!forceWelcome ||
-    (!selectedSession && !isLoadingSessionMessages && chatMessages.length === 0);
+    (!selectedSession && !currentSessionId && !isLoadingSessionMessages && chatMessages.length === 0);
 
   // Fire onExitWelcome the moment the user submits from welcome mode. Wraps
   // handleSubmit so we don't have to thread state through useChatComposerState.

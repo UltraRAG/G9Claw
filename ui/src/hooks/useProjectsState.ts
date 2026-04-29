@@ -173,16 +173,9 @@ export function useProjectsState({
   const loadingProgressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Track when a session was first selected so the projects_updated handler
-  // can avoid clearing a brand-new session that the file watcher hasn't
-  // indexed yet (race between `complete` removing the session from
-  // activeSessions and a stale `projects_updated` arriving).
-  const sessionSelectedAtRef = useRef<number>(0);
   const prevTrackedSessionIdRef = useRef<string | null>(null);
   if (selectedSession?.id !== prevTrackedSessionIdRef.current) {
     prevTrackedSessionIdRef.current = selectedSession?.id ?? null;
-    if (selectedSession?.id) {
-      sessionSelectedAtRef.current = Date.now();
-    }
   }
 
   // Mirror `projects` into a ref so async callbacks can read the latest list
@@ -337,16 +330,15 @@ export function useProjectsState({
     );
 
     if (!updatedSelectedSession) {
-      // Grace period: a just-created session may not appear in the file
-      // watcher's projects_updated yet. If we clear selectedSession now,
-      // the UI briefly flashes back to the welcome/greet page until the
-      // next refresh re-discovers the session. Protect for 10 s after
-      // the session was first selected.
-      const SESSION_GRACE_MS = 10_000;
-      if (Date.now() - sessionSelectedAtRef.current < SESSION_GRACE_MS) {
-        return;
-      }
-      setSelectedSession(null);
+      // The session is absent from the truncated project list (only the
+      // top-N sessions are included in projects_updated for performance).
+      // This does NOT mean the session was deleted — it may simply be
+      // older than the top-N cut-off, or the file watcher hasn't indexed
+      // a brand-new session yet.
+      //
+      // Never clear selectedSession here. The only paths that should
+      // clear it are explicit user actions: switching projects, starting
+      // a new session, or deleting the session/project.
       return;
     }
 

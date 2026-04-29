@@ -391,21 +391,26 @@ export function useChatSessionState({
   // Main session loading effect — store-based
   useEffect(() => {
     if (!selectedSession || !selectedProject) {
-      // When the welcome → first-message flow lands a `session_created`
-      // from the backend, `useChatRealtimeHandlers` calls
-      // `setCurrentSessionId(newId)` *before* the projects list refreshes
-      // and `selectedSession` resolves. Because `currentSessionId` is in
-      // this effect's dep array, that update re-fires this effect with
-      // `selectedSession` still null — and the reset below would yank
-      // `currentSessionId` back to null, dropping `activeSessionId` to
-      // null, emptying chatMessages, and re-triggering welcome mode for
-      // ~1s until selectedSession finally catches up. Skip the reset in
-      // that exact transient state so the user message + streaming
-      // response stay rendered through the handoff.
+      // Guard: skip the full reset while a new-session handoff is in
+      // flight. Two distinct transient windows must be protected:
+      //
+      // 1. session_created already arrived → currentSessionId is set and
+      //    matches the pendingViewSession, but selectedSession hasn't
+      //    resolved yet (projects list refresh still in progress).
+      //
+      // 2. The user just submitted from the welcome surface and we're
+      //    still waiting for session_created. pendingViewSessionRef has
+      //    been allocated (with sessionId: null) but the backend hasn't
+      //    responded yet. A projects_updated WS message can change
+      //    selectedProject's reference and re-fire this effect — the
+      //    reset would wipe pendingUserMessage and flash back to welcome.
       const isPendingSessionHandoff =
         Boolean(currentSessionId) &&
         pendingViewSessionRef.current?.sessionId === currentSessionId;
-      if (!selectedSession && isPendingSessionHandoff) {
+      const isAwaitingSessionCreation =
+        pendingViewSessionRef.current !== null &&
+        !pendingViewSessionRef.current.sessionId;
+      if (!selectedSession && (isPendingSessionHandoff || isAwaitingSessionCreation)) {
         return;
       }
       resetStreamingState();
