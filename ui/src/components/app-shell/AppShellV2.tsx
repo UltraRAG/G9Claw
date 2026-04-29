@@ -34,6 +34,49 @@ type DeleteSessionTarget = {
 
 const SettingsComponent = Settings as unknown as (props: TypedSettingsProps) => JSX.Element;
 
+const UNREAD_IGNORED_MESSAGE_TYPES = new Set([
+  'websocket-reconnected',
+  'pending-permissions-response',
+  'session-status',
+]);
+
+const UNREAD_IGNORED_MESSAGE_KINDS = new Set([
+  'session_created',
+  'status',
+  'stream_end',
+]);
+
+const getSessionIdFromMessage = (message: unknown): string | null => {
+  if (!message || typeof message !== 'object') return null;
+  const candidate = message as {
+    sessionId?: unknown;
+    session_id?: unknown;
+    newSessionId?: unknown;
+    actualSessionId?: unknown;
+  };
+  const value =
+    candidate.sessionId ??
+    candidate.session_id ??
+    candidate.actualSessionId ??
+    candidate.newSessionId;
+  return typeof value === 'string' && value.trim() ? value : null;
+};
+
+const isUnreadWorthyMessage = (message: unknown): boolean => {
+  if (!message || typeof message !== 'object') return false;
+  const candidate = message as { kind?: unknown; type?: unknown };
+
+  if (typeof candidate.kind === 'string') {
+    return !UNREAD_IGNORED_MESSAGE_KINDS.has(candidate.kind);
+  }
+
+  if (typeof candidate.type === 'string') {
+    return !UNREAD_IGNORED_MESSAGE_TYPES.has(candidate.type);
+  }
+
+  return false;
+};
+
 // V2 shell. Reuses the same data hooks as legacy AppContent so chat, discovery,
 // auth, and project plumbing keep working unchanged — V2 just reorganizes the
 // outer chrome (sidebar + breadcrumb header per prototype/shadcn.html).
@@ -52,8 +95,9 @@ export default function AppShellV2() {
 
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
-  const { ws, sendMessage, latestMessage, isConnected } = useWebSocket();
+  const { ws, sendMessage, latestMessage, isConnected, subscribe } = useWebSocket();
   const wasConnectedRef = useRef(false);
+  const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => new Set());
 
   const {
     activeSessions,
@@ -166,6 +210,34 @@ export default function AppShellV2() {
       }
     };
   }, [openSettings]);
+
+  useEffect(() => {
+    const selectedSessionId = selectedSession?.id;
+    if (!selectedSessionId) return;
+
+    setUnreadSessionIds((previous) => {
+      if (!previous.has(selectedSessionId)) return previous;
+      const next = new Set(previous);
+      next.delete(selectedSessionId);
+      return next;
+    });
+  }, [selectedSession?.id]);
+
+  useEffect(() => {
+    return subscribe((message) => {
+      if (!isUnreadWorthyMessage(message)) return;
+
+      const messageSessionId = getSessionIdFromMessage(message);
+      if (!messageSessionId || messageSessionId === selectedSession?.id) return;
+
+      setUnreadSessionIds((previous) => {
+        if (previous.has(messageSessionId)) return previous;
+        const next = new Set(previous);
+        next.add(messageSessionId);
+        return next;
+      });
+    });
+  }, [selectedSession?.id, subscribe]);
 
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
@@ -313,6 +385,12 @@ export default function AppShellV2() {
 	      }
 
 	      sidebarSharedProps.onSessionDelete?.(session.id);
+	      setUnreadSessionIds((previous) => {
+	        if (!previous.has(session.id)) return previous;
+	        const next = new Set(previous);
+	        next.delete(session.id);
+	        return next;
+	      });
 	      setSessionCustomTitle(session.id, null);
 	      await refreshProjectsSilently();
 	      setDeleteSessionTarget(null);
@@ -333,6 +411,12 @@ export default function AppShellV2() {
 
   const handleSelectSession = useCallback(
     (project: Project, sessId: string) => {
+      setUnreadSessionIds((previous) => {
+        if (!previous.has(sessId)) return previous;
+        const next = new Set(previous);
+        next.delete(sessId);
+        return next;
+      });
       if (project.name !== selectedProject?.name) {
         handleProjectSelect(project);
       }
@@ -397,6 +481,8 @@ export default function AppShellV2() {
       selectedSession={selectedSession}
       activeTab={activeTab}
       isLoading={isLoadingProjects}
+      processingSessions={processingSessions}
+      unreadSessionIds={unreadSessionIds}
       onSelectTab={handleSelectTab}
       onSelectProject={handleSelectProject}
       onSelectSession={handleSelectSession}

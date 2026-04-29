@@ -95,12 +95,60 @@ const formatRelative = (ts: number, t: TFunction): string => {
   return t('sidebar:time.daysAgo', { count: days, defaultValue: `${days} days ago` });
 };
 
+type SessionIndicatorStatus = 'processing' | 'unread' | 'idle';
+
+const SPINNER_DOTS = Array.from({ length: 8 }, (_, index) => index);
+
+function SessionStatusIndicator({
+  status,
+  label,
+}: {
+  status: SessionIndicatorStatus;
+  label: string;
+}) {
+  if (status === 'processing') {
+    return (
+      <span
+        aria-label={label}
+        title={label}
+        className="relative block h-3 w-3 animate-spin"
+      >
+        {SPINNER_DOTS.map((dot) => (
+          <span
+            key={dot}
+            className="absolute left-1/2 top-1/2 h-1 w-1 rounded-full bg-neutral-500 dark:bg-neutral-300"
+            style={{
+              transform: `translate(-50%, -50%) rotate(${dot * 45}deg) translateY(-4px)`,
+              opacity: 0.35 + dot * 0.08,
+            }}
+          />
+        ))}
+      </span>
+    );
+  }
+
+  return (
+    <span
+      aria-label={label}
+      title={label}
+      className={cn(
+        'block h-1.5 w-1.5 rounded-full',
+        status === 'unread'
+          ? 'bg-blue-500 dark:bg-blue-400'
+          : 'bg-neutral-300 dark:bg-neutral-600',
+      )}
+    />
+  );
+}
+
 export type SidebarV2Props = {
   projects: Project[];
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   activeTab: AppTab;
   isLoading: boolean;
+  processingSessions?: Set<string>;
+  unreadSessionIds?: Set<string>;
   onSelectTab: (tab: AppTab) => void;
   onSelectProject: (project: Project) => void;
   onSelectSession: (project: Project, sessionId: string) => void;
@@ -147,6 +195,8 @@ export default function SidebarV2({
   selectedSession,
   activeTab,
   isLoading,
+  processingSessions,
+  unreadSessionIds,
   onSelectProject,
   onSelectSession,
   onStartNewSession,
@@ -464,6 +514,17 @@ export default function SidebarV2({
               selectedSession?.id === sessionId &&
               activeTab === 'chat';
             const isSessionRenaming = renamingSession === sessionId;
+            const indicatorStatus: SessionIndicatorStatus = processingSessions?.has(sessionId)
+              ? 'processing'
+              : unreadSessionIds?.has(sessionId)
+                ? 'unread'
+                : 'idle';
+            const indicatorLabel =
+              indicatorStatus === 'processing'
+                ? t('sidebar:sessions.processing', { defaultValue: 'Agent is running' })
+                : indicatorStatus === 'unread'
+                  ? t('sidebar:sessions.unread', { defaultValue: 'Unread messages' })
+                  : t('sidebar:sessions.idle', { defaultValue: 'No unread messages' });
 
             return (
               <div
@@ -493,13 +554,21 @@ export default function SidebarV2({
                   <button
                     type="button"
                     onClick={() => handleSessionClick(project, sessionId)}
-                    className="block w-full px-2 py-1 text-left"
+                    className="flex w-full items-start gap-2 px-2 py-1 text-left"
                   >
-                    <div className="truncate text-[12.5px] text-neutral-900 dark:text-neutral-100">
-                      {sessionDisplayTitle(session)}
-                    </div>
-                    <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                      {formatRelative(lastActivity, t)}
+                    <span className="flex h-[18px] w-3 shrink-0 items-center justify-center pt-[3px]">
+                      <SessionStatusIndicator
+                        status={indicatorStatus}
+                        label={indicatorLabel}
+                      />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[12.5px] text-neutral-900 dark:text-neutral-100">
+                        {sessionDisplayTitle(session)}
+                      </div>
+                      <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                        {formatRelative(lastActivity, t)}
+                      </div>
                     </div>
                   </button>
                 )}
@@ -627,7 +696,7 @@ export default function SidebarV2({
           onClick={() => navigate('/')}
           aria-label="EdgeClaw"
           title="EdgeClaw"
-          className="flex min-w-0 shrink items-center rounded-md p-1 -ml-1 transition hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:focus-visible:ring-neutral-700"
+          className="-ml-1 flex min-w-0 shrink items-center rounded-md p-1 transition hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:focus-visible:ring-neutral-700"
         >
           <img
             src={edgeclawLogo}
