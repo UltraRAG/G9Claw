@@ -2038,10 +2038,79 @@ async function renameProject(projectName, newDisplayName) {
 }
 
 // Delete a session from a project
-async function deleteSession(projectName, sessionId) {
+async function deleteSession(projectName, sessionId, options = {}) {
+  const {
+    sessionKind = null,
+    parentSessionId = null,
+    relativeTranscriptPath = null,
+  } = options;
   const projectDir = path.join(os.homedir(), '.claude', 'projects', projectName);
 
   try {
+    if (sessionKind === 'background_task') {
+      let transcriptPath = await resolveBackgroundTranscriptPath(
+        projectName,
+        parentSessionId,
+        relativeTranscriptPath
+      );
+      if (!transcriptPath) {
+        const safeParentSessionId = typeof parentSessionId === 'string' ? parentSessionId.trim() : '';
+        const safeRelativeTranscriptPath = typeof relativeTranscriptPath === 'string'
+          ? relativeTranscriptPath.trim()
+          : '';
+        const requestedPath = path.resolve(projectDir, safeRelativeTranscriptPath);
+        const allowedDir = path.join(projectDir, safeParentSessionId, 'subagents');
+        const resolvedAllowedDir = await canonicalizePath(allowedDir);
+
+        if (
+          safeParentSessionId &&
+          safeRelativeTranscriptPath &&
+          resolvedAllowedDir &&
+          isWithinAllowedDir(resolvedAllowedDir, requestedPath) &&
+          CRON_TRANSCRIPT_FILENAME_REGEX.test(path.basename(requestedPath))
+        ) {
+          transcriptPath = requestedPath;
+        }
+
+        if (!transcriptPath) {
+          const transcriptFilename = path.basename(safeRelativeTranscriptPath);
+          const normalizedRelativeTranscriptPath = normalizePathSeparators(
+            path.normalize(safeRelativeTranscriptPath)
+          );
+          const expectedRelativeTranscriptPath = normalizePathSeparators(
+            path.join(safeParentSessionId, 'subagents', transcriptFilename)
+          );
+
+          if (
+            /^[a-zA-Z0-9._-]+$/.test(safeParentSessionId) &&
+            normalizedRelativeTranscriptPath === expectedRelativeTranscriptPath &&
+            CRON_TRANSCRIPT_FILENAME_REGEX.test(transcriptFilename)
+          ) {
+            transcriptPath = path.join(
+              projectDir,
+              safeParentSessionId,
+              'subagents',
+              transcriptFilename
+            );
+          }
+        }
+      }
+      if (!transcriptPath) {
+        throw new Error('Invalid background task transcript path');
+      }
+
+      const expectedSessionId = createBackgroundTaskSessionId(
+        parentSessionId,
+        path.basename(transcriptPath)
+      );
+      if (expectedSessionId !== sessionId) {
+        throw new Error('Background task session metadata does not match sessionId');
+      }
+
+      await fs.rm(transcriptPath, { force: true });
+      return true;
+    }
+
     const files = await fs.readdir(projectDir);
     const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
 

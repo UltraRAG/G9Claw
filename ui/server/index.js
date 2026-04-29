@@ -682,7 +682,11 @@ app.delete('/api/projects/:projectName/sessions/:sessionId', authenticateToken, 
     try {
         const { projectName, sessionId } = req.params;
         console.log(`[API] Deleting session: ${sessionId} from project: ${projectName}`);
-        await deleteSession(projectName, sessionId);
+        await deleteSession(projectName, sessionId, {
+            sessionKind: req.query.sessionKind || null,
+            parentSessionId: req.query.parentSessionId || null,
+            relativeTranscriptPath: req.query.relativeTranscriptPath || null,
+        });
         sessionNamesDb.deleteName(sessionId, 'claude');
         console.log(`[API] Session ${sessionId} deleted successfully`);
         res.json({ success: true });

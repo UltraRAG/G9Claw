@@ -7,7 +7,9 @@ import path from 'node:path';
 
 import {
   clearProjectDirectoryCache,
-  getProjectCronJobsOverview
+  deleteSession,
+  getProjectCronJobsOverview,
+  getSessions
 } from './projects.js';
 
 const originalHome = process.env.HOME;
@@ -368,6 +370,89 @@ test('getProjectCronJobsOverview matches recurring cron jobs to completed backgr
     overview.jobs[0].latestRun?.relativeTranscriptPath,
     `${parentSessionId}/subagents/${transcriptFileName}`
   );
+});
+
+test('deleteSession removes background cron transcript files', async () => {
+  const homeDir = await createTempHome();
+  const projectName = 'project-with-deleted-cron-transcript';
+  const projectRoot = path.join(homeDir, 'workspace-delete-cron-transcript');
+  const parentSessionId = 'parent-session-delete';
+  const transcriptFileName = 'agent-cron-delete.jsonl';
+  const taskTranscriptKey = 'cron-delete';
+  const backgroundSessionId = `background-${parentSessionId}-agent-cron-delete`;
+
+  await fs.mkdir(projectRoot, { recursive: true });
+  await writeProjectConfig(homeDir, projectName, projectRoot);
+  const transcriptPath = await createBackgroundCronArtifacts({
+    homeDir,
+    projectName,
+    parentSessionId,
+    transcriptFileName,
+    status: 'completed',
+    summary: 'Cron task "Recurring cron cron-delete" completed'
+  });
+  await writeScheduledTasks(projectRoot, [
+    {
+      id: 'cron-delete',
+      cron: '*/15 * * * *',
+      prompt: 'Review incoming support spikes',
+      createdAt: 1713511000000,
+      lastFiredAt: 1713512000000,
+      recurring: true,
+      originSessionId: parentSessionId,
+      transcriptKey: taskTranscriptKey
+    }
+  ]);
+
+  const beforeDelete = await getSessions(projectName, Number.MAX_SAFE_INTEGER, 0);
+  assert.ok(beforeDelete.sessions.some((session) => session.id === backgroundSessionId));
+
+  await deleteSession(projectName, backgroundSessionId, {
+    sessionKind: 'background_task',
+    parentSessionId,
+    relativeTranscriptPath: `${parentSessionId}/subagents/${transcriptFileName}`
+  });
+
+  await assert.rejects(fs.access(transcriptPath), { code: 'ENOENT' });
+
+  const afterDelete = await getSessions(projectName, Number.MAX_SAFE_INTEGER, 0);
+  assert.ok(!afterDelete.sessions.some((session) => session.id === backgroundSessionId));
+
+  const overview = await getProjectCronJobsOverview(projectName);
+  assert.equal(overview.jobs.length, 1);
+  assert.equal(overview.jobs[0].latestRun, null);
+
+  await deleteSession(projectName, backgroundSessionId, {
+    sessionKind: 'background_task',
+    parentSessionId,
+    relativeTranscriptPath: `${parentSessionId}/subagents/${transcriptFileName}`
+  });
+});
+
+test('deleteSession keeps regular session deletion behavior', async () => {
+  const homeDir = await createTempHome();
+  const projectName = 'project-with-regular-session-delete';
+  const projectStoreDir = path.join(homeDir, '.claude', 'projects', projectName);
+  const sessionFile = path.join(projectStoreDir, 'history.jsonl');
+
+  await writeJsonl(sessionFile, [
+    {
+      sessionId: 'session-to-delete',
+      timestamp: '2026-04-19T10:00:00.000Z',
+      message: { role: 'user', content: 'Delete me' }
+    },
+    {
+      sessionId: 'session-to-keep',
+      timestamp: '2026-04-19T10:01:00.000Z',
+      message: { role: 'user', content: 'Keep me' }
+    }
+  ]);
+
+  await deleteSession(projectName, 'session-to-delete');
+
+  const content = await fs.readFile(sessionFile, 'utf8');
+  assert.equal(content.includes('session-to-delete'), false);
+  assert.equal(content.includes('session-to-keep'), true);
 });
 
 test('getProjectCronJobsOverview matches recurring cron jobs to failed background sessions via transcriptKey', async () => {

@@ -100,10 +100,16 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ displayName }),
     }),
-  deleteSession: (projectName, sessionId) =>
-    authenticatedFetch(`/api/projects/${projectName}/sessions/${sessionId}`, {
+  deleteSession: (projectName, sessionId, opts = {}) => {
+    const params = new URLSearchParams();
+    if (opts.sessionKind) params.append('sessionKind', opts.sessionKind);
+    if (opts.parentSessionId) params.append('parentSessionId', opts.parentSessionId);
+    if (opts.relativeTranscriptPath) params.append('relativeTranscriptPath', opts.relativeTranscriptPath);
+    const query = params.toString();
+    return authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sessionId)}${query ? `?${query}` : ''}`, {
       method: 'DELETE',
-    }),
+    });
+  },
   renameSession: (sessionId, summary, provider) =>
     authenticatedFetch(`/api/sessions/${sessionId}/rename`, {
       method: 'PUT',

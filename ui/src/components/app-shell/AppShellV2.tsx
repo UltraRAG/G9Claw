@@ -14,7 +14,14 @@ import {
   sessionDisplayTitle,
   setSessionCustomTitle,
 } from '../../lib/customNames';
-import type { AppTab, Project, ProjectSession, SessionProvider } from '../../types/app';
+import {
+  getSessionRequestParams,
+  isBackgroundTaskSession,
+  type AppTab,
+  type Project,
+  type ProjectSession,
+  type SessionProvider,
+} from '../../types/app';
 import { api } from '../../utils/api';
 import SidebarV2 from './SidebarV2';
 import MainAreaV2 from './MainAreaV2';
@@ -375,6 +382,12 @@ export default function AppShellV2() {
 	        response = await api.deleteCursorSession(session.id, projectPath);
 	      } else if (provider === 'gemini') {
 	        response = await api.deleteGeminiSession(session.id);
+	      } else if (isBackgroundTaskSession(session)) {
+	        response = await api.deleteSession(
+	          project.name,
+	          session.id,
+	          getSessionRequestParams(session),
+	        );
 	      } else {
 	        response = await api.deleteSession(project.name, session.id);
 	      }
