@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -38,6 +39,73 @@ const asTimestamp = (value: unknown): number => {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+};
+
+type ProjectSortOrder = 'name' | 'date';
+
+// The Settings dialog persists `projectSortOrder` into the same
+// `claude-settings` localStorage blob the chat surface uses. Up to this
+// point nothing on the sidebar consumed it, so the dropdown changed nothing.
+// We read it here and re-render whenever the Settings tab broadcasts a
+// `claude-settings-changed` event.
+const readProjectSortOrder = (): ProjectSortOrder => {
+  if (typeof window === 'undefined') return 'name';
+  const raw = window.localStorage.getItem('claude-settings');
+  if (!raw) return 'name';
+  try {
+    const parsed = JSON.parse(raw) as { projectSortOrder?: unknown };
+    return parsed.projectSortOrder === 'date' ? 'date' : 'name';
+  } catch {
+    return 'name';
+  }
+};
+
+const useProjectSortOrder = (): ProjectSortOrder => {
+  const [order, setOrder] = useState<ProjectSortOrder>(() => readProjectSortOrder());
+  useEffect(() => {
+    const refresh = () => setOrder(readProjectSortOrder());
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'claude-settings') refresh();
+    };
+    window.addEventListener('claude-settings-changed', refresh);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('claude-settings-changed', refresh);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+  return order;
+};
+
+// "Most recent activity" for a project = newest timestamp across every
+// session it owns. Falls back to 0 so brand-new projects with no sessions
+// sort to the bottom under "date" mode (and stay alphabetical otherwise).
+const projectLastActivity = (project: Project): number => {
+  const buckets: ProjectSession[][] = [
+    Array.isArray(project.sessions) ? project.sessions : [],
+    Array.isArray((project as Project & { codexSessions?: ProjectSession[] }).codexSessions)
+      ? (project as Project & { codexSessions: ProjectSession[] }).codexSessions
+      : [],
+    Array.isArray((project as Project & { cursorSessions?: ProjectSession[] }).cursorSessions)
+      ? (project as Project & { cursorSessions: ProjectSession[] }).cursorSessions
+      : [],
+    Array.isArray((project as Project & { geminiSessions?: ProjectSession[] }).geminiSessions)
+      ? (project as Project & { geminiSessions: ProjectSession[] }).geminiSessions
+      : [],
+  ];
+  let latest = 0;
+  for (const list of buckets) {
+    for (const session of list) {
+      const ts = Math.max(
+        asTimestamp(session.lastActivity),
+        asTimestamp(session.updated_at),
+        asTimestamp(session.createdAt),
+        asTimestamp(session.created_at),
+      );
+      if (ts > latest) latest = ts;
+    }
+  }
+  return latest;
 };
 
 type FlatSession = {
@@ -312,7 +380,23 @@ export default function SidebarV2({
 
   const generalProject =
     safeProjects.find((project) => project.name === 'general' || project.displayName === 'general') ?? null;
-  const otherProjects = safeProjects.filter((project) => project !== generalProject);
+
+  const projectSortOrder = useProjectSortOrder();
+  const otherProjects = useMemo(() => {
+    const remaining = safeProjects.filter((project) => project !== generalProject);
+    if (projectSortOrder === 'date') {
+      // Most recent first. Tie-break on display name so the order is stable
+      // when two projects have no recorded activity (both 0).
+      return [...remaining].sort((a, b) => {
+        const diff = projectLastActivity(b) - projectLastActivity(a);
+        if (diff !== 0) return diff;
+        return projectDisplayName(a).localeCompare(projectDisplayName(b));
+      });
+    }
+    return [...remaining].sort((a, b) =>
+      projectDisplayName(a).localeCompare(projectDisplayName(b), undefined, { sensitivity: 'base' }),
+    );
+  }, [safeProjects, generalProject, projectSortOrder]);
 
   const navToProject = useCallback(
     (name: string) => navigate(`/p/${encodeURIComponent(name)}`),

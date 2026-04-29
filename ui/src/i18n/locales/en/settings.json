@@ -91,6 +91,7 @@
     "label": "Settings",
     "agents": "Agents",
     "appearance": "Appearance",
+    "permissions": "Permissions",
     "git": "Git",
     "apiTokens": "API & Tokens",
     "tasks": "Tasks",
@@ -150,7 +151,7 @@
       },
       "fontSize": {
         "label": "Font Size",
-        "description": "Editor font size in pixels"
+        "description": "Applies to the code editor only (px). Chat and sidebar keep the system default."
       }
     }
   },
@@ -339,6 +340,16 @@
   },
   "permissions": {
     "title": "Permission Settings",
+    "description": "Manage which tools the assistant can run without asking. Grants from the chat \"Add permission\" button land here too.",
+    "export": "Export",
+    "import": "Import",
+    "importExportHint": "Share or back up your tool permissions as JSON.",
+    "exportSuccess": "Exported {{allowed}} allowed and {{blocked}} blocked tools.",
+    "exportError": "Failed to export permissions.",
+    "importReadError": "Could not read the selected file.",
+    "importInvalid": "Not a valid permissions export. Expected JSON with allowedTools / disallowedTools / skipPermissions.",
+    "importConfirmBody": "Merge {{allowed}} allowed and {{blocked}} blocked tools into your existing permissions?",
+    "importSuccess": "Imported. Added {{addedAllowed}} allowed and {{addedBlocked}} blocked tools.",
     "skipPermissions": {
       "label": "Skip permission prompts (use with caution)",
       "claudeDescription": "Equivalent to --dangerously-skip-permissions flag",
@@ -410,7 +421,8 @@
       }
     },
     "actions": {
-      "add": "Add"
+      "add": "Add",
+      "remove": "Remove"
     }
   },
   "mcpServers": {

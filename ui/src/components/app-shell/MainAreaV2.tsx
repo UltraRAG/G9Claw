@@ -142,23 +142,18 @@ export default function MainAreaV2(props: MainAreaV2Props) {
       {/* Header: breadcrumb left, tool switcher right. */}
       <header className="flex h-12 shrink-0 items-center px-6">
         {isSidebarCollapsed ? (
-          <div className="mr-4 flex shrink-0 items-center gap-2">
-            <span
-              title="edgeclaw"
-              className="flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-900 text-[14px] font-semibold text-neutral-50 dark:bg-neutral-50 dark:text-neutral-900"
-            >
-              E
-            </span>
-            <button
-              type="button"
-              onClick={onOpenSidebar}
-              aria-label={t('sidebar:tooltips.showSidebar', { defaultValue: 'Show sidebar' }) as string}
-              title={t('sidebar:tooltips.showSidebar', { defaultValue: 'Show sidebar' }) as string}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-            >
-              <PanelLeftOpen className="h-4 w-4" strokeWidth={1.75} />
-            </button>
-          </div>
+          // Just the "expand sidebar" affordance — the EdgeClaw logo lives
+          // in the sidebar header, so showing a duplicate badge here when
+          // the sidebar is collapsed feels redundant.
+          <button
+            type="button"
+            onClick={onOpenSidebar}
+            aria-label={t('sidebar:tooltips.showSidebar', { defaultValue: 'Show sidebar' }) as string}
+            title={t('sidebar:tooltips.showSidebar', { defaultValue: 'Show sidebar' }) as string}
+            className="mr-4 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+          >
+            <PanelLeftOpen className="h-4 w-4" strokeWidth={1.75} />
+          </button>
         ) : null}
         <div className="flex min-w-0 flex-1 items-center gap-2 text-[13px]">
           <span className="text-neutral-500 dark:text-neutral-400">
