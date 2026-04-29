@@ -2,8 +2,10 @@ import type { ReactNode } from 'react';
 import { cn } from '../../../lib/utils';
 
 type SettingsRowProps = {
-  label: string;
-  description?: string;
+  // ReactNode so callers can inline a small icon next to the label (the
+  // Permissions tab leans on this for its alert/shield glyphs).
+  label: ReactNode;
+  description?: ReactNode;
   children: ReactNode;
   className?: string;
 };

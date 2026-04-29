@@ -15,7 +15,7 @@ type ClaudeSettingsStorage = {
   projectSortOrder?: ProjectSortOrder;
 };
 
-const KNOWN_MAIN_TABS: SettingsMainTab[] = ['appearance', 'config'];
+const KNOWN_MAIN_TABS: SettingsMainTab[] = ['appearance', 'permissions', 'config'];
 
 const normalizeMainTab = (tab: string): SettingsMainTab => {
   // Older callers may still pass legacy ids ('agents', 'git', 'api', etc.) —
@@ -106,6 +106,11 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
             lastUpdated: new Date().toISOString(),
           }),
         );
+        // Sidebar listens for this event to live-resort the project list,
+        // and the Permissions tab uses the same channel to refresh after
+        // imports. Without the dispatch the dropdown looks dead until you
+        // reload the page.
+        window.dispatchEvent(new Event('claude-settings-changed'));
         setSaveStatus('success');
       } catch (err) {
         console.error('Failed to persist Appearance settings:', err);

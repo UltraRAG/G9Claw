@@ -106,12 +106,19 @@ function describeAttachmentPart(part) {
   const url =
     source.type === 'url' && typeof source.url === 'string' ? source.url : '';
 
+  // Use type-specific glyphs so the user can tell a PDF/document attachment
+  // apart from an image at a glance. The generic 📎 paperclip used previously
+  // was ambiguous (it implies "attachment" in general but reads identically
+  // for any kind of file).
+  let icon;
   let label;
   if (part.type === 'image') {
+    icon = '🖼';
     label = mediaType ? `Image (${mediaType})` : 'Image';
   } else {
     // document — most commonly application/pdf, but Claude also accepts
     // text/plain, text/markdown, etc. via the document block.
+    icon = '📄';
     if (/pdf/i.test(mediaType)) {
       label = 'PDF';
     } else if (mediaType) {
@@ -122,7 +129,7 @@ function describeAttachmentPart(part) {
   }
 
   const detail = filename || url;
-  return detail ? `📎 ${label}: ${detail}` : `📎 ${label}`;
+  return detail ? `${icon} ${label}: ${detail}` : `${icon} ${label}`;
 }
 
 function parseTaskNotification(content) {
@@ -301,6 +308,14 @@ function normalizeContentPart(part, raw, sessionId, partIndex, options) {
 
 function normalizeUserMessage(raw, sessionId, options) {
   if (options.includeUserText === false) {
+    return [];
+  }
+
+  // SDK-injected continuation messages (skill briefings, slash-command echoes,
+  // PDF page rasterizations fed back to the model, etc.) carry isMeta=true.
+  // They are not real user input — hide them from the chat surface, mirroring
+  // how we drop synthetic assistant messages in normalizeAssistantMessage.
+  if (raw?.isMeta === true) {
     return [];
   }
 

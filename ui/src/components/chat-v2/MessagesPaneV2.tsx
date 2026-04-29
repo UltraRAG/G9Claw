@@ -40,6 +40,13 @@ type MessagesPaneV2Props = {
   showRawParameters?: boolean;
   showThinking?: boolean;
   setInput: Dispatch<SetStateAction<string>>;
+  // While the assistant is producing a response (request sent → `complete`
+  // event), we render a small "working" pill at the bottom of the list so the
+  // user always has a visible signal that the model is doing something —
+  // streaming bubbles arrive in 100ms-buffered chunks and tool runs can sit
+  // silent for a while, so without this the UI looks frozen.
+  isAssistantWorking?: boolean;
+  workingStatusText?: string | null;
 };
 
 export default function MessagesPaneV2({
@@ -68,6 +75,8 @@ export default function MessagesPaneV2({
   showRawParameters,
   showThinking,
   setInput,
+  isAssistantWorking = false,
+  workingStatusText,
 }: MessagesPaneV2Props) {
   const { t } = useTranslation();
   const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
@@ -205,8 +214,67 @@ export default function MessagesPaneV2({
               />
             );
           })}
+
+          {isAssistantWorking ? (
+            <WorkingIndicator label={resolveWorkingLabel(workingStatusText, t)} />
+          ) : null}
         </div>
       )}
+    </div>
+  );
+}
+
+// Map raw status strings the realtime layer hands us to localized labels.
+// Strings come from a few places (`useChatComposerState`, the realtime
+// handler default, possible future SDK-sourced values) and may be any of:
+// "Processing" / "Working..." / "Working" / "Waiting for permission".
+// Anything we don't recognize falls through verbatim — better than showing
+// a wrong-but-translated string.
+function resolveWorkingLabel(
+  raw: string | null | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  const fallback = t('working.default', { defaultValue: 'Working' });
+  if (!raw) return fallback;
+  const normalized = raw.replace(/[.…\s]+$/u, '').trim().toLowerCase();
+  switch (normalized) {
+    case '':
+    case 'working':
+      return fallback;
+    case 'processing':
+      return t('working.processing', { defaultValue: 'Processing' });
+    case 'thinking':
+      return t('working.thinking', { defaultValue: 'Thinking' });
+    case 'waiting for permission':
+      return t('working.waitingForPermission', { defaultValue: 'Waiting for permission' });
+    default:
+      return raw;
+  }
+}
+
+// Three-dot bouncing pill that signals the assistant is busy. Lives at the
+// bottom of the message list and is naturally pushed offscreen as new
+// messages arrive — same pattern as ChatGPT/Claude.ai.
+function WorkingIndicator({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-2 pl-1 text-[12px] text-neutral-500 dark:text-neutral-400"
+    >
+      <span
+        className="inline-flex h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400 dark:bg-neutral-500"
+        style={{ animationDelay: '0ms' }}
+      />
+      <span
+        className="inline-flex h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400 dark:bg-neutral-500"
+        style={{ animationDelay: '150ms' }}
+      />
+      <span
+        className="inline-flex h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400 dark:bg-neutral-500"
+        style={{ animationDelay: '300ms' }}
+      />
+      <span className="ml-1.5 tabular-nums">{label}</span>
     </div>
   );
 }

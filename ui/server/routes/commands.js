@@ -96,7 +96,7 @@ const builtInCommands = [
   },
   {
     name: '/model',
-    description: 'Switch or view the current AI model',
+    description: 'View the current AI model and available options',
     namespace: 'builtin',
     metadata: { type: 'builtin' }
   },

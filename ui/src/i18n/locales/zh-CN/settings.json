@@ -91,6 +91,7 @@
     "label": "设置",
     "agents": "智能体",
     "appearance": "外观",
+    "permissions": "权限",
     "git": "Git",
     "apiTokens": "API 和令牌",
     "tasks": "任务",
@@ -150,7 +151,7 @@
       },
       "fontSize": {
         "label": "字体大小",
-        "description": "编辑器字体大小（px）"
+        "description": "仅作用于代码编辑器视图（px）。聊天和侧边栏沿用系统默认字号。"
       }
     }
   },
@@ -339,6 +340,16 @@
   },
   "permissions": {
     "title": "权限设置",
+    "description": "管理助手可以无需询问即可运行的工具。从聊天中点击「添加权限」授予的项也会落到这里。",
+    "export": "导出",
+    "import": "导入",
+    "importExportHint": "可将权限列表导出为 JSON，便于备份或与他人共享。",
+    "exportSuccess": "已导出 {{allowed}} 个允许工具与 {{blocked}} 个禁用工具。",
+    "exportError": "导出权限失败。",
+    "importReadError": "无法读取选中的文件。",
+    "importInvalid": "文件不是有效的权限导出（需要包含 allowedTools / disallowedTools / skipPermissions 的 JSON）。",
+    "importConfirmBody": "将导入的 {{allowed}} 个允许工具与 {{blocked}} 个禁用工具合并到现有权限？",
+    "importSuccess": "导入完成，新增 {{addedAllowed}} 个允许工具与 {{addedBlocked}} 个禁用工具。",
     "skipPermissions": {
       "label": "跳过权限提示（请谨慎使用）",
       "claudeDescription": "等同于 --dangerously-skip-permissions 标志",
@@ -410,7 +421,8 @@
       }
     },
     "actions": {
-      "add": "添加"
+      "add": "添加",
+      "remove": "移除"
     }
   },
   "mcpServers": {
