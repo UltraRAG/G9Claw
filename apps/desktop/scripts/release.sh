@@ -355,20 +355,33 @@ step "Create DMG"
 # Management TCC denial when copying a notarized .app via hdiutil's internal
 # ditto step (error: "操作不被允许" / EPERM on /Volumes/<volname>/<App>.app).
 #
-# Two key bypasses learned the hard way:
-#   1. Volume name MUST differ from the .app's bundle basename, otherwise even
-#      a manual ditto is blocked. Using "EdgeClaw <version>" works.
-#   2. Format ULMO/APFS combo also breaks; HFS+ + UDZO is universally portable.
+# CRITICAL — volume name TCC heuristic (verified empirically on macOS 14.x):
+#   • "EdgeClaw"          → blocked (matches CFBundleName)
+#   • "EdgeClaw 0.1.0"    → blocked (CFBundleName + space + token)
+#   • "EdgeClaw Installer"→ OK
+#   • "Install EdgeClaw"  → OK   ← used here for friendlier Finder display
+#   • "EdgeClaw-0.1.0"    → OK   (hyphen instead of space)
+# The pattern appears to be: TCC App Management blocks copying a notarized
+# .app into a volume whose name STARTS with `<CFBundleName><whitespace>` and
+# the next token isn't a known word like "Installer". Safer to avoid the
+# pattern entirely.
+#
+# Other learned constraints:
+#   • Format ULMO/APFS combo breaks; HFS+ + UDZO is universally portable.
+#   • Manual ditto is required because `hdiutil create -srcfolder` runs
+#     ditto internally with the same TCC restrictions.
+#   • Stripping `com.apple.provenance` xattr is NOT required if volname
+#     avoids the trigger pattern.
 
 rm -f "$DMG_OUT"
 
 APP_MB=$(du -sm "$APP_OUT" | awk '{print $1}')
 ALLOC=$((APP_MB + 300))
-VOLNAME="EdgeClaw ${VERSION}"
+VOLNAME="Install EdgeClaw ${VERSION}"
 RW_DMG="$(mktemp -t edgeclaw-rw.XXXX).dmg"
 trap 'rm -f "$RW_DMG"; mount | awk -v v="$VOLNAME" "\$0 ~ v {print \$1}" | xargs -I{} hdiutil detach {} -force >/dev/null 2>&1 || true' EXIT
 
-info "Step a: create empty UDRW image (${ALLOC}MB, HFS+)…"
+info "Step a: create empty UDRW image (${ALLOC}MB, HFS+, volname='${VOLNAME}')…"
 hdiutil create -size "${ALLOC}m" -fs HFS+ -volname "$VOLNAME" \
   -layout SPUD -ov "$RW_DMG" >/dev/null 2>&1 \
   || fail "Failed to create empty DMG"
@@ -379,9 +392,9 @@ ATT_PLIST="$(hdiutil attach -plist -nobrowse -noverify -noautoopen "$RW_DMG")" \
 MP="$(echo "$ATT_PLIST" | python3 -c "import sys, plistlib; d=plistlib.loads(sys.stdin.buffer.read()); print(next((e['mount-point'] for e in d['system-entities'] if 'mount-point' in e), ''))")"
 [[ -n "$MP" && -d "$MP" ]] || fail "Could not parse mount point from hdiutil plist"
 
-info "Step c: copy .app + Applications symlink…"
+info "Step c: ditto .app + Applications symlink…"
 ditto "$APP_OUT" "$MP/EdgeClaw.app" \
-  || { hdiutil detach "$MP" -force >/dev/null 2>&1; fail "ditto into mounted DMG failed (TCC?)"; }
+  || { hdiutil detach "$MP" -force >/dev/null 2>&1; fail "ditto into mounted DMG failed (TCC? try a different volname)"; }
 ln -sf /Applications "$MP/Applications"
 
 info "Step d: detach…"
