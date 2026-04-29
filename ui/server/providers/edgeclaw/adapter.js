@@ -64,11 +64,65 @@ function stringifyContent(value) {
     return value.content;
   }
 
+  // Defense in depth: never serialize binary attachment blocks via
+  // JSON.stringify. The base64 payload is huge and should never end up in a
+  // chat bubble. Callers that genuinely need a label for an attachment part
+  // should use describeAttachmentPart() instead.
+  if (value.type === 'image' || value.type === 'document') {
+    return '';
+  }
+
   try {
     return JSON.stringify(value);
   } catch {
     return String(value);
   }
+}
+
+// Anthropic content blocks can carry binary attachments alongside text:
+//   { type: 'image',    source: { type: 'base64', media_type, data } }
+//   { type: 'document', source: { type: 'base64', media_type, data } }  // PDFs
+// Without this helper, the user-message normalizer falls through to
+// JSON.stringify(part) and ends up rendering raw base64 as a chat bubble.
+function describeAttachmentPart(part) {
+  if (!part || typeof part !== 'object') return null;
+  if (part.type !== 'image' && part.type !== 'document') return null;
+
+  const source = part.source || {};
+  const mediaType =
+    typeof source.media_type === 'string'
+      ? source.media_type
+      : typeof part.media_type === 'string'
+        ? part.media_type
+        : '';
+  const filename =
+    typeof part.filename === 'string'
+      ? part.filename
+      : typeof part.name === 'string'
+        ? part.name
+        : typeof part.title === 'string'
+          ? part.title
+          : '';
+  const url =
+    source.type === 'url' && typeof source.url === 'string' ? source.url : '';
+
+  let label;
+  if (part.type === 'image') {
+    label = mediaType ? `Image (${mediaType})` : 'Image';
+  } else {
+    // document — most commonly application/pdf, but Claude also accepts
+    // text/plain, text/markdown, etc. via the document block.
+    if (/pdf/i.test(mediaType)) {
+      label = 'PDF';
+    } else if (mediaType) {
+      label = `Document (${mediaType})`;
+    } else {
+      label = 'Document';
+    }
+  }
+
+  const detail = filename || url;
+  return detail ? `📎 ${label}: ${detail}` : `📎 ${label}`;
 }
 
 function parseTaskNotification(content) {
@@ -258,6 +312,21 @@ function normalizeUserMessage(raw, sessionId, options) {
     content.forEach((part, index) => {
       if (part?.type === 'tool_result') {
         normalized.push(...normalizeContentPart(part, raw, sessionId, index, options));
+        return;
+      }
+
+      const attachmentLabel = describeAttachmentPart(part);
+      if (attachmentLabel) {
+        const message = createTextMessage({
+          id: getBaseId(raw, index),
+          sessionId,
+          timestamp,
+          role: 'user',
+          content: attachmentLabel,
+        });
+        if (message) {
+          normalized.push(message);
+        }
         return;
       }
 
