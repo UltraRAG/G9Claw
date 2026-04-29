@@ -290,6 +290,25 @@ export default function SidebarV2({
   const [contextMenu, setContextMenu] = useState<SidebarContextMenu | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Segmented toggle between the Projects list and the General workspace.
+  // Persisted across reloads so the user's preferred view sticks. Switching
+  // is purely a visibility change — we don't reroute or alter selection so
+  // the user can peek without losing their place in the active chat.
+  const SIDEBAR_SECTION_STORAGE_KEY = 'sidebar-v2-active-section';
+  type SidebarSection = 'projects' | 'general';
+  const [activeSection, setActiveSection] = useState<SidebarSection>(() => {
+    if (typeof window === 'undefined') return 'projects';
+    const stored = window.localStorage.getItem(SIDEBAR_SECTION_STORAGE_KEY);
+    return stored === 'general' ? 'general' : 'projects';
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_SECTION_STORAGE_KEY, activeSection);
+    } catch {
+      // localStorage unavailable — fall back to in-memory state silently.
+    }
+  }, [activeSection]);
+
   // Resizable sidebar width — clamped to a sensible range and persisted across
   // reloads. Drag-handle on the right edge mutates this on the fly.
   const SIDEBAR_MIN_WIDTH = 200;
@@ -384,6 +403,25 @@ export default function SidebarV2({
 
   const generalProject =
     safeProjects.find((project) => project.name === 'general' || project.displayName === 'general') ?? null;
+
+  // Auto-flip the section toggle to match the active project when it changes
+  // externally (e.g. /switch-project, deep-linking, default selection on
+  // first load). Without this, navigating to a project on one section while
+  // the sidebar is parked on the other leaves the new project invisible.
+  // We only react to changes — if the user manually clicks the toggle we
+  // never fight them mid-session.
+  const previousSelectedProjectNameRef = useRef<string | null>(null);
+  useEffect(() => {
+    const currentName = selectedProject?.name ?? null;
+    const previousName = previousSelectedProjectNameRef.current;
+    previousSelectedProjectNameRef.current = currentName;
+    if (!currentName) return;
+    if (currentName === previousName) return;
+
+    const nextSection: SidebarSection =
+      generalProject && currentName === generalProject.name ? 'general' : 'projects';
+    setActiveSection((current) => (current === nextSection ? current : nextSection));
+  }, [selectedProject?.name, generalProject]);
 
   const projectSortOrder = useProjectSortOrder();
   const otherProjects = useMemo(() => {
@@ -573,7 +611,10 @@ export default function SidebarV2({
     [cancelRename, commitProjectRename, commitSessionRename],
   );
 
-  const renderSessionRows = (project: Project) => {
+  const renderSessionRows = (
+    project: Project,
+    options: { flat?: boolean } = {},
+  ) => {
     // 500 is a defensive ceiling — if a user holds down Load more their DOM
     // doesn't grow unboundedly. Backend pages 30 at a time so this caps at
     // ~17 clicks worth of history; sessionMeta.total is shown in the button
@@ -588,8 +629,13 @@ export default function SidebarV2({
     const remaining =
       totalSessions !== null ? Math.max(0, totalSessions - sessions.length) : null;
 
+    // `flat` mode is used by the General tab where sessions are rendered as a
+    // top-level list (no folder ancestor), so the usual ml-6 indent would
+    // leave a weird empty gutter on the left.
+    const containerClass = options.flat ? 'space-y-0.5' : 'ml-6 space-y-0.5';
+
     return (
-      <div className="ml-6 space-y-0.5">
+      <div className={containerClass}>
         {showDraftSession ? (
           <button
             type="button"
@@ -849,57 +895,110 @@ export default function SidebarV2({
         ) : null}
       </div>
 
+      {/* Section toggle: a thin pill control sitting just above the scroll
+          area, so it doesn't move while the list scrolls. Mirrors the look of
+          familiar two-tab segmented controls (e.g. iOS, ProseMirror). */}
+      <div className="px-3 pt-3 pb-1">
+        <div
+          role="tablist"
+          aria-label={t('sidebar:sectionToggle.label', { defaultValue: 'Sidebar section' }) as string}
+          className="flex w-full rounded-md bg-neutral-100 p-0.5 dark:bg-neutral-900"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSection === 'projects'}
+            onClick={() => setActiveSection('projects')}
+            className={cn(
+              'flex-1 rounded text-[12px] font-medium transition-colors',
+              'h-7 leading-none',
+              activeSection === 'projects'
+                ? 'bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-100'
+                : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200',
+            )}
+          >
+            {t('sidebar:projects.title', { defaultValue: 'Projects' })}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSection === 'general'}
+            onClick={() => setActiveSection('general')}
+            className={cn(
+              'flex-1 rounded text-[12px] font-medium transition-colors',
+              'h-7 leading-none',
+              activeSection === 'general'
+                ? 'bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-100'
+                : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200',
+            )}
+          >
+            {t('sidebar:general.title', { defaultValue: 'General' })}
+          </button>
+        </div>
+      </div>
+
       <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {isLoading && safeProjects.length === 0 ? (
           <div className="px-2 py-4 text-xs text-neutral-500 dark:text-neutral-400">
             {t('sidebar:sessions.loading', { defaultValue: 'Loading...' })}
           </div>
+        ) : activeSection === 'projects' ? (
+          <section className="pt-2">
+            <div className="flex items-center px-3 pb-1">
+              <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.04em] text-neutral-500/90 dark:text-neutral-400/80">
+                {t('sidebar:projects.title', { defaultValue: 'Projects' })}
+              </span>
+              <button
+                type="button"
+                onClick={onCreateProject}
+                aria-label={t('sidebar:projects.newProject', { defaultValue: 'New Project' }) as string}
+                title={t('sidebar:projects.newProject', { defaultValue: 'New Project' }) as string}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+              >
+                <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
+              </button>
+            </div>
+
+            {otherProjects.length === 0 ? (
+              <div className="px-3 py-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                {t('sidebar:projects.noProjects', { defaultValue: 'No projects found' })}
+              </div>
+            ) : (
+              <div className="space-y-0.5">
+                {otherProjects.map((project) => renderProjectGroup(project))}
+              </div>
+            )}
+          </section>
         ) : (
-          <>
-            <section className="pt-3">
-              <div className="flex items-center px-3 pb-1">
-                <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.04em] text-neutral-500/90 dark:text-neutral-400/80">
-                  {t('sidebar:projects.title', { defaultValue: 'Projects' })}
-                </span>
-                <button
-                  type="button"
-                  onClick={onCreateProject}
-                  aria-label={t('sidebar:projects.newProject', { defaultValue: 'New Project' }) as string}
-                  title={t('sidebar:projects.newProject', { defaultValue: 'New Project' }) as string}
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-                >
-                  <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-                </button>
+          <section className="pt-2">
+            {generalProject ? (
+              <>
+                <div className="flex items-center px-3 pb-1">
+                  <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.04em] text-neutral-500/90 dark:text-neutral-400/80">
+                    {t('sidebar:general.title', { defaultValue: 'General' })}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(event) => handleNewSession(event, generalProject)}
+                    aria-label={t('sidebar:tooltips.newChat', { defaultValue: 'New Chat' }) as string}
+                    title={t('sidebar:tooltips.newChat', { defaultValue: 'New Chat' }) as string}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                  >
+                    <MessageSquarePlus className="h-3.5 w-3.5" strokeWidth={1.75} />
+                  </button>
+                </div>
+                <div className="px-1">
+                  {renderSessionRows(generalProject, { flat: true })}
+                </div>
+              </>
+            ) : (
+              <div className="px-3 py-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                {t('sidebar:general.missing', {
+                  defaultValue: 'No general workspace found',
+                })}
               </div>
-
-              {otherProjects.length === 0 ? (
-                <div className="px-3 py-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-                  {t('sidebar:projects.noProjects', { defaultValue: 'No projects found' })}
-                </div>
-              ) : (
-                <div className="space-y-0.5">
-                  {otherProjects.map((project) => renderProjectGroup(project))}
-                </div>
-              )}
-            </section>
-
-            <section className="pt-4">
-              <div className="flex items-center px-3 pb-1">
-                <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.04em] text-neutral-500/90 dark:text-neutral-400/80">
-                  {t('sidebar:general.title', { defaultValue: 'General' })}
-                </span>
-              </div>
-              {generalProject ? (
-                renderProjectGroup(generalProject, { isGeneral: true })
-              ) : (
-                <div className="px-3 py-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-                  {t('sidebar:general.missing', {
-                    defaultValue: 'No general workspace found',
-                  })}
-                </div>
-              )}
-            </section>
-          </>
+            )}
+          </section>
         )}
       </div>
 

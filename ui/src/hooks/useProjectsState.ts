@@ -118,6 +118,7 @@ const VALID_TABS: Set<string> = new Set([
   'git',
   'tasks',
   'memory',
+  'skills',
   'preview',
   'dashboard',
 ]);

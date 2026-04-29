@@ -36,6 +36,7 @@ import {
 import MainContentStateView from './subcomponents/MainContentStateView';
 import ErrorBoundary from './ErrorBoundary';
 import MemoryPanel from './memory/MemoryPanel';
+import SkillsV2 from '../../main-content-v2/SkillsV2';
 
 type TaskMasterContextValue = {
   currentProject?: Project | null;
@@ -751,6 +752,7 @@ function SplitBody(props: SplitBodyProps) {
     'always-on',
     'dashboard',
     'memory',
+    'skills',
     'tasks',
   ]);
   const isFullScreenTool = fullScreenToolTabs.has(activeTab) || isPlugin;
@@ -833,6 +835,7 @@ function SplitBody(props: SplitBodyProps) {
     }
     if (activeTab === 'dashboard') return <DashboardV2 />;
     if (activeTab === 'memory') return <MemoryPanel selectedProject={selectedProject} />;
+    if (activeTab === 'skills') return <SkillsV2 selectedProject={selectedProject} />;
     if (renderTasksAsTool) return <TasksV2 isVisible />;
     if (isPlugin) {
       return (
@@ -927,7 +930,11 @@ function SplitBody(props: SplitBodyProps) {
             className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
             style={{ minWidth: `${FILES_TREE_MIN_WIDTH}px` }}
           >
-            <FilesV2 selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+            <FilesV2
+              selectedProject={selectedProject}
+              onFileOpen={handleFileOpen}
+              onClose={() => setActiveTab('chat')}
+            />
           </div>
         </>
       ) : null}

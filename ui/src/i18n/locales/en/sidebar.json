@@ -24,6 +24,9 @@
     "name": "General",
     "missing": "No general workspace found"
   },
+  "sectionToggle": {
+    "label": "Sidebar section"
+  },
   "renamePlaceholder": "Rename - empty to reset",
   "contextMenu": {
     "label": "Context menu"

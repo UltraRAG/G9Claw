@@ -114,8 +114,27 @@ export function useSlashCommands({
           })),
         ];
 
+        // Pinned commands always come first in fixed server-defined order;
+        // backend returns them as `data.pinned` for that exact ordering.
+        // Other commands fall back to usage-history sort.
+        const pinnedOrderIndex = new Map<string, number>();
+        ((data.pinned || []) as SlashCommand[]).forEach((command, index) => {
+          pinnedOrderIndex.set(command.name, index);
+        });
+
         const parsedHistory = readCommandHistory(selectedProject.name);
         const sortedCommands = [...allCommands].sort((commandA, commandB) => {
+          const aPinnedIdx = pinnedOrderIndex.has(commandA.name)
+            ? (pinnedOrderIndex.get(commandA.name) as number)
+            : -1;
+          const bPinnedIdx = pinnedOrderIndex.has(commandB.name)
+            ? (pinnedOrderIndex.get(commandB.name) as number)
+            : -1;
+          if (aPinnedIdx !== -1 || bPinnedIdx !== -1) {
+            if (aPinnedIdx === -1) return 1;
+            if (bPinnedIdx === -1) return -1;
+            return aPinnedIdx - bPinnedIdx;
+          }
           const commandAUsage = parsedHistory[commandA.name] || 0;
           const commandBUsage = parsedHistory[commandB.name] || 0;
           return commandBUsage - commandAUsage;
@@ -198,25 +217,52 @@ export function useSlashCommands({
     [selectedProject],
   );
 
-  const selectCommandFromKeyboard = useCallback(
+  // Insert the picked command name into the textarea and leave the caret right
+  // after `<command> `. We DO NOT auto-submit — the user reviews/edits args
+  // and presses Enter themselves, mirroring how the TUI behaves and avoiding
+  // surprise sends (e.g. /add-project with no path runs blindly).
+  //
+  // The replacement spans from the active `/` to the next whitespace so a
+  // partial query like `hello /skill_inst` becomes `hello /skill_install ` and
+  // any trailing text after the query is preserved.
+  const insertCommandIntoInput = useCallback(
     (command: SlashCommand) => {
-      const textBeforeSlash = input.slice(0, slashPosition);
-      const textAfterSlash = input.slice(slashPosition);
+      // Fall back to slash-prepend when no active slashPosition exists (e.g.
+      // mouse click without prior typing). Keep existing input intact.
+      const slashStart = slashPosition >= 0 ? slashPosition : input.length;
+      const textBeforeSlash = input.slice(0, slashStart);
+      const textAfterSlash = input.slice(slashStart);
       const spaceIndex = textAfterSlash.indexOf(' ');
-      const textAfterQuery = spaceIndex !== -1 ? textAfterSlash.slice(spaceIndex) : '';
-      const newInput = `${textBeforeSlash}${command.name} ${textAfterQuery}`;
+      const textAfterQuery =
+        spaceIndex !== -1 ? textAfterSlash.slice(spaceIndex) : '';
+      const head = `${textBeforeSlash}${command.name} `;
+      const newInput = `${head}${textAfterQuery}`;
 
       setInput(newInput);
       resetCommandMenuState();
 
-      const executionResult = onExecuteCommand(command);
-      if (isPromiseLike(executionResult)) {
-        executionResult.catch(() => {
-          // Keep behavior silent; execution errors are handled by caller.
-        });
-      }
+      // Defer focus + caret placement until after React commits the new input
+      // value; otherwise selectionStart points into stale text.
+      const caret = head.length;
+      setTimeout(() => {
+        const ta = textareaRef.current;
+        if (!ta) return;
+        ta.focus();
+        try {
+          ta.setSelectionRange(caret, caret);
+        } catch {
+          // Ignore: setSelectionRange throws on unfocused/hidden inputs in some browsers.
+        }
+      }, 0);
     },
-    [input, slashPosition, setInput, resetCommandMenuState, onExecuteCommand],
+    [input, slashPosition, setInput, resetCommandMenuState, textareaRef],
+  );
+
+  const selectCommandFromKeyboard = useCallback(
+    (command: SlashCommand) => {
+      insertCommandIntoInput(command);
+    },
+    [insertCommandIntoInput],
   );
 
   const handleCommandSelect = useCallback(
@@ -231,20 +277,9 @@ export function useSlashCommands({
       }
 
       trackCommandUsage(command);
-      const executionResult = onExecuteCommand(command);
-
-      if (isPromiseLike(executionResult)) {
-        executionResult.then(() => {
-          resetCommandMenuState();
-        });
-        executionResult.catch(() => {
-          // Keep behavior silent; execution errors are handled by caller.
-        });
-      } else {
-        resetCommandMenuState();
-      }
+      insertCommandIntoInput(command);
     },
-    [selectedProject, trackCommandUsage, onExecuteCommand, resetCommandMenuState],
+    [selectedProject, trackCommandUsage, insertCommandIntoInput],
   );
 
   const handleToggleCommandMenu = useCallback(() => {

@@ -24,6 +24,9 @@
     "name": "通用",
     "missing": "未找到通用工作区"
   },
+  "sectionToggle": {
+    "label": "侧边栏分区"
+  },
   "renamePlaceholder": "重命名 - 留空恢复默认",
   "contextMenu": {
     "label": "操作菜单"
