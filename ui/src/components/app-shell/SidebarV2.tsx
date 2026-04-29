@@ -28,6 +28,8 @@ import {
   setSessionCustomTitle,
   useCustomNamesVersion,
 } from '../../lib/customNames';
+import edgeclawLogo from '../../assets/edgeclaw-logo.png';
+import edgeclawLogoWhite from '../../assets/edgeclaw-logo-white.png';
 
 const asTimestamp = (value: unknown): number => {
   if (typeof value === 'number') return value;
@@ -165,6 +167,60 @@ export default function SidebarV2({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const [contextMenu, setContextMenu] = useState<SidebarContextMenu | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Resizable sidebar width — clamped to a sensible range and persisted across
+  // reloads. Drag-handle on the right edge mutates this on the fly.
+  const SIDEBAR_MIN_WIDTH = 200;
+  const SIDEBAR_MAX_WIDTH = 480;
+  const SIDEBAR_DEFAULT_WIDTH = 248;
+  const SIDEBAR_WIDTH_STORAGE_KEY = 'sidebar-v2-width';
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    if (typeof window === 'undefined') return SIDEBAR_DEFAULT_WIDTH;
+    const stored = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    const parsed = stored ? Number(stored) : NaN;
+    if (!Number.isFinite(parsed)) return SIDEBAR_DEFAULT_WIDTH;
+    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsed));
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
+  const handleResizeStart = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    setIsResizing(true);
+
+    const onMove = (e: globalThis.MouseEvent) => {
+      const next = Math.min(
+        SIDEBAR_MAX_WIDTH,
+        Math.max(SIDEBAR_MIN_WIDTH, startWidth + (e.clientX - startX)),
+      );
+      setSidebarWidth(next);
+    };
+
+    const onUp = () => {
+      setIsResizing(false);
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      // Persist the latest width by reading back from state — wrapped in a
+      // microtask so the latest setState has settled before we serialize.
+      queueMicrotask(() => {
+        try {
+          // Read directly off the DOM element rather than chasing closure state
+          // to avoid serializing a stale value.
+          const aside = document.querySelector<HTMLElement>('aside[data-sidebar-v2-root]');
+          const width = aside?.offsetWidth;
+          if (width && Number.isFinite(width)) {
+            window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(width)));
+          }
+        } catch {
+          // localStorage may be unavailable in some environments — ignore.
+        }
+      });
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [sidebarWidth]);
 
   useEffect(() => {
     if ((renamingProject || renamingSession) && renameInputRef.current) {
@@ -554,22 +610,37 @@ export default function SidebarV2({
 
   return (
     <aside
+      data-sidebar-v2-root
+      style={{ width: `${sidebarWidth}px` }}
       className={cn(
-        'flex h-full w-[248px] shrink-0 flex-col',
+        // On mobile the parent wraps this aside in an overlay constrained
+        // to 85vw, so force the inline width style off with !w-full there.
+        'relative flex h-full shrink-0 flex-col max-md:!w-full',
         'bg-neutral-50 text-neutral-900',
         'dark:bg-neutral-900 dark:text-neutral-100',
         'border-r border-neutral-200 dark:border-neutral-800',
       )}
     >
-      <div className="flex h-12 items-center justify-between px-4">
+      <div className="flex h-16 items-center justify-between pl-2 pr-4">
         <button
           type="button"
           onClick={() => navigate('/')}
-          aria-label="edgeclaw"
-          title="edgeclaw"
-          className="flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-900 text-[14px] font-semibold text-neutral-50 hover:bg-neutral-800 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-200"
+          aria-label="EdgeClaw"
+          title="EdgeClaw"
+          className="flex min-w-0 shrink items-center rounded-md p-1 -ml-1 transition hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:focus-visible:ring-neutral-700"
         >
-          E
+          <img
+            src={edgeclawLogo}
+            alt="EdgeClaw"
+            className="h-14 w-auto select-none object-contain dark:hidden"
+            draggable={false}
+          />
+          <img
+            src={edgeclawLogoWhite}
+            alt="EdgeClaw"
+            className="hidden h-14 w-auto select-none object-contain dark:block"
+            draggable={false}
+          />
         </button>
         {onCollapse ? (
           <button
@@ -688,6 +759,41 @@ export default function SidebarV2({
             <span>{t('sidebar:actions.delete', { defaultValue: 'Delete' })}</span>
           </button>
         </div>
+      ) : null}
+
+      {/* Drag handle for resizing the sidebar. Sits flush against the right
+          border, 4px wide; expands hit area on hover and shows a faint accent
+          while dragging. Hidden on mobile (the overlay sidebar isn't resizable). */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={t('sidebar:tooltips.resize', { defaultValue: 'Resize sidebar' }) as string}
+        title={t('sidebar:tooltips.resize', { defaultValue: 'Drag to resize' }) as string}
+        onMouseDown={handleResizeStart}
+        onDoubleClick={() => {
+          setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+          try {
+            window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(SIDEBAR_DEFAULT_WIDTH));
+          } catch {
+            // ignore
+          }
+        }}
+        className={cn(
+          'absolute inset-y-0 right-0 z-10 hidden w-1 cursor-col-resize select-none md:block',
+          'transition-colors duration-150',
+          isResizing
+            ? 'bg-blue-500/60'
+            : 'hover:bg-neutral-300/70 dark:hover:bg-neutral-700/70',
+        )}
+      />
+
+      {/* While dragging, paint a fullscreen overlay so the cursor stays
+          consistent and we don't accidentally select text in the main pane. */}
+      {isResizing ? (
+        <div
+          className="fixed inset-0 z-[60] cursor-col-resize"
+          style={{ userSelect: 'none' }}
+        />
       ) : null}
     </aside>
   );
