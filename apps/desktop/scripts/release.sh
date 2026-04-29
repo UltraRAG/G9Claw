@@ -348,22 +348,49 @@ step "Apple notarization"
 fi
 
 # ============================================================================
-step "Create APFS DMG"
+step "Create DMG"
 # ============================================================================
+# We use a manual mount→ditto→detach→convert pipeline instead of
+# `hdiutil create -srcfolder` because on macOS 14+ the latter triggers App
+# Management TCC denial when copying a notarized .app via hdiutil's internal
+# ditto step (error: "操作不被允许" / EPERM on /Volumes/<volname>/<App>.app).
+#
+# Two key bypasses learned the hard way:
+#   1. Volume name MUST differ from the .app's bundle basename, otherwise even
+#      a manual ditto is blocked. Using "EdgeClaw <version>" works.
+#   2. Format ULMO/APFS combo also breaks; HFS+ + UDZO is universally portable.
 
 rm -f "$DMG_OUT"
-TMP_DMG="$(mktemp -d)"
-trap 'rm -rf "$TMP_DMG"' EXIT
-ditto "$APP_OUT" "$TMP_DMG/EdgeClaw.app"
-ln -s /Applications "$TMP_DMG/Applications"
 
-APP_MB=$(du -sm "$TMP_DMG/EdgeClaw.app" | awk '{print $1}')
-ALLOC=$((APP_MB + 200))
-info "APFS DMG, allocation=${ALLOC}MB…"
-hdiutil create -volname "EdgeClaw" \
-  -srcfolder "$TMP_DMG" -ov -fs APFS -format ULMO \
-  -size "${ALLOC}m" "$DMG_OUT" >/dev/null 2>&1 \
-  || fail "hdiutil create failed"
+APP_MB=$(du -sm "$APP_OUT" | awk '{print $1}')
+ALLOC=$((APP_MB + 300))
+VOLNAME="EdgeClaw ${VERSION}"
+RW_DMG="$(mktemp -t edgeclaw-rw.XXXX).dmg"
+trap 'rm -f "$RW_DMG"; mount | awk -v v="$VOLNAME" "\$0 ~ v {print \$1}" | xargs -I{} hdiutil detach {} -force >/dev/null 2>&1 || true' EXIT
+
+info "Step a: create empty UDRW image (${ALLOC}MB, HFS+)…"
+hdiutil create -size "${ALLOC}m" -fs HFS+ -volname "$VOLNAME" \
+  -layout SPUD -ov "$RW_DMG" >/dev/null 2>&1 \
+  || fail "Failed to create empty DMG"
+
+info "Step b: attach…"
+ATT_PLIST="$(hdiutil attach -plist -nobrowse -noverify -noautoopen "$RW_DMG")" \
+  || fail "hdiutil attach failed"
+MP="$(echo "$ATT_PLIST" | python3 -c "import sys, plistlib; d=plistlib.loads(sys.stdin.buffer.read()); print(next((e['mount-point'] for e in d['system-entities'] if 'mount-point' in e), ''))")"
+[[ -n "$MP" && -d "$MP" ]] || fail "Could not parse mount point from hdiutil plist"
+
+info "Step c: copy .app + Applications symlink…"
+ditto "$APP_OUT" "$MP/EdgeClaw.app" \
+  || { hdiutil detach "$MP" -force >/dev/null 2>&1; fail "ditto into mounted DMG failed (TCC?)"; }
+ln -sf /Applications "$MP/Applications"
+
+info "Step d: detach…"
+hdiutil detach "$MP" -force >/dev/null 2>&1 || warn "detach reported non-zero (often safe)"
+
+info "Step e: convert to UDZO compressed…"
+hdiutil convert "$RW_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG_OUT" >/dev/null 2>&1 \
+  || fail "hdiutil convert failed"
+rm -f "$RW_DMG"
 
 if [[ "$MODE" == "signed" ]]; then
   codesign --force --sign "$IDENTITY" --timestamp "$DMG_OUT" >/dev/null 2>&1 \
