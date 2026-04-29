@@ -4,6 +4,7 @@ import { Button } from '../../../shared/view/ui';
 import SettingsSidebar from '../view/SettingsSidebar';
 import AppearanceSettingsTab from '../view/tabs/AppearanceSettingsTab';
 import EdgeClawConfigTab from '../view/tabs/EdgeClawConfigTab';
+import PermissionsSettingsTab from '../view/tabs/PermissionsSettingsTab';
 import { useSettingsController } from '../hooks/useSettingsController';
 import type { SettingsProps } from '../types/types';
 
@@ -60,6 +61,8 @@ function Settings({ isOpen, onClose, initialTab = 'appearance' }: SettingsProps)
                   onCodeEditorFontSizeChange={(value) => updateCodeEditorSetting('fontSize', value)}
                 />
               )}
+
+              {activeTab === 'permissions' && <PermissionsSettingsTab />}
 
               {activeTab === 'config' && <EdgeClawConfigTab />}
             </div>

@@ -2,8 +2,10 @@ import type { ReactNode } from 'react';
 import { cn } from '../../../lib/utils';
 
 type SettingsSectionProps = {
-  title: string;
-  description?: string;
+  // ReactNode so callers can inline a small icon next to the title (the
+  // Permissions tab leans on this for its alert/shield glyphs).
+  title: ReactNode;
+  description?: ReactNode;
   children: ReactNode;
   className?: string;
 };

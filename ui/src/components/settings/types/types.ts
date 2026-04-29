@@ -1,10 +1,12 @@
 import type { Dispatch, SetStateAction } from 'react';
 
-// Settings was trimmed to two tabs (Appearance + Config). The agents/git/api/
-// tasks/notifications/plugins/router/about tabs and their MCP form modals
-// were removed wholesale — see git history for the prior shape if you ever
-// need to recover the multi-provider surface.
-export type SettingsMainTab = 'appearance' | 'config';
+// Settings was trimmed down from the original multi-tab layout. The
+// 'permissions' tab was re-added because the chat surface emits
+// "Open settings" links from tool-permission prompts and we need somewhere
+// for those to land. The agents/git/api/tasks/notifications/plugins/router/
+// about tabs and their MCP form modals stay removed — see git history if
+// you ever need to recover the multi-provider surface.
+export type SettingsMainTab = 'appearance' | 'permissions' | 'config';
 
 export type ProjectSortOrder = 'name' | 'date';
 export type SaveStatus = 'success' | 'error' | null;

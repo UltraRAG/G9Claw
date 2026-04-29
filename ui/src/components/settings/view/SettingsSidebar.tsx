@@ -1,4 +1,4 @@
-import { FileCog, Palette, type LucideIcon } from 'lucide-react';
+import { FileCog, Palette, Shield, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../../lib/utils';
 import { PillBar, Pill } from '../../../shared/view/ui';
@@ -15,11 +15,11 @@ type NavItem = {
   icon: LucideIcon;
 };
 
-// Trimmed to the two tabs the product still surfaces. Adding a new tab?
-// Update this list, the SettingsMainTab union, SETTINGS_MAIN_TABS in
-// constants.ts, and the switch in Settings.tsx.
+// Adding a new tab? Update this list, the SettingsMainTab union,
+// SETTINGS_MAIN_TABS in constants.ts, and the switch in Settings.tsx.
 const NAV_ITEMS: NavItem[] = [
   { id: 'appearance', labelKey: 'mainTabs.appearance', icon: Palette },
+  { id: 'permissions', labelKey: 'mainTabs.permissions', icon: Shield },
   { id: 'config', labelKey: 'mainTabs.config', icon: FileCog },
 ];
 

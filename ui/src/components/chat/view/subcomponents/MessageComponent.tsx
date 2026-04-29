@@ -298,7 +298,19 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
                               {onShowSettings && (
                                 <button
                                   type="button"
-                                  onClick={(e) => { e.stopPropagation(); onShowSettings(); }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    // Prefer the global helper when present so we
+                                    // can land directly on the Permissions tab.
+                                    // Falls back to the prop (which always
+                                    // opens at 'appearance') if the shell isn't
+                                    // mounted with `window.openSettings`.
+                                    if (typeof window !== 'undefined' && window.openSettings) {
+                                      window.openSettings('permissions');
+                                    } else {
+                                      onShowSettings();
+                                    }
+                                  }}
                                   className="text-xs text-red-700 underline hover:text-red-800 dark:text-red-200 dark:hover:text-red-100"
                                 >
                                   {t('permissions.openSettings')}
