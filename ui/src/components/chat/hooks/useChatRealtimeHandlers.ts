@@ -221,7 +221,16 @@ export function useChatRealtimeHandlers({
     }
 
     // --- All other messages: route to store ---
-    if (sid) {
+    // Skip assistant text messages that duplicate finalized streaming content.
+    // The streaming pipeline (stream_delta → stream_end → finalizeStreaming)
+    // already creates a text message in realtimeMessages. If the backend also
+    // sends a standalone 'text' message with the same content, skip it.
+    const isDuplicateStreamText =
+      msg.kind === 'text' && msg.role === 'assistant' && sid &&
+      sessionStore.getSessionSlot?.(sid)?.realtimeMessages.some(
+        (m) => m.kind === 'text' && m.role === 'assistant' && m.content === (msg as NormalizedMessage).content,
+      );
+    if (sid && !isDuplicateStreamText) {
       sessionStore.appendRealtime(sid, msg as NormalizedMessage);
     }
 
@@ -237,13 +246,16 @@ export function useChatRealtimeHandlers({
             pendingViewSessionRef.current.sessionId = newSessionId;
           }
           setCurrentSessionId(newSessionId);
+          // Eagerly set activeSession so that notify() works for
+          // stream_delta events that arrive before React re-renders.
+          sessionStore.setActiveSession(newSessionId);
           onReplaceTemporarySession?.(newSessionId);
           setPendingPermissionRequests((prev) =>
             prev.map((r) => (r.sessionId ? r : { ...r, sessionId: newSessionId })),
           );
         }
         if (window.refreshProjects) {
-          setTimeout(() => window.refreshProjects?.(), 500);
+          void window.refreshProjects();
         }
         onNavigateToSession?.(newSessionId);
         break;

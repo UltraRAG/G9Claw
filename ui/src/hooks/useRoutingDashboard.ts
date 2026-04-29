@@ -66,10 +66,12 @@ export function useRoutingDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hasFetchedRef = useRef(false);
 
   const refresh = useCallback(async () => {
+    const isInitial = !hasFetchedRef.current;
+    if (isInitial) setLoading(true);
     try {
-      setLoading(true);
       const res = await authenticatedFetch('/api/ccr/dashboard');
       if (res.ok) {
         setData(await res.json());
@@ -81,7 +83,8 @@ export function useRoutingDashboard() {
     } catch (err: any) {
       setError(err.message || 'Failed to fetch dashboard');
     } finally {
-      setLoading(false);
+      hasFetchedRef.current = true;
+      if (isInitial) setLoading(false);
     }
   }, []);
 

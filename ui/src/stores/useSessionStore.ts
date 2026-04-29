@@ -238,7 +238,11 @@ export function useSessionStore() {
   }, []);
 
   const setActiveSession = useCallback((sessionId: string | null) => {
+    const changed = activeSessionIdRef.current !== sessionId;
     activeSessionIdRef.current = sessionId;
+    if (changed) {
+      setTick(n => n + 1);
+    }
   }, []);
 
   const getSlot = useCallback((sessionId: string): SessionSlot => {

@@ -560,7 +560,11 @@ export default function AppShellV2() {
           onSessionNotProcessing={markSessionAsNotProcessing}
           processingSessions={processingSessions}
           onReplaceTemporarySession={replaceTemporarySession}
-          onNavigateToSession={(sid: string) => navigate(`/session/${sid}`)}
+          onNavigateToSession={(sid: string) => {
+            const provider = (localStorage.getItem('selected-provider') || 'claude') as SessionProvider;
+            setSelectedSession((prev) => prev?.id === sid ? prev : { id: sid, __provider: provider } as ProjectSession);
+            navigate(`/session/${sid}`);
+          }}
           onStartNewSession={handleNewSession}
           onSelectSession={handleSelectSession}
           onShowSettings={onShowSettings}

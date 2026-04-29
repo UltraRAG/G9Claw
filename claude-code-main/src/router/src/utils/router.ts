@@ -532,8 +532,12 @@ export const router = async (req: any, _res: any, context: RouterContext) => {
               `[AutoOrchestrate] slimmed system prompt: ${originalBlocks} blocks (~${Math.round(originalTokensEstimate / 4)} tokens) → ${req.body.system.length} blocks (~${Math.round(newTokensEstimate / 4)} tokens), saved ~${Math.round(savedChars / 4)} tokens${preservedBlocks.length > 0 ? `, preserved ${preservedBlocks.length} memory block(s)` : ""}`
             );
           }
+        } else if (autoOrch.mainAgentModel) {
+          // Sub-agents in an orchestrated session: override model to mainAgentModel
+          // so they don't get routed to cheaper models by tokenSaver classification.
+          req.body.model = autoOrch.mainAgentModel;
+          req.log.info(`[AutoOrchestrate] sub-agent model overridden to ${autoOrch.mainAgentModel}`);
         }
-        // Sub-agents: no prompt injection, no tool stripping, no model override, no slimming
       }
     }
     // Debug dump — write the final request body to /tmp/ccr-debug/ for inspection

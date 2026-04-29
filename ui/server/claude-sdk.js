@@ -66,6 +66,11 @@ function buildClaudeSubprocessEnv() {
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
   }
 
+  // Propagate CDP_URL so all claude-code subprocesses share the global Chrome
+  if (process.env.CDP_URL) {
+    env.CDP_URL = process.env.CDP_URL;
+  }
+
   return env;
 }
 
