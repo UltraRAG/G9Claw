@@ -426,10 +426,11 @@ function convertOpenAIRequestToAnthropic(oai: Record<string, unknown>): Record<s
     }
   }
 
-  // Ensure metadata with session_id exists for CCR stats collection
+  // Ensure metadata with session_id exists for CCR stats collection.
+  // Prefer: explicit metadata > OpenAI `user` field > X-Session-Id header > fallback.
   let metadata = oai.metadata as Record<string, unknown> | undefined
   if (!metadata?.user_id) {
-    const sessionId = `chat-completions-${Date.now()}`
+    const sessionId = (oai.user as string) || (oai._sessionId as string) || `chat-completions-${Date.now()}`
     metadata = { ...metadata, user_id: JSON.stringify({ session_id: sessionId }) }
   }
 
@@ -976,6 +977,11 @@ const server = Bun.serve({
         if (isChatCompletions) {
           console.log('[proxy] converting /chat/completions → /v1/messages for CCR')
           const openaiBody = JSON.parse(bodyText)
+          // Forward X-Session-Id header so convertOpenAIRequestToAnthropic can use it
+          const headerSessionId = req.headers.get('x-session-id')
+          if (headerSessionId && !openaiBody.user && !openaiBody._sessionId) {
+            openaiBody._sessionId = headerSessionId
+          }
           const anthropicBody = convertOpenAIRequestToAnthropic(openaiBody)
           bodyText = JSON.stringify(anthropicBody)
           ccrUrl = ccrUrl.replace(/\/chat\/completions/, '/v1/messages')

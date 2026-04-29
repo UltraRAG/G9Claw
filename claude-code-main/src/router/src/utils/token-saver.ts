@@ -1,4 +1,3 @@
-import { ProxyAgent } from "undici";
 import { ProviderService } from "../services/provider";
 
 // ── Types ──
@@ -129,8 +128,9 @@ async function callJudge(
 ): Promise<string> {
   const provider = providerService.getProvider(config.judgeProvider);
   if (!provider) {
-    throw new Error(`Judge provider '${config.judgeProvider}' not found`);
+    throw new Error(`Judge provider '${config.judgeProvider}' not found — set judgeProvider in tokenSaver config`);
   }
+  const modelName = config.judgeModel;
 
   const fetchOptions: RequestInit = {
     method: "POST",
@@ -139,7 +139,7 @@ async function callJudge(
       Authorization: `Bearer ${provider.apiKey}`,
     },
     body: JSON.stringify({
-      model: config.judgeModel,
+      model: modelName,
       messages: [
         { role: "system", content: generateJudgePrompt(config.tiers, config.rules) },
         { role: "user", content: prompt },
@@ -149,19 +149,22 @@ async function callJudge(
     }),
   };
 
-  if (httpsProxy) {
-    (fetchOptions as any).dispatcher = new ProxyAgent(
-      new URL(httpsProxy).toString(),
-    );
+  if (httpsProxy && !process.env.HTTPS_PROXY) {
+    process.env.HTTPS_PROXY = httpsProxy;
   }
 
-  const response = await fetch(
-    `${provider.baseUrl}/chat/completions`,
-    fetchOptions,
-  );
+  // provider.baseUrl may already include the endpoint path (e.g. /chat/completions)
+  const baseUrl = provider.baseUrl.replace(/\/+$/, '');
+  const targetUrl = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+  const nativeFetch = (globalThis as any).__originalFetch ?? fetch;
+  const response = await nativeFetch(targetUrl, fetchOptions);
 
   const data = await response.json() as any;
-  return data.choices?.[0]?.message?.content ?? "";
+  const content = data.choices?.[0]?.message?.content ?? "";
+  if (!content) {
+    console.warn(`[TokenSaver] judge empty response: status=${response.status} body=${JSON.stringify(data).slice(0,200)}`);
+  }
+  return content;
 }
 
 // ── Main classification entry point ──
@@ -189,6 +192,7 @@ export async function classifyAndRoute(
   try {
     const responseText = await callJudge(providerService, config, userMessage, httpsProxy);
     const tier = parseTier(responseText, validTiers, defaultTier);
+    console.error(`[TokenSaver] query="${userMessage.slice(0,40)}" → tier=${tier}`);
     const target = config.tiers[tier];
     return target ? { model: target.model, tier } : null;
   } catch (err) {

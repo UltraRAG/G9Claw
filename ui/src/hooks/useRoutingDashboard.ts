@@ -2,12 +2,23 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { authenticatedFetch } from '../utils/api';
 import type { TokenBucket } from './useRouterSettings';
 
+export type RequestLogEntry = {
+  ts: number;
+  role: 'main' | 'sub';
+  tier?: string;
+  model: string;
+  tokens: number;
+  cost: number;
+  query?: string;
+};
+
 export type SessionRouting = {
   total: TokenBucket;
   byTier: Record<string, TokenBucket>;
   byScenario: Record<string, TokenBucket>;
   byRole: Record<string, TokenBucket>;
   byModel: Record<string, TokenBucket>;
+  requestLog?: RequestLogEntry[];
   firstSeenAt: number;
   lastActiveAt: number;
 };
@@ -17,6 +28,7 @@ export type DashboardSession = {
   title: string;
   provider: string;
   lastActivity: string | null;
+  userQueries?: string[];
   routing: SessionRouting | null;
 };
 

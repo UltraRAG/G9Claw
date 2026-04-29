@@ -29,6 +29,7 @@ export interface SessionTokenStats {
   byTier: Record<string, TokenBucket>;
   byRole: Record<string, TokenBucket>;
   byModel: Record<string, TokenBucket>;
+  requestLog: RequestLogEntry[];
   firstSeenAt: number;
   lastActiveAt: number;
 }
@@ -47,6 +48,16 @@ export interface TokenStatsData {
   lastUpdatedAt: number;
 }
 
+export interface RequestLogEntry {
+  ts: number;
+  role: "main" | "sub";
+  tier?: string;
+  model: string;
+  tokens: number;
+  cost: number;
+  query?: string;
+}
+
 export interface UsageEvent {
   sessionId: string;
   provider: string;
@@ -55,6 +66,7 @@ export interface UsageEvent {
   tier?: string;
   isSubagent?: boolean;
   usage?: { input?: number; output?: number; cacheRead?: number };
+  querySnippet?: string;
 }
 
 export interface ModelPricing {
@@ -240,6 +252,7 @@ export class TokenStatsCollector {
           byTier: {},
           byRole: {},
           byModel: {},
+          requestLog: [],
           firstSeenAt: now,
           lastActiveAt: now,
         };
@@ -255,6 +268,20 @@ export class TokenStatsCollector {
       if (event.tier) {
         addToBucket(ensureBucket(sess.byTier, event.tier), event.usage, cost);
       }
+
+      if (!sess.requestLog) sess.requestLog = [];
+      const totalTokens = (event.usage?.input ?? 0) + (event.usage?.output ?? 0) + (event.usage?.cacheRead ?? 0);
+      sess.requestLog.push({
+        ts: now,
+        role,
+        tier: event.tier,
+        model: event.model,
+        tokens: totalTokens,
+        cost,
+        query: event.querySnippet,
+      });
+      if (sess.requestLog.length > 100) sess.requestLog = sess.requestLog.slice(-100);
+
       this.evictOldSessions();
     }
 

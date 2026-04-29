@@ -355,6 +355,52 @@ async function handlePipelineFallback(
   return null;
 }
 
+function unwrapJsonQuery(raw: string): string {
+  if (!raw.startsWith('{')) return raw;
+  try {
+    const obj = JSON.parse(raw);
+    const q = obj.query
+      || obj.focus_user_turn?.content
+      || (Array.isArray(obj.recent_messages) && obj.recent_messages.find((m: any) => m.role === 'user')?.content);
+    if (typeof q === 'string' && q.length > 0) return q;
+  } catch { /* not JSON */ }
+  return raw;
+}
+
+function extractContentText(msg: any): string | undefined {
+  const raw = typeof msg.content === 'string'
+    ? msg.content
+    : Array.isArray(msg.content)
+      ? msg.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ')
+      : undefined;
+  if (!raw) return undefined;
+  return unwrapJsonQuery(raw);
+}
+
+function extractQuerySnippet(body: any, isSubagent?: boolean): string | undefined {
+  try {
+    const messages = body.messages;
+    if (!Array.isArray(messages) || messages.length === 0) return undefined;
+
+    if (isSubagent) {
+      const userMsgs = messages.filter((m: any) => m.role === 'user');
+      const last = userMsgs[userMsgs.length - 1];
+      if (!last) return undefined;
+      const text = extractContentText(last);
+      if (!text) return undefined;
+      return text.length > 120 ? text.slice(0, 120) + '…' : text;
+    }
+
+    const lastUser = [...messages].reverse().find((m: any) => m.role === 'user');
+    if (!lastUser) return undefined;
+    const text = extractContentText(lastUser);
+    if (!text) return undefined;
+    return text.length > 120 ? text.slice(0, 120) + '…' : text;
+  } catch {
+    return undefined;
+  }
+}
+
 function collectStats(req: any, body: any, response: Response) {
   const collector = getGlobalStatsCollector();
   if (!collector) return;
@@ -367,6 +413,7 @@ function collectStats(req: any, body: any, response: Response) {
   const tier = req.tokenSaverTier as string | undefined;
   const isSubagent = req.isSubagent as boolean | undefined;
   const model = body.model || "unknown";
+  const querySnippet = extractQuerySnippet(body, isSubagent);
 
   if (body.stream === true && response.body) {
     const [originalStream, statsStream] = response.body.tee();
@@ -384,6 +431,7 @@ function collectStats(req: any, body: any, response: Response) {
             const u = value.data.usage;
             collector.record({
               sessionId, provider, model, scenarioType, tier, isSubagent,
+              querySnippet,
               usage: {
                 input: u.input_tokens,
                 output: u.output_tokens,
@@ -408,6 +456,7 @@ function collectStats(req: any, body: any, response: Response) {
       if (json?.usage) {
         collector.record({
           sessionId, provider, model, scenarioType, tier, isSubagent,
+          querySnippet,
           usage: {
             input: json.usage.input_tokens,
             output: json.usage.output_tokens,
@@ -428,6 +477,7 @@ export function installFetchInterceptor(
   services: PipelineServices
 ): void {
   const _originalFetch = globalThis.fetch;
+  (globalThis as any).__originalFetch = _originalFetch;
 
   globalThis.fetch = async function ccrInterceptedFetch(
     input: RequestInfo | URL,

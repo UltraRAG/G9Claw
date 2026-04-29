@@ -17,6 +17,9 @@ import {
 } from '../embedded-ccr.js';
 import { resolveClaudeCodeMainRoot } from '../claude-code-main-path.js';
 import { getProjects } from '../projects.js';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 const router = Router();
 
@@ -155,6 +158,42 @@ router.put('/config', async (req, res) => {
 // Dashboard — cross-references projects with CCR session stats
 // ---------------------------------------------------------------------------
 
+function extractPlainQuery(raw) {
+  if (!raw || !raw.startsWith('{')) return raw || '';
+  try {
+    const obj = JSON.parse(raw);
+    return obj.query || obj.focus_user_turn?.content || raw;
+  } catch { /* JSON may be truncated */ }
+  // Regex fallback for truncated JSON — content may not have closing quote
+  const m = raw.match(/"(?:query|content)":\s*"([^"]{2,})/);
+  if (m) return m[1].replace(/["}\]\\,\s]+$/, '').replace(/…$/, '');
+  return raw;
+}
+
+async function extractUserQueries(projectName, sessionId, limit = 20) {
+  try {
+    const sessionPath = join(homedir(), '.claude', 'projects', projectName, `${sessionId}.jsonl`);
+    const raw = await readFile(sessionPath, 'utf-8');
+    const queries = [];
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.message?.role !== 'user') continue;
+        let text = entry.message.content;
+        if (Array.isArray(text) && text.length > 0 && text[0].type === 'text') text = text[0].text;
+        if (typeof text !== 'string' || !text || text.startsWith('<') || text.startsWith('{')) continue;
+        if (text === 'Warmup' || text.startsWith('Caveat:') || text.startsWith('This session is being continued')) continue;
+        queries.push(text.length > 120 ? text.slice(0, 120) + '…' : text);
+        if (queries.length >= limit) break;
+      } catch { /* skip malformed lines */ }
+    }
+    return queries;
+  } catch {
+    return [];
+  }
+}
+
 function emptyBucket() {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0, requestCount: 0, estimatedCost: 0 };
 }
@@ -196,12 +235,23 @@ router.get('/dashboard', async (_req, res) => {
 
     const projectsData = await getProjects().catch(() => []);
 
+    // Build lookup map: exact sessionId → stats, plus suffix-based fallback
+    // CCR stores sessionId as extracted from metadata.user_id's session_id field.
+    // UI sessions use IDs like "abc-123" which should match directly.
     const ccrMap = new Map();
+    const ccrSuffixMap = new Map();
     for (const s of allSessions) {
       ccrMap.set(s.sessionId, s);
+      // Also index by last segment after underscore for legacy format matching
+      const parts = (s.sessionId || '').split('_session_');
+      if (parts.length > 1) ccrSuffixMap.set(parts[1], s);
     }
 
-    const matchedIds = new Set();
+    function findCcrStats(uiSessionId) {
+      return ccrMap.get(uiSessionId) || ccrSuffixMap.get(uiSessionId) || null;
+    }
+
+    const matchedCcrIds = new Set();
     const overall = {
       total: emptyBucket(),
       byTier: {},
@@ -228,22 +278,25 @@ router.get('/dashboard', async (_req, res) => {
         routedSessionCount: 0,
       };
 
-      const sessions = projSessions.map((s) => {
+      const sessions = await Promise.all(projSessions.map(async (s) => {
         const sid = s.id;
-        const ccrStats = ccrMap.get(sid);
+        const ccrStats = findCcrStats(sid);
         if (ccrStats) {
-          matchedIds.add(sid);
+          matchedCcrIds.add(ccrStats.sessionId);
           aggregated.routedSessionCount++;
           mergeBuckets(aggregated.total, ccrStats.total || {});
           mergeRecordBuckets(aggregated.byTier, ccrStats.byTier);
           mergeRecordBuckets(aggregated.byRole, ccrStats.byRole);
         }
 
+        const userQueries = await extractUserQueries(proj.name, sid);
+
         return {
           sessionId: sid,
           title: s.summary || s.title || s.name || s.lastUserMessage || '',
           provider: s.__provider || 'claude',
           lastActivity: s.lastActivity || s.updated_at || s.createdAt || null,
+          userQueries,
           routing: ccrStats
             ? {
                 total: ccrStats.total,
@@ -251,12 +304,13 @@ router.get('/dashboard', async (_req, res) => {
                 byScenario: ccrStats.byScenario || {},
                 byRole: ccrStats.byRole || {},
                 byModel: ccrStats.byModel || {},
+                requestLog: ccrStats.requestLog || [],
                 firstSeenAt: ccrStats.firstSeenAt,
                 lastActiveAt: ccrStats.lastActiveAt,
               }
             : null,
         };
-      });
+      }));
 
       mergeBuckets(overall.total, aggregated.total);
       mergeRecordBuckets(overall.byTier, aggregated.byTier);
@@ -274,14 +328,62 @@ router.get('/dashboard', async (_req, res) => {
 
     overall.projectCount = projects.length;
 
-    const unmatchedSessions = allSessions.filter((s) => !matchedIds.has(s.sessionId));
+    const unmatchedSessions = allSessions.filter((s) => !matchedCcrIds.has(s.sessionId));
+
+    // Merge unmatched sessions into the "general" project
+    let generalProject = projects.find((p) => p.displayName === 'general' || p.name === 'general');
+    if (!generalProject) {
+      generalProject = {
+        name: 'general',
+        displayName: 'general',
+        fullPath: '',
+        sessions: [],
+        aggregated: { total: emptyBucket(), byTier: {}, byRole: {}, sessionCount: 0, routedSessionCount: 0 },
+      };
+      projects.push(generalProject);
+      overall.projectCount = projects.length;
+    }
+
     for (const s of unmatchedSessions) {
       mergeBuckets(overall.total, s.total || {});
       mergeRecordBuckets(overall.byTier, s.byTier);
       mergeRecordBuckets(overall.byRole, s.byRole);
+
+      mergeBuckets(generalProject.aggregated.total, s.total || {});
+      mergeRecordBuckets(generalProject.aggregated.byTier, s.byTier);
+      mergeRecordBuckets(generalProject.aggregated.byRole, s.byRole);
+      generalProject.aggregated.sessionCount++;
+      if (s.total && s.total.requestCount > 0) generalProject.aggregated.routedSessionCount++;
+
+      let unmatchedTitle = s.sessionId;
+      const firstQuery = s.requestLog?.[0]?.query;
+      if (firstQuery) {
+        unmatchedTitle = extractPlainQuery(firstQuery);
+        if (unmatchedTitle.length > 80) unmatchedTitle = unmatchedTitle.slice(0, 80) + '…';
+      }
+
+      generalProject.sessions.push({
+        sessionId: s.sessionId,
+        title: unmatchedTitle,
+        provider: 'router',
+        lastActivity: s.lastActiveAt ? new Date(s.lastActiveAt).toISOString() : null,
+        userQueries: (s.requestLog || []).filter((e) => e.role === 'main').map((e) => e.query ? extractPlainQuery(e.query) : null).filter(Boolean),
+        routing: {
+          total: s.total,
+          byTier: s.byTier || {},
+          byScenario: s.byScenario || {},
+          byRole: s.byRole || {},
+          byModel: s.byModel || {},
+          requestLog: s.requestLog || [],
+          firstSeenAt: s.firstSeenAt,
+          lastActiveAt: s.lastActiveAt,
+        },
+      });
     }
 
-    res.json({ projects, overall, unmatchedSessions });
+    overall.sessionCount += unmatchedSessions.length;
+
+    res.json({ projects, overall, unmatchedSessions: [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
