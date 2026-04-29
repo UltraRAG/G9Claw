@@ -5,6 +5,7 @@ import { DreamRewriteRunner, HeartbeatIndexer, LlmMemoryExtractor, MemoryReposit
 import { normalizeMessages, inspectTranscriptMessage, } from "./message-utils.js";
 const AUTO_INDEX_ANCHOR_AT_STATE_KEY = "autoIndexAnchorAt";
 const AUTO_DREAM_ANCHOR_AT_STATE_KEY = "autoDreamAnchorAt";
+const AUTO_INDEX_PENDING_DIALOGUE_TURN_THRESHOLD = 20;
 const OPENCLAW_CONFIG_PATH = join(homedir(), ".openclaw", "openclaw.json");
 let cachedOpenClawModelConfig;
 function normalizeText(value) {
@@ -666,10 +667,16 @@ export class EdgeClawMemoryService {
         let indexStats;
         let dreamResult;
         const indexAnchorAt = this.reconcileAutoIndexAnchor();
-        if (overview.pendingSessions > 0
-            && hasElapsedMinutes(indexAnchorAt, settings.autoIndexIntervalMinutes, nowMs)) {
+        const pendingDialogueTurns = this.repository.countPendingDialogueTurns();
+        const shouldIndexByBacklog = pendingDialogueTurns >= AUTO_INDEX_PENDING_DIALOGUE_TURN_THRESHOLD;
+        const shouldIndexByInterval = overview.pendingSessions > 0
+            && hasElapsedMinutes(indexAnchorAt, settings.autoIndexIntervalMinutes, nowMs);
+        if (shouldIndexByBacklog || shouldIndexByInterval) {
+            const scheduledReason = reason.startsWith("scheduled") ? reason : `scheduled:${reason}`;
             indexStats = await this.flush({
-                reason: reason.startsWith("scheduled") ? reason : `scheduled:${reason}`,
+                reason: shouldIndexByBacklog
+                    ? `${scheduledReason}:pending_threshold`
+                    : scheduledReason,
             });
             overview = this.overview();
         }

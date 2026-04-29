@@ -94,6 +94,7 @@ export interface MemoryListOptions {
 
 const AUTO_INDEX_ANCHOR_AT_STATE_KEY = "autoIndexAnchorAt" as const;
 const AUTO_DREAM_ANCHOR_AT_STATE_KEY = "autoDreamAnchorAt" as const;
+const AUTO_INDEX_PENDING_DIALOGUE_TURN_THRESHOLD = 20;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -921,17 +922,21 @@ export class EdgeClawMemoryService {
     let indexStats: HeartbeatStats | undefined;
     let dreamResult: DreamRunResult | undefined;
     const indexAnchorAt = this.reconcileAutoIndexAnchor();
-
-    if (
-      overview.pendingSessions > 0
+    const pendingDialogueTurns = this.repository.countPendingDialogueTurns();
+    const shouldIndexByBacklog = pendingDialogueTurns >= AUTO_INDEX_PENDING_DIALOGUE_TURN_THRESHOLD;
+    const shouldIndexByInterval = overview.pendingSessions > 0
       && hasElapsedMinutes(
         indexAnchorAt,
         settings.autoIndexIntervalMinutes,
         nowMs,
-      )
-    ) {
+      );
+
+    if (shouldIndexByBacklog || shouldIndexByInterval) {
+      const scheduledReason = reason.startsWith("scheduled") ? reason : `scheduled:${reason}`;
       indexStats = await this.flush({
-        reason: reason.startsWith("scheduled") ? reason : `scheduled:${reason}`,
+        reason: shouldIndexByBacklog
+          ? `${scheduledReason}:pending_threshold`
+          : scheduledReason,
       });
       overview = this.overview();
     }

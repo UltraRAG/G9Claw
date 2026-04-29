@@ -228,6 +228,15 @@ button:disabled {
   font-weight: 600;
 }
 
+.topbar-auto-status {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.topbar-auto-status.is-failed {
+  color: var(--text-3);
+}
+
 .topbar-index-time {
   color: var(--text-2);
   font-weight: 500;
