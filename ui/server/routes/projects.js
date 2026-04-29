@@ -15,6 +15,10 @@ import {
   queueDiscoveryPlanExecution,
   updateProjectDiscoveryPlanExecution
 } from '../discovery-plans.js';
+import {
+  getAlwaysOnRunHistory,
+  getAlwaysOnRunHistoryDetail
+} from '../services/always-on-run-history.js';
 import { sendCronDaemonRequest } from '../services/cron-daemon-owner.js';
 
 const router = express.Router();
@@ -329,7 +333,8 @@ export async function handleUpdateProjectDiscoveryPlanExecution(req, res) {
       executionStartedAt: getTrimmedParam(req.body?.executionStartedAt),
       executionLastActivityAt: getTrimmedParam(req.body?.executionLastActivityAt),
       status: getTrimmedParam(req.body?.status),
-      latestSummary: getTrimmedParam(req.body?.latestSummary)
+      latestSummary: getTrimmedParam(req.body?.latestSummary),
+      executionToken: getTrimmedParam(req.body?.executionToken)
     });
     return res.json({ plan: updatedPlan });
   } catch (error) {
@@ -396,6 +401,46 @@ export async function handleRunProjectCronJobNow(req, res) {
   }
 }
 
+export async function handleGetProjectAlwaysOnRunHistory(req, res) {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    if (!projectName) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+
+    const projectRoot = await extractProjectDirectory(projectName);
+    const limit = Number.parseInt(req.query?.limit || '', 10);
+    const history = await getAlwaysOnRunHistory(projectRoot, {
+      limit: Number.isFinite(limit) ? limit : undefined
+    });
+    return res.json(history);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+export async function handleGetProjectAlwaysOnRunHistoryDetail(req, res) {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    const runId = getTrimmedParam(req.params?.runId);
+    if (!projectName) {
+      return res.status(400).json({ error: 'projectName is required' });
+    }
+    if (!runId) {
+      return res.status(400).json({ error: 'runId is required' });
+    }
+
+    const projectRoot = await extractProjectDirectory(projectName);
+    const detail = await getAlwaysOnRunHistoryDetail(projectRoot, runId, { projectName });
+    return res.json({ run: detail });
+  } catch (error) {
+    const status = error?.code === 'NOT_FOUND' ? 404 : 500;
+    return res.status(status).json({ error: error.message });
+  }
+}
+
+router.get('/:projectName/always-on/run-history', handleGetProjectAlwaysOnRunHistory);
+router.get('/:projectName/always-on/run-history/:runId', handleGetProjectAlwaysOnRunHistoryDetail);
 router.get('/:projectName/cron-jobs', handleGetProjectCronJobs);
 router.delete('/:projectName/cron-jobs/:taskId', handleDeleteProjectCronJob);
 router.post('/:projectName/cron-jobs/:taskId/run-now', handleRunProjectCronJobNow);

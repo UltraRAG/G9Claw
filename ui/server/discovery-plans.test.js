@@ -14,6 +14,7 @@ import {
 import {
   clearProjectDirectoryCache,
 } from './projects.js';
+import { getAlwaysOnRunHistory } from './services/always-on-run-history.js';
 
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
@@ -131,6 +132,7 @@ test('discovery plans can be listed, queued, updated, and archived', async () =>
   assert.equal(execution.sessionSummary, 'Always-On: Investigate flaky tests');
   assert.match(execution.command, /Do not enter Plan Mode/);
   assert.match(execution.command, /## Execution Steps/);
+  assert.ok(execution.executionToken);
 
   let store = await readDiscoveryPlanStore(projectRoot);
   assert.equal(store.plans[0].status, 'queued');
@@ -139,6 +141,7 @@ test('discovery plans can be listed, queued, updated, and archived', async () =>
   const runningPlan = await updateProjectDiscoveryPlanExecution(projectName, 'plan-alpha', {
     executionSessionId: 'session-123',
     status: 'running',
+    executionToken: execution.executionToken,
   });
   assert.equal(runningPlan.executionSessionId, 'session-123');
   assert.equal(runningPlan.status, 'running');
@@ -147,7 +150,14 @@ test('discovery plans can be listed, queued, updated, and archived', async () =>
     executionSessionId: 'session-123',
     status: 'completed',
     latestSummary: 'Tests were stabilized and rerun successfully.',
+    executionToken: execution.executionToken,
   });
+
+  const history = await getAlwaysOnRunHistory(projectRoot);
+  assert.equal(history.runs.length, 1);
+  assert.equal(history.runs[0].runId, execution.executionToken);
+  assert.equal(history.runs[0].status, 'completed');
+  assert.equal(history.runs[0].sourceId, 'plan-alpha');
 
   const archiveResult = await archiveProjectDiscoveryPlan(projectName, 'plan-alpha');
   assert.deepEqual(archiveResult, { archived: true });

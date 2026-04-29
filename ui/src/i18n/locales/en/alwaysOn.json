@@ -33,10 +33,11 @@
   },
   "empty": {
     "plans": "No discovery plans yet. Run Discover to let Always-On scan this project.",
-    "items": "No plans or cron jobs yet. Run Discover or create a scheduled task."
+    "items": "No active plans or cron jobs. Completed runs are available in Run History."
   },
   "tabs": {
-    "plansCron": "Plans & Cron Jobs"
+    "plansCron": "Plans & Cron Jobs",
+    "runHistory": "Run History"
   },
   "table": {
     "title": "Title",
@@ -100,6 +101,29 @@
     "scope": {
       "persistent": "Persistent",
       "session": "Session-scope"
+    }
+  },
+  "history": {
+    "loading": "Loading run history…",
+    "loadingDetail": "Loading run detail…",
+    "empty": "No Always-On runs have been recorded yet.",
+    "emptyLog": "No output log was captured for this run.",
+    "missing": "This run history entry is no longer available.",
+    "detailTitle": "Run detail",
+    "session": {
+      "available": "Available"
+    },
+    "table": {
+      "title": "Title",
+      "kind": "Kind",
+      "status": "Status",
+      "started": "Started",
+      "source": "Source",
+      "session": "Session"
+    },
+    "sections": {
+      "outputLog": "Output Log",
+      "metadata": "Metadata"
     }
   },
   "relative": {

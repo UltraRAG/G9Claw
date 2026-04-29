@@ -54,6 +54,10 @@ export const api = {
   projects: () => authenticatedFetch('/api/projects'),
   projectCronJobs: (projectName) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/cron-jobs`),
+  projectAlwaysOnRunHistory: (projectName, limit = 500) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/always-on/run-history?limit=${encodeURIComponent(limit)}`),
+  projectAlwaysOnRunHistoryDetail: (projectName, runId) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/always-on/run-history/${encodeURIComponent(runId)}`),
   projectDiscoveryContext: (projectName) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-context`),
   projectDiscoveryPlans: (projectName) =>

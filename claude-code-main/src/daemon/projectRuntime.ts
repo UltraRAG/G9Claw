@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto'
-import { mkdir, rm, writeFile } from 'fs/promises'
+import { appendFile, mkdir, rm, writeFile } from 'fs/promises'
 import { spawn } from 'child_process'
-import { resolve } from 'path'
+import { join, resolve } from 'path'
 import {
   createCronScheduler,
   type CronScheduler,
@@ -24,6 +24,56 @@ type ActiveWorker = {
 }
 
 const WORKER_SHUTDOWN_GRACE_MS = 5_000
+
+type AlwaysOnRunStatus = 'running' | 'completed' | 'failed'
+
+export async function appendCronRunHistoryEvent(
+  projectRoot: string,
+  task: DaemonCronTask,
+  runId: string,
+  status: AlwaysOnRunStatus,
+  startedAt: string,
+  options: { finishedAt?: string; error?: string } = {},
+): Promise<void> {
+  const alwaysOnDir = join(resolve(projectRoot), '.claude', 'always-on')
+  const relativeTranscriptPath =
+    task.originSessionId && task.transcriptKey
+      ? join(task.originSessionId, 'subagents', task.transcriptKey)
+      : undefined
+  const event = {
+    runId,
+    projectRoot: resolve(projectRoot),
+    kind: 'cron',
+    sourceId: task.id,
+    title: task.prompt?.trim().split(/\r?\n/, 1)[0] || task.cron || task.id,
+    status,
+    timestamp: options.finishedAt ?? startedAt,
+    startedAt,
+    finishedAt: options.finishedAt,
+    parentSessionId: task.originSessionId,
+    relativeTranscriptPath,
+    transcriptKey: task.transcriptKey,
+    error: options.error,
+    metadata: {
+      taskId: task.id,
+      cron: task.cron,
+      durable: task.durable,
+      recurring: task.recurring,
+      manualOnly: task.manualOnly,
+      originSessionId: task.originSessionId,
+      transcriptKey: task.transcriptKey,
+    },
+  }
+
+  try {
+    await mkdir(alwaysOnDir, { recursive: true })
+    await appendFile(join(alwaysOnDir, 'run-history.jsonl'), `${JSON.stringify(event)}\n`, 'utf-8')
+  } catch (error) {
+    logForDebugging(
+      `[CronDaemon] failed to append run history for ${task.id}: ${String(error)}`,
+    )
+  }
+}
 
 export async function terminateProcessTree(
   pid: number,
@@ -211,6 +261,7 @@ export class ProjectRuntime {
     }
 
     const workerId = randomUUID()
+    const startedAtIso = new Date().toISOString()
     await mkdir(getCronDaemonWorkerPayloadDir(), { recursive: true })
     const payloadPath = getCronDaemonWorkerPayloadPath(workerId)
     const payload: CronWorkerPayload = {
@@ -239,6 +290,7 @@ export class ProjectRuntime {
       payloadPath,
       startedAt: Date.now(),
     })
+    void appendCronRunHistoryEvent(this.projectRoot, task, workerId, 'running', startedAtIso)
 
     child.stderr?.on('data', chunk => {
       logForDebugging(
@@ -248,11 +300,27 @@ export class ProjectRuntime {
 
     child.on('error', error => {
       cleanupWorker()
+      void appendCronRunHistoryEvent(this.projectRoot, task, workerId, 'failed', startedAtIso, {
+        finishedAt: new Date().toISOString(),
+        error: String(error),
+      })
       logError(error)
     })
 
     child.on('exit', code => {
       cleanupWorker()
+      const failed = code !== 0
+      void appendCronRunHistoryEvent(
+        this.projectRoot,
+        task,
+        workerId,
+        failed ? 'failed' : 'completed',
+        startedAtIso,
+        {
+          finishedAt: new Date().toISOString(),
+          error: failed ? `Worker exited with code ${code ?? 'unknown'}` : undefined,
+        },
+      )
       if (code !== 0) {
         logForDebugging(
           `[CronDaemon] worker for ${task.id} exited with code ${code ?? 'unknown'}`,

@@ -19,3 +19,7 @@ export function getAlwaysOnDiscoveryLockPath(projectRoot) {
 export function getAlwaysOnDiscoveryStatePath(projectRoot) {
   return path.join(getAlwaysOnRoot(projectRoot), 'discovery-state.json');
 }
+
+export function getAlwaysOnRunHistoryPath(projectRoot) {
+  return path.join(getAlwaysOnRoot(projectRoot), 'run-history.jsonl');
+}

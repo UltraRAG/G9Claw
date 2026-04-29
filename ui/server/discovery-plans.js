@@ -10,6 +10,7 @@ import {
   getProjectCronJobsOverview,
   getSessions
 } from './projects.js';
+import { appendAlwaysOnRunEvent } from './services/always-on-run-history.js';
 
 const ALWAYS_ON_DISCOVERY_INDEX_VERSION = 1;
 const ALWAYS_ON_DISCOVERY_STRUCTURE_VERSION = 1;
@@ -568,6 +569,7 @@ export async function queueDiscoveryPlanExecution(projectName, planId, { source 
   }
 
   const now = new Date().toISOString();
+  const executionToken = randomUUID();
   const updatedPlan = {
     ...plan,
     status: 'queued',
@@ -581,12 +583,26 @@ export async function queueDiscoveryPlanExecution(projectName, planId, { source 
   };
   store.plans[index] = updatedPlan;
   await writeDiscoveryPlanStore(projectRoot, store);
+  await appendAlwaysOnRunEvent(projectRoot, {
+    runId: executionToken,
+    kind: 'plan',
+    sourceId: updatedPlan.id,
+    title: updatedPlan.title,
+    status: 'queued',
+    timestamp: now,
+    startedAt: now,
+    metadata: {
+      planId: updatedPlan.id,
+      planFilePath: updatedPlan.planFilePath,
+      source,
+    },
+  });
 
   return {
     plan: buildDiscoveryPlanOverview(updatedPlan, content, null),
     sessionSummary: `Always-On: ${updatedPlan.title}`,
     command: buildDiscoveryPlanExecutionPrompt(updatedPlan, content, projectName),
-    executionToken: randomUUID()
+    executionToken
   };
 }
 
@@ -622,6 +638,29 @@ export async function updateProjectDiscoveryPlanExecution(projectName, planId, u
 
   store.plans[index] = nextPlan;
   await writeDiscoveryPlanStore(projectRoot, store);
+  const executionRunId = normalizeString(
+    updates.executionToken,
+    nextPlan.executionSessionId || plan.executionSessionId || nextPlan.id
+  );
+  const normalizedStatus = normalizeString(updates.status, nextPlan.executionStatus || nextPlan.status);
+  if (executionRunId && normalizedStatus) {
+    await appendAlwaysOnRunEvent(projectRoot, {
+      runId: executionRunId,
+      kind: 'plan',
+      sourceId: nextPlan.id,
+      title: nextPlan.title,
+      status: normalizedStatus,
+      timestamp: now,
+      startedAt: nextPlan.executionStartedAt || now,
+      finishedAt: normalizedStatus === 'completed' || normalizedStatus === 'failed' ? now : undefined,
+      sessionId: nextPlan.executionSessionId,
+      output: nextPlan.latestSummary,
+      metadata: {
+        planId: nextPlan.id,
+        planFilePath: nextPlan.planFilePath,
+      },
+    });
+  }
 
   const content = await readDiscoveryPlanBody(projectRoot, nextPlan.planFilePath);
   return buildDiscoveryPlanOverview(nextPlan, content, null);

@@ -33,10 +33,11 @@
   },
   "empty": {
     "plans": "还没有发现方案。点击「扫描」让 Always-On 检视当前项目。",
-    "items": "还没有方案或 cron job。点击「扫描」或创建一个定时任务。"
+    "items": "没有活跃的计划或定时任务。已完成的运行可在运行历史中查看。"
   },
   "tabs": {
-    "plansCron": "计划与定时任务"
+    "plansCron": "计划与定时任务",
+    "runHistory": "运行历史"
   },
   "table": {
     "title": "标题",
@@ -100,6 +101,29 @@
     "scope": {
       "persistent": "持久",
       "session": "会话范围"
+    }
+  },
+  "history": {
+    "loading": "正在加载运行历史…",
+    "loadingDetail": "正在加载运行详情…",
+    "empty": "还没有记录 Always-On 运行。",
+    "emptyLog": "这次运行没有捕获到输出日志。",
+    "missing": "这条运行历史已不可用。",
+    "detailTitle": "运行详情",
+    "session": {
+      "available": "可用"
+    },
+    "table": {
+      "title": "标题",
+      "kind": "类型",
+      "status": "状态",
+      "started": "开始时间",
+      "source": "来源",
+      "session": "会话"
+    },
+    "sections": {
+      "outputLog": "输出日志",
+      "metadata": "Metadata"
     }
   },
   "relative": {

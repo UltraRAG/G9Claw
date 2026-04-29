@@ -3,7 +3,7 @@ import { EventEmitter } from 'events'
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { ProjectRuntime } from './projectRuntime.js'
+import { appendCronRunHistoryEvent, ProjectRuntime } from './projectRuntime.js'
 import { DaemonSessionTaskStore } from './sessionTaskStore.js'
 import type { DaemonCronTask } from './types.js'
 import { sleep } from '../utils/sleep.js'
@@ -62,6 +62,47 @@ describe('ProjectRuntime', () => {
     )
     expect(raw).toContain(`"transcriptKey": "${spawnedTask?.transcriptKey}"`)
     expect(raw).not.toContain('"durable"')
+  })
+
+  test('appends cron run history events', async () => {
+    const task: DaemonCronTask = {
+      id: 'cron-1',
+      cron: '0 * * * *',
+      prompt: 'Check the queue',
+      createdAt: Date.now(),
+      recurring: false,
+      durable: true,
+      originSessionId: 'origin-session',
+      transcriptKey: 'cron-thread-1',
+    }
+
+    await appendCronRunHistoryEvent(
+      projectRoot,
+      task,
+      'run-1',
+      'running',
+      '2026-04-20T10:00:00.000Z',
+    )
+    await appendCronRunHistoryEvent(projectRoot, task, 'run-1', 'completed', '2026-04-20T10:00:00.000Z', {
+      finishedAt: '2026-04-20T10:02:00.000Z',
+    })
+
+    const raw = await readFile(join(projectRoot, '.claude', 'always-on', 'run-history.jsonl'), 'utf-8')
+    const events = raw.trim().split('\n').map(line => JSON.parse(line))
+    expect(events).toHaveLength(2)
+    expect(events[0]).toMatchObject({
+      runId: 'run-1',
+      kind: 'cron',
+      sourceId: 'cron-1',
+      status: 'running',
+      parentSessionId: 'origin-session',
+      relativeTranscriptPath: join('origin-session', 'subagents', 'cron-thread-1'),
+    })
+    expect(events[1]).toMatchObject({
+      runId: 'run-1',
+      status: 'completed',
+      finishedAt: '2026-04-20T10:02:00.000Z',
+    })
   })
 })
 

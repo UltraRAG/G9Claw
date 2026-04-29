@@ -14,9 +14,13 @@ import {
   Trash2,
 } from 'lucide-react';
 import type {
+  AlwaysOnRunHistoryDetail,
+  AlwaysOnRunHistoryEntry,
   CronJobOverview,
   DiscoveryPlanOverview,
   Project,
+  ProjectAlwaysOnRunHistoryDetailResponse,
+  ProjectAlwaysOnRunHistoryResponse,
   ProjectCronJobsResponse,
   ProjectDiscoveryPlansResponse,
 } from '../../types/app';
@@ -35,6 +39,10 @@ const POLL_INTERVAL_MS = 15_000;
 const CRON_TITLE_MAX_LENGTH = 56;
 const TABLE_GRID_COLUMNS =
   'grid-cols-[minmax(280px,1.8fr)_minmax(120px,0.8fr)_88px_112px_96px_96px_196px]';
+const HISTORY_TABLE_GRID_COLUMNS =
+  'grid-cols-[minmax(280px,1.8fr)_96px_96px_128px_minmax(160px,0.8fr)_112px]';
+
+type AlwaysOnSubTab = 'items' | 'history';
 
 type AlwaysOnRow =
   | {
@@ -101,6 +109,10 @@ function getPlanFileName(plan: DiscoveryPlanOverview): string {
   return (fileName || plan.title).replace(/\.md$/i, '');
 }
 
+export function getPlanRowTitle(plan: DiscoveryPlanOverview): string {
+  return plan.title || getPlanFileName(plan);
+}
+
 function truncateText(value: string | undefined, maxLength = CRON_TITLE_MAX_LENGTH): string {
   const text = value?.trim() || '';
   if (text.length <= maxLength) return text;
@@ -162,6 +174,25 @@ function getDetailTitle(row: AlwaysOnRow): string {
   return row.kind === 'plan' ? row.plan.title || row.title : row.title;
 }
 
+function formatMetadataValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function getHistorySessionLabel(run: AlwaysOnRunHistoryEntry, t: TFunction<'alwaysOn'>): string {
+  if (run.session?.sessionId || run.session?.relativeTranscriptPath) {
+    return t('history.session.available', { defaultValue: 'Available' });
+  }
+  return '—';
+}
+
 function canRunRow(row: AlwaysOnRow): boolean {
   return row.kind === 'cron' || (row.plan.status === 'ready' && !row.plan.executionSessionId);
 }
@@ -174,6 +205,18 @@ function canArchiveOrDeleteRow(row: AlwaysOnRow): boolean {
       row.plan.status !== 'running' &&
       row.plan.status !== 'queued')
   );
+}
+
+export function isActivePlan(plan: DiscoveryPlanOverview): boolean {
+  return plan.status !== 'completed' && plan.status !== 'superseded' && plan.executionStatus !== 'completed';
+}
+
+export function isActiveCronJob(job: CronJobOverview): boolean {
+  return job.status !== 'completed' && job.status !== 'unknown';
+}
+
+export function isVisibleRunHistoryEntry(run: AlwaysOnRunHistoryEntry): boolean {
+  return run.status !== 'unknown';
 }
 
 function DetailSection({
@@ -226,7 +269,7 @@ function getRows(
   cronJobs: CronJobOverview[],
   t: TFunction<'alwaysOn'>,
 ): AlwaysOnRow[] {
-  const planRows: AlwaysOnRow[] = plans.map((plan) => {
+  const planRows: AlwaysOnRow[] = plans.filter(isActivePlan).map((plan) => {
     const completed =
       plan.status === 'completed' || plan.executionStatus === 'completed'
         ? plan.executionLastActivityAt || plan.updatedAt
@@ -235,7 +278,7 @@ function getRows(
     return {
       kind: 'plan',
       id: `plan:${plan.id}`,
-      title: getPlanFileName(plan),
+      title: getPlanRowTitle(plan),
       typeLabel: t('types.plan', { defaultValue: 'plan' }),
       statusLabel: plan.executionStatus || plan.status,
       createdAt: plan.createdAt,
@@ -246,7 +289,7 @@ function getRows(
     };
   });
 
-  const cronRows: AlwaysOnRow[] = cronJobs.map((job) => {
+  const cronRows: AlwaysOnRow[] = cronJobs.filter(isActiveCronJob).map((job) => {
     const createdAt = toIsoFromMs(job.createdAt);
     const lastFiredAt = toIsoFromMs(job.lastFiredAt);
     const latestActivity = job.latestRun?.lastActivity || undefined;
@@ -277,8 +320,13 @@ export default function AlwaysOnV2({
   onOpenCronSession,
 }: AlwaysOnV2Props) {
   const { t } = useTranslation('alwaysOn');
+  const [activeSubTab, setActiveSubTab] = useState<AlwaysOnSubTab>('items');
   const [plans, setPlans] = useState<DiscoveryPlanOverview[]>([]);
   const [cronJobs, setCronJobs] = useState<CronJobOverview[]>([]);
+  const [runHistory, setRunHistory] = useState<AlwaysOnRunHistoryEntry[]>([]);
+  const [historyDetailRunId, setHistoryDetailRunId] = useState<string | null>(null);
+  const [historyDetail, setHistoryDetail] = useState<AlwaysOnRunHistoryDetail | null>(null);
+  const [historyDetailLoading, setHistoryDetailLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
@@ -292,14 +340,16 @@ export default function AlwaysOnV2({
     if (!projectName) {
       setPlans([]);
       setCronJobs([]);
+      setRunHistory([]);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const [plansResponse, cronJobsResponse] = await Promise.all([
+      const [plansResponse, cronJobsResponse, runHistoryResponse] = await Promise.all([
         api.projectDiscoveryPlans(projectName),
         api.projectCronJobs(projectName),
+        api.projectAlwaysOnRunHistory(projectName),
       ]);
 
       if (!plansResponse.ok) {
@@ -310,11 +360,21 @@ export default function AlwaysOnV2({
         const body = (await cronJobsResponse.json().catch(() => ({}))) as { error?: string };
         throw new Error(body?.error || `HTTP ${cronJobsResponse.status}`);
       }
+      if (!runHistoryResponse.ok) {
+        const body = (await runHistoryResponse.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body?.error || `HTTP ${runHistoryResponse.status}`);
+      }
 
       const plansPayload = (await plansResponse.json()) as ProjectDiscoveryPlansResponse;
       const cronJobsPayload = (await cronJobsResponse.json()) as ProjectCronJobsResponse;
+      const runHistoryPayload = (await runHistoryResponse.json()) as ProjectAlwaysOnRunHistoryResponse;
       setPlans(Array.isArray(plansPayload.plans) ? plansPayload.plans : []);
       setCronJobs(Array.isArray(cronJobsPayload.jobs) ? cronJobsPayload.jobs : []);
+      setRunHistory(
+        Array.isArray(runHistoryPayload.runs)
+          ? runHistoryPayload.runs.filter(isVisibleRunHistoryEntry)
+          : [],
+      );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -333,7 +393,15 @@ export default function AlwaysOnV2({
 
   useEffect(() => {
     setDetailRowId(null);
+    setHistoryDetailRunId(null);
+    setHistoryDetail(null);
   }, [projectName]);
+
+  useEffect(() => {
+    setDetailRowId(null);
+    setHistoryDetailRunId(null);
+    setHistoryDetail(null);
+  }, [activeSubTab]);
 
   const runningPlans = plans.filter(
     (plan) => plan.status === 'running' || plan.executionStatus === 'running',
@@ -426,6 +494,27 @@ export default function AlwaysOnV2({
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setDeletingRowId(null);
+    }
+  };
+
+  const handleOpenHistoryDetail = async (runId: string) => {
+    if (!projectName) return;
+    setHistoryDetailRunId(runId);
+    setHistoryDetail(null);
+    setHistoryDetailLoading(true);
+    setError(null);
+    try {
+      const response = await api.projectAlwaysOnRunHistoryDetail(projectName, runId);
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body?.error || `HTTP ${response.status}`);
+      }
+      const payload = (await response.json()) as ProjectAlwaysOnRunHistoryDetailResponse;
+      setHistoryDetail(payload.run);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setHistoryDetailLoading(false);
     }
   };
 
@@ -671,6 +760,134 @@ export default function AlwaysOnV2({
     );
   };
 
+  const renderHistoryDetail = () => {
+    if (!historyDetailRunId) return null;
+
+    return (
+      <div>
+        <div className="mb-5 flex flex-col gap-4 border-b border-neutral-200 pb-4 dark:border-neutral-800 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <button
+              type="button"
+              onClick={() => {
+                setHistoryDetailRunId(null);
+                setHistoryDetail(null);
+              }}
+              className="mb-3 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xxs text-neutral-600 transition hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-900"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.75} />
+              {t('actions.back', { defaultValue: 'Back' })}
+            </button>
+            <h2 className="break-words text-[20px] font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
+              {historyDetail?.title || t('history.detailTitle', { defaultValue: 'Run detail' })}
+            </h2>
+          </div>
+        </div>
+
+        {historyDetailLoading ? (
+          <div className="flex items-center gap-2 text-[13px] text-neutral-500 dark:text-neutral-400">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.75} />
+            <span>{t('history.loadingDetail', { defaultValue: 'Loading run detail…' })}</span>
+          </div>
+        ) : historyDetail ? (
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <DetailSection title={t('history.sections.outputLog', { defaultValue: 'Output Log' })}>
+              <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-neutral-50 p-4 text-[12px] leading-6 text-neutral-800 dark:bg-neutral-900 dark:text-neutral-200">
+                {historyDetail.outputLog || t('history.emptyLog', { defaultValue: 'No output log was captured for this run.' })}
+              </pre>
+            </DetailSection>
+            <aside>
+              <DetailSection title={t('history.sections.metadata', { defaultValue: 'Metadata' })}>
+                <div className="space-y-4">
+                  {Object.entries(historyDetail.metadata || {}).map(([key, value]) => (
+                    <DetailMetaItem key={key} label={key} value={formatMetadataValue(value)} mono />
+                  ))}
+                </div>
+              </DetailSection>
+            </aside>
+          </div>
+        ) : (
+          <p className="text-[13px] text-neutral-500 dark:text-neutral-400">
+            {t('history.missing', { defaultValue: 'This run history entry is no longer available.' })}
+          </p>
+        )}
+      </div>
+    );
+  };
+
+  const renderHistory = () => {
+    if (historyDetailRunId) {
+      return renderHistoryDetail();
+    }
+
+    if (loading && runHistory.length === 0) {
+      return (
+        <div className="flex items-center gap-2 text-[13px] text-neutral-500 dark:text-neutral-400">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.75} />
+          <span>{t('history.loading', { defaultValue: 'Loading run history…' })}</span>
+        </div>
+      );
+    }
+
+    if (runHistory.length === 0) {
+      return (
+        <div className="text-[13px] text-neutral-500 dark:text-neutral-400">
+          {t('history.empty', { defaultValue: 'No Always-On runs have been recorded yet.' })}
+        </div>
+      );
+    }
+
+    return (
+      <div className="overflow-x-auto">
+        <div className="min-w-[880px] text-[13px]">
+          <div
+            className={cn(
+              'text-xxs grid gap-3 border-b border-neutral-200 pb-2 font-medium text-neutral-500 dark:border-neutral-800 dark:text-neutral-400',
+              HISTORY_TABLE_GRID_COLUMNS,
+            )}
+          >
+            <span>{t('history.table.title', { defaultValue: 'Title' })}</span>
+            <span>{t('history.table.kind', { defaultValue: 'Kind' })}</span>
+            <span>{t('history.table.status', { defaultValue: 'Status' })}</span>
+            <span>{t('history.table.started', { defaultValue: 'Started' })}</span>
+            <span>{t('history.table.source', { defaultValue: 'Source' })}</span>
+            <span>{t('history.table.session', { defaultValue: 'Session' })}</span>
+          </div>
+          <div className="divide-y divide-neutral-100 dark:divide-neutral-900">
+            {runHistory.map((run) => (
+              <div key={run.runId} className={cn('grid gap-3 py-3', HISTORY_TABLE_GRID_COLUMNS)}>
+                <div className="min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenHistoryDetail(run.runId)}
+                    className="block max-w-full truncate rounded-sm text-left font-medium text-blue-600 outline-none transition hover:text-blue-700 hover:underline focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-blue-400 dark:hover:text-blue-300"
+                  >
+                    {run.title}
+                  </button>
+                </div>
+                <div className="self-center text-xxs capitalize text-neutral-600 dark:text-neutral-300">
+                  {run.kind}
+                </div>
+                <div className="self-center text-xxs text-neutral-600 dark:text-neutral-300">
+                  {run.status}
+                </div>
+                <div className="self-center font-mono text-xxs text-neutral-500 dark:text-neutral-400">
+                  {formatTime(run.startedAt)}
+                </div>
+                <div className="self-center truncate font-mono text-xxs text-neutral-500 dark:text-neutral-400">
+                  {run.sourceId}
+                </div>
+                <div className="self-center text-xxs text-neutral-600 dark:text-neutral-300">
+                  {getHistorySessionLabel(run, t)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderDetail = () => {
     if (!detailRowId) return null;
     if (!detailRow) {
@@ -696,12 +913,38 @@ export default function AlwaysOnV2({
 
   return (
     <div className="h-full bg-white dark:bg-neutral-950">
-      <div className="flex h-9 items-center border-b border-neutral-200 px-4 dark:border-neutral-800">
+      <div
+        role="tablist"
+        aria-label={t('tabs.ariaLabel', { defaultValue: 'Always-On sections' })}
+        className="scrollbar-thin flex h-9 items-center gap-1 overflow-x-auto border-b border-neutral-200 px-4 dark:border-neutral-800"
+      >
         <button
           type="button"
-          className="h-7 rounded-md bg-neutral-100 px-3 text-xxs font-medium text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100"
+          role="tab"
+          aria-selected={activeSubTab === 'items'}
+          onClick={() => setActiveSubTab('items')}
+          className={cn(
+            'inline-flex h-8 shrink-0 items-center rounded-md px-2.5 text-[13px] transition-colors',
+            activeSubTab === 'items'
+              ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
+              : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100',
+          )}
         >
           {t('tabs.plansCron', { defaultValue: 'Plans & Cron Jobs' })}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeSubTab === 'history'}
+          onClick={() => setActiveSubTab('history')}
+          className={cn(
+            'inline-flex h-8 shrink-0 items-center rounded-md px-2.5 text-[13px] transition-colors',
+            activeSubTab === 'history'
+              ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
+              : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100',
+          )}
+        >
+          {t('tabs.runHistory', { defaultValue: 'Run History' })}
         </button>
       </div>
 
@@ -756,7 +999,9 @@ export default function AlwaysOnV2({
               </div>
             ) : null}
 
-          {detailRowId ? (
+          {activeSubTab === 'history' ? (
+            renderHistory()
+          ) : detailRowId ? (
             renderDetail()
           ) : loading && rows.length === 0 ? (
             <div className="flex items-center gap-2 text-[13px] text-neutral-500 dark:text-neutral-400">
@@ -766,7 +1011,7 @@ export default function AlwaysOnV2({
           ) : rows.length === 0 ? (
             <div className="text-[13px] text-neutral-500 dark:text-neutral-400">
               {t('empty.items', {
-                defaultValue: 'No plans or cron jobs yet. Run Discover or create a scheduled task.',
+                defaultValue: 'No active plans or cron jobs. Completed runs are available in Run History.',
               })}
             </div>
           ) : (

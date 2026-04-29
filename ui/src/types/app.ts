@@ -47,6 +47,38 @@ export interface RunProjectCronJobNowResponse {
   reason?: CronJobRunNowReason;
 }
 
+export type AlwaysOnRunHistoryStatus = 'queued' | 'running' | 'completed' | 'failed' | 'unknown';
+export type AlwaysOnRunHistoryKind = 'plan' | 'cron';
+
+export interface AlwaysOnRunHistorySession {
+  sessionId?: string;
+  parentSessionId?: string;
+  relativeTranscriptPath?: string;
+}
+
+export interface AlwaysOnRunHistoryEntry {
+  runId: string;
+  title: string;
+  kind: AlwaysOnRunHistoryKind;
+  status: AlwaysOnRunHistoryStatus;
+  startedAt?: string;
+  sourceId: string;
+  session?: AlwaysOnRunHistorySession;
+}
+
+export interface AlwaysOnRunHistoryDetail extends AlwaysOnRunHistoryEntry {
+  outputLog: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ProjectAlwaysOnRunHistoryResponse {
+  runs: AlwaysOnRunHistoryEntry[];
+}
+
+export interface ProjectAlwaysOnRunHistoryDetailResponse {
+  run: AlwaysOnRunHistoryDetail;
+}
+
 export type DiscoveryPlanApprovalMode = 'auto' | 'manual';
 export type DiscoveryPlanStatus =
   | 'draft'

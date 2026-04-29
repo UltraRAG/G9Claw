@@ -51,6 +51,7 @@ type TasksSettingsContextValue = {
 type PendingDiscoveryExecution = {
   projectName: string;
   planId: string;
+  executionToken: string;
 };
 
 const AUTO_EXECUTION_POLL_INTERVAL_MS = 15000;
@@ -288,6 +289,7 @@ function MainContent({
     pendingDiscoveryExecutionsRef.current.set(payload.executionToken, {
       projectName: selectedProject.name,
       planId,
+      executionToken: payload.executionToken,
     });
 
     startClaudeSessionCommand({
@@ -406,6 +408,7 @@ function MainContent({
         executionSessionId: newSessionId,
         status: 'running',
         executionStartedAt: new Date().toISOString(),
+        executionToken: pending.executionToken,
       }).finally(() => {
         refreshProjectsSilently();
       });
@@ -424,6 +427,7 @@ function MainContent({
       ? {
           projectName: selectedProject.name,
           planId: explicitPlanId,
+          executionToken,
         }
       : null;
     const execution = trackedExecution || fallbackTrackedExecution;
@@ -448,6 +452,7 @@ function MainContent({
       status,
       executionLastActivityAt: new Date().toISOString(),
       latestSummary: typeof message.content === 'string' ? message.content : undefined,
+      executionToken: execution.executionToken,
     }).finally(() => {
       refreshProjectsSilently();
     });
