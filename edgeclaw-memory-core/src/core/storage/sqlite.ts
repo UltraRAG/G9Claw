@@ -963,6 +963,25 @@ export class MemoryRepository {
     return rows.map((row) => String(row.session_key));
   }
 
+  countPendingDialogueTurns(preferredSessionKeys?: string[]): number {
+    const normalizedPreferred = Array.isArray(preferredSessionKeys)
+      ? preferredSessionKeys.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : [];
+    if (normalizedPreferred.length > 0) {
+      const placeholders = normalizedPreferred.map(() => "?").join(", ");
+      return Number(
+        (this.db.prepare(`
+          SELECT COUNT(*) AS count
+          FROM l0_sessions
+          WHERE indexed = 0 AND session_key IN (${placeholders})
+        `).get(...normalizedPreferred) as DbRow | undefined)?.count ?? 0,
+      );
+    }
+    return Number(
+      (this.db.prepare("SELECT COUNT(*) AS count FROM l0_sessions WHERE indexed = 0").get() as DbRow | undefined)?.count ?? 0,
+    );
+  }
+
   getEarliestPendingTimestamp(preferredSessionKeys?: string[]): string | undefined {
     const normalizedPreferred = Array.isArray(preferredSessionKeys)
       ? preferredSessionKeys.filter((item): item is string => typeof item === "string" && item.trim().length > 0)

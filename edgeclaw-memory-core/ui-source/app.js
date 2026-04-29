@@ -53,6 +53,8 @@ const UI_STRINGS = {
     "nav.user": "用户画像",
     "nav.trace": "记忆追踪",
     "topbar.lastIndexed": "最近索引",
+    "topbar.autoStatus.enabled": "自动构建：已启用",
+    "topbar.autoStatus.failed": "自动构建：失败",
     "search.placeholder": "搜索当前视图",
     "actions.search": "搜索",
     "actions.refresh": "刷新",
@@ -275,6 +277,8 @@ const UI_STRINGS = {
     "nav.user": "User Profile",
     "nav.trace": "Memory Traces",
     "topbar.lastIndexed": "Last indexed",
+    "topbar.autoStatus.enabled": "Auto Build: Enabled",
+    "topbar.autoStatus.failed": "Auto Build: Failed",
     "search.placeholder": "Search current view",
     "actions.search": "Search",
     "actions.refresh": "Refresh",
@@ -582,6 +586,7 @@ const DEFAULT_ACTIVITY = t("status.ready");
 const appScrimEl = document.getElementById("appScrim");
 const activityTextEl = document.getElementById("activityText");
 const statusBarEl = document.getElementById("statusBar");
+const memoryAutoStatusEl = document.getElementById("memoryAutoStatus");
 const navLastIndexedEl = document.getElementById("navLastIndexed");
 const boardNavTabs = Array.from(document.querySelectorAll(".nav-tab[data-page]"));
 const traceSubTabs = Array.from(document.querySelectorAll(".trace-tab[data-trace]"));
@@ -1087,8 +1092,21 @@ function syncMaintenanceActionState() {
   }
 }
 
+function renderMemoryAutoStatus() {
+  if (!memoryAutoStatusEl) return;
+
+  const scheduler = state.overview?.scheduler || null;
+  const autoBuildEnabled = scheduler?.enabled === true && scheduler?.running === true;
+
+  memoryAutoStatusEl.classList.toggle("is-failed", !autoBuildEnabled);
+  memoryAutoStatusEl.textContent = autoBuildEnabled
+    ? t("topbar.autoStatus.enabled")
+    : t("topbar.autoStatus.failed");
+}
+
 function updateCounts() {
   navLastIndexedEl.textContent = formatDateTime(state.overview?.lastIndexedAt || "") === "—" ? t("status.waitingForIndex") : formatDateTime(state.overview?.lastIndexedAt || "");
+  renderMemoryAutoStatus();
   syncMaintenanceActionState();
 }
 
@@ -1683,7 +1701,7 @@ async function loadDreamDetail(traceId) {
 /* ── Data Loading ── */
 
 async function loadOverview() { state.overview = await fetchJson("/api/memory/overview"); updateCounts(); applyPageChrome(); }
-async function loadSettings() { state.settings = await fetchJson("/api/memory/settings"); }
+async function loadSettings() { state.settings = await fetchJson("/api/memory/settings"); updateCounts(); }
 async function loadWorkspace() {
   state.workspace = await fetchJson(buildWorkspaceRequestPath("/api/memory/workspace?limit=200"));
   const selectionChanged = syncSelectedProjectIdFromWorkspace();

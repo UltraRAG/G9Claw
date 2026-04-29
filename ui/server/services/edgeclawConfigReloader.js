@@ -7,7 +7,7 @@ import {
   buildGatewayConfig,
   expandTilde,
 } from './edgeclawConfig.js';
-import { closeMemoryServices } from './memoryService.js';
+import { closeMemoryServices, startMemoryScheduler } from './memoryService.js';
 import { restartCCR, saveCCRConfig, shutdownCCR } from '../embedded-ccr.js';
 
 // Regenerates the derived gateway runtime YAML from the unified config.
@@ -35,7 +35,11 @@ export async function reloadEdgeClawConfig(config) {
   result.processEnv.reloaded = true;
 
   closeMemoryServices();
+  if (config.memory?.enabled) {
+    startMemoryScheduler();
+  }
   result.memory.reloaded = true;
+  result.memory.scheduler = config.memory?.enabled ? 'started' : 'stopped';
 
   if (config.router?.enabled) {
     saveCCRConfig(buildCcrConfig(config));
