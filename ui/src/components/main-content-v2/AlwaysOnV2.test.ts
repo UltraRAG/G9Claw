@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AlwaysOnRunHistoryEntry, CronJobOverview, DiscoveryPlanOverview } from '../../types/app';
 import {
+  getVisibleRunMetadataEntries,
   getPlanRowTitle,
   isActiveCronJob,
   isActivePlan,
@@ -96,5 +97,22 @@ describe('AlwaysOnV2 active item filtering', () => {
     expect(shouldPollRunLog('completed')).toBe(false);
     expect(shouldPollRunLog('failed')).toBe(false);
     expect(shouldPollRunLog('unknown')).toBe(false);
+  });
+
+  it('hides internal run metadata keys from history detail metadata', () => {
+    const entries = getVisibleRunMetadataEntries({
+      source: 'manual',
+      sourceId: 'plan-alpha',
+      logUpdatedAt: '2026-04-29T14:31:14.104Z',
+      planFilePath: '.claude/always-on/plans/plan-alpha.md',
+      logSize: 800,
+      logSource: 'log-file',
+      logTruncated: false,
+    });
+
+    expect(entries).toEqual([
+      ['planFilePath', '.claude/always-on/plans/plan-alpha.md'],
+      ['logSource', 'log-file'],
+    ]);
   });
 });

@@ -189,6 +189,18 @@ function formatMetadataValue(value: unknown): string {
   }
 }
 
+const HIDDEN_RUN_METADATA_KEYS = new Set([
+  'source',
+  'sourceId',
+  'logUpdatedAt',
+  'logSize',
+  'logTruncated',
+]);
+
+export function getVisibleRunMetadataEntries(metadata: Record<string, unknown> | undefined) {
+  return Object.entries(metadata || {}).filter(([key]) => !HIDDEN_RUN_METADATA_KEYS.has(key));
+}
+
 function getHistorySessionLabel(run: AlwaysOnRunHistoryEntry, t: TFunction<'alwaysOn'>): string {
   if (run.session?.sessionId || run.session?.relativeTranscriptPath) {
     return t('history.session.available', { defaultValue: 'Available' });
@@ -822,6 +834,7 @@ export default function AlwaysOnV2({
 
   const renderHistoryDetail = () => {
     if (!historyDetailRunId) return null;
+    const metadataEntries = historyDetail ? getVisibleRunMetadataEntries(historyDetail.metadata) : [];
 
     return (
       <div>
@@ -880,11 +893,17 @@ export default function AlwaysOnV2({
             </DetailSection>
             <aside>
               <DetailSection title={t('history.sections.metadata', { defaultValue: 'Metadata' })}>
-                <div className="space-y-4">
-                  {Object.entries(historyDetail.metadata || {}).map(([key, value]) => (
-                    <DetailMetaItem key={key} label={key} value={formatMetadataValue(value)} mono />
-                  ))}
-                </div>
+                {metadataEntries.length > 0 ? (
+                  <div className="space-y-4">
+                    {metadataEntries.map(([key, value]) => (
+                      <DetailMetaItem key={key} label={key} value={formatMetadataValue(value)} mono />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[13px] text-neutral-500 dark:text-neutral-400">
+                    {t('detail.none', { defaultValue: 'None' })}
+                  </p>
+                )}
               </DetailSection>
             </aside>
           </div>
