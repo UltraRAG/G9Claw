@@ -1405,6 +1405,15 @@ export const connectToServer = memoize(
       const cleanup = async () => {
         // In-process servers (e.g. Chrome MCP) don't have child processes or stderr
         if (inProcessServer) {
+          if (isBrowserUseMCPServer(name)) {
+            try {
+              const { closeSession } = await import('./builtin/browserUse/session.js')
+              await closeSession()
+              logMCPDebug(name, 'Browser CDP session closed')
+            } catch (error) {
+              logMCPDebug(name, `Error closing browser session: ${error}`)
+            }
+          }
           try {
             await inProcessServer.close()
           } catch (error) {

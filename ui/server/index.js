@@ -2445,8 +2445,9 @@ app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authentica
 
 // Serve React app for all other routes (excluding static files)
 app.get('*', (req, res) => {
-    // Skip requests for static assets (files with extensions)
-    if (path.extname(req.path)) {
+    // Skip requests for actual static asset extensions only
+    const ext = path.extname(req.path);
+    if (ext && /^\.(js|css|map|json|ico|png|jpg|jpeg|gif|svg|webp|woff2?|ttf|eot|mp4|webm)$/.test(ext)) {
         return res.status(404).send('Not found');
     }
 
@@ -2682,6 +2683,11 @@ async function startServer() {
                         const { shutdownCCR } = await import('./embedded-ccr.js');
                         await shutdownCCR();
                     } catch { /* CCR may not have been loaded */ }
+                    try {
+                        const { shutdownGlobalChrome, stopChromeHealthCheck } = await import('./utils/globalChrome.js');
+                        stopChromeHealthCheck();
+                        shutdownGlobalChrome();
+                    } catch { /* Chrome may not have been started */ }
                 } finally {
                     process.exit(0);
                 }

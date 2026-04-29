@@ -1,123 +1,118 @@
-import { join } from 'path'
-import { homedir } from 'os'
 import type { Browser, BrowserContext, Page } from 'playwright-core'
 import { ensureGlobalChrome, restartGlobalChrome, isCDPHealthy } from './globalChrome.js'
 
-const CDP_CONNECT_TIMEOUT = 60_000
+const CDP_CONNECT_TIMEOUT = 15_000
 const MAX_CDP_RETRIES = 2
-
-let browserInstance: Browser | null = null
-let contextInstance: BrowserContext | null = null
-let isPersistent = false
+const CDP_RETRY_DELAY_MS = 250
 
 export interface BrowserSession {
-  browser: Browser | null
+  browser: Browser
   context: BrowserContext
 }
 
-function getUserDataDir(): string {
-  const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-  return join(configDir, 'browser-use-profile')
+function normalizeCdpUrl(raw: string): string {
+  return raw.replace(/\/$/, '')
 }
 
-function resetSingletons() {
-  browserInstance = null
-  contextInstance = null
-  isPersistent = false
+type CachedConnection = {
+  browser: Browser
+  context: BrowserContext
+  onDisconnected?: () => void
 }
 
-function isContextAlive(): boolean {
-  if (!contextInstance) return false
+const cachedByCdpUrl = new Map<string, CachedConnection>()
+const connectingByCdpUrl = new Map<string, Promise<BrowserSession>>()
+
+function isConnectionAlive(cached: CachedConnection): boolean {
+  if (!cached.browser.isConnected()) return false
   try {
-    contextInstance.pages()
+    cached.context.pages()
     return true
   } catch {
     return false
   }
 }
 
-async function connectCDP(chromium: typeof import('playwright-core').chromium, cdpUrl: string): Promise<void> {
-  browserInstance = await chromium.connectOverCDP(cdpUrl, { timeout: CDP_CONNECT_TIMEOUT })
-  const contexts = browserInstance.contexts()
-  contextInstance = contexts[0] ?? await browserInstance.newContext()
-  isPersistent = false
-  browserInstance.on('disconnected', () => resetSingletons())
+async function connectWithRetry(cdpUrl: string): Promise<BrowserSession> {
+  const { chromium } = await import('playwright-core')
+  let lastErr: unknown
+
+  for (let attempt = 0; attempt <= MAX_CDP_RETRIES; attempt++) {
+    if (attempt > 0 || !(await isCDPHealthy())) {
+      const freshUrl = await restartGlobalChrome()
+      if (!freshUrl) {
+        throw new Error('[browser-use] Chrome restart failed. Check Chrome installation.')
+      }
+    }
+
+    try {
+      const timeout = CDP_CONNECT_TIMEOUT + attempt * 5000
+      const browser = await chromium.connectOverCDP(cdpUrl, { timeout })
+      const contexts = browser.contexts()
+      const context = contexts[0] ?? await browser.newContext()
+
+      const normalized = normalizeCdpUrl(cdpUrl)
+      const onDisconnected = () => {
+        const current = cachedByCdpUrl.get(normalized)
+        if (current?.browser === browser) {
+          cachedByCdpUrl.delete(normalized)
+        }
+      }
+      const cached: CachedConnection = { browser, context, onDisconnected }
+      cachedByCdpUrl.set(normalized, cached)
+      browser.on('disconnected', onDisconnected)
+
+      return { browser, context }
+    } catch (err) {
+      lastErr = err
+      const delay = CDP_RETRY_DELAY_MS + attempt * CDP_RETRY_DELAY_MS
+      await new Promise((r) => setTimeout(r, delay))
+    }
+  }
+
+  const msg = lastErr instanceof Error ? lastErr.message : String(lastErr)
+  throw new Error(`[browser-use] Chrome CDP unavailable after ${MAX_CDP_RETRIES + 1} attempts: ${msg}`)
 }
 
+/**
+ * Get or create a Playwright CDP session.
+ *
+ * Design inspired by OpenClaw pw-session.ts:
+ * - cachedByCdpUrl: reuse existing connections
+ * - connectingByCdpUrl: deduplicate in-flight connects
+ * - disconnected handler only clears cache, never kills Chrome
+ * - No launchPersistentContext fallback (CDP is the only path)
+ */
 export async function getOrCreateSession(): Promise<BrowserSession> {
-  if (contextInstance && (isPersistent || browserInstance?.isConnected())) {
-    if (!isContextAlive()) {
-      resetSingletons()
-    } else {
-      return { browser: browserInstance, context: contextInstance }
-    }
+  const rawCdpUrl = process.env.CDP_URL ?? await ensureGlobalChrome()
+  if (!rawCdpUrl) {
+    throw new Error('[browser-use] No Chrome available. Set CDP_URL or install Chrome.')
+  }
+  const cdpUrl = normalizeCdpUrl(rawCdpUrl)
+
+  const cached = cachedByCdpUrl.get(cdpUrl)
+  if (cached && isConnectionAlive(cached)) {
+    return { browser: cached.browser, context: cached.context }
   }
 
-  const { chromium } = await import('playwright-core')
-  const cdpUrl = process.env.CDP_URL
-
-  const resolvedCdpUrl = cdpUrl ?? await ensureGlobalChrome()
-
-  if (resolvedCdpUrl) {
-    let lastErr: unknown
-    for (let attempt = 0; attempt <= MAX_CDP_RETRIES; attempt++) {
-      // Health check before expensive connectOverCDP
-      if (attempt > 0 || !(await isCDPHealthy())) {
-        const freshUrl = await restartGlobalChrome()
-        if (!freshUrl) break
-      }
-      try {
-        await connectCDP(chromium, resolvedCdpUrl)
-        return { browser: browserInstance, context: contextInstance }
-      } catch (err) {
-        lastErr = err
-        resetSingletons()
-      }
-    }
-    // All CDP retries exhausted — fall through to persistent context fallback
-    console.warn(`[browser-use] CDP connect failed after ${MAX_CDP_RETRIES + 1} attempts, falling back to local launch`, lastErr)
+  if (cached) {
+    cachedByCdpUrl.delete(cdpUrl)
   }
 
-  // Fallback: launch persistent context directly
-  isPersistent = true
-  const executablePath = findChromePath()
-  const userDataDir = getUserDataDir()
+  const inflight = connectingByCdpUrl.get(cdpUrl)
+  if (inflight) return inflight
 
-  const { mkdirSync, unlinkSync, existsSync } = await import('fs')
-  mkdirSync(userDataDir, { recursive: true })
-
-  for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
-    const lockPath = join(userDataDir, lockFile)
-    if (existsSync(lockPath)) {
-      try { unlinkSync(lockPath) } catch { /* ignore */ }
-    }
-  }
-
-  contextInstance = await chromium.launchPersistentContext(userDataDir, {
-    headless: false,
-    executablePath,
-    args: [
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-features=ProfilePicker',
-    ],
+  const pending = connectWithRetry(cdpUrl).finally(() => {
+    connectingByCdpUrl.delete(cdpUrl)
   })
-  browserInstance = contextInstance.browser()
-  contextInstance.on('close', () => resetSingletons())
-
-  return { browser: browserInstance, context: contextInstance }
+  connectingByCdpUrl.set(cdpUrl, pending)
+  return pending
 }
 
 export async function getActivePage(): Promise<Page> {
-  try {
-    const { context } = await getOrCreateSession()
-    const pages = context.pages()
-    return pages[pages.length - 1] ?? await context.newPage()
-  } catch {
-    resetSingletons()
-    const { context } = await getOrCreateSession()
-    return context.pages()[0] ?? await context.newPage()
-  }
+  const { context } = await getOrCreateSession()
+  const pages = context.pages()
+  return pages[pages.length - 1] ?? await context.newPage()
 }
 
 export async function getPageByTargetId(targetId: string): Promise<Page | null> {
@@ -138,41 +133,33 @@ export async function getPageByTargetId(targetId: string): Promise<Page | null> 
   return null
 }
 
-export async function closeSession(): Promise<void> {
-  if (isPersistent && contextInstance) {
-    await contextInstance.close().catch(() => {})
-  } else if (browserInstance) {
-    await browserInstance.close().catch(() => {})
-  }
-  resetSingletons()
-}
+/**
+ * Close the Playwright CDP connection (not the Chrome process).
+ * Mirrors OpenClaw's closePlaywrightBrowserConnection.
+ */
+export async function closeSession(opts?: { cdpUrl?: string }): Promise<void> {
+  const normalized = opts?.cdpUrl ? normalizeCdpUrl(opts.cdpUrl) : null
 
-function findChromePath(): string | undefined {
-  const platform = process.platform
-  if (platform === 'darwin') {
-    const candidates = [
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/Applications/Chromium.app/Contents/MacOS/Chromium',
-      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-    ]
-    for (const c of candidates) {
-      try {
-        const fs = require('fs') as typeof import('fs')
-        if (fs.existsSync(c)) return c
-      } catch { /* ignore */ }
+  if (normalized) {
+    const cur = cachedByCdpUrl.get(normalized)
+    cachedByCdpUrl.delete(normalized)
+    connectingByCdpUrl.delete(normalized)
+    if (cur) {
+      if (cur.onDisconnected && typeof cur.browser.off === 'function') {
+        cur.browser.off('disconnected', cur.onDisconnected)
+      }
+      await cur.browser.close().catch(() => {})
     }
-  } else if (platform === 'linux') {
-    const candidates = [
-      '/usr/bin/google-chrome',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/chromium',
-    ]
-    for (const c of candidates) {
-      try {
-        const fs = require('fs') as typeof import('fs')
-        if (fs.existsSync(c)) return c
-      } catch { /* ignore */ }
-    }
+    return
   }
-  return undefined
+
+  const connections = Array.from(cachedByCdpUrl.values())
+  cachedByCdpUrl.clear()
+  connectingByCdpUrl.clear()
+  for (const cur of connections) {
+    if (cur.onDisconnected && typeof cur.browser.off === 'function') {
+      cur.browser.off('disconnected', cur.onDisconnected)
+    }
+    await cur.browser.close().catch(() => {})
+  }
 }

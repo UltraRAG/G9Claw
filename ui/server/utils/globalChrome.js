@@ -98,16 +98,38 @@ async function waitForCDP(maxMs = 10_000) {
   return false;
 }
 
+const CHROME_STOP_TIMEOUT_MS = 2500;
+const CHROME_STOP_POLL_MS = 100;
+
 async function killCDPPort() {
+  let pidList = [];
   try {
-    const pids = execSync(`lsof -ti :${CDP_PORT} 2>/dev/null`, { encoding: 'utf8' }).trim();
-    if (pids) {
-      for (const pid of pids.split('\n')) {
-        try { process.kill(Number(pid), 'SIGKILL'); } catch { /* ignore */ }
-      }
-      await new Promise((r) => setTimeout(r, 500));
-    }
+    const raw = execSync(`lsof -ti :${CDP_PORT} 2>/dev/null`, { encoding: 'utf8' }).trim();
+    if (raw) pidList = raw.split('\n').map(Number).filter(Boolean);
   } catch { /* ignore */ }
+
+  if (pidList.length === 0) {
+    chromeProcess = null;
+    return;
+  }
+
+  for (const pid of pidList) {
+    try { process.kill(pid, 'SIGTERM'); } catch { /* ignore */ }
+  }
+
+  const deadline = Date.now() + CHROME_STOP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (!(await isCDPHealthy())) {
+      chromeProcess = null;
+      return;
+    }
+    await new Promise((r) => setTimeout(r, CHROME_STOP_POLL_MS));
+  }
+
+  for (const pid of pidList) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
+  }
+  await new Promise((r) => setTimeout(r, 300));
   chromeProcess = null;
 }
 
@@ -180,7 +202,7 @@ export function stopChromeHealthCheck() {
 export function shutdownGlobalChrome() {
   stopChromeHealthCheck();
   if (chromeProcess) {
-    try { chromeProcess.kill(); } catch { /* ignore */ }
+    try { chromeProcess.kill('SIGTERM'); } catch { /* ignore */ }
     chromeProcess = null;
   }
 }
