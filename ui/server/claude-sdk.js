@@ -268,14 +268,15 @@ function mapCliOptionsToSDK(options = {}) {
  * @param {Array<string>} tempImagePaths - Temp image file paths for cleanup
  * @param {string} tempDir - Temp directory for cleanup
  */
-function addSession(sessionId, queryInstance, tempImagePaths = [], tempDir = null, writer = null) {
+function addSession(sessionId, queryInstance, tempImagePaths = [], tempDir = null, writer = null, cwd = null) {
   activeSessions.set(sessionId, {
     instance: queryInstance,
     startTime: Date.now(),
     status: 'active',
     tempImagePaths,
     tempDir,
-    writer
+    writer,
+    cwd
   });
 }
 
@@ -898,7 +899,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
     // Track the query instance for abort capability
     if (capturedSessionId) {
-      addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws);
+      addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws, options.cwd || options.projectPath || null);
       updateSessionRuntime(capturedSessionId, {
         writer: ws,
         userId: ws?.userId || null,
@@ -915,7 +916,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
-        addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws);
+        addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws, options.cwd || options.projectPath || null);
         updateSessionRuntime(capturedSessionId, {
           writer: ws,
           userId: ws?.userId || null,
@@ -1098,6 +1099,14 @@ function getActiveClaudeSDKSessions() {
   return getAllSessions();
 }
 
+function getActiveClaudeSDKSessionDetails() {
+  return Array.from(activeSessions.entries()).map(([sessionId, session]) => ({
+    sessionId,
+    cwd: session.cwd || null,
+    status: session.status
+  }));
+}
+
 /**
  * Get pending tool approvals for a specific session.
  * @param {string} sessionId - The session ID
@@ -1148,6 +1157,7 @@ export {
   abortClaudeSDKSession,
   isClaudeSDKSessionActive,
   getActiveClaudeSDKSessions,
+  getActiveClaudeSDKSessionDetails,
   resolveToolApproval,
   getPendingApprovalsForSession,
   reconnectSessionWriter

@@ -29,6 +29,14 @@ export function getCronDaemonNotificationDir(): string {
   return join(getCronDaemonDir(), 'notifications')
 }
 
+export function getCronDaemonDiscoveryRequestsDir(): string {
+  return join(getCronDaemonDir(), 'discovery-requests')
+}
+
+export function getCronDaemonDiscoveryRequestPath(requestId: string): string {
+  return join(getCronDaemonDiscoveryRequestsDir(), `${requestId}.json`)
+}
+
 export function getCronDaemonSessionNotificationDir(sessionId: string): string {
   return join(getCronDaemonNotificationDir(), sessionId)
 }

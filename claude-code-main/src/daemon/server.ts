@@ -6,6 +6,9 @@ import { clearCronDaemonOwner } from './ownership.js'
 import { ProjectRuntime } from './projectRuntime.js'
 import { DaemonSessionTaskStore } from './sessionTaskStore.js'
 import { getCronDaemonSocketPath } from './paths.js'
+import { DiscoveryScheduler } from './discoveryScheduler/index.js'
+import { releaseDiscoveryLock } from './discoveryScheduler/lock.js'
+import { markDiscoveryFireComplete } from './discoveryScheduler/state.js'
 import type {
   CronDaemonRequest,
   CronDaemonResponse,
@@ -29,12 +32,14 @@ export class CronDaemonServer {
   private readonly runtimes = new Map<string, ProjectRuntime>()
   private readonly sessionTaskStore = new DaemonSessionTaskStore()
   private readonly registry = new CronDaemonProjectRegistry()
+  private readonly discoveryScheduler = new DiscoveryScheduler()
   private stopping = false
 
   async start(): Promise<void> {
     await this.registry.load()
     for (const projectRoot of this.registry.list()) {
       await this.ensureHydratedRuntime(projectRoot)
+      this.discoveryScheduler.ensureProject(projectRoot)
     }
 
     const socketPath = getCronDaemonSocketPath()
@@ -58,6 +63,7 @@ export class CronDaemonServer {
     for (const runtime of this.runtimes.values()) {
       runtime.stop()
     }
+    this.discoveryScheduler.stop()
     await this.sessionTaskStore.persistProjects(this.runtimes.keys())
     await new Promise<void>(resolvePromise => {
       this.server.close(() => resolvePromise())
@@ -253,6 +259,23 @@ export class CronDaemonServer {
             },
           }
         }
+        case 'register_project': {
+          const projectRoot = await this.ensureRuntime(request.projectRoot)
+          this.discoveryScheduler.ensureProject(projectRoot)
+          return {
+            ok: true,
+            data: { type: 'register_project', projectRoot },
+          }
+        }
+        case 'discovery_fire_complete': {
+          const projectRoot = resolve(request.projectRoot)
+          await markDiscoveryFireComplete(projectRoot, request.status)
+          await releaseDiscoveryLock(projectRoot)
+          return {
+            ok: true,
+            data: { type: 'discovery_fire_complete' },
+          }
+        }
       }
     } catch (error) {
       return {
@@ -266,6 +289,7 @@ export class CronDaemonServer {
     const normalized = resolve(projectRoot)
     await this.registry.remember(normalized)
     await this.ensureHydratedRuntime(normalized)
+    this.discoveryScheduler.ensureProject(normalized)
     return normalized
   }
 

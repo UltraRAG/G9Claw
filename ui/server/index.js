@@ -49,7 +49,7 @@ import fetch from 'node-fetch';
 import mime from 'mime-types';
 
 import { getProjects, getSessions, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
-import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
+import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, getActiveClaudeSDKSessionDetails, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from './openai-codex.js';
 import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
@@ -80,7 +80,9 @@ import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './util
 import { getClaudeRuntimeModelConfig } from './utils/claude-runtime-config.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, userDb } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
-import { shutdownOwnedCronDaemon } from './services/cron-daemon-owner.js';
+import { sendCronDaemonRequest, shutdownOwnedCronDaemon } from './services/cron-daemon-owner.js';
+import { createAlwaysOnHeartbeatManager } from './always-on-heartbeat.js';
+import { startDiscoveryTriggerClient } from './services/discovery-trigger-client.js';
 import { runServerStartupBeforeListen, startServerAfterStartup } from './services/server-startup.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { DISABLE_LOCAL_AUTH, IS_PLATFORM } from './constants/config.js';
@@ -110,6 +112,13 @@ const WATCHER_DEBOUNCE_MS = 300;
 let projectsWatchers = [];
 let projectsWatcherDebounceTimer = null;
 const connectedClients = new Set();
+const alwaysOnHeartbeat = createAlwaysOnHeartbeatManager({
+    getActiveClaudeSessions: getActiveClaudeSDKSessionDetails
+});
+const alwaysOnDiscoveryTriggerClient = startDiscoveryTriggerClient({
+    clients: connectedClients,
+    getWriterId: (ws) => alwaysOnHeartbeat.getWriterId(ws)
+});
 let isGetProjectsRunning = false; // Flag to prevent reentrant calls
 let edgeClawProxyProcess = null;
 
@@ -1634,7 +1643,17 @@ function handleChatConnection(ws, request) {
         try {
             const data = JSON.parse(message);
 
-            if (data.type === 'claude-command') {
+            if (data.type === 'always-on-presence') {
+                await alwaysOnHeartbeat.handlePresence(ws, data);
+            } else if (data.type === 'always-on-presence-clear') {
+                await alwaysOnHeartbeat.clearPresence(ws);
+            } else if (data.type === 'always-on-auto-discovery-complete') {
+                await sendCronDaemonRequest({
+                    type: 'discovery_fire_complete',
+                    projectRoot: data.projectRoot,
+                    status: data.status === 'failed' ? 'failed' : 'started'
+                }).catch(() => {});
+            } else if (data.type === 'claude-command') {
                 console.log('[DEBUG] User message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
@@ -1763,6 +1782,7 @@ function handleChatConnection(ws, request) {
         console.log('🔌 Chat client disconnected');
         // Remove from connected clients
         connectedClients.delete(ws);
+        void alwaysOnHeartbeat.clearPresence(ws);
     });
 }
 
@@ -2614,6 +2634,7 @@ async function startServer() {
                     stopMemoryScheduler();
                     closeMemoryServices();
                     stopEdgeClawConfigWatcher();
+                    alwaysOnDiscoveryTriggerClient.stop();
                     await stopEdgeClawProxy();
                     await stopAllPlugins();
                     try {

@@ -27,6 +27,10 @@ import type {
   ProjectDiscoveryPlansResponse,
 } from '../../../types/app';
 import { api } from '../../../utils/api';
+import {
+  clearAlwaysOnPresence,
+  sendAlwaysOnPresence,
+} from '../../../utils/alwaysOnPresence';
 import MainContentStateView from './subcomponents/MainContentStateView';
 import ErrorBoundary from './ErrorBoundary';
 import MemoryPanel from './memory/MemoryPanel';
@@ -176,6 +180,7 @@ function MainContent({
   const pendingDiscoveryExecutionsRef = useRef<Map<string, PendingDiscoveryExecution>>(new Map());
   const discoveryExecutionsBySessionRef = useRef<Map<string, PendingDiscoveryExecution>>(new Map());
   const autoLaunchInFlightRef = useRef<Set<string>>(new Set());
+  const lastUserMsgAtRef = useRef<string | null>(null);
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
 
@@ -215,6 +220,44 @@ function MainContent({
     }
   }, []);
 
+  const trackedSendMessage = useCallback((message: unknown) => {
+    if (
+      message &&
+      typeof message === 'object' &&
+      'type' in message &&
+      ['claude-command', 'cursor-command', 'codex-command', 'gemini-command'].includes(
+        String((message as { type?: unknown }).type),
+      )
+    ) {
+      lastUserMsgAtRef.current = new Date().toISOString();
+    }
+    sendMessage(message);
+  }, [sendMessage]);
+
+  const publishPresence = useCallback(() => {
+    if (!selectedProject) {
+      return;
+    }
+    sendAlwaysOnPresence(sendMessage, {
+      selectedProject,
+      processingSessionIds: Array.from(processingSessions),
+      lastUserMsgAt: lastUserMsgAtRef.current,
+    });
+  }, [processingSessions, selectedProject, sendMessage]);
+
+  useEffect(() => {
+    if (!selectedProject || !ws) {
+      return undefined;
+    }
+
+    publishPresence();
+    const timer = window.setInterval(publishPresence, 30000);
+    return () => {
+      window.clearInterval(timer);
+      clearAlwaysOnPresence(sendMessage);
+    };
+  }, [publishPresence, selectedProject, sendMessage, ws]);
+
   const updateDiscoveryExecution = useCallback(async (
     projectName: string,
     planId: string,
@@ -245,7 +288,7 @@ function MainContent({
     });
 
     startClaudeSessionCommand({
-      sendMessage,
+      sendMessage: trackedSendMessage,
       selectedProject,
       command: payload.command,
       permissionMode: 'default',
@@ -256,7 +299,7 @@ function MainContent({
     });
 
     refreshProjectsSilently();
-  }, [refreshProjectsSilently, selectedProject, sendMessage]);
+  }, [refreshProjectsSilently, selectedProject, trackedSendMessage]);
 
   const handleExecuteDiscoveryPlan = useCallback(async (
     planId: string,
@@ -441,7 +484,7 @@ function MainContent({
 
     const discoveryPrompt = buildAlwaysOnDiscoveryPrompt(selectedProject, discoveryContext);
     const pendingSessionId = startClaudeSessionCommand({
-      sendMessage,
+      sendMessage: trackedSendMessage,
       selectedProject,
       command: discoveryPrompt,
       permissionMode: getStoredClaudePermissionMode(selectedSession),
@@ -455,8 +498,45 @@ function MainContent({
     onStartNewSession,
     selectedProject,
     selectedSession,
-    sendMessage,
+    trackedSendMessage,
   ]);
+
+  useEffect(() => {
+    const message = latestMessage as {
+      type?: string;
+      requestId?: string;
+      projectRoot?: string;
+    } | null;
+    if (message?.type !== 'always-on-auto-discovery-start') {
+      return;
+    }
+
+    const selectedRoot = selectedProject?.fullPath || selectedProject?.path || '';
+    if (!selectedProject || !selectedRoot || selectedRoot !== message.projectRoot) {
+      sendMessage({
+        type: 'always-on-auto-discovery-complete',
+        projectRoot: message.projectRoot,
+        status: 'failed',
+      });
+      return;
+    }
+
+    void handleStartDiscoverySession()
+      .then(() => {
+        sendMessage({
+          type: 'always-on-auto-discovery-complete',
+          projectRoot: message.projectRoot,
+          status: 'started',
+        });
+      })
+      .catch(() => {
+        sendMessage({
+          type: 'always-on-auto-discovery-complete',
+          projectRoot: message.projectRoot,
+          status: 'failed',
+        });
+      });
+  }, [handleStartDiscoverySession, latestMessage, selectedProject, sendMessage]);
 
   if (isLoading) {
     return (
@@ -489,7 +569,7 @@ function MainContent({
           tasksEnabled={tasksEnabled}
           setActiveTab={setActiveTab}
           ws={ws}
-          sendMessage={sendMessage}
+          sendMessage={trackedSendMessage}
           latestMessage={latestMessage}
           handleFileOpen={handleFileOpen}
           onInputFocusChange={onInputFocusChange}

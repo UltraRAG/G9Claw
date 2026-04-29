@@ -42,6 +42,15 @@ export type CronDaemonRequest =
       projectRoot: string
       taskId: string
     }
+  | {
+      type: 'register_project'
+      projectRoot: string
+    }
+  | {
+      type: 'discovery_fire_complete'
+      projectRoot: string
+      status: 'started' | 'completed' | 'failed'
+    }
 
 export type RuntimeSummary = {
   projectRoot: string
@@ -64,6 +73,8 @@ export type CronDaemonResponse =
             started: boolean
             reason?: 'already_running' | 'not_found'
           }
+        | { type: 'register_project'; projectRoot: string }
+        | { type: 'discovery_fire_complete' }
     }
   | {
       ok: false
