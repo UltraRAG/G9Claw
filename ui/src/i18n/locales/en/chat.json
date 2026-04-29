@@ -23,6 +23,12 @@
   "interrupted": {
     "label": "Interrupted by user"
   },
+  "working": {
+    "default": "Working",
+    "processing": "Processing",
+    "thinking": "Thinking",
+    "waitingForPermission": "Waiting for permission"
+  },
   "tools": {
     "settings": "Tool Settings",
     "error": "Tool Error",

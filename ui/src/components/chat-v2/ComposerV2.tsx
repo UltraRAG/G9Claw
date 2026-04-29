@@ -9,7 +9,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ArrowUp, AtSign, Command, Paperclip, Square } from 'lucide-react';
+import { ArrowUp, AtSign, Command, ImagePlus, Square } from 'lucide-react';
 import type { PendingPermissionRequest } from '../chat/types/types';
 import CommandMenu from '../chat/view/subcomponents/CommandMenu';
 import PermissionRequestsBanner from '../chat/view/subcomponents/PermissionRequestsBanner';
@@ -291,9 +291,9 @@ export default function ComposerV2({
                     type="button"
                     onClick={openImagePicker}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-                    title={t('input.attachImages', { defaultValue: 'Attach file' }) as string}
+                    title={t('input.attachImages', { defaultValue: 'Attach images' }) as string}
                   >
-                    <Paperclip className="h-4 w-4" strokeWidth={1.75} />
+                    <ImagePlus className="h-4 w-4" strokeWidth={1.75} />
                   </button>
                   <button
                     type="button"

@@ -116,6 +116,7 @@ function ChatInterfaceV2({
     loadAllMessages,
     allMessagesLoaded,
     isLoadingAllMessages,
+    claudeStatus,
     setClaudeStatus,
     createDiff,
     scrollContainerRef,
@@ -408,6 +409,8 @@ function ChatInterfaceV2({
         showRawParameters={showRawParameters}
         showThinking={showThinking}
         setInput={setInput}
+        isAssistantWorking={isLoading}
+        workingStatusText={claudeStatus?.text ?? null}
       />
       {composer}
     </div>
