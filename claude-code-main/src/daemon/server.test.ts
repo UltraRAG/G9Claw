@@ -5,6 +5,10 @@ import { join } from 'path'
 import { CronDaemonServer } from './server.js'
 import { ProjectRuntime } from './projectRuntime.js'
 
+async function sleep(ms: number): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms))
+}
+
 async function writeScheduledTasks(projectRoot: string, tasks: unknown[]) {
   const configDir = join(projectRoot, '.claude')
   await mkdir(configDir, { recursive: true })
@@ -204,7 +208,7 @@ describe('CronDaemonServer run_task_now', () => {
       return
     }
 
-    isTaskRunningSpy.mockImplementation(taskId => taskId === durableTaskId)
+    isTaskRunningSpy.mockImplementation((taskId: string) => taskId === durableTaskId)
 
     const response = await (server as any).handleRequest({
       type: 'list_tasks',
@@ -274,5 +278,122 @@ describe('CronDaemonServer run_task_now', () => {
         ]),
       },
     })
+  })
+})
+
+describe('CronDaemonServer client leases', () => {
+  test('keeps the daemon alive until the last client unregisters', async () => {
+    const server = new CronDaemonServer(5)
+    const stopSpy = spyOn(server, 'stop').mockResolvedValue(undefined)
+
+    const first = await (server as any).handleRequest({
+      type: 'register_client',
+      clientId: 'webui-1',
+      clientKind: 'webui',
+    })
+    const second = await (server as any).handleRequest({
+      type: 'register_client',
+      clientId: 'tui-1',
+      clientKind: 'tui',
+      processId: 123,
+    })
+    const unregisterFirst = await (server as any).handleRequest({
+      type: 'unregister_client',
+      clientId: 'webui-1',
+    })
+
+    await sleep(10)
+    expect(stopSpy).not.toHaveBeenCalled()
+
+    const unregisterSecond = await (server as any).handleRequest({
+      type: 'unregister_client',
+      clientId: 'tui-1',
+    })
+    await sleep(10)
+
+    expect(first).toMatchObject({
+      ok: true,
+      data: { type: 'register_client', activeClients: 1 },
+    })
+    expect(second).toMatchObject({
+      ok: true,
+      data: { type: 'register_client', activeClients: 2 },
+    })
+    expect(unregisterFirst).toEqual({
+      ok: true,
+      data: { type: 'unregister_client', activeClients: 1 },
+    })
+    expect(unregisterSecond).toEqual({
+      ok: true,
+      data: { type: 'unregister_client', activeClients: 0 },
+    })
+    expect(stopSpy).toHaveBeenCalledTimes(1)
+
+    stopSpy.mockRestore()
+  })
+
+  test('cancels pending empty-client shutdown when a client reconnects', async () => {
+    const server = new CronDaemonServer(20)
+    const stopSpy = spyOn(server, 'stop').mockResolvedValue(undefined)
+
+    await (server as any).handleRequest({
+      type: 'register_client',
+      clientId: 'webui-1',
+      clientKind: 'webui',
+    })
+    await (server as any).handleRequest({
+      type: 'unregister_client',
+      clientId: 'webui-1',
+    })
+    await (server as any).handleRequest({
+      type: 'register_client',
+      clientId: 'webui-2',
+      clientKind: 'webui',
+    })
+    await sleep(30)
+
+    expect(stopSpy).not.toHaveBeenCalled()
+
+    stopSpy.mockRestore()
+    await (server as any).handleRequest({
+      type: 'unregister_client',
+      clientId: 'webui-2',
+    })
+    await server.stop()
+  })
+
+  test('ping includes active client lease summaries', async () => {
+    const server = new CronDaemonServer(20)
+    const leaseProjectRoot = '/tmp/cron-daemon-lease-summary'
+    await (server as any).handleRequest({
+      type: 'register_client',
+      clientId: 'tui-summary',
+      clientKind: 'tui',
+      processId: 42,
+      projectRoots: [leaseProjectRoot],
+    })
+
+    const response = await (server as any).handleRequest({ type: 'ping' })
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        type: 'pong',
+        clients: [
+          expect.objectContaining({
+            clientId: 'tui-summary',
+            clientKind: 'tui',
+            processId: 42,
+            projectRoots: [leaseProjectRoot],
+          }),
+        ],
+      },
+    })
+
+    await (server as any).handleRequest({
+      type: 'unregister_client',
+      clientId: 'tui-summary',
+    })
+    await server.stop()
   })
 })

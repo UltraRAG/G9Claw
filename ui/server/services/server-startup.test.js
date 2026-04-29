@@ -6,16 +6,10 @@ import {
   startServerAfterStartup
 } from './server-startup.js';
 
-test('runServerStartupBeforeListen initializes the daemon before the rest of startup', async () => {
+test('runServerStartupBeforeListen does not start the cron daemon without a UI page', async () => {
   const steps = [];
 
   await runServerStartupBeforeListen({
-    initializeCronDaemonOwnerEnvFn: () => {
-      steps.push('owner');
-    },
-    ensureCronDaemonForUiStartupFn: async () => {
-      steps.push('daemon');
-    },
     initializeDatabaseFn: async () => {
       steps.push('database');
     },
@@ -27,7 +21,7 @@ test('runServerStartupBeforeListen initializes the daemon before the rest of sta
     }
   });
 
-  assert.deepEqual(steps, ['owner', 'daemon', 'database', 'local-user', 'web-push']);
+  assert.deepEqual(steps, ['database', 'local-user', 'web-push']);
 });
 
 test('startServerAfterStartup does not continue into listen when startup fails', async () => {

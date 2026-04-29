@@ -17,6 +17,10 @@ export function getCronDaemonOwnerPath(): string {
   return join(getCronDaemonDir(), 'owner.json')
 }
 
+export function getCronDaemonStartLockPath(): string {
+  return join(getCronDaemonDir(), 'start.lock')
+}
+
 export function getCronDaemonWorkerPayloadDir(): string {
   return join(getCronDaemonDir(), 'workers')
 }
