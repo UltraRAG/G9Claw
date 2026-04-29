@@ -6,9 +6,16 @@ import {
   MemoryBundleValidationError,
 } from '../../../edgeclaw-memory-core/lib/index.js';
 import {
+  readEdgeClawConfigFile,
+  writeEdgeClawConfig,
+} from '../services/edgeclawConfig.js';
+import { reloadEdgeClawConfig } from '../services/edgeclawConfigReloader.js';
+import { suppressNextWatchEvent } from '../services/edgeclawConfigWatcher.js';
+import {
   clearAllMemoryData,
   exportAllProjectsMemoryBundle,
   getMemoryServiceForRequest,
+  getMemorySchedulerStatus,
   importAllProjectsMemoryBundle,
   rollbackLastMemoryDream,
   runManualMemoryDream,
@@ -40,6 +47,57 @@ function parseMemoryKind(value) {
   return value === 'user' || value === 'feedback' || value === 'project' || value === 'general_project_meta'
     ? value
     : 'all';
+}
+
+function normalizeMemoryInterval(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.min(10_080, Math.floor(parsed)));
+}
+
+function getGlobalMemorySettingsFromConfig(config) {
+  const memory = config?.memory ?? {};
+  const reasoningMode = memory.reasoningMode === 'accuracy_first' ? 'accuracy_first' : 'answer_first';
+  return {
+    reasoningMode,
+    autoIndexIntervalMinutes: normalizeMemoryInterval(memory.autoIndexIntervalMinutes, 30),
+    autoDreamIntervalMinutes: normalizeMemoryInterval(memory.autoDreamIntervalMinutes, 60),
+  };
+}
+
+function getGlobalMemorySettings() {
+  return getGlobalMemorySettingsFromConfig(readEdgeClawConfigFile().config);
+}
+
+async function saveGlobalMemorySettings(partial = {}) {
+  const { config } = readEdgeClawConfigFile();
+  const current = getGlobalMemorySettingsFromConfig(config);
+  const next = {
+    reasoningMode: partial.reasoningMode === 'accuracy_first'
+      ? 'accuracy_first'
+      : partial.reasoningMode === 'answer_first'
+        ? 'answer_first'
+        : current.reasoningMode,
+    autoIndexIntervalMinutes: normalizeMemoryInterval(
+      partial.autoIndexIntervalMinutes,
+      current.autoIndexIntervalMinutes,
+    ),
+    autoDreamIntervalMinutes: normalizeMemoryInterval(
+      partial.autoDreamIntervalMinutes,
+      current.autoDreamIntervalMinutes,
+    ),
+  };
+  const nextConfig = {
+    ...config,
+    memory: {
+      ...(config.memory ?? {}),
+      ...next,
+    },
+  };
+  suppressNextWatchEvent();
+  const saved = await writeEdgeClawConfig(nextConfig);
+  await reloadEdgeClawConfig(saved.config);
+  return getGlobalMemorySettingsFromConfig(saved.config);
 }
 
 function normalizeSearchText(value) {
@@ -211,8 +269,11 @@ function buildWorkspaceSnapshot(repository, { query = '', limit = 100, offset = 
 
 function buildDashboardSnapshot(service, repository, { query = '', selectedProjectId = '' } = {}) {
   return {
-    overview: service.overview(),
-    settings: service.getSettings(),
+    overview: {
+      ...service.overview(),
+      scheduler: getMemorySchedulerStatus(),
+    },
+    settings: getGlobalMemorySettings(),
     workspace: buildWorkspaceSnapshot(repository, {
       query,
       limit: 200,
@@ -264,18 +325,21 @@ function sendBundleDownload(res, bundle, prefix) {
 
 router.get('/overview', async (req, res) =>
   withMemoryService(req, res, async ({ service }) => {
-    res.json(service.overview());
+    res.json({
+      ...service.overview(),
+      scheduler: getMemorySchedulerStatus(),
+    });
   }),
 );
 
 router.route('/settings')
   .get(async (req, res) =>
-    withMemoryService(req, res, async ({ service }) => {
-      res.json(service.getSettings());
+    withMemoryService(req, res, async () => {
+      res.json(getGlobalMemorySettings());
     }))
   .post(async (req, res) =>
-    withMemoryService(req, res, async ({ service }) => {
-      res.json(service.saveSettings(req.body ?? {}));
+    withMemoryService(req, res, async () => {
+      res.json(await saveGlobalMemorySettings(req.body ?? {}));
     }));
 
 router.post('/index/run', async (req, res) =>

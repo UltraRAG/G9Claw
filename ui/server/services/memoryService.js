@@ -43,13 +43,17 @@ function buildServiceForDataDir(dataDir, workspaceDir = dataDir) {
   } catch {
     memoryDefaults = {};
   }
-  return new EdgeClawMemoryService({
+  const service = new EdgeClawMemoryService({
     workspaceDir,
     dbPath: path.join(dataDir, 'control.sqlite'),
     memoryDir: path.join(dataDir, 'memory'),
     source: 'claudecodeui',
     ...memoryDefaults,
   });
+  if (memoryDefaults.defaultIndexingSettings) {
+    service.saveSettings(memoryDefaults.defaultIndexingSettings);
+  }
+  return service;
 }
 
 function readWorkspaceDirFromDataDir(dataDir) {
@@ -442,6 +446,23 @@ export function stopMemoryScheduler() {
     clearInterval(schedulerTimer);
     schedulerTimer = null;
   }
+}
+
+export function getMemorySchedulerStatus() {
+  let enabled = true;
+  let configError = null;
+  try {
+    enabled = readEdgeClawConfigFile().config.memory?.enabled !== false;
+  } catch (error) {
+    configError = error instanceof Error ? error.message : String(error);
+  }
+
+  return {
+    enabled,
+    running: Boolean(schedulerTimer),
+    intervalMs: MEMORY_SCHEDULER_INTERVAL_MS,
+    ...(configError ? { configError } : {}),
+  };
 }
 
 export function closeMemoryServices() {
