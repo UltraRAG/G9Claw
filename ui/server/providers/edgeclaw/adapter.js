@@ -151,6 +151,22 @@ function parseTaskNotification(content) {
   };
 }
 
+function formatApiErrorContent(raw) {
+  const errorCode =
+    raw?.error?.cause?.code ||
+    raw?.cause?.code ||
+    raw?.error?.code ||
+    raw?.code ||
+    'unknown';
+  const errorPath = raw?.error?.cause?.path || raw?.cause?.path || raw?.path || '';
+  const retryAttempt =
+    typeof raw?.retryAttempt === 'number' && typeof raw?.maxRetries === 'number'
+      ? ` Retry ${raw.retryAttempt}/${raw.maxRetries}.`
+      : '';
+  const target = errorPath ? ` (${errorPath})` : '';
+  return `API error: ${errorCode}${target}.${retryAttempt}`;
+}
+
 function createTextMessage({ id, sessionId, timestamp, role, content }) {
   const taskNotification = parseTaskNotification(content);
   if (taskNotification) {
@@ -315,7 +331,7 @@ function normalizeUserMessage(raw, sessionId, options) {
   // PDF page rasterizations fed back to the model, etc.) carry isMeta=true.
   // They are not real user input — hide them from the chat surface, mirroring
   // how we drop synthetic assistant messages in normalizeAssistantMessage.
-  if (raw?.isMeta === true) {
+  if (raw?.isMeta === true && options.sessionKind !== 'background_task') {
     return [];
   }
 
@@ -371,6 +387,19 @@ function normalizeUserMessage(raw, sessionId, options) {
 }
 
 function normalizeAssistantMessage(raw, sessionId, options) {
+  if (raw?.isApiErrorMessage === true) {
+    const timestamp = getTimestamp(raw);
+    const content = stringifyContent(raw?.message?.content ?? raw?.content);
+    return [createNormalizedMessage({
+      id: getBaseId(raw),
+      sessionId,
+      timestamp,
+      provider: PROVIDER,
+      kind: 'error',
+      content: content.trim() || formatApiErrorContent(raw),
+    })];
+  }
+
   // The Claude Agent SDK uses `model: '<synthetic>'` to mark assistant
   // placeholders that it injects to keep the user/assistant turn pairing
   // valid for the API (e.g. `No response requested.` after an interrupted
@@ -429,6 +458,17 @@ function normalizeStreamEvent(raw, sessionId) {
 function normalizeDirectEvent(raw, sessionId, options) {
   const timestamp = getTimestamp(raw);
   const id = getBaseId(raw);
+
+  if (raw.type === 'system' && raw.subtype === 'api_error') {
+    return [createNormalizedMessage({
+      id,
+      sessionId,
+      timestamp,
+      provider: PROVIDER,
+      kind: 'error',
+      content: formatApiErrorContent(raw),
+    })];
+  }
 
   if (raw.type === 'stream_event') {
     return normalizeStreamEvent(raw, sessionId);
@@ -578,7 +618,7 @@ export const edgeclawAdapter = {
     const normalized = [];
 
     for (const raw of rawMessages) {
-      normalized.push(...normalizeMessage(raw, sessionId));
+      normalized.push(...normalizeMessage(raw, sessionId, { sessionKind }));
     }
 
     return {

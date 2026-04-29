@@ -1568,16 +1568,45 @@ function summarizeBackgroundTaskPrompt(content) {
   return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
 }
 
+function hasDisplayableBackgroundText(entry) {
+  const content = typeof entry?.content === 'string'
+    ? entry.content
+    : extractTextContent(entry?.message?.content);
+  return typeof content === 'string' && content.trim().length > 0;
+}
+
 function countDisplayableBackgroundMessages(entries) {
   let count = 0;
 
   for (const entry of entries) {
-    if (entry?.message?.role === 'user' || entry?.message?.role === 'assistant') {
+    if (entry?.type === 'system' && entry?.subtype === 'api_error') {
       count++;
       continue;
     }
 
-    if (entry?.type === 'thinking' || entry?.type === 'tool_use' || entry?.type === 'tool_result') {
+    if (entry?.message?.role === 'user') {
+      if (hasDisplayableBackgroundText(entry)) {
+        count++;
+      }
+      continue;
+    }
+
+    if (entry?.message?.role === 'assistant' || entry?.type === 'assistant') {
+      if (entry?.message?.model === '<synthetic>' && entry?.isApiErrorMessage !== true) {
+        continue;
+      }
+      if (hasDisplayableBackgroundText(entry)) {
+        count++;
+      }
+      continue;
+    }
+
+    if (
+      entry?.type === 'thinking' ||
+      entry?.type === 'tool_use' ||
+      entry?.type === 'tool_result' ||
+      entry?.type === 'error'
+    ) {
       count++;
     }
   }

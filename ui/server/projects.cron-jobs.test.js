@@ -429,6 +429,69 @@ test('deleteSession removes background cron transcript files', async () => {
   });
 });
 
+test('getSessions counts displayable read-only cron transcript records', async () => {
+  const homeDir = await createTempHome();
+  const projectName = 'project-with-readonly-cron-count';
+  const projectRoot = path.join(homeDir, 'workspace-readonly-cron-count');
+  const projectStoreDir = path.join(homeDir, '.claude', 'projects', projectName);
+  const parentSessionId = 'parent-session-readonly';
+  const transcriptFileName = 'agent-cron-readonly.jsonl';
+  const transcriptPath = path.join(projectStoreDir, parentSessionId, 'subagents', transcriptFileName);
+
+  await fs.mkdir(projectRoot, { recursive: true });
+  await writeProjectConfig(homeDir, projectName, projectRoot);
+  await writeJsonl(transcriptPath, [
+    {
+      uuid: 'cron-trigger',
+      timestamp: '2026-04-19T10:00:00.000Z',
+      type: 'user',
+      isMeta: true,
+      message: {
+        role: 'user',
+        content: '提醒用户：该站起来活动一下了！'
+      }
+    },
+    {
+      uuid: 'cron-system-error',
+      timestamp: '2026-04-19T10:00:01.000Z',
+      type: 'system',
+      subtype: 'api_error',
+      cause: {
+        code: 'ConnectionRefused',
+        path: 'http://ccr.local/v1/messages?beta=true'
+      },
+      retryAttempt: 1,
+      maxRetries: 10
+    },
+    {
+      uuid: 'cron-synthetic-error',
+      timestamp: '2026-04-19T10:00:02.000Z',
+      type: 'assistant',
+      isApiErrorMessage: true,
+      message: {
+        role: 'assistant',
+        model: '<synthetic>',
+        content: [
+          {
+            type: 'text',
+            text: 'API Error: Unable to connect to API (ConnectionRefused)'
+          }
+        ]
+      }
+    }
+  ]);
+
+  const sessionsResult = await getSessions(projectName, Number.MAX_SAFE_INTEGER, 0);
+  const backgroundSession = sessionsResult.sessions.find(
+    (session) => session.id === `background-${parentSessionId}-agent-cron-readonly`
+  );
+
+  assert.ok(backgroundSession);
+  assert.equal(backgroundSession.messageCount, 3);
+  assert.equal(backgroundSession.isReadOnly, true);
+  assert.ok(backgroundSession.relativeTranscriptPath.endsWith(`${parentSessionId}/subagents/${transcriptFileName}`));
+});
+
 test('deleteSession keeps regular session deletion behavior', async () => {
   const homeDir = await createTempHome();
   const projectName = 'project-with-regular-session-delete';

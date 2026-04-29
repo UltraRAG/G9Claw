@@ -6,7 +6,7 @@ import type {
   ClaudePermissionSuggestion,
   PermissionGrantResult,
 } from '../chat/types/types';
-import type { Project, ProjectSession, SessionProvider } from '../../types/app';
+import { isBackgroundTaskSession, type Project, type ProjectSession, type SessionProvider } from '../../types/app';
 import { getIntrinsicMessageKey } from '../chat/utils/messageKeys';
 import MessageRowV2 from './MessageRowV2';
 
@@ -66,7 +66,7 @@ export default function MessagesPaneV2({
   isLoadingAllMessages,
   provider,
   selectedProject,
-  selectedSession: _selectedSession,
+  selectedSession,
   createDiff,
   onFileOpen,
   onShowSettings,
@@ -111,6 +111,9 @@ export default function MessagesPaneV2({
   ];
 
   const isEmpty = !isLoadingSessionMessages && chatMessages.length === 0;
+  const isNewConversationEmpty = isEmpty && !selectedSession;
+  const isExistingConversationEmpty = isEmpty && Boolean(selectedSession);
+  const isReadOnlyBackgroundSession = isBackgroundTaskSession(selectedSession);
 
   return (
     <div
@@ -126,7 +129,7 @@ export default function MessagesPaneV2({
             <span>{t('loading', { defaultValue: 'Loading…' })}</span>
           </div>
         </div>
-      ) : isEmpty ? (
+      ) : isNewConversationEmpty ? (
         <div className="mx-auto flex h-full max-w-[720px] flex-col items-center justify-center gap-4 px-6 py-10 text-center">
           <div className="text-[15px] font-medium text-neutral-900 dark:text-neutral-100">
             {selectedProject
@@ -147,6 +150,29 @@ export default function MessagesPaneV2({
               ))}
             </div>
           ) : null}
+        </div>
+      ) : isExistingConversationEmpty ? (
+        <div className="mx-auto flex h-full max-w-[720px] flex-col items-center justify-center gap-2 px-6 py-10 text-center">
+          <div className="text-[15px] font-medium text-neutral-900 dark:text-neutral-100">
+            {isReadOnlyBackgroundSession
+              ? t('emptyChat.readonlyBackgroundTitle', {
+                  defaultValue: 'No displayable messages in this task transcript',
+                })
+              : t('emptyChat.emptySessionTitle', {
+                  defaultValue: 'No displayable messages in this conversation',
+                })}
+          </div>
+          <div className="max-w-[520px] text-[13px] leading-5 text-neutral-500 dark:text-neutral-400">
+            {isReadOnlyBackgroundSession
+              ? t('emptyChat.readonlyBackgroundDescription', {
+                  defaultValue:
+                    'This read-only background task transcript only contains records the chat view cannot display.',
+                })
+              : t('emptyChat.emptySessionDescription', {
+                  defaultValue:
+                    'This conversation exists, but it does not contain messages that can be rendered here.',
+                })}
+          </div>
         </div>
       ) : (
         <div className="mx-auto max-w-[860px] space-y-8 px-6 py-10">
