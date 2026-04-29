@@ -152,6 +152,10 @@ function getCronScopeLabel(job: CronJobOverview, t: TFunction<'alwaysOn'>): stri
     : t('detail.scope.persistent', { defaultValue: 'Persistent' });
 }
 
+function getDetailTitle(row: AlwaysOnRow): string {
+  return row.kind === 'plan' ? row.plan.title || row.title : row.title;
+}
+
 function canRunRow(row: AlwaysOnRow): boolean {
   return row.kind === 'cron' || (row.plan.status === 'ready' && !row.plan.executionSessionId);
 }
@@ -331,6 +335,8 @@ export default function AlwaysOnV2({
   const isRunning = runningPlans.length > 0;
   const rows = getRows(plans, cronJobs, t);
   const detailRow = detailRowId ? rows.find((row) => row.id === detailRowId) || null : null;
+  const projectRoot = selectedProject?.fullPath || selectedProject?.path || selectedProject?.name || '';
+  const claudeDirectory = projectRoot ? `${projectRoot.replace(/\/$/, '')}/.claude` : '.claude';
 
   if (!selectedProject) {
     return (
@@ -517,14 +523,8 @@ export default function AlwaysOnV2({
         </button>
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="break-words text-[20px] font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
-            {row.title}
+            {getDetailTitle(row)}
           </h2>
-          <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xxs font-medium text-neutral-600 dark:bg-neutral-900 dark:text-neutral-300">
-            {row.typeLabel}
-          </span>
-          <span className="rounded-full border border-neutral-200 px-2 py-0.5 text-xxs font-medium text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
-            {row.statusLabel}
-          </span>
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
@@ -537,7 +537,6 @@ export default function AlwaysOnV2({
     const contextRefEntries = [
       ['workingDirectory', t('detail.context.workingDirectory', { defaultValue: 'Working Directory' })],
       ['memory', t('detail.context.memory', { defaultValue: 'Memory' })],
-      ['existingPlans', t('detail.context.existingPlans', { defaultValue: 'Existing Plans' })],
       ['cronJobs', t('detail.context.cronJobs', { defaultValue: 'Cron Jobs' })],
       ['recentChats', t('detail.context.recentChats', { defaultValue: 'Recent Chats' })],
     ] as const;
@@ -555,17 +554,17 @@ export default function AlwaysOnV2({
     }
 
     return (
-      <div className="space-y-4">
+      <div className="min-w-0 space-y-4">
         {visibleGroups.map((group) => (
-          <div key={group.key}>
+          <div key={group.key} className="min-w-0">
             <h4 className="mb-2 text-xxs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-500">
               {group.label}
             </h4>
-            <ul className="space-y-1.5">
+            <ul className="min-w-0 space-y-1.5">
               {group.values.map((value) => (
                 <li
                   key={value}
-                  className="rounded-md bg-neutral-50 px-2 py-1.5 font-mono text-[12px] text-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                  className="min-w-0 overflow-hidden whitespace-normal break-words rounded-md bg-neutral-50 px-2 py-1.5 font-mono text-[12px] text-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
                 >
                   {value}
                 </li>
@@ -579,7 +578,6 @@ export default function AlwaysOnV2({
 
   const renderPlanDetail = (row: Extract<AlwaysOnRow, { kind: 'plan' }>) => {
     const { plan } = row;
-    const planTitle = plan.title && plan.title !== row.title ? plan.title : undefined;
 
     return (
       <>
@@ -616,10 +614,7 @@ export default function AlwaysOnV2({
           <aside className="space-y-4">
             <DetailSection title={t('detail.sections.planFile', { defaultValue: 'Plan File' })}>
               <div className="space-y-4">
-                <DetailMetaItem label={t('detail.fields.filePath', { defaultValue: 'File path' })} value={plan.planFilePath} mono />
-                <DetailMetaItem label={t('detail.fields.planTitle', { defaultValue: 'Plan title' })} value={planTitle} />
-                <DetailMetaItem label={t('detail.fields.approvalMode', { defaultValue: 'Approval mode' })} value={plan.approvalMode} />
-                <DetailMetaItem label={t('detail.fields.structureVersion', { defaultValue: 'Structure version' })} value={plan.structureVersion} />
+                <DetailMetaItem label={t('detail.fields.claudeDirectory', { defaultValue: '.claude directory' })} value={claudeDirectory} mono />
                 <DetailMetaItem label={t('detail.fields.createdAt', { defaultValue: 'Created' })} value={formatTime(plan.createdAt)} mono />
                 <DetailMetaItem label={t('detail.fields.updatedAt', { defaultValue: 'Updated' })} value={formatTime(plan.updatedAt)} mono />
               </div>
@@ -796,7 +791,7 @@ export default function AlwaysOnV2({
                           <button
                             type="button"
                             onClick={() => setDetailRowId(row.id)}
-                            className="block max-w-full truncate rounded-sm text-left font-medium text-neutral-900 outline-none transition hover:text-neutral-600 focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-neutral-100 dark:hover:text-neutral-300"
+                            className="block max-w-full truncate rounded-sm text-left font-medium text-blue-600 outline-none transition hover:text-blue-700 hover:underline focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-blue-400 dark:hover:text-blue-300"
                           >
                             {row.title}
                           </button>

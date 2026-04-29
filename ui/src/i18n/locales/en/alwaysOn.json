@@ -69,6 +69,7 @@
       "createdFrom": "Created From"
     },
     "fields": {
+      "claudeDirectory": ".claude directory",
       "filePath": "File path",
       "planTitle": "Plan title",
       "approvalMode": "Approval mode",

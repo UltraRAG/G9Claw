@@ -69,6 +69,7 @@
       "createdFrom": "创建来源"
     },
     "fields": {
+      "claudeDirectory": ".claude 目录",
       "filePath": "文件路径",
       "planTitle": "Plan 标题",
       "approvalMode": "批准模式",
