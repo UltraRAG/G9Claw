@@ -80,7 +80,8 @@ import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './util
 import { getClaudeRuntimeModelConfig } from './utils/claude-runtime-config.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, userDb } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
-import { sendCronDaemonRequest, shutdownOwnedCronDaemon } from './services/cron-daemon-owner.js';
+import { sendCronDaemonRequest } from './services/cron-daemon-owner.js';
+import { startCronDaemonClientLease } from './services/cron-daemon-client-lease.js';
 import { createAlwaysOnHeartbeatManager } from './always-on-heartbeat.js';
 import { startDiscoveryTriggerClient } from './services/discovery-trigger-client.js';
 import { runServerStartupBeforeListen, startServerAfterStartup } from './services/server-startup.js';
@@ -1635,6 +1636,12 @@ function handleChatConnection(ws, request) {
 
     // Add to connected clients for project updates
     connectedClients.add(ws);
+    const clientId = alwaysOnHeartbeat.getWriterId(ws);
+    const cronDaemonLease = startCronDaemonClientLease({
+        clientId,
+        clientKind: 'webui'
+    });
+    let cleanedUp = false;
 
     // Wrap WebSocket with writer for consistent interface with SSEStreamWriter
     const writer = new WebSocketWriter(ws, request?.user?.id ?? request?.user?.userId ?? null);
@@ -1778,11 +1785,21 @@ function handleChatConnection(ws, request) {
         }
     });
 
-    ws.on('close', () => {
-        console.log('🔌 Chat client disconnected');
+    const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
         // Remove from connected clients
         connectedClients.delete(ws);
         void alwaysOnHeartbeat.clearPresence(ws);
+        void cronDaemonLease.stop();
+    };
+
+    ws.on('close', () => {
+        console.log('🔌 Chat client disconnected');
+        cleanup();
+    });
+    ws.on('error', () => {
+        cleanup();
     });
 }
 
@@ -2642,7 +2659,6 @@ async function startServer() {
                         await shutdownCCR();
                     } catch { /* CCR may not have been loaded */ }
                 } finally {
-                    await shutdownOwnedCronDaemon();
                     process.exit(0);
                 }
             })();

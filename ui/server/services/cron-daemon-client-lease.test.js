@@ -1,0 +1,49 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { startCronDaemonClientLease } from './cron-daemon-client-lease.js';
+
+function tick() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+test('startCronDaemonClientLease registers and unregisters a web UI client', async () => {
+  const requests = [];
+  let ensureCount = 0;
+
+  const lease = startCronDaemonClientLease({
+    clientId: 'webui-1',
+    intervalMs: 60_000,
+    ensureCronDaemonFn: async () => {
+      ensureCount += 1;
+    },
+    sendCronDaemonRequestFn: async (request) => {
+      requests.push(request);
+      return {
+        ok: true,
+        data: {
+          type: request.type,
+          activeClients: request.type === 'unregister_client' ? 0 : 1
+        }
+      };
+    }
+  });
+
+  await tick();
+  await lease.stop();
+
+  assert.equal(ensureCount, 1);
+  assert.deepEqual(requests, [
+    {
+      type: 'register_client',
+      clientId: 'webui-1',
+      clientKind: 'webui',
+      processId: process.pid,
+      projectRoots: []
+    },
+    {
+      type: 'unregister_client',
+      clientId: 'webui-1'
+    }
+  ]);
+});

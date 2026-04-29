@@ -1,5 +1,8 @@
-import { test } from 'node:test';
+import { afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   buildCronDaemonSpawnCommand,
@@ -11,6 +14,24 @@ function createUnavailableError(code) {
   error.code = code;
   return error;
 }
+
+let tempConfigDir;
+let priorConfigDir;
+
+beforeEach(async () => {
+  priorConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  tempConfigDir = await mkdtemp(join(tmpdir(), 'ui-cron-daemon-startup-'));
+  process.env.CLAUDE_CONFIG_DIR = tempConfigDir;
+});
+
+afterEach(async () => {
+  if (priorConfigDir === undefined) {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  } else {
+    process.env.CLAUDE_CONFIG_DIR = priorConfigDir;
+  }
+  await rm(tempConfigDir, { recursive: true, force: true });
+});
 
 test('buildCronDaemonSpawnCommand prefers the local Claude Code tree and falls back to the CLI path', () => {
   const localCommand = buildCronDaemonSpawnCommand({
@@ -68,7 +89,7 @@ test('ensureCronDaemonForUiStartup starts the daemon when the socket is unavaila
     sendCronDaemonRequestFn: async (request) => {
       requests.push(request);
       requestCount += 1;
-      if (requestCount === 1) {
+      if (requestCount <= 2) {
         throw createUnavailableError('ENOENT');
       }
       return { ok: true, data: { type: 'pong', runtimes: [] } };
@@ -95,7 +116,7 @@ test('ensureCronDaemonForUiStartup starts the daemon when the socket is unavaila
   });
 
   assert.equal(response.data.type, 'pong');
-  assert.deepEqual(requests, [{ type: 'ping' }, { type: 'ping' }]);
+  assert.deepEqual(requests, [{ type: 'ping' }, { type: 'ping' }, { type: 'ping' }]);
   assert.equal(spawnCalls.length, 1);
   assert.equal(spawnCalls[0].command, 'bun');
   assert.deepEqual(spawnCalls[0].args.slice(0, 3), [
@@ -140,6 +161,6 @@ test('ensureCronDaemonForUiStartup fails fast when the daemon never becomes heal
     /Timed out waiting for Cron daemon response/
   );
 
-  assert.equal(requestCount, 4);
+  assert.equal(requestCount, 5);
   assert.equal(sleepCount, 2);
 });

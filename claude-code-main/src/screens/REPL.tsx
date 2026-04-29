@@ -204,6 +204,7 @@ const useProactive = feature('PROACTIVE') || feature('KAIROS') ? require('../pro
 //   TypeError: require() async module ... is unsupported. use 'await import()' instead.
 // This previously crashed the REPL on first render under Bun.
 import { useScheduledTasks } from '../hooks/useScheduledTasks.js';
+import { useCronDaemonClientLease } from '../hooks/useCronDaemonClientLease.js';
 import { useAlwaysOnHeartbeat } from '../hooks/useAlwaysOnHeartbeat.js';
 import { useAlwaysOnDiscoveryRequests } from '../hooks/useAlwaysOnDiscoveryRequests.js';
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
@@ -792,6 +793,7 @@ export function REPL({
     enabled: !isRemoteSession
   });
   const tasksV2 = useTasksV2WithCollapseEffect();
+  useCronDaemonClientLease();
   useAlwaysOnHeartbeat(tasksV2);
   useAlwaysOnDiscoveryRequests();
 

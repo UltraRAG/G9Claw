@@ -1,11 +1,12 @@
 import net from 'net'
-import { unlink } from 'fs/promises'
-import { resolve } from 'path'
+import { mkdir, unlink } from 'fs/promises'
+import { dirname, resolve } from 'path'
 import { CronDaemonProjectRegistry } from './projectRegistry.js'
 import { clearCronDaemonOwner } from './ownership.js'
 import { ProjectRuntime } from './projectRuntime.js'
 import { DaemonSessionTaskStore } from './sessionTaskStore.js'
 import { getCronDaemonSocketPath } from './paths.js'
+import { ClientLeaseRegistry } from './clientLeases.js'
 import { DiscoveryScheduler } from './discoveryScheduler/index.js'
 import { releaseDiscoveryLock } from './discoveryScheduler/lock.js'
 import { markDiscoveryFireComplete } from './discoveryScheduler/state.js'
@@ -18,6 +19,24 @@ import type {
 import { safeParseJSON } from '../utils/json.js'
 import { logForDebugging } from '../utils/debug.js'
 import { addCronTask, readCronTasks, removeCronTasks } from '../utils/cronTasks.js'
+
+const DEFAULT_EMPTY_CLIENT_SHUTDOWN_DELAY_MS = 10_000
+
+async function isSocketAcceptingConnections(socketPath: string): Promise<boolean> {
+  return await new Promise(resolvePromise => {
+    const socket = net.createConnection(socketPath)
+    let settled = false
+    const finish = (result: boolean) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolvePromise(result)
+    }
+    socket.setTimeout(250, () => finish(false))
+    socket.once('connect', () => finish(true))
+    socket.once('error', () => finish(false))
+  })
+}
 
 export class CronDaemonServer {
   private readonly server = net.createServer(socket =>
@@ -33,7 +52,13 @@ export class CronDaemonServer {
   private readonly sessionTaskStore = new DaemonSessionTaskStore()
   private readonly registry = new CronDaemonProjectRegistry()
   private readonly discoveryScheduler = new DiscoveryScheduler()
+  private readonly clientLeases = new ClientLeaseRegistry()
+  private emptyClientShutdownTimer: ReturnType<typeof setTimeout> | null = null
   private stopping = false
+
+  constructor(
+    private readonly emptyClientShutdownDelayMs = DEFAULT_EMPTY_CLIENT_SHUTDOWN_DELAY_MS,
+  ) {}
 
   async start(): Promise<void> {
     await this.registry.load()
@@ -43,6 +68,10 @@ export class CronDaemonServer {
     }
 
     const socketPath = getCronDaemonSocketPath()
+    if (await isSocketAcceptingConnections(socketPath)) {
+      throw new Error(`Cron daemon socket is already active at ${socketPath}`)
+    }
+    await mkdir(dirname(socketPath), { recursive: true })
     await unlink(socketPath).catch(() => {})
     await clearCronDaemonOwner()
 
@@ -54,22 +83,68 @@ export class CronDaemonServer {
       })
     })
 
+    this.clientLeases.start(() => this.handleClientLeasesChanged())
+    this.scheduleEmptyClientShutdown()
     logForDebugging(`[CronDaemon] listening on ${socketPath}`)
   }
 
   async stop(): Promise<void> {
     if (this.stopping) return
     this.stopping = true
-    for (const runtime of this.runtimes.values()) {
-      runtime.stop()
-    }
+    logForDebugging('[CronDaemon] stopping')
+    this.clearEmptyClientShutdownTimer()
+    this.clientLeases.stop()
     this.discoveryScheduler.stop()
+    await Promise.all([...this.runtimes.values()].map(runtime => runtime.stop()))
     await this.sessionTaskStore.persistProjects(this.runtimes.keys())
-    await new Promise<void>(resolvePromise => {
-      this.server.close(() => resolvePromise())
-    })
+    if (this.server.listening) {
+      await new Promise<void>(resolvePromise => {
+        this.server.close(() => resolvePromise())
+      })
+    }
     await unlink(getCronDaemonSocketPath()).catch(() => {})
     await clearCronDaemonOwner()
+  }
+
+  private clearEmptyClientShutdownTimer(): void {
+    if (!this.emptyClientShutdownTimer) return
+    clearTimeout(this.emptyClientShutdownTimer)
+    this.emptyClientShutdownTimer = null
+  }
+
+  private scheduleEmptyClientShutdown(): void {
+    if (this.stopping || this.clientLeases.hasFreshClients()) {
+      this.clearEmptyClientShutdownTimer()
+      return
+    }
+    if (this.emptyClientShutdownTimer) return
+    this.emptyClientShutdownTimer = setTimeout(() => {
+      this.emptyClientShutdownTimer = null
+      if (!this.clientLeases.hasFreshClients()) {
+        logForDebugging('[CronDaemon] stopping after all client leases expired')
+        void this.stop()
+      }
+    }, this.emptyClientShutdownDelayMs)
+    this.emptyClientShutdownTimer.unref()
+  }
+
+  private handleClientLeasesChanged(): void {
+    if (this.clientLeases.hasFreshClients()) {
+      this.clearEmptyClientShutdownTimer()
+      return
+    }
+    this.scheduleEmptyClientShutdown()
+  }
+
+  private normalizeProjectRoots(projectRoots: unknown): string[] {
+    if (!Array.isArray(projectRoots)) return []
+    return [
+      ...new Set(
+        projectRoots
+          .filter(root => typeof root === 'string' && root.trim().length > 0)
+          .map(root => resolve(root)),
+      ),
+    ]
   }
 
   private async handleConnection(socket: net.Socket): Promise<void> {
@@ -112,7 +187,10 @@ export class CronDaemonServer {
           const runtimes = await Promise.all(
             [...this.runtimes.values()].map(runtime => runtime.summarize()),
           )
-          return { ok: true, data: { type: 'pong', runtimes } }
+          return {
+            ok: true,
+            data: { type: 'pong', runtimes, clients: this.clientLeases.list() },
+          }
         }
         case 'shutdown':
           return { ok: true, data: { type: 'shutdown' } }
@@ -274,6 +352,62 @@ export class CronDaemonServer {
           return {
             ok: true,
             data: { type: 'discovery_fire_complete' },
+          }
+        }
+        case 'register_client': {
+          const projectRoots = this.normalizeProjectRoots(request.projectRoots)
+          const client = this.clientLeases.upsert({
+            clientId: request.clientId,
+            clientKind: request.clientKind,
+            processId: request.processId,
+            projectRoots,
+          })
+          logForDebugging(
+            `[CronDaemon] registered client ${client.clientKind}:${client.clientId} active=${this.clientLeases.count()}`,
+          )
+          this.handleClientLeasesChanged()
+          return {
+            ok: true,
+            data: {
+              type: 'register_client',
+              client,
+              activeClients: this.clientLeases.count(),
+            },
+          }
+        }
+        case 'client_heartbeat': {
+          const client = this.clientLeases.heartbeat(
+            request.clientId,
+            this.normalizeProjectRoots(request.projectRoots),
+          )
+          if (!client) {
+            logForDebugging(
+              `[CronDaemon] heartbeat from unknown client ${request.clientId}`,
+            )
+            throw new Error(`Unknown Cron daemon client ${request.clientId}`)
+          }
+          this.handleClientLeasesChanged()
+          return {
+            ok: true,
+            data: {
+              type: 'client_heartbeat',
+              client,
+              activeClients: this.clientLeases.count(),
+            },
+          }
+        }
+        case 'unregister_client': {
+          const removed = this.clientLeases.unregister(request.clientId)
+          logForDebugging(
+            `[CronDaemon] unregistered client ${request.clientId} removed=${removed} active=${this.clientLeases.count()}`,
+          )
+          this.handleClientLeasesChanged()
+          return {
+            ok: true,
+            data: {
+              type: 'unregister_client',
+              activeClients: this.clientLeases.count(),
+            },
           }
         }
       }

@@ -8,6 +8,20 @@ export type DaemonListedCronTask = DaemonCronTask & {
   running: boolean
 }
 
+export type CronDaemonClientKind = 'webui' | 'tui'
+
+export type CronDaemonClientLease = {
+  clientId: string
+  clientKind: CronDaemonClientKind
+  processId?: number
+  projectRoots: string[]
+  lastSeenAt: number
+}
+
+export type CronDaemonClientSummary = CronDaemonClientLease & {
+  expiresAt: number
+}
+
 export type CronDaemonRequest =
   | {
       type: 'ping'
@@ -51,6 +65,22 @@ export type CronDaemonRequest =
       projectRoot: string
       status: 'started' | 'completed' | 'failed'
     }
+  | {
+      type: 'register_client'
+      clientId: string
+      clientKind: CronDaemonClientKind
+      processId?: number
+      projectRoots?: string[]
+    }
+  | {
+      type: 'client_heartbeat'
+      clientId: string
+      projectRoots?: string[]
+    }
+  | {
+      type: 'unregister_client'
+      clientId: string
+    }
 
 export type RuntimeSummary = {
   projectRoot: string
@@ -63,7 +93,11 @@ export type CronDaemonResponse =
   | {
       ok: true
       data:
-        | { type: 'pong'; runtimes: RuntimeSummary[] }
+        | {
+            type: 'pong'
+            runtimes: RuntimeSummary[]
+            clients?: CronDaemonClientSummary[]
+          }
         | { type: 'shutdown' }
         | { type: 'create_task'; task: DaemonCronTask }
         | { type: 'list_tasks'; tasks: DaemonListedCronTask[] }
@@ -75,6 +109,17 @@ export type CronDaemonResponse =
           }
         | { type: 'register_project'; projectRoot: string }
         | { type: 'discovery_fire_complete' }
+        | {
+            type: 'register_client'
+            client: CronDaemonClientLease
+            activeClients: number
+          }
+        | {
+            type: 'client_heartbeat'
+            client: CronDaemonClientLease
+            activeClients: number
+          }
+        | { type: 'unregister_client'; activeClients: number }
     }
   | {
       ok: false

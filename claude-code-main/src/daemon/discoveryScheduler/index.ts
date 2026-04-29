@@ -11,8 +11,10 @@ type ProjectTimer = {
 
 export class DiscoveryScheduler {
   private readonly timers = new Map<string, ProjectTimer>()
+  private stopped = false
 
   ensureProject(projectRoot: string): void {
+    if (this.stopped) return
     const normalized = resolve(projectRoot)
     if (this.timers.has(normalized)) return
 
@@ -27,6 +29,7 @@ export class DiscoveryScheduler {
   }
 
   stop(): void {
+    this.stopped = true
     for (const { timer } of this.timers.values()) {
       clearInterval(timer)
     }
@@ -34,15 +37,18 @@ export class DiscoveryScheduler {
   }
 
   private async tickProject(projectRoot: string): Promise<void> {
+    if (this.stopped) return
     const entry = this.timers.get(projectRoot)
     if (!entry || entry.running) return
     entry.running = true
     try {
+      if (this.stopped) return
       const config = getDiscoveryTriggerConfig()
       const result = await evaluateDiscoveryGates(projectRoot, config)
       if (!result.ok) {
         return
       }
+      if (this.stopped) return
       await notifyDiscoveryFire(projectRoot, result.heartbeat)
     } catch (error) {
       logForDebugging(
