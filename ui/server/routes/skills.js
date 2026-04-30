@@ -128,8 +128,20 @@ async function listSkillsIn(root, scope) {
   }
   const skills = [];
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
     if (!safeSlug(entry.name)) continue;
+    // Accept directories AND symlinks-to-directories (the import-as-symlink
+    // path creates the latter). For symlinks we resolve and verify the
+    // target is a real directory before treating it as a skill.
+    let isSkillDir = entry.isDirectory();
+    if (!isSkillDir && entry.isSymbolicLink()) {
+      try {
+        const target = await fs.stat(path.join(root, entry.name));
+        isSkillDir = target.isDirectory();
+      } catch {
+        isSkillDir = false;
+      }
+    }
+    if (!isSkillDir) continue;
     const meta = await readSkillMeta(path.join(root, entry.name));
     if (!meta) continue;
     skills.push({ ...meta, scope });
@@ -288,6 +300,131 @@ router.post('/delete', async (req, res) => {
   } catch (e) {
     console.error('[skills/delete]', e);
     res.status(500).json({ error: 'Failed to delete skill', message: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Import from existing folder (copy or symlink)
+// ---------------------------------------------------------------------------
+
+function expandHome(p) {
+  if (typeof p !== 'string' || !p) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+router.post('/import', async (req, res) => {
+  try {
+    const { sourcePath, slug: requestedSlug, scope, projectPath, mode, force } = req.body || {};
+
+    if (typeof sourcePath !== 'string' || !sourcePath.trim()) {
+      return res.status(400).json({ error: 'sourcePath is required' });
+    }
+    const importMode = mode === 'symlink' ? 'symlink' : 'copy';
+
+    // Resolve source: ~ expansion + absolute path required.
+    const resolvedSource = path.resolve(expandHome(sourcePath.trim()));
+    let stat;
+    try {
+      stat = await fs.stat(resolvedSource);
+    } catch (e) {
+      if (e.code === 'ENOENT') {
+        return res.status(404).json({ error: `Source path does not exist: ${resolvedSource}` });
+      }
+      throw e;
+    }
+    if (!stat.isDirectory()) {
+      return res.status(400).json({ error: `Source path is not a directory: ${resolvedSource}` });
+    }
+
+    // SKILL.md must exist at the source root — that's what makes it a skill.
+    try {
+      await fs.access(path.join(resolvedSource, 'SKILL.md'));
+    } catch {
+      return res.status(400).json({
+        error: `Source folder does not contain a SKILL.md at the root: ${resolvedSource}`,
+      });
+    }
+
+    // Slug: explicit, else fall back to basename of source. Validate strictly.
+    const inferredSlug = (typeof requestedSlug === 'string' && requestedSlug.trim()) || path.basename(resolvedSource);
+    if (!safeSlug(inferredSlug)) {
+      return res.status(400).json({
+        error: `Invalid slug "${inferredSlug}". Allowed: [a-zA-Z0-9][a-zA-Z0-9._-]{0,99}, no "..".`,
+      });
+    }
+
+    // Resolve target scope and dir.
+    const wantProject = scope === 'project';
+    let root;
+    if (wantProject) {
+      if (!projectPath || isGeneralCwd(projectPath)) {
+        return res.status(400).json({
+          error: 'project scope requires a real project (general chat doesn\'t qualify)',
+        });
+      }
+      root = projectSkillsRoot(projectPath);
+    } else {
+      root = userSkillsRoot();
+    }
+    const targetDir = path.join(root, inferredSlug);
+
+    // Refuse the obviously broken self-import (target === source).
+    if (path.resolve(targetDir) === resolvedSource) {
+      return res.status(400).json({
+        error: 'Source and target resolve to the same path; pick a different slug or scope.',
+      });
+    }
+
+    // Conflict: target already exists.
+    let exists = false;
+    try {
+      await fs.access(targetDir);
+      exists = true;
+    } catch {
+      /* not present, good */
+    }
+    if (exists) {
+      if (!force) {
+        return res.status(409).json({
+          error: `Skill already exists at ${targetDir}. Re-run with force=true to overwrite.`,
+        });
+      }
+      await fs.rm(targetDir, { recursive: true, force: true });
+    }
+
+    await fs.mkdir(root, { recursive: true });
+
+    if (importMode === 'symlink') {
+      // Symlink lets the user keep editing in the source folder; the agent
+      // will follow the link when reading SKILL.md.
+      await fs.symlink(resolvedSource, targetDir, 'dir');
+    } else {
+      // Recursive copy. dereference=false preserves symlinks inside the
+      // source as symlinks; force=true is safe because we already checked
+      // and cleared the target above.
+      await fs.cp(resolvedSource, targetDir, {
+        recursive: true,
+        force: true,
+        dereference: false,
+        errorOnExist: false,
+      });
+    }
+
+    const meta = await readSkillMeta(targetDir);
+    res.json({
+      ok: true,
+      mode: importMode,
+      scope: wantProject ? 'project' : 'user',
+      slug: inferredSlug,
+      sourcePath: resolvedSource,
+      skillPath: targetDir,
+      skill: meta,
+    });
+  } catch (e) {
+    console.error('[skills/import]', e);
+    res.status(500).json({ error: 'Import failed', message: e.message });
   }
 });
 

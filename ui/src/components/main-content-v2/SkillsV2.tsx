@@ -5,6 +5,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { EditorView } from '@codemirror/view';
 import {
   Download,
+  FolderInput,
   Globe,
   Loader2,
   PencilLine,
@@ -619,7 +620,7 @@ function NewSkillModal({
   projectPath: string | null;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
-  const [tab, setTab] = useState<'install' | 'create'>('install');
+  const [tab, setTab] = useState<'install' | 'import' | 'create'>('install');
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
       <div className="flex h-[560px] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-2xl dark:border-neutral-800 dark:bg-neutral-950">
@@ -639,6 +640,9 @@ function NewSkillModal({
           <ModalTab active={tab === 'install'} onClick={() => setTab('install')} icon={Download}>
             {t('skillsTab.tabInstall', { defaultValue: 'Install from ClawHub' })}
           </ModalTab>
+          <ModalTab active={tab === 'import'} onClick={() => setTab('import')} icon={FolderInput}>
+            {t('skillsTab.tabImport', { defaultValue: 'Import folder' })}
+          </ModalTab>
           <ModalTab active={tab === 'create'} onClick={() => setTab('create')} icon={PencilLine}>
             {t('skillsTab.tabCreate', { defaultValue: 'Write my own' })}
           </ModalTab>
@@ -650,6 +654,13 @@ function NewSkillModal({
               projectAvailable={projectAvailable}
               projectPath={projectPath}
               onInstalled={onCreated}
+              t={t}
+            />
+          ) : tab === 'import' ? (
+            <ImportFromFolder
+              projectAvailable={projectAvailable}
+              projectPath={projectPath}
+              onImported={onCreated}
               t={t}
             />
           ) : (
@@ -889,6 +900,188 @@ function InstallFromClawHub({
             })}
           </ul>
         )}
+      </div>
+    </div>
+  );
+}
+
+function ImportFromFolder({
+  projectAvailable,
+  projectPath,
+  onImported,
+  t,
+}: {
+  projectAvailable: boolean;
+  projectPath: string | null;
+  onImported: (created: NewModalCreated) => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const [sourcePath, setSourcePath] = useState('');
+  const [slug, setSlug] = useState('');
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [scope, setScope] = useState<'user' | 'project'>(projectAvailable ? 'project' : 'user');
+  const [mode, setMode] = useState<'copy' | 'symlink'>('copy');
+  const [force, setForce] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [errorText, setErrorText] = useState<string | null>(null);
+
+  // Auto-suggest slug from sourcePath basename until user manually edits.
+  useEffect(() => {
+    if (slugTouched) return;
+    const cleaned = sourcePath.trim().replace(/\/+$/, '');
+    if (!cleaned) {
+      setSlug('');
+      return;
+    }
+    const base = cleaned.split('/').filter(Boolean).pop() || '';
+    setSlug(base);
+  }, [sourcePath, slugTouched]);
+
+  const slugValid = !slug || /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(slug);
+  const canSubmit = sourcePath.trim().length > 0 && slugValid && !importing;
+
+  const submit = useCallback(async () => {
+    if (!canSubmit) return;
+    setImporting(true);
+    setErrorText(null);
+    try {
+      const r = await api<{
+        ok: boolean;
+        slug: string;
+        scope: 'user' | 'project';
+        skillPath: string;
+        skill: Skill | null;
+        mode: string;
+      }>('/api/skills/import', {
+        sourcePath,
+        slug: slug || undefined,
+        scope,
+        projectPath: scope === 'project' ? projectPath : null,
+        mode,
+        force,
+      });
+      onImported({ slug: r.slug, name: r.skill?.name || r.slug, scope: r.scope });
+    } catch (e) {
+      const msg = (e as Error).message;
+      // Surface "already exists" with a hint to enable force.
+      if (/already exists/i.test(msg) && !force) {
+        setErrorText(msg + ' ' + t('skillsTab.importEnableForce', { defaultValue: 'Enable "Overwrite" to replace it.' }));
+      } else {
+        setErrorText(msg);
+      }
+    } finally {
+      setImporting(false);
+    }
+  }, [canSubmit, sourcePath, slug, scope, projectPath, mode, force, onImported, t]);
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <Field
+          label={t('skillsTab.importSource', { defaultValue: 'Source folder' })}
+          hint={t('skillsTab.importSourceHint', { defaultValue: 'Absolute path to a folder containing SKILL.md. Tilde (~) is expanded server-side.' }) as string}
+        >
+          <input
+            type="text"
+            value={sourcePath}
+            onChange={(e) => setSourcePath(e.target.value)}
+            placeholder="~/code/my-skill"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            className="h-8 w-full rounded-md border border-neutral-200 bg-white px-2 font-mono text-[12px] outline-none focus:border-neutral-400 dark:border-neutral-800 dark:bg-neutral-950 dark:focus:border-neutral-600"
+          />
+        </Field>
+
+        <Field
+          label={t('skillsTab.importSlug', { defaultValue: 'Slug (target folder name)' })}
+          hint={t('skillsTab.importSlugHint', { defaultValue: 'Defaults to the source folder name. Edit to override.' }) as string}
+        >
+          <input
+            type="text"
+            value={slug}
+            onChange={(e) => {
+              setSlug(e.target.value);
+              setSlugTouched(true);
+            }}
+            placeholder="my-skill"
+            className={cn(
+              'h-8 w-full rounded-md border bg-white px-2 font-mono text-[12px] outline-none dark:bg-neutral-950',
+              slugValid
+                ? 'border-neutral-200 focus:border-neutral-400 dark:border-neutral-800 dark:focus:border-neutral-600'
+                : 'border-red-300 dark:border-red-800',
+            )}
+          />
+        </Field>
+
+        <Field label={t('skillsTab.importMode', { defaultValue: 'Import mode' })}>
+          <div className="flex flex-col gap-1.5 text-[12px]">
+            <label className="flex cursor-pointer items-start gap-2">
+              <input
+                type="radio"
+                name="import-mode"
+                checked={mode === 'copy'}
+                onChange={() => setMode('copy')}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="font-medium">{t('skillsTab.importModeCopy', { defaultValue: 'Copy' })}</span>
+                <span className="ml-1 text-neutral-500 dark:text-neutral-400">
+                  {t('skillsTab.importModeCopyHint', { defaultValue: '— independent copy, edits live in the skills folder.' })}
+                </span>
+              </span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-2">
+              <input
+                type="radio"
+                name="import-mode"
+                checked={mode === 'symlink'}
+                onChange={() => setMode('symlink')}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="font-medium">{t('skillsTab.importModeSymlink', { defaultValue: 'Symlink' })}</span>
+                <span className="ml-1 text-neutral-500 dark:text-neutral-400">
+                  {t('skillsTab.importModeSymlinkHint', { defaultValue: '— edits in the source folder propagate live; deleting the source breaks the skill.' })}
+                </span>
+              </span>
+            </label>
+          </div>
+        </Field>
+
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <ScopeSelector scope={scope} onChange={setScope} projectAvailable={projectAvailable} t={t} />
+          <label className="flex cursor-pointer items-center gap-2 text-[12px]">
+            <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
+            <span>{t('skillsTab.importForce', { defaultValue: 'Overwrite if exists' })}</span>
+          </label>
+        </div>
+
+        {errorText ? (
+          <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+            {errorText}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-neutral-200 px-5 py-3 dark:border-neutral-800">
+        <button
+          type="button"
+          onClick={submit}
+          disabled={!canSubmit}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md bg-neutral-900 px-3 text-[12px] font-medium text-white transition hover:bg-neutral-700 disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+        >
+          {importing ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.75} />
+          ) : (
+            <FolderInput className="h-3.5 w-3.5" strokeWidth={1.75} />
+          )}
+          <span>
+            {importing
+              ? t('skillsTab.importing', { defaultValue: 'Importing…' })
+              : t('skillsTab.importAction', { defaultValue: 'Import skill' })}
+          </span>
+        </button>
       </div>
     </div>
   );
