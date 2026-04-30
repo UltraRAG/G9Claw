@@ -12,6 +12,18 @@ import { ensureTuiCronDaemonClientLease } from './tuiClientLease.js'
 import type { CronDaemonRequest, CronDaemonResponse } from './types.js'
 
 const START_LOCK_STALE_MS = 30_000
+const CCR_SENTINEL = 'http://ccr.local'
+const CCR_DAEMON_FETCH_INTERCEPTOR = 'CCR_DAEMON_FETCH_INTERCEPTOR'
+
+export function buildCronDaemonEnv(
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env = { ...baseEnv }
+  if (env.ANTHROPIC_BASE_URL === CCR_SENTINEL) {
+    env[CCR_DAEMON_FETCH_INTERCEPTOR] = '1'
+  }
+  return env
+}
 
 function isDaemonUnavailableError(error: unknown): boolean {
   return (
@@ -59,7 +71,7 @@ async function pingCronDaemon(): Promise<void> {
 async function startCronDaemonDetached(): Promise<void> {
   const child = spawn(process.execPath, getDaemonCommandArgs(), {
     cwd: process.cwd(),
-    env: process.env,
+    env: buildCronDaemonEnv(),
     detached: true,
     stdio: 'ignore',
   })

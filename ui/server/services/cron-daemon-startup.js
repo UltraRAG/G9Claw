@@ -9,6 +9,8 @@ import { sendCronDaemonRequest } from './cron-daemon-owner.js';
 const DEFAULT_RETRY_ATTEMPTS = 20;
 const DEFAULT_RETRY_DELAY_MS = 250;
 const START_LOCK_STALE_MS = 30000;
+const CCR_SENTINEL = 'http://ccr.local';
+const CCR_DAEMON_FETCH_INTERCEPTOR = 'CCR_DAEMON_FETCH_INTERCEPTOR';
 
 function getClaudeConfigHomeDir() {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -62,6 +64,14 @@ export function isCronDaemonUnavailableError(error) {
     'code' in error &&
     (error.code === 'ENOENT' || error.code === 'ECONNREFUSED')
   );
+}
+
+export function buildCronDaemonEnv(baseEnv = process.env) {
+  const env = { ...baseEnv };
+  if (env.ANTHROPIC_BASE_URL === CCR_SENTINEL) {
+    env[CCR_DAEMON_FETCH_INTERCEPTOR] = '1';
+  }
+  return env;
 }
 
 export function buildCronDaemonSpawnCommand({
@@ -139,7 +149,7 @@ export function startCronDaemonDetached({
   const stdio = fd === null ? 'ignore' : ['ignore', fd, fd];
   const child = spawnFn(command, args, {
     cwd: process.cwd(),
-    env: process.env,
+    env: buildCronDaemonEnv(),
     detached: true,
     stdio
   });

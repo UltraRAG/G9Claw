@@ -38,9 +38,19 @@ plugin({
 // Intercepts fetch() in-process. No HTTP server, no port, no network overhead.
 // Skip with CCR_DISABLED=1 or when ANTHROPIC_BASE_URL is already set externally.
 const CCR_SENTINEL = 'http://ccr.local';
+const CCR_DAEMON_FETCH_INTERCEPTOR = 'CCR_DAEMON_FETCH_INTERCEPTOR';
 
-function isDaemonPreloadContext(): boolean {
-  const runtimeArgs = [...process.argv, ...process.execArgv];
+function isEnvDisabled(value: string | undefined): boolean {
+  return value === '1' || value === 'true';
+}
+
+function isEnvTruthy(value: string | undefined): boolean {
+  return value === '1' || value === 'true';
+}
+
+export function isDaemonPreloadContext(
+  runtimeArgs = [...process.argv, ...process.execArgv],
+): boolean {
   return runtimeArgs.some((arg) => (
     arg === 'daemon' ||
     arg === '--daemon-worker' ||
@@ -49,12 +59,27 @@ function isDaemonPreloadContext(): boolean {
   ));
 }
 
-if (
-  !isDaemonPreloadContext() &&
-  process.env.CCR_DISABLED !== '1' &&
-  process.env.CCR_DISABLED !== 'true' &&
-  (!process.env.ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL === CCR_SENTINEL)
-) {
+export function shouldInstallCcrInterceptor(
+  env: Record<string, string | undefined> = process.env,
+  runtimeArgs = [...process.argv, ...process.execArgv],
+): boolean {
+  if (isEnvDisabled(env.CCR_DISABLED)) return false;
+  if (
+    env.ANTHROPIC_BASE_URL &&
+    env.ANTHROPIC_BASE_URL !== CCR_SENTINEL
+  ) {
+    return false;
+  }
+
+  if (!isDaemonPreloadContext(runtimeArgs)) return true;
+
+  return (
+    env.ANTHROPIC_BASE_URL === CCR_SENTINEL ||
+    isEnvTruthy(env[CCR_DAEMON_FETCH_INTERCEPTOR])
+  );
+}
+
+if (shouldInstallCcrInterceptor()) {
   const DIR = dirname(new URL(import.meta.url).pathname);
 
   // Resolve CCR config: YAML (~/.edgeclaw/config.yaml) first, ccr-config.json fallback

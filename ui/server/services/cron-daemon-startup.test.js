@@ -5,8 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  buildCronDaemonEnv,
   buildCronDaemonSpawnCommand,
-  ensureCronDaemonForUiStartup
+  ensureCronDaemonForUiStartup,
+  startCronDaemonDetached
 } from './cron-daemon-startup.js';
 
 function createUnavailableError(code) {
@@ -17,11 +19,17 @@ function createUnavailableError(code) {
 
 let tempConfigDir;
 let priorConfigDir;
+let priorAnthropicBaseUrl;
+let priorCcrDaemonFetchInterceptor;
 
 beforeEach(async () => {
   priorConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  priorAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
+  priorCcrDaemonFetchInterceptor = process.env.CCR_DAEMON_FETCH_INTERCEPTOR;
   tempConfigDir = await mkdtemp(join(tmpdir(), 'ui-cron-daemon-startup-'));
   process.env.CLAUDE_CONFIG_DIR = tempConfigDir;
+  delete process.env.ANTHROPIC_BASE_URL;
+  delete process.env.CCR_DAEMON_FETCH_INTERCEPTOR;
 });
 
 afterEach(async () => {
@@ -29,6 +37,16 @@ afterEach(async () => {
     delete process.env.CLAUDE_CONFIG_DIR;
   } else {
     process.env.CLAUDE_CONFIG_DIR = priorConfigDir;
+  }
+  if (priorAnthropicBaseUrl === undefined) {
+    delete process.env.ANTHROPIC_BASE_URL;
+  } else {
+    process.env.ANTHROPIC_BASE_URL = priorAnthropicBaseUrl;
+  }
+  if (priorCcrDaemonFetchInterceptor === undefined) {
+    delete process.env.CCR_DAEMON_FETCH_INTERCEPTOR;
+  } else {
+    process.env.CCR_DAEMON_FETCH_INTERCEPTOR = priorCcrDaemonFetchInterceptor;
   }
   await rm(tempConfigDir, { recursive: true, force: true });
 });
@@ -58,6 +76,42 @@ test('buildCronDaemonSpawnCommand prefers the local Claude Code tree and falls b
     command: '/opt/bin/claude',
     args: ['daemon', 'serve']
   });
+});
+
+test('buildCronDaemonEnv opts daemon preload into CCR interceptor for sentinel base URL', () => {
+  assert.deepEqual(buildCronDaemonEnv({
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:18080'
+  }), {
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:18080'
+  });
+
+  assert.deepEqual(buildCronDaemonEnv({
+    ANTHROPIC_BASE_URL: 'http://ccr.local'
+  }), {
+    ANTHROPIC_BASE_URL: 'http://ccr.local',
+    CCR_DAEMON_FETCH_INTERCEPTOR: '1'
+  });
+});
+
+test('startCronDaemonDetached passes CCR interceptor opt-in in sentinel mode', () => {
+  const spawnCalls = [];
+  process.env.ANTHROPIC_BASE_URL = 'http://ccr.local';
+
+  startCronDaemonDetached({
+    spawnFn: (command, args, options) => {
+      spawnCalls.push({ command, args, options });
+      return { unref() {} };
+    },
+    buildCronDaemonSpawnCommandFn: () => ({
+      command: 'bun',
+      args: ['--preload', '/tmp/preload.ts', '-e', 'noop']
+    }),
+    openLogFdFn: () => ({ fd: null, logPath: '/tmp/cron-daemon.log' })
+  });
+
+  assert.equal(spawnCalls.length, 1);
+  assert.equal(spawnCalls[0].options.env.ANTHROPIC_BASE_URL, 'http://ccr.local');
+  assert.equal(spawnCalls[0].options.env.CCR_DAEMON_FETCH_INTERCEPTOR, '1');
 });
 
 test('ensureCronDaemonForUiStartup reuses a healthy daemon without spawning a new process', async () => {
@@ -129,12 +183,11 @@ test('ensureCronDaemonForUiStartup starts the daemon when the socket is unavaila
     '-e'
   ]);
   assert.match(spawnCalls[0].args[3], /daemonMain\(\['serve'\]\)/);
-  assert.deepEqual(spawnCalls[0].options, {
-    cwd: process.cwd(),
-    env: process.env,
-    detached: true,
-    stdio: 'ignore'
-  });
+  assert.equal(spawnCalls[0].options.cwd, process.cwd());
+  assert.equal(spawnCalls[0].options.detached, true);
+  assert.equal(spawnCalls[0].options.stdio, 'ignore');
+  assert.equal(spawnCalls[0].options.env.CLAUDE_CONFIG_DIR, process.env.CLAUDE_CONFIG_DIR);
+  assert.equal(spawnCalls[0].options.env.CCR_DAEMON_FETCH_INTERCEPTOR, undefined);
   assert.equal(spawnCalls[0].unrefCalled, true);
 });
 

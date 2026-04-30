@@ -476,10 +476,18 @@ export function installFetchInterceptor(
   sentinelBaseUrl: string,
   services: PipelineServices
 ): void {
-  const _originalFetch = globalThis.fetch;
-  (globalThis as any).__originalFetch = _originalFetch;
+  const globalState = globalThis as any;
+  const existing = globalState.__ccrFetchInterceptor;
+  if (existing?.fetch === globalThis.fetch) {
+    existing.sentinelBaseUrl = sentinelBaseUrl;
+    existing.services = services;
+    return;
+  }
 
-  globalThis.fetch = async function ccrInterceptedFetch(
+  const originalFetch = existing?.originalFetch ?? globalThis.fetch;
+  globalState.__originalFetch = originalFetch;
+
+  const interceptedFetch = async function ccrInterceptedFetch(
     input: RequestInfo | URL,
     init?: RequestInit
   ): Promise<Response> {
@@ -489,9 +497,18 @@ export function installFetchInterceptor(
         ? input.href
         : input.url;
 
-    if (url.startsWith(sentinelBaseUrl)) {
-      return processRequest(url, init, services, _originalFetch);
+    const state = globalState.__ccrFetchInterceptor;
+    if (state && url.startsWith(state.sentinelBaseUrl)) {
+      return processRequest(url, init, state.services, state.originalFetch);
     }
-    return _originalFetch(input, init);
+    return state?.originalFetch(input, init) ?? originalFetch(input, init);
   } as typeof globalThis.fetch;
+
+  globalState.__ccrFetchInterceptor = {
+    sentinelBaseUrl,
+    services,
+    originalFetch,
+    fetch: interceptedFetch,
+  };
+  globalThis.fetch = interceptedFetch;
 }
