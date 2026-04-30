@@ -22,6 +22,7 @@ import { useEditorSidebar } from '../../code-editor/hooks/useEditorSidebar';
 import EditorSidebar from '../../code-editor/view/EditorSidebar';
 import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
 import type {
+  AlwaysOnSessionTarget,
   CronJobOverview,
   ExecuteDiscoveryPlanResponse,
   Project,
@@ -64,6 +65,8 @@ type PendingDiscoveryExecution = {
   planId: string;
   executionToken: string;
 };
+
+type MainContentToast = { kind: 'error' | 'info'; text: string } | null;
 
 const AUTO_EXECUTION_POLL_INTERVAL_MS = 15000;
 const FILES_CHAT_DEFAULT_WIDTH = 460;
@@ -147,6 +150,7 @@ function MainContent({
   const autoLaunchInFlightRef = useRef<Set<string>>(new Set());
   const processedDiscoveryRequestsRef = useRef(createDiscoveryRequestDedupeStore());
   const lastUserMsgAtRef = useRef<string | null>(null);
+  const [toast, setToast] = useState<MainContentToast>(null);
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
 
@@ -295,11 +299,112 @@ function MainContent({
     await launchQueuedDiscoveryPlanExecution(payload);
   }, [launchQueuedDiscoveryPlanExecution, selectedProject]);
 
-  const handleOpenCronSession = useCallback((job: CronJobOverview) => {
+  const flashToast = useCallback((toastValue: MainContentToast, ms = 2400) => {
+    setToast(toastValue);
+    if (toastValue) {
+      window.setTimeout(() => setToast(null), ms);
+    }
+  }, []);
+
+  const getProjectSessions = useCallback((project: Project): ProjectSession[] => [
+    ...(project.sessions ?? []),
+    ...(project.codexSessions ?? []),
+    ...(project.cursorSessions ?? []),
+    ...(project.geminiSessions ?? []),
+  ], []);
+
+  const findSessionInProject = useCallback((project: Project, sessionId: string) => (
+    getProjectSessions(project).find((session) => session.id === sessionId)
+  ), [getProjectSessions]);
+
+  const loadClaudeSession = useCallback(async (projectName: string, sessionId: string) => {
+    const response = await api.sessions(projectName, Number.MAX_SAFE_INTEGER, 0);
+    if (!response.ok) {
+      return null;
+    }
+    const payload = await readJsonPayload<{ sessions?: ProjectSession[] }>(response);
+    return payload?.sessions?.find((session) => session.id === sessionId) ?? null;
+  }, []);
+
+  const handleOpenAlwaysOnSession = useCallback(async (target: AlwaysOnSessionTarget) => {
     if (!selectedProject) {
       return;
     }
 
+    const missingMessage = i18n.t('alwaysOn:sessionMissing', {
+      defaultValue: 'This chat record no longer exists.',
+    });
+
+    if (target.kind === 'origin') {
+      const existingSession =
+        findSessionInProject(selectedProject, target.sessionId) ??
+        await loadClaudeSession(selectedProject.name, target.sessionId);
+
+      if (!existingSession) {
+        flashToast({ kind: 'error', text: missingMessage });
+        return;
+      }
+
+      const fallbackSession: ProjectSession = {
+        ...existingSession,
+        __provider: existingSession.__provider ?? 'claude',
+        __projectName: selectedProject.name,
+      };
+
+      setActiveTab('chat');
+      if (onSelectSession) {
+        onSelectSession(selectedProject, target.sessionId, fallbackSession);
+        return;
+      }
+      onNavigateToSession(target.sessionId);
+      return;
+    }
+
+    const existingSession =
+      findSessionInProject(selectedProject, target.sessionId) ??
+      await loadClaudeSession(selectedProject.name, target.sessionId);
+
+    if (!existingSession) {
+      flashToast({ kind: 'error', text: missingMessage });
+      return;
+    }
+
+    const fallbackSession: ProjectSession = {
+      ...existingSession,
+      id: target.sessionId,
+      title: target.title || existingSession.title || existingSession.summary || target.summary,
+      summary: target.summary || existingSession.summary || existingSession.title || target.title,
+      lastActivity: target.lastActivity || existingSession.lastActivity,
+      sessionKind: 'background_task',
+      parentSessionId: target.parentSessionId,
+      relativeTranscriptPath: target.relativeTranscriptPath,
+      transcriptKey: target.transcriptKey || existingSession.transcriptKey,
+      taskId: target.taskId || existingSession.taskId,
+      taskStatus: target.taskStatus || existingSession.taskStatus,
+      outputFile: target.outputFile || existingSession.outputFile,
+      isReadOnly: true,
+      __provider: 'claude',
+      __projectName: selectedProject.name,
+    };
+
+    setActiveTab('chat');
+    if (onSelectSession) {
+      onSelectSession(selectedProject, target.sessionId, fallbackSession);
+      return;
+    }
+    onNavigateToSession(target.sessionId);
+  }, [
+    findSessionInProject,
+    flashToast,
+    i18n,
+    loadClaudeSession,
+    onNavigateToSession,
+    onSelectSession,
+    selectedProject,
+    setActiveTab,
+  ]);
+
+  const handleOpenCronSession = useCallback((job: CronJobOverview) => {
     const latestRun = job.latestRun;
     if (
       !latestRun?.sessionId ||
@@ -309,33 +414,20 @@ function MainContent({
       return;
     }
 
-    const existingSession = selectedProject.sessions?.find(
-      session => session.id === latestRun.sessionId,
-    );
-    const fallbackSession: ProjectSession = existingSession ?? {
-      id: latestRun.sessionId,
+    void handleOpenAlwaysOnSession({
+      kind: 'background',
+      sessionId: latestRun.sessionId,
+      parentSessionId: latestRun.parentSessionId,
+      relativeTranscriptPath: latestRun.relativeTranscriptPath,
       title: latestRun.summary || job.prompt || job.cron,
       summary: latestRun.summary || job.prompt || job.cron,
       lastActivity: latestRun.lastActivity,
-      sessionKind: 'background_task',
-      parentSessionId: latestRun.parentSessionId,
-      relativeTranscriptPath: latestRun.relativeTranscriptPath,
       transcriptKey: latestRun.transcriptKey || job.transcriptKey,
       taskId: latestRun.taskId,
       taskStatus: job.status,
       outputFile: latestRun.outputFile,
-      isReadOnly: true,
-      __provider: 'claude',
-      __projectName: selectedProject.name,
-    };
-
-    setActiveTab('chat');
-    if (onSelectSession) {
-      onSelectSession(selectedProject, latestRun.sessionId, fallbackSession);
-      return;
-    }
-    onNavigateToSession(latestRun.sessionId);
-  }, [onNavigateToSession, onSelectSession, selectedProject, setActiveTab]);
+    });
+  }, [handleOpenAlwaysOnSession]);
 
   useEffect(() => {
     const message = latestMessage as {
@@ -595,7 +687,7 @@ function MainContent({
   }
 
   return (
-    <div className="flex h-full flex-col bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+    <div className="relative flex h-full flex-col bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <SplitBody
           selectedProject={selectedProject}
@@ -627,6 +719,7 @@ function MainContent({
           handleStartDiscoverySession={handleStartDiscoverySession}
           handleExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
           handleOpenCronSession={handleOpenCronSession}
+          handleOpenAlwaysOnSession={handleOpenAlwaysOnSession}
           editorExpanded={editorExpanded}
         />
 
@@ -644,6 +737,17 @@ function MainContent({
           fillSpace={activeTab === 'files'}
         />
       </div>
+      {toast ? (
+        <div
+          className={cn(
+            'pointer-events-none absolute bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-md px-3 py-1.5 text-[12px] shadow-lg',
+            toast.kind === 'error' && 'bg-red-600 text-white',
+            toast.kind === 'info' && 'bg-neutral-800 text-white',
+          )}
+        >
+          {toast.text}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -681,6 +785,7 @@ type SplitBodyProps = {
   handleStartDiscoverySession: any;
   handleExecuteDiscoveryPlan: any;
   handleOpenCronSession: (job: CronJobOverview) => void;
+  handleOpenAlwaysOnSession: (target: AlwaysOnSessionTarget) => void | Promise<void>;
   editorExpanded: boolean;
 };
 
@@ -715,6 +820,7 @@ function SplitBody(props: SplitBodyProps) {
     handleStartDiscoverySession,
     handleExecuteDiscoveryPlan,
     handleOpenCronSession,
+    handleOpenAlwaysOnSession,
     editorExpanded,
   } = props;
 
@@ -815,6 +921,7 @@ function SplitBody(props: SplitBodyProps) {
           onStartDiscoverySession={handleStartDiscoverySession}
           onExecuteDiscoveryPlan={handleExecuteDiscoveryPlan}
           onOpenCronSession={handleOpenCronSession}
+          onOpenSession={handleOpenAlwaysOnSession}
         />
       );
     }

@@ -32,6 +32,25 @@ export interface CronJobOverview {
   latestRun?: CronJobLatestRun | null;
 }
 
+export type AlwaysOnSessionTarget =
+  | {
+      kind: 'origin';
+      sessionId: string;
+    }
+  | {
+      kind: 'background';
+      sessionId: string;
+      parentSessionId: string;
+      relativeTranscriptPath: string;
+      title?: string;
+      summary?: string;
+      lastActivity?: string;
+      transcriptKey?: string;
+      taskId?: string;
+      taskStatus?: string;
+      outputFile?: string;
+    };
+
 export interface ProjectCronJobsResponse {
   jobs: CronJobOverview[];
 }
