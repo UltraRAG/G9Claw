@@ -275,6 +275,8 @@ export function useSessionStore() {
     slot.status = 'loading';
     notify(sessionId);
 
+    const fetchStartedAt = Date.now();
+
     try {
       const params = new URLSearchParams();
       if (opts.provider) params.append('provider', opts.provider);
@@ -307,6 +309,17 @@ export function useSessionStore() {
       slot.offset = (opts.offset ?? 0) + messages.length;
       slot.fetchedAt = Date.now();
       slot.status = 'idle';
+
+      // Prune realtime messages that predate this fetch — server data is
+      // authoritative for that time range.  Keep only in-flight streaming
+      // indicators and messages created after the fetch was initiated.
+      if (slot.realtimeMessages.length > 0 && messages.length > 0) {
+        slot.realtimeMessages = slot.realtimeMessages.filter(m => {
+          if (m.id.startsWith('__streaming_')) return true;
+          return (Date.parse(m.timestamp) || 0) > fetchStartedAt;
+        });
+      }
+
       recomputeMergedIfNeeded(slot);
       if (data.tokenUsage) {
         slot.tokenUsage = data.tokenUsage;
