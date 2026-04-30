@@ -483,6 +483,28 @@ step "Notarize DMG (offline-friendly polish)"
 fi
 
 # ============================================================================
+# Ship the install/repair helper alongside the DMG so recipients who got the
+# DMG via a sandboxed IM (Lark/WeChat/QQ/DingTalk) can self-recover without
+# us walking them through `xattr -cr` over chat.
+#
+# The helper is also useful for: unstapled .app diagnosis, Gatekeeper
+# rejection diagnosis, and showing "Authority + source" of an installed
+# build. See INSTALL.md for the user-facing explanation.
+DIST_DIR="$(dirname "$DMG_OUT")"
+HELPER_SRC="${SCRIPT_DIR}/install-edgeclaw.sh"
+HELPER_DST="${DIST_DIR}/install-edgeclaw.sh"
+INSTALL_MD_SRC="${DESKTOP_DIR}/INSTALL.md"
+INSTALL_MD_DST="${DIST_DIR}/INSTALL.md"
+if [[ -f "$HELPER_SRC" ]]; then
+  cp "$HELPER_SRC" "$HELPER_DST" && chmod +x "$HELPER_DST" \
+    && ok "Install helper: $(basename "$HELPER_DST")"
+fi
+if [[ -f "$INSTALL_MD_SRC" ]]; then
+  cp "$INSTALL_MD_SRC" "$INSTALL_MD_DST" \
+    && ok "Install guide: $(basename "$INSTALL_MD_DST")"
+fi
+
+# ============================================================================
 if [[ "$SKIP_VERIFY" == "0" && -x "${SCRIPT_DIR}/verify-dmg.sh" ]]; then
 step "End-to-end verification"
 # ============================================================================
@@ -495,6 +517,8 @@ echo
 echo "${BLD}${GRN}✓ Release build complete${RST}"
 echo
 echo "  ${BLD}DMG${RST}      ${DMG_OUT}"
+[[ -f "$HELPER_DST" ]]    && echo "  ${BLD}Helper${RST}   ${HELPER_DST}"
+[[ -f "$INSTALL_MD_DST" ]] && echo "  ${BLD}Guide${RST}    ${INSTALL_MD_DST}"
 echo "  ${BLD}Version${RST}  ${VERSION}"
 echo "  ${BLD}Size${RST}     ${DMG_MB}MB"
 echo "  ${BLD}Mode${RST}     ${MODE}"
@@ -509,6 +533,11 @@ if [[ "$MODE" == "signed" ]]; then
       echo "  ${BLD}Install${RST}  双击 DMG → 拖入 Applications → 双击打开（联网零摩擦；"
       echo "                  完全离线时首次双击 DMG 会有一次性提示，按"打开"放行）"
     fi
+    echo
+    echo "  ${BLD}${YEL}分发提示${RST}  通过飞书/微信/QQ 等沙盒 IM 发 DMG 会触发"
+    echo "          macOS provenance 拒绝执行（详见 INSTALL.md 根因分析）。"
+    echo "          推荐：浏览器直链 / AirDrop / GitHub Releases。"
+    echo "          兜底：把 install-edgeclaw.sh 一并发送，让收方跑一次即可。"
   else
     echo "  ${BLD}Notarize${RST} ${YEL}Skipped/Failed${RST}"
     echo "  ${BLD}Install${RST}  拖入 Applications → 右键打开 → 允许"
