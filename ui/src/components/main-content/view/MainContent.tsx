@@ -38,6 +38,11 @@ import {
   clearAlwaysOnPresence,
   sendAlwaysOnPresence,
 } from '../../../utils/alwaysOnPresence';
+import {
+  createDiscoveryRequestDedupeStore,
+  shouldProcessDiscoveryRequest,
+} from '../../../utils/alwaysOnDiscoveryRequestDedupe';
+import { findAlwaysOnProjectByRoot } from '../../../utils/alwaysOnProjectMatching';
 import MainContentStateView from './subcomponents/MainContentStateView';
 import ErrorBoundary from './ErrorBoundary';
 import MemoryPanel from './memory/MemoryPanel';
@@ -106,6 +111,7 @@ function buildAlwaysOnDiscoveryToolsSettings() {
 }
 
 function MainContent({
+  projects,
   selectedProject,
   selectedSession,
   activeTab,
@@ -139,6 +145,7 @@ function MainContent({
   const pendingDiscoveryExecutionsRef = useRef<Map<string, PendingDiscoveryExecution>>(new Map());
   const discoveryExecutionsBySessionRef = useRef<Map<string, PendingDiscoveryExecution>>(new Map());
   const autoLaunchInFlightRef = useRef<Set<string>>(new Set());
+  const processedDiscoveryRequestsRef = useRef(createDiscoveryRequestDedupeStore());
   const lastUserMsgAtRef = useRef<string | null>(null);
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
@@ -194,18 +201,25 @@ function MainContent({
   }, [sendMessage]);
 
   const publishPresence = useCallback(() => {
-    if (!selectedProject) {
+    const alwaysOnProjects = projects.filter(project =>
+      project.alwaysOn?.discovery?.triggerEnabled === true
+    );
+    if (!selectedProject && alwaysOnProjects.length === 0) {
       return;
     }
     sendAlwaysOnPresence(sendMessage, {
       selectedProject,
+      alwaysOnProjects,
       processingSessionIds: Array.from(processingSessions),
       lastUserMsgAt: lastUserMsgAtRef.current,
     });
-  }, [processingSessions, selectedProject, sendMessage]);
+  }, [processingSessions, projects, selectedProject, sendMessage]);
 
   useEffect(() => {
-    if (!selectedProject || !ws) {
+    const hasAlwaysOnProject = projects.some(project =>
+      project.alwaysOn?.discovery?.triggerEnabled === true
+    );
+    if (!ws || (!selectedProject && !hasAlwaysOnProject)) {
       return undefined;
     }
 
@@ -215,7 +229,7 @@ function MainContent({
       window.clearInterval(timer);
       clearAlwaysOnPresence(sendMessage);
     };
-  }, [publishPresence, selectedProject, sendMessage, ws]);
+  }, [projects, publishPresence, selectedProject, sendMessage, ws]);
 
   const updateDiscoveryExecution = useCallback(async (
     projectName: string,
@@ -457,18 +471,18 @@ function MainContent({
     };
   }, [pollAutoExecutablePlans, selectedProject]);
 
-  const handleStartDiscoverySession = useCallback(async () => {
-    if (!selectedProject) {
+  const handleStartDiscoverySession = useCallback(async (targetProject = selectedProject) => {
+    if (!targetProject) {
       return;
     }
 
-    onStartNewSession(selectedProject);
+    onStartNewSession(targetProject);
     let discoveryContext: ProjectDiscoveryContextResponse = {
       generatedAt: new Date().toISOString(),
       lookbackDays: 7,
       workspace: {
-        projectName: selectedProject.name,
-        projectRoot: selectedProject.fullPath || selectedProject.path || selectedProject.name,
+        projectName: targetProject.name,
+        projectRoot: targetProject.fullPath || targetProject.path || targetProject.name,
         signals: [],
       },
       memory: [],
@@ -478,7 +492,7 @@ function MainContent({
     };
 
     try {
-      const response = await api.projectDiscoveryContext(selectedProject.name);
+      const response = await api.projectDiscoveryContext(targetProject.name);
       const payload = await readJsonPayload<ProjectDiscoveryContextResponse & { error?: string }>(response);
       if (response.ok && payload) {
         discoveryContext = payload;
@@ -488,16 +502,16 @@ function MainContent({
     }
 
     const discoveryPrompt = buildAlwaysOnDiscoveryPrompt(
-      selectedProject,
+      targetProject,
       discoveryContext,
       discoveryPromptLanguage,
     );
     const pendingSessionId = startClaudeSessionCommand({
       sendMessage: trackedSendMessage,
-      selectedProject,
+      selectedProject: targetProject,
       command: discoveryPrompt,
       permissionMode: getStoredClaudePermissionMode(selectedSession),
-      sessionSummary: `Always-On discovery: ${selectedProject.displayName || selectedProject.name}`,
+      sessionSummary: `Always-On discovery: ${targetProject.displayName || targetProject.name}`,
       toolsSettings: buildAlwaysOnDiscoveryToolsSettings(),
     });
 
@@ -521,8 +535,20 @@ function MainContent({
       return;
     }
 
-    const selectedRoot = selectedProject?.fullPath || selectedProject?.path || '';
-    if (!selectedProject || !selectedRoot || selectedRoot !== message.projectRoot) {
+    if (!message.requestId) {
+      sendMessage({
+        type: 'always-on-auto-discovery-complete',
+        projectRoot: message.projectRoot,
+        status: 'failed',
+      });
+      return;
+    }
+    if (!shouldProcessDiscoveryRequest(processedDiscoveryRequestsRef.current, message.requestId)) {
+      return;
+    }
+
+    const targetProject = findAlwaysOnProjectByRoot(projects, message.projectRoot);
+    if (!targetProject) {
       sendMessage({
         type: 'always-on-auto-discovery-complete',
         projectRoot: message.projectRoot,
@@ -531,7 +557,7 @@ function MainContent({
       return;
     }
 
-    void handleStartDiscoverySession()
+    void handleStartDiscoverySession(targetProject)
       .then(() => {
         sendMessage({
           type: 'always-on-auto-discovery-complete',
@@ -546,7 +572,7 @@ function MainContent({
           status: 'failed',
         });
       });
-  }, [handleStartDiscoverySession, latestMessage, selectedProject, sendMessage]);
+  }, [handleStartDiscoverySession, latestMessage, projects, sendMessage]);
 
   if (isLoading) {
     return (

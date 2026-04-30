@@ -269,6 +269,14 @@ export interface ProjectTaskmasterInfo {
   [key: string]: unknown;
 }
 
+export interface ProjectAlwaysOnInfo {
+  discovery?: {
+    triggerEnabled?: boolean;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
 export interface Project {
   name: string;
   displayName: string;
@@ -280,6 +288,7 @@ export interface Project {
   geminiSessions?: ProjectSession[];
   sessionMeta?: ProjectSessionMeta;
   taskmaster?: ProjectTaskmasterInfo;
+  alwaysOn?: ProjectAlwaysOnInfo;
   [key: string]: unknown;
 }
 
