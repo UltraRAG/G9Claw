@@ -100,6 +100,8 @@ fi
 if [[ "$MODE" == "signed" && "$SKIP_NOTARIZE" == "0" ]]; then
   if xcrun notarytool history --keychain-profile "$KEYCHAIN_PROFILE" >/dev/null 2>&1; then
     ok "Notarize profile: ${KEYCHAIN_PROFILE}"
+    info "(if a later submit reports 'No Keychain password item found' despite this,"
+    info " it is almost always Apple notary throttling — see retry diagnostic below.)"
   else
     warn "Keychain profile '${KEYCHAIN_PROFILE}' not configured → skipping notarization"
     warn "Configure with: xcrun notarytool store-credentials \"${KEYCHAIN_PROFILE}\" \\"
@@ -319,8 +321,12 @@ step "Apple notarization"
     || fail "Failed to create notarization zip"
   ok "Zip: $(du -sm "$NZ_ZIP" | awk '{print $1}')MB"
 
+  # Retry delays are tuned for Apple notary throttling, which empirically
+  # requires 5-15 min cooldown after rapid successive submissions.
+  # Worst-case extra wait: 60+180+600 = 14 min — acceptable inside a release
+  # that already takes ~10 min when notarize succeeds first try.
   ATTEMPTS=3
-  DELAYS=(10 30 60)
+  DELAYS=(60 180 600)
   for n in $(seq 1 "$ATTEMPTS"); do
     info "Submitting (attempt ${n}/${ATTEMPTS}, may take 5-20 min)…"
     LOG="$(mktemp)"
@@ -335,6 +341,16 @@ step "Apple notarization"
         echo "      xcrun notarytool log ${SID} --keychain-profile \"${KEYCHAIN_PROFILE}\""
         break
       fi
+    fi
+    # Notarytool diagnostic: distinguish throttling from real auth failure.
+    # Pre-flight already validated the profile — so 'No Keychain password
+    # item found' here is almost always Apple notary returning an opaque
+    # auth-fail (typically rate-limited after 4-5 rapid submissions/hour).
+    # Real profile/credential issues would have failed pre-flight.
+    if grep -q "No Keychain password item found" "$LOG" 2>/dev/null; then
+      warn "↳ Diagnostic: 'No Keychain password item found' but profile validated in pre-flight."
+      warn "  Almost certainly Apple notary throttling (not a credential problem)."
+      warn "  Cooldown is typically 5-15 min after 4-5 rapid submissions per hour."
     fi
     rm -f "$LOG"
     [[ "$n" -lt "$ATTEMPTS" ]] && { warn "Retry in ${DELAYS[$((n-1))]}s…"; sleep "${DELAYS[$((n-1))]}"; }
@@ -421,6 +437,52 @@ hdiutil verify "$DMG_OUT" >/dev/null 2>&1 \
   && ok "DMG checksum verified" || warn "DMG verify failed"
 
 # ============================================================================
+# DMG-level notarization (offline-friendly polish).
+#
+# The .app inside is already notarized + stapled, so installed users will
+# always pass Gatekeeper. This step adds a separate ticket on the DMG
+# *envelope* itself — without it, a user double-clicking the DMG while
+# completely offline sees a one-time "cannot verify developer" dialog
+# before they can mount it. Stapling the DMG embeds the ticket so even
+# offline mounts are silent.
+#
+# Behavior:
+#   • Skipped if .app notarize was skipped or failed (DMG would also fail).
+#   • Single attempt (no retry): worst case the user sees the one-time
+#     dialog, which is harmless — the inner .app still verifies correctly.
+#   • Submission size ≈ DMG size (~385MB), takes ~1-3 min typically.
+DMG_NOTARIZE_OK=0
+if [[ "$NOTARIZE_OK" == "1" && "$MODE" == "signed" && "$SKIP_NOTARIZE" == "0" ]]; then
+step "Notarize DMG (offline-friendly polish)"
+# ============================================================================
+  info "Submitting DMG envelope (1-3 min typically)…"
+  DMG_LOG="$(mktemp)"
+  if xcrun notarytool submit "$DMG_OUT" \
+      --keychain-profile "$KEYCHAIN_PROFILE" --wait 2>&1 | tee "$DMG_LOG"; then
+    if grep -q "status: Accepted" "$DMG_LOG"; then
+      DMG_NOTARIZE_OK=1
+    fi
+  fi
+  if [[ "$DMG_NOTARIZE_OK" == "1" ]]; then
+    if xcrun stapler staple "$DMG_OUT" >/dev/null 2>&1; then
+      ok "DMG stapled (offline mount is silent — no first-open dialog)"
+    else
+      warn "DMG stapler failed (.app inside still notarized — users will see"
+      warn "  one-time dialog on offline mount, then it's silent forever)"
+    fi
+  else
+    if grep -q "No Keychain password item found" "$DMG_LOG" 2>/dev/null; then
+      warn "DMG-level notarize hit notary throttling (.app inside still notarized)"
+    else
+      warn "DMG-level notarize failed (.app inside still notarized — non-fatal)"
+    fi
+    info "  (Run later: xcrun notarytool submit \"$DMG_OUT\" --keychain-profile \"$KEYCHAIN_PROFILE\" --wait)"
+    info "  (Then:      xcrun stapler staple \"$DMG_OUT\")"
+  fi
+  rm -f "$DMG_LOG"
+fi
+
+# ============================================================================
 if [[ "$SKIP_VERIFY" == "0" && -x "${SCRIPT_DIR}/verify-dmg.sh" ]]; then
 step "End-to-end verification"
 # ============================================================================
@@ -439,8 +501,14 @@ echo "  ${BLD}Mode${RST}     ${MODE}"
 if [[ "$MODE" == "signed" ]]; then
   echo "  ${BLD}Cert${RST}     ${IDENTITY}"
   if [[ "$NOTARIZE_OK" == "1" ]]; then
-    echo "  ${BLD}Notarize${RST} ${GRN}Accepted + Stapled${RST}"
-    echo "  ${BLD}Install${RST}  双击 DMG → 拖入 Applications → 双击打开（零摩擦）"
+    if [[ "$DMG_NOTARIZE_OK" == "1" ]]; then
+      echo "  ${BLD}Notarize${RST} ${GRN}.app + DMG both stapled (fully offline-friendly)${RST}"
+      echo "  ${BLD}Install${RST}  双击 DMG → 拖入 Applications → 双击打开（零摩擦，离线也行）"
+    else
+      echo "  ${BLD}Notarize${RST} ${GRN}.app stapled${RST} · ${YEL}DMG envelope not stapled${RST}"
+      echo "  ${BLD}Install${RST}  双击 DMG → 拖入 Applications → 双击打开（联网零摩擦；"
+      echo "                  完全离线时首次双击 DMG 会有一次性提示，按"打开"放行）"
+    fi
   else
     echo "  ${BLD}Notarize${RST} ${YEL}Skipped/Failed${RST}"
     echo "  ${BLD}Install${RST}  拖入 Applications → 右键打开 → 允许"
