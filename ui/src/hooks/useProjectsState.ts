@@ -460,11 +460,7 @@ export function useProjectsState({
       const previewProject = resetProjectSessionPreview(project);
       setSelectedProject(previewProject);
       setSelectedSession(null);
-      if (previewProject !== project) {
-        setProjects((prevProjects) =>
-          prevProjects.map((p) => (p.name === project.name ? previewProject : p)),
-        );
-      }
+      setProjects((prevProjects) => prevProjects.map(resetProjectSessionPreview));
       navigate('/');
 
       if (isMobile) {
@@ -691,6 +687,17 @@ export function useProjectsState({
     navigate('/');
   }, [navigate]);
 
+  const handleResetProjectSessionPreview = useCallback((projectName: string) => {
+    setProjects((prevProjects) =>
+      prevProjects.map((project) =>
+        project.name === projectName ? resetProjectSessionPreview(project) : project,
+      ),
+    );
+    setSelectedProject((prev) =>
+      prev?.name === projectName ? resetProjectSessionPreview(prev) : prev,
+    );
+  }, []);
+
   const sidebarSharedProps = useMemo(
     () => ({
       projects,
@@ -755,6 +762,7 @@ export function useProjectsState({
     handleSessionDelete,
     handleProjectDelete,
     handleDeselectProject,
+    handleResetProjectSessionPreview,
     setSelectedProject,
     handleSidebarRefresh,
     loadMoreSessions,

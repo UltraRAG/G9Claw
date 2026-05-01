@@ -227,6 +227,7 @@ export type SidebarV2Props = {
   onRequestDeleteSession: (project: Project, session: ProjectSession, provider: SessionProvider) => void;
   onShowSettings: () => void;
   onDeselectProject?: () => void;
+  onResetProjectSessionPreview?: (projectName: string) => void;
   onCollapse?: () => void;
   onLoadMoreSessions?: (projectName: string) => void;
   loadingMoreProjectIds?: Set<string>;
@@ -277,6 +278,7 @@ export default function SidebarV2({
   onRequestDeleteSession,
   onShowSettings,
   onDeselectProject,
+  onResetProjectSessionPreview,
   onCollapse,
   onLoadMoreSessions,
   loadingMoreProjectIds,
@@ -453,11 +455,19 @@ export default function SidebarV2({
     setActiveSection('general');
     if (!generalProject) return;
 
+    onResetProjectSessionPreview?.(generalProject.name);
     if (selectedProject?.name !== generalProject.name) {
       onSelectProject(generalProject);
     }
     navToProject(generalProject.name);
-  }, [generalProject, navToProject, onSelectProject, selectedProject?.name]);
+  }, [generalProject, navToProject, onResetProjectSessionPreview, onSelectProject, selectedProject?.name]);
+
+  const handleProjectsSectionClick = useCallback(() => {
+    if (generalProject) {
+      onResetProjectSessionPreview?.(generalProject.name);
+    }
+    setActiveSection('projects');
+  }, [generalProject, onResetProjectSessionPreview]);
 
   const toggleProjectExpanded = useCallback((project: Project) => {
     setExpandedGroups((previous) => {
@@ -928,7 +938,7 @@ export default function SidebarV2({
             type="button"
             role="tab"
             aria-selected={activeSection === 'projects'}
-            onClick={() => setActiveSection('projects')}
+            onClick={handleProjectsSectionClick}
             className={cn(
               'flex-1 rounded text-[12px] font-medium transition-colors',
               'h-7 leading-none',
