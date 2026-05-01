@@ -236,7 +236,7 @@ export function isActivePlan(plan: DiscoveryPlanOverview): boolean {
 }
 
 export function isActiveCronJob(job: CronJobOverview): boolean {
-  return job.status !== 'completed' && job.status !== 'unknown';
+  return job.recurring || job.status !== 'completed';
 }
 
 export function isVisibleRunHistoryEntry(run: AlwaysOnRunHistoryEntry): boolean {
