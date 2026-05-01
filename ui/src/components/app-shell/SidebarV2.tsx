@@ -449,6 +449,16 @@ export default function SidebarV2({
     [navigate],
   );
 
+  const handleGeneralSectionClick = useCallback(() => {
+    setActiveSection('general');
+    if (!generalProject) return;
+
+    if (selectedProject?.name !== generalProject.name) {
+      onSelectProject(generalProject);
+    }
+    navToProject(generalProject.name);
+  }, [generalProject, navToProject, onSelectProject, selectedProject?.name]);
+
   const toggleProjectExpanded = useCallback((project: Project) => {
     setExpandedGroups((previous) => {
       const next = new Set(previous);
@@ -927,7 +937,7 @@ export default function SidebarV2({
             type="button"
             role="tab"
             aria-selected={activeSection === 'general'}
-            onClick={() => setActiveSection('general')}
+            onClick={handleGeneralSectionClick}
             className={cn(
               'flex-1 rounded text-[12px] font-medium transition-colors',
               'h-7 leading-none',
