@@ -878,7 +878,13 @@ export default function SidebarV2({
       <div className="flex h-16 items-center justify-between pl-2 pr-4">
         <button
           type="button"
-          onClick={() => navigate('/')}
+          onClick={() => {
+            if (onDeselectProject) {
+              onDeselectProject();
+            } else {
+              navigate('/');
+            }
+          }}
           aria-label="EdgeClaw"
           title="EdgeClaw"
           className="-ml-1 flex min-w-0 shrink items-center rounded-md p-1 transition hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:focus-visible:ring-neutral-700"

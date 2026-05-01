@@ -23,6 +23,9 @@ type FetchProjectsOptions = {
   showLoadingState?: boolean;
 };
 
+const PROJECT_SESSION_PREVIEW_LIMIT = 5;
+const SESSION_PAGE_SIZE = 30;
+
 const serialize = (value: unknown) => JSON.stringify(value ?? null);
 
 const projectsHaveChanges = (
@@ -72,6 +75,28 @@ const getProjectSessions = (project: Project): ProjectSession[] => {
     ...(project.cursorSessions ?? []),
     ...(project.geminiSessions ?? []),
   ];
+};
+
+const resetProjectSessionPreview = (project: Project): Project => {
+  const sessions = project.sessions ?? [];
+  if (sessions.length <= PROJECT_SESSION_PREVIEW_LIMIT) {
+    return project;
+  }
+
+  const total =
+    typeof project.sessionMeta?.total === 'number'
+      ? project.sessionMeta.total
+      : sessions.length;
+
+  return {
+    ...project,
+    sessions: sessions.slice(0, PROJECT_SESSION_PREVIEW_LIMIT),
+    sessionMeta: {
+      ...(project.sessionMeta ?? {}),
+      total,
+      hasMore: total > PROJECT_SESSION_PREVIEW_LIMIT,
+    },
+  };
 };
 
 const isUpdateAdditive = (
@@ -432,8 +457,14 @@ export function useProjectsState({
 
   const handleProjectSelect = useCallback(
     (project: Project) => {
-      setSelectedProject(project);
+      const previewProject = resetProjectSessionPreview(project);
+      setSelectedProject(previewProject);
       setSelectedSession(null);
+      if (previewProject !== project) {
+        setProjects((prevProjects) =>
+          prevProjects.map((p) => (p.name === project.name ? previewProject : p)),
+        );
+      }
       navigate('/');
 
       if (isMobile) {
@@ -524,7 +555,6 @@ export function useProjectsState({
   // this action: it pages through /api/projects/:name/sessions?limit=&offset=
   // and appends the new claude sessions in place. We track in-flight project
   // names so the button can render a loading state and reject re-entrancy.
-  const PAGE_SIZE = 30;
   const loadingMoreSessionsRef = useRef<Set<string>>(new Set());
   const [loadingMoreProjectIds, setLoadingMoreProjectIds] = useState<Set<string>>(new Set());
 
@@ -547,7 +577,7 @@ export function useProjectsState({
       setProjectLoading(projectName, true);
 
       try {
-        const response = await api.sessions(projectName, PAGE_SIZE, offset);
+        const response = await api.sessions(projectName, SESSION_PAGE_SIZE, offset);
         if (!response.ok) {
           throw new Error(`Failed to load sessions: ${response.status}`);
         }
@@ -657,6 +687,7 @@ export function useProjectsState({
   const handleDeselectProject = useCallback(() => {
     setSelectedProject(null);
     setSelectedSession(null);
+    setProjects((prevProjects) => prevProjects.map(resetProjectSessionPreview));
     navigate('/');
   }, [navigate]);
 
