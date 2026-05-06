@@ -157,13 +157,19 @@ export async function processRequest(
       }
     }
 
-    // Strip Anthropic-specific parameters that non-Anthropic providers reject
-    const ANTHROPIC_ONLY_PARAMS = ["reasoning", "thinking", "enable_thinking", "metadata"];
-    const isNonAnthropicModel = !requestBody.model?.startsWith("claude");
-    if (isNonAnthropicModel) {
-      for (const p of ANTHROPIC_ONLY_PARAMS) {
-        delete requestBody[p];
+    // Strip Anthropic-specific parameters that non-Anthropic providers reject,
+    // but inject reasoning_effort for OpenAI reasoning models (gpt-5.x, o3, o4).
+    if (!requestBody.model?.startsWith("claude")) {
+      delete requestBody.thinking;
+      delete requestBody.enable_thinking;
+      delete requestBody.metadata;
+
+      const model = requestBody.model ?? "";
+      if (model.includes("gpt-5") || model.includes("o3") || model.includes("o4")) {
+        requestBody.reasoning_effort = requestBody.reasoning_effort || "low";
+        log.info(`[CCR] injected reasoning_effort=low for ${model}`);
       }
+      delete requestBody.reasoning;
     }
 
     const sendArgs = {

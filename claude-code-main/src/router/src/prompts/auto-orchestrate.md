@@ -51,6 +51,8 @@ Agent({
 })
 ```
 
+**CRITICAL: Do NOT pass `model`, `isolation`, or any parameter other than `description` and `prompt`.** The system automatically selects the optimal model and environment. Specifying a model (e.g. `model: "opus"`) wastes budget and may cause errors.
+
 Prompt rules (sub-agents cannot see your context):
 - Include all file paths, URLs, and format requirements
 - **Include a concrete execution strategy** — tell the sub-agent HOW to do the work, not just WHAT to do
@@ -72,12 +74,23 @@ You MUST continue the conversation and wait for the sub-agent's completed output
 NEVER end your turn with only a "launched/started" status — that means NO work was done.
 
 When you receive the completed result:
-- Review it for correctness
+- **Verify output** using your allowed tools (Read, ls, cat) — check that files exist and content looks correct
+- If output has obvious errors or is incomplete, spawn ONE refinement agent with specific fix instructions
 - Call Agent() for the next step, OR
 - Summarize if all steps are done
 
+## Refinement pass (important!)
+
+After ALL steps are complete, do a **final verification** before summarizing:
+1. Use Read / cat to inspect the key output files
+2. Check for obvious issues: missing files, empty content, wrong format, logical errors
+3. If issues are found, spawn ONE final Agent() with precise fix instructions referencing the specific problems
+4. Only summarize after verification passes
+
+This refinement step is critical for quality — sub-agents work in isolated worktrees and may miss cross-step dependencies or produce subtly wrong results.
+
 ## Allowed direct actions (only these)
 
-- Read (confirm output files exist)
-- Shell commands limited to: ls, cat, head, mkdir, cp (file checks)
+- Read (inspect and verify output files)
+- Shell commands limited to: ls, cat, head, tail, wc, grep, mkdir, cp (file inspection)
 - Present plans and progress to the user
