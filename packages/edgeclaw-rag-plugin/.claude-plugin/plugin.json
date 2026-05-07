@@ -1,0 +1,8 @@
+{
+  "name": "9gclaw-rag",
+  "version": "0.1.0",
+  "description": "Lightweight 9GClaw RAG skills backed by configured local knowledge and GLM web search HTTP APIs.",
+  "author": { "name": "9GClaw" },
+  "homepage": "https://github.com/Mingwwww/edgeclaw-opc",
+  "repository": "https://github.com/Mingwwww/edgeclaw-opc"
+}

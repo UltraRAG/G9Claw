@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# EdgeClaw Desktop macOS One-Click Packager (release.sh)
+# 9GClaw Desktop macOS One-Click Packager (release.sh)
 # ----------------------------------------------------------------------------
 # Adapted from OpenClaw's release.sh. Differences:
 #   - Builds claudecodeui (vite build) instead of OpenClaw gateway
@@ -43,7 +43,7 @@ MODE="auto"
 SKIP_BUILD=0
 SKIP_NOTARIZE=0
 SKIP_VERIFY=0
-KEYCHAIN_PROFILE="${NOTARIZE_KEYCHAIN_PROFILE:-EdgeClaw}"
+KEYCHAIN_PROFILE="${NOTARIZE_KEYCHAIN_PROFILE:-9GClaw}"
 
 for arg in "$@"; do
   case "$arg" in
@@ -68,10 +68,10 @@ fail() { echo "  ${RED}✗ $*${RST}"; exit 1; }
 info() { echo "  ${DIM}$*${RST}"; }
 
 VERSION="$(node -e "console.log(require('${DESKTOP_DIR}/package.json').version)")"
-APP_OUT="${DESKTOP_DIR}/dist-electron/mac-arm64/EdgeClaw.app"
-DMG_OUT="${DESKTOP_DIR}/dist-electron/EdgeClaw-${VERSION}-arm64.dmg"
+APP_OUT="${DESKTOP_DIR}/dist-electron/mac-arm64/9GClaw.app"
+DMG_OUT="${DESKTOP_DIR}/dist-electron/9GClaw-${VERSION}-arm64.dmg"
 
-echo "${BLD}EdgeClaw Desktop One-Click Packager${RST}"
+echo "${BLD}9GClaw Desktop One-Click Packager${RST}"
 echo "${DIM}Version ${VERSION} · arm64 · $(date '+%Y-%m-%d %H:%M')${RST}"
 
 # ============================================================================
@@ -315,7 +315,7 @@ if [[ "$MODE" == "signed" && "$SKIP_NOTARIZE" == "0" ]]; then
 step "Apple notarization"
 # ============================================================================
 
-  NZ_ZIP="${DESKTOP_DIR}/dist-electron/EdgeClaw-notarize.zip"
+  NZ_ZIP="${DESKTOP_DIR}/dist-electron/9GClaw-notarize.zip"
   rm -f "$NZ_ZIP"
   ditto -c -k --keepParent "$APP_OUT" "$NZ_ZIP" \
     || fail "Failed to create notarization zip"
@@ -376,11 +376,11 @@ step "Create DMG"
 # ditto step (error: "操作不被允许" / EPERM on /Volumes/<volname>/<App>.app).
 #
 # CRITICAL — volume name TCC heuristic (verified empirically on macOS 14.x):
-#   • "EdgeClaw"          → blocked (matches CFBundleName)
-#   • "EdgeClaw 0.1.0"    → blocked (CFBundleName + space + token)
-#   • "EdgeClaw Installer"→ OK
-#   • "Install EdgeClaw"  → OK   ← used here for friendlier Finder display
-#   • "EdgeClaw-0.1.0"    → OK   (hyphen instead of space)
+#   • "9GClaw"          → blocked (matches CFBundleName)
+#   • "9GClaw 0.1.0"    → blocked (CFBundleName + space + token)
+#   • "9GClaw Installer"→ OK
+#   • "Install 9GClaw"  → OK   ← used here for friendlier Finder display
+#   • "9GClaw-0.1.0"    → OK   (hyphen instead of space)
 # The pattern appears to be: TCC App Management blocks copying a notarized
 # .app into a volume whose name STARTS with `<CFBundleName><whitespace>` and
 # the next token isn't a known word like "Installer". Safer to avoid the
@@ -397,7 +397,7 @@ rm -f "$DMG_OUT"
 
 APP_MB=$(du -sm "$APP_OUT" | awk '{print $1}')
 ALLOC=$((APP_MB + 300))
-VOLNAME="Install EdgeClaw ${VERSION}"
+VOLNAME="Install 9GClaw ${VERSION}"
 RW_DMG="$(mktemp -t edgeclaw-rw.XXXX).dmg"
 trap 'rm -f "$RW_DMG"; mount | awk -v v="$VOLNAME" "\$0 ~ v {print \$1}" | xargs -I{} hdiutil detach {} -force >/dev/null 2>&1 || true' EXIT
 
@@ -413,7 +413,7 @@ MP="$(echo "$ATT_PLIST" | python3 -c "import sys, plistlib; d=plistlib.loads(sys
 [[ -n "$MP" && -d "$MP" ]] || fail "Could not parse mount point from hdiutil plist"
 
 info "Step c: ditto .app + Applications symlink…"
-ditto "$APP_OUT" "$MP/EdgeClaw.app" \
+ditto "$APP_OUT" "$MP/9GClaw.app" \
   || { hdiutil detach "$MP" -force >/dev/null 2>&1; fail "ditto into mounted DMG failed (TCC? try a different volname)"; }
 ln -sf /Applications "$MP/Applications"
 

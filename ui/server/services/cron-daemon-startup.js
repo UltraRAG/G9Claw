@@ -25,7 +25,7 @@ function getCronDaemonStartLockPath() {
  *
  * Prior to this, the daemon spawned with `stdio: 'ignore'` so all of its
  * lifecycle output, errors, and discovery-scheduler trace was silently
- * discarded — making post-mortem debugging on the EdgeClaw Desktop install
+ * discarded — making post-mortem debugging on the 9GClaw Desktop install
  * basically impossible (`~/.edgeclaw/desktop.server.log` only captured the
  * UI server's own output, not its detached children).
  *
@@ -142,7 +142,7 @@ export function startCronDaemonDetached({
 } = {}) {
   const { command, args } = buildCronDaemonSpawnCommandFn();
   const { fd, logPath } = openLogFdFn();
-  // Detach so multiple ui servers (e.g. dev + EdgeClaw Desktop side-by-side)
+  // Detach so multiple ui servers (e.g. dev + 9GClaw Desktop side-by-side)
   // can share state through ~/.claude/cron-daemon.sock, but pipe stdout/stderr
   // into a real log file instead of /dev/null so the daemon is debuggable
   // post-mortem. Stdin stays 'ignore' (the daemon never reads input).

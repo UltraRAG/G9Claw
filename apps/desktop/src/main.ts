@@ -1,5 +1,5 @@
 /**
- * Electron main process for EdgeClaw Desktop.
+ * Electron main process for 9GClaw Desktop.
  *
  * Lifecycle:
  *   1. Single-instance lock
@@ -17,7 +17,7 @@ import * as path from "node:path";
 import { showOnboardingWindow } from "./onboarding-window";
 import { ServerManager } from "./server-manager";
 
-app.setName("EdgeClaw");
+app.setName("9GClaw");
 
 const isDev = !app.isPackaged;
 const devRepoRoot = path.resolve(__dirname, "..", "..", "..");
@@ -38,15 +38,15 @@ function setupAppMenu(): void {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {
-        label: "EdgeClaw",
+        label: "9GClaw",
         submenu: [
-          { role: "about", label: "关于 EdgeClaw" },
+          { role: "about", label: "关于 9GClaw" },
           { type: "separator" },
-          { role: "hide", label: "隐藏 EdgeClaw" },
+          { role: "hide", label: "隐藏 9GClaw" },
           { role: "hideOthers" },
           { role: "unhide" },
           { type: "separator" },
-          { role: "quit", label: "退出 EdgeClaw" },
+          { role: "quit", label: "退出 9GClaw" },
         ],
       },
       {
@@ -97,7 +97,7 @@ async function ensureConfigOrOnboard(): Promise<boolean> {
     // it does we still need to tell the user *something* before quitting.
     await dialog.showMessageBox({
       type: "error",
-      title: "EdgeClaw",
+      title: "9GClaw",
       message: "Onboarding 资源缺失",
       detail: `未找到 onboarding HTML：\n${htmlPath}`,
       buttons: ["退出"],
@@ -127,7 +127,7 @@ function createMainWindow(port: number): BrowserWindow {
     height: 820,
     minWidth: 900,
     minHeight: 600,
-    title: "EdgeClaw",
+    title: "9GClaw",
     show: false,
     titleBarStyle: "default",
     webPreferences: {
@@ -196,7 +196,7 @@ if (!gotLock) {
       const msg = e instanceof Error ? e.message : String(e);
       await dialog.showMessageBox({
         type: "error",
-        title: "EdgeClaw",
+        title: "9GClaw",
         message: "本地服务启动失败",
         detail: msg,
         buttons: ["退出"],
@@ -212,13 +212,13 @@ if (!gotLock) {
     });
 
     serverManager.on("error", (err) => {
-      console.error("[EdgeClaw] server error:", err);
+      console.error("[9GClaw] server error:", err);
     });
 
     serverManager.on("max-restarts", () => {
       void dialog.showMessageBox(mainWindow ?? (undefined as never), {
         type: "error",
-        title: "EdgeClaw",
+        title: "9GClaw",
         message: "本地服务多次崩溃",
         detail: "服务进程已多次异常退出。请尝试重启应用。",
       });

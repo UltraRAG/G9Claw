@@ -1,64 +1,72 @@
-// Regenerate the EdgeClaw "EC" letter-mark assets used as the favicon,
-// in-app logo, and PWA icons. Output covers both .svg vectors and .png
-// rasters (rendered with sharp). Run from the project root:
+// Regenerate 9GClaw favicon, in-app logo, and PWA icons from the source logo
+// in `ui/src/assets/9gclaw-logo-source.png`. Run from the project root:
 //
 //   node ui/public/generate-icons.js
 //
 // or from ui/:
 //
 //   node public/generate-icons.js
-//
-// Update the mark in `ecMarkSvg()` below — every output file pulls from
-// that one function so the mark stays consistent across all sizes.
 
-const fs = require('fs');
-const path = require('path');
-const sharp = require('sharp');
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 
-const PUBLIC = __dirname;
+const PUBLIC = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(PUBLIC, '..', '..');
+const SOURCE_LOGO = path.join(REPO_ROOT, 'ui', 'src', 'assets', '9gclaw-logo-source.png');
 
-function ecMarkSvg({ size = 512 } = {}) {
-  const r = Math.round(size * 0.18);
-  const fontSize = Math.round(size * 0.46);
-  const baselineY = Math.round(size * 0.62);
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">
-  <rect width="${size}" height="${size}" rx="${r}" fill="#0A0A0A"/>
-  <text x="${size / 2}" y="${baselineY}" text-anchor="middle"
-        font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
-        font-weight="800" font-size="${fontSize}" letter-spacing="${(-fontSize * 0.05).toFixed(2)}"
-        fill="#FAFAFA">EC</text>
-</svg>`;
+function ensureParent(filePath) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
-const PWA_SIZES = [72, 96, 128, 144, 152, 192, 384, 512];
-const LOGO_PNG_SIZES = [32, 64, 128, 256, 512];
+async function sourceIconBuffer(size) {
+  const meta = await sharp(SOURCE_LOGO).metadata();
+  const square = Math.min(meta.width, meta.height);
+  const left = Math.floor(((meta.width || square) - square) / 2);
+  const top = Math.floor(((meta.height || square) - square) / 2);
+  return sharp(SOURCE_LOGO)
+    .extract({ left, top, width: square, height: square })
+    .resize(size, size, { fit: 'cover' })
+    .png()
+    .toBuffer();
+}
 
-async function writePng(outPath, svg, size) {
-  const buf = await sharp(Buffer.from(svg)).resize(size, size).png().toBuffer();
-  fs.writeFileSync(outPath, buf);
+function embeddedSvg(pngBase64, size) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><image href="data:image/png;base64,${pngBase64}" width="${size}" height="${size}" preserveAspectRatio="xMidYMid slice"/></svg>`;
+}
+
+async function writePng(rel, size) {
+  const out = path.join(PUBLIC, rel);
+  ensureParent(out);
+  fs.writeFileSync(out, await sourceIconBuffer(size));
 }
 
 (async () => {
-  const tasks = [];
-  tasks.push(['favicon.svg', ecMarkSvg({ size: 64 }), null]);
-  tasks.push(['logo.svg', ecMarkSvg({ size: 512 }), null]);
-  tasks.push(['favicon.png', ecMarkSvg({ size: 64 }), 64]);
-  for (const s of LOGO_PNG_SIZES) {
-    tasks.push([`logo-${s}.png`, ecMarkSvg({ size: s }), s]);
-  }
-  for (const s of PWA_SIZES) {
-    tasks.push([`icons/icon-${s}x${s}.svg`, ecMarkSvg({ size: s }), null]);
-    tasks.push([`icons/icon-${s}x${s}.png`, ecMarkSvg({ size: s }), s]);
+  if (!fs.existsSync(SOURCE_LOGO)) {
+    throw new Error(`Missing source logo: ${SOURCE_LOGO}`);
   }
 
-  for (const [rel, svg, pngSize] of tasks) {
-    const out = path.join(PUBLIC, rel);
-    if (pngSize === null) {
-      fs.writeFileSync(out, svg, 'utf8');
-    } else {
-      await writePng(out, svg, pngSize);
-    }
-    console.log('wrote', rel);
+  const logoSizes = [32, 64, 128, 256, 512];
+  const pwaSizes = [72, 96, 128, 144, 152, 192, 384, 512];
+
+  await writePng('favicon.png', 64);
+  for (const size of logoSizes) {
+    await writePng(`logo-${size}.png`, size);
   }
-  console.log(`Done — ${tasks.length} files written.`);
+  for (const size of pwaSizes) {
+    const png = await sourceIconBuffer(size);
+    const pngPath = path.join(PUBLIC, 'icons', `icon-${size}x${size}.png`);
+    const svgPath = path.join(PUBLIC, 'icons', `icon-${size}x${size}.svg`);
+    ensureParent(pngPath);
+    fs.writeFileSync(pngPath, png);
+    fs.writeFileSync(svgPath, embeddedSvg(png.toString('base64'), size), 'utf8');
+  }
+
+  const logo512 = await sourceIconBuffer(512);
+  fs.writeFileSync(path.join(PUBLIC, 'logo.svg'), embeddedSvg(logo512.toString('base64'), 512), 'utf8');
+  const favicon64 = await sourceIconBuffer(64);
+  fs.writeFileSync(path.join(PUBLIC, 'favicon.svg'), embeddedSvg(favicon64.toString('base64'), 64), 'utf8');
+
+  console.log('Done - 9GClaw icon assets regenerated.');
 })();

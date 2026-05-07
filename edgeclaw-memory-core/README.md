@@ -1,4 +1,4 @@
-# EdgeClaw 安装与启动教程
+# 9GClaw 安装与启动教程
 
 这份文档写给第一次接触这个项目的人。
 
@@ -259,7 +259,7 @@ npm run server
 你看到类似下面的信息，就说明 Web 服务启动成功了：
 
 ```text
-CloudCLI Server - Ready
+9GClaw Server - Ready
 Server URL: http://localhost:3001
 ```
 
@@ -273,7 +273,7 @@ Server URL: http://localhost:3001
 http://localhost:3001
 ```
 
-如果一切正常，你应该能看到 CloudCLI 的页面。
+如果一切正常，你应该能看到 9GClaw 的页面。
 
 ## 九、如何确认真的启动成功
 
@@ -363,7 +363,7 @@ npm run server
 
 说明 Node.js 没装好，先安装 Node.js 22+，再重新打开终端。
 
-### 3. `Missing required EdgeClaw configuration`
+### 3. `Missing required 9GClaw configuration`
 
 说明你的根目录 `.env` 里缺少必填项。
 

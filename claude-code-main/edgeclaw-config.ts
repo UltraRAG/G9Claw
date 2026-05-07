@@ -66,6 +66,20 @@ export interface EdgeClawConfig {
     maxMessageChars?: number
     heartbeatBatchSize?: number
   }
+  rag?: {
+    enabled?: boolean
+    localKnowledge?: {
+      baseUrl?: string
+      milvusUri?: string
+      apiKey?: string
+      defaultTopK?: number
+    }
+    glmWebSearch?: {
+      baseUrl?: string
+      apiKey?: string
+      defaultTopK?: number
+    }
+  }
   router?: { enabled?: boolean; httpsProxy?: string }
   gateway?: { enabled?: boolean; home?: string }
 }
@@ -148,6 +162,20 @@ function defaultConfig(): EdgeClawConfig {
       maxMessageChars: 6000,
       heartbeatBatchSize: 30,
     },
+    rag: {
+      enabled: false,
+      localKnowledge: {
+        baseUrl: '',
+        milvusUri: '',
+        apiKey: '',
+        defaultTopK: 8,
+      },
+      glmWebSearch: {
+        baseUrl: '',
+        apiKey: '',
+        defaultTopK: 8,
+      },
+    },
     router: { enabled: false },
     gateway: { enabled: false, home: join(homedir(), '.edgeclaw', 'gateway') },
   }
@@ -228,6 +256,14 @@ export function buildRuntimeEnvFromConfig(config: EdgeClawConfig): Record<string
     VITE_CONTEXT_WINDOW: String(config.runtime?.contextWindow ?? 160000),
     API_TIMEOUT_MS: String(config.runtime?.apiTimeoutMs ?? 120000),
     EDGECLAW_MEMORY_ENABLED: config.memory?.enabled === false ? '0' : '1',
+    EDGECLAW_RAG_ENABLED: config.rag?.enabled ? '1' : '0',
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL: stripTrailingSlash(config.rag?.localKnowledge?.baseUrl),
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI: normalize(config.rag?.localKnowledge?.milvusUri),
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY: config.rag?.localKnowledge?.apiKey ?? '',
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_TOP_K: String(config.rag?.localKnowledge?.defaultTopK ?? 8),
+    EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL: stripTrailingSlash(config.rag?.glmWebSearch?.baseUrl),
+    EDGECLAW_RAG_GLM_WEB_SEARCH_API_KEY: config.rag?.glmWebSearch?.apiKey ?? '',
+    EDGECLAW_RAG_GLM_WEB_SEARCH_TOP_K: String(config.rag?.glmWebSearch?.defaultTopK ?? 8),
     CCR_ENABLED: config.router?.enabled ? '1' : '0',
     CCR_DISABLED: config.router?.enabled ? '0' : '1',
     GATEWAY_ENABLED: config.gateway?.enabled ? '1' : '0',

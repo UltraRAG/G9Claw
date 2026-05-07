@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'" />
-  <title>EdgeClaw — 初始化</title>
+  <title>9GClaw — 初始化</title>
   <style>
     :root {
       --bg: #0f1115;
@@ -181,7 +181,7 @@
 </head>
 <body>
   <div class="card">
-    <h1>初始化 EdgeClaw</h1>
+    <h1>初始化 9GClaw</h1>
     <p class="subtitle">配置一个 OpenAI / Anthropic 兼容的上游，保存后会写入 <code>~/.edgeclaw/config.yaml</code>。</p>
 
     <div class="preset-row">
@@ -311,7 +311,7 @@
           model: modelEl.value.trim(),
         });
         if (res && res.ok) {
-          showStatus("已保存，正在启动 EdgeClaw…", "success");
+          showStatus("已保存，正在启动 9GClaw…", "success");
         } else {
           saveBtn.disabled = false;
           showStatus(`保存失败：${(res && res.error) || "未知错误"}`, "error");

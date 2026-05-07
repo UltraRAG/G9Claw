@@ -77,11 +77,25 @@ type EdgeClawConfig = {
     };
   };
   memory?: { enabled?: boolean; model?: string; params?: Record<string, unknown> };
+  rag?: {
+    enabled?: boolean;
+    localKnowledge?: {
+      baseUrl?: string;
+      milvusUri?: string;
+      apiKey?: string;
+      defaultTopK?: number;
+    };
+    glmWebSearch?: {
+      baseUrl?: string;
+      apiKey?: string;
+      defaultTopK?: number;
+    };
+  };
   router?: { enabled?: boolean } & Record<string, unknown>;
   gateway?: { enabled?: boolean; home?: string } & Record<string, unknown>;
 };
 
-type SectionId = 'runtime' | 'models' | 'agents' | 'alwaysOn' | 'memory' | 'router' | 'gateway';
+type SectionId = 'runtime' | 'models' | 'agents' | 'alwaysOn' | 'memory' | 'rag' | 'router' | 'gateway';
 
 const SECTIONS: Array<{ id: SectionId; labelKey: string; descriptionKey: string }> = [
   { id: 'runtime', labelKey: 'runtime',  descriptionKey: 'runtime' },
@@ -89,6 +103,7 @@ const SECTIONS: Array<{ id: SectionId; labelKey: string; descriptionKey: string 
   { id: 'agents',  labelKey: 'agents',   descriptionKey: 'agents' },
   { id: 'alwaysOn', labelKey: 'alwaysOn', descriptionKey: 'alwaysOn' },
   { id: 'memory',  labelKey: 'memory',   descriptionKey: 'memory' },
+  { id: 'rag',     labelKey: 'rag',      descriptionKey: 'rag' },
   { id: 'router',  labelKey: 'router',   descriptionKey: 'router' },
   { id: 'gateway', labelKey: 'gateway',  descriptionKey: 'gateway' },
 ];
@@ -649,7 +664,7 @@ function MemorySection({ config, onChange }: { config: EdgeClawConfig; onChange:
     ...entryIds.map((id) => ({ value: id, label: id })),
   ];
   return (
-    <SettingsSection title="Memory" description="EdgeClaw memory service — embeddings & summarisation pipelines.">
+    <SettingsSection title="Memory" description="9GClaw memory service — embeddings & summarisation pipelines.">
       <SettingsCard>
         <SettingsRow label="Enabled" description="Toggles the memory service. Disabled by default.">
           <SettingsToggle
@@ -664,6 +679,135 @@ function MemorySection({ config, onChange }: { config: EdgeClawConfig; onChange:
           </FormRow>
         )}
       </SettingsCard>
+    </SettingsSection>
+  );
+}
+
+type RagEndpointKey = 'localKnowledge' | 'glmWebSearch';
+
+function RagEndpointCard({
+  title,
+  description,
+  config,
+  endpointKey,
+  baseUrlPlaceholder,
+  keyPlaceholder,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  config: EdgeClawConfig;
+  endpointKey: RagEndpointKey;
+  baseUrlPlaceholder: string;
+  keyPlaceholder: string;
+  onChange: (next: EdgeClawConfig) => void;
+}) {
+  const endpoint = config.rag?.[endpointKey] ?? {};
+  const localKnowledge =
+    endpointKey === 'localKnowledge'
+      ? (endpoint as NonNullable<NonNullable<EdgeClawConfig['rag']>['localKnowledge']>)
+      : null;
+  const isMaskedKey = endpoint.apiKey === MASK;
+  const set = <K extends keyof NonNullable<NonNullable<EdgeClawConfig['rag']>[RagEndpointKey]>>(
+    key: K,
+    value: NonNullable<NonNullable<EdgeClawConfig['rag']>[RagEndpointKey]>[K],
+  ) => onChange(patch(config, ['rag', endpointKey, key as string], value));
+
+  return (
+    <SettingsCard divided>
+      <div className="px-4 py-3">
+        <div className="text-sm font-semibold text-foreground">{title}</div>
+        <div className="mt-0.5 text-xs text-muted-foreground">{description}</div>
+      </div>
+      <FormRow label="Base URL" description="Service root; scripts call POST /search under this URL.">
+        <TextInput
+          value={endpoint.baseUrl}
+          placeholder={baseUrlPlaceholder}
+          monospace
+          onChange={(v) => set('baseUrl', v)}
+        />
+      </FormRow>
+      {localKnowledge && (
+        <FormRow
+          label="Milvus URI"
+          description="Optional Milvus connection URI passed through to the local retriever service."
+        >
+          <TextInput
+            value={localKnowledge.milvusUri}
+            placeholder="http://127.0.0.1:19530"
+            monospace
+            onChange={(v) => onChange(patch(config, ['rag', 'localKnowledge', 'milvusUri'], v))}
+          />
+        </FormRow>
+      )}
+      <FormRow label="API key" description="Stored in config.yaml and exported to the RAG scripts at runtime.">
+        <div>
+          <TextInput
+            type="password"
+            value={endpoint.apiKey}
+            placeholder={isMaskedKey ? 'Existing key kept — type to replace' : keyPlaceholder}
+            onChange={(v) => set('apiKey', v)}
+          />
+          {isMaskedKey && (
+            <span className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+              <Info className="h-3 w-3" />
+              Key hidden; leave as-is to keep, retype to replace.
+            </span>
+          )}
+        </div>
+      </FormRow>
+      <FormRow label="Default top K" description="Used when a skill does not pass --top-k explicitly.">
+        <NumberInput
+          value={endpoint.defaultTopK}
+          placeholder="8"
+          onChange={(v) => set('defaultTopK', v as any)}
+        />
+      </FormRow>
+    </SettingsCard>
+  );
+}
+
+function RagSection({ config, onChange }: { config: EdgeClawConfig; onChange: (next: EdgeClawConfig) => void }) {
+  const rag = config.rag ?? {};
+  return (
+    <SettingsSection
+      title="RAG"
+      description="Local retriever and GLM web search APIs used by the bundled 9GClaw RAG skills."
+    >
+      <div className="space-y-4">
+        <SettingsCard>
+          <SettingsRow
+            label="Enabled"
+            description="When on, 9GClaw exports EDGECLAW_RAG_* env vars so RAG skills can call these APIs."
+          >
+            <SettingsToggle
+              checked={Boolean(rag.enabled)}
+              ariaLabel="Toggle RAG"
+              onChange={(v) => onChange(patch(config, ['rag', 'enabled'], v))}
+            />
+          </SettingsRow>
+        </SettingsCard>
+
+        <RagEndpointCard
+          title="Local knowledge / Retriever"
+          description="Private or curated knowledge base retrieval endpoint, including Milvus-backed services."
+          config={config}
+          endpointKey="localKnowledge"
+          baseUrlPlaceholder="http://127.0.0.1:8701"
+          keyPlaceholder="retriever-api-key"
+          onChange={onChange}
+        />
+
+        <RagEndpointCard
+          title="GLM Web Search"
+          description="Public web search endpoint used for current information and URL-backed citations."
+          config={config}
+          endpointKey="glmWebSearch"
+          baseUrlPlaceholder="http://127.0.0.1:8702"
+          keyPlaceholder="glm-web-search-api-key"
+          onChange={onChange}
+        />
+      </div>
     </SettingsSection>
   );
 }
@@ -965,6 +1109,7 @@ export default function EdgeClawConfigTab({ projects = [] }: { projects?: Settin
                 {activeSection === 'agents'  && <AgentsSection  config={parsedConfig} onChange={onFormChange} />}
                 {activeSection === 'alwaysOn' && <AlwaysOnSection config={parsedConfig} projects={projects} onChange={onFormChange} />}
                 {activeSection === 'memory'  && <MemorySection  config={parsedConfig} onChange={onFormChange} />}
+                {activeSection === 'rag'     && <RagSection     config={parsedConfig} onChange={onFormChange} />}
                 {activeSection === 'router'  && <RouterSection  config={parsedConfig} onChange={onFormChange} />}
                 {activeSection === 'gateway' && <GatewaySection config={parsedConfig} onChange={onFormChange} />}
               </>

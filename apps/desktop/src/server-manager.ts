@@ -51,16 +51,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function getEdgeClawDir(): string {
+function getAppConfigDir(): string {
   return path.join(os.homedir(), ".edgeclaw");
 }
 
 function getPidFilePath(): string {
-  return path.join(getEdgeClawDir(), "desktop.server.pid");
+  return path.join(getAppConfigDir(), "desktop.server.pid");
 }
 
-async function ensureEdgeClawDir(): Promise<void> {
-  await fs.mkdir(getEdgeClawDir(), { recursive: true });
+async function ensureAppConfigDir(): Promise<void> {
+  await fs.mkdir(getAppConfigDir(), { recursive: true });
 }
 
 /**
@@ -75,7 +75,7 @@ async function ensureEdgeClawDir(): Promise<void> {
  * which is per-user, writable, survives macOS upgrades, and is the standard
  * location Electron's `app.getPath('userData')` resolves to.
  *
- * We key on the EdgeClaw bundle version so that upgrading the app forces a
+ * We key on the 9GClaw bundle version so that upgrading the app forces a
  * fresh extraction (otherwise stale source files from the previous version
  * would silently win). Old version dirs are GC'd on next startup via
  * `cleanupStaleRuntimeVersions()`.
@@ -85,7 +85,7 @@ function getRuntimeBaseDir(version: string): string {
     os.homedir(),
     "Library",
     "Application Support",
-    "EdgeClaw",
+    "9GClaw",
     "runtime",
     version,
   );
@@ -238,7 +238,7 @@ export type ServerManagerOptions = {
   devRepoRoot?: string;
   /**
    * Bundle version (typically `app.getVersion()`). Used to pick the per-version
-   * runtime extraction directory under `~/Library/Application Support/EdgeClaw/
+   * runtime extraction directory under `~/Library/Application Support/9GClaw/
    * runtime/<version>/`. Required when `dev: false` so that upgrading the app
    * forces a fresh re-extraction of bundled tarballs.
    */
@@ -320,7 +320,7 @@ export class ServerManager extends EventEmitter<ServerManagerEvents> {
   }
 
   /**
-   * Best-effort cleanup of `~/Library/Application Support/EdgeClaw/runtime/`
+   * Best-effort cleanup of `~/Library/Application Support/9GClaw/runtime/`
    * subdirectories belonging to other versions. Called at startup so that
    * upgrading the app reclaims disk (~1GB per stale version).
    */
@@ -624,7 +624,7 @@ export class ServerManager extends EventEmitter<ServerManagerEvents> {
   }
 
   private async writePidFile(pid: number): Promise<void> {
-    await ensureEdgeClawDir();
+    await ensureAppConfigDir();
     await fs.writeFile(getPidFilePath(), `${pid}\n`, "utf8");
   }
 
@@ -690,7 +690,7 @@ export class ServerManager extends EventEmitter<ServerManagerEvents> {
 
     // Mirror server stdout/stderr to ~/.edgeclaw/desktop.server.log so failures
     // are diagnosable even when the user launches via Finder/Dock (no terminal).
-    await ensureEdgeClawDir();
+    await ensureAppConfigDir();
     const logPath = getServerLogPath();
     const logStream = fsSync.createWriteStream(logPath, { flags: "a" });
     logStream.write(
@@ -803,7 +803,7 @@ export class ServerManager extends EventEmitter<ServerManagerEvents> {
     // edgeclawConfig.js patch) the cron daemon. As a belt-and-suspenders
     // safety net — in case the parent died via SIGKILL, hung past the SIGTERM
     // grace, or the user used `kill -9` from Activity Monitor — sweep any
-    // remaining orphans now so quitting EdgeClaw really leaves zero processes.
+    // remaining orphans now so quitting 9GClaw really leaves zero processes.
     await this.cleanupOrphanRuntimeProcesses();
     this.stopRequested = false;
   }

@@ -52,8 +52,8 @@ export function assertRequiredEdgeClawEnv() {
   }
 
   throw new Error(
-    `Missing required EdgeClaw configuration: ${missingKeys.join(', ')}. ` +
-      `Set them in ${getEdgeClawConfigPath()} before starting CloudCLI.`,
+    `Missing required 9GClaw configuration: ${missingKeys.join(', ')}. ` +
+      `Set them in ${getEdgeClawConfigPath()} before starting 9GClaw.`,
   );
 }
 

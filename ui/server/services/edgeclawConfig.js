@@ -253,6 +253,20 @@ export function buildDefaultEdgeClawConfig() {
       maxMessageChars: 6000,
       heartbeatBatchSize: 30,
     },
+    rag: {
+      enabled: false,
+      localKnowledge: {
+        baseUrl: '',
+        milvusUri: '',
+        apiKey: '',
+        defaultTopK: 8,
+      },
+      glmWebSearch: {
+        baseUrl: '',
+        apiKey: '',
+        defaultTopK: 8,
+      },
+    },
     router: {
       enabled: false,
       log: true,
@@ -533,6 +547,14 @@ export function buildRuntimeEnv(config) {
     VITE_CONTEXT_WINDOW: String(runtime.contextWindow ?? 160000),
     API_TIMEOUT_MS: String(runtime.apiTimeoutMs ?? 120000),
     EDGECLAW_MEMORY_ENABLED: normalized.memory.enabled ? '1' : '0',
+    EDGECLAW_RAG_ENABLED: normalized.rag.enabled ? '1' : '0',
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL: stripTrailingSlash(normalized.rag.localKnowledge.baseUrl),
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI: normalized.rag.localKnowledge.milvusUri || '',
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY: normalized.rag.localKnowledge.apiKey || '',
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_TOP_K: String(normalized.rag.localKnowledge.defaultTopK ?? 8),
+    EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL: stripTrailingSlash(normalized.rag.glmWebSearch.baseUrl),
+    EDGECLAW_RAG_GLM_WEB_SEARCH_API_KEY: normalized.rag.glmWebSearch.apiKey || '',
+    EDGECLAW_RAG_GLM_WEB_SEARCH_TOP_K: String(normalized.rag.glmWebSearch.defaultTopK ?? 8),
     CCR_ENABLED: normalized.router.enabled ? '1' : '0',
     CCR_DISABLED: normalized.router.enabled ? '0' : '1',
     GATEWAY_ENABLED: normalized.gateway.enabled ? '1' : '0',
@@ -807,7 +829,7 @@ export async function writeEdgeClawConfig(config) {
   const normalized = normalizeEdgeClawConfig(config);
   const validation = validateEdgeClawConfig(normalized);
   if (!validation.valid) {
-    const error = new Error('Invalid EdgeClaw config');
+    const error = new Error('Invalid 9GClaw config');
     error.validation = validation;
     throw error;
   }

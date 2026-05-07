@@ -1,7 +1,7 @@
 {
   "name": "@edgeclaw/desktop",
   "version": "0.1.0",
-  "description": "EdgeClaw macOS Desktop App (Electron shell + claudecodeui + claude-code-main)",
+  "description": "9GClaw macOS Desktop App (Electron shell + claudecodeui + claude-code-main)",
   "main": "dist/main.js",
   "private": true,
   "license": "AGPL-3.0-or-later",
@@ -24,5 +24,5 @@
     "electron-builder": "^26.0.12",
     "typescript": "^5.8.3"
   },
-  "author": "EdgeClaw Contributors"
+  "author": "9GClaw Contributors"
 }

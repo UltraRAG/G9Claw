@@ -63,8 +63,8 @@ const IS_OPENROUTER_UPSTREAM = (() => {
 const ATTRIBUTION_HEADERS: Record<string, string> = IS_OPENROUTER_UPSTREAM
   ? {
       'HTTP-Referer': 'https://edgeclaw.ai',
-      'X-Title': 'EdgeClaw',
-      'X-OpenRouter-Title': 'EdgeClaw',
+      'X-Title': '9GClaw',
+      'X-OpenRouter-Title': '9GClaw',
       'X-OpenRouter-Categories': 'cli-agent',
     }
   : {}

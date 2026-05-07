@@ -30,8 +30,8 @@ import {
   setSessionCustomTitle,
   useCustomNamesVersion,
 } from '../../lib/customNames';
-import edgeclawLogo from '../../assets/edgeclaw-logo.png';
-import edgeclawLogoWhite from '../../assets/edgeclaw-logo-white.png';
+import nineGClawLogo from '../../assets/9gclaw-logo.png';
+import nineGClawLogoWhite from '../../assets/9gclaw-logo-white.png';
 
 const asTimestamp = (value: unknown): number => {
   if (typeof value === 'number') return value;
@@ -895,19 +895,19 @@ export default function SidebarV2({
               navigate('/');
             }
           }}
-          aria-label="EdgeClaw"
-          title="EdgeClaw"
+          aria-label="9GClaw"
+          title="9GClaw"
           className="-ml-1 flex min-w-0 shrink items-center rounded-md p-1 transition hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:focus-visible:ring-neutral-700"
         >
           <img
-            src={edgeclawLogo}
-            alt="EdgeClaw"
+            src={nineGClawLogo}
+            alt="9GClaw"
             className="h-14 w-auto select-none object-contain dark:hidden"
             draggable={false}
           />
           <img
-            src={edgeclawLogoWhite}
-            alt="EdgeClaw"
+            src={nineGClawLogoWhite}
+            alt="9GClaw"
             className="hidden h-14 w-auto select-none object-contain dark:block"
             draggable={false}
           />

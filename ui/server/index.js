@@ -176,24 +176,24 @@ async function ensureEdgeClawProxyRunning() {
     const upstreamApiKey = process.env.EDGECLAW_API_KEY?.trim();
 
     if (!proxyPort || !upstreamBaseUrl || !upstreamApiKey) {
-        console.warn('[WARN] EdgeClaw proxy not started: missing provider baseUrl/apiKey/proxyPort in ~/.edgeclaw/config.yaml');
+        console.warn('[WARN] 9GClaw proxy not started: missing provider baseUrl/apiKey/proxyPort in ~/.edgeclaw/config.yaml');
         return;
     }
 
     if (await isLocalPortListening(proxyPort)) {
-        console.log(`${c.info('[INFO]')} Reusing existing EdgeClaw proxy on http://127.0.0.1:${proxyPort}`);
+        console.log(`${c.info('[INFO]')} Reusing existing 9GClaw proxy on http://127.0.0.1:${proxyPort}`);
         return;
     }
 
     const claudeCodeMainRoot = resolveClaudeCodeMainRoot();
     if (!claudeCodeMainRoot) {
-        console.error('[ERROR] Unable to locate claude-code-main; cannot start EdgeClaw proxy automatically.');
+        console.error('[ERROR] Unable to locate claude-code-main; cannot start 9GClaw proxy automatically.');
         return;
     }
 
     const proxyEntrypoint = path.join(claudeCodeMainRoot, 'proxy.ts');
     if (!fs.existsSync(proxyEntrypoint)) {
-        console.error(`[ERROR] Missing EdgeClaw proxy entrypoint: ${proxyEntrypoint}`);
+        console.error(`[ERROR] Missing 9GClaw proxy entrypoint: ${proxyEntrypoint}`);
         return;
     }
 
@@ -208,13 +208,13 @@ async function ensureEdgeClawProxyRunning() {
     proxyProcess.stdout.on('data', chunk => {
         const text = chunk.toString().trimEnd();
         if (text) {
-            console.log(`[EdgeClaw proxy] ${text}`);
+            console.log(`[9GClaw proxy] ${text}`);
         }
     });
     proxyProcess.stderr.on('data', chunk => {
         const text = chunk.toString().trimEnd();
         if (text) {
-            console.error(`[EdgeClaw proxy] ${text}`);
+            console.error(`[9GClaw proxy] ${text}`);
         }
     });
     proxyProcess.on('exit', (code, signal) => {
@@ -224,16 +224,16 @@ async function ensureEdgeClawProxyRunning() {
         if (signal === 'SIGTERM' || signal === 'SIGINT') {
             return;
         }
-        console.error(`[ERROR] EdgeClaw proxy exited unexpectedly (code=${code ?? 'null'}, signal=${signal ?? 'null'})`);
+        console.error(`[ERROR] 9GClaw proxy exited unexpectedly (code=${code ?? 'null'}, signal=${signal ?? 'null'})`);
     });
 
     const ready = await waitForLocalPort(proxyPort);
     if (ready) {
-        console.log(`${c.info('[INFO]')} EdgeClaw proxy ready on http://127.0.0.1:${proxyPort}`);
+        console.log(`${c.info('[INFO]')} 9GClaw proxy ready on http://127.0.0.1:${proxyPort}`);
         return;
     }
 
-    console.error(`[ERROR] EdgeClaw proxy did not become ready on http://127.0.0.1:${proxyPort}`);
+    console.error(`[ERROR] 9GClaw proxy did not become ready on http://127.0.0.1:${proxyPort}`);
 }
 
 async function stopEdgeClawProxy() {
@@ -579,7 +579,7 @@ app.use('/api/skills', authenticateToken, skillsRoutes);
 // Settings API Routes (protected)
 app.use('/api/settings', authenticateToken, settingsRoutes);
 
-// EdgeClaw unified YAML config routes (protected)
+// 9GClaw unified YAML config routes (protected)
 app.use('/api/config', authenticateToken, configRoutes);
 
 // CLI Authentication API Routes (protected)
@@ -633,7 +633,7 @@ app.use('/memory-dashboard', authenticateToken, express.static(MEMORY_DASHBOARD_
 
 // Hard 404 boundary: anything still asking for /memory-dashboard/* after the
 // static middleware is a missing asset. Without this, the request would fall
-// through to the SPA wildcard below and return the EdgeClaw shell index.html,
+// through to the SPA wildcard below and return the 9GClaw shell index.html,
 // which the MemoryPanel iframe then renders — recursively nesting the entire
 // app inside itself (see bug: "嵌套显示 + general memory 多次出现").
 app.use('/memory-dashboard', (_req, res) => {
@@ -2647,7 +2647,7 @@ async function startServer() {
 
                     console.log('');
                     console.log(c.dim('═'.repeat(63)));
-                    console.log(`  ${c.bright('CloudCLI Server - Ready')}`);
+                    console.log(`  ${c.bright('9GClaw Server - Ready')}`);
                     console.log(c.dim('═'.repeat(63)));
                     console.log('');
                     console.log(`${c.info('[INFO]')} Server URL:  ${c.bright('http://' + DISPLAY_HOST + ':' + SERVER_PORT)}`);

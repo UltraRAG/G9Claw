@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================================
-# EdgeClaw Desktop DMG Verifier (verify-dmg.sh)
+# 9GClaw Desktop DMG Verifier (verify-dmg.sh)
 # ----------------------------------------------------------------------------
-# 校验一个已经构建好的 EdgeClaw Desktop DMG 是否真的能用：
+# 校验一个已经构建好的 9GClaw Desktop DMG 是否真的能用：
 #   1. DMG 结构完整、可挂载
 #   2. App bundle 结构正确（4 个 Helper、Frameworks、node-bin、bun-bin、bundles）
 #   3. 代码签名通过 codesign --verify --deep --strict
@@ -32,7 +32,7 @@ warn() { WARN=$((WARN+1)); echo "  ${YEL}⚠${RST} $*"; }
 info() { echo "  ${DIM}$*${RST}"; }
 hdr()  { echo; echo "${BLD}${CYN}── $* ──${RST}"; }
 
-echo "${BLD}EdgeClaw Desktop DMG Verification${RST}"
+echo "${BLD}9GClaw Desktop DMG Verification${RST}"
 echo "${DIM}DMG: ${DMG}${RST}"
 echo "${DIM}Mode: ${MODE}${RST}"
 
@@ -52,15 +52,15 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-APP="$MOUNT_DIR/EdgeClaw.app"
-[[ -d "$APP" ]] && pass "EdgeClaw.app present" || { fail "EdgeClaw.app missing"; exit 1; }
+APP="$MOUNT_DIR/9GClaw.app"
+[[ -d "$APP" ]] && pass "9GClaw.app present" || { fail "9GClaw.app missing"; exit 1; }
 [[ -L "$MOUNT_DIR/Applications" ]] && pass "/Applications symlink present" \
   || warn "/Applications symlink missing (用户拖拽体验受影响)"
 
 # ─────────────── Bundle structure ───────────────
 hdr "2. App bundle structure"
 
-[[ -f "$APP/Contents/MacOS/EdgeClaw" ]] && pass "Main executable present" \
+[[ -f "$APP/Contents/MacOS/9GClaw" ]] && pass "Main executable present" \
   || fail "Main executable missing"
 [[ -f "$APP/Contents/Info.plist" ]]    && pass "Info.plist present" \
   || fail "Info.plist missing"
@@ -68,7 +68,7 @@ hdr "2. App bundle structure"
   || fail "Electron Framework missing"
 
 helper_ok=0
-for h in "EdgeClaw Helper" "EdgeClaw Helper (GPU)" "EdgeClaw Helper (Renderer)" "EdgeClaw Helper (Plugin)"; do
+for h in "9GClaw Helper" "9GClaw Helper (GPU)" "9GClaw Helper (Renderer)" "9GClaw Helper (Plugin)"; do
   if [[ -f "$APP/Contents/Frameworks/${h}.app/Contents/MacOS/${h}" ]]; then
     helper_ok=$((helper_ok+1))
   else
@@ -197,7 +197,7 @@ hdr "6. claudecodeui server smoke test"
 
 PORT="$(node -e 'const s=require("net").createServer();s.listen(0,()=>{console.log(s.address().port);s.close();});' 2>/dev/null || echo 28790)"
 
-# Need a structured config file to satisfy assertRequiredEdgeClawEnv()
+# Need a structured config file to satisfy assertRequired9GClawEnv()
 # Schema: models.providers.<id>.{baseUrl,apiKey}, models.entries.<id>.{provider,name}, agents.main.model
 # Bake the dynamic SERVER_PORT into runtime.serverPort because applyConfigToProcessEnv
 # overrides whatever env was set when claudecodeui boots.
@@ -223,6 +223,16 @@ agents:
     model: default
 memory:
   enabled: false
+rag:
+  enabled: false
+  localKnowledge:
+    baseUrl: ""
+    apiKey: ""
+    defaultTopK: 8
+  glmWebSearch:
+    baseUrl: ""
+    apiKey: ""
+    defaultTopK: 8
 EOF
 pass "Stub config.yaml created (serverPort=${PORT})"
 SRV_LOG="$SANDBOX/server.log"

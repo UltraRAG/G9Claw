@@ -1,9 +1,9 @@
 /**
- * EdgeClaw provider adapter.
+ * 9GClaw provider adapter.
  *
  * Normalizes Claude Agent SDK events and JSONL session history into the
  * provider-neutral NormalizedMessage format used by the UI. The folder is
- * named `edgeclaw` to match the project, but the SessionProvider key on the
+ * named `edgeclaw` for protocol compatibility, but the SessionProvider key on the
  * wire is still `'claude'` (see PROVIDER below) so renaming the folder does
  * not break protocol compatibility with the frontend.
  *

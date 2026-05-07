@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * CloudCLI CLI
+ * 9GClaw CLI
  *
- * Provides command-line utilities for managing CloudCLI
+ * Provides command-line utilities for managing 9GClaw
  *
  * Commands:
  *   (no args)     - Start the server (default)
@@ -73,7 +73,7 @@ function getInstallDir() {
 function showStatus() {
     loadRootEdgeClawEnv();
 
-    console.log(`\n${c.bright('CloudCLI UI - Status')}\n`);
+    console.log(`\n${c.bright('9GClaw UI - Status')}\n`);
     console.log(c.dim('═'.repeat(60)));
 
     // Version info
@@ -108,7 +108,7 @@ function showStatus() {
     console.log(`       EDGECLAW_API_KEY: ${maskConfiguredSecret(process.env.EDGECLAW_API_KEY)}`);
     console.log(`       EDGECLAW_MODEL: ${normalizeConfiguredValue(process.env.EDGECLAW_MODEL)}`);
     console.log(`       EDGECLAW_MEMORY_ENABLED: ${c.dim(process.env.EDGECLAW_MEMORY_ENABLED || '1 (default)')}`);
-    console.log(`       Required EdgeClaw Config: ${missingConfig.length === 0 ? c.ok('[OK] Complete') : c.warn(`[WARN] Missing ${missingConfig.join(', ')}`)}`);
+    console.log(`       Required 9GClaw Config: ${missingConfig.length === 0 ? c.ok('[OK] Complete') : c.warn(`[WARN] Missing ${missingConfig.join(', ')}`)}`);
 
     // Claude projects folder
     const claudeProjectsPath = path.join(os.homedir(), '.claude', 'projects');
@@ -136,7 +136,7 @@ function showStatus() {
 function showHelp() {
     console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
-║              CloudCLI - Command Line Tool               ║
+║              9GClaw - Command Line Tool               ║
 ╚═══════════════════════════════════════════════════════════════╝
 
 Usage:
@@ -144,7 +144,7 @@ Usage:
   cloudcli [command] [options]
 
 Commands:
-  start          Start the CloudCLI server (default)
+  start          Start the 9GClaw server (default)
   status         Show configuration and data locations
   update         Update to the latest version
   help           Show this help information

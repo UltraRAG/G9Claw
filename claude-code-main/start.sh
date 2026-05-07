@@ -28,7 +28,7 @@ if ! command -v bun &>/dev/null; then
   fi
 fi
 
-# Load unified EdgeClaw YAML config after bun is available.
+# Load unified 9GClaw YAML config after bun is available.
 if [ -f "$DIR/edgeclaw-config.ts" ]; then
   EDGECLAW_CONFIG_EXPORTS="$(bun --config=/dev/null run "$DIR/edgeclaw-config.ts" shell-env 2>/dev/null || true)"
   if [ -n "$EDGECLAW_CONFIG_EXPORTS" ]; then
@@ -172,25 +172,39 @@ fi
 
 # ── Claude Code interactive CLI ──
 # PLUGIN_DIR must point at a Claude Code plugin (a directory containing
-# .claude-plugin/plugin.json). The default is this repo's bundled turnkey
-# plugin. To disable plugin loading entirely, set PLUGIN_DIR= (empty).
-DEFAULT_PLUGIN_DIR="$REPO_ROOT/packages/turnkey-cc-plugin"
+# .claude-plugin/plugin.json). By default 9GClaw loads its bundled plugins.
+# To disable plugin loading entirely, set PLUGIN_DIR= (empty). To override the
+# bundled set with one plugin, set PLUGIN_DIR=/path/to/plugin.
+DEFAULT_PLUGIN_DIRS=(
+  "$REPO_ROOT/packages/turnkey-cc-plugin"
+  "$REPO_ROOT/packages/edgeclaw-rag-plugin"
+)
 if [ -z "${PLUGIN_DIR+x}" ]; then
-  PLUGIN_DIR="$DEFAULT_PLUGIN_DIR"
+  PLUGIN_DIRS=("${DEFAULT_PLUGIN_DIRS[@]}")
+elif [ -n "$PLUGIN_DIR" ]; then
+  PLUGIN_DIRS=("$PLUGIN_DIR")
+else
+  PLUGIN_DIRS=()
 fi
 
 PLUGIN_ARGS=()
-if [ -n "$PLUGIN_DIR" ]; then
-  if [ -f "$PLUGIN_DIR/.claude-plugin/plugin.json" ]; then
-    PLUGIN_ARGS=(--plugin-dir "$PLUGIN_DIR")
-    log "plugin OK: $PLUGIN_DIR"
-  else
-    log "WARNING: PLUGIN_DIR=$PLUGIN_DIR is not a valid CC plugin"
-    log "         (missing .claude-plugin/plugin.json) — skipping --plugin-dir."
-    log "         Passing an invalid plugin dir to cli.tsx silently aborts the TUI."
-  fi
+if [ "${#PLUGIN_DIRS[@]}" -gt 0 ]; then
+  for plugin_dir in "${PLUGIN_DIRS[@]}"; do
+    if [ -f "$plugin_dir/.claude-plugin/plugin.json" ]; then
+      PLUGIN_ARGS+=(--plugin-dir "$plugin_dir")
+      log "plugin OK: $plugin_dir"
+    else
+      log "WARNING: PLUGIN_DIR=$plugin_dir is not a valid CC plugin"
+      log "         (missing .claude-plugin/plugin.json) — skipping --plugin-dir."
+      log "         Passing an invalid plugin dir to cli.tsx silently aborts the TUI."
+    fi
+  done
 else
-  log "PLUGIN_DIR explicitly empty — skipping --plugin-dir."
+  if [ -z "${PLUGIN_DIR+x}" ]; then
+    log "No bundled plugins configured — skipping --plugin-dir."
+  else
+    log "PLUGIN_DIR explicitly empty — skipping --plugin-dir."
+  fi
 fi
 
 # ── Diagnostics: pass --debug to enable file-based startup tracing ──

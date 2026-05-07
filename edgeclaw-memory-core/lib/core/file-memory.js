@@ -810,7 +810,7 @@ export class FileMemoryStore {
             ? active.filter((entry) => entry.type === "user")
             : sortEntries((this.manifestUserEntriesProvider?.() ?? []).filter((entry) => !entry.deprecated));
         const lines = [
-            "# EdgeClaw Memory",
+            "# 9GClaw Memory",
             "",
             `Updated: ${nowIso()}`,
             "",
@@ -1187,7 +1187,7 @@ export class FileMemoryStore {
         return { mutatedIds };
     }
     archiveTmpEntries(_) {
-        throw new Error("archive_tmp is not supported in EdgeClaw current-project memory mode");
+        throw new Error("archive_tmp is not supported in 9GClaw current-project memory mode");
     }
     listProjectMetas(_options = {}) {
         if (!this.manageProjectMeta)

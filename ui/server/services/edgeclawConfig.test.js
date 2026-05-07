@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeEdgeClawConfig } from './edgeclawConfig.js';
+import { buildRuntimeEnv, normalizeEdgeClawConfig } from './edgeclawConfig.js';
 
 test('normalizeEdgeClawConfig exposes default top-level alwaysOn config', () => {
   const config = normalizeEdgeClawConfig({});
@@ -59,4 +59,45 @@ test('normalizeEdgeClawConfig prefers top-level alwaysOn over legacy agents.alwa
   assert.equal(config.alwaysOn.discovery.trigger.enabled, false);
   assert.equal(config.alwaysOn.discovery.trigger.tickIntervalMinutes, 3);
   assert.equal(config.alwaysOn.discovery.projects['/workspace/a'].enabled, true);
+});
+
+test('normalizeEdgeClawConfig exposes default rag config', () => {
+  const config = normalizeEdgeClawConfig({});
+
+  assert.equal(config.rag.enabled, false);
+  assert.equal(config.rag.localKnowledge.baseUrl, '');
+  assert.equal(config.rag.localKnowledge.milvusUri, '');
+  assert.equal(config.rag.localKnowledge.apiKey, '');
+  assert.equal(config.rag.localKnowledge.defaultTopK, 8);
+  assert.equal(config.rag.glmWebSearch.baseUrl, '');
+  assert.equal(config.rag.glmWebSearch.apiKey, '');
+  assert.equal(config.rag.glmWebSearch.defaultTopK, 8);
+});
+
+test('buildRuntimeEnv exports rag settings', () => {
+  const env = buildRuntimeEnv({
+    rag: {
+      enabled: true,
+      localKnowledge: {
+        baseUrl: 'https://local.example.com/',
+        milvusUri: 'http://milvus.example.com:19530',
+        apiKey: 'local-secret',
+        defaultTopK: 5,
+      },
+      glmWebSearch: {
+        baseUrl: 'https://web.example.com/',
+        apiKey: 'web-secret',
+        defaultTopK: 6,
+      },
+    },
+  });
+
+  assert.equal(env.EDGECLAW_RAG_ENABLED, '1');
+  assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL, 'https://local.example.com');
+  assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI, 'http://milvus.example.com:19530');
+  assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY, 'local-secret');
+  assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_TOP_K, '5');
+  assert.equal(env.EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL, 'https://web.example.com');
+  assert.equal(env.EDGECLAW_RAG_GLM_WEB_SEARCH_API_KEY, 'web-secret');
+  assert.equal(env.EDGECLAW_RAG_GLM_WEB_SEARCH_TOP_K, '6');
 });

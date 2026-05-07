@@ -51,7 +51,7 @@ module.exports = async function notarizeAfterSign(context) {
       opts.appleApiIssuer = apiIssuer;
     }
   } else {
-    const profile = process.env.NOTARIZE_KEYCHAIN_PROFILE || "EdgeClaw";
+    const profile = process.env.NOTARIZE_KEYCHAIN_PROFILE || "9GClaw";
     console.log(
       `[notarize] Using keychain profile "${profile}" (${APP_BUNDLE_ID}): ${appPath}`,
     );

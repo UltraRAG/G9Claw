@@ -1,6 +1,6 @@
 appId: cc.edgeclaw.desktop
-productName: EdgeClaw
-copyright: "Copyright © 2026 EdgeClaw Contributors. AGPL-3.0-or-later."
+productName: 9GClaw
+copyright: "Copyright © 2026 9GClaw Contributors. AGPL-3.0-or-later."
 
 directories:
   output: dist-electron
@@ -21,7 +21,7 @@ mac:
 
 dmg:
   sign: true
-  artifactName: "EdgeClaw-${version}-arm64.dmg"
+  artifactName: "9GClaw-${version}-arm64.dmg"
   contents:
     - x: 130
       y: 220

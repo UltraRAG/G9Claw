@@ -460,7 +460,7 @@
     }
   },
   "edgeClawConfig": {
-    "loading": "Loading EdgeClaw config...",
+    "loading": "Loading 9GClaw config...",
     "header": {
       "configFile": "Config file",
       "configPreview": "Config preview",
@@ -494,7 +494,11 @@
       },
       "memory": {
         "label": "Memory",
-        "description": "EdgeClaw memory service"
+        "description": "9GClaw memory service"
+      },
+      "rag": {
+        "label": "RAG",
+        "description": "Retriever and web search APIs"
       },
       "router": {
         "label": "Router",
