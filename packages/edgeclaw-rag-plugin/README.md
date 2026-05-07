@@ -21,8 +21,9 @@ rag:
   disableBuiltInWebTools: true
   localKnowledge:
     baseUrl: "https://local-knowledge.example.com"
-    milvusUri: "http://127.0.0.1:19530"
     apiKey: "..."
+    modelName: "retriever-v1"
+    databaseUrl: "milvus://127.0.0.1:19530"
     defaultTopK: 8
   glmWebSearch:
     baseUrl: "https://api.z.ai/api/paas/v4/web_search"

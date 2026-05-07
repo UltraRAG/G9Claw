@@ -258,8 +258,9 @@ export function buildDefaultEdgeClawConfig() {
       disableBuiltInWebTools: true,
       localKnowledge: {
         baseUrl: '',
-        milvusUri: '',
         apiKey: '',
+        modelName: '',
+        databaseUrl: '',
         defaultTopK: 8,
       },
       glmWebSearch: {
@@ -383,6 +384,16 @@ export function normalizeEdgeClawConfig(input) {
   }
   if (isRecord(normalized.agents)) {
     delete normalized.agents.alwaysOn;
+  }
+  if (
+    isRecord(raw?.rag?.localKnowledge) &&
+    normalizeString(raw.rag.localKnowledge.milvusUri) &&
+    !normalizeString(raw.rag.localKnowledge.databaseUrl)
+  ) {
+    normalized.rag.localKnowledge.databaseUrl = normalizeString(raw.rag.localKnowledge.milvusUri);
+  }
+  if (isRecord(normalized.rag?.localKnowledge)) {
+    delete normalized.rag.localKnowledge.milvusUri;
   }
   delete normalized.compat;
   return normalized;
@@ -551,8 +562,10 @@ export function buildRuntimeEnv(config) {
     EDGECLAW_RAG_ENABLED: normalized.rag.enabled ? '1' : '0',
     EDGECLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS: normalized.rag.disableBuiltInWebTools ? '1' : '0',
     EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL: stripTrailingSlash(normalized.rag.localKnowledge.baseUrl),
-    EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI: normalized.rag.localKnowledge.milvusUri || '',
     EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY: normalized.rag.localKnowledge.apiKey || '',
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME: normalized.rag.localKnowledge.modelName || '',
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL: normalized.rag.localKnowledge.databaseUrl || '',
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI: normalized.rag.localKnowledge.databaseUrl || '',
     EDGECLAW_RAG_LOCAL_KNOWLEDGE_TOP_K: String(normalized.rag.localKnowledge.defaultTopK ?? 8),
     EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL: stripTrailingSlash(normalized.rag.glmWebSearch.baseUrl),
     EDGECLAW_RAG_GLM_WEB_SEARCH_API_KEY: normalized.rag.glmWebSearch.apiKey || '',

@@ -82,8 +82,9 @@ type EdgeClawConfig = {
     disableBuiltInWebTools?: boolean;
     localKnowledge?: {
       baseUrl?: string;
-      milvusUri?: string;
       apiKey?: string;
+      modelName?: string;
+      databaseUrl?: string;
       defaultTopK?: number;
     };
     glmWebSearch?: {
@@ -695,6 +696,7 @@ function RagEndpointCard({
   urlLabel = 'Base URL',
   urlDescription = 'Service root; scripts call POST /search under this URL.',
   keyPlaceholder,
+  showDefaultTopK = true,
   onChange,
 }: {
   title: string;
@@ -705,6 +707,7 @@ function RagEndpointCard({
   urlLabel?: string;
   urlDescription?: string;
   keyPlaceholder: string;
+  showDefaultTopK?: boolean;
   onChange: (next: EdgeClawConfig) => void;
 }) {
   const endpoint = config.rag?.[endpointKey] ?? {};
@@ -732,25 +735,12 @@ function RagEndpointCard({
           onChange={(v) => set('baseUrl', v)}
         />
       </FormRow>
-      {localKnowledge && (
-        <FormRow
-          label="Milvus URI"
-          description="Optional Milvus connection URI passed through to the local retriever service."
-        >
-          <TextInput
-            value={localKnowledge.milvusUri}
-            placeholder="http://127.0.0.1:19530"
-            monospace
-            onChange={(v) => onChange(patch(config, ['rag', 'localKnowledge', 'milvusUri'], v))}
-          />
-        </FormRow>
-      )}
       <FormRow label="API key" description="Stored in config.yaml and exported to the RAG scripts at runtime.">
         <div>
           <TextInput
             type="password"
             value={endpoint.apiKey}
-            placeholder={isMaskedKey ? 'Existing key kept — type to replace' : keyPlaceholder}
+            placeholder={isMaskedKey ? 'Existing key kept - type to replace' : keyPlaceholder}
             onChange={(v) => set('apiKey', v)}
           />
           {isMaskedKey && (
@@ -761,13 +751,41 @@ function RagEndpointCard({
           )}
         </div>
       </FormRow>
-      <FormRow label="Default top K" description="Used when a skill does not pass --top-k explicitly.">
-        <NumberInput
-          value={endpoint.defaultTopK}
-          placeholder="8"
-          onChange={(v) => set('defaultTopK', v as any)}
-        />
-      </FormRow>
+      {localKnowledge && (
+        <>
+          <FormRow
+            label="Model name"
+            description="Retriever model name passed to the local knowledge service."
+          >
+            <TextInput
+              value={localKnowledge.modelName}
+              placeholder="embedding-or-rerank-model"
+              monospace
+              onChange={(v) => onChange(patch(config, ['rag', 'localKnowledge', 'modelName'], v))}
+            />
+          </FormRow>
+          <FormRow
+            label="Database URL"
+            description="Knowledge database connection URL passed through to the local retriever service."
+          >
+            <TextInput
+              value={localKnowledge.databaseUrl}
+              placeholder="milvus://127.0.0.1:19530"
+              monospace
+              onChange={(v) => onChange(patch(config, ['rag', 'localKnowledge', 'databaseUrl'], v))}
+            />
+          </FormRow>
+        </>
+      )}
+      {showDefaultTopK && (
+        <FormRow label="Default top K" description="Used when a skill does not pass --top-k explicitly.">
+          <NumberInput
+            value={endpoint.defaultTopK}
+            placeholder="8"
+            onChange={(v) => set('defaultTopK', v as any)}
+          />
+        </FormRow>
+      )}
     </SettingsCard>
   );
 }
@@ -812,7 +830,10 @@ function RagSection({ config, onChange }: { config: EdgeClawConfig; onChange: (n
           config={config}
           endpointKey="localKnowledge"
           baseUrlPlaceholder="http://127.0.0.1:8701"
+          urlLabel="URL"
+          urlDescription="Retriever service root; scripts call POST /search under this URL."
           keyPlaceholder="retriever-api-key"
+          showDefaultTopK={false}
           onChange={onChange}
         />
 

@@ -74,8 +74,9 @@ class RagScriptTests(unittest.TestCase):
                 ]
             }
             os.environ["EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"] = fixture.base_url
-            os.environ["EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI"] = "http://milvus.example.com:19530"
             os.environ["EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY"] = "secret"
+            os.environ["EDGECLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME"] = "retriever-v1"
+            os.environ["EDGECLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL"] = f"{fixture.base_url}/search"
 
             result = local_knowledge_search.search_local_knowledge("air defense", top_k=3)
 
@@ -83,8 +84,10 @@ class RagScriptTests(unittest.TestCase):
         self.assertIn("Local evidence", result["context"])
         self.assertEqual(result["citations"][0]["id"], "doc-1")
         self.assertEqual(_Handler.last_request["path"], "/search")
-        self.assertEqual(_Handler.last_request["body"]["topK"], 3)
-        self.assertEqual(_Handler.last_request["body"]["milvusUri"], "http://milvus.example.com:19530")
+        self.assertEqual(_Handler.last_request["body"]["text"], "air defense")
+        self.assertEqual(_Handler.last_request["body"]["top_k"], 3)
+        self.assertNotIn("modelName", _Handler.last_request["body"])
+        self.assertNotIn("databaseUrl", _Handler.last_request["body"])
         self.assertEqual(_Handler.last_request["headers"]["Authorization"], "Bearer secret")
 
     def test_web_search_success(self):
@@ -113,7 +116,7 @@ class RagScriptTests(unittest.TestCase):
             os.environ["EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"] = fixture.base_url
             os.environ["EDGECLAW_RAG_LOCAL_KNOWLEDGE_TOP_K"] = "11"
             local_result = local_knowledge_search.search_local_knowledge("local query")
-            local_top_k = _Handler.last_request["body"]["topK"]
+            local_top_k = _Handler.last_request["body"]["top_k"]
 
             os.environ["EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL"] = f"{fixture.base_url}/api/paas/v4/web_search"
             os.environ["EDGECLAW_RAG_GLM_WEB_SEARCH_TOP_K"] = "10"

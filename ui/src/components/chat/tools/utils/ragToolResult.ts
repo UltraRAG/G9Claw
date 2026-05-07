@@ -98,6 +98,7 @@ function hasRagShape(payload: Record<string, any>): boolean {
     context.includes('9GClaw Local Knowledge Search') ||
     debug.provider === 'zai' ||
     'milvusUriConfigured' in debug ||
+    'databaseUrlConfigured' in debug ||
     citations.some((item) => item?.type === 'web' || item?.type === 'local_knowledge') ||
     Boolean(payload.error && (debug.url || ragErrorCodes.has(errorCode)))
   );
@@ -120,6 +121,7 @@ function inferSourceKind(payload: Record<string, any>): RagSourceKind {
 
   if (
     'milvusUriConfigured' in debug ||
+    'databaseUrlConfigured' in debug ||
     context.includes('Local Knowledge Search') ||
     citations.some((item) => item?.type === 'local_knowledge') ||
     results.some((item) => typeof item?.id === 'string' && item.id)

@@ -9,8 +9,9 @@ allowed-tools:
 # 9GClaw Local Knowledge Search
 
 Use this skill to retrieve context from the deployed local knowledge API.
-If `rag.localKnowledge.milvusUri` is configured, the script passes it to the
-retriever service as `milvusUri`.
+If `rag.localKnowledge.modelName` or `rag.localKnowledge.databaseUrl` are
+configured, the script passes them to the retriever service as `modelName` and
+`databaseUrl`.
 
 ## Command
 

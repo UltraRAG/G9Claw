@@ -67,8 +67,10 @@ test('normalizeEdgeClawConfig exposes default rag config', () => {
   assert.equal(config.rag.enabled, false);
   assert.equal(config.rag.disableBuiltInWebTools, true);
   assert.equal(config.rag.localKnowledge.baseUrl, '');
-  assert.equal(config.rag.localKnowledge.milvusUri, '');
+  assert.equal(config.rag.localKnowledge.milvusUri, undefined);
   assert.equal(config.rag.localKnowledge.apiKey, '');
+  assert.equal(config.rag.localKnowledge.modelName, '');
+  assert.equal(config.rag.localKnowledge.databaseUrl, '');
   assert.equal(config.rag.localKnowledge.defaultTopK, 8);
   assert.equal(config.rag.glmWebSearch.baseUrl, '');
   assert.equal(config.rag.glmWebSearch.apiKey, '');
@@ -81,8 +83,9 @@ test('buildRuntimeEnv exports rag settings', () => {
       enabled: true,
       localKnowledge: {
         baseUrl: 'https://local.example.com/',
-        milvusUri: 'http://milvus.example.com:19530',
         apiKey: 'local-secret',
+        modelName: 'retriever-v1',
+        databaseUrl: 'milvus://milvus.example.com:19530',
         defaultTopK: 5,
       },
       glmWebSearch: {
@@ -96,10 +99,25 @@ test('buildRuntimeEnv exports rag settings', () => {
   assert.equal(env.EDGECLAW_RAG_ENABLED, '1');
   assert.equal(env.EDGECLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS, '1');
   assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL, 'https://local.example.com');
-  assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI, 'http://milvus.example.com:19530');
   assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY, 'local-secret');
+  assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME, 'retriever-v1');
+  assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL, 'milvus://milvus.example.com:19530');
+  assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI, 'milvus://milvus.example.com:19530');
   assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_TOP_K, '5');
   assert.equal(env.EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL, 'https://web.example.com');
   assert.equal(env.EDGECLAW_RAG_GLM_WEB_SEARCH_API_KEY, 'web-secret');
   assert.equal(env.EDGECLAW_RAG_GLM_WEB_SEARCH_TOP_K, '6');
+});
+
+test('normalizeEdgeClawConfig migrates legacy local knowledge milvusUri to databaseUrl', () => {
+  const config = normalizeEdgeClawConfig({
+    rag: {
+      localKnowledge: {
+        milvusUri: 'http://legacy-milvus.example.com:19530',
+      },
+    },
+  });
+
+  assert.equal(config.rag.localKnowledge.databaseUrl, 'http://legacy-milvus.example.com:19530');
+  assert.equal(config.rag.localKnowledge.milvusUri, undefined);
 });

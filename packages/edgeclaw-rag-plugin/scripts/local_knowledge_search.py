@@ -2,12 +2,10 @@
 """Call the configured 9GClaw local knowledge search API.
 
 The API contract is fixed by 9GClaw v1:
-POST {EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL}/search
+POST {EDGECLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL}
 {
-  "query": string,
-  "topK": number,
-  "filters": object,
-  "milvusUri": string | null
+  "text": string,
+  "top_k": number
 }
 
 The script always prints a JSON envelope so skills can pass failures back to the
@@ -44,6 +42,13 @@ def _int_value(value: str | None, default: int) -> int:
 
 def _join_endpoint(base_url: str, endpoint: str) -> str:
     return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+
+
+def _resolve_search_endpoint(base_url: str, database_url: str) -> str:
+    configured = database_url or base_url
+    if configured.rstrip("/").endswith("/search"):
+        return configured.rstrip("/")
+    return _join_endpoint(configured, "/search")
 
 
 def _json_dumps(value: Any) -> str:
@@ -94,10 +99,29 @@ def _normalize_result(item: Any, index: int) -> dict[str, Any]:
     if not isinstance(metadata, dict):
         metadata = {}
 
-    content = item.get("content") or item.get("text") or item.get("snippet") or item.get("body") or ""
-    title = item.get("title") or item.get("name") or metadata.get("title") or f"Result {index + 1}"
-    result_id = item.get("id") or item.get("docId") or item.get("documentId") or metadata.get("id") or f"result-{index + 1}"
-    source = item.get("source") or metadata.get("source") or "local_knowledge"
+    entity = item.get("entity")
+    if not isinstance(entity, dict):
+        entity = {}
+
+    content = (
+        item.get("content")
+        or item.get("text")
+        or item.get("snippet")
+        or item.get("body")
+        or entity.get("text")
+        or entity.get("content")
+        or ""
+    )
+    title = item.get("title") or item.get("name") or metadata.get("title") or entity.get("title") or f"Result {index + 1}"
+    result_id = (
+        item.get("id")
+        or item.get("docId")
+        or item.get("documentId")
+        or metadata.get("id")
+        or entity.get("id")
+        or f"result-{index + 1}"
+    )
+    source = item.get("source") or metadata.get("source") or entity.get("source") or "local_knowledge"
 
     return {
         "id": str(result_id),
@@ -152,29 +176,35 @@ def search_local_knowledge(
     filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     base_url = _env("EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL")
-    milvus_uri = _env("EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI")
     api_key = _env("EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY")
+    database_url = _env("EDGECLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL") or _env("EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI")
+    model_name = _env("EDGECLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME")
     default_top_k = _int_value(_env("EDGECLAW_RAG_LOCAL_KNOWLEDGE_TOP_K"), 8)
     timeout_seconds = _int_value(_env("EDGECLAW_RAG_LOCAL_KNOWLEDGE_TIMEOUT_SECONDS"), DEFAULT_TIMEOUT_SECONDS)
 
     if _env("EDGECLAW_RAG_ENABLED", "0") in {"0", "false", "False", "no", "NO"}:
         return _error(query, "rag_disabled", "9GClaw RAG is disabled. Set rag.enabled: true in ~/.edgeclaw/config.yaml.")
-    if not base_url:
-        return _error(query, "missing_config", "EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL is not configured.")
+    if not base_url and not database_url:
+        return _error(
+            query,
+            "missing_config",
+            "EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL or EDGECLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL is not configured.",
+        )
 
     effective_top_k = top_k if top_k and top_k > 0 else default_top_k
     payload = {
-        "query": query,
-        "topK": effective_top_k,
-        "filters": filters or {},
+        "text": query,
+        "top_k": effective_top_k,
     }
-    if milvus_uri:
-        payload["milvusUri"] = milvus_uri
-    url = _join_endpoint(base_url, "/search")
+    if filters and isinstance(filters.get("output_fields"), list):
+        payload["output_fields"] = filters["output_fields"]
+    url = _resolve_search_endpoint(base_url, database_url)
     error_debug = {
         "url": url,
         "topK": effective_top_k,
-        "milvusUriConfigured": bool(milvus_uri),
+        "modelName": model_name,
+        "modelNameConfigured": bool(model_name),
+        "databaseUrlConfigured": bool(database_url),
     }
 
     try:
@@ -200,7 +230,9 @@ def search_local_knowledge(
                 "status": status,
                 "elapsedMs": elapsed_ms,
                 "topK": effective_top_k,
-                "milvusUriConfigured": bool(milvus_uri),
+                "modelName": model_name,
+                "modelNameConfigured": bool(model_name),
+                "databaseUrlConfigured": bool(database_url),
                 "resultCount": len(results),
             },
         }
