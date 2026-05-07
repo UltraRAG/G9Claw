@@ -108,6 +108,60 @@ class RagScriptTests(unittest.TestCase):
         self.assertEqual(result["citations"][0]["url"], "https://example.com/news")
         self.assertEqual(_Handler.last_request["body"]["freshnessDays"], 7)
 
+    def test_default_top_k_comes_from_environment(self):
+        with ServerFixture() as fixture:
+            os.environ["EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"] = fixture.base_url
+            os.environ["EDGECLAW_RAG_LOCAL_KNOWLEDGE_TOP_K"] = "11"
+            local_result = local_knowledge_search.search_local_knowledge("local query")
+            local_top_k = _Handler.last_request["body"]["topK"]
+
+            os.environ["EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL"] = f"{fixture.base_url}/api/paas/v4/web_search"
+            os.environ["EDGECLAW_RAG_GLM_WEB_SEARCH_TOP_K"] = "10"
+            web_result = glm_web_search.search_glm_web("web query")
+            web_count = _Handler.last_request["body"]["count"]
+
+        self.assertTrue(local_result["ok"])
+        self.assertEqual(local_top_k, 11)
+        self.assertTrue(web_result["ok"])
+        self.assertEqual(web_count, 10)
+
+    def test_zai_web_search_endpoint_success(self):
+        with ServerFixture() as fixture:
+            _Handler.response_body = {
+                "search_result": [
+                    {
+                        "title": "Z.AI News",
+                        "link": "https://example.com/zai",
+                        "content": "Z.AI current evidence",
+                        "media": "example.com",
+                        "publish_date": "2026-05-07",
+                    }
+                ]
+            }
+            os.environ["EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL"] = f"{fixture.base_url}/api/paas/v4/web_search"
+            os.environ["EDGECLAW_RAG_GLM_WEB_SEARCH_API_KEY"] = "web-secret"
+
+            result = glm_web_search.search_glm_web(
+                "current risk",
+                top_k=80,
+                freshness_days=7,
+                allowed_domains=["example.com"],
+                blocked_domains=["ignored.example.com"],
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["debug"]["provider"], "zai")
+        self.assertEqual(result["debug"]["topK"], 50)
+        self.assertEqual(result["citations"][0]["url"], "https://example.com/zai")
+        self.assertEqual(_Handler.last_request["path"], "/api/paas/v4/web_search")
+        self.assertEqual(_Handler.last_request["headers"]["Authorization"], "Bearer web-secret")
+        self.assertEqual(_Handler.last_request["body"]["search_engine"], "search-prime")
+        self.assertEqual(_Handler.last_request["body"]["search_query"], "current risk")
+        self.assertEqual(_Handler.last_request["body"]["count"], 50)
+        self.assertEqual(_Handler.last_request["body"]["search_recency_filter"], "oneWeek")
+        self.assertEqual(_Handler.last_request["body"]["search_domain_filter"], "example.com")
+        self.assertNotIn("blockedDomains", _Handler.last_request["body"])
+
     def test_missing_config_returns_json_error(self):
         result = local_knowledge_search.search_local_knowledge("query")
         self.assertFalse(result["ok"])

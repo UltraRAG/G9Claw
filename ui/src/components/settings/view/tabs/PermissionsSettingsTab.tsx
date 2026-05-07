@@ -28,11 +28,9 @@ const QUICK_ADD_TOOLS = [
   'MultiEdit',
   'Task',
   'TodoWrite',
-  'WebFetch',
-  'WebSearch',
 ];
 
-const QUICK_BLOCK_TOOLS = ['Bash(rm:*)', 'Bash(sudo:*)'];
+const QUICK_BLOCK_TOOLS = ['Bash(rm:*)', 'Bash(sudo:*)', 'WebFetch', 'WebSearch'];
 
 const addUnique = (items: string[], value: string): string[] => {
   const trimmed = value.trim();

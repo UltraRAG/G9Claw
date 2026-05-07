@@ -25,7 +25,10 @@ import {
 } from './services/notification-orchestrator.js';
 import { edgeclawAdapter } from './providers/edgeclaw/adapter.js';
 import { createNormalizedMessage } from './providers/types.js';
-import { getLeakedClaudeSdkSpawnOptions } from './claude-code-main-path.js';
+import {
+  getLeakedClaudeSdkSpawnOptions,
+  resolveBundledPluginDirs
+} from './claude-code-main-path.js';
 import { getClaudeRuntimeModelConfig } from './utils/claude-runtime-config.js';
 import {
   drainSessionCronNotifications,
@@ -39,9 +42,39 @@ const pendingToolApprovals = new Map();
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion']);
+const BUILT_IN_WEB_TOOLS = ['WebFetch', 'WebSearch'];
+const RAG_WEB_TOOL_GUIDANCE = [
+  '9GClaw RAG is enabled.',
+  'For network search, web research, current public facts, source-backed answers, or user requests mentioning web/search skills, use the 9GClaw RAG skills instead of built-in web tools.',
+  'Use skill 9gclaw-glm-web-search for public web search. Use skill 9gclaw-rag-research when local knowledge and web evidence should be combined.',
+  'Do not pass --top-k to RAG scripts unless the user explicitly asks to override the configured result count; the scripts read EDGECLAW_RAG_*_TOP_K from 9GClaw config.',
+  'Do not use WebFetch or WebSearch for search. If a page must be opened after search results are returned, prefer the URL snippets/citations from the RAG script unless the user explicitly asks to fetch a specific URL.',
+].join('\n');
 
 function normalizeEnvValue(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function isEnabledEnv(value) {
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
+function shouldDisableBuiltInWebTools() {
+  return (
+    isEnabledEnv(normalizeEnvValue(process.env.EDGECLAW_RAG_ENABLED).toLowerCase()) &&
+    normalizeEnvValue(process.env.EDGECLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS).toLowerCase() !== '0' &&
+    normalizeEnvValue(process.env.EDGECLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS).toLowerCase() !== 'false'
+  );
+}
+
+function addUniqueItems(items, additions) {
+  const out = Array.isArray(items) ? [...items] : [];
+  for (const item of additions) {
+    if (!out.includes(item)) {
+      out.push(item);
+    }
+  }
+  return out;
 }
 
 function buildClaudeSubprocessEnv() {
@@ -212,6 +245,7 @@ function mapCliOptionsToSDK(options = {}) {
   }
 
   let allowedTools = [...(settings.allowedTools || [])];
+  let disallowedTools = [...(settings.disallowedTools || [])];
 
   // Add plan mode default tools
   if (permissionMode === 'plan') {
@@ -223,6 +257,12 @@ function mapCliOptionsToSDK(options = {}) {
     }
   }
 
+  const disableBuiltInWebTools = shouldDisableBuiltInWebTools();
+  if (disableBuiltInWebTools) {
+    disallowedTools = addUniqueItems(disallowedTools, BUILT_IN_WEB_TOOLS);
+    allowedTools = allowedTools.filter(tool => !BUILT_IN_WEB_TOOLS.includes(tool));
+  }
+
   sdkOptions.allowedTools = allowedTools;
 
   // Use the tools preset to make all default built-in tools available (including AskUserQuestion).
@@ -230,7 +270,7 @@ function mapCliOptionsToSDK(options = {}) {
   // but being explicit ensures forward compatibility and clarity.
   sdkOptions.tools = { type: 'preset', preset: 'claude_code' };
 
-  sdkOptions.disallowedTools = settings.disallowedTools || [];
+  sdkOptions.disallowedTools = disallowedTools;
 
   // Map model (default resolved from runtime env/config)
   sdkOptions.model = options.model || getClaudeRuntimeModelConfig().defaultModel;
@@ -239,13 +279,21 @@ function mapCliOptionsToSDK(options = {}) {
   // Map system prompt configuration
   sdkOptions.systemPrompt = {
     type: 'preset',
-    preset: 'claude_code'  // Required to use CLAUDE.md
+    preset: 'claude_code',  // Required to use CLAUDE.md
+    ...(disableBuiltInWebTools ? { append: RAG_WEB_TOOL_GUIDANCE } : {})
   };
 
   // Map setting sources for CLAUDE.md loading
   // This loads CLAUDE.md from project, user (~/.config/claude/CLAUDE.md), and local directories
   sdkOptions.settingSources = ['project', 'user', 'local'];
   sdkOptions.env = buildClaudeSubprocessEnv();
+  const pluginDirs = resolveBundledPluginDirs();
+  if (pluginDirs.length > 0) {
+    sdkOptions.plugins = pluginDirs.map(pluginDir => ({
+      type: 'local',
+      path: pluginDir
+    }));
+  }
 
   // Map resume session
   if (sessionId) {
@@ -801,15 +849,15 @@ async function queryClaudeSDK(command, options = {}, ws) {
       const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
 
       if (!requiresInteraction) {
-        if (sdkOptions.permissionMode === 'bypassPermissions') {
-          return { behavior: 'allow', updatedInput: input };
-        }
-
         const isDisallowed = (sdkOptions.disallowedTools || []).some(entry =>
           matchesToolPermission(entry, toolName, input)
         );
         if (isDisallowed) {
           return { behavior: 'deny', message: 'Tool disallowed by settings' };
+        }
+
+        if (sdkOptions.permissionMode === 'bypassPermissions') {
+          return { behavior: 'allow', updatedInput: input };
         }
 
         const isAllowed = (sdkOptions.allowedTools || []).some(entry =>

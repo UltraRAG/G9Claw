@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlparse
 
 
 DEFAULT_TIMEOUT_SECONDS = 15
@@ -29,8 +30,16 @@ def _int_value(value: str | None, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
-def _join_endpoint(base_url: str, endpoint: str) -> str:
-    return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+def _resolve_search_endpoint(configured_url: str) -> str:
+    parsed = urlparse(configured_url)
+    if parsed.path and parsed.path != "/":
+        return configured_url.rstrip("/")
+    return f"{configured_url.rstrip('/')}/search"
+
+
+def _is_zai_web_search_endpoint(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.path.rstrip("/").endswith("/web_search")
 
 
 def _json_dumps(value: Any) -> str:
@@ -42,7 +51,7 @@ def _extract_items(response: Any) -> list[Any]:
         return response
     if not isinstance(response, dict):
         return []
-    for key in ("results", "items", "webPages", "data"):
+    for key in ("search_result", "results", "items", "webPages", "data"):
         value = response.get(key)
         if isinstance(value, list):
             return value
@@ -67,8 +76,8 @@ def _normalize_result(item: Any, index: int) -> dict[str, Any]:
     title = item.get("title") or item.get("name") or f"Result {index + 1}"
     url = item.get("url") or item.get("link") or item.get("href") or ""
     snippet = item.get("snippet") or item.get("summary") or item.get("content") or item.get("text") or ""
-    published_at = item.get("publishedAt") or item.get("published_at") or item.get("date") or ""
-    source = item.get("source") or item.get("site") or "glm_web_search"
+    published_at = item.get("publishedAt") or item.get("published_at") or item.get("publish_date") or item.get("date") or ""
+    source = item.get("source") or item.get("site") or item.get("media") or "glm_web_search"
 
     return {
         "title": str(title),
@@ -115,6 +124,38 @@ def _request_json(url: str, api_key: str, payload: dict[str, Any], timeout_secon
     return json.loads(raw) if raw.strip() else {}, status, elapsed_ms
 
 
+def _zai_recency_filter(freshness_days: int | None) -> str:
+    if not freshness_days or freshness_days <= 0:
+        return "noLimit"
+    if freshness_days <= 1:
+        return "oneDay"
+    if freshness_days <= 7:
+        return "oneWeek"
+    if freshness_days <= 31:
+        return "oneMonth"
+    if freshness_days <= 366:
+        return "oneYear"
+    return "noLimit"
+
+
+def _zai_payload(
+    query: str,
+    *,
+    count: int,
+    freshness_days: int | None,
+    allowed_domains: list[str] | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "search_engine": "search-prime",
+        "search_query": query,
+        "count": max(1, min(count, 50)),
+        "search_recency_filter": _zai_recency_filter(freshness_days),
+    }
+    if allowed_domains:
+        payload["search_domain_filter"] = allowed_domains[0]
+    return payload
+
+
 def search_glm_web(
     query: str,
     *,
@@ -134,18 +175,32 @@ def search_glm_web(
         return _error(query, "missing_config", "EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL is not configured.")
 
     effective_top_k = top_k if top_k and top_k > 0 else default_top_k
-    payload: dict[str, Any] = {
-        "query": query,
-        "topK": effective_top_k,
-    }
-    if freshness_days and freshness_days > 0:
-        payload["freshnessDays"] = freshness_days
-    if allowed_domains:
-        payload["allowedDomains"] = allowed_domains
-    if blocked_domains:
-        payload["blockedDomains"] = blocked_domains
+    url = _resolve_search_endpoint(base_url)
+    is_zai = _is_zai_web_search_endpoint(url)
+    if is_zai:
+        payload = _zai_payload(
+            query,
+            count=effective_top_k,
+            freshness_days=freshness_days,
+            allowed_domains=allowed_domains,
+        )
+    else:
+        payload: dict[str, Any] = {
+            "query": query,
+            "topK": effective_top_k,
+        }
+        if freshness_days and freshness_days > 0:
+            payload["freshnessDays"] = freshness_days
+        if allowed_domains:
+            payload["allowedDomains"] = allowed_domains
+        if blocked_domains:
+            payload["blockedDomains"] = blocked_domains
 
-    url = _join_endpoint(base_url, "/search")
+    error_debug = {
+        "url": url,
+        "provider": "zai" if is_zai else "generic",
+        "topK": payload.get("count", effective_top_k),
+    }
 
     try:
         raw, status, elapsed_ms = _request_json(url, api_key, payload, timeout_seconds)
@@ -168,23 +223,24 @@ def search_glm_web(
             "citations": citations,
             "debug": {
                 "url": url,
+                "provider": "zai" if is_zai else "generic",
                 "status": status,
                 "elapsedMs": elapsed_ms,
-                "topK": effective_top_k,
+                "topK": payload.get("count", effective_top_k),
                 "resultCount": len(results),
             },
         }
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        return _error(query, "http_error", f"HTTP {exc.code}: {detail or exc.reason}", {"url": url, "status": exc.code})
+        return _error(query, "http_error", f"HTTP {exc.code}: {detail or exc.reason}", {**error_debug, "status": exc.code})
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):
-            return _error(query, "timeout", f"Request timed out after {timeout_seconds}s.", {"url": url})
-        return _error(query, "request_error", str(exc.reason), {"url": url})
+            return _error(query, "timeout", f"Request timed out after {timeout_seconds}s.", error_debug)
+        return _error(query, "request_error", str(exc.reason), error_debug)
     except TimeoutError:
-        return _error(query, "timeout", f"Request timed out after {timeout_seconds}s.", {"url": url})
+        return _error(query, "timeout", f"Request timed out after {timeout_seconds}s.", error_debug)
     except json.JSONDecodeError as exc:
-        return _error(query, "invalid_json", str(exc), {"url": url})
+        return _error(query, "invalid_json", str(exc), error_debug)
 
 
 def _error(query: str, code: str, message: str, debug: dict[str, Any] | None = None) -> dict[str, Any]:

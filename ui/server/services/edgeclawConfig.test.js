@@ -65,6 +65,7 @@ test('normalizeEdgeClawConfig exposes default rag config', () => {
   const config = normalizeEdgeClawConfig({});
 
   assert.equal(config.rag.enabled, false);
+  assert.equal(config.rag.disableBuiltInWebTools, true);
   assert.equal(config.rag.localKnowledge.baseUrl, '');
   assert.equal(config.rag.localKnowledge.milvusUri, '');
   assert.equal(config.rag.localKnowledge.apiKey, '');
@@ -93,6 +94,7 @@ test('buildRuntimeEnv exports rag settings', () => {
   });
 
   assert.equal(env.EDGECLAW_RAG_ENABLED, '1');
+  assert.equal(env.EDGECLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS, '1');
   assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL, 'https://local.example.com');
   assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI, 'http://milvus.example.com:19530');
   assert.equal(env.EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY, 'local-secret');

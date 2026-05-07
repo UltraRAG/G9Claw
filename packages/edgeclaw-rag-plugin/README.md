@@ -18,20 +18,29 @@ that call the RAG HTTP APIs configured through `~/.edgeclaw/config.yaml`.
 ```yaml
 rag:
   enabled: true
+  disableBuiltInWebTools: true
   localKnowledge:
     baseUrl: "https://local-knowledge.example.com"
     milvusUri: "http://127.0.0.1:19530"
     apiKey: "..."
     defaultTopK: 8
   glmWebSearch:
-    baseUrl: "https://glm-web-search.example.com"
+    baseUrl: "https://api.z.ai/api/paas/v4/web_search"
     apiKey: "..."
     defaultTopK: 8
 ```
 
+For Z.AI Web Search, put the full `/api/paas/v4/web_search` endpoint in
+`rag.glmWebSearch.baseUrl`. For a self-hosted compatible web-search service,
+you may still put only the service root; the script will call `POST /search`.
+
 The 9GClaw runtime exports these values as `EDGECLAW_RAG_*` environment
 variables. The Python scripts only read environment variables and use the Python
 standard library.
+
+Skills should omit `--top-k` in their default commands. Passing `--top-k`
+explicitly overrides `rag.*.defaultTopK`; use it only when the user asks for a
+different result count.
 
 ## Loading
 

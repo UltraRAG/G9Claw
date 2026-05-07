@@ -21,6 +21,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let didLogSpawn = false;
+let didLogPlugins = false;
 
 function packageRootDir() {
   return path.resolve(__dirname, '..');
@@ -69,6 +70,38 @@ export function resolveClaudeCodeMainRoot() {
   }
 
   return null;
+}
+
+export function resolveBundledPluginDirs() {
+  const repoRoot = path.resolve(packageRootDir(), '..');
+  const defaultPluginDirs = [
+    path.join(repoRoot, 'packages', 'turnkey-cc-plugin'),
+    path.join(repoRoot, 'packages', 'edgeclaw-rag-plugin'),
+  ];
+
+  let pluginDirs;
+  if (!Object.prototype.hasOwnProperty.call(process.env, 'PLUGIN_DIR')) {
+    pluginDirs = defaultPluginDirs;
+  } else if (process.env.PLUGIN_DIR && process.env.PLUGIN_DIR.trim()) {
+    pluginDirs = [path.resolve(process.env.PLUGIN_DIR.trim())];
+  } else {
+    pluginDirs = [];
+  }
+
+  const validPluginDirs = pluginDirs.filter(pluginDir => fs.existsSync(path.join(pluginDir, '.claude-plugin', 'plugin.json')));
+
+  if (!didLogPlugins) {
+    didLogPlugins = true;
+    if (validPluginDirs.length > 0) {
+      console.log(`[cloudcli] Claude Agent SDK bundled plugins: ${validPluginDirs.join(', ')}`);
+    } else if (pluginDirs.length > 0) {
+      console.warn(`[cloudcli] No valid bundled plugins found from: ${pluginDirs.join(', ')}`);
+    } else {
+      console.log('[cloudcli] Bundled plugin loading disabled by PLUGIN_DIR=');
+    }
+  }
+
+  return validPluginDirs;
 }
 
 /**

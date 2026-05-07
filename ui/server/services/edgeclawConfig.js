@@ -255,6 +255,7 @@ export function buildDefaultEdgeClawConfig() {
     },
     rag: {
       enabled: false,
+      disableBuiltInWebTools: true,
       localKnowledge: {
         baseUrl: '',
         milvusUri: '',
@@ -548,6 +549,7 @@ export function buildRuntimeEnv(config) {
     API_TIMEOUT_MS: String(runtime.apiTimeoutMs ?? 120000),
     EDGECLAW_MEMORY_ENABLED: normalized.memory.enabled ? '1' : '0',
     EDGECLAW_RAG_ENABLED: normalized.rag.enabled ? '1' : '0',
+    EDGECLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS: normalized.rag.disableBuiltInWebTools ? '1' : '0',
     EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL: stripTrailingSlash(normalized.rag.localKnowledge.baseUrl),
     EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI: normalized.rag.localKnowledge.milvusUri || '',
     EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY: normalized.rag.localKnowledge.apiKey || '',

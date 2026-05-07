@@ -171,6 +171,11 @@ def search_local_knowledge(
     if milvus_uri:
         payload["milvusUri"] = milvus_uri
     url = _join_endpoint(base_url, "/search")
+    error_debug = {
+        "url": url,
+        "topK": effective_top_k,
+        "milvusUriConfigured": bool(milvus_uri),
+    }
 
     try:
         raw, status, elapsed_ms = _request_json(url, api_key, payload, timeout_seconds)
@@ -201,15 +206,15 @@ def search_local_knowledge(
         }
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        return _error(query, "http_error", f"HTTP {exc.code}: {detail or exc.reason}", {"url": url, "status": exc.code})
+        return _error(query, "http_error", f"HTTP {exc.code}: {detail or exc.reason}", {**error_debug, "status": exc.code})
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):
-            return _error(query, "timeout", f"Request timed out after {timeout_seconds}s.", {"url": url})
-        return _error(query, "request_error", str(exc.reason), {"url": url})
+            return _error(query, "timeout", f"Request timed out after {timeout_seconds}s.", error_debug)
+        return _error(query, "request_error", str(exc.reason), error_debug)
     except TimeoutError:
-        return _error(query, "timeout", f"Request timed out after {timeout_seconds}s.", {"url": url})
+        return _error(query, "timeout", f"Request timed out after {timeout_seconds}s.", error_debug)
     except json.JSONDecodeError as exc:
-        return _error(query, "invalid_json", str(exc), {"url": url})
+        return _error(query, "invalid_json", str(exc), error_debug)
 
 
 def _error(query: str, code: str, message: str, debug: dict[str, Any] | None = None) -> dict[str, Any]:

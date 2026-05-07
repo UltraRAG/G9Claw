@@ -79,6 +79,7 @@ type EdgeClawConfig = {
   memory?: { enabled?: boolean; model?: string; params?: Record<string, unknown> };
   rag?: {
     enabled?: boolean;
+    disableBuiltInWebTools?: boolean;
     localKnowledge?: {
       baseUrl?: string;
       milvusUri?: string;
@@ -691,6 +692,8 @@ function RagEndpointCard({
   config,
   endpointKey,
   baseUrlPlaceholder,
+  urlLabel = 'Base URL',
+  urlDescription = 'Service root; scripts call POST /search under this URL.',
   keyPlaceholder,
   onChange,
 }: {
@@ -699,6 +702,8 @@ function RagEndpointCard({
   config: EdgeClawConfig;
   endpointKey: RagEndpointKey;
   baseUrlPlaceholder: string;
+  urlLabel?: string;
+  urlDescription?: string;
   keyPlaceholder: string;
   onChange: (next: EdgeClawConfig) => void;
 }) {
@@ -719,7 +724,7 @@ function RagEndpointCard({
         <div className="text-sm font-semibold text-foreground">{title}</div>
         <div className="mt-0.5 text-xs text-muted-foreground">{description}</div>
       </div>
-      <FormRow label="Base URL" description="Service root; scripts call POST /search under this URL.">
+      <FormRow label={urlLabel} description={urlDescription}>
         <TextInput
           value={endpoint.baseUrl}
           placeholder={baseUrlPlaceholder}
@@ -788,6 +793,19 @@ function RagSection({ config, onChange }: { config: EdgeClawConfig; onChange: (n
           </SettingsRow>
         </SettingsCard>
 
+        <SettingsCard>
+          <SettingsRow
+            label="Disable built-in web tools"
+            description="When RAG is enabled, hide WebFetch/WebSearch from model-visible tools so web search goes through 9GClaw RAG skills."
+          >
+            <SettingsToggle
+              checked={rag.disableBuiltInWebTools !== false}
+              ariaLabel="Disable built-in web tools"
+              onChange={(v) => onChange(patch(config, ['rag', 'disableBuiltInWebTools'], v))}
+            />
+          </SettingsRow>
+        </SettingsCard>
+
         <RagEndpointCard
           title="Local knowledge / Retriever"
           description="Private or curated knowledge base retrieval endpoint, including Milvus-backed services."
@@ -799,11 +817,13 @@ function RagSection({ config, onChange }: { config: EdgeClawConfig; onChange: (n
         />
 
         <RagEndpointCard
-          title="GLM Web Search"
+          title="Z.AI / GLM Web Search"
           description="Public web search endpoint used for current information and URL-backed citations."
           config={config}
           endpointKey="glmWebSearch"
-          baseUrlPlaceholder="http://127.0.0.1:8702"
+          baseUrlPlaceholder="https://api.z.ai/api/paas/v4/web_search"
+          urlLabel="Endpoint URL"
+          urlDescription="Direct POST endpoint. Z.AI uses /api/paas/v4/web_search; root URLs still fall back to POST /search."
           keyPlaceholder="glm-web-search-api-key"
           onChange={onChange}
         />
