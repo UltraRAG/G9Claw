@@ -2,7 +2,8 @@ import React, { memo, useMemo, useCallback } from 'react';
 import type { Project } from '../../../types/app';
 import type { SubagentChildTool } from '../types/types';
 import { getToolConfig } from './configs/toolConfigs';
-import { OneLineDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer } from './components';
+import { OneLineDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer, RagResultContent } from './components';
+import { parseRagToolResult } from './utils/ragToolResult';
 
 type DiffLine = {
   type: string;
@@ -144,6 +145,11 @@ const ToolRendererInner: React.FC<ToolRendererProps> = ({
     }
   }, [mode, toolInput, toolResult]);
 
+  const ragResult = useMemo(() => {
+    if (mode !== 'result' || toolName !== 'Bash') return null;
+    return parseRagToolResult(toolResult);
+  }, [mode, toolName, toolResult]);
+
   const handleAction = useCallback(() => {
     if (displayConfig?.action === 'open-file' && onFileOpen) {
       const value = toDisplayString(
@@ -168,6 +174,23 @@ const ToolRendererInner: React.FC<ToolRendererProps> = ({
   }
 
   if (!displayConfig) return null;
+
+  if (ragResult) {
+    const count = ragResult.debug.resultCount ?? ragResult.results.length;
+    const title = `${ragResult.sourceLabel}: ${count} ${count === 1 ? 'result' : 'results'}`;
+
+    return (
+      <CollapsibleDisplay
+        toolName="RAG"
+        toolId={toolId}
+        title={title}
+        defaultOpen
+        toolCategory="search"
+      >
+        <RagResultContent data={ragResult} />
+      </CollapsibleDisplay>
+    );
+  }
 
   if (displayConfig.type === 'one-line') {
     const value = toDisplayString(

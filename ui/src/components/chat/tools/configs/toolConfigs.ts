@@ -1,3 +1,5 @@
+import { parseRagToolResult } from '../utils/ragToolResult';
+
 /**
  * Centralized tool configuration registry
  * Defines display behavior for all tool types 
@@ -705,6 +707,9 @@ export function shouldHideToolResult(toolName: string, toolResult: any): boolean
 
   // Hide on success only
   if (config.result.hideOnSuccess && toolResult && !toolResult.isError) {
+    if (toolName === 'Bash' && parseRagToolResult(toolResult)) {
+      return false;
+    }
     return true;
   }
 
