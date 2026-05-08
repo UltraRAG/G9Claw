@@ -409,6 +409,17 @@ function extractContentText(msg: any): string | undefined {
   return unwrapJsonQuery(raw);
 }
 
+function isSyntheticReminderText(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.startsWith('<system-reminder>') || trimmed.includes('</system-reminder>');
+}
+
+function extractUsableUserText(msg: any): string | undefined {
+  const text = extractContentText(msg);
+  if (!text || isSyntheticReminderText(text)) return undefined;
+  return text;
+}
+
 function extractQuerySnippet(body: any, isSubagent?: boolean): string | undefined {
   try {
     const messages = body.messages;
@@ -416,16 +427,16 @@ function extractQuerySnippet(body: any, isSubagent?: boolean): string | undefine
 
     if (isSubagent) {
       const userMsgs = messages.filter((m: any) => m.role === 'user');
-      const last = userMsgs[userMsgs.length - 1];
+      const last = [...userMsgs].reverse().find((m: any) => extractUsableUserText(m));
       if (!last) return undefined;
-      const text = extractContentText(last);
+      const text = extractUsableUserText(last);
       if (!text) return undefined;
       return text.length > 120 ? text.slice(0, 120) + '…' : text;
     }
 
-    const lastUser = [...messages].reverse().find((m: any) => m.role === 'user');
+    const lastUser = [...messages].reverse().find((m: any) => m.role === 'user' && extractUsableUserText(m));
     if (!lastUser) return undefined;
-    const text = extractContentText(lastUser);
+    const text = extractUsableUserText(lastUser);
     if (!text) return undefined;
     return text.length > 120 ? text.slice(0, 120) + '…' : text;
   } catch {

@@ -151,12 +151,14 @@ export async function startEmbeddedCCR(options = {}) {
     },
   };
 
-  // Set ANTHROPIC_BASE_URL so CC subprocesses (spawned by the UI server)
-  // also go through CCR. They'll use the sentinel URL which the fetch
-  // interceptor (installed in their preload.ts) will handle.
-  // For subprocesses that don't have the interceptor, this is harmless —
-  // the sentinel URL will fail, and CC falls back to direct API.
-  process.env.ANTHROPIC_BASE_URL = 'http://ccr.local';
+  // Keep Claude SDK subprocesses on the central 9GClaw proxy. The proxy owns
+  // the live CCR router and token-stats collector used by the routing
+  // dashboard. Sending subprocesses to the zero-port ccr.local sentinel would
+  // create per-process collectors that the UI cannot aggregate.
+  if (!process.env.ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL === 'http://ccr.local') {
+    const proxyPort = process.env.PROXY_PORT || process.env.EDGECLAW_PROXY_PORT || '18080';
+    process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxyPort}`;
+  }
 
   return { port: null, baseUrl: null, reused: false, zeroPorts: true };
 }

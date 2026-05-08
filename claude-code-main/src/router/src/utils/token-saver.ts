@@ -78,24 +78,71 @@ export function parseTier(
 
 // ── Message extraction ──
 
+function unwrapStructuredQuery(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) return raw;
+  try {
+    const obj = JSON.parse(trimmed);
+    const candidates = [
+      obj.query,
+      obj.focus_user_turn?.content,
+      ...(Array.isArray(obj.recent_messages)
+        ? [...obj.recent_messages].reverse().map((m: any) => m?.role === "user" ? m.content : undefined)
+        : []),
+    ];
+    const match = candidates.find((value) => typeof value === "string" && value.trim().length > 0);
+    return match || raw;
+  } catch {
+    return raw;
+  }
+}
+
+function isSyntheticReminder(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.startsWith("<system-reminder>") || trimmed.includes("</system-reminder>");
+}
+
+function extractUserMessageText(msg: any, includeToolResults = false): string {
+  if (typeof msg.content === "string") {
+    const text = unwrapStructuredQuery(msg.content).trim();
+    return text && !isSyntheticReminder(text) ? text : "";
+  }
+
+  if (!Array.isArray(msg.content)) return "";
+
+  const texts: string[] = [];
+  for (const block of msg.content) {
+    if (block.type === "text" && block.text) {
+      const text = unwrapStructuredQuery(String(block.text)).trim();
+      if (text && !isSyntheticReminder(text)) texts.push(text);
+    }
+    if (includeToolResults && block.type === "tool_result") {
+      const text = typeof block.content === "string"
+        ? block.content
+        : JSON.stringify(block.content);
+      if (text.trim()) texts.push(text);
+    }
+  }
+  return texts.join("\n");
+}
+
 export function extractLastUserMessage(messages: any[]): string {
   if (!Array.isArray(messages)) return "";
+  let toolResultFallback = "";
+
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg.role !== "user") continue;
-    if (typeof msg.content === "string") return msg.content;
-    if (Array.isArray(msg.content)) {
-      const texts: string[] = [];
-      for (const block of msg.content) {
-        if (block.type === "text" && block.text) texts.push(block.text);
-        if (block.type === "tool_result") {
-          if (typeof block.content === "string") texts.push(block.content);
-        }
-      }
-      if (texts.length > 0) return texts.join("\n");
+
+    const userText = extractUserMessageText(msg);
+    if (userText) return userText;
+
+    if (!toolResultFallback) {
+      toolResultFallback = extractUserMessageText(msg, true);
     }
   }
-  return "";
+
+  return toolResultFallback;
 }
 
 // ── Sub-agent detection ──
