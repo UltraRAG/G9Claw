@@ -34,9 +34,6 @@ export const DEFAULT_TOKEN_SAVER = {
     'Single-file edits, code review -> MEDIUM',
     'Multi-file tasks, refactoring -> COMPLEX',
     'Novel architecture, deep analysis -> REASONING',
-    'RAG, cited research, web/local knowledge synthesis, or source-backed reports -> REASONING',
-    'HTML/webpage/dashboard generation that requires research or citations -> REASONING',
-    'Military, DARPA, intelligence, operational assessment, or future capability analysis -> REASONING',
   ],
 } as const;
 

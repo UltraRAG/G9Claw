@@ -111,33 +111,6 @@ function unwrapStructuredQuery(raw: string): string {
   }
 }
 
-function pickAvailableTier(config: TokenSaverConfig, preferred: string[]): string | null {
-  for (const tier of preferred) {
-    if (config.tiers[tier]) return tier;
-  }
-  return null;
-}
-
-function inferDeterministicTier(
-  userMessage: string,
-  config: TokenSaverConfig,
-): string | null {
-  const lower = userMessage.toLowerCase();
-  const hasResearchSignal =
-    /darpa|rag|research|source|sources|citation|citations|web search|local knowledge|milvus|military|intelligence/.test(lower) ||
-    /军事|情报|作战|战场|无人系统|大模型|新材料|生物技术|知识库|网络搜索|引用|来源|检索/.test(userMessage);
-
-  const hasComplexDeliverable =
-    /html|website|webpage|dashboard|report|brief|architecture|risk|timeline|assessment|analysis/.test(lower) ||
-    /网页|网站|静态|报告|简报|架构|风险|时间线|评估|分析|综合|未来五年/.test(userMessage);
-
-  if (hasResearchSignal && hasComplexDeliverable) {
-    return pickAvailableTier(config, ["REASONING", "COMPLEX"]);
-  }
-
-  return null;
-}
-
 function isSyntheticReminder(text: string): boolean {
   const trimmed = text.trim();
   return trimmed.startsWith("<system-reminder>") || trimmed.includes("</system-reminder>");
@@ -280,13 +253,6 @@ export async function classifyAndRoute(
   if (!userMessage.trim()) {
     const target = config.tiers[defaultTier];
     return target ? { model: target.model, tier: defaultTier } : null;
-  }
-
-  const deterministicTier = inferDeterministicTier(userMessage, config);
-  if (deterministicTier) {
-    const target = config.tiers[deterministicTier];
-    console.error(`[TokenSaver] deterministic query="${userMessage.slice(0,40)}" → tier=${deterministicTier}`);
-    return target ? { model: target.model, tier: deterministicTier } : null;
   }
 
   try {
