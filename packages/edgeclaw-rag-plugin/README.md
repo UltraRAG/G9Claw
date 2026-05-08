@@ -20,10 +20,12 @@ rag:
   enabled: true
   disableBuiltInWebTools: true
   localKnowledge:
+    # Embedding / model service URL.
     baseUrl: "https://local-knowledge.example.com"
     apiKey: "..."
     modelName: "retriever-v1"
-    databaseUrl: "milvus://127.0.0.1:19530"
+    # Local knowledge search endpoint.
+    databaseUrl: "http://127.0.0.1:52008/search"
     defaultTopK: 8
   glmWebSearch:
     baseUrl: "https://api.z.ai/api/paas/v4/web_search"

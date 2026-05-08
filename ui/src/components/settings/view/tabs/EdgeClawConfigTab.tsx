@@ -765,12 +765,12 @@ function RagEndpointCard({
             />
           </FormRow>
           <FormRow
-            label="Database URL"
-            description="Knowledge database connection URL passed through to the local retriever service."
+            label="Search URL"
+            description="Local knowledge search endpoint. Scripts POST text/top_k directly to this URL."
           >
             <TextInput
               value={localKnowledge.databaseUrl}
-              placeholder="milvus://127.0.0.1:19530"
+              placeholder="http://127.0.0.1:52008/search"
               monospace
               onChange={(v) => onChange(patch(config, ['rag', 'localKnowledge', 'databaseUrl'], v))}
             />
@@ -829,9 +829,9 @@ function RagSection({ config, onChange }: { config: EdgeClawConfig; onChange: (n
           description="Private or curated knowledge base retrieval endpoint, including Milvus-backed services."
           config={config}
           endpointKey="localKnowledge"
-          baseUrlPlaceholder="http://127.0.0.1:8701"
-          urlLabel="URL"
-          urlDescription="Retriever service root; scripts call POST /search under this URL."
+          baseUrlPlaceholder="http://127.0.0.1:52005/v1"
+          urlLabel="Embedding / Model URL"
+          urlDescription="Embedding or model service URL used by the retriever stack. If Search URL is empty, scripts fall back to POST /search under this URL."
           keyPlaceholder="retriever-api-key"
           showDefaultTopK={false}
           onChange={onChange}
