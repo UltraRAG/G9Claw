@@ -8,6 +8,7 @@ const CDP_PORT = 9222;
 const CDP_HOST = '127.0.0.1';
 
 let chromeProcess = null;
+let cdpInitPromise = null;
 
 function getUserDataDir() {
   const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
@@ -143,6 +144,28 @@ export async function ensureGlobalChrome() {
     return `http://${CDP_HOST}:${CDP_PORT}`;
   }
   return null;
+}
+
+export async function ensureCDPUrl() {
+  if (process.env.CDP_URL && await isCDPHealthy()) {
+    return process.env.CDP_URL;
+  }
+
+  if (!cdpInitPromise) {
+    cdpInitPromise = ensureGlobalChrome()
+      .then((url) => {
+        if (url) {
+          process.env.CDP_URL = url;
+          startChromeHealthCheck();
+        }
+        return url;
+      })
+      .finally(() => {
+        cdpInitPromise = null;
+      });
+  }
+
+  return cdpInitPromise;
 }
 
 export async function restartGlobalChrome() {

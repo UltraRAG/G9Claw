@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { parse as parseYaml } from 'yaml'
+import { DEFAULT_AUTO_ORCHESTRATE, DEFAULT_TOKEN_SAVER } from './ccr-defaults'
 
 export type EdgeClawProviderType = 'openai-chat' | 'openai-responses' | 'anthropic' | 'litellm' | 'ccr'
 
@@ -11,6 +12,8 @@ export interface EdgeClawProviderConfig {
   apiKey?: string
   headers?: Record<string, string>
   transformer?: unknown
+  local?: boolean
+  costMode?: string
 }
 
 export interface EdgeClawModelEntry {
@@ -68,10 +71,13 @@ export interface EdgeClawConfig {
   }
   rag?: {
     enabled?: boolean
+    disableBuiltInWebTools?: boolean
     localKnowledge?: {
       baseUrl?: string
+      databaseUrl?: string
       milvusUri?: string
       apiKey?: string
+      modelName?: string
       defaultTopK?: number
     }
     glmWebSearch?: {
@@ -164,10 +170,12 @@ function defaultConfig(): EdgeClawConfig {
     },
     rag: {
       enabled: false,
+      disableBuiltInWebTools: true,
       localKnowledge: {
         baseUrl: '',
-        milvusUri: '',
         apiKey: '',
+        modelName: '',
+        databaseUrl: '',
         defaultTopK: 8,
       },
       glmWebSearch: {
@@ -179,6 +187,25 @@ function defaultConfig(): EdgeClawConfig {
     router: { enabled: false },
     gateway: { enabled: false, home: join(homedir(), '.edgeclaw', 'gateway') },
   }
+}
+
+function isZeroCostProvider(providerId: string, provider: EdgeClawProviderConfig | undefined): boolean {
+  const id = normalize(providerId).toLowerCase()
+  if (id === 'edgeclaw' || id === 'edgeclaw_memory' || id.startsWith('edgeclaw_')) {
+    return true
+  }
+  return provider?.local === true || provider?.costMode === 'local'
+}
+
+function buildZeroCostModelPricing(config: EdgeClawConfig): Record<string, { inputPer1M: number; outputPer1M: number }> {
+  const pricing: Record<string, { inputPer1M: number; outputPer1M: number }> = {}
+  for (const entry of Object.values(config.models?.entries ?? {})) {
+    if (!entry?.provider || !entry?.name) continue
+    const provider = config.models?.providers?.[entry.provider]
+    if (!isZeroCostProvider(entry.provider, provider)) continue
+    pricing[`${entry.provider},${entry.name}`] = { inputPer1M: 0, outputPer1M: 0 }
+  }
+  return pricing
 }
 
 function deepMerge<T>(base: T, override: unknown): T {
@@ -257,9 +284,12 @@ export function buildRuntimeEnvFromConfig(config: EdgeClawConfig): Record<string
     API_TIMEOUT_MS: String(config.runtime?.apiTimeoutMs ?? 120000),
     EDGECLAW_MEMORY_ENABLED: config.memory?.enabled === false ? '0' : '1',
     EDGECLAW_RAG_ENABLED: config.rag?.enabled ? '1' : '0',
+    EDGECLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS: config.rag?.disableBuiltInWebTools === false ? '0' : '1',
     EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL: stripTrailingSlash(config.rag?.localKnowledge?.baseUrl),
-    EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI: normalize(config.rag?.localKnowledge?.milvusUri),
     EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY: config.rag?.localKnowledge?.apiKey ?? '',
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME: normalize(config.rag?.localKnowledge?.modelName),
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL: normalize(config.rag?.localKnowledge?.databaseUrl ?? config.rag?.localKnowledge?.milvusUri),
+    EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI: normalize(config.rag?.localKnowledge?.databaseUrl ?? config.rag?.localKnowledge?.milvusUri),
     EDGECLAW_RAG_LOCAL_KNOWLEDGE_TOP_K: String(config.rag?.localKnowledge?.defaultTopK ?? 8),
     EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL: stripTrailingSlash(config.rag?.glmWebSearch?.baseUrl),
     EDGECLAW_RAG_GLM_WEB_SEARCH_API_KEY: config.rag?.glmWebSearch?.apiKey ?? '',
@@ -355,7 +385,7 @@ export function buildCcrConfigFromEdgeClawConfig(config = loadEdgeClawConfig()) 
   }))
   const router: any = (config as any).router ?? {}
   const routes = router.routes ?? {}
-  const tokenSaver = structuredClone(router.tokenSaver ?? { enabled: false })
+  const tokenSaver = deepMerge(structuredClone(DEFAULT_TOKEN_SAVER) as any, router.tokenSaver ?? {}) as any
   if (tokenSaver.judgeModel) {
     const judge = resolveEdgeClawModel(config, tokenSaver.judgeModel)
     if (judge) {
@@ -369,7 +399,7 @@ export function buildCcrConfigFromEdgeClawConfig(config = loadEdgeClawConfig()) 
       if (resolved) tier.model = `${resolved.providerId},${resolved.model}`
     }
   }
-  const autoOrchestrate = structuredClone(router.autoOrchestrate ?? { enabled: false })
+  const autoOrchestrate = deepMerge(structuredClone(DEFAULT_AUTO_ORCHESTRATE) as any, router.autoOrchestrate ?? {}) as any
   if (autoOrchestrate.mainAgentModel) {
     const resolved = resolveEdgeClawModel(config, autoOrchestrate.mainAgentModel)
     if (resolved) autoOrchestrate.mainAgentModel = `${resolved.providerId},${resolved.model}`
@@ -390,7 +420,13 @@ export function buildCcrConfigFromEdgeClawConfig(config = loadEdgeClawConfig()) 
       tokenSaver,
       autoOrchestrate,
     },
-    tokenStats: router.tokenStats ?? { enabled: true },
+    tokenStats: {
+      ...(router.tokenStats ?? { enabled: true }),
+      modelPricing: {
+        ...buildZeroCostModelPricing(config),
+        ...(router.tokenStats?.modelPricing ?? {}),
+      },
+    },
     ...(router.httpsProxy ? { HTTPS_PROXY: router.httpsProxy } : {}),
     ...(router.fallback ? { fallback: router.fallback } : {}),
   }

@@ -73,8 +73,11 @@ const jobClassifier = feature('TEMPLATES')
 import {
   remove as removeFromQueue,
   getCommandsByMaxPriority,
+  getCommandQueueSnapshot,
+  subscribeToCommandQueue,
   isSlashCommand,
 } from './utils/messageQueueManager.js'
+import type { QueuedCommand } from './types/textInputTypes.js'
 import { notifyCommandLifecycle } from './utils/commandLifecycle.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import {
@@ -1340,6 +1343,55 @@ async function* queryLoop(
         }
       }
 
+      // Wait for pending async agent notifications before exiting. Some
+      // non-Claude orchestrator models otherwise stop after launching an Agent
+      // while the sub-agent is still running.
+      const pendingAgentTasks = toolUseContext.getAppState().tasks
+      const hasActiveAgentTasks = Object.values(pendingAgentTasks).some(
+        (t: any) => t.type === 'local_agent' && t.status === 'running',
+      )
+
+      if (
+        hasActiveAgentTasks &&
+        !toolUseContext.abortController.signal.aborted
+      ) {
+        const waitedNotifications = await waitForAgentNotification(
+          subscribeToCommandQueue,
+          getCommandQueueSnapshot,
+          120_000,
+          toolUseContext.abortController.signal,
+        )
+
+        if (waitedNotifications.length > 0) {
+          const notifMessages = waitedNotifications.map(cmd =>
+            createUserMessage({
+              content: cmd.value as string,
+              isMeta: true,
+            }),
+          )
+          removeFromQueue(waitedNotifications)
+          for (const msg of notifMessages) yield msg
+
+          state = {
+            messages: [
+              ...messagesForQuery,
+              ...assistantMessages,
+              ...notifMessages,
+            ],
+            toolUseContext,
+            autoCompactTracking: tracking,
+            maxOutputTokensRecoveryCount: 0,
+            hasAttemptedReactiveCompact: false,
+            maxOutputTokensOverride: undefined,
+            pendingToolUseSummary: undefined,
+            stopHookActive: undefined,
+            turnCount: turnCount + 1,
+            transition: { reason: 'agent_notification' as const },
+          }
+          continue
+        }
+      }
+
       return { reason: 'completed' }
     }
 
@@ -1537,11 +1589,33 @@ async function* queryLoop(
     // only; subagents never see the prompt stream.
     // eslint-disable-next-line custom-rules/require-tool-match-name -- ToolUseBlock.name has no aliases
     const sleepRan = toolUseBlocks.some(b => b.name === SLEEP_TOOL_NAME)
+
+    const agentAsyncLaunched = toolResults.some(r => {
+      if (r.type !== 'user') return false
+      const content = r.message.content
+      if (typeof content === 'string') return content.includes('Async agent launched')
+      if (Array.isArray(content)) {
+        return content.some((b: any) => {
+          if (b.type !== 'tool_result') return false
+          const c = b.content
+          if (typeof c === 'string') return c.includes('Async agent launched')
+          if (Array.isArray(c)) {
+            return c.some((p: any) => p.type === 'text' && p.text?.includes('Async agent launched'))
+          }
+          return false
+        })
+      }
+      return false
+    })
+    if (agentAsyncLaunched && !toolUseContext.abortController.signal.aborted) {
+      await new Promise(resolve => setTimeout(resolve, 10_000))
+    }
+
     const isMainThread =
       querySource.startsWith('repl_main_thread') || querySource === 'sdk'
     const currentAgentId = toolUseContext.agentId
     const queuedCommandsSnapshot = getCommandsByMaxPriority(
-      sleepRan ? 'later' : 'next',
+      sleepRan || agentAsyncLaunched ? 'later' : 'next',
     ).filter(cmd => {
       if (isSlashCommand(cmd)) return false
       if (isMainThread) return cmd.agentId === undefined
@@ -1699,4 +1773,48 @@ async function* queryLoop(
     }
     state = next
   } // while (true)
+}
+
+function waitForAgentNotification(
+  subscribe: (callback: () => void) => () => void,
+  getSnapshot: () => readonly QueuedCommand[],
+  timeoutMs: number,
+  abortSignal: AbortSignal,
+): Promise<QueuedCommand[]> {
+  return new Promise(resolve => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    let unsubscribe: (() => void) | undefined
+
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout)
+      unsubscribe?.()
+      abortSignal.removeEventListener('abort', onAbort)
+    }
+
+    const finish = (commands: QueuedCommand[]) => {
+      cleanup()
+      resolve(commands)
+    }
+
+    const check = () => {
+      const commands = getSnapshot().filter(
+        cmd => cmd.mode === 'task-notification',
+      )
+      if (commands.length > 0) {
+        finish([...commands])
+      }
+    }
+
+    const onAbort = () => finish([])
+
+    if (abortSignal.aborted) {
+      resolve([])
+      return
+    }
+
+    abortSignal.addEventListener('abort', onAbort, { once: true })
+    unsubscribe = subscribe(check)
+    timeout = setTimeout(() => finish([]), timeoutMs)
+    check()
+  })
 }

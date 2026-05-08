@@ -293,7 +293,9 @@ export function useChatRealtimeHandlers({
         setIsLoading(false);
         setCanAbortSession(false);
         setClaudeStatus(null);
-        setPendingPermissionRequests([]);
+        setPendingPermissionRequests((prev) =>
+          prev.filter((r: PendingPermissionRequest) => r.sessionId && r.sessionId !== sid),
+        );
         onSessionInactive?.(sid);
         onSessionNotProcessing?.(sid);
 
@@ -334,6 +336,13 @@ export function useChatRealtimeHandlers({
 
       case 'permission_request': {
         if (!msg.requestId) break;
+        const permSid = msg.sessionId || sid;
+        const isForCurrentSession =
+          !permSid ||
+          permSid === currentSessionId ||
+          permSid === selectedSession?.id ||
+          permSid === activeViewSessionId;
+        if (!isForCurrentSession) break;
         setPendingPermissionRequests((prev) => {
           if (prev.some((r: PendingPermissionRequest) => r.requestId === msg.requestId)) return prev;
           return [...prev, {
@@ -341,7 +350,7 @@ export function useChatRealtimeHandlers({
             toolName: msg.toolName || 'UnknownTool',
             input: msg.input,
             context: msg.context,
-            sessionId: sid || null,
+            sessionId: permSid || null,
             receivedAt: new Date(),
           }];
         });

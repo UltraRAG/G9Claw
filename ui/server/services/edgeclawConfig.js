@@ -336,6 +336,8 @@ export function buildDefaultEdgeClawConfig() {
         mainAgentModel: 'default',
         skillPath: '~/.claude/prompts/auto-orchestrate.md',
         blockedTools: [],
+        allowedTools: ['Agent', 'Read', 'Grep', 'Glob', 'TodoRead', 'TodoWrite'],
+        subagentMaxTokens: 48000,
         slimSystemPrompt: true,
       },
       tokenStats: { enabled: true },

@@ -38,6 +38,7 @@ import {
 const activeSessions = new Map();
 const sessionRuntimes = new Map();
 const pendingToolApprovals = new Map();
+const pendingCoalescenceMap = new Map();
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
@@ -77,11 +78,16 @@ function addUniqueItems(items, additions) {
   return out;
 }
 
-function buildClaudeSubprocessEnv() {
+async function buildClaudeSubprocessEnv() {
   const env = { ...process.env };
   const runtimeModel = getClaudeRuntimeModelConfig().defaultModel;
-  const anthropicBaseUrl = normalizeEnvValue(process.env.ANTHROPIC_BASE_URL);
+  let anthropicBaseUrl = normalizeEnvValue(process.env.ANTHROPIC_BASE_URL);
   const anthropicApiKey = normalizeEnvValue(process.env.ANTHROPIC_API_KEY);
+
+  if (anthropicBaseUrl === 'http://ccr.local') {
+    const proxyPort = process.env.EDGECLAW_PROXY_PORT || process.env.PROXY_PORT || '18080';
+    anthropicBaseUrl = `http://127.0.0.1:${proxyPort}`;
+  }
 
   if (anthropicBaseUrl) {
     env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
@@ -99,9 +105,16 @@ function buildClaudeSubprocessEnv() {
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
   }
 
-  // Propagate CDP_URL so all claude-code subprocesses share the global Chrome
-  if (process.env.CDP_URL) {
-    env.CDP_URL = process.env.CDP_URL;
+  try {
+    const { ensureCDPUrl } = await import('./utils/globalChrome.js');
+    const cdpUrl = await ensureCDPUrl();
+    if (cdpUrl) {
+      env.CDP_URL = cdpUrl;
+    }
+  } catch {
+    if (process.env.CDP_URL) {
+      env.CDP_URL = process.env.CDP_URL;
+    }
   }
 
   return env;
@@ -177,6 +190,25 @@ function resolveToolApproval(requestId, decision) {
   }
 }
 
+function buildServerPermissionKey(toolName, input) {
+  if (!toolName) return null;
+  if (toolName !== 'Bash') return toolName;
+
+  let command = '';
+  if (typeof input === 'string') {
+    command = input.trim();
+  } else if (input && typeof input === 'object' && typeof input.command === 'string') {
+    command = input.command.trim();
+  }
+
+  if (!command) return toolName;
+  const tokens = command.split(/\s+/);
+  if (tokens[0] === 'git' && tokens[1]) {
+    return `Bash(${tokens[0]} ${tokens[1]}:*)`;
+  }
+  return `Bash(${tokens[0]}:*)`;
+}
+
 // Match stored permission entries against a tool + input combo.
 // This only supports exact tool names and the Bash(command:*) shorthand
 // used by the UI; it intentionally does not implement full glob semantics,
@@ -216,7 +248,7 @@ function matchesToolPermission(entry, toolName, input) {
  * @param {Object} options - CLI options
  * @returns {Object} SDK-compatible options
  */
-function mapCliOptionsToSDK(options = {}) {
+async function mapCliOptionsToSDK(options = {}) {
   const { sessionId, cwd, toolsSettings, permissionMode } = options;
 
   const sdkOptions = {};
@@ -286,7 +318,7 @@ function mapCliOptionsToSDK(options = {}) {
   // Map setting sources for CLAUDE.md loading
   // This loads CLAUDE.md from project, user (~/.config/claude/CLAUDE.md), and local directories
   sdkOptions.settingSources = ['project', 'user', 'local'];
-  sdkOptions.env = buildClaudeSubprocessEnv();
+  sdkOptions.env = await buildClaudeSubprocessEnv();
   const pluginDirs = resolveBundledPluginDirs();
   if (pluginDirs.length > 0) {
     sdkOptions.plugins = pluginDirs.map(pluginDir => ({
@@ -811,7 +843,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
   try {
     // Map CLI options to SDK format
-    const sdkOptions = mapCliOptionsToSDK(options);
+    const sdkOptions = await mapCliOptionsToSDK(options);
 
     // Load MCP configuration
     const mcpServers = await loadMcpConfig(options.cwd);
@@ -868,32 +900,70 @@ async function queryClaudeSDK(command, options = {}, ws) {
         }
       }
 
+      const permKey = buildServerPermissionKey(toolName, input);
+      const effectiveSessionId = capturedSessionId || sessionId || null;
+      const coalescenceKey = permKey ? `${effectiveSessionId || 'none'}:${permKey}` : null;
+
+      if (coalescenceKey && !requiresInteraction) {
+        const existing = pendingCoalescenceMap.get(coalescenceKey);
+        if (existing) {
+          const decision = await existing.promise;
+          if (decision?.allow) {
+            if (decision.rememberEntry && typeof decision.rememberEntry === 'string') {
+              if (!sdkOptions.allowedTools.includes(decision.rememberEntry)) {
+                sdkOptions.allowedTools.push(decision.rememberEntry);
+              }
+              if (Array.isArray(sdkOptions.disallowedTools)) {
+                sdkOptions.disallowedTools = sdkOptions.disallowedTools.filter(entry => entry !== decision.rememberEntry);
+              }
+            }
+            return { behavior: 'allow', updatedInput: decision.updatedInput ?? input };
+          }
+          if (decision?.cancelled) {
+            return { behavior: 'deny', message: 'Permission request cancelled' };
+          }
+          return { behavior: 'deny', message: decision?.message ?? 'User denied tool use' };
+        }
+      }
+
       const requestId = createRequestId();
-      ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+      let coalescenceResolve;
+      if (coalescenceKey && !requiresInteraction) {
+        const coalescencePromise = new Promise(resolve => { coalescenceResolve = resolve; });
+        pendingCoalescenceMap.set(coalescenceKey, { requestId, promise: coalescencePromise });
+      }
+
+      ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: effectiveSessionId, provider: 'claude' }));
       emitNotification(createNotificationEvent({
         provider: 'claude',
-        sessionId: capturedSessionId || sessionId || null,
+        sessionId: effectiveSessionId,
         kind: 'action_required',
         code: 'permission.required',
         meta: { toolName, sessionName: sessionSummary },
         severity: 'warning',
         requiresUserAction: true,
-        dedupeKey: `claude:permission:${capturedSessionId || sessionId || 'none'}:${requestId}`
+        dedupeKey: `claude:permission:${effectiveSessionId || 'none'}:${permKey || requestId}`
       }));
 
       const decision = await waitForToolApproval(requestId, {
         timeoutMs: requiresInteraction ? 0 : undefined,
         signal: context?.signal,
         metadata: {
-          _sessionId: capturedSessionId || sessionId || null,
+          _sessionId: effectiveSessionId,
           _toolName: toolName,
           _input: input,
           _receivedAt: new Date(),
         },
         onCancel: (reason) => {
-          ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+          ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: effectiveSessionId, provider: 'claude' }));
         }
       });
+      if (coalescenceKey) {
+        pendingCoalescenceMap.delete(coalescenceKey);
+      }
+      if (coalescenceResolve) {
+        coalescenceResolve(decision);
+      }
       if (!decision) {
         return { behavior: 'deny', message: 'Permission request timed out' };
       }
@@ -1115,8 +1185,10 @@ async function abortClaudeSDKSession(sessionId) {
   try {
     console.log(`Aborting SDK session: ${sessionId}`);
 
-    // Call interrupt() on the query instance
-    await session.instance.interrupt();
+    await session.instance.interrupt().catch(() => {});
+    if (typeof session.instance.close === 'function') {
+      session.instance.close();
+    }
 
     // Update session status
     session.status = 'aborted';
