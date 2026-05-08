@@ -129,8 +129,23 @@ export function setModelPricing(pricing: Record<string, ModelPricing>): void {
   modelPricingConfig = pricing;
 }
 
-export function lookupPricing(model: string): ModelPricing {
+export function lookupPricing(model: string, provider?: string): ModelPricing {
   if (!modelPricingConfig) return { inputPer1M: 3, outputPer1M: 15 };
+
+  const providerModel = provider ? `${provider},${model}` : "";
+  if (providerModel && modelPricingConfig[providerModel]) {
+    return {
+      inputPer1M: modelPricingConfig[providerModel].inputPer1M ?? 3,
+      outputPer1M: modelPricingConfig[providerModel].outputPer1M ?? 15,
+    };
+  }
+
+  if (provider && modelPricingConfig[provider]) {
+    return {
+      inputPer1M: modelPricingConfig[provider].inputPer1M ?? 3,
+      outputPer1M: modelPricingConfig[provider].outputPer1M ?? 15,
+    };
+  }
 
   if (modelPricingConfig[model]) {
     return {
@@ -141,6 +156,7 @@ export function lookupPricing(model: string): ModelPricing {
 
   const lowerModel = model.toLowerCase();
   for (const [key, val] of Object.entries(modelPricingConfig)) {
+    if (key.includes(",")) continue;
     if (lowerModel.includes(key.toLowerCase())) {
       return { inputPer1M: val.inputPer1M ?? 3, outputPer1M: val.outputPer1M ?? 15 };
     }
@@ -149,10 +165,10 @@ export function lookupPricing(model: string): ModelPricing {
   return { inputPer1M: 3, outputPer1M: 15 };
 }
 
-function calculateCost(model: string, usage: UsageEvent["usage"]): number {
+function calculateCost(provider: string, model: string, usage: UsageEvent["usage"]): number {
   const input = usage?.input ?? 0;
   const output = usage?.output ?? 0;
-  const p = lookupPricing(model);
+  const p = lookupPricing(model, provider);
   return (input * p.inputPer1M + output * p.outputPer1M) / 1_000_000;
 }
 
@@ -210,7 +226,7 @@ export class TokenStatsCollector {
 
   record(event: UsageEvent): void {
     const now = Date.now();
-    const cost = calculateCost(event.model, event.usage);
+    const cost = calculateCost(event.provider, event.model, event.usage);
 
     const role = event.isSubagent ? "sub" : "main";
 

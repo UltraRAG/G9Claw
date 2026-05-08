@@ -62,6 +62,7 @@ export interface NormalizedMessage {
   subagentTools?: unknown[];
   taskId?: string;
   outputFile?: string;
+  taskResult?: string;
   isFinal?: boolean;
   // Cursor-specific ordering
   sequence?: number;

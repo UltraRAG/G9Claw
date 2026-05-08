@@ -48,10 +48,36 @@ function providerEndpointForType(provider) {
   const baseUrl = stripTrailingSlash(provider?.baseUrl);
   const type = normalizeString(provider?.type) || 'openai-chat';
   if (!baseUrl) return '';
-  if (type === 'openai-responses') return `${baseUrl}/responses`;
-  if (type === 'anthropic') return `${baseUrl}/v1/messages`;
-  if (type === 'openai-chat' || type === 'litellm' || type === 'ccr') return `${baseUrl}/chat/completions`;
+  if (type === 'openai-responses') return baseUrl.endsWith('/responses') ? baseUrl : `${baseUrl}/responses`;
+  if (type === 'anthropic') return baseUrl.endsWith('/v1/messages') ? baseUrl : `${baseUrl}/v1/messages`;
+  if (type === 'openai-chat' || type === 'litellm' || type === 'ccr') {
+    return baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+  }
   return `${baseUrl}/chat/completions`;
+}
+
+function isZeroCostProvider(providerId, provider) {
+  const id = normalizeString(providerId).toLowerCase();
+  if (id === 'edgeclaw' || id === 'edgeclaw_memory' || id.startsWith('edgeclaw_')) {
+    return true;
+  }
+
+  if (provider?.local === true || provider?.costMode === 'local') {
+    return true;
+  }
+
+  return false;
+}
+
+function buildZeroCostModelPricing(normalized) {
+  const pricing = {};
+  for (const entry of Object.values(normalized.models.entries || {})) {
+    if (!entry?.provider || !entry?.name) continue;
+    const provider = normalized.models.providers?.[entry.provider];
+    if (!isZeroCostProvider(entry.provider, provider)) continue;
+    pricing[`${entry.provider},${entry.name}`] = { inputPer1M: 0, outputPer1M: 0 };
+  }
+  return pricing;
 }
 
 function deepMerge(base, override) {
@@ -299,6 +325,9 @@ export function buildDefaultEdgeClawConfig() {
           'Single-file edits, code review -> MEDIUM',
           'Multi-file tasks, refactoring -> COMPLEX',
           'Novel architecture, deep analysis -> REASONING',
+          'RAG, cited research, web/local knowledge synthesis, or source-backed reports -> REASONING',
+          'HTML/webpage/dashboard generation that requires research or citations -> REASONING',
+          'Military, DARPA, intelligence, operational assessment, or future capability analysis -> REASONING',
         ],
       },
       autoOrchestrate: {
@@ -714,6 +743,16 @@ export function buildCcrConfig(config) {
   const aoModel = resolveModel(normalized, router.autoOrchestrate.mainAgentModel, { allowMissing: true });
   if (aoModel) router.autoOrchestrate.mainAgentModel = `${aoModel.providerId},${aoModel.model}`;
 
+  const zeroCostModelPricing = buildZeroCostModelPricing(normalized);
+  const configuredModelPricing = normalized.router.tokenStats?.modelPricing || {};
+  const tokenStats = {
+    ...normalized.router.tokenStats,
+    modelPricing: {
+      ...zeroCostModelPricing,
+      ...configuredModelPricing,
+    },
+  };
+
   return {
     LOG: normalized.router.log,
     HOST: normalized.router.host,
@@ -721,7 +760,7 @@ export function buildCcrConfig(config) {
     API_TIMEOUT_MS: normalized.router.apiTimeoutMs,
     Providers: providers,
     Router: router,
-    tokenStats: normalized.router.tokenStats,
+    tokenStats,
     ...(normalized.router.httpsProxy ? { HTTPS_PROXY: normalized.router.httpsProxy } : {}),
     ...(normalized.router.rewriteSystemPrompt ? { REWRITE_SYSTEM_PROMPT: normalized.router.rewriteSystemPrompt } : {}),
     ...(normalized.router.customRouterPath ? { CUSTOM_ROUTER_PATH: normalized.router.customRouterPath } : {}),

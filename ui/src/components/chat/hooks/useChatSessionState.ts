@@ -77,6 +77,9 @@ function chatMessageToNormalized(
       kind: 'task_notification',
       status: (msg as any).taskStatus || 'completed',
       summary: msg.content || '',
+      taskResult: (msg as any).taskResult || '',
+      taskId: (msg as any).taskId || '',
+      outputFile: (msg as any).outputFile || '',
     } as NormalizedMessage;
   }
   if (msg.type === 'error') {

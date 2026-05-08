@@ -134,6 +134,7 @@ function convertNormalizedMessages(messages: NormalizedMessage[]): ChatMessage[]
           taskStatus: msg.status || 'completed',
           taskId: msg.taskId || '',
           outputFile: msg.outputFile || '',
+          taskResult: msg.taskResult || '',
         });
         break;
 

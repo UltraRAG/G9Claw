@@ -1,7 +1,7 @@
 import { join } from 'path';
 import { homedir } from 'os';
 import { createConnection } from 'net';
-import { spawn, execSync } from 'child_process';
+import { spawn } from 'child_process';
 import fs from 'fs';
 
 const CDP_PORT = 9222;
@@ -101,36 +101,24 @@ async function waitForCDP(maxMs = 10_000) {
 const CHROME_STOP_TIMEOUT_MS = 2500;
 const CHROME_STOP_POLL_MS = 100;
 
-async function killCDPPort() {
-  let pidList = [];
-  try {
-    const raw = execSync(`lsof -ti :${CDP_PORT} 2>/dev/null`, { encoding: 'utf8' }).trim();
-    if (raw) pidList = raw.split('\n').map(Number).filter(Boolean);
-  } catch { /* ignore */ }
-
-  if (pidList.length === 0) {
-    chromeProcess = null;
-    return;
-  }
-
-  for (const pid of pidList) {
-    try { process.kill(pid, 'SIGTERM'); } catch { /* ignore */ }
-  }
+async function stopLaunchedChrome() {
+  const proc = chromeProcess;
+  if (!proc) return;
+  chromeProcess = null;
+  try { proc.kill('SIGTERM'); } catch { /* ignore */ }
 
   const deadline = Date.now() + CHROME_STOP_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (!(await isCDPHealthy())) {
-      chromeProcess = null;
+    try {
+      if (proc.exitCode !== null || proc.signalCode) return;
+      if (proc.pid) process.kill(proc.pid, 0);
+    } catch {
       return;
     }
     await new Promise((r) => setTimeout(r, CHROME_STOP_POLL_MS));
   }
 
-  for (const pid of pidList) {
-    try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
-  }
-  await new Promise((r) => setTimeout(r, 300));
-  chromeProcess = null;
+  try { proc.kill('SIGKILL'); } catch { /* ignore */ }
 }
 
 export async function ensureGlobalChrome() {
@@ -139,7 +127,8 @@ export async function ensureGlobalChrome() {
   }
 
   if (await isCDPPortOpen()) {
-    await killCDPPort();
+    console.warn(`[BROWSER] Chrome CDP port ${CDP_PORT} is open but not healthy; leaving existing browser untouched`);
+    return null;
   }
 
   const executablePath = findChromePath();
@@ -157,7 +146,12 @@ export async function ensureGlobalChrome() {
 }
 
 export async function restartGlobalChrome() {
-  await killCDPPort();
+  await stopLaunchedChrome();
+
+  if (await isCDPPortOpen()) {
+    console.warn(`[BROWSER] Chrome CDP port ${CDP_PORT} is already in use; leaving existing browser untouched`);
+    return null;
+  }
 
   const executablePath = findChromePath();
   if (!executablePath) return null;
@@ -179,14 +173,8 @@ export function startChromeHealthCheck(intervalMs = 30_000) {
   stopChromeHealthCheck();
   healthCheckTimer = setInterval(async () => {
     if (!(await isCDPHealthy())) {
-      console.warn('[BROWSER] Chrome CDP unhealthy, restarting...');
-      const url = await restartGlobalChrome();
-      if (url) {
-        process.env.CDP_URL = url;
-        console.log(`[BROWSER] Chrome restarted at ${url}`);
-      } else {
-        console.error('[BROWSER] Chrome restart failed');
-      }
+      console.warn('[BROWSER] Chrome CDP unhealthy; leaving browser process untouched');
+      delete process.env.CDP_URL;
     }
   }, intervalMs);
   healthCheckTimer.unref();
@@ -201,8 +189,5 @@ export function stopChromeHealthCheck() {
 
 export function shutdownGlobalChrome() {
   stopChromeHealthCheck();
-  if (chromeProcess) {
-    try { chromeProcess.kill('SIGTERM'); } catch { /* ignore */ }
-    chromeProcess = null;
-  }
+  void stopLaunchedChrome();
 }

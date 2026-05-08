@@ -46,7 +46,7 @@
  * - permission_cancelled: requestId
  * - session_created:      newSessionId
  * - interactive_prompt:   content
- * - task_notification:    status, summary, taskId?, outputFile?
+ * - task_notification:    status, summary, taskResult?, taskId?, outputFile?
  * - interrupted:          content (typically "[Request interrupted by user]")
  */
 

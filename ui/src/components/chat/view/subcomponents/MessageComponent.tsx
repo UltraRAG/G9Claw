@@ -66,6 +66,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
   const permissionSuggestion = getClaudePermissionSuggestion(message, provider);
   const [permissionGrantState, setPermissionGrantState] = useState<PermissionGrantState>('idle');
   const messageContent = stringifyMessageContent(message.content);
+  const taskResultContent = typeof message.taskResult === 'string' ? message.taskResult.trim() : '';
   const messageImages = Array.isArray(message.images)
     ? message.images.filter((image) => image && typeof image.data === 'string')
     : [];
@@ -184,6 +185,18 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
               />
               <div className="min-w-0 flex-1">
                 <div className="break-words text-foreground">{messageContent}</div>
+                {taskResultContent && (
+                  <details className="mt-2 rounded-lg border border-border/50 bg-background/70 px-2 py-1.5">
+                    <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground">
+                      Agent output
+                    </summary>
+                    <div className="mt-2 border-t border-border/50 pt-2">
+                      <Markdown className="prose prose-sm max-w-none dark:prose-invert">
+                        {taskResultContent}
+                      </Markdown>
+                    </div>
+                  </details>
+                )}
                 {(message.taskStatus || message.taskId) && (
                   <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-muted-foreground">
                     {message.taskStatus && (

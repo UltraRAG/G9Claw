@@ -49,6 +49,7 @@ export interface ChatMessage {
   taskStatus?: string;
   taskId?: string;
   outputFile?: string;
+  taskResult?: string;
   isSubagentContainer?: boolean;
   isTaskNotification?: boolean;
   isInterruptedNotice?: boolean;

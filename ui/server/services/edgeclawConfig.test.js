@@ -121,3 +121,56 @@ test('normalizeEdgeClawConfig migrates legacy local knowledge milvusUri to datab
   assert.equal(config.rag.localKnowledge.databaseUrl, 'http://legacy-milvus.example.com:19530');
   assert.equal(config.rag.localKnowledge.milvusUri, undefined);
 });
+
+test('buildCcrConfig sets first-party 9GClaw providers to zero token cost', async () => {
+  const { buildCcrConfig } = await import('./edgeclawConfig.js');
+  const ccr = buildCcrConfig({
+    models: {
+      providers: {
+        edgeclaw: {
+          type: 'openai-chat',
+          baseUrl: 'http://local.example.com/v1',
+          apiKey: 'local-secret',
+        },
+        openrouter: {
+          type: 'openai-chat',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          apiKey: 'paid-secret',
+        },
+      },
+      entries: {
+        router_small: { provider: 'edgeclaw', name: 'qwen3.5-35b' },
+        default: { provider: 'openrouter', name: 'deepseek/deepseek-v4-pro' },
+      },
+    },
+  });
+
+  assert.deepEqual(ccr.tokenStats.modelPricing['edgeclaw,qwen3.5-35b'], {
+    inputPer1M: 0,
+    outputPer1M: 0,
+  });
+  assert.equal(ccr.tokenStats.modelPricing['openrouter,deepseek/deepseek-v4-pro'], undefined);
+});
+
+test('buildCcrConfig accepts provider base URLs that already include chat completions', async () => {
+  const { buildCcrConfig } = await import('./edgeclawConfig.js');
+  const ccr = buildCcrConfig({
+    models: {
+      providers: {
+        openrouter: {
+          type: 'openai-chat',
+          baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
+          apiKey: 'paid-secret',
+        },
+      },
+      entries: {
+        default: { provider: 'openrouter', name: 'deepseek/deepseek-v4-pro' },
+      },
+    },
+  });
+
+  assert.equal(
+    ccr.Providers.find((provider) => provider.name === 'openrouter')?.api_base_url,
+    'https://openrouter.ai/api/v1/chat/completions',
+  );
+});

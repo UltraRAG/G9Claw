@@ -11,7 +11,7 @@ const OUTPUT_LOG_MAX_CHARS = 60_000;
 const RECOVERY_MATCH_WINDOW_MS = 5 * 60 * 1000;
 const VALID_KINDS = new Set(['plan', 'cron']);
 const VALID_STATUSES = new Set(['queued', 'running', 'completed', 'failed', 'unknown']);
-const TASK_NOTIFICATION_REGEX = /<task-notification>\s*<task-id>([\s\S]*?)<\/task-id>\s*<output-file>([\s\S]*?)<\/output-file>\s*<status>([\s\S]*?)<\/status>\s*<summary>([\s\S]*?)<\/summary>\s*<\/task-notification>/i;
+const TASK_NOTIFICATION_REGEX = /<task-notification>\s*<task-id>([\s\S]*?)<\/task-id>\s*<output-file>([\s\S]*?)<\/output-file>\s*<status>([\s\S]*?)<\/status>\s*<summary>([\s\S]*?)<\/summary>(?:\s*<result>[\s\S]*?<\/result>)?\s*<\/task-notification>/i;
 const CRON_TRANSCRIPT_FILENAME_REGEX = /^agent-cron[^/]*\.jsonl$/i;
 
 function normalizeString(value, fallback = '') {

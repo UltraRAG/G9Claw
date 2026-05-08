@@ -387,7 +387,21 @@ async function handlePipelineFallback(
   return null;
 }
 
+function unwrapTaskNotificationQuery(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('<task-notification>')) return raw;
+
+  const result = trimmed.match(/<result>([\s\S]*?)<\/result>/i)?.[1]?.trim();
+  if (result) return result;
+
+  const summary = trimmed.match(/<summary>([\s\S]*?)<\/summary>/i)?.[1]?.trim();
+  return summary || raw;
+}
+
 function unwrapJsonQuery(raw: string): string {
+  const taskNotificationText = unwrapTaskNotificationQuery(raw);
+  if (taskNotificationText !== raw) return taskNotificationText;
+
   if (!raw.startsWith('{')) return raw;
   try {
     const obj = JSON.parse(raw);

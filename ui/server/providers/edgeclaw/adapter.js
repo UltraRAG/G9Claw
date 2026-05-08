@@ -21,6 +21,7 @@ const TASK_FIELD_REGEX = {
   outputFile: /<output-file>([\s\S]*?)<\/output-file>/i,
   status: /<status>([\s\S]*?)<\/status>/i,
   summary: /<summary>([\s\S]*?)<\/summary>/i,
+  result: /<result>([\s\S]*?)<\/result>/i,
 };
 
 function asArray(value) {
@@ -159,6 +160,7 @@ function parseTaskNotification(content) {
     outputFile: extract(TASK_FIELD_REGEX.outputFile),
     status: extract(TASK_FIELD_REGEX.status),
     summary: extract(TASK_FIELD_REGEX.summary),
+    result: extract(TASK_FIELD_REGEX.result),
   };
 }
 
@@ -189,6 +191,7 @@ function createTextMessage({ id, sessionId, timestamp, role, content }) {
       kind: 'task_notification',
       status: taskNotification.status || 'completed',
       summary: taskNotification.summary || 'Background task update',
+      taskResult: taskNotification.result,
       taskId: taskNotification.taskId,
       outputFile: taskNotification.outputFile,
     });
