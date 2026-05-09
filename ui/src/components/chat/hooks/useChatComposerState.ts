@@ -480,6 +480,7 @@ export function useChatComposerState({
     showCommandMenu,
     selectedCommandIndex,
     resetCommandMenuState,
+    dismissCommandMenu,
     handleCommandSelect,
     handleToggleCommandMenu,
     handleCommandInputChange,
@@ -1016,7 +1017,7 @@ export function useChatComposerState({
 
   const handleAbortSession = useCallback(() => {
     if (!canAbortSession) {
-      return;
+      return false;
     }
 
     const pendingSessionId =
@@ -1037,7 +1038,7 @@ export function useChatComposerState({
 
     if (!targetSessionId) {
       console.warn('Abort requested but no concrete session ID is available yet.');
-      return;
+      return false;
     }
 
     sendMessage({
@@ -1045,6 +1046,7 @@ export function useChatComposerState({
       sessionId: targetSessionId,
       provider,
     });
+    return true;
   }, [canAbortSession, currentSessionId, pendingViewSessionRef, provider, selectedSession?.id, sendMessage]);
 
   const handleGrantToolPermission = useCallback(
@@ -1115,6 +1117,7 @@ export function useChatComposerState({
     showCommandMenu,
     selectedCommandIndex,
     resetCommandMenuState,
+    dismissCommandMenu,
     handleCommandSelect,
     handleToggleCommandMenu,
     showFileDropdown,

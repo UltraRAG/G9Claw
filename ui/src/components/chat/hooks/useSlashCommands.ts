@@ -79,6 +79,19 @@ export function useSlashCommands({
     clearCommandQueryTimer();
   }, [clearCommandQueryTimer]);
 
+  const dismissCommandMenu = useCallback(() => {
+    if (showCommandMenu && slashPosition >= 0) {
+      setInput((previous) => {
+        const before = previous.slice(0, slashPosition);
+        const after = previous.slice(slashPosition);
+        const spaceIndex = after.indexOf(' ');
+        const tail = spaceIndex !== -1 ? after.slice(spaceIndex) : '';
+        return (before + tail).replace(/^\s+$/, '');
+      });
+    }
+    resetCommandMenuState();
+  }, [resetCommandMenuState, setInput, showCommandMenu, slashPosition]);
+
   useEffect(() => {
     const fetchCommands = async () => {
       if (!selectedProject) {
@@ -377,13 +390,13 @@ export function useSlashCommands({
 
       if (event.key === 'Escape') {
         event.preventDefault();
-        resetCommandMenuState();
+        dismissCommandMenu();
         return true;
       }
 
       return false;
     },
-    [showCommandMenu, filteredCommands, resetCommandMenuState, selectCommandFromKeyboard, selectedCommandIndex],
+    [showCommandMenu, filteredCommands, dismissCommandMenu, resetCommandMenuState, selectCommandFromKeyboard, selectedCommandIndex],
   );
 
   useEffect(
@@ -402,6 +415,7 @@ export function useSlashCommands({
     showCommandMenu,
     selectedCommandIndex,
     resetCommandMenuState,
+    dismissCommandMenu,
     handleCommandSelect,
     handleToggleCommandMenu,
     handleCommandInputChange,

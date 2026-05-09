@@ -9,7 +9,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ArrowUp, AtSign, Command, ImagePlus, Square } from 'lucide-react';
+import { ArrowUp, AtSign, Command, ImagePlus, Loader2, Square } from 'lucide-react';
 import type { PendingPermissionRequest } from '../chat/types/types';
 import CommandMenu from '../chat/view/subcomponents/CommandMenu';
 import PermissionRequestsBanner from '../chat/view/subcomponents/PermissionRequestsBanner';
@@ -78,6 +78,7 @@ export type ComposerV2Props = {
 
   isLoading: boolean;
   canAbortSession: boolean;
+  isAbortPending?: boolean;
 
   pendingPermissionRequests: PendingPermissionRequest[];
   handlePermissionDecision: (
@@ -143,6 +144,7 @@ export default function ComposerV2({
   isDragActive,
   isLoading,
   canAbortSession,
+  isAbortPending = false,
   pendingPermissionRequests,
   handlePermissionDecision,
   handleGrantToolPermission,
@@ -317,10 +319,22 @@ export default function ComposerV2({
                   <button
                     type="button"
                     onClick={onAbortSession}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-red-500 text-white transition hover:bg-red-600"
-                    title={t('input.stop', { defaultValue: 'Stop' }) as string}
+                    disabled={isAbortPending}
+                    className={cn(
+                      'inline-flex h-8 w-8 items-center justify-center rounded-lg bg-red-500 text-white transition hover:bg-red-600',
+                      isAbortPending && 'cursor-wait opacity-70 hover:bg-red-500',
+                    )}
+                    title={
+                      isAbortPending
+                        ? (t('input.stopping', { defaultValue: 'Stopping...' }) as string)
+                        : (t('input.stop', { defaultValue: 'Stop' }) as string)
+                    }
                   >
-                    <Square className="h-3.5 w-3.5" strokeWidth={2.5} fill="currentColor" />
+                    {isAbortPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.25} />
+                    ) : (
+                      <Square className="h-3.5 w-3.5" strokeWidth={2.5} fill="currentColor" />
+                    )}
                   </button>
                 ) : (
                   <button

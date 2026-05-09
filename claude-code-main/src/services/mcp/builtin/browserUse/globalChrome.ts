@@ -77,7 +77,7 @@ function cleanSingletonLocks(dir: string) {
 }
 
 function launchChrome(executablePath: string, userDataDir: string): ChildProcess {
-  const { spawnSync, spawn } = require('child_process') as typeof import('child_process')
+  const { spawn } = require('child_process') as typeof import('child_process')
 
   cleanSingletonLocks(userDataDir)
 
@@ -110,59 +110,41 @@ async function waitForCDP(maxMs = 10_000): Promise<boolean> {
 const CHROME_STOP_TIMEOUT_MS = 2500
 const CHROME_STOP_POLL_MS = 100
 
-/**
- * Gracefully stop whatever is on CDP_PORT.
- * Mirrors OpenClaw's stopOpenClawChrome: SIGTERM first, poll until
- * the port is free, then SIGKILL only as a last resort.
- */
-async function killCDPPort(): Promise<void> {
-  let pidList: number[] = []
-  try {
-    const { execSync } = require('child_process') as typeof import('child_process')
-    const raw = execSync(`lsof -ti :${CDP_PORT} 2>/dev/null`, { encoding: 'utf8' }).trim()
-    if (raw) pidList = raw.split('\n').map(Number).filter(Boolean)
-  } catch { /* ignore */ }
-
-  if (pidList.length === 0) {
-    chromeProcess = null
-    return
-  }
-
-  for (const pid of pidList) {
-    try { process.kill(pid, 'SIGTERM') } catch { /* ignore */ }
-  }
+async function stopLaunchedChrome(): Promise<void> {
+  const proc = chromeProcess
+  if (!proc) return
+  chromeProcess = null
+  try { proc.kill('SIGTERM') } catch { /* ignore */ }
 
   const deadline = Date.now() + CHROME_STOP_TIMEOUT_MS
   while (Date.now() < deadline) {
-    if (!(await isCDPHealthy())) {
-      chromeProcess = null
+    try {
+      if (proc.exitCode !== null || proc.signalCode) return
+      if (proc.pid) process.kill(proc.pid, 0)
+    } catch {
       return
     }
     await new Promise((r) => setTimeout(r, CHROME_STOP_POLL_MS))
   }
 
-  for (const pid of pidList) {
-    try { process.kill(pid, 'SIGKILL') } catch { /* ignore */ }
-  }
-  await new Promise((r) => setTimeout(r, 300))
-  chromeProcess = null
+  try { proc.kill('SIGKILL') } catch { /* ignore */ }
 }
 
 /**
  * Ensures a global Chrome instance is running with remote debugging enabled.
  * Returns the CDP HTTP URL if successful, or null on failure.
  *
- * If the existing Chrome is unresponsive (port open but /json/version fails),
- * it is killed and relaunched.
+ * If another process owns the CDP port but is unhealthy, leave it untouched
+ * and let browser-use fall back to Playwright-managed Chrome.
  */
 export async function ensureGlobalChrome(): Promise<string | null> {
   if (await isCDPHealthy()) {
     return `http://${CDP_HOST}:${CDP_PORT}`
   }
 
-  // Port open but unhealthy → kill stale Chrome
   if (await isCDPPortOpen()) {
-    await killCDPPort()
+    console.warn(`[browser-use] Chrome CDP port ${CDP_PORT} is open but not healthy; leaving existing browser untouched`)
+    return null
   }
 
   const executablePath = findChromePath()
@@ -185,7 +167,12 @@ export async function ensureGlobalChrome(): Promise<string | null> {
  * Force-restart Chrome. Use when connectOverCDP fails despite port being open.
  */
 export async function restartGlobalChrome(): Promise<string | null> {
-  await killCDPPort()
+  await stopLaunchedChrome()
+
+  if (await isCDPPortOpen()) {
+    console.warn(`[browser-use] Chrome CDP port ${CDP_PORT} is already in use; leaving existing browser untouched`)
+    return null
+  }
 
   const executablePath = findChromePath()
   if (!executablePath) return null
@@ -207,8 +194,5 @@ export function getGlobalCDPUrl(): string {
 }
 
 export function shutdownGlobalChrome(): void {
-  if (chromeProcess) {
-    try { chromeProcess.kill('SIGTERM') } catch { /* ignore */ }
-    chromeProcess = null
-  }
+  void stopLaunchedChrome()
 }

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ChevronDown,
@@ -49,6 +49,11 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
   const { files, loading, refreshFiles } = useFileTreeData(selectedProject);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activePath, setActivePath] = useState<string | null>(null);
+
+  useEffect(() => {
+    setExpanded(new Set());
+    setActivePath(null);
+  }, [selectedProject?.name]);
 
   const flat = useMemo(() => flatten(files, expanded), [files, expanded]);
 

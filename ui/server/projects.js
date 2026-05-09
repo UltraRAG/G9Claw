@@ -349,6 +349,39 @@ async function generateDisplayName(projectName, actualProjectDir = null) {
   return projectPath;
 }
 
+async function smartDecodeProjectName(projectName) {
+  const stripped = projectName.startsWith('-') ? projectName.slice(1) : projectName;
+  const parts = stripped.split('-');
+
+  let resolved = '/';
+  let i = 0;
+
+  while (i < parts.length) {
+    let bestLen = 0;
+
+    for (let j = i; j < parts.length; j++) {
+      const candidate = parts.slice(i, j + 1).join('-');
+      const candidatePath = path.join(resolved, candidate);
+      try {
+        await fs.access(candidatePath);
+        bestLen = j - i + 1;
+      } catch {
+        // Keep trying longer dash-joined path segments.
+      }
+    }
+
+    if (bestLen === 0) {
+      resolved = path.join(resolved, parts[i]);
+      i++;
+    } else {
+      resolved = path.join(resolved, parts.slice(i, i + bestLen).join('-'));
+      i += bestLen;
+    }
+  }
+
+  return resolved;
+}
+
 // Extract the actual project directory from JSONL sessions (with caching)
 async function extractProjectDirectory(projectName) {
   // Check cache first
@@ -375,12 +408,27 @@ async function extractProjectDirectory(projectName) {
     // Check if the project directory exists
     await fs.access(projectDir);
 
-    const files = await fs.readdir(projectDir);
-    const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
+    const entries = await fs.readdir(projectDir, { withFileTypes: true });
+    const jsonlFiles = entries
+      .filter(entry => entry.isFile() && entry.name.endsWith('.jsonl'))
+      .map(entry => entry.name);
+
+    const sessionDirs = entries.filter(entry => entry.isDirectory() && !entry.name.startsWith('.'));
+    for (const dir of sessionDirs) {
+      try {
+        const subEntries = await fs.readdir(path.join(projectDir, dir.name), { withFileTypes: true });
+        for (const subEntry of subEntries) {
+          if (subEntry.isFile() && subEntry.name.endsWith('.jsonl')) {
+            jsonlFiles.push(path.join(dir.name, subEntry.name));
+          }
+        }
+      } catch {
+        // Skip inaccessible SDK session directories.
+      }
+    }
 
     if (jsonlFiles.length === 0) {
-      // Fall back to decoded project name if no sessions
-      extractedPath = projectName.replace(/-/g, '/');
+      extractedPath = await smartDecodeProjectName(projectName);
     } else {
       // Process all JSONL files to collect cwd values
       for (const file of jsonlFiles) {
@@ -416,8 +464,7 @@ async function extractProjectDirectory(projectName) {
 
       // Determine the best cwd to use
       if (cwdCounts.size === 0) {
-        // No cwd found, fall back to decoded project name
-        extractedPath = projectName.replace(/-/g, '/');
+        extractedPath = await smartDecodeProjectName(projectName);
       } else if (cwdCounts.size === 1) {
         // Only one cwd, use it
         extractedPath = Array.from(cwdCounts.keys())[0];
@@ -441,7 +488,7 @@ async function extractProjectDirectory(projectName) {
 
         // Fallback (shouldn't reach here)
         if (!extractedPath) {
-          extractedPath = latestCwd || projectName.replace(/-/g, '/');
+          extractedPath = latestCwd || await smartDecodeProjectName(projectName);
         }
       }
     }
@@ -452,13 +499,12 @@ async function extractProjectDirectory(projectName) {
     return extractedPath;
 
   } catch (error) {
-    // If the directory doesn't exist, just use the decoded project name
+    // If the directory doesn't exist, use filesystem-aware decoding.
     if (error.code === 'ENOENT') {
-      extractedPath = projectName.replace(/-/g, '/');
+      extractedPath = await smartDecodeProjectName(projectName);
     } else {
       console.error(`Error extracting project directory for ${projectName}:`, error);
-      // Fall back to decoded project name for other errors
-      extractedPath = projectName.replace(/-/g, '/');
+      extractedPath = await smartDecodeProjectName(projectName);
     }
 
     // Cache the fallback result too
@@ -476,6 +522,7 @@ async function getProjects(progressCallback = null) {
   const projects = [];
   const existingProjects = new Set();
   const codexSessionsIndexRef = { sessionsByProject: null };
+  let configDirty = false;
   let totalProjects = 0;
   let processedProjects = 0;
   let directories = [];
@@ -513,6 +560,10 @@ async function getProjects(progressCallback = null) {
 
       // Extract actual project directory from JSONL sessions
       const actualProjectDir = await extractProjectDirectory(entry.name);
+      if (actualProjectDir && !config[entry.name]?.originalPath) {
+        config[entry.name] = { ...(config[entry.name] || {}), originalPath: actualProjectDir };
+        configDirty = true;
+      }
 
       // Get display name from config or generate one
       const customName = config[entry.name]?.displayName;
@@ -728,6 +779,12 @@ async function getProjects(progressCallback = null) {
 
       projects.push(project);
     }
+  }
+
+  if (configDirty) {
+    saveProjectConfig(config).catch(err =>
+      console.warn('Failed to persist project config with originalPath:', err.message)
+    );
   }
 
   // Emit completion after all projects (including manual) are processed
