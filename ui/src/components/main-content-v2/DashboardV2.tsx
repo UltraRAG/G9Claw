@@ -432,62 +432,6 @@ export default function DashboardV2({ projectFilter, onSelectProject, onDeselect
           />
         </div>
 
-        {baselineCost > 0 && (
-          <div className={cn(
-            'mt-4 rounded-xl border p-4',
-            savedCost >= 0
-              ? 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/60 dark:bg-emerald-950/20'
-              : 'border-amber-200 bg-amber-50/70 dark:border-amber-900/60 dark:bg-amber-950/20',
-          )}>
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-start gap-3">
-                <div className={cn(
-                  'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
-                  savedCost >= 0
-                    ? 'bg-emerald-500 text-white'
-                    : 'bg-amber-500 text-white',
-                )}>
-                  <DollarSign className="h-4 w-4" strokeWidth={2} />
-                </div>
-                <div>
-                  <div className="text-[13px] font-medium text-neutral-800 dark:text-neutral-100">
-                    {savedCost >= 0 ? 'Router saved' : 'Router spent extra'}
-                  </div>
-                  <div className="mt-0.5 text-[26px] font-semibold tabular-nums text-neutral-900 dark:text-neutral-50">
-                    {formatCost(Math.abs(savedCost))}
-                  </div>
-                  <div className="text-xxs text-neutral-500 dark:text-neutral-400">
-                    Compared with sending the same tokens to the no-router baseline model.
-                  </div>
-                </div>
-              </div>
-              <div className="grid min-w-[280px] grid-cols-3 gap-3 text-right">
-                <div>
-                  <div className="text-xxs text-neutral-500 dark:text-neutral-400">No router</div>
-                  <div className="mt-1 text-[14px] font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">
-                    {formatCost(baselineCost)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xxs text-neutral-500 dark:text-neutral-400">Actual</div>
-                  <div className="mt-1 text-[14px] font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">
-                    {formatCost(totalCost)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xxs text-neutral-500 dark:text-neutral-400">Rate</div>
-                  <div className={cn(
-                    'mt-1 text-[14px] font-semibold tabular-nums',
-                    savedCost >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300',
-                  )}>
-                    {Math.round(savingsRate * 100)}%
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Project-filtered: flat session list */}
         {projectFilter && (
           <div className="mt-6 space-y-2">
@@ -508,6 +452,10 @@ export default function DashboardV2({ projectFilter, onSelectProject, onDeselect
               </p>
             )}
           </div>
+        )}
+
+        {projectFilter && groups.length > 0 && groups[0].allSessions.length > 0 && (
+          <PriceSection sessions={groups[0].allSessions} />
         )}
 
         {/* Global view: project cost cards grid + recent routes */}
@@ -744,6 +692,206 @@ function ProjectCostCard({ group, onClick }: { group: ProjectGroup; onClick?: ()
   );
 }
 
+type PriceTotals = {
+  actual: number;
+  baseline: number;
+  saved: number;
+  requests: number;
+  tokens: number;
+};
+
+function PriceSection({ sessions }: { sessions: DashboardSession[] }) {
+  const { t } = useTranslation('routing');
+  const pricedSessions = sessions.filter((session) => session.routing);
+  const totals = pricedSessions.reduce<PriceTotals>(
+    (acc, session) => {
+      const total = session.routing?.total;
+      if (!total) return acc;
+      acc.actual += total.estimatedCost || 0;
+      acc.baseline += total.baselineCost || 0;
+      acc.saved += total.savedCost || 0;
+      acc.requests += total.requestCount || 0;
+      acc.tokens += total.totalTokens || 0;
+      return acc;
+    },
+    { actual: 0, baseline: 0, saved: 0, requests: 0, tokens: 0 },
+  );
+  const hasBaseline = totals.baseline > 0;
+  const savedIsPositive = totals.saved >= 0;
+
+  return (
+    <div className="mt-6 space-y-2">
+      <div className="text-xxs uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+        {t('dashboard.price.title', { defaultValue: 'Price' })}
+      </div>
+      <div className={cn(
+        'rounded-xl border',
+        hasBaseline
+          ? savedIsPositive
+            ? 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/60 dark:bg-emerald-950/20'
+            : 'border-amber-200 bg-amber-50/70 dark:border-amber-900/60 dark:bg-amber-950/20'
+          : 'border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950',
+      )}>
+        {pricedSessions.length === 0 ? (
+          <p className="px-5 py-6 text-center text-[13px] text-neutral-400 dark:text-neutral-500">
+            {t('dashboard.price.empty', { defaultValue: 'No priced sessions yet.' })}
+          </p>
+        ) : (
+          <>
+            <div className={cn(
+              'grid grid-cols-1 divide-y md:grid-cols-3 md:divide-x md:divide-y-0',
+              hasBaseline
+                ? savedIsPositive
+                  ? 'divide-emerald-100 dark:divide-emerald-900/40'
+                  : 'divide-amber-100 dark:divide-amber-900/40'
+                : 'divide-neutral-100 dark:divide-neutral-800',
+            )}>
+              <PriceMetric
+                label={t('dashboard.price.actual', { defaultValue: 'Actual cost' })}
+                value={formatCost(totals.actual)}
+                sub={t('dashboard.price.summary', {
+                  sessions: pricedSessions.length,
+                  requests: totals.requests,
+                  tokens: formatTokens(totals.tokens),
+                  defaultValue: `${pricedSessions.length} sessions · ${totals.requests} req · ${formatTokens(totals.tokens)} tokens`,
+                })}
+              />
+              <PriceMetric
+                label={t('dashboard.price.baseline', { defaultValue: 'No-router cost' })}
+                value={hasBaseline ? formatCost(totals.baseline) : '—'}
+                sub={t('dashboard.price.baselineHint', {
+                  defaultValue: 'Baseline assumes the main model handles all routed tokens.',
+                })}
+              />
+              <PriceMetric
+                label={savedIsPositive
+                  ? t('dashboard.price.saved', { defaultValue: 'Saved' })
+                  : t('dashboard.price.extra', { defaultValue: 'Extra spent' })}
+                value={hasBaseline ? formatCost(Math.abs(totals.saved)) : '—'}
+                sub={hasBaseline
+                  ? t('dashboard.price.savedHint', {
+                      rate: Math.round(Math.abs(totals.saved / totals.baseline) * 100),
+                      defaultValue: `${Math.round(Math.abs(totals.saved / totals.baseline) * 100)}% vs baseline`,
+                    })
+                  : t('dashboard.price.missingBaseline', { defaultValue: 'No baseline configured for these sessions.' })}
+                tone={hasBaseline ? (savedIsPositive ? 'positive' : 'warning') : 'neutral'}
+              />
+            </div>
+
+            <div className={cn(
+              'border-t',
+              hasBaseline
+                ? savedIsPositive
+                  ? 'border-emerald-100 dark:border-emerald-900/40'
+                  : 'border-amber-100 dark:border-amber-900/40'
+                : 'border-neutral-100 dark:border-neutral-800',
+            )}>
+              <div className="hidden grid-cols-[minmax(0,1fr)_112px_112px_112px] gap-4 px-5 py-2 text-[11px] leading-[14px] text-neutral-500 dark:text-neutral-400 md:grid">
+                <span>{t('dashboard.price.session', { defaultValue: 'Session' })}</span>
+                <span className="text-right">{t('dashboard.price.actualShort', { defaultValue: 'Actual' })}</span>
+                <span className="text-right">{t('dashboard.price.baselineShort', { defaultValue: 'No router' })}</span>
+                <span className="text-right">{t('dashboard.price.savedShort', { defaultValue: 'Saved' })}</span>
+              </div>
+              <div className={cn(
+                'divide-y',
+                hasBaseline
+                  ? savedIsPositive
+                    ? 'divide-emerald-100/80 dark:divide-emerald-900/30'
+                    : 'divide-amber-100/80 dark:divide-amber-900/30'
+                  : 'divide-neutral-100 dark:divide-neutral-800/50',
+              )}>
+                {pricedSessions.map((session) => {
+                  const total = session.routing!.total;
+                  const actual = total.estimatedCost || 0;
+                  const baseline = total.baselineCost || 0;
+                  const saved = total.savedCost || 0;
+                  const rowHasBaseline = baseline > 0;
+                  const rowSavedPositive = saved >= 0;
+                  return (
+                    <div
+                      key={session.sessionId}
+                      className="grid grid-cols-1 gap-2 px-5 py-3 text-[13px] md:grid-cols-[minmax(0,1fr)_112px_112px_112px] md:items-center md:gap-4"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate font-medium text-neutral-800 dark:text-neutral-200">
+                          {session.title || session.sessionId}
+                        </div>
+                        <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-xxs text-neutral-500 dark:text-neutral-400">
+                          <span>{total.requestCount || 0} req</span>
+                          <span>{formatTokens(total.totalTokens || 0)} tokens</span>
+                          <span>{formatTime(session.lastActivity, session.routing?.lastActiveAt)}</span>
+                        </div>
+                      </div>
+                      <PriceCell label={t('dashboard.price.actualShort', { defaultValue: 'Actual' })} value={formatCost(actual)} />
+                      <PriceCell label={t('dashboard.price.baselineShort', { defaultValue: 'No router' })} value={rowHasBaseline ? formatCost(baseline) : '—'} />
+                      <PriceCell
+                        label={rowSavedPositive
+                          ? t('dashboard.price.savedShort', { defaultValue: 'Saved' })
+                          : t('dashboard.price.extraShort', { defaultValue: 'Extra' })}
+                        value={rowHasBaseline ? formatCost(Math.abs(saved)) : '—'}
+                        tone={rowHasBaseline ? (rowSavedPositive ? 'positive' : 'warning') : 'neutral'}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PriceMetric({
+  label,
+  value,
+  sub,
+  tone = 'neutral',
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  sub?: ReactNode;
+  tone?: 'neutral' | 'positive' | 'warning';
+}) {
+  return (
+    <div className="px-5 py-4">
+      <div className="text-xxs text-neutral-500 dark:text-neutral-400">{label}</div>
+      <div className={cn(
+        'mt-1 text-[22px] font-semibold tabular-nums text-neutral-900 dark:text-neutral-100',
+        tone === 'positive' && 'text-emerald-700 dark:text-emerald-300',
+        tone === 'warning' && 'text-amber-700 dark:text-amber-300',
+      )}>
+        {value}
+      </div>
+      {sub && <div className="mt-1 text-xxs text-neutral-500 dark:text-neutral-400">{sub}</div>}
+    </div>
+  );
+}
+
+function PriceCell({
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  tone?: 'neutral' | 'positive' | 'warning';
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 md:block md:text-right">
+      <span className="text-xxs text-neutral-500 dark:text-neutral-400 md:hidden">{label}</span>
+      <span className={cn(
+        'tabular-nums text-neutral-700 dark:text-neutral-300',
+        tone === 'positive' && 'font-medium text-emerald-700 dark:text-emerald-300',
+        tone === 'warning' && 'font-medium text-amber-700 dark:text-amber-300',
+      )}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
 function buildPerQueryTiers(
   queries: string[],
   routing: DashboardSession['routing'],
@@ -884,23 +1032,24 @@ function SessionRow({ session }: { session: DashboardSession }) {
                 {tier}
               </span>
             ))}
-            <span className="text-xxs tabular-nums text-neutral-500 dark:text-neutral-400">
-              {routing.total.requestCount} req
-            </span>
-            <span className="text-xxs tabular-nums text-neutral-600 dark:text-neutral-400">
-              {formatTokens(routing.total.totalTokens || 0)}
-            </span>
-            <span className="text-xxs tabular-nums text-neutral-500 dark:text-neutral-400">
-              {formatCost(routing.total.estimatedCost || 0)}
-            </span>
-            {(routing.total.baselineCost || 0) > 0 && (
+            <div className="ml-1 grid grid-cols-[56px_62px_58px_86px] items-center gap-2 text-[11px] leading-[14px] tabular-nums">
+              <span className="text-right text-neutral-500 dark:text-neutral-400">
+                {routing.total.requestCount} req
+              </span>
+              <span className="text-right text-neutral-600 dark:text-neutral-400">
+                {formatTokens(routing.total.totalTokens || 0)}
+              </span>
+              <span className="text-right text-neutral-500 dark:text-neutral-400">
+                {formatCost(routing.total.estimatedCost || 0)}
+              </span>
               <span className={cn(
-                'text-xxs tabular-nums',
+                'text-right font-medium',
+                !(routing.total.baselineCost || 0) && 'invisible',
                 saved >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400',
               )}>
                 {saved >= 0 ? 'saved' : 'over'} {formatCost(Math.abs(saved))}
               </span>
-            )}
+            </div>
           </div>
         ) : (
           <span className="text-xxs shrink-0 text-neutral-300 dark:text-neutral-700">

@@ -25,6 +25,23 @@
         "model": "模型",
         "tokens": "Token 数"
       }
+    },
+    "price": {
+      "title": "Price",
+      "empty": "暂无可计价会话。",
+      "actual": "实际开销",
+      "baseline": "不走 Router 开销",
+      "saved": "节省",
+      "extra": "多花",
+      "summary": "{{sessions}} 个会话 · {{requests}} 次请求 · {{tokens}} tokens",
+      "baselineHint": "按所有路由 token 都交给主模型估算。",
+      "savedHint": "相对基准 {{rate}}%",
+      "missingBaseline": "这些会话还没有配置基准成本。",
+      "session": "会话",
+      "actualShort": "实际",
+      "baselineShort": "不走 Router",
+      "savedShort": "节省",
+      "extraShort": "多花"
     }
   }
 }

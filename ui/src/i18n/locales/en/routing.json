@@ -25,6 +25,23 @@
         "model": "Model",
         "tokens": "Tokens"
       }
+    },
+    "price": {
+      "title": "Price",
+      "empty": "No priced sessions yet.",
+      "actual": "Actual cost",
+      "baseline": "No-router cost",
+      "saved": "Saved",
+      "extra": "Extra spent",
+      "summary": "{{sessions}} sessions · {{requests}} req · {{tokens}} tokens",
+      "baselineHint": "Baseline assumes the main model handles all routed tokens.",
+      "savedHint": "{{rate}}% vs baseline",
+      "missingBaseline": "No baseline configured for these sessions.",
+      "session": "Session",
+      "actualShort": "Actual",
+      "baselineShort": "No router",
+      "savedShort": "Saved",
+      "extraShort": "Extra"
     }
   }
 }
