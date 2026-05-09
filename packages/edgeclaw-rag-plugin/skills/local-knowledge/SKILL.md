@@ -13,6 +13,15 @@ If `rag.localKnowledge.modelName` or `rag.localKnowledge.databaseUrl` are
 configured, the script passes them to the retriever service as `modelName` and
 `databaseUrl`.
 
+This is a skill loaded through the built-in `Skill` tool. Do not call
+`9gclaw-rag:local-knowledge` as a direct tool name.
+
+If explicitly invoking this skill, use:
+
+```json
+{"skill":"9gclaw-rag:local-knowledge","args":"<query>"}
+```
+
 ## Command
 
 ```bash

@@ -47,7 +47,9 @@ const BUILT_IN_WEB_TOOLS = ['WebFetch', 'WebSearch'];
 const RAG_WEB_TOOL_GUIDANCE = [
   '9GClaw RAG is enabled.',
   'For network search, web research, current public facts, source-backed answers, or user requests mentioning web/search skills, use the 9GClaw RAG skills instead of built-in web tools.',
-  'Use skill 9gclaw-glm-web-search for public web search. Use skill 9gclaw-rag-research when local knowledge and web evidence should be combined.',
+  'The RAG entries are skills, not direct tool names. Never call tools named "9gclaw-rag:glm-web-search", "9gclaw-rag:local-knowledge", or "9gclaw-rag:rag-research".',
+  'To use public web search, call the built-in Skill tool with skill="9gclaw-rag:glm-web-search" and the search query as args. To combine local knowledge and web evidence, call Skill with skill="9gclaw-rag:rag-research".',
+  'After the Skill tool loads a RAG skill, follow the loaded SKILL.md and run the allowed Bash script command shown there.',
   'Do not pass --top-k to RAG scripts unless the user explicitly asks to override the configured result count; the scripts read EDGECLAW_RAG_*_TOP_K from 9GClaw config.',
   'Do not use WebFetch or WebSearch for search. If a page must be opened after search results are returned, prefer the URL snippets/citations from the RAG script unless the user explicitly asks to fetch a specific URL.',
 ].join('\n');

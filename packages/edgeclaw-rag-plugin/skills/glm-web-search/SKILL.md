@@ -12,6 +12,15 @@ Use this skill to search the configured Z.AI / GLM web search service. This
 replaces the built-in Claude Code `WebFetch` and `WebSearch` tools for search
 tasks in 9GClaw.
 
+This is a skill loaded through the built-in `Skill` tool. Do not call
+`9gclaw-rag:glm-web-search` as a direct tool name.
+
+If explicitly invoking this skill, use:
+
+```json
+{"skill":"9gclaw-rag:glm-web-search","args":"<query>"}
+```
+
 The recommended endpoint is:
 
 ```text

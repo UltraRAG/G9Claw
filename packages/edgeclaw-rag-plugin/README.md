@@ -7,11 +7,26 @@ that call the RAG HTTP APIs configured through `~/.edgeclaw/config.yaml`.
 
 ## Skills
 
-| Skill | Purpose |
+These entries are Claude Code skills. Invoke them through the built-in `Skill`
+tool; do not call `9gclaw-rag:*` as direct tool names.
+
+| Skill ID | Purpose |
 | --- | --- |
-| `9gclaw-local-knowledge` | Search the deployed local knowledge API. |
-| `9gclaw-glm-web-search` | Search the configured GLM web search API. |
-| `9gclaw-rag-research` | Combine local knowledge and web search evidence. |
+| `9gclaw-rag:local-knowledge` | Search the deployed local knowledge API. |
+| `9gclaw-rag:glm-web-search` | Search the configured GLM web search API. |
+| `9gclaw-rag:rag-research` | Combine local knowledge and web search evidence. |
+
+Correct tool call shape:
+
+```json
+{
+  "tool": "Skill",
+  "input": {
+    "skill": "9gclaw-rag:glm-web-search",
+    "args": "today weather in Shenyang"
+  }
+}
+```
 
 ## Required Config
 

@@ -36,7 +36,12 @@ export function getClaudePermissionSuggestion(
   if (provider !== 'claude') return null;
   if (!message?.toolResult?.isError) return null;
 
+  const errorContent = String(message.toolResult.content || '');
+  if (errorContent.includes('No such tool available')) return null;
+
   const toolName = message?.toolName;
+  if (typeof toolName === 'string' && toolName.startsWith('9gclaw-rag:')) return null;
+
   const entry = buildClaudeToolPermissionEntry(toolName, message.toolInput);
   if (!entry) return null;
 
