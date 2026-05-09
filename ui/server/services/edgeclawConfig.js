@@ -746,6 +746,7 @@ export function buildCcrConfig(config) {
   const configuredModelPricing = normalized.router.tokenStats?.modelPricing || {};
   const tokenStats = {
     ...normalized.router.tokenStats,
+    savingsBaselineModel: normalized.router.tokenStats?.savingsBaselineModel || router.default,
     modelPricing: {
       ...zeroCostModelPricing,
       ...configuredModelPricing,

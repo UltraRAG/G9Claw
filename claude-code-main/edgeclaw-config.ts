@@ -404,6 +404,7 @@ export function buildCcrConfigFromEdgeClawConfig(config = loadEdgeClawConfig()) 
     const resolved = resolveEdgeClawModel(config, autoOrchestrate.mainAgentModel)
     if (resolved) autoOrchestrate.mainAgentModel = `${resolved.providerId},${resolved.model}`
   }
+  const defaultRoute = routeToCcr(config, routes.default)
   return {
     LOG: router.log ?? true,
     HOST: router.host ?? '127.0.0.1',
@@ -411,7 +412,7 @@ export function buildCcrConfigFromEdgeClawConfig(config = loadEdgeClawConfig()) 
     API_TIMEOUT_MS: router.apiTimeoutMs ?? 120000,
     Providers: providers,
     Router: {
-      default: routeToCcr(config, routes.default),
+      default: defaultRoute,
       background: routeToCcr(config, routes.background),
       think: routeToCcr(config, routes.think),
       longContext: routeToCcr(config, routes.longContext),
@@ -422,6 +423,7 @@ export function buildCcrConfigFromEdgeClawConfig(config = loadEdgeClawConfig()) 
     },
     tokenStats: {
       ...(router.tokenStats ?? { enabled: true }),
+      savingsBaselineModel: router.tokenStats?.savingsBaselineModel || defaultRoute,
       modelPricing: {
         ...buildZeroCostModelPricing(config),
         ...(router.tokenStats?.modelPricing ?? {}),

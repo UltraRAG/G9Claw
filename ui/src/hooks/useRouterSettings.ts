@@ -8,6 +8,8 @@ export type TokenBucket = {
   totalTokens: number;
   requestCount: number;
   estimatedCost: number;
+  baselineCost?: number;
+  savedCost?: number;
 };
 
 export type CCRProvider = {
@@ -48,7 +50,11 @@ export type CCRConfig = {
       slimSystemPrompt?: boolean;
     };
   };
-  tokenStats?: { enabled: boolean };
+  tokenStats?: {
+    enabled: boolean;
+    savingsBaselineModel?: string;
+    modelPricing?: Record<string, { inputPer1M: number; outputPer1M: number }>;
+  };
 };
 
 export type CCRHealth = {

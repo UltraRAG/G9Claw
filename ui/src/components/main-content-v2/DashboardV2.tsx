@@ -32,9 +32,11 @@ function formatTokens(n: number): string {
 }
 
 function formatCost(n: number): string {
-  if (!n) return '$0.00';
-  if (n < 0.01) return `$${n.toFixed(4)}`;
-  return `$${n.toFixed(2)}`;
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  if (!abs) return '$0.00';
+  if (abs < 0.01) return `${sign}$${abs.toFixed(4)}`;
+  return `${sign}$${abs.toFixed(2)}`;
 }
 
 function formatTime(iso?: string | null, fallback?: number): string {
@@ -167,7 +169,7 @@ function buildProjectGroups(
   let generalGroup: ProjectGroup | null = null;
   const unmatched = data.unmatchedSessions || [];
   if (unmatched.length > 0) {
-    const aggTotal = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0, requestCount: 0, estimatedCost: 0 };
+    const aggTotal = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0, requestCount: 0, estimatedCost: 0, baselineCost: 0, savedCost: 0 };
     const aggByTier: Record<string, any> = {};
     const aggByRole: Record<string, any> = {};
     const sessions: DashboardSession[] = [];
@@ -179,12 +181,16 @@ function buildProjectGroups(
       aggTotal.totalTokens += u.total?.totalTokens || 0;
       aggTotal.requestCount += u.total?.requestCount || 0;
       aggTotal.estimatedCost += u.total?.estimatedCost || 0;
+      aggTotal.baselineCost += u.total?.baselineCost || 0;
+      aggTotal.savedCost += u.total?.savedCost || 0;
 
       for (const [k, v] of Object.entries(u.byTier || {})) {
-        if (!aggByTier[k]) aggByTier[k] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0, requestCount: 0, estimatedCost: 0 };
+        if (!aggByTier[k]) aggByTier[k] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0, requestCount: 0, estimatedCost: 0, baselineCost: 0, savedCost: 0 };
         aggByTier[k].totalTokens += v?.totalTokens || 0;
         aggByTier[k].requestCount += v?.requestCount || 0;
         aggByTier[k].estimatedCost += v?.estimatedCost || 0;
+        aggByTier[k].baselineCost += v?.baselineCost || 0;
+        aggByTier[k].savedCost += v?.savedCost || 0;
       }
 
       sessions.push({
@@ -309,6 +315,9 @@ export default function DashboardV2({ projectFilter, onSelectProject, onDeselect
   const inputTokens = overall.total.inputTokens || 0;
   const outputTokens = overall.total.outputTokens || 0;
   const totalCost = overall.total.estimatedCost || 0;
+  const baselineCost = overall.total.baselineCost || 0;
+  const savedCost = overall.total.savedCost || 0;
+  const savingsRate = baselineCost > 0 ? savedCost / baselineCost : 0;
 
   const routedSessionCount =
     groups.reduce((sum, g) => sum + g.aggregated.routedSessionCount, 0) +
@@ -397,15 +406,87 @@ export default function DashboardV2({ projectFilter, onSelectProject, onDeselect
             label={t('dashboard.stats.cost', { defaultValue: 'Cost' })}
             value={formatCost(totalCost)}
             sub={
-              totalRequests > 0
-                ? (t('dashboard.stats.perRequest', {
-                    value: formatCost(totalCost / totalRequests),
-                    defaultValue: `≈ ${formatCost(totalCost / totalRequests)} / request`,
-                  }) as string)
-                : undefined
+              baselineCost > 0
+                ? `No-router ${formatCost(baselineCost)}`
+                : totalRequests > 0
+                  ? (t('dashboard.stats.perRequest', {
+                      value: formatCost(totalCost / totalRequests),
+                      defaultValue: `≈ ${formatCost(totalCost / totalRequests)} / request`,
+                    }) as string)
+                  : undefined
+            }
+            hint={
+              baselineCost > 0 ? (
+                <span className={cn(
+                  'inline-flex items-center gap-1',
+                  savedCost >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400',
+                )}>
+                  <TrendingUp className="h-3 w-3" strokeWidth={1.75} />
+                  <span>
+                    {savedCost >= 0 ? 'Saved' : 'Over'} {formatCost(Math.abs(savedCost))}
+                    {baselineCost > 0 ? ` (${Math.round(Math.abs(savingsRate) * 100)}%)` : ''}
+                  </span>
+                </span>
+              ) : undefined
             }
           />
         </div>
+
+        {baselineCost > 0 && (
+          <div className={cn(
+            'mt-4 rounded-xl border p-4',
+            savedCost >= 0
+              ? 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/60 dark:bg-emerald-950/20'
+              : 'border-amber-200 bg-amber-50/70 dark:border-amber-900/60 dark:bg-amber-950/20',
+          )}>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <div className={cn(
+                  'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
+                  savedCost >= 0
+                    ? 'bg-emerald-500 text-white'
+                    : 'bg-amber-500 text-white',
+                )}>
+                  <DollarSign className="h-4 w-4" strokeWidth={2} />
+                </div>
+                <div>
+                  <div className="text-[13px] font-medium text-neutral-800 dark:text-neutral-100">
+                    {savedCost >= 0 ? 'Router saved' : 'Router spent extra'}
+                  </div>
+                  <div className="mt-0.5 text-[26px] font-semibold tabular-nums text-neutral-900 dark:text-neutral-50">
+                    {formatCost(Math.abs(savedCost))}
+                  </div>
+                  <div className="text-xxs text-neutral-500 dark:text-neutral-400">
+                    Compared with sending the same tokens to the no-router baseline model.
+                  </div>
+                </div>
+              </div>
+              <div className="grid min-w-[280px] grid-cols-3 gap-3 text-right">
+                <div>
+                  <div className="text-xxs text-neutral-500 dark:text-neutral-400">No router</div>
+                  <div className="mt-1 text-[14px] font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">
+                    {formatCost(baselineCost)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xxs text-neutral-500 dark:text-neutral-400">Actual</div>
+                  <div className="mt-1 text-[14px] font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">
+                    {formatCost(totalCost)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xxs text-neutral-500 dark:text-neutral-400">Rate</div>
+                  <div className={cn(
+                    'mt-1 text-[14px] font-semibold tabular-nums',
+                    savedCost >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300',
+                  )}>
+                    {Math.round(savingsRate * 100)}%
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Project-filtered: flat session list */}
         {projectFilter && (
@@ -622,6 +703,7 @@ function TierBar({ byTier }: { byTier: Record<string, { estimatedCost?: number; 
 function ProjectCostCard({ group, onClick }: { group: ProjectGroup; onClick?: () => void }) {
   const agg = group.aggregated;
   const cost = agg.total.estimatedCost || 0;
+  const saved = agg.total.savedCost || 0;
   const requests = agg.total.requestCount || 0;
   const tokens = agg.total.totalTokens || 0;
   const Tag = onClick ? 'button' : 'div';
@@ -647,6 +729,14 @@ function ProjectCostCard({ group, onClick }: { group: ProjectGroup; onClick?: ()
         </div>
         <div className="shrink-0 text-right">
           <div className="text-[18px] font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">{formatCost(cost)}</div>
+          {(agg.total.baselineCost || 0) > 0 && (
+            <div className={cn(
+              'text-xxs tabular-nums',
+              saved >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400',
+            )}>
+              {saved >= 0 ? 'saved' : 'over'} {formatCost(Math.abs(saved))}
+            </div>
+          )}
         </div>
       </div>
       <TierBar byTier={agg.byTier || {}} />
@@ -688,6 +778,7 @@ function filterUserQueries(queries: string[]): string[] {
 
 function RequestLogRow({ entry, variant }: { entry: RequestLogEntry; variant: 'main' | 'sub' }) {
   const isSub = variant === 'sub';
+  const saved = entry.savedCost ?? 0;
   return (
     <div className={cn(
       'flex items-start gap-2 rounded-md px-2.5 py-1.5 text-[12px]',
@@ -719,6 +810,14 @@ function RequestLogRow({ entry, variant }: { entry: RequestLogEntry; variant: 'm
           <span className="truncate">{entry.model}</span>
           <span className="tabular-nums">{formatTokens(entry.tokens)}</span>
           <span className="tabular-nums">{formatCost(entry.cost)}</span>
+          {typeof entry.savedCost === 'number' && Math.abs(saved) > 0.000001 && (
+            <span className={cn(
+              'tabular-nums',
+              saved >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400',
+            )}>
+              {saved >= 0 ? 'saved' : 'over'} {formatCost(Math.abs(saved))}
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -728,6 +827,7 @@ function RequestLogRow({ entry, variant }: { entry: RequestLogEntry; variant: 'm
 function SessionRow({ session }: { session: DashboardSession }) {
   const [open, setOpen] = useState(false);
   const routing = session.routing;
+  const saved = routing?.total?.savedCost || 0;
   const rawQueries = session.userQueries || [];
   const queries = filterUserQueries(rawQueries);
   const queryCount = queries.length;
@@ -793,6 +893,14 @@ function SessionRow({ session }: { session: DashboardSession }) {
             <span className="text-xxs tabular-nums text-neutral-500 dark:text-neutral-400">
               {formatCost(routing.total.estimatedCost || 0)}
             </span>
+            {(routing.total.baselineCost || 0) > 0 && (
+              <span className={cn(
+                'text-xxs tabular-nums',
+                saved >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400',
+              )}>
+                {saved >= 0 ? 'saved' : 'over'} {formatCost(Math.abs(saved))}
+              </span>
+            )}
           </div>
         ) : (
           <span className="text-xxs shrink-0 text-neutral-300 dark:text-neutral-700">

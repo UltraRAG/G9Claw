@@ -195,7 +195,16 @@ async function extractUserQueries(projectName, sessionId, limit = 20) {
 }
 
 function emptyBucket() {
-  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0, requestCount: 0, estimatedCost: 0 };
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    totalTokens: 0,
+    requestCount: 0,
+    estimatedCost: 0,
+    baselineCost: 0,
+    savedCost: 0,
+  };
 }
 
 function mergeBuckets(target, source) {
@@ -205,6 +214,8 @@ function mergeBuckets(target, source) {
   target.totalTokens += source.totalTokens || 0;
   target.requestCount += source.requestCount || 0;
   target.estimatedCost += source.estimatedCost || 0;
+  target.baselineCost += source.baselineCost || 0;
+  target.savedCost += source.savedCost || 0;
 }
 
 function mergeRecordBuckets(target, source) {

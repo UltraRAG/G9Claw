@@ -72,6 +72,7 @@ test('buildCcrConfigFromEdgeClawConfig fills router defaults and zero-cost local
   expect(ccr.Router.tokenSaver.rules.join('\n')).not.toContain('DARPA')
   expect(ccr.Router.autoOrchestrate.allowedTools).toContain('Agent')
   expect(ccr.Router.autoOrchestrate.subagentMaxTokens).toBe(48000)
+  expect(ccr.tokenStats.savingsBaselineModel).toBe('edgeclaw,qwen3.5-35b')
   expect(ccr.tokenStats.modelPricing['edgeclaw,qwen3.5-35b']).toEqual({
     inputPer1M: 0,
     outputPer1M: 0,

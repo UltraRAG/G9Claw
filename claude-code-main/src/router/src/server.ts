@@ -33,7 +33,7 @@ import { TransformerService } from "./services/transformer";
 import { TokenizerService } from "./services/tokenizer";
 import { router, calculateTokenCount, searchProjectBySession } from "./utils/router";
 import { sessionUsageCache } from "./utils/cache";
-import { TokenStatsCollector, setGlobalStatsCollector, setModelPricing } from "./plugins/token-stats";
+import { TokenStatsCollector, setGlobalStatsCollector, setModelPricing, setSavingsBaselineModel } from "./plugins/token-stats";
 
 // Extend FastifyRequest to include custom properties
 declare module "fastify" {
@@ -216,6 +216,7 @@ class Server {
       if (tokenStatsConfig?.modelPricing) {
         setModelPricing(tokenStatsConfig.modelPricing);
       }
+      setSavingsBaselineModel(tokenStatsConfig?.savingsBaselineModel);
     }
 
     this.app.addHook("preHandler", (req, reply, done) => {

@@ -11,6 +11,8 @@ export interface TokenBucket {
   totalTokens: number;
   requestCount: number;
   estimatedCost: number;
+  baselineCost: number;
+  savedCost: number;
 }
 
 export interface HourlyBucket {
@@ -55,6 +57,8 @@ export interface RequestLogEntry {
   model: string;
   tokens: number;
   cost: number;
+  baselineCost?: number;
+  savedCost?: number;
   query?: string;
 }
 
@@ -74,6 +78,11 @@ export interface ModelPricing {
   outputPer1M: number;
 }
 
+export interface SavingsBaselineModel {
+  provider?: string;
+  model?: string;
+}
+
 // ── Helpers ──
 
 const MAX_HOURLY_BUCKETS = 72;
@@ -81,7 +90,16 @@ const MAX_SESSIONS = 200;
 const DEFAULT_STATS_PATH = join(homedir(), ".claude-code-router", "token-stats.json");
 
 function emptyBucket(): TokenBucket {
-  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0, requestCount: 0, estimatedCost: 0 };
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    totalTokens: 0,
+    requestCount: 0,
+    estimatedCost: 0,
+    baselineCost: 0,
+    savedCost: 0,
+  };
 }
 
 function currentHourKey(): string {
@@ -104,16 +122,20 @@ function emptyStats(): TokenStatsData {
   };
 }
 
-function addToBucket(bucket: TokenBucket, usage: UsageEvent["usage"], cost = 0): void {
+function addToBucket(bucket: TokenBucket, usage: UsageEvent["usage"], cost = 0, baselineCost = cost): void {
   const input = usage?.input ?? 0;
   const output = usage?.output ?? 0;
   const cacheRead = usage?.cacheRead ?? 0;
+  if (typeof bucket.baselineCost !== "number") bucket.baselineCost = 0;
+  if (typeof bucket.savedCost !== "number") bucket.savedCost = 0;
   bucket.inputTokens += input;
   bucket.outputTokens += output;
   bucket.cacheReadTokens += cacheRead;
   bucket.totalTokens += input + output;
   bucket.requestCount += 1;
   bucket.estimatedCost += cost;
+  bucket.baselineCost += baselineCost;
+  bucket.savedCost += baselineCost - cost;
 }
 
 function ensureBucket(map: Record<string, TokenBucket>, key: string): TokenBucket {
@@ -124,9 +146,27 @@ function ensureBucket(map: Record<string, TokenBucket>, key: string): TokenBucke
 // ── Pricing ──
 
 let modelPricingConfig: Record<string, ModelPricing> | null = null;
+let savingsBaselineModel: SavingsBaselineModel | null = null;
 
 export function setModelPricing(pricing: Record<string, ModelPricing>): void {
   modelPricingConfig = pricing;
+}
+
+export function setSavingsBaselineModel(modelRef?: string | SavingsBaselineModel | null): void {
+  if (!modelRef) {
+    savingsBaselineModel = null;
+    return;
+  }
+  if (typeof modelRef === "string") {
+    const [provider, ...modelParts] = modelRef.split(",");
+    const model = modelParts.join(",");
+    savingsBaselineModel = model ? { provider, model } : { model: provider };
+    return;
+  }
+  savingsBaselineModel = {
+    provider: modelRef.provider,
+    model: modelRef.model,
+  };
 }
 
 export function lookupPricing(model: string, provider?: string): ModelPricing {
@@ -170,6 +210,15 @@ function calculateCost(provider: string, model: string, usage: UsageEvent["usage
   const output = usage?.output ?? 0;
   const p = lookupPricing(model, provider);
   return (input * p.inputPer1M + output * p.outputPer1M) / 1_000_000;
+}
+
+function calculateBaselineCost(provider: string, model: string, usage: UsageEvent["usage"]): number {
+  if (!savingsBaselineModel?.model) return calculateCost(provider, model, usage);
+  return calculateCost(
+    savingsBaselineModel.provider || provider,
+    savingsBaselineModel.model,
+    usage,
+  );
 }
 
 // ── Collector ──
@@ -227,16 +276,17 @@ export class TokenStatsCollector {
   record(event: UsageEvent): void {
     const now = Date.now();
     const cost = calculateCost(event.provider, event.model, event.usage);
+    const baselineCost = calculateBaselineCost(event.provider, event.model, event.usage);
 
     const role = event.isSubagent ? "sub" : "main";
 
     // Lifetime totals
-    addToBucket(this.data.lifetime.total, event.usage, cost);
-    addToBucket(ensureBucket(this.data.lifetime.byScenario, event.scenarioType), event.usage, cost);
-    addToBucket(ensureBucket(this.data.lifetime.byProvider, event.provider), event.usage, cost);
-    addToBucket(ensureBucket(this.data.lifetime.byRole, role), event.usage, cost);
+    addToBucket(this.data.lifetime.total, event.usage, cost, baselineCost);
+    addToBucket(ensureBucket(this.data.lifetime.byScenario, event.scenarioType), event.usage, cost, baselineCost);
+    addToBucket(ensureBucket(this.data.lifetime.byProvider, event.provider), event.usage, cost, baselineCost);
+    addToBucket(ensureBucket(this.data.lifetime.byRole, role), event.usage, cost, baselineCost);
     if (event.tier) {
-      addToBucket(ensureBucket(this.data.lifetime.byTier, event.tier), event.usage, cost);
+      addToBucket(ensureBucket(this.data.lifetime.byTier, event.tier), event.usage, cost, baselineCost);
     }
 
     // Hourly bucket
@@ -249,12 +299,12 @@ export class TokenStatsCollector {
         this.data.hourly = this.data.hourly.slice(-MAX_HOURLY_BUCKETS);
       }
     }
-    addToBucket(hourly.total, event.usage, cost);
-    addToBucket(ensureBucket(hourly.byScenario, event.scenarioType), event.usage, cost);
-    addToBucket(ensureBucket(hourly.byProvider, event.provider), event.usage, cost);
-    addToBucket(ensureBucket(hourly.byRole, role), event.usage, cost);
+    addToBucket(hourly.total, event.usage, cost, baselineCost);
+    addToBucket(ensureBucket(hourly.byScenario, event.scenarioType), event.usage, cost, baselineCost);
+    addToBucket(ensureBucket(hourly.byProvider, event.provider), event.usage, cost, baselineCost);
+    addToBucket(ensureBucket(hourly.byRole, role), event.usage, cost, baselineCost);
     if (event.tier) {
-      addToBucket(ensureBucket(hourly.byTier, event.tier), event.usage, cost);
+      addToBucket(ensureBucket(hourly.byTier, event.tier), event.usage, cost, baselineCost);
     }
 
     // Session-level tracking
@@ -277,12 +327,12 @@ export class TokenStatsCollector {
       if (!sess.byRole) sess.byRole = {};
       if (!sess.byModel) sess.byModel = {};
       sess.lastActiveAt = now;
-      addToBucket(sess.total, event.usage, cost);
-      addToBucket(ensureBucket(sess.byScenario, event.scenarioType), event.usage, cost);
-      addToBucket(ensureBucket(sess.byRole, role), event.usage, cost);
-      addToBucket(ensureBucket(sess.byModel, event.model), event.usage, cost);
+      addToBucket(sess.total, event.usage, cost, baselineCost);
+      addToBucket(ensureBucket(sess.byScenario, event.scenarioType), event.usage, cost, baselineCost);
+      addToBucket(ensureBucket(sess.byRole, role), event.usage, cost, baselineCost);
+      addToBucket(ensureBucket(sess.byModel, event.model), event.usage, cost, baselineCost);
       if (event.tier) {
-        addToBucket(ensureBucket(sess.byTier, event.tier), event.usage, cost);
+        addToBucket(ensureBucket(sess.byTier, event.tier), event.usage, cost, baselineCost);
       }
 
       if (!sess.requestLog) sess.requestLog = [];
@@ -294,6 +344,8 @@ export class TokenStatsCollector {
         model: event.model,
         tokens: totalTokens,
         cost,
+        baselineCost,
+        savedCost: baselineCost - cost,
         query: event.querySnippet,
       });
       if (sess.requestLog.length > 100) sess.requestLog = sess.requestLog.slice(-100);

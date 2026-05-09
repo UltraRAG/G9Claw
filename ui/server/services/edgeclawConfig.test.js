@@ -149,6 +149,7 @@ test('buildCcrConfig sets first-party 9GClaw providers to zero token cost', asyn
     inputPer1M: 0,
     outputPer1M: 0,
   });
+  assert.equal(ccr.tokenStats.savingsBaselineModel, 'openrouter,deepseek/deepseek-v4-pro');
   assert.equal(ccr.tokenStats.modelPricing['openrouter,deepseek/deepseek-v4-pro'], undefined);
 });
 
