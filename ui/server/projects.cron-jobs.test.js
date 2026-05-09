@@ -216,6 +216,38 @@ test('getProjectCronJobsOverview returns an empty list when scheduled_tasks.json
   assert.deepEqual(overview, { jobs: [] });
 });
 
+test('getProjects hides manually configured duplicates with the same project path', async () => {
+  const homeDir = await createTempHome();
+  const projectRoot = path.join(homeDir, '9gclaw_projects', 'darpa');
+  const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
+  const discoveredProjectName = projectRoot.replace(/[\\/:\s]/g, '-');
+  const manualProjectName = projectRoot.replace(/[\\/:\s~_]/g, '-');
+
+  assert.notEqual(discoveredProjectName, manualProjectName);
+
+  await fs.mkdir(projectRoot, { recursive: true });
+  await fs.mkdir(path.join(claudeProjectsDir, discoveredProjectName), { recursive: true });
+  await fs.writeFile(
+    path.join(homeDir, '.claude', 'project-config.json'),
+    JSON.stringify({
+      [discoveredProjectName]: {
+        originalPath: projectRoot
+      },
+      [manualProjectName]: {
+        manuallyAdded: true,
+        originalPath: projectRoot
+      }
+    }, null, 2),
+    'utf8'
+  );
+
+  const projects = await getProjects();
+  const matchingProjects = projects.filter((project) => path.resolve(project.fullPath) === projectRoot);
+
+  assert.equal(matchingProjects.length, 1);
+  assert.equal(matchingProjects[0].name, discoveredProjectName);
+});
+
 test('getProjects includes per-project always-on discovery trigger setting', async () => {
   const homeDir = await createTempHome();
   const projectName = 'project-with-always-on';

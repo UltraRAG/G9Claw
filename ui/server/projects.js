@@ -521,6 +521,7 @@ async function getProjects(progressCallback = null) {
   const alwaysOnProjectSettings = readAlwaysOnProjectSettings();
   const projects = [];
   const existingProjects = new Set();
+  const existingProjectPaths = new Set();
   const codexSessionsIndexRef = { sessionsByProject: null };
   let configDirty = false;
   let totalProjects = 0;
@@ -569,6 +570,10 @@ async function getProjects(progressCallback = null) {
       const customName = config[entry.name]?.displayName;
       const autoDisplayName = await generateDisplayName(entry.name, actualProjectDir);
       const fullPath = actualProjectDir;
+      const comparableProjectPath = normalizeComparablePath(fullPath);
+      if (comparableProjectPath) {
+        existingProjectPaths.add(comparableProjectPath);
+      }
 
       const project = {
         name: entry.name,
@@ -675,18 +680,6 @@ async function getProjects(progressCallback = null) {
   // Add manually configured projects that don't exist as folders yet
   for (const [projectName, projectConfig] of Object.entries(config)) {
     if (!existingProjects.has(projectName) && projectConfig.manuallyAdded) {
-      processedProjects++;
-
-      // Emit progress for manual projects
-      if (progressCallback) {
-        progressCallback({
-          phase: 'loading',
-          current: processedProjects,
-          total: totalProjects,
-          currentProject: projectName
-        });
-      }
-
       // Use the original path if available, otherwise extract from potential sessions
       let actualProjectDir = projectConfig.originalPath;
 
@@ -697,6 +690,22 @@ async function getProjects(progressCallback = null) {
           // Fall back to decoded project name
           actualProjectDir = projectName.replace(/-/g, '/');
         }
+      }
+      const comparableProjectPath = normalizeComparablePath(actualProjectDir);
+      if (comparableProjectPath && existingProjectPaths.has(comparableProjectPath)) {
+        continue;
+      }
+
+      processedProjects++;
+
+      // Emit progress for manual projects
+      if (progressCallback) {
+        progressCallback({
+          phase: 'loading',
+          current: processedProjects,
+          total: totalProjects,
+          currentProject: projectName
+        });
       }
 
       const project = {
@@ -778,6 +787,9 @@ async function getProjects(progressCallback = null) {
       }
 
       projects.push(project);
+      if (comparableProjectPath) {
+        existingProjectPaths.add(comparableProjectPath);
+      }
     }
   }
 
