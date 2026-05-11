@@ -273,6 +273,9 @@ function resolveWorkingLabel(
       return t('working.thinking', { defaultValue: 'Thinking' });
     case 'waiting for permission':
       return t('working.waitingForPermission', { defaultValue: 'Waiting for permission' });
+    case 'compacting':
+    case 'compacting context':
+      return t('working.compacting', { defaultValue: 'Compacting context...' });
     default:
       return raw;
   }

@@ -452,6 +452,20 @@ export function normalizeEdgeClawConfig(input) {
   if (isRecord(normalized.agents)) {
     delete normalized.agents.alwaysOn;
   }
+  const rawModelEntries = raw?.models?.entries;
+  if (isRecord(rawModelEntries) && isRecord(normalized.models?.entries)) {
+    for (const [id, rawEntry] of Object.entries(rawModelEntries)) {
+      if (!isRecord(rawEntry) || !isRecord(normalized.models.entries[id])) continue;
+      const hasUsableContextWindow =
+        Object.prototype.hasOwnProperty.call(rawEntry, 'contextWindow') &&
+        rawEntry.contextWindow !== undefined &&
+        rawEntry.contextWindow !== null &&
+        rawEntry.contextWindow !== '';
+      if (!hasUsableContextWindow) {
+        delete normalized.models.entries[id].contextWindow;
+      }
+    }
+  }
   if (
     isRecord(raw?.rag?.localKnowledge) &&
     normalizeString(raw.rag.localKnowledge.milvusUri) &&
@@ -613,6 +627,13 @@ export function buildRuntimeEnv(config) {
   const main = resolveModel(normalized, normalized.agents.main.model, { allowMissing: true });
   const runtime = normalized.runtime;
   const proxyPort = String(runtime.proxyPort ?? 18080);
+  const configuredContextWindow = Number.parseInt(
+    String(main?.entry?.contextWindow ?? runtime.contextWindow ?? 160000),
+    10
+  );
+  const effectiveContextWindow = Number.isFinite(configuredContextWindow) && configuredContextWindow > 0
+    ? configuredContextWindow
+    : 160000;
   // For runtime infrastructure fields (port/host), the host process (e.g. desktop
   // ServerManager) may have pre-allocated a free port via env vars. Respect those
   // when set; otherwise fall back to YAML config; otherwise built-in defaults.
@@ -622,8 +643,9 @@ export function buildRuntimeEnv(config) {
     SERVER_PORT: process.env.SERVER_PORT || String(runtime.serverPort ?? 3001),
     VITE_PORT: process.env.VITE_PORT || String(runtime.vitePort ?? 5173),
     HOST: process.env.HOST || String(runtime.host ?? '0.0.0.0'),
-    CONTEXT_WINDOW: String(runtime.contextWindow ?? 160000),
-    VITE_CONTEXT_WINDOW: String(runtime.contextWindow ?? 160000),
+    CONTEXT_WINDOW: String(effectiveContextWindow),
+    VITE_CONTEXT_WINDOW: String(effectiveContextWindow),
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(effectiveContextWindow),
     API_TIMEOUT_MS: String(runtime.apiTimeoutMs ?? 120000),
     EDGECLAW_MEMORY_ENABLED: normalized.memory.enabled ? '1' : '0',
     EDGECLAW_RAG_ENABLED: normalized.rag.enabled ? '1' : '0',

@@ -339,7 +339,7 @@ function RuntimeSection({ config, onChange }: { config: EdgeClawConfig; onChange
         <FormRow label="Proxy port" description="Local LLM proxy (Claude Agent SDK target).">
           <NumberInput value={r.proxyPort} placeholder="18080" onChange={(v) => set('proxyPort', v as any)} />
         </FormRow>
-        <FormRow label="Context window" description="Default token budget for new sessions.">
+        <FormRow label="Context window" description="Fallback token budget when a model entry does not set one.">
           <NumberInput value={r.contextWindow} placeholder="160000" onChange={(v) => set('contextWindow', v as any)} />
         </FormRow>
         <FormRow label="API timeout (ms)" description="Per-request upstream timeout.">
@@ -525,6 +525,9 @@ function EntriesEditor({ config, onChange }: { config: EdgeClawConfig; onChange:
             <label className="block text-xs text-muted-foreground">
               <span className="mb-1 block">Context window (optional)</span>
               <NumberInput value={entry.contextWindow} placeholder="160000" onChange={(v) => setEntry(id, { ...entry, contextWindow: v })} />
+              <span className="mt-1 block text-[11px] leading-snug text-muted-foreground/80">
+                Used for this model's token budget and auto-compaction threshold.
+              </span>
             </label>
           </div>
         );

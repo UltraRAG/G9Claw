@@ -66,6 +66,45 @@ test('normalizeMessage converts background api_error system events to errors', (
   assert.match(messages[0].content, /Retry 2\/10/);
 });
 
+test('normalizeMessage converts compacting status system events', () => {
+  const messages = normalizeMessage(
+    {
+      uuid: 'status-compacting',
+      type: 'system',
+      subtype: 'status',
+      status: 'compacting',
+      timestamp: '2026-04-29T12:00:01.000Z',
+    },
+    'regular-session'
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, 'status');
+  assert.equal(messages[0].text, 'compacting');
+  assert.equal(messages[0].canInterrupt, true);
+});
+
+test('normalizeMessage converts compact boundary system events', () => {
+  const messages = normalizeMessage(
+    {
+      uuid: 'compact-boundary',
+      type: 'system',
+      subtype: 'compact_boundary',
+      timestamp: '2026-04-29T12:00:01.000Z',
+      compact_metadata: {
+        trigger: 'auto',
+        pre_tokens: 123456,
+      },
+    },
+    'regular-session'
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, 'compact_boundary');
+  assert.equal(messages[0].trigger, 'auto');
+  assert.equal(messages[0].preTokens, 123456);
+});
+
 test('normalizeMessage keeps synthetic assistant API errors as errors', () => {
   const messages = normalizeMessage(
     {

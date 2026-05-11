@@ -53,6 +53,9 @@ export interface ChatMessage {
   isSubagentContainer?: boolean;
   isTaskNotification?: boolean;
   isInterruptedNotice?: boolean;
+  isCompactBoundary?: boolean;
+  compactTrigger?: string;
+  preTokens?: number;
   subagentState?: {
     childTools: SubagentChildTool[];
     currentToolIndex: number;

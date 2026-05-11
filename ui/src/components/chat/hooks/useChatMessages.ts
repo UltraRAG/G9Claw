@@ -148,6 +148,18 @@ function convertNormalizedMessages(messages: NormalizedMessage[]): ChatMessage[]
         });
         break;
 
+      case 'compact_boundary':
+        converted.push({
+          id: msg.id,
+          type: 'system',
+          content: 'Context compacted',
+          timestamp: msg.timestamp,
+          isCompactBoundary: true,
+          compactTrigger: msg.trigger,
+          preTokens: msg.preTokens,
+        });
+        break;
+
       case 'stream_delta':
         if (msg.content) {
           converted.push({

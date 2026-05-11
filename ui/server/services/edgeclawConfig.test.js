@@ -109,6 +109,71 @@ test('buildRuntimeEnv exports rag settings', () => {
   assert.equal(env.EDGECLAW_RAG_GLM_WEB_SEARCH_TOP_K, '6');
 });
 
+test('buildRuntimeEnv prefers active main model context window over runtime fallback', () => {
+  const env = buildRuntimeEnv({
+    runtime: {
+      contextWindow: 160000,
+    },
+    models: {
+      providers: {
+        edgeclaw: {
+          type: 'openai-chat',
+          baseUrl: 'http://model.example.com/v1',
+          apiKey: 'secret',
+        },
+      },
+      entries: {
+        default: {
+          provider: 'edgeclaw',
+          name: 'main-model',
+          contextWindow: 262144,
+        },
+      },
+    },
+    agents: {
+      main: {
+        model: 'default',
+      },
+    },
+  });
+
+  assert.equal(env.CONTEXT_WINDOW, '262144');
+  assert.equal(env.VITE_CONTEXT_WINDOW, '262144');
+  assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '262144');
+});
+
+test('buildRuntimeEnv falls back to runtime context window when main model entry omits it', () => {
+  const env = buildRuntimeEnv({
+    runtime: {
+      contextWindow: 131072,
+    },
+    models: {
+      providers: {
+        edgeclaw: {
+          type: 'openai-chat',
+          baseUrl: 'http://model.example.com/v1',
+          apiKey: 'secret',
+        },
+      },
+      entries: {
+        default: {
+          provider: 'edgeclaw',
+          name: 'main-model',
+        },
+      },
+    },
+    agents: {
+      main: {
+        model: 'default',
+      },
+    },
+  });
+
+  assert.equal(env.CONTEXT_WINDOW, '131072');
+  assert.equal(env.VITE_CONTEXT_WINDOW, '131072');
+  assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '131072');
+});
+
 test('normalizeEdgeClawConfig migrates legacy local knowledge milvusUri to databaseUrl', () => {
   const config = normalizeEdgeClawConfig({
     rag: {

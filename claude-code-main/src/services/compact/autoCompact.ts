@@ -349,3 +349,62 @@ export async function autoCompactIfNeeded(
     return { wasCompacted: false, consecutiveFailures: nextFailures }
   }
 }
+
+export async function compactForPromptTooLongRecovery(
+  messages: Message[],
+  toolUseContext: ToolUseContext,
+  cacheSafeParams: CacheSafeParams,
+  querySource?: QuerySource,
+  tracking?: AutoCompactTrackingState,
+): Promise<{
+  wasCompacted: boolean
+  compactionResult?: CompactionResult
+  error?: Error
+}> {
+  const source = String(querySource ?? '')
+  if (
+    isEnvTruthy(process.env.DISABLE_COMPACT) ||
+    !isAutoCompactEnabled() ||
+    source === 'compact' ||
+    source === 'session_memory'
+  ) {
+    return { wasCompacted: false }
+  }
+
+  const model = toolUseContext.options.mainLoopModel
+  const recompactionInfo: RecompactionInfo = {
+    isRecompactionInChain: tracking?.compacted === true,
+    turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
+    previousCompactTurnId: tracking?.turnId,
+    autoCompactThreshold: getAutoCompactThreshold(model),
+    querySource,
+  }
+
+  try {
+    const compactionResult = await compactConversation(
+      messages,
+      toolUseContext,
+      cacheSafeParams,
+      true, // Suppress user questions for recovery autocompact
+      undefined,
+      true,
+      recompactionInfo,
+    )
+
+    setLastSummarizedMessageId(undefined)
+    runPostCompactCleanup(querySource)
+
+    return {
+      wasCompacted: true,
+      compactionResult,
+    }
+  } catch (error) {
+    if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
+      logError(error)
+    }
+    return {
+      wasCompacted: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    }
+  }
+}

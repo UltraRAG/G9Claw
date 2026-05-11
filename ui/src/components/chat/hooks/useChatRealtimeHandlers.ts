@@ -370,6 +370,8 @@ export function useChatRealtimeHandlers({
       case 'status': {
         if (msg.text === 'token_budget' && msg.tokenBudget) {
           setTokenBudget(msg.tokenBudget as Record<string, unknown>);
+        } else if (msg.text === 'clear_status') {
+          setClaudeStatus(null);
         } else if (msg.text) {
           setClaudeStatus({
             text: msg.text,
@@ -379,6 +381,13 @@ export function useChatRealtimeHandlers({
           setIsLoading(true);
           setCanAbortSession(msg.canInterrupt !== false);
         }
+        break;
+      }
+
+      case 'compact_boundary': {
+        setClaudeStatus(null);
+        setIsLoading(true);
+        setCanAbortSession(true);
         break;
       }
 

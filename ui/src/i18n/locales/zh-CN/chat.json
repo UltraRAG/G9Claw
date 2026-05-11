@@ -23,11 +23,16 @@
   "interrupted": {
     "label": "已被用户暂停"
   },
+  "compact": {
+    "label": "上下文已压缩",
+    "tokens": "压缩前 {{tokens}} tokens"
+  },
   "working": {
     "default": "处理中",
     "processing": "处理中",
     "thinking": "思考中",
-    "waitingForPermission": "等待授权"
+    "waitingForPermission": "等待授权",
+    "compacting": "正在压缩上下文..."
   },
   "tools": {
     "settings": "工具设置",

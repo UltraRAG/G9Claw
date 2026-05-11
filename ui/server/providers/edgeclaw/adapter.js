@@ -473,6 +473,50 @@ function normalizeDirectEvent(raw, sessionId, options) {
   const timestamp = getTimestamp(raw);
   const id = getBaseId(raw);
 
+  if (raw.type === 'system' && raw.subtype === 'status') {
+    if (raw.status === 'compacting') {
+      return [createNormalizedMessage({
+        id,
+        sessionId,
+        timestamp,
+        provider: PROVIDER,
+        kind: 'status',
+        text: 'compacting',
+        tokens: 0,
+        canInterrupt: true,
+      })];
+    }
+
+    if (raw.status === null) {
+      return [createNormalizedMessage({
+        id,
+        sessionId,
+        timestamp,
+        provider: PROVIDER,
+        kind: 'status',
+        text: 'clear_status',
+        tokens: 0,
+        canInterrupt: false,
+      })];
+    }
+
+    return [];
+  }
+
+  if (raw.type === 'system' && raw.subtype === 'compact_boundary') {
+    const metadata = raw.compact_metadata || raw.compactMetadata || {};
+    return [createNormalizedMessage({
+      id,
+      sessionId,
+      timestamp,
+      provider: PROVIDER,
+      kind: 'compact_boundary',
+      trigger: metadata.trigger || raw.trigger || 'auto',
+      preTokens: metadata.pre_tokens ?? metadata.preTokens,
+      compactMetadata: metadata,
+    })];
+  }
+
   if (raw.type === 'system' && raw.subtype === 'api_error') {
     return [createNormalizedMessage({
       id,

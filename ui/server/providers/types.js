@@ -19,7 +19,8 @@
 /**
  * @typedef {'text' | 'tool_use' | 'tool_result' | 'thinking' | 'stream_delta' | 'stream_end'
  *   | 'error' | 'complete' | 'status' | 'permission_request' | 'permission_cancelled'
- *   | 'session_created' | 'interactive_prompt' | 'task_notification' | 'interrupted'} MessageKind
+ *   | 'session_created' | 'interactive_prompt' | 'task_notification' | 'interrupted'
+ *   | 'compact_boundary'} MessageKind
  */
 
 // ─── NormalizedMessage ───────────────────────────────────────────────────────
@@ -48,6 +49,7 @@
  * - interactive_prompt:   content
  * - task_notification:    status, summary, taskResult?, taskId?, outputFile?
  * - interrupted:          content (typically "[Request interrupted by user]")
+ * - compact_boundary:     trigger, preTokens?, compactMetadata?
  */
 
 // ─── Fetch History ───────────────────────────────────────────────────────────

@@ -23,11 +23,16 @@
   "interrupted": {
     "label": "Interrupted by user"
   },
+  "compact": {
+    "label": "Context compacted",
+    "tokens": "{{tokens}} tokens before compact"
+  },
   "working": {
     "default": "Working",
     "processing": "Processing",
     "thinking": "Thinking",
-    "waitingForPermission": "Waiting for permission"
+    "waitingForPermission": "Waiting for permission",
+    "compacting": "Compacting context..."
   },
   "tools": {
     "settings": "Tool Settings",

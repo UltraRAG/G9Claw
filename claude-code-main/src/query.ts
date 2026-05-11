@@ -7,6 +7,7 @@ import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
 import {
   calculateTokenWarningState,
+  compactForPromptTooLongRecovery,
   isAutoCompactEnabled,
   type AutoCompactTrackingState,
 } from './services/compact/autoCompact.js'
@@ -40,6 +41,7 @@ import type {
 import { logError } from './utils/log.js'
 import {
   PROMPT_TOO_LONG_ERROR_MESSAGE,
+  isPromptTooLongError,
   isPromptTooLongMessage,
 } from './services/api/errors.js'
 import { logAntError, logForDebugging } from './utils/debug.js'
@@ -165,6 +167,8 @@ function* yieldMissingToolResultBlocks(
  * rules, ye will be punished with an entire day of debugging and hair pulling.
  */
 const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3
+const CONTEXT_OVERFLOW_RECOVERY_FAILED_MESSAGE =
+  'Context is still too large after automatic compaction. Start a new session, reduce attached images/files, or lower max output tokens and try again.'
 
 /**
  * Is this a max_output_tokens error message? If so, the streaming loop should
@@ -815,6 +819,18 @@ async function* queryLoop(
               withheld = true
             }
             if (
+              !reactiveCompact &&
+              !hasAttemptedReactiveCompact &&
+              isAutoCompactEnabled() &&
+              String(querySource) !== 'compact' &&
+              String(querySource) !== 'session_memory' &&
+              message.type === 'assistant' &&
+              message.isApiErrorMessage &&
+              isPromptTooLongMessage(message)
+            ) {
+              withheld = true
+            }
+            if (
               mediaRecoveryEnabled &&
               reactiveCompact?.isWithheldMediaSizeError(message)
             ) {
@@ -978,6 +994,70 @@ async function* queryLoop(
           content: error.message,
         })
         return { reason: 'image_error' }
+      }
+
+      if (
+        isPromptTooLongError(error) &&
+        !reactiveCompact &&
+        !hasAttemptedReactiveCompact &&
+        isAutoCompactEnabled() &&
+        String(querySource) !== 'compact' &&
+        String(querySource) !== 'session_memory'
+      ) {
+        const compacted = await compactForPromptTooLongRecovery(
+          messagesForQuery,
+          toolUseContext,
+          {
+            systemPrompt,
+            userContext,
+            systemContext,
+            toolUseContext,
+            forkContextMessages: messagesForQuery,
+          },
+          querySource,
+          tracking,
+        )
+
+        if (compacted.compactionResult) {
+          if (params.taskBudget) {
+            const preCompactContext =
+              finalContextTokensFromLastResponse(messagesForQuery)
+            taskBudgetRemaining = Math.max(
+              0,
+              (taskBudgetRemaining ?? params.taskBudget.total) -
+                preCompactContext,
+            )
+          }
+
+          const postCompactMessages = buildPostCompactMessages(
+            compacted.compactionResult,
+          )
+          for (const msg of postCompactMessages) {
+            yield msg
+          }
+          state = {
+            messages: postCompactMessages,
+            toolUseContext,
+            autoCompactTracking: undefined,
+            maxOutputTokensRecoveryCount,
+            hasAttemptedReactiveCompact: true,
+            maxOutputTokensOverride: undefined,
+            pendingToolUseSummary: undefined,
+            stopHookActive: undefined,
+            turnCount,
+            transition: { reason: 'context_overflow_compact_retry' },
+          }
+          continue
+        }
+
+        yield createAssistantAPIErrorMessage({
+          content: CONTEXT_OVERFLOW_RECOVERY_FAILED_MESSAGE,
+          error: 'invalid_request',
+          errorDetails:
+            compacted.error?.message ??
+            (error instanceof Error ? error.message : String(error)),
+        })
+        return { reason: 'prompt_too_long' }
       }
 
       // Generally queryModelWithStreaming should not throw errors but instead
@@ -1162,6 +1242,71 @@ async function* queryLoop(
         yield lastMessage
         void executeStopFailureHooks(lastMessage, toolUseContext)
         return { reason: isWithheldMedia ? 'image_error' : 'prompt_too_long' }
+      } else if (
+        isWithheld413 &&
+        !reactiveCompact &&
+        !hasAttemptedReactiveCompact &&
+        isAutoCompactEnabled() &&
+        String(querySource) !== 'compact' &&
+        String(querySource) !== 'session_memory'
+      ) {
+        const compacted = await compactForPromptTooLongRecovery(
+          messagesForQuery,
+          toolUseContext,
+          {
+            systemPrompt,
+            userContext,
+            systemContext,
+            toolUseContext,
+            forkContextMessages: messagesForQuery,
+          },
+          querySource,
+          tracking,
+        )
+
+        if (compacted.compactionResult) {
+          if (params.taskBudget) {
+            const preCompactContext =
+              finalContextTokensFromLastResponse(messagesForQuery)
+            taskBudgetRemaining = Math.max(
+              0,
+              (taskBudgetRemaining ?? params.taskBudget.total) -
+                preCompactContext,
+            )
+          }
+
+          const postCompactMessages = buildPostCompactMessages(
+            compacted.compactionResult,
+          )
+          for (const msg of postCompactMessages) {
+            yield msg
+          }
+          const next: State = {
+            messages: postCompactMessages,
+            toolUseContext,
+            autoCompactTracking: undefined,
+            maxOutputTokensRecoveryCount,
+            hasAttemptedReactiveCompact: true,
+            maxOutputTokensOverride: undefined,
+            pendingToolUseSummary: undefined,
+            stopHookActive: undefined,
+            turnCount,
+            transition: { reason: 'context_overflow_compact_retry' },
+          }
+          state = next
+          continue
+        }
+
+        yield createAssistantAPIErrorMessage({
+          content: CONTEXT_OVERFLOW_RECOVERY_FAILED_MESSAGE,
+          error: 'invalid_request',
+          errorDetails:
+            compacted.error?.message ??
+            lastMessage?.errorDetails ??
+            CONTEXT_OVERFLOW_RECOVERY_FAILED_MESSAGE,
+        })
+        void executeStopFailureHooks(lastMessage, toolUseContext)
+        return { reason: 'prompt_too_long' }
       } else if (feature('CONTEXT_COLLAPSE') && isWithheld413) {
         // reactiveCompact compiled out but contextCollapse withheld and
         // couldn't recover (staged queue empty/stale). Surface. Same

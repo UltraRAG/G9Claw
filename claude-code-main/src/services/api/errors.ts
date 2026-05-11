@@ -61,6 +61,27 @@ export function startsWithApiErrorPrefix(text: string): boolean {
 }
 export const PROMPT_TOO_LONG_ERROR_MESSAGE = 'Prompt is too long'
 
+export function isPromptTooLongErrorText(text: string): boolean {
+  const lower = text.toLowerCase()
+  return (
+    lower.includes('prompt is too long') ||
+    lower.includes('maximum context length') ||
+    lower.includes('context_length_exceeded') ||
+    (lower.includes('input_tokens') && lower.includes('maximum')) ||
+    (lower.includes('context length') && lower.includes('tokens')) ||
+    (lower.includes('requested') &&
+      lower.includes('tokens') &&
+      lower.includes('prompt contains'))
+  )
+}
+
+export function isPromptTooLongError(error: unknown): boolean {
+  if (error instanceof Error) {
+    return isPromptTooLongErrorText(error.message)
+  }
+  return typeof error === 'string' && isPromptTooLongErrorText(error)
+}
+
 export function isPromptTooLongMessage(msg: AssistantMessage): boolean {
   if (!msg.isApiErrorMessage) {
     return false
@@ -86,12 +107,39 @@ export function parsePromptTooLongTokenCounts(rawMessage: string): {
   actualTokens: number | undefined
   limitTokens: number | undefined
 } {
-  const match = rawMessage.match(
+  const legacyMatch = rawMessage.match(
     /prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)/i,
   )
+  if (legacyMatch) {
+    return {
+      actualTokens: parseInt(legacyMatch[1]!, 10),
+      limitTokens: parseInt(legacyMatch[2]!, 10),
+    }
+  }
+
+  const openAIStyleMatch = rawMessage.match(
+    /maximum context length is\s*(\d+)\s*tokens?[\s\S]*?total of at least\s*(\d+)\s*tokens?/i,
+  )
+  if (openAIStyleMatch) {
+    return {
+      actualTokens: parseInt(openAIStyleMatch[2]!, 10),
+      limitTokens: parseInt(openAIStyleMatch[1]!, 10),
+    }
+  }
+
+  const openAIInputOnlyMatch = rawMessage.match(
+    /maximum context length is\s*(\d+)\s*tokens?[\s\S]*?prompt contains at least\s*(\d+)\s*input_tokens?/i,
+  )
+  if (openAIInputOnlyMatch) {
+    return {
+      actualTokens: parseInt(openAIInputOnlyMatch[2]!, 10),
+      limitTokens: parseInt(openAIInputOnlyMatch[1]!, 10),
+    }
+  }
+
   return {
-    actualTokens: match ? parseInt(match[1]!, 10) : undefined,
-    limitTokens: match ? parseInt(match[2]!, 10) : undefined,
+    actualTokens: undefined,
+    limitTokens: undefined,
   }
 }
 
@@ -561,7 +609,7 @@ export function getAssistantMessageFromError(
   // Use case-insensitive check since Vertex returns "Prompt is too long" (capitalized)
   if (
     error instanceof Error &&
-    error.message.toLowerCase().includes('prompt is too long')
+    isPromptTooLongError(error)
   ) {
     // Content stays generic (UI matches on exact string). The raw error with
     // token counts goes into errorDetails — reactive compact's retry loop
@@ -1010,9 +1058,7 @@ export function classifyAPIError(error: unknown): string {
   // Prompt/content size errors
   if (
     error instanceof Error &&
-    error.message
-      .toLowerCase()
-      .includes(PROMPT_TOO_LONG_ERROR_MESSAGE.toLowerCase())
+    isPromptTooLongError(error)
   ) {
     return 'prompt_too_long'
   }

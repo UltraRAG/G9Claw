@@ -28,7 +28,8 @@ export type MessageKind =
   | 'session_created'
   | 'interactive_prompt'
   | 'task_notification'
-  | 'interrupted';
+  | 'interrupted'
+  | 'compact_boundary';
 
 export interface NormalizedMessage {
   id: string;
@@ -63,6 +64,9 @@ export interface NormalizedMessage {
   taskId?: string;
   outputFile?: string;
   taskResult?: string;
+  trigger?: string;
+  preTokens?: number;
+  compactMetadata?: unknown;
   isFinal?: boolean;
   // Cursor-specific ordering
   sequence?: number;
