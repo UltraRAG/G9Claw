@@ -329,6 +329,8 @@
     "newFile": "New File (Cmd+N)",
     "newFolder": "New Folder (Cmd+Shift+N)",
     "refresh": "Refresh",
+    "downloadProject": "Download project as zip",
+    "openHtmlPreview": "Open HTML preview in new tab",
     "collapseAll": "Collapse All",
     "context": {
       "rename": "Rename",

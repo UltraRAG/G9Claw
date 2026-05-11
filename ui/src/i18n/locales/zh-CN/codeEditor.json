@@ -20,7 +20,10 @@
     "saved": "已保存！",
     "exitFullscreen": "退出全屏",
     "fullscreen": "全屏",
-    "close": "关闭"
+    "close": "关闭",
+    "openHtmlPreview": "在新标签页打开 HTML 预览",
+    "previewMarkdown": "预览 Markdown",
+    "editMarkdown": "编辑 Markdown"
   },
   "footer": {
     "lines": "行数：",

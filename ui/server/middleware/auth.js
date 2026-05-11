@@ -19,7 +19,7 @@ const validateApiKey = (req, res, next) => {
   next();
 };
 
-function extractDashboardRefererToken(req) {
+function extractRefererToken(req) {
   const refererHeader = req.headers.referer || req.headers.referrer;
   if (!refererHeader || Array.isArray(refererHeader)) {
     return null;
@@ -30,7 +30,12 @@ function extractDashboardRefererToken(req) {
       refererHeader,
       `${req.protocol}://${req.get('host')}`,
     );
-    if (!refererUrl.pathname.startsWith('/memory-dashboard')) {
+    const isMemoryDashboardAsset = refererUrl.pathname.startsWith('/memory-dashboard');
+    const isProjectPreviewAsset =
+      refererUrl.pathname.startsWith('/api/projects/') &&
+      refererUrl.pathname.includes('/preview/');
+
+    if (!isMemoryDashboardAsset && !isProjectPreviewAsset) {
       return null;
     }
     return refererUrl.searchParams.get('token');
@@ -66,8 +71,10 @@ const authenticateToken = async (req, res, next) => {
   }
   // Memory dashboard static assets inherit the iframe document URL as Referer,
   // but do not inherit the query string onto app.js/app.css requests.
+  // Project preview assets behave the same way: index.html can carry ?token=,
+  // while relative CSS/images/scripts rely on the preview document referer.
   if (!token) {
-    token = extractDashboardRefererToken(req);
+    token = extractRefererToken(req);
   }
 
   if (!token) {

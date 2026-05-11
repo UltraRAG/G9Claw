@@ -30,6 +30,37 @@ export const authenticatedFetch = (url, options = {}) => {
   });
 };
 
+const normalizePathForUrl = (value) => String(value || '').replace(/\\/g, '/');
+
+const getProjectRelativePath = (filePath, projectRoot) => {
+  const normalizedFilePath = normalizePathForUrl(filePath);
+  const normalizedRoot = normalizePathForUrl(projectRoot).replace(/\/+$/, '');
+
+  if (normalizedRoot && normalizedFilePath === normalizedRoot) {
+    return '';
+  }
+
+  if (normalizedRoot && normalizedFilePath.startsWith(`${normalizedRoot}/`)) {
+    return normalizedFilePath.slice(normalizedRoot.length + 1);
+  }
+
+  return normalizedFilePath.replace(/^\/+/, '');
+};
+
+const encodePathSegments = (relativePath) =>
+  String(relativePath || '')
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+
+const appendAuthToken = (url) => {
+  const token = localStorage.getItem('auth-token');
+  if (!token) return url;
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+};
+
 // API endpoints
 export const api = {
   // Auth endpoints (no token required)
@@ -168,6 +199,13 @@ export const api = {
     }),
   getFiles: (projectName, options = {}) =>
     authenticatedFetch(`/api/projects/${projectName}/files`, options),
+  projectPreviewUrl: (projectName, filePath, projectRoot) => {
+    const relativePath = getProjectRelativePath(filePath, projectRoot);
+    const encodedPath = encodePathSegments(relativePath) || 'index.html';
+    return appendAuthToken(`/api/projects/${encodeURIComponent(projectName)}/preview/${encodedPath}`);
+  },
+  downloadProjectZip: (projectName) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/download`),
 
   // File operations
   createFile: (projectName, { path, type, name }) =>

@@ -1,7 +1,7 @@
 import { EditorView } from '@codemirror/view';
 import { unifiedMergeView } from '@codemirror/merge';
 import type { Extension } from '@codemirror/state';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCodeEditorDocument } from '../hooks/useCodeEditorDocument';
 import { useCodeEditorSettings } from '../hooks/useCodeEditorSettings';
@@ -15,6 +15,7 @@ import CodeEditorHeader from './subcomponents/CodeEditorHeader';
 import CodeEditorLoadingState from './subcomponents/CodeEditorLoadingState';
 import CodeEditorSurface from './subcomponents/CodeEditorSurface';
 import CodeEditorBinaryFile from './subcomponents/CodeEditorBinaryFile';
+import { api } from '../../../utils/api';
 
 type CodeEditorProps = {
   file: CodeEditorFile;
@@ -24,6 +25,7 @@ type CodeEditorProps = {
   isExpanded?: boolean;
   onToggleExpand?: (() => void) | null;
   onPopOut?: (() => void) | null;
+  projectRoot?: string;
 };
 
 export default function CodeEditor({
@@ -34,6 +36,7 @@ export default function CodeEditor({
   isExpanded = false,
   onToggleExpand = null,
   onPopOut = null,
+  projectRoot,
 }: CodeEditorProps) {
   const { t } = useTranslation('codeEditor');
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -67,6 +70,21 @@ export default function CodeEditor({
     const extension = file.name.split('.').pop()?.toLowerCase();
     return extension === 'md' || extension === 'markdown';
   }, [file.name]);
+
+  const isHtmlFile = useMemo(() => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    return extension === 'html' || extension === 'htm';
+  }, [file.name]);
+
+  const handleOpenHtmlPreview = useCallback(() => {
+    const projectName = file.projectName;
+    if (!projectName) {
+      return;
+    }
+
+    const previewUrl = api.projectPreviewUrl(projectName, file.path, projectRoot || projectPath);
+    window.open(previewUrl, '_blank', 'noopener');
+  }, [file.path, file.projectName, projectPath, projectRoot]);
 
   const minimapExtension = useMemo(
     () => (
@@ -197,10 +215,12 @@ export default function CodeEditor({
             isSidebar={isSidebar}
             isFullscreen={isFullscreen}
             isMarkdownFile={isMarkdownFile}
+            isHtmlFile={isHtmlFile}
             markdownPreview={markdownPreview}
             saving={saving}
             saveSuccess={saveSuccess}
             onToggleMarkdownPreview={() => setMarkdownPreview((previous) => !previous)}
+            onOpenHtmlPreview={handleOpenHtmlPreview}
             onDownload={handleDownload}
             onSave={handleSave}
             onToggleFullscreen={() => setIsFullscreen((previous) => !previous)}
@@ -210,6 +230,7 @@ export default function CodeEditor({
               editMarkdown: t('actions.editMarkdown'),
               previewMarkdown: t('actions.previewMarkdown'),
               download: t('actions.download'),
+              openHtmlPreview: t('actions.openHtmlPreview'),
               save: t('actions.save'),
               saving: t('actions.saving'),
               saved: t('actions.saved'),

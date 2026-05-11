@@ -1,4 +1,4 @@
-import { Code2, Download, Eye, Maximize2, Minimize2, Save, X } from 'lucide-react';
+import { Code2, Download, ExternalLink, Eye, Maximize2, Minimize2, Save, X } from 'lucide-react';
 import type { CodeEditorFile } from '../../types/types';
 
 type CodeEditorHeaderProps = {
@@ -6,10 +6,12 @@ type CodeEditorHeaderProps = {
   isSidebar: boolean;
   isFullscreen: boolean;
   isMarkdownFile: boolean;
+  isHtmlFile: boolean;
   markdownPreview: boolean;
   saving: boolean;
   saveSuccess: boolean;
   onToggleMarkdownPreview: () => void;
+  onOpenHtmlPreview: () => void;
   onDownload: () => void;
   onSave: () => void;
   onToggleFullscreen: () => void;
@@ -18,6 +20,7 @@ type CodeEditorHeaderProps = {
     showingChanges: string;
     editMarkdown: string;
     previewMarkdown: string;
+    openHtmlPreview: string;
     download: string;
     save: string;
     saving: string;
@@ -33,10 +36,12 @@ export default function CodeEditorHeader({
   isSidebar,
   isFullscreen,
   isMarkdownFile,
+  isHtmlFile,
   markdownPreview,
   saving,
   saveSuccess,
   onToggleMarkdownPreview,
+  onOpenHtmlPreview,
   onDownload,
   onSave,
   onToggleFullscreen,
@@ -85,6 +90,17 @@ export default function CodeEditorHeader({
             ) : (
               <Eye className="h-3.5 w-3.5" strokeWidth={1.75} />
             )}
+          </button>
+        )}
+
+        {isHtmlFile && (
+          <button
+            type="button"
+            onClick={onOpenHtmlPreview}
+            className={iconBtn}
+            title={labels.openHtmlPreview}
+          >
+            <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.75} />
           </button>
         )}
 

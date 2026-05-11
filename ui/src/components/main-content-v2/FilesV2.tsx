@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
+  Download,
+  ExternalLink,
   Folder,
   FolderOpen,
   Loader2,
@@ -15,6 +18,7 @@ import { useFileTreeData } from '../file-tree/hooks/useFileTreeData';
 import type { FileTreeNode } from '../file-tree/types/types';
 import { getFileIconData } from '../file-tree/constants/fileIcons';
 import { cn } from '../../lib/utils.js';
+import { api } from '../../utils/api';
 
 type FilesV2Props = {
   selectedProject: Project | null;
@@ -49,6 +53,7 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
   const { files, loading, refreshFiles } = useFileTreeData(selectedProject);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activePath, setActivePath] = useState<string | null>(null);
+  const [downloadingProject, setDownloadingProject] = useState(false);
 
   useEffect(() => {
     setExpanded(new Set());
@@ -70,6 +75,45 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
     setExpanded(new Set());
   }, []);
 
+  const projectRoot = selectedProject?.fullPath || selectedProject?.path || '';
+
+  const handleDownloadProject = useCallback(async () => {
+    if (!selectedProject?.name || downloadingProject) return;
+
+    try {
+      setDownloadingProject(true);
+      const response = await api.downloadProjectZip(selectedProject.name);
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${selectedProject.displayName || selectedProject.name}.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Failed to download project archive:', error);
+    } finally {
+      setDownloadingProject(false);
+    }
+  }, [downloadingProject, selectedProject?.displayName, selectedProject?.name]);
+
+  const handleOpenHtmlPreview = useCallback(
+    (event: MouseEvent<HTMLButtonElement>, node: FileTreeNode) => {
+      event.stopPropagation();
+      if (!selectedProject?.name) return;
+
+      const previewUrl = api.projectPreviewUrl(selectedProject.name, node.path, projectRoot);
+      window.open(previewUrl, '_blank', 'noopener');
+    },
+    [projectRoot, selectedProject?.name],
+  );
+
   const handleClick = useCallback(
     (node: FileTreeNode) => {
       setActivePath(node.path);
@@ -90,7 +134,7 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
     );
   }
 
-  const cwd = selectedProject.fullPath || selectedProject.path || selectedProject.name;
+  const cwd = projectRoot || selectedProject.name;
   const hasExpanded = expanded.size > 0;
 
   return (
@@ -100,6 +144,20 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
           {cwd}
         </span>
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={handleDownloadProject}
+            disabled={downloadingProject}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-neutral-600 transition hover:bg-neutral-100 disabled:opacity-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
+            title={t('fileTree.downloadProject', { defaultValue: 'Download project as zip' }) as string}
+            aria-label={t('fileTree.downloadProject', { defaultValue: 'Download project as zip' }) as string}
+          >
+            {downloadingProject ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.75} />
+            ) : (
+              <Download className="h-3.5 w-3.5" strokeWidth={1.75} />
+            )}
+          </button>
           <button
             type="button"
             onClick={refreshFiles}
@@ -150,6 +208,7 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
               const isDir = node.type === 'directory';
               const isOpen = isDir && expanded.has(node.path);
               const isActive = activePath === node.path;
+              const isHtmlFile = !isDir && /\.html?$/i.test(node.name);
 
               let Icon = Folder;
               let color = 'text-neutral-500 dark:text-neutral-400';
@@ -191,7 +250,7 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
                   <Icon className={cn('h-3.5 w-3.5 shrink-0', color)} strokeWidth={1.75} />
                   <span
                     className={cn(
-                      'truncate',
+                      'min-w-0 flex-1 truncate',
                       isActive
                         ? 'font-medium text-neutral-900 dark:text-neutral-100'
                         : 'text-neutral-700 dark:text-neutral-300',
@@ -199,6 +258,17 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
                   >
                     {node.name}
                   </span>
+                  {isHtmlFile ? (
+                    <button
+                      type="button"
+                      onClick={(event) => handleOpenHtmlPreview(event, node)}
+                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                      title={t('fileTree.openHtmlPreview', { defaultValue: 'Open HTML preview in new tab' }) as string}
+                      aria-label={t('fileTree.openHtmlPreview', { defaultValue: 'Open HTML preview in new tab' }) as string}
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.75} />
+                    </button>
+                  ) : null}
                 </li>
               );
             })}

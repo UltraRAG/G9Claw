@@ -739,6 +739,7 @@ function MainContent({
             onCloseEditor={handleCloseEditor}
             onToggleEditorExpand={handleToggleEditorExpand}
             projectPath={selectedProject.path}
+            projectRoot={selectedProject.fullPath || selectedProject.path}
             fillSpace={activeTab === 'files'}
           />
         )}

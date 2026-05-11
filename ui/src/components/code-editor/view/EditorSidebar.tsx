@@ -14,6 +14,7 @@ type EditorSidebarProps = {
   onCloseEditor: () => void;
   onToggleEditorExpand: () => void;
   projectPath?: string;
+  projectRoot?: string;
   fillSpace?: boolean;
 };
 
@@ -33,6 +34,7 @@ export default function EditorSidebar({
   onCloseEditor,
   onToggleEditorExpand,
   projectPath,
+  projectRoot,
   fillSpace,
 }: EditorSidebarProps) {
   const [poppedOut, setPoppedOut] = useState(false);
@@ -93,6 +95,7 @@ export default function EditorSidebar({
           onCloseEditor();
         }}
         projectPath={projectPath}
+        projectRoot={projectRoot}
         isSidebar={false}
       />
     );
@@ -123,6 +126,7 @@ export default function EditorSidebar({
           file={editingFile}
           onClose={onCloseEditor}
           projectPath={projectPath}
+          projectRoot={projectRoot}
           isSidebar
           isExpanded={editorExpanded}
           onToggleExpand={onToggleEditorExpand}

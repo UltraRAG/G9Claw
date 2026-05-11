@@ -327,6 +327,8 @@
     "newFile": "新建文件 (Cmd+N)",
     "newFolder": "新建文件夹 (Cmd+Shift+N)",
     "refresh": "刷新",
+    "downloadProject": "下载整个项目 zip",
+    "openHtmlPreview": "在新标签页打开 HTML 预览",
     "collapseAll": "全部折叠",
     "context": {
       "rename": "重命名",
