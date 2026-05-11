@@ -238,7 +238,7 @@ export type DashboardV2Props = {
 
 export default function DashboardV2({ projectFilter, onSelectProject, onDeselectProject }: DashboardV2Props = {}) {
   const { t } = useTranslation('routing');
-  const { data, loading, error, refresh } = useRoutingDashboard();
+  const { data, loading, error, refresh } = useRoutingDashboard(projectFilter);
 
   const { groups, generalGroup, recent, filteredOverall } = useMemo(() => {
     if (!data)

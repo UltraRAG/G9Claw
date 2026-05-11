@@ -75,7 +75,7 @@ export type DashboardData = {
 
 const POLL_INTERVAL_MS = 30_000;
 
-export function useRoutingDashboard() {
+export function useRoutingDashboard(projectFilter?: string | null) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +86,8 @@ export function useRoutingDashboard() {
     const isInitial = !hasFetchedRef.current;
     if (isInitial) setLoading(true);
     try {
-      const res = await authenticatedFetch('/api/ccr/dashboard');
+      const query = projectFilter ? `?project=${encodeURIComponent(projectFilter)}` : '';
+      const res = await authenticatedFetch(`/api/ccr/dashboard${query}`);
       if (res.ok) {
         setData(await res.json());
         setError(null);
@@ -100,7 +101,7 @@ export function useRoutingDashboard() {
       hasFetchedRef.current = true;
       if (isInitial) setLoading(false);
     }
-  }, []);
+  }, [projectFilter]);
 
   useEffect(() => {
     refresh();
