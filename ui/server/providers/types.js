@@ -42,14 +42,15 @@
  * - stream_end:           (no extra fields)
  * - error:                content
  * - complete:             (no extra fields)
- * - status:               text, tokens?, canInterrupt?
+ * - status:               text, tokens?, canInterrupt?, compactProgress?
  * - permission_request:   requestId, toolName, input, context?
  * - permission_cancelled: requestId
  * - session_created:      newSessionId
  * - interactive_prompt:   content
  * - task_notification:    status, summary, taskResult?, taskId?, outputFile?
  * - interrupted:          content (typically "[Request interrupted by user]")
- * - compact_boundary:     trigger, preTokens?, compactMetadata?
+ * - compact_boundary:     trigger, preTokens?, compactLevel?, compactStage?,
+ *                         compactStageLabel?, compactMetadata?
  */
 
 // ─── Fetch History ───────────────────────────────────────────────────────────

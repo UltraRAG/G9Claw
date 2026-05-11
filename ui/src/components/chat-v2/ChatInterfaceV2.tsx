@@ -385,6 +385,7 @@ function ChatInterfaceV2({
       isLoading={isLoading}
       canAbortSession={canAbortSession}
       isAbortPending={isAbortPending}
+      tokenBudget={tokenBudget}
       pendingPermissionRequests={pendingPermissionRequests}
       handlePermissionDecision={handlePermissionDecision}
       handleGrantToolPermission={handleGrantToolPermission}
@@ -445,7 +446,7 @@ function ChatInterfaceV2({
         showThinking={showThinking}
         setInput={setInput}
         isAssistantWorking={isLoading}
-        workingStatusText={claudeStatus?.text ?? null}
+        workingStatus={claudeStatus}
       />
       {composer}
     </div>

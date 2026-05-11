@@ -11,6 +11,7 @@ import { APIUserAbortError } from '@anthropic-ai/sdk'
 import { markPostCompaction } from 'src/bootstrap/state.js'
 import { getInvokedSkillsForAgent } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
+import type { SDKCompactProgress } from '../../entrypoints/agentSdkTypes.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
@@ -129,6 +130,81 @@ export const POST_COMPACT_MAX_TOKENS_PER_FILE = 5_000
 export const POST_COMPACT_MAX_TOKENS_PER_SKILL = 5_000
 export const POST_COMPACT_SKILLS_TOKEN_BUDGET = 25_000
 const MAX_COMPACT_STREAMING_RETRIES = 2
+
+export type CompactProgressStage = Pick<
+  SDKCompactProgress,
+  'level' | 'stage' | 'label'
+>
+
+export const COMPACT_PROGRESS_STAGES = {
+  contextCollapse: {
+    level: 1,
+    stage: 'context_collapse',
+    label: 'Context collapse',
+  },
+  sessionMemory: {
+    level: 2,
+    stage: 'session_memory',
+    label: 'Session memory compaction',
+  },
+  summary: {
+    level: 3,
+    stage: 'summary',
+    label: 'Summary compaction',
+  },
+  reactive: {
+    level: 4,
+    stage: 'reactive',
+    label: 'Reactive compaction',
+  },
+  overflowRecovery: {
+    level: 5,
+    stage: 'overflow_recovery',
+    label: 'Overflow recovery compaction',
+  },
+} as const satisfies Record<string, CompactProgressStage>
+
+export function createCompactProgress(
+  stage: CompactProgressStage,
+  state: SDKCompactProgress['state'] = 'running',
+  preTokens?: number,
+  reason?: string,
+): SDKCompactProgress {
+  return {
+    ...stage,
+    state,
+    ...(typeof preTokens === 'number' && { pre_tokens: preTokens }),
+    ...(reason && { reason }),
+  }
+}
+
+export function setCompactingSDKStatus(
+  context: Pick<ToolUseContext, 'setSDKStatus'>,
+  stage: CompactProgressStage,
+  state: SDKCompactProgress['state'] = 'running',
+  preTokens?: number,
+  reason?: string,
+): void {
+  context.setSDKStatus?.(
+    'compacting',
+    createCompactProgress(stage, state, preTokens, reason),
+  )
+}
+
+export function annotateBoundaryWithCompactStage(
+  boundary: SystemCompactBoundaryMessage,
+  stage: CompactProgressStage,
+): SystemCompactBoundaryMessage {
+  return {
+    ...boundary,
+    compactMetadata: {
+      ...boundary.compactMetadata,
+      level: stage.level,
+      stage: stage.stage,
+      stageLabel: stage.label,
+    },
+  }
+}
 
 /**
  * Strip image blocks from user messages before sending for compaction.
@@ -392,6 +468,7 @@ export async function compactConversation(
   customInstructions?: string,
   isAutoCompact: boolean = false,
   recompactionInfo?: RecompactionInfo,
+  compactProgressStage: CompactProgressStage = COMPACT_PROGRESS_STAGES.summary,
 ): Promise<CompactionResult> {
   try {
     if (messages.length === 0) {
@@ -409,7 +486,12 @@ export async function compactConversation(
     })
 
     // Execute PreCompact hooks
-    context.setSDKStatus?.('compacting')
+    setCompactingSDKStatus(
+      context,
+      compactProgressStage,
+      'started',
+      preCompactTokenCount,
+    )
     const hookResult = await executePreCompactHooks(
       {
         trigger: isAutoCompact ? 'auto' : 'manual',
@@ -427,6 +509,12 @@ export async function compactConversation(
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
     context.onCompactProgress?.({ type: 'compact_start' })
+    setCompactingSDKStatus(
+      context,
+      compactProgressStage,
+      'running',
+      preCompactTokenCount,
+    )
 
     // 3P default: true — forked-agent path reuses main conversation's prompt cache.
     // Experiment (Jan 2026) confirmed: false path is 98% cache miss, costs ~0.76% of
@@ -455,6 +543,7 @@ export async function compactConversation(
         context,
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
+        compactProgressStage,
       })
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
@@ -595,10 +684,13 @@ export async function compactConversation(
 
     // Create the compact boundary marker and summary messages before the
     // event so we can compute the true resulting-context size.
-    const boundaryMarker = createCompactBoundaryMessage(
-      isAutoCompact ? 'auto' : 'manual',
-      preCompactTokenCount ?? 0,
-      messages.at(-1)?.uuid,
+    const boundaryMarker = annotateBoundaryWithCompactStage(
+      createCompactBoundaryMessage(
+        isAutoCompact ? 'auto' : 'manual',
+        preCompactTokenCount ?? 0,
+        messages.at(-1)?.uuid,
+      ),
+      compactProgressStage,
     )
     // Carry loaded-tool state — the summary doesn't preserve tool_reference
     // blocks, so the post-compact schema filter needs this to keep sending
@@ -814,7 +906,12 @@ export async function partialCompactConversation(
       hookType: 'pre_compact',
     })
 
-    context.setSDKStatus?.('compacting')
+    setCompactingSDKStatus(
+      context,
+      COMPACT_PROGRESS_STAGES.summary,
+      'started',
+      preCompactTokenCount,
+    )
     const hookResult = await executePreCompactHooks(
       {
         trigger: 'manual',
@@ -836,6 +933,12 @@ export async function partialCompactConversation(
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
     context.onCompactProgress?.({ type: 'compact_start' })
+    setCompactingSDKStatus(
+      context,
+      COMPACT_PROGRESS_STAGES.summary,
+      'running',
+      preCompactTokenCount,
+    )
 
     const compactPrompt = getPartialCompactPrompt(customInstructions, direction)
     const summaryRequest = createUserMessage({
@@ -867,6 +970,7 @@ export async function partialCompactConversation(
         context,
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
+        compactProgressStage: COMPACT_PROGRESS_STAGES.summary,
       })
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
@@ -1011,12 +1115,15 @@ export async function partialCompactConversation(
         ? allMessages.slice(0, pivotIndex).findLast(m => m.type !== 'progress')
             ?.uuid
         : messagesToKeep.at(-1)?.uuid
-    const boundaryMarker = createCompactBoundaryMessage(
-      'manual',
-      preCompactTokenCount ?? 0,
-      lastPreCompactUuid,
-      userFeedback,
-      messagesToSummarize.length,
+    const boundaryMarker = annotateBoundaryWithCompactStage(
+      createCompactBoundaryMessage(
+        'manual',
+        preCompactTokenCount ?? 0,
+        lastPreCompactUuid,
+        userFeedback,
+        messagesToSummarize.length,
+      ),
+      COMPACT_PROGRESS_STAGES.summary,
     )
     // allMessages not just messagesToSummarize — set union is idempotent,
     // simpler than tracking which half each tool lived in.
@@ -1140,6 +1247,7 @@ async function streamCompactSummary({
   context,
   preCompactTokenCount,
   cacheSafeParams,
+  compactProgressStage,
 }: {
   messages: Message[]
   summaryRequest: UserMessage
@@ -1147,6 +1255,7 @@ async function streamCompactSummary({
   context: ToolUseContext
   preCompactTokenCount: number
   cacheSafeParams: CacheSafeParams
+  compactProgressStage: CompactProgressStage
 }): Promise<AssistantMessage> {
   // When prompt cache sharing is enabled, use forked agent to reuse the
   // main conversation's cached prefix (system prompt, tools, context messages).
@@ -1166,12 +1275,25 @@ async function streamCompactSummary({
   // and the server doesn't consider the session stale.
   const activityInterval = isSessionActivityTrackingActive()
     ? setInterval(
-        (statusSetter?: (status: 'compacting' | null) => void) => {
+        (
+          statusSetter?: ToolUseContext['setSDKStatus'],
+          stage?: CompactProgressStage,
+          tokens?: number,
+        ) => {
           sendSessionActivitySignal()
-          statusSetter?.('compacting')
+          if (stage) {
+            statusSetter?.(
+              'compacting',
+              createCompactProgress(stage, 'running', tokens),
+            )
+          } else {
+            statusSetter?.('compacting')
+          }
         },
         30_000,
         context.setSDKStatus,
+        compactProgressStage,
+        preCompactTokenCount,
       )
     : undefined
 

@@ -18,6 +18,23 @@ export type {
 // Re-export all generated types
 export * from './coreTypes.generated.js'
 
+export type SDKStatus = 'compacting' | null
+
+export type SDKCompactProgressState =
+  | 'started'
+  | 'running'
+  | 'failed'
+  | 'completed'
+
+export type SDKCompactProgress = {
+  level: number
+  stage: string
+  label: string
+  state: SDKCompactProgressState
+  pre_tokens?: number
+  reason?: string
+}
+
 // Re-export utility types that can't be expressed as Zod schemas
 export type { NonNullableUsage } from './sdkUtilityTypes.js'
 

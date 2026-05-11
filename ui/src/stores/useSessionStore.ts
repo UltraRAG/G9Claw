@@ -31,6 +31,15 @@ export type MessageKind =
   | 'interrupted'
   | 'compact_boundary';
 
+export interface CompactProgress {
+  level: number;
+  stage: string;
+  label: string;
+  state: 'started' | 'running' | 'failed' | 'completed';
+  pre_tokens?: number;
+  reason?: string;
+}
+
 export interface NormalizedMessage {
   id: string;
   sessionId: string;
@@ -50,6 +59,7 @@ export interface NormalizedMessage {
   text?: string;
   tokens?: number;
   canInterrupt?: boolean;
+  compactProgress?: CompactProgress;
   tokenBudget?: unknown;
   requestId?: string;
   input?: unknown;
@@ -66,6 +76,9 @@ export interface NormalizedMessage {
   taskResult?: string;
   trigger?: string;
   preTokens?: number;
+  compactLevel?: number;
+  compactStage?: string;
+  compactStageLabel?: string;
   compactMetadata?: unknown;
   isFinal?: boolean;
   // Cursor-specific ordering

@@ -49,7 +49,7 @@ import fetch from 'node-fetch';
 import mime from 'mime-types';
 
 import { getProjects, getSessions, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
-import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, getActiveClaudeSDKSessionDetails, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
+import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, getActiveClaudeSDKSessionDetails, getClaudeSDKSessionTokenBudget, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from './openai-codex.js';
 import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
@@ -1774,7 +1774,8 @@ function handleChatConnection(ws, request) {
                     type: 'session-status',
                     sessionId,
                     provider,
-                    isProcessing: isActive
+                    isProcessing: isActive,
+                    ...(provider === 'claude' && { tokenBudget: getClaudeSDKSessionTokenBudget(sessionId) })
                 });
             } else if (data.type === 'get-pending-permissions') {
                 // Return pending permission requests for a session
@@ -2392,7 +2393,7 @@ app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authentica
         const encodedPath = projectPath.replace(/[^a-zA-Z0-9-]/g, '-');
         const projectDir = path.join(homeDir, '.claude', 'projects', encodedPath);
 
-        const jsonlPath = path.join(projectDir, `${safeSessionId}.jsonl`);
+        let jsonlPath = path.join(projectDir, `${safeSessionId}.jsonl`);
 
         // Constrain to projectDir
         const rel = path.relative(path.resolve(projectDir), path.resolve(jsonlPath));
@@ -2400,25 +2401,54 @@ app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authentica
             return res.status(400).json({ error: 'Invalid path' });
         }
 
+        const findClaudeSessionFile = async (dir) => {
+            try {
+                const entries = await fsPromises.readdir(dir, { withFileTypes: true });
+                for (const entry of entries) {
+                    const fullPath = path.join(dir, entry.name);
+                    if (entry.isDirectory()) {
+                        const found = await findClaudeSessionFile(fullPath);
+                        if (found) return found;
+                    } else if (entry.name === `${safeSessionId}.jsonl`) {
+                        return fullPath;
+                    }
+                }
+            } catch {
+                // Skip directories we can't read
+            }
+            return null;
+        };
+
         // Read and parse the JSONL file
         let fileContent;
         try {
             fileContent = await fsPromises.readFile(jsonlPath, 'utf8');
         } catch (error) {
             if (error.code === 'ENOENT') {
-                return res.status(404).json({ error: 'Session file not found', path: jsonlPath });
+                const fallbackPath = await findClaudeSessionFile(path.join(homeDir, '.claude', 'projects'));
+                if (!fallbackPath) {
+                    return res.status(404).json({ error: 'Session file not found', path: jsonlPath });
+                }
+                jsonlPath = fallbackPath;
+                fileContent = await fsPromises.readFile(jsonlPath, 'utf8');
+            } else {
+                throw error; // Re-throw other errors to be caught by outer try-catch
             }
-            throw error; // Re-throw other errors to be caught by outer try-catch
         }
         const lines = fileContent.trim().split('\n');
 
         const parsedContextWindow = parseInt(process.env.CONTEXT_WINDOW, 10);
         const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160000;
         let inputTokens = 0;
+        let outputTokens = 0;
         let cacheCreationTokens = 0;
         let cacheReadTokens = 0;
+        let foundUsage = false;
 
-        // Find the latest assistant message with usage data (scan from end)
+        // Find the latest assistant message with real usage data (scan from end).
+        // Some SDK transcript entries are text fragments with
+        // usage: { input_tokens: 0, output_tokens: 0 }; do not let those
+        // placeholder records reset an otherwise populated session to 0.
         for (let i = lines.length - 1; i >= 0; i--) {
             try {
                 const entry = JSON.parse(lines[i]);
@@ -2427,11 +2457,26 @@ app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authentica
                 if (entry.type === 'assistant' && entry.message?.usage) {
                     const usage = entry.message.usage;
 
-                    // Use token counts from latest assistant message only
-                    inputTokens = usage.input_tokens || 0;
-                    cacheCreationTokens = usage.cache_creation_input_tokens || 0;
-                    cacheReadTokens = usage.cache_read_input_tokens || 0;
+                    const candidateInputTokens = usage.input_tokens || 0;
+                    const candidateOutputTokens = usage.output_tokens || 0;
+                    const candidateCacheCreationTokens = usage.cache_creation_input_tokens || 0;
+                    const candidateCacheReadTokens = usage.cache_read_input_tokens || 0;
+                    const candidateTotal =
+                        candidateInputTokens +
+                        candidateOutputTokens +
+                        candidateCacheCreationTokens +
+                        candidateCacheReadTokens;
 
+                    if (candidateTotal <= 0) {
+                        continue;
+                    }
+
+                    // Use token counts from latest non-empty assistant usage only
+                    inputTokens = candidateInputTokens;
+                    outputTokens = candidateOutputTokens;
+                    cacheCreationTokens = candidateCacheCreationTokens;
+                    cacheReadTokens = candidateCacheReadTokens;
+                    foundUsage = true;
                     break; // Stop after finding the latest assistant message
                 }
             } catch (parseError) {
@@ -2440,14 +2485,20 @@ app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authentica
             }
         }
 
-        // Calculate total context usage (excluding output_tokens, as per ccusage)
-        const totalUsed = inputTokens + cacheCreationTokens + cacheReadTokens;
+        const runtimeBudget = getClaudeSDKSessionTokenBudget(safeSessionId);
+
+        // Calculate current session context usage. Include output tokens because
+        // the assistant response remains in the next-turn conversation context.
+        const totalUsed = foundUsage
+            ? inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens
+            : (runtimeBudget?.used || 0);
 
         res.json({
             used: totalUsed,
-            total: contextWindow,
+            total: runtimeBudget?.total || contextWindow,
             breakdown: {
                 input: inputTokens,
+                output: outputTokens,
                 cacheCreation: cacheCreationTokens,
                 cacheRead: cacheReadTokens
             }

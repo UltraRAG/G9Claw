@@ -79,9 +79,17 @@ export function toSDKCompactMetadata(
   meta: CompactMetadata,
 ): SDKCompactMetadata {
   const seg = meta.preservedSegment
+  const expanded = meta as CompactMetadata & {
+    level?: number
+    stage?: string
+    stageLabel?: string
+  }
   return {
     trigger: meta.trigger,
     pre_tokens: meta.preTokens,
+    ...(expanded.level && { level: expanded.level }),
+    ...(expanded.stage && { stage: expanded.stage }),
+    ...(expanded.stageLabel && { stage_label: expanded.stageLabel }),
     ...(seg && {
       preserved_segment: {
         head_uuid: seg.headUuid,
@@ -99,9 +107,17 @@ export function fromSDKCompactMetadata(
   meta: SDKCompactMetadata,
 ): CompactMetadata {
   const seg = meta.preserved_segment
+  const expanded = meta as SDKCompactMetadata & {
+    level?: number
+    stage?: string
+    stage_label?: string
+  }
   return {
     trigger: meta.trigger,
     preTokens: meta.pre_tokens,
+    ...(expanded.level && { level: expanded.level }),
+    ...(expanded.stage && { stage: expanded.stage }),
+    ...(expanded.stage_label && { stageLabel: expanded.stage_label }),
     ...(seg && {
       preservedSegment: {
         headUuid: seg.head_uuid,

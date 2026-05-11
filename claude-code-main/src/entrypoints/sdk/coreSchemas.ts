@@ -1269,6 +1269,17 @@ export const SDKStatusSchema = lazySchema(() =>
   z.union([z.literal('compacting'), z.null()]),
 )
 
+export const SDKCompactProgressSchema = lazySchema(() =>
+  z.object({
+    level: z.number(),
+    stage: z.string(),
+    label: z.string(),
+    state: z.enum(['started', 'running', 'failed', 'completed']),
+    pre_tokens: z.number().optional(),
+    reason: z.string().optional(),
+  }),
+)
+
 // SDKUserMessage content without uuid/session_id
 const SDKUserMessageContentSchema = lazySchema(() =>
   z.object({
@@ -1510,6 +1521,9 @@ export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
     compact_metadata: z.object({
       trigger: z.enum(['manual', 'auto']),
       pre_tokens: z.number(),
+      level: z.number().optional(),
+      stage: z.string().optional(),
+      stage_label: z.string().optional(),
       preserved_segment: z
         .object({
           head_uuid: UUIDPlaceholder(),
@@ -1535,6 +1549,7 @@ export const SDKStatusMessageSchema = lazySchema(() =>
     type: z.literal('system'),
     subtype: z.literal('status'),
     status: SDKStatusSchema(),
+    compact_progress: SDKCompactProgressSchema().optional(),
     permissionMode: PermissionModeSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),

@@ -1,6 +1,10 @@
 import { useCallback, useEffect } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
-import type { PendingPermissionRequest } from '../types/types';
+import type {
+  ClaudeWorkStatus,
+  CompactProgress,
+  PendingPermissionRequest,
+} from '../types/types';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
@@ -41,6 +45,8 @@ type LatestChatMessage = {
   text?: string;
   tokens?: number;
   canInterrupt?: boolean;
+  compactProgress?: CompactProgress;
+  compact_progress?: CompactProgress;
   tokenBudget?: unknown;
   newSessionId?: string;
   aborted?: boolean;
@@ -55,7 +61,7 @@ interface UseChatRealtimeHandlersArgs {
   setCurrentSessionId: (sessionId: string | null) => void;
   setIsLoading: (loading: boolean) => void;
   setCanAbortSession: (canAbort: boolean) => void;
-  setClaudeStatus: (status: { text: string; tokens: number; can_interrupt: boolean } | null) => void;
+  setClaudeStatus: (status: ClaudeWorkStatus | null) => void;
   setTokenBudget: (budget: Record<string, unknown> | null) => void;
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
   pendingViewSessionRef: MutableRefObject<PendingViewSession | null>;
@@ -139,12 +145,17 @@ export function useChatRealtimeHandlers({
           const statusSessionId = msg.sessionId;
           if (!statusSessionId) return;
 
+          if (msg.tokenBudget) {
+            setTokenBudget(msg.tokenBudget as Record<string, unknown>);
+          }
+
           const status = msg.status;
           if (status) {
             const statusInfo = {
               text: status.text || 'Working...',
               tokens: status.tokens || 0,
               can_interrupt: status.can_interrupt !== undefined ? status.can_interrupt : true,
+              compactProgress: status.compactProgress || status.compact_progress || null,
             };
             setClaudeStatus(statusInfo);
             setIsLoading(true);
@@ -377,6 +388,7 @@ export function useChatRealtimeHandlers({
             text: msg.text,
             tokens: msg.tokens || 0,
             can_interrupt: msg.canInterrupt !== undefined ? msg.canInterrupt : true,
+            compactProgress: msg.compactProgress || msg.compact_progress || null,
           });
           setIsLoading(true);
           setCanAbortSession(msg.canInterrupt !== false);

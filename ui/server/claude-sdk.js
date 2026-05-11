@@ -39,6 +39,7 @@ const activeSessions = new Map();
 const sessionRuntimes = new Map();
 const pendingToolApprovals = new Map();
 const pendingCoalescenceMap = new Map();
+const sessionTokenBudgets = new Map();
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
@@ -53,6 +54,87 @@ const RAG_WEB_TOOL_GUIDANCE = [
   'Do not pass --top-k to RAG scripts unless the user explicitly asks to override the configured result count; the scripts read EDGECLAW_RAG_*_TOP_K from 9GClaw config.',
   'Do not use WebFetch or WebSearch for search. If a page must be opened after search results are returned, prefer the URL snippets/citations from the RAG script unless the user explicitly asks to fetch a specific URL.',
 ].join('\n');
+
+function getConfiguredContextWindow() {
+  const parsed = parseInt(process.env.CONTEXT_WINDOW, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 160000;
+}
+
+function createTokenBudget(used = 0) {
+  return {
+    used: Math.max(0, Math.round(Number(used) || 0)),
+    total: getConfiguredContextWindow(),
+  };
+}
+
+function storeSessionTokenBudget(sessionId, tokenBudget) {
+  if (!sessionId || !tokenBudget) {
+    return tokenBudget;
+  }
+
+  const normalizedBudget = createTokenBudget(tokenBudget.used);
+  const previous = sessionTokenBudgets.get(sessionId) || getSessionRuntime(sessionId)?.tokenBudget || null;
+
+  // Do not let synthetic or provider placeholder usage records reset an
+  // already-populated session back to zero. Some SDK transcript entries carry
+  // usage: { input_tokens: 0, output_tokens: 0 } for text fragments.
+  if (normalizedBudget.used <= 0 && previous?.used > 0) {
+    return previous;
+  }
+
+  sessionTokenBudgets.set(sessionId, normalizedBudget);
+  updateSessionRuntime(sessionId, { tokenBudget: normalizedBudget });
+  return normalizedBudget;
+}
+
+function getSessionTokenBudget(sessionId) {
+  if (!sessionId) {
+    return createTokenBudget(0);
+  }
+  const runtimeBudget = getSessionRuntime(sessionId)?.tokenBudget;
+  if (!sessionTokenBudgets.has(sessionId) && runtimeBudget) {
+    sessionTokenBudgets.set(sessionId, runtimeBudget);
+  }
+  if (!sessionTokenBudgets.has(sessionId)) {
+    sessionTokenBudgets.set(sessionId, createTokenBudget(0));
+  }
+  const budget = sessionTokenBudgets.get(sessionId);
+  const currentTotal = getConfiguredContextWindow();
+  if (budget.total !== currentTotal) {
+    sessionTokenBudgets.set(sessionId, { ...budget, total: currentTotal });
+    updateSessionRuntime(sessionId, { tokenBudget: sessionTokenBudgets.get(sessionId) });
+  }
+  return sessionTokenBudgets.get(sessionId);
+}
+
+function hasKnownSessionTokenBudget(sessionId) {
+  if (!sessionId) {
+    return false;
+  }
+  const budget = sessionTokenBudgets.get(sessionId) || getSessionRuntime(sessionId)?.tokenBudget;
+  return Boolean(budget && Number(budget.used) > 0);
+}
+
+function transferSessionTokenBudget(fromSessionId, toSessionId) {
+  if (!fromSessionId || !toSessionId || fromSessionId === toSessionId) {
+    return;
+  }
+  if (!sessionTokenBudgets.has(toSessionId) && sessionTokenBudgets.has(fromSessionId)) {
+    sessionTokenBudgets.set(toSessionId, sessionTokenBudgets.get(fromSessionId));
+    updateSessionRuntime(toSessionId, { tokenBudget: sessionTokenBudgets.get(toSessionId) });
+  }
+  sessionTokenBudgets.delete(fromSessionId);
+}
+
+function sendTokenBudget(ws, sessionId, tokenBudget = getSessionTokenBudget(sessionId)) {
+  ws?.send?.(createNormalizedMessage({
+    kind: 'status',
+    text: 'token_budget',
+    tokenBudget,
+    sessionId: sessionId || null,
+    provider: 'claude'
+  }));
+}
 
 function normalizeEnvValue(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -454,6 +536,7 @@ function createSessionRuntime(sessionId) {
     userId: null,
     sessionSummary: null,
     lastQueryOptions: null,
+    tokenBudget: null,
     pendingCronNotifications: [],
     autoResumeInFlight: false
   };
@@ -496,6 +579,9 @@ function updateSessionRuntime(sessionId, fields = {}) {
   }
   if (fields.lastQueryOptions) {
     runtime.lastQueryOptions = fields.lastQueryOptions;
+  }
+  if (fields.tokenBudget !== undefined) {
+    runtime.tokenBudget = fields.tokenBudget;
   }
 
   return runtime;
@@ -631,41 +717,84 @@ function transformMessage(sdkMessage) {
 /**
  * Extracts token usage from SDK result messages
  * @param {Object} resultMessage - SDK result message
+ * @param {string} sessionId - Session identifier used for local accumulation
  * @returns {Object|null} Token budget object or null
  */
-function extractTokenBudget(resultMessage) {
+function extractTokenBudget(resultMessage, sessionId) {
+  const readUsageNumber = (usage, ...keys) => {
+    if (!usage) return 0;
+    for (const key of keys) {
+      const value = usage[key];
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+    }
+    return 0;
+  };
+
+  const usageToContextTokens = (usage) => {
+    const inputTokens = readUsageNumber(usage, 'input_tokens', 'inputTokens');
+    const outputTokens = readUsageNumber(usage, 'output_tokens', 'outputTokens');
+    const cacheReadTokens = readUsageNumber(
+      usage,
+      'cache_read_input_tokens',
+      'cacheReadInputTokens',
+    );
+    const cacheCreationTokens = readUsageNumber(
+      usage,
+      'cache_creation_input_tokens',
+      'cacheCreationInputTokens',
+    );
+    const explicitTotal = readUsageNumber(usage, 'total_tokens', 'totalTokens');
+    return explicitTotal || inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+  };
+
+  const directUsage = resultMessage?.message?.usage || resultMessage?.usage || null;
+  if (directUsage) {
+    const used = usageToContextTokens(directUsage);
+    if (used > 0) {
+      return storeSessionTokenBudget(sessionId, createTokenBudget(used));
+    }
+  }
+
   if (resultMessage.type !== 'result' || !resultMessage.modelUsage) {
     return null;
   }
 
-  // Get the first model's usage data
-  const modelKey = Object.keys(resultMessage.modelUsage)[0];
-  const modelData = resultMessage.modelUsage[modelKey];
-
-  if (!modelData) {
+  const modelUsages = Object.values(resultMessage.modelUsage).filter(Boolean);
+  if (modelUsages.length === 0) {
     return null;
   }
 
-  // Use cumulative tokens if available (tracks total for the session)
-  // Otherwise fall back to per-request tokens
-  const inputTokens = modelData.cumulativeInputTokens || modelData.inputTokens || 0;
-  const outputTokens = modelData.cumulativeOutputTokens || modelData.outputTokens || 0;
-  const cacheReadTokens = modelData.cumulativeCacheReadInputTokens || modelData.cacheReadInputTokens || 0;
-  const cacheCreationTokens = modelData.cumulativeCacheCreationInputTokens || modelData.cacheCreationInputTokens || 0;
+  const hasCumulativeUsage = modelUsages.some((modelData) =>
+    modelData.cumulativeInputTokens !== undefined ||
+    modelData.cumulativeOutputTokens !== undefined ||
+    modelData.cumulativeCacheReadInputTokens !== undefined ||
+    modelData.cumulativeCacheCreationInputTokens !== undefined
+  );
 
-  // Total used = input + output + cache tokens
-  const totalUsed = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+  const totalUsed = modelUsages.reduce((sum, modelData) => {
+    const inputTokens = hasCumulativeUsage
+      ? modelData.cumulativeInputTokens || 0
+      : modelData.inputTokens || 0;
+    const outputTokens = hasCumulativeUsage
+      ? modelData.cumulativeOutputTokens || 0
+      : modelData.outputTokens || 0;
+    const cacheReadTokens = hasCumulativeUsage
+      ? modelData.cumulativeCacheReadInputTokens || 0
+      : modelData.cacheReadInputTokens || 0;
+    const cacheCreationTokens = hasCumulativeUsage
+      ? modelData.cumulativeCacheCreationInputTokens || 0
+      : modelData.cacheCreationInputTokens || 0;
+    return sum + inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+  }, 0);
 
-  // Use configured context window budget from environment (default 160000)
-  // This is the user's budget limit, not the model's context window
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW) || 160000;
+  const previous = getSessionTokenBudget(sessionId);
+  const nextUsed = hasCumulativeUsage ? totalUsed : previous.used + totalUsed;
+  const nextBudget = createTokenBudget(nextUsed);
 
   // Token calc logged via token-budget WS event
-
-  return {
-    used: totalUsed,
-    total: contextWindow
-  };
+  return storeSessionTokenBudget(sessionId, nextBudget);
 }
 
 /**
@@ -822,6 +951,7 @@ async function loadMcpConfig(cwd) {
 async function queryClaudeSDK(command, options = {}, ws) {
   const { sessionId, sessionSummary } = options;
   let capturedSessionId = sessionId;
+  let tokenBudgetSessionId = sessionId || `pending:${crypto.randomUUID()}`;
   let sessionCreatedSent = false;
   let tempImagePaths = [];
   let tempDir = null;
@@ -844,6 +974,11 @@ async function queryClaudeSDK(command, options = {}, ws) {
   };
 
   try {
+    const initialTokenBudget = getSessionTokenBudget(tokenBudgetSessionId);
+    if (!sessionId || initialTokenBudget.used > 0) {
+      sendTokenBudget(ws, capturedSessionId || null, initialTokenBudget);
+    }
+
     // Map CLI options to SDK format
     const sdkOptions = await mapCliOptionsToSDK(options);
 
@@ -1041,6 +1176,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
+        transferSessionTokenBudget(tokenBudgetSessionId, capturedSessionId);
+        tokenBudgetSessionId = capturedSessionId;
+        sendTokenBudget(ws, capturedSessionId, getSessionTokenBudget(tokenBudgetSessionId));
         addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws, options.cwd || options.projectPath || null);
         updateSessionRuntime(capturedSessionId, {
           writer: ws,
@@ -1093,16 +1231,13 @@ async function queryClaudeSDK(command, options = {}, ws) {
         ws.send(msg);
       }
 
-      // Extract and send token budget updates from result messages
-      if (message.type === 'result') {
-        const models = Object.keys(message.modelUsage || {});
-        if (models.length > 0) {
-          // Model info available in result message
-        }
-        const tokenBudgetData = extractTokenBudget(message);
-        if (tokenBudgetData) {
-          ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
-        }
+      // Extract and send token budget updates from any SDK message carrying
+      // usage. External OpenAI-compatible providers usually write usage on
+      // assistant messages, while some SDK versions expose modelUsage on the
+      // final result event.
+      const tokenBudgetData = extractTokenBudget(message, tokenBudgetSessionId);
+      if (tokenBudgetData) {
+        sendTokenBudget(ws, capturedSessionId || sessionId || null, tokenBudgetData);
       }
     }
 
@@ -1255,6 +1390,13 @@ function getActiveClaudeSDKSessionDetails() {
   }));
 }
 
+function getClaudeSDKSessionTokenBudget(sessionId) {
+  if (!hasKnownSessionTokenBudget(sessionId)) {
+    return null;
+  }
+  return getSessionTokenBudget(sessionId);
+}
+
 /**
  * Get pending tool approvals for a specific session.
  * @param {string} sessionId - The session ID
@@ -1306,6 +1448,7 @@ export {
   isClaudeSDKSessionActive,
   getActiveClaudeSDKSessions,
   getActiveClaudeSDKSessionDetails,
+  getClaudeSDKSessionTokenBudget,
   resolveToolApproval,
   getPendingApprovalsForSession,
   reconnectSessionWriter

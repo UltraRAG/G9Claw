@@ -56,12 +56,31 @@ export interface ChatMessage {
   isCompactBoundary?: boolean;
   compactTrigger?: string;
   preTokens?: number;
+  compactLevel?: number;
+  compactStage?: string;
+  compactStageLabel?: string;
   subagentState?: {
     childTools: SubagentChildTool[];
     currentToolIndex: number;
     isComplete: boolean;
   };
   [key: string]: unknown;
+}
+
+export interface CompactProgress {
+  level: number;
+  stage: string;
+  label: string;
+  state: 'started' | 'running' | 'failed' | 'completed';
+  pre_tokens?: number;
+  reason?: string;
+}
+
+export interface ClaudeWorkStatus {
+  text: string;
+  tokens: number;
+  can_interrupt: boolean;
+  compactProgress?: CompactProgress | null;
 }
 
 export interface ClaudeSettings {

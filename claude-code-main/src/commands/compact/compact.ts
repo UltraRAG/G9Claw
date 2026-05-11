@@ -6,12 +6,15 @@ import { getSystemContext, getUserContext } from '../../context.js'
 import { getShortcutDisplay } from '../../keybindings/shortcutFormat.js'
 import { notifyCompaction } from '../../services/api/promptCacheBreakDetection.js'
 import {
+  annotateBoundaryWithCompactStage,
+  COMPACT_PROGRESS_STAGES,
   type CompactionResult,
   compactConversation,
   ERROR_MESSAGE_INCOMPLETE_RESPONSE,
   ERROR_MESSAGE_NOT_ENOUGH_MESSAGES,
   ERROR_MESSAGE_USER_ABORT,
   mergeHookInstructions,
+  setCompactingSDKStatus,
 } from '../../services/compact/compact.js'
 import { suppressCompactWarning } from '../../services/compact/compactWarningState.js'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
@@ -55,6 +58,11 @@ export const call: LocalCommandCall = async (args, context) => {
     // Try session memory compaction first if no custom instructions
     // (session memory compaction doesn't support custom instructions)
     if (!customInstructions) {
+      setCompactingSDKStatus(
+        context,
+        COMPACT_PROGRESS_STAGES.sessionMemory,
+        'started',
+      )
       const sessionMemoryResult = await trySessionMemoryCompaction(
         messages,
         context.agentId,
@@ -76,7 +84,13 @@ export const call: LocalCommandCall = async (args, context) => {
 
         return {
           type: 'compact',
-          compactionResult: sessionMemoryResult,
+          compactionResult: {
+            ...sessionMemoryResult,
+            boundaryMarker: annotateBoundaryWithCompactStage(
+              sessionMemoryResult.boundaryMarker,
+              COMPACT_PROGRESS_STAGES.sessionMemory,
+            ),
+          },
           displayText: buildDisplayText(context),
         }
       }
@@ -150,7 +164,11 @@ async function compactViaReactive(
     type: 'hooks_start',
     hookType: 'pre_compact',
   })
-  context.setSDKStatus?.('compacting')
+  setCompactingSDKStatus(
+    context,
+    COMPACT_PROGRESS_STAGES.reactive,
+    'started',
+  )
 
   try {
     // Hooks and cache-param build are independent — run concurrently.
@@ -171,6 +189,11 @@ async function compactViaReactive(
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
     context.onCompactProgress?.({ type: 'compact_start' })
+    setCompactingSDKStatus(
+      context,
+      COMPACT_PROGRESS_STAGES.reactive,
+      'running',
+    )
 
     const outcome = await reactive.reactiveCompactOnPromptTooLong(
       messages,
@@ -215,6 +238,10 @@ async function compactViaReactive(
       type: 'compact',
       compactionResult: {
         ...outcome.result,
+        boundaryMarker: annotateBoundaryWithCompactStage(
+          outcome.result.boundaryMarker,
+          COMPACT_PROGRESS_STAGES.reactive,
+        ),
         userDisplayMessage: combinedMessage,
       },
       displayText: buildDisplayText(context, combinedMessage),

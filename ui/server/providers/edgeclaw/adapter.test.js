@@ -73,6 +73,13 @@ test('normalizeMessage converts compacting status system events', () => {
       type: 'system',
       subtype: 'status',
       status: 'compacting',
+      compact_progress: {
+        level: 3,
+        stage: 'summary',
+        label: 'Summary compaction',
+        state: 'running',
+        pre_tokens: 123456,
+      },
       timestamp: '2026-04-29T12:00:01.000Z',
     },
     'regular-session'
@@ -82,6 +89,42 @@ test('normalizeMessage converts compacting status system events', () => {
   assert.equal(messages[0].kind, 'status');
   assert.equal(messages[0].text, 'compacting');
   assert.equal(messages[0].canInterrupt, true);
+  assert.deepEqual(messages[0].compactProgress, {
+    level: 3,
+    stage: 'summary',
+    label: 'Summary compaction',
+    state: 'running',
+    pre_tokens: 123456,
+  });
+});
+
+test('normalizeMessage accepts camelCase compact progress fields', () => {
+  const messages = normalizeMessage(
+    {
+      uuid: 'status-compacting-camel',
+      type: 'system',
+      subtype: 'status',
+      status: 'compacting',
+      compactProgress: {
+        level: 5,
+        stage: 'overflow_recovery',
+        stageLabel: 'Overflow recovery compaction',
+        state: 'started',
+        preTokens: 200000,
+      },
+      timestamp: '2026-04-29T12:00:01.000Z',
+    },
+    'regular-session'
+  );
+
+  assert.equal(messages.length, 1);
+  assert.deepEqual(messages[0].compactProgress, {
+    level: 5,
+    stage: 'overflow_recovery',
+    label: 'Overflow recovery compaction',
+    state: 'started',
+    pre_tokens: 200000,
+  });
 });
 
 test('normalizeMessage converts compact boundary system events', () => {
@@ -94,6 +137,9 @@ test('normalizeMessage converts compact boundary system events', () => {
       compact_metadata: {
         trigger: 'auto',
         pre_tokens: 123456,
+        level: 5,
+        stage: 'overflow_recovery',
+        stage_label: 'Overflow recovery compaction',
       },
     },
     'regular-session'
@@ -103,6 +149,9 @@ test('normalizeMessage converts compact boundary system events', () => {
   assert.equal(messages[0].kind, 'compact_boundary');
   assert.equal(messages[0].trigger, 'auto');
   assert.equal(messages[0].preTokens, 123456);
+  assert.equal(messages[0].compactLevel, 5);
+  assert.equal(messages[0].compactStage, 'overflow_recovery');
+  assert.equal(messages[0].compactStageLabel, 'Overflow recovery compaction');
 });
 
 test('normalizeMessage keeps synthetic assistant API errors as errors', () => {

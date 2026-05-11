@@ -11,7 +11,12 @@ import {
   isAutoCompactEnabled,
   type AutoCompactTrackingState,
 } from './services/compact/autoCompact.js'
-import { buildPostCompactMessages } from './services/compact/compact.js'
+import {
+  annotateBoundaryWithCompactStage,
+  buildPostCompactMessages,
+  COMPACT_PROGRESS_STAGES,
+  setCompactingSDKStatus,
+} from './services/compact/compact.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const reactiveCompact = feature('REACTIVE_COMPACT')
   ? (require('./services/compact/reactiveCompact.js') as typeof import('./services/compact/reactiveCompact.js'))
@@ -1186,7 +1191,12 @@ async function* queryLoop(
         }
       }
       if ((isWithheld413 || isWithheldMedia) && reactiveCompact) {
-        const compacted = await reactiveCompact.tryReactiveCompact({
+        setCompactingSDKStatus(
+          toolUseContext,
+          COMPACT_PROGRESS_STAGES.reactive,
+          'started',
+        )
+        const reactiveResult = await reactiveCompact.tryReactiveCompact({
           hasAttempted: hasAttemptedReactiveCompact,
           querySource,
           aborted: toolUseContext.abortController.signal.aborted,
@@ -1200,7 +1210,15 @@ async function* queryLoop(
           },
         })
 
-        if (compacted) {
+        if (reactiveResult) {
+          const compacted = {
+            ...reactiveResult,
+            boundaryMarker: annotateBoundaryWithCompactStage(
+              reactiveResult.boundaryMarker,
+              COMPACT_PROGRESS_STAGES.reactive,
+            ),
+          }
+
           // task_budget: same carryover as the proactive path above.
           // messagesForQuery still holds the pre-compact array here (the
           // 413-failed attempt's input).
@@ -1233,6 +1251,8 @@ async function* queryLoop(
           state = next
           continue
         }
+
+        toolUseContext.setSDKStatus?.(null)
 
         // No recovery — surface the withheld error and exit. Do NOT fall
         // through to stop hooks: the model never produced a valid response,

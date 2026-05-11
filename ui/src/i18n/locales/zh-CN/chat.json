@@ -25,14 +25,23 @@
   },
   "compact": {
     "label": "上下文已压缩",
-    "tokens": "压缩前 {{tokens}} tokens"
+    "level": "{{level}} 级",
+    "tokens": "压缩前 {{tokens}} tokens",
+    "stages": {
+      "context_collapse": "上下文折叠",
+      "session_memory": "记忆压缩",
+      "summary": "摘要压缩",
+      "reactive": "响应式压缩",
+      "overflow_recovery": "兜底压缩重试"
+    }
   },
   "working": {
     "default": "处理中",
     "processing": "处理中",
     "thinking": "思考中",
     "waitingForPermission": "等待授权",
-    "compacting": "正在压缩上下文..."
+    "compacting": "正在压缩上下文...",
+    "compactingLevel": "正在触发 {{level}} 级压缩：{{label}}"
   },
   "tools": {
     "settings": "工具设置",
@@ -124,6 +133,12 @@
     "attachImages": "附加图片",
     "mentionFile": "引用文件",
     "slashCommand": "运行斜杠命令",
+    "contextStatus": "背景信息窗口：{{percent}}% 已用。已用 {{used}} tokens，共 {{total}}。接近上限时会自动压缩上下文。",
+    "contextStatusUnknown": "上下文占用未知。下一次模型返回后会显示。",
+    "contextStatusTitle": "背景信息窗口",
+    "contextStatusUsed": "已用 {{used}} tokens，共 {{total}}。",
+    "contextStatusAutoCompact": "接近配置上限时会自动触发上下文压缩。",
+    "contextStatusUnknownBody": "暂未收到 token 预算数据。下一次模型返回后会显示。",
     "send": "发送",
     "stop": "停止",
     "hintText": {

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type {
   ChatMessage,
   ClaudePermissionSuggestion,
+  ClaudeWorkStatus,
   PermissionGrantResult,
 } from '../chat/types/types';
 import { isBackgroundTaskSession, type Project, type ProjectSession, type SessionProvider } from '../../types/app';
@@ -46,7 +47,7 @@ type MessagesPaneV2Props = {
   // streaming bubbles arrive in 100ms-buffered chunks and tool runs can sit
   // silent for a while, so without this the UI looks frozen.
   isAssistantWorking?: boolean;
-  workingStatusText?: string | null;
+  workingStatus?: ClaudeWorkStatus | null;
 };
 
 export default function MessagesPaneV2({
@@ -76,9 +77,9 @@ export default function MessagesPaneV2({
   showThinking,
   setInput,
   isAssistantWorking = false,
-  workingStatusText,
+  workingStatus,
 }: MessagesPaneV2Props) {
-  const { t } = useTranslation();
+  const { t } = useTranslation('chat');
   const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
   const allocatedKeysRef = useRef<Set<string>>(new Set());
   const generatedMessageKeyCounterRef = useRef(0);
@@ -242,7 +243,7 @@ export default function MessagesPaneV2({
           })}
 
           {isAssistantWorking ? (
-            <WorkingIndicator label={resolveWorkingLabel(workingStatusText, t)} />
+            <WorkingIndicator label={resolveWorkingLabel(workingStatus, t)} />
           ) : null}
         </div>
       )}
@@ -257,10 +258,11 @@ export default function MessagesPaneV2({
 // Anything we don't recognize falls through verbatim — better than showing
 // a wrong-but-translated string.
 function resolveWorkingLabel(
-  raw: string | null | undefined,
+  status: ClaudeWorkStatus | null | undefined,
   t: (key: string, options?: Record<string, unknown>) => string,
 ): string {
   const fallback = t('working.default', { defaultValue: 'Working' });
+  const raw = status?.text;
   if (!raw) return fallback;
   const normalized = raw.replace(/[.…\s]+$/u, '').trim().toLowerCase();
   switch (normalized) {

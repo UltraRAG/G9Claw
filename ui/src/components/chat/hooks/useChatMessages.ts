@@ -157,6 +157,9 @@ function convertNormalizedMessages(messages: NormalizedMessage[]): ChatMessage[]
           isCompactBoundary: true,
           compactTrigger: msg.trigger,
           preTokens: msg.preTokens,
+          compactLevel: msg.compactLevel,
+          compactStage: msg.compactStage,
+          compactStageLabel: msg.compactStageLabel,
         });
         break;
 

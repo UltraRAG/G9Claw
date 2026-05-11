@@ -11,6 +11,7 @@ import type {
   SDKCompactBoundaryMessage,
   SDKMessage,
   SDKPermissionDenial,
+  SDKCompactProgress,
   SDKStatus,
   SDKUserMessageReplay,
 } from 'src/entrypoints/agentSdkTypes.js'
@@ -154,7 +155,10 @@ export type QueryEngineConfig = {
   /** Handler for URL elicitations triggered by MCP tool -32042 errors. */
   handleElicitation?: ToolUseContext['handleElicitation']
   includePartialMessages?: boolean
-  setSDKStatus?: (status: SDKStatus) => void
+  setSDKStatus?: (
+    status: SDKStatus,
+    compactProgress?: SDKCompactProgress | null,
+  ) => void
   abortController?: AbortController
   orphanedPermission?: OrphanedPermission
   /**
@@ -1374,7 +1378,10 @@ export async function* ask({
   includePartialMessages?: boolean
   handleElicitation?: ToolUseContext['handleElicitation']
   agents?: AgentDefinition[]
-  setSDKStatus?: (status: SDKStatus) => void
+  setSDKStatus?: (
+    status: SDKStatus,
+    compactProgress?: SDKCompactProgress | null,
+  ) => void
   orphanedPermission?: OrphanedPermission
 }): AsyncGenerator<SDKMessage, void, unknown> {
   const engine = new QueryEngine({

@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { useState } from 'react';
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -9,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ArrowUp, AtSign, Command, ImagePlus, Loader2, Square } from 'lucide-react';
+import { ArrowUp, AtSign, CircleGauge, Command, ImagePlus, Loader2, Square } from 'lucide-react';
 import type { PendingPermissionRequest } from '../chat/types/types';
 import CommandMenu from '../chat/view/subcomponents/CommandMenu';
 import PermissionRequestsBanner from '../chat/view/subcomponents/PermissionRequestsBanner';
@@ -79,6 +80,7 @@ export type ComposerV2Props = {
   isLoading: boolean;
   canAbortSession: boolean;
   isAbortPending?: boolean;
+  tokenBudget?: Record<string, unknown> | null;
 
   pendingPermissionRequests: PendingPermissionRequest[];
   handlePermissionDecision: (
@@ -105,6 +107,68 @@ export type ComposerV2Props = {
    */
   chromeless?: boolean;
 };
+
+type ContextStatus = {
+  known: boolean;
+  used: number;
+  total: number;
+  percent: number;
+  usedLabel: string;
+  totalLabel: string;
+  tone: 'normal' | 'amber' | 'red' | 'unknown';
+};
+
+const DEFAULT_CONTEXT_WINDOW = (() => {
+  const parsed = Number(import.meta.env.VITE_CONTEXT_WINDOW);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 160000;
+})();
+
+function readNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}k`;
+  }
+  return value.toLocaleString();
+}
+
+function getContextStatus(tokenBudget?: Record<string, unknown> | null): ContextStatus {
+  const used = readNumber(tokenBudget?.used) ?? 0;
+  const total = readNumber(tokenBudget?.total) ?? DEFAULT_CONTEXT_WINDOW;
+  if (total <= 0) {
+    return {
+      known: false,
+      used: 0,
+      total: 0,
+      percent: 0,
+      usedLabel: '--',
+      totalLabel: '--',
+      tone: 'unknown',
+    };
+  }
+
+  const percent = Math.max(0, Math.min(999, Math.round((used / total) * 100)));
+  const tone = percent >= 90 ? 'red' : percent >= 70 ? 'amber' : 'normal';
+  return {
+    known: true,
+    used,
+    total,
+    percent,
+    usedLabel: formatTokenCount(used),
+    totalLabel: formatTokenCount(total),
+    tone,
+  };
+}
 
 export default function ComposerV2({
   input,
@@ -145,12 +209,14 @@ export default function ComposerV2({
   isLoading,
   canAbortSession,
   isAbortPending = false,
+  tokenBudget,
   pendingPermissionRequests,
   handlePermissionDecision,
   handleGrantToolPermission,
   chromeless = false,
 }: ComposerV2Props) {
   const { t } = useTranslation('chat');
+  const [isContextPopoverOpen, setIsContextPopoverOpen] = useState(false);
 
   const hasQuestionPanel = pendingPermissionRequests.some(
     (r) => r.toolName === 'AskUserQuestion',
@@ -164,6 +230,18 @@ export default function ComposerV2({
   };
 
   const disabled = !input.trim() && !(isLoading && canAbortSession);
+  const contextStatus = getContextStatus(tokenBudget);
+  const contextStatusTitle = contextStatus.known
+    ? (t('input.contextStatus', {
+        percent: contextStatus.percent,
+        used: contextStatus.usedLabel,
+        total: contextStatus.totalLabel,
+        defaultValue:
+          `${contextStatus.percent}% used. ${contextStatus.usedLabel} tokens used out of ${contextStatus.totalLabel}. Auto compact runs near the limit.`,
+      }) as string)
+    : (t('input.contextStatusUnknown', {
+        defaultValue: 'Context usage unknown. It will appear after the next model response.',
+      }) as string);
 
   return (
     <div
@@ -313,6 +391,87 @@ export default function ComposerV2({
                   >
                     <Command className="h-4 w-4" strokeWidth={1.75} />
                   </button>
+                  <div
+                    className="relative"
+                    onBlur={(event) => {
+                      const nextTarget = event.relatedTarget as Node | null;
+                      if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
+                        setIsContextPopoverOpen(false);
+                      }
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setIsContextPopoverOpen((open) => !open)}
+                      className={cn(
+                        'inline-flex h-7 min-w-[44px] items-center justify-center gap-1 rounded-md px-1.5 text-[11px] tabular-nums transition',
+                        contextStatus.tone === 'red'
+                          ? 'text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30'
+                          : contextStatus.tone === 'amber'
+                            ? 'text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/30'
+                            : contextStatus.tone === 'normal'
+                              ? 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'
+                              : 'text-neutral-400 hover:bg-neutral-100 dark:text-neutral-500 dark:hover:bg-neutral-800',
+                      )}
+                      title={contextStatusTitle}
+                      aria-label={contextStatusTitle}
+                      aria-expanded={isContextPopoverOpen}
+                    >
+                      <CircleGauge className="h-4 w-4" strokeWidth={1.75} />
+                      <span>{contextStatus.known ? `${contextStatus.percent}%` : '--'}</span>
+                    </button>
+                    {isContextPopoverOpen ? (
+                      <div
+                        role="status"
+                        className="absolute bottom-full left-0 z-50 mb-2 w-64 rounded-lg border border-neutral-200 bg-white p-3 text-left text-[12px] leading-5 text-neutral-700 shadow-lg dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-200"
+                      >
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <span className="font-medium text-neutral-900 dark:text-neutral-100">
+                            {t('input.contextStatusTitle', { defaultValue: 'Context window' })}
+                          </span>
+                          <span
+                            className={cn(
+                              'rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums',
+                              contextStatus.tone === 'red'
+                                ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300'
+                                : contextStatus.tone === 'amber'
+                                  ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
+                                  : contextStatus.tone === 'normal'
+                                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300'
+                                    : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400',
+                            )}
+                          >
+                            {contextStatus.known ? `${contextStatus.percent}%` : '--'}
+                          </span>
+                        </div>
+                        {contextStatus.known ? (
+                          <>
+                            <div className="text-neutral-500 dark:text-neutral-400">
+                              {t('input.contextStatusUsed', {
+                                used: contextStatus.used.toLocaleString(),
+                                total: contextStatus.total.toLocaleString(),
+                                defaultValue:
+                                  `${contextStatus.used.toLocaleString()} tokens used out of ${contextStatus.total.toLocaleString()}.`,
+                              })}
+                            </div>
+                            <div className="mt-2 text-neutral-500 dark:text-neutral-400">
+                              {t('input.contextStatusAutoCompact', {
+                                defaultValue:
+                                  'Auto compact runs when the conversation approaches the configured limit.',
+                              })}
+                            </div>
+                          </>
+                        ) : (
+                          <div className="text-neutral-500 dark:text-neutral-400">
+                            {t('input.contextStatusUnknownBody', {
+                              defaultValue:
+                                'No token budget has been reported yet. It will appear after the next model response.',
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
 
                 {isLoading && canAbortSession ? (

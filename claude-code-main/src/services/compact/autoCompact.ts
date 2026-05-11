@@ -17,10 +17,13 @@ import { getMaxOutputTokensForModel } from '../api/claude.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
 import {
+  annotateBoundaryWithCompactStage,
+  COMPACT_PROGRESS_STAGES,
   type CompactionResult,
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
+  setCompactingSDKStatus,
 } from './compact.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
@@ -285,6 +288,12 @@ export async function autoCompactIfNeeded(
   }
 
   // EXPERIMENT: Try session memory compaction first
+  setCompactingSDKStatus(
+    toolUseContext,
+    COMPACT_PROGRESS_STAGES.sessionMemory,
+    'started',
+    tokenCountWithEstimation(messages),
+  )
   const sessionMemoryResult = await trySessionMemoryCompaction(
     messages,
     toolUseContext.agentId,
@@ -305,7 +314,13 @@ export async function autoCompactIfNeeded(
     markPostCompaction()
     return {
       wasCompacted: true,
-      compactionResult: sessionMemoryResult,
+      compactionResult: {
+        ...sessionMemoryResult,
+        boundaryMarker: annotateBoundaryWithCompactStage(
+          sessionMemoryResult.boundaryMarker,
+          COMPACT_PROGRESS_STAGES.sessionMemory,
+        ),
+      },
     }
   }
 
@@ -318,6 +333,7 @@ export async function autoCompactIfNeeded(
       undefined, // No custom instructions for autocompact
       true, // isAutoCompact
       recompactionInfo,
+      COMPACT_PROGRESS_STAGES.summary,
     )
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
@@ -389,6 +405,7 @@ export async function compactForPromptTooLongRecovery(
       undefined,
       true,
       recompactionInfo,
+      COMPACT_PROGRESS_STAGES.overflowRecovery,
     )
 
     setLastSummarizedMessageId(undefined)

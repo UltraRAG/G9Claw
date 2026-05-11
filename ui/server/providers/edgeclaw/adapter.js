@@ -164,6 +164,58 @@ function parseTaskNotification(content) {
   };
 }
 
+function normalizeCompactProgress(raw) {
+  const source =
+    raw?.compact_progress ||
+    raw?.compactProgress ||
+    raw?.compactMetadata ||
+    raw?.metadata?.compact_progress ||
+    raw?.metadata?.compactProgress ||
+    (raw?.level || raw?.stage || raw?.label ? raw : null);
+
+  if (!source || typeof source !== 'object') {
+    return null;
+  }
+
+  const level = Number(source.level);
+  const stage = typeof source.stage === 'string' ? source.stage : '';
+  const label =
+    typeof source.label === 'string'
+      ? source.label
+      : typeof source.stage_label === 'string'
+        ? source.stage_label
+        : typeof source.stageLabel === 'string'
+          ? source.stageLabel
+          : stage;
+  const state =
+    typeof source.state === 'string' && source.state
+      ? source.state
+      : 'running';
+  const preTokens =
+    typeof source.pre_tokens === 'number'
+      ? source.pre_tokens
+      : typeof source.preTokens === 'number'
+        ? source.preTokens
+        : undefined;
+  const reason =
+    typeof source.reason === 'string' && source.reason
+      ? source.reason
+      : undefined;
+
+  if (!Number.isFinite(level) || level <= 0 || !stage) {
+    return null;
+  }
+
+  return {
+    level,
+    stage,
+    label,
+    state,
+    ...(typeof preTokens === 'number' && { pre_tokens: preTokens }),
+    ...(reason && { reason }),
+  };
+}
+
 function formatApiErrorContent(raw) {
   const errorCode =
     raw?.error?.cause?.code ||
@@ -475,6 +527,7 @@ function normalizeDirectEvent(raw, sessionId, options) {
 
   if (raw.type === 'system' && raw.subtype === 'status') {
     if (raw.status === 'compacting') {
+      const compactProgress = normalizeCompactProgress(raw);
       return [createNormalizedMessage({
         id,
         sessionId,
@@ -484,6 +537,7 @@ function normalizeDirectEvent(raw, sessionId, options) {
         text: 'compacting',
         tokens: 0,
         canInterrupt: true,
+        ...(compactProgress && { compactProgress }),
       })];
     }
 
@@ -513,6 +567,9 @@ function normalizeDirectEvent(raw, sessionId, options) {
       kind: 'compact_boundary',
       trigger: metadata.trigger || raw.trigger || 'auto',
       preTokens: metadata.pre_tokens ?? metadata.preTokens,
+      compactLevel: metadata.level,
+      compactStage: metadata.stage,
+      compactStageLabel: metadata.stage_label || metadata.stageLabel,
       compactMetadata: metadata,
     })];
   }

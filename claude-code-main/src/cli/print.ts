@@ -109,6 +109,7 @@ import {
 import { registerCleanup } from 'src/utils/cleanupRegistry.js'
 import { createIdleTimeoutManager } from 'src/utils/idleTimeout.js'
 import type {
+  SDKCompactProgress,
   SDKStatus,
   ModelInfo,
   SDKMessage,
@@ -495,7 +496,10 @@ export async function runHeadless(
     workload: string | undefined
     setupTrigger?: 'init' | 'maintenance' | undefined
     sessionStartHooksPromise?: ReturnType<typeof processSessionStartHooks>
-    setSDKStatus?: (status: SDKStatus) => void
+    setSDKStatus?: (
+      status: SDKStatus,
+      compactProgress?: SDKCompactProgress | null,
+    ) => void
   },
 ): Promise<void> {
   if (
@@ -1008,7 +1012,10 @@ function runHeadlessStreaming(
     includePartialMessages?: boolean | undefined
     enableAuthStatus?: boolean | undefined
     agent?: string | undefined
-    setSDKStatus?: (status: SDKStatus) => void
+    setSDKStatus?: (
+      status: SDKStatus,
+      compactProgress?: SDKCompactProgress | null,
+    ) => void
     promptSuggestions?: boolean | undefined
     workload?: string | undefined
   },
@@ -2205,11 +2212,12 @@ function runHeadlessStreaming(
                 ),
               agents: currentAgents,
               orphanedPermission: cmd.orphanedPermission,
-              setSDKStatus: status => {
+              setSDKStatus: (status, compactProgress) => {
                 output.enqueue({
                   type: 'system',
                   subtype: 'status',
                   status,
+                  ...(compactProgress && { compact_progress: compactProgress }),
                   session_id: getSessionId(),
                   uuid: randomUUID(),
                 })
@@ -2803,11 +2811,12 @@ function runHeadlessStreaming(
                 params.url,
                 'elicitationId' in params ? params.elicitationId : undefined,
               ),
-            setSDKStatus: status => {
+            setSDKStatus: (status, compactProgress) => {
               output.enqueue({
                 type: 'system',
                 subtype: 'status',
                 status,
+                ...(compactProgress && { compact_progress: compactProgress }),
                 session_id: getSessionId(),
                 uuid: randomUUID(),
               })

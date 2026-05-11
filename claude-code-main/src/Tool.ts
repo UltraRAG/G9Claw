@@ -74,7 +74,10 @@ export type {
 
 import type { SpinnerMode } from './components/Spinner.js'
 import type { QuerySource } from './constants/querySource.js'
-import type { SDKStatus } from './entrypoints/agentSdkTypes.js'
+import type {
+  SDKCompactProgress,
+  SDKStatus,
+} from './entrypoints/agentSdkTypes.js'
 import type { AppState } from './state/AppState.js'
 import type {
   HookProgress,
@@ -233,7 +236,10 @@ export type ToolUseContext = {
   pushApiMetricsEntry?: (ttftMs: number) => void
   setStreamMode?: (mode: SpinnerMode) => void
   onCompactProgress?: (event: CompactProgressEvent) => void
-  setSDKStatus?: (status: SDKStatus) => void
+  setSDKStatus?: (
+    status: SDKStatus,
+    compactProgress?: SDKCompactProgress | null,
+  ) => void
   openMessageSelector?: () => void
   updateFileHistoryState: (
     updater: (prev: FileHistoryState) => FileHistoryState,
