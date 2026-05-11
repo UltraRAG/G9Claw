@@ -44,7 +44,7 @@ test('buildRuntimeEnvFromConfig exports rag settings', () => {
   expect(env.EDGECLAW_RAG_GLM_WEB_SEARCH_TOP_K).toBe('6')
 })
 
-test('buildCcrConfigFromEdgeClawConfig fills router defaults and zero-cost local pricing', () => {
+test('buildCcrConfigFromEdgeClawConfig fills router defaults and built-in model pricing', () => {
   const ccr = buildCcrConfigFromEdgeClawConfig({
     models: {
       providers: {
@@ -55,7 +55,7 @@ test('buildCcrConfigFromEdgeClawConfig fills router defaults and zero-cost local
         },
       },
       entries: {
-        default: { provider: 'edgeclaw', name: 'qwen3.5-35b' },
+        default: { provider: 'edgeclaw', name: 'qwen3.6-27b' },
       },
     },
     agents: { main: { model: 'default' } },
@@ -67,14 +67,34 @@ test('buildCcrConfigFromEdgeClawConfig fills router defaults and zero-cost local
   })
 
   expect(ccr.Router.tokenSaver.defaultTier).toBe('MEDIUM')
-  expect(ccr.Router.tokenSaver.tiers.SIMPLE.model).toBe('edgeclaw,qwen3.5-35b')
+  expect(ccr.Router.tokenSaver.tiers.SIMPLE.model).toBe('edgeclaw,qwen3.6-27b')
   expect(ccr.Router.tokenSaver.rules.join('\n')).not.toContain('RAG')
   expect(ccr.Router.tokenSaver.rules.join('\n')).not.toContain('DARPA')
   expect(ccr.Router.autoOrchestrate.allowedTools).toContain('Agent')
   expect(ccr.Router.autoOrchestrate.subagentMaxTokens).toBe(48000)
-  expect(ccr.tokenStats.savingsBaselineModel).toBe('edgeclaw,qwen3.5-35b')
-  expect(ccr.tokenStats.modelPricing['edgeclaw,qwen3.5-35b']).toEqual({
-    inputPer1M: 0,
-    outputPer1M: 0,
+  expect(ccr.tokenStats.savingsBaselineModel).toBe('edgeclaw,qwen3.6-27b')
+  expect(ccr.tokenStats.modelPricing['qwen3.6-27b']).toEqual({
+    inputPer1M: 0.4,
+    outputPer1M: 3.2,
+  })
+  expect(ccr.tokenStats.modelPricing['minimax-m2.7']).toEqual({
+    inputPer1M: 0.8,
+    outputPer1M: 6,
+  })
+  expect(ccr.tokenStats.modelPricing['gpt-5.4-mini']).toEqual({
+    inputPer1M: 0.75,
+    outputPer1M: 4.5,
+  })
+  expect(ccr.tokenStats.modelPricing['claude-sonnet-4.5']).toEqual({
+    inputPer1M: 3,
+    outputPer1M: 15,
+  })
+  expect(ccr.tokenStats.modelPricing['gemini-2.5-flash']).toEqual({
+    inputPer1M: 0.3,
+    outputPer1M: 2.5,
+  })
+  expect(ccr.tokenStats.modelPricing['deepseek-reasoner']).toEqual({
+    inputPer1M: 0.55,
+    outputPer1M: 2.19,
   })
 })

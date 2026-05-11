@@ -122,7 +122,7 @@ test('normalizeEdgeClawConfig migrates legacy local knowledge milvusUri to datab
   assert.equal(config.rag.localKnowledge.milvusUri, undefined);
 });
 
-test('buildCcrConfig sets first-party 9GClaw providers to zero token cost', async () => {
+test('buildCcrConfig applies built-in pricing to first-party 9GClaw models', async () => {
   const { buildCcrConfig } = await import('./edgeclawConfig.js');
   const ccr = buildCcrConfig({
     models: {
@@ -139,15 +139,35 @@ test('buildCcrConfig sets first-party 9GClaw providers to zero token cost', asyn
         },
       },
       entries: {
-        router_small: { provider: 'edgeclaw', name: 'qwen3.5-35b' },
+        router_small: { provider: 'edgeclaw', name: 'qwen3.6-27b' },
         default: { provider: 'openrouter', name: 'deepseek/deepseek-v4-pro' },
       },
     },
   });
 
-  assert.deepEqual(ccr.tokenStats.modelPricing['edgeclaw,qwen3.5-35b'], {
-    inputPer1M: 0,
-    outputPer1M: 0,
+  assert.deepEqual(ccr.tokenStats.modelPricing['qwen3.6-27b'], {
+    inputPer1M: 0.4,
+    outputPer1M: 3.2,
+  });
+  assert.deepEqual(ccr.tokenStats.modelPricing['minimax-m2.7'], {
+    inputPer1M: 0.8,
+    outputPer1M: 6,
+  });
+  assert.deepEqual(ccr.tokenStats.modelPricing['gpt-5.4-mini'], {
+    inputPer1M: 0.75,
+    outputPer1M: 4.5,
+  });
+  assert.deepEqual(ccr.tokenStats.modelPricing['claude-sonnet-4.5'], {
+    inputPer1M: 3,
+    outputPer1M: 15,
+  });
+  assert.deepEqual(ccr.tokenStats.modelPricing['gemini-2.5-flash'], {
+    inputPer1M: 0.3,
+    outputPer1M: 2.5,
+  });
+  assert.deepEqual(ccr.tokenStats.modelPricing['deepseek-reasoner'], {
+    inputPer1M: 0.55,
+    outputPer1M: 2.19,
   });
   assert.equal(ccr.tokenStats.savingsBaselineModel, 'openrouter,deepseek/deepseek-v4-pro');
   assert.equal(ccr.tokenStats.modelPricing['openrouter,deepseek/deepseek-v4-pro'], undefined);

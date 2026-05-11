@@ -189,23 +189,72 @@ function defaultConfig(): EdgeClawConfig {
   }
 }
 
-function isZeroCostProvider(providerId: string, provider: EdgeClawProviderConfig | undefined): boolean {
-  const id = normalize(providerId).toLowerCase()
-  if (id === 'edgeclaw' || id === 'edgeclaw_memory' || id.startsWith('edgeclaw_')) {
-    return true
-  }
-  return provider?.local === true || provider?.costMode === 'local'
+type ModelPricing = {
+  inputPer1M: number
+  outputPer1M: number
 }
 
-function buildZeroCostModelPricing(config: EdgeClawConfig): Record<string, { inputPer1M: number; outputPer1M: number }> {
-  const pricing: Record<string, { inputPer1M: number; outputPer1M: number }> = {}
-  for (const entry of Object.values(config.models?.entries ?? {})) {
-    if (!entry?.provider || !entry?.name) continue
-    const provider = config.models?.providers?.[entry.provider]
-    if (!isZeroCostProvider(entry.provider, provider)) continue
-    pricing[`${entry.provider},${entry.name}`] = { inputPer1M: 0, outputPer1M: 0 }
-  }
-  return pricing
+const DEFAULT_MODEL_PRICING: Record<string, ModelPricing> = {
+  // OpenAI, standard processing, short context, USD per 1M tokens.
+  'gpt-5.5': { inputPer1M: 5, outputPer1M: 30 },
+  'gpt-5.5-pro': { inputPer1M: 30, outputPer1M: 180 },
+  'gpt-5.4': { inputPer1M: 2.5, outputPer1M: 15 },
+  'gpt-5.4-mini': { inputPer1M: 0.75, outputPer1M: 4.5 },
+  'gpt-5.4-nano': { inputPer1M: 0.2, outputPer1M: 1.25 },
+  'gpt-5.4-pro': { inputPer1M: 30, outputPer1M: 180 },
+  'gpt-5.3-codex': { inputPer1M: 1.75, outputPer1M: 14 },
+  'chatgpt-latest': { inputPer1M: 5, outputPer1M: 30 },
+  'chat-latest': { inputPer1M: 5, outputPer1M: 30 },
+
+  // Anthropic Claude, standard token pricing, USD per 1M tokens.
+  'claude-opus-4.7': { inputPer1M: 5, outputPer1M: 25 },
+  'claude-opus-4-7': { inputPer1M: 5, outputPer1M: 25 },
+  'claude-opus-4.6': { inputPer1M: 5, outputPer1M: 25 },
+  'claude-opus-4-6': { inputPer1M: 5, outputPer1M: 25 },
+  'claude-opus-4.5': { inputPer1M: 5, outputPer1M: 25 },
+  'claude-opus-4-5': { inputPer1M: 5, outputPer1M: 25 },
+  'claude-sonnet-4.6': { inputPer1M: 3, outputPer1M: 15 },
+  'claude-sonnet-4-6': { inputPer1M: 3, outputPer1M: 15 },
+  'claude-sonnet-4.5': { inputPer1M: 3, outputPer1M: 15 },
+  'claude-sonnet-4-5': { inputPer1M: 3, outputPer1M: 15 },
+  'claude-haiku-4.5': { inputPer1M: 1, outputPer1M: 5 },
+  'claude-haiku-4-5': { inputPer1M: 1, outputPer1M: 5 },
+  'claude-3-5-sonnet': { inputPer1M: 3, outputPer1M: 15 },
+  'claude-3-5-haiku': { inputPer1M: 0.8, outputPer1M: 4 },
+  'claude-3-opus': { inputPer1M: 15, outputPer1M: 75 },
+
+  // Google Gemini Developer API, paid tier standard pricing, USD per 1M tokens.
+  'gemini-3.1-pro-preview': { inputPer1M: 2, outputPer1M: 12 },
+  'gemini-3.1-pro-preview-customtools': { inputPer1M: 2, outputPer1M: 12 },
+  'gemini-3.1-flash-lite': { inputPer1M: 0.25, outputPer1M: 1.5 },
+  'gemini-3.1-flash-lite-preview': { inputPer1M: 0.25, outputPer1M: 1.5 },
+  'gemini-3-flash-preview': { inputPer1M: 0.5, outputPer1M: 3 },
+  'gemini-2.5-pro': { inputPer1M: 1.25, outputPer1M: 10 },
+  'gemini-2.5-flash': { inputPer1M: 0.3, outputPer1M: 2.5 },
+  'gemini-2.5-flash-lite': { inputPer1M: 0.1, outputPer1M: 0.4 },
+  'gemini-2.5-flash-lite-preview': { inputPer1M: 0.1, outputPer1M: 0.4 },
+  'gemini-2.0-flash': { inputPer1M: 0.1, outputPer1M: 0.4 },
+
+  // DeepSeek official API cache-miss input pricing, USD per 1M tokens.
+  'deepseek-chat': { inputPer1M: 0.27, outputPer1M: 1.1 },
+  'deepseek-reasoner': { inputPer1M: 0.55, outputPer1M: 2.19 },
+
+  // MiniMax PAYG/effective pricing, USD per 1M tokens.
+  'minimax-m2.7': { inputPer1M: 0.8, outputPer1M: 6 },
+  'minimax-m2.7-highspeed': { inputPer1M: 1.6, outputPer1M: 12 },
+  'minimax-m2.5': { inputPer1M: 0.8, outputPer1M: 6 },
+  'minimax-m2.5-highspeed': { inputPer1M: 1.6, outputPer1M: 12 },
+  'minimax-m2.1': { inputPer1M: 0.8, outputPer1M: 6 },
+  'minimax-m2.1-highspeed': { inputPer1M: 1.6, outputPer1M: 12 },
+  'm2-her': { inputPer1M: 0.8, outputPer1M: 6 },
+
+  // 9GClaw local deployment billing table, USD per 1M tokens.
+  'qwen3.6-27b': { inputPer1M: 0.4, outputPer1M: 3.2 },
+  'qwen3.6-35b-a3b': { inputPer1M: 0.2, outputPer1M: 1.2 },
+}
+
+function buildDefaultModelPricing(): Record<string, ModelPricing> {
+  return structuredClone(DEFAULT_MODEL_PRICING)
 }
 
 function deepMerge<T>(base: T, override: unknown): T {
@@ -425,7 +474,7 @@ export function buildCcrConfigFromEdgeClawConfig(config = loadEdgeClawConfig()) 
       ...(router.tokenStats ?? { enabled: true }),
       savingsBaselineModel: router.tokenStats?.savingsBaselineModel || defaultRoute,
       modelPricing: {
-        ...buildZeroCostModelPricing(config),
+        ...buildDefaultModelPricing(),
         ...(router.tokenStats?.modelPricing ?? {}),
       },
     },

@@ -195,11 +195,12 @@ export function lookupPricing(model: string, provider?: string): ModelPricing {
   }
 
   const lowerModel = model.toLowerCase();
-  for (const [key, val] of Object.entries(modelPricingConfig)) {
-    if (key.includes(",")) continue;
-    if (lowerModel.includes(key.toLowerCase())) {
-      return { inputPer1M: val.inputPer1M ?? 3, outputPer1M: val.outputPer1M ?? 15 };
-    }
+  const genericMatch = Object.entries(modelPricingConfig)
+    .filter(([key]) => !key.includes(",") && lowerModel.includes(key.toLowerCase()))
+    .sort(([a], [b]) => b.length - a.length)[0];
+  if (genericMatch) {
+    const [, val] = genericMatch;
+    return { inputPer1M: val.inputPer1M ?? 3, outputPer1M: val.outputPer1M ?? 15 };
   }
 
   return { inputPer1M: 3, outputPer1M: 15 };
