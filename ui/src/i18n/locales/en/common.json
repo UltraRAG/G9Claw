@@ -334,6 +334,8 @@
     "uploadFolder": "Upload folder",
     "downloadProject": "Download project as zip",
     "openHtmlPreview": "Open HTML preview in new tab",
+    "confirmDeleteFile": "Delete this file? This cannot be undone.",
+    "confirmDeleteFolder": "Delete this folder and all files inside it? This cannot be undone.",
     "collapseAll": "Collapse All",
     "context": {
       "rename": "Rename",

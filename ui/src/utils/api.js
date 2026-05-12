@@ -221,7 +221,7 @@ export const api = {
     }),
 
   deleteFile: (projectName, { path, type }) =>
-    authenticatedFetch(`/api/projects/${projectName}/files`, {
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/files`, {
       method: 'DELETE',
       body: JSON.stringify({ path, type }),
     }),

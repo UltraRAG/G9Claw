@@ -11,6 +11,7 @@ import {
   FolderOpen,
   Loader2,
   RefreshCw,
+  Trash2,
   Upload,
   X,
 } from 'lucide-react';
@@ -31,6 +32,12 @@ type FlattenedNode = {
   node: FileTreeNode;
   depth: number;
   parentPath: string;
+};
+
+type FileContextMenu = {
+  node: FileTreeNode;
+  x: number;
+  y: number;
 };
 
 function flatten(
@@ -57,6 +64,8 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
   const [downloadingProject, setDownloadingProject] = useState(false);
   const [uploadingProject, setUploadingProject] = useState(false);
   const [uploadMenuOpen, setUploadMenuOpen] = useState(false);
+  const [contextMenu, setContextMenu] = useState<FileContextMenu | null>(null);
+  const [deletingPath, setDeletingPath] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -64,6 +73,7 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
     setExpanded(new Set());
     setActivePath(null);
     setUploadMenuOpen(false);
+    setContextMenu(null);
   }, [selectedProject?.name]);
 
   const flat = useMemo(() => flatten(files, expanded), [files, expanded]);
@@ -87,6 +97,22 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
     folderInputRef.current?.setAttribute('webkitdirectory', '');
     folderInputRef.current?.setAttribute('directory', '');
   }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return undefined;
+
+    const closeMenu = () => setContextMenu(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeMenu();
+    };
+
+    document.addEventListener('click', closeMenu);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('click', closeMenu);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [contextMenu]);
 
   const uploadSelectedFiles = useCallback(
     async (fileList: FileList | null) => {
@@ -158,6 +184,68 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
       window.open(previewUrl, '_blank', 'noopener');
     },
     [projectRoot, selectedProject?.name],
+  );
+
+  const handleContextMenu = useCallback((event: MouseEvent<HTMLLIElement>, node: FileTreeNode) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setActivePath(node.path);
+    setUploadMenuOpen(false);
+    setContextMenu({
+      node,
+      x: Math.min(event.clientX, window.innerWidth - 160),
+      y: Math.min(event.clientY, window.innerHeight - 52),
+    });
+  }, []);
+
+  const handleDeleteNode = useCallback(
+    async (node: FileTreeNode) => {
+      if (!selectedProject?.name || deletingPath) return;
+
+      const confirmMessage = node.type === 'directory'
+        ? t('fileTree.confirmDeleteFolder', {
+            defaultValue: 'Delete this folder and all files inside it? This cannot be undone.',
+          })
+        : t('fileTree.confirmDeleteFile', {
+            defaultValue: 'Delete this file? This cannot be undone.',
+          });
+
+      if (!window.confirm(confirmMessage as string)) {
+        setContextMenu(null);
+        return;
+      }
+
+      try {
+        setDeletingPath(node.path);
+        setContextMenu(null);
+        const response = await api.deleteFile(selectedProject.name, {
+          path: node.path,
+          type: node.type,
+        });
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '');
+          throw new Error(errorText || `Delete failed: ${response.status}`);
+        }
+        setExpanded((prev) => {
+          const next = new Set(prev);
+          for (const path of next) {
+            if (path === node.path || path.startsWith(`${node.path}/`)) {
+              next.delete(path);
+            }
+          }
+          return next;
+        });
+        setActivePath((path) => (
+          path && (path === node.path || path.startsWith(`${node.path}/`)) ? null : path
+        ));
+        await refreshFiles();
+      } catch (error) {
+        console.error('Failed to delete file or folder:', error);
+      } finally {
+        setDeletingPath(null);
+      }
+    },
+    [deletingPath, refreshFiles, selectedProject?.name, t],
   );
 
   const handleClick = useCallback(
@@ -324,6 +412,7 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
                 <li
                   key={node.path}
                   onClick={() => handleClick(node)}
+                  onContextMenu={(event) => handleContextMenu(event, node)}
                   style={{ marginLeft: `${depth * 20}px` }}
                   className={cn(
                     'flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 transition-colors',
@@ -375,6 +464,31 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
           </ul>
         )}
       </div>
+      {contextMenu ? (
+        <div
+          role="menu"
+          aria-label={t('fileTree.context.menuLabel', { defaultValue: 'File context menu' }) as string}
+          className="fixed z-50 min-w-32 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-[12px] shadow-lg dark:border-neutral-800 dark:bg-neutral-950"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => void handleDeleteNode(contextMenu.node)}
+            disabled={deletingPath === contextMenu.node.path}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-600 transition hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950/30"
+          >
+            {deletingPath === contextMenu.node.path ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.75} />
+            ) : (
+              <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+            )}
+            <span>{t('fileTree.context.delete', { defaultValue: 'Delete' })}</span>
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

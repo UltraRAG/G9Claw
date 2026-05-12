@@ -332,6 +332,8 @@
     "uploadFolder": "上传文件夹",
     "downloadProject": "下载整个项目 zip",
     "openHtmlPreview": "在新标签页打开 HTML 预览",
+    "confirmDeleteFile": "删除这个文件？此操作无法撤销。",
+    "confirmDeleteFolder": "删除这个文件夹及其中所有文件？此操作无法撤销。",
     "collapseAll": "全部折叠",
     "context": {
       "rename": "重命名",
