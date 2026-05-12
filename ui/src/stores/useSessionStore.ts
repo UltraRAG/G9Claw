@@ -29,7 +29,9 @@ export type MessageKind =
   | 'interactive_prompt'
   | 'task_notification'
   | 'interrupted'
-  | 'compact_boundary';
+  | 'compact_boundary'
+  | 'agent_activity'
+  | 'agent_activity_summary';
 
 export interface CompactProgress {
   level: number;
@@ -94,6 +96,21 @@ export interface NormalizedMessage {
   compactStage?: string;
   compactStageLabel?: string;
   compactMetadata?: unknown;
+  runId?: string;
+  activityId?: string;
+  phase?: string;
+  state?: string;
+  title?: string;
+  detail?: string;
+  startedAt?: string;
+  endedAt?: string | null;
+  durationMs?: number | null;
+  severity?: string;
+  toolCallCount?: number;
+  toolErrorCount?: number;
+  ragSearchCount?: number;
+  compactCount?: number;
+  keySteps?: unknown[];
   isFinal?: boolean;
   // Cursor-specific ordering
   sequence?: number;

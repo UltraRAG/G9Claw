@@ -34,6 +34,7 @@ import {
   drainSessionCronNotifications,
   registerCronSession
 } from './services/cron-session-bridge.js';
+import { ActivityTracker } from './services/activity-tracker.js';
 
 const activeSessions = new Map();
 const sessionRuntimes = new Map();
@@ -437,7 +438,7 @@ async function mapCliOptionsToSDK(options = {}) {
  * @param {Array<string>} tempImagePaths - Temp image file paths for cleanup
  * @param {string} tempDir - Temp directory for cleanup
  */
-function addSession(sessionId, queryInstance, tempImagePaths = [], tempDir = null, writer = null, cwd = null) {
+function addSession(sessionId, queryInstance, tempImagePaths = [], tempDir = null, writer = null, cwd = null, activityTracker = null) {
   activeSessions.set(sessionId, {
     instance: queryInstance,
     startTime: Date.now(),
@@ -445,7 +446,8 @@ function addSession(sessionId, queryInstance, tempImagePaths = [], tempDir = nul
     tempImagePaths,
     tempDir,
     writer,
-    cwd
+    cwd,
+    activityTracker
   });
 }
 
@@ -953,6 +955,12 @@ async function queryClaudeSDK(command, options = {}, ws) {
   let sessionCreatedSent = false;
   let tempImagePaths = [];
   let tempDir = null;
+  const activityTracker = new ActivityTracker({
+    ws,
+    sessionId: capturedSessionId || null,
+    projectRoot: options.cwd || options.projectPath || null,
+    sessionSummary,
+  });
 
   if (sessionId) {
     updateSessionRuntime(sessionId, {
@@ -972,6 +980,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
   };
 
   try {
+    activityTracker.start();
     const initialTokenBudget = getSessionTokenBudget(tokenBudgetSessionId);
     if (!sessionId || initialTokenBudget.used > 0) {
       sendTokenBudget(ws, capturedSessionId || null, initialTokenBudget);
@@ -1064,7 +1073,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
         pendingCoalescenceMap.set(coalescenceKey, { requestId, promise: coalescencePromise });
       }
 
-      ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: effectiveSessionId, provider: 'claude' }));
+      const permissionMessage = createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: effectiveSessionId, provider: 'claude' });
+      ws.send(permissionMessage);
+      activityTracker.observe(permissionMessage);
       emitNotification(createNotificationEvent({
         provider: 'claude',
         sessionId: effectiveSessionId,
@@ -1153,7 +1164,8 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
     // Track the query instance for abort capability
     if (capturedSessionId) {
-      addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws, options.cwd || options.projectPath || null);
+      activityTracker.setSessionId(capturedSessionId);
+      addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws, options.cwd || options.projectPath || null, activityTracker);
       updateSessionRuntime(capturedSessionId, {
         writer: ws,
         userId: ws?.userId || null,
@@ -1170,10 +1182,11 @@ async function queryClaudeSDK(command, options = {}, ws) {
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
+        activityTracker.setSessionId(capturedSessionId);
         transferSessionTokenBudget(tokenBudgetSessionId, capturedSessionId);
         tokenBudgetSessionId = capturedSessionId;
         sendTokenBudget(ws, capturedSessionId, getSessionTokenBudget(tokenBudgetSessionId));
-        addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws, options.cwd || options.projectPath || null);
+        addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws, options.cwd || options.projectPath || null, activityTracker);
         updateSessionRuntime(capturedSessionId, {
           writer: ws,
           userId: ws?.userId || null,
@@ -1222,6 +1235,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
         if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
           msg.parentToolUseId = transformedMessage.parentToolUseId;
         }
+        activityTracker.observe(msg);
         ws.send(msg);
       }
 
@@ -1242,6 +1256,8 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
     // Clean up temporary image files
     await cleanupTempFiles(tempImagePaths, tempDir);
+
+    await activityTracker.complete('completed');
 
     // Send completion event
     ws.send(createNormalizedMessage({
@@ -1276,15 +1292,19 @@ async function queryClaudeSDK(command, options = {}, ws) {
     // Clean up temporary image files on error
     await cleanupTempFiles(tempImagePaths, tempDir);
 
-    // Send error to WebSocket
-    ws.send(createNormalizedMessage({
+    const errorMessage = createNormalizedMessage({
       kind: 'error',
       content: error.message,
       sessionId: capturedSessionId || sessionId || null,
       provider: 'claude',
       alwaysOnPlanId: options.alwaysOnPlanId || null,
       alwaysOnExecutionToken: options.alwaysOnExecutionToken || null
-    }));
+    });
+    activityTracker.observe(errorMessage);
+    await activityTracker.complete('failed');
+
+    // Send error to WebSocket
+    ws.send(errorMessage);
     notifyRunFailed({
       userId: ws?.userId || null,
       provider: 'claude',
@@ -1343,6 +1363,12 @@ async function abortClaudeSDKSession(sessionId) {
       } catch (sendError) {
         console.warn(`Failed to push interrupted notice for ${sessionId}:`, sendError?.message || sendError);
       }
+    }
+
+    if (session.activityTracker && typeof session.activityTracker.complete === 'function') {
+      await session.activityTracker.complete('cancelled').catch((trackerError) => {
+        console.warn(`Failed to finalize activity trace for ${sessionId}:`, trackerError?.message || trackerError);
+      });
     }
 
     // Clean up temporary image files

@@ -171,6 +171,48 @@ function convertNormalizedMessages(messages: NormalizedMessage[]): ChatMessage[]
         });
         break;
 
+      case 'agent_activity':
+        converted.push({
+          id: msg.id,
+          type: 'system',
+          content: msg.title || '',
+          timestamp: msg.timestamp,
+          isAgentActivity: true,
+          runId: msg.runId,
+          activityId: msg.activityId,
+          phase: msg.phase,
+          state: msg.state,
+          title: msg.title,
+          detail: msg.detail,
+          toolName: msg.toolName,
+          toolId: msg.toolId,
+          startedAt: msg.startedAt,
+          endedAt: msg.endedAt,
+          durationMs: msg.durationMs,
+          severity: msg.severity,
+        });
+        break;
+
+      case 'agent_activity_summary':
+        converted.push({
+          id: msg.id,
+          type: 'system',
+          content: msg.title || 'Process summary',
+          timestamp: msg.timestamp,
+          isAgentActivitySummary: true,
+          runId: msg.runId,
+          startedAt: msg.startedAt,
+          endedAt: msg.endedAt,
+          durationMs: msg.durationMs,
+          state: msg.status,
+          toolCallCount: msg.toolCallCount,
+          toolErrorCount: msg.toolErrorCount,
+          ragSearchCount: msg.ragSearchCount,
+          compactCount: msg.compactCount,
+          keySteps: msg.keySteps,
+        });
+        break;
+
       case 'stream_delta':
         if (msg.content) {
           converted.push({

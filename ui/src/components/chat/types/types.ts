@@ -63,11 +63,28 @@ export interface ChatMessage {
   isTaskNotification?: boolean;
   isInterruptedNotice?: boolean;
   isCompactBoundary?: boolean;
+  isAgentActivity?: boolean;
+  isAgentActivitySummary?: boolean;
   compactTrigger?: string;
   preTokens?: number;
   compactLevel?: number;
   compactStage?: string;
   compactStageLabel?: string;
+  runId?: string;
+  activityId?: string;
+  phase?: string;
+  state?: string;
+  title?: string;
+  detail?: string;
+  startedAt?: string;
+  endedAt?: string | null;
+  durationMs?: number | null;
+  severity?: string;
+  toolCallCount?: number;
+  toolErrorCount?: number;
+  ragSearchCount?: number;
+  compactCount?: number;
+  keySteps?: unknown[];
   subagentState?: {
     childTools: SubagentChildTool[];
     currentToolIndex: number;

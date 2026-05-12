@@ -1,5 +1,6 @@
-import { memo, useMemo } from 'react';
-import { AlertTriangle, FileText } from 'lucide-react';
+import { memo, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Activity, AlertTriangle, ChevronDown, ChevronRight, FileText } from 'lucide-react';
 import type {
   ChatMessage,
   ClaudePermissionSuggestion,
@@ -75,6 +76,7 @@ function MessageRowV2({
   showRawParameters,
   showThinking,
 }: MessageRowV2Props) {
+  const { t } = useTranslation('chat');
   const delegate = useMemo(() => shouldDelegate(message), [message]);
 
   const formattedContent = useMemo(
@@ -95,6 +97,10 @@ function MessageRowV2({
         : [],
     [message.attachments],
   );
+
+  if (message.isAgentActivitySummary) {
+    return <ProcessSummaryRow message={message} t={t} />;
+  }
 
   if (delegate) {
     // Wrap legacy output in a neutral container so gradients/colors from the
@@ -208,3 +214,113 @@ function MessageRowV2({
 }
 
 export default memo(MessageRowV2);
+
+function formatDuration(ms?: number | null): string {
+  const totalSeconds = Math.max(0, Math.round(Number(ms) || 0) / 1000);
+  if (totalSeconds < 60) {
+    return `${Math.round(totalSeconds)}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function normalizeKeySteps(value: unknown): Array<{
+  activityId?: string;
+  title?: string;
+  detail?: string;
+  state?: string;
+  severity?: string;
+}> {
+  return Array.isArray(value)
+    ? value
+        .filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object')
+        .map((step) => ({
+          activityId: typeof step.activityId === 'string' ? step.activityId : undefined,
+          title: typeof step.title === 'string' ? step.title : undefined,
+          detail: typeof step.detail === 'string' ? step.detail : undefined,
+          state: typeof step.state === 'string' ? step.state : undefined,
+          severity: typeof step.severity === 'string' ? step.severity : undefined,
+        }))
+    : [];
+}
+
+function ProcessSummaryRow({
+  message,
+  t,
+}: {
+  message: ChatMessage;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const steps = useMemo(() => normalizeKeySteps(message.keySteps), [message.keySteps]);
+  const status = String(message.state || 'completed');
+  const isFailed = status === 'failed';
+  const isCancelled = status === 'cancelled';
+  const title = isFailed
+    ? t('process.summary.failed', { defaultValue: 'Process failed' })
+    : isCancelled
+      ? t('process.summary.cancelled', { defaultValue: 'Process stopped' })
+      : t('process.summary.completed', { defaultValue: 'Process completed' });
+  const toolCalls = Number(message.toolCallCount || 0);
+  const searches = Number(message.ragSearchCount || 0);
+  const errors = Number(message.toolErrorCount || 0);
+  const duration = formatDuration(message.durationMs);
+  const metaParts = [
+    toolCalls > 0 ? t('process.metrics.toolCalls', { count: toolCalls, defaultValue: '{{count}} tool calls' }) : null,
+    searches > 0 ? t('process.metrics.searches', { count: searches, defaultValue: '{{count}} searches' }) : null,
+    errors > 0 ? t('process.metrics.errors', { count: errors, defaultValue: '{{count}} errors' }) : null,
+    duration,
+  ].filter(Boolean);
+
+  return (
+    <div className="rounded-xl border border-neutral-200 bg-neutral-50/80 text-[12px] text-neutral-700 dark:border-neutral-800 dark:bg-neutral-900/55 dark:text-neutral-300">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left"
+      >
+        {expanded ? (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-neutral-500" strokeWidth={2} />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-neutral-500" strokeWidth={2} />
+        )}
+        <Activity className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-400" strokeWidth={2} />
+        <span className="font-medium text-neutral-900 dark:text-neutral-100">{title}</span>
+        <span className="min-w-0 truncate text-neutral-500 dark:text-neutral-400">
+          {metaParts.join(' · ')}
+        </span>
+      </button>
+      {expanded ? (
+        <div className="space-y-1 border-t border-neutral-200 px-3.5 py-2.5 dark:border-neutral-800">
+          {steps.length > 0 ? (
+            steps.map((step, index) => (
+              <div
+                key={step.activityId || `${message.id || 'process'}-${index}`}
+                className="flex min-w-0 items-start gap-2 text-[12px] text-neutral-600 dark:text-neutral-400"
+              >
+                <span
+                  className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
+                    step.state === 'failed' || step.severity === 'error' || step.severity === 'warning'
+                      ? 'bg-amber-500'
+                      : 'bg-neutral-300 dark:bg-neutral-600'
+                  }`}
+                />
+                <div className="min-w-0">
+                  <div className="truncate">{step.title || t('process.step', { defaultValue: 'Step' })}</div>
+                  {step.detail ? (
+                    <div className="truncate text-neutral-400 dark:text-neutral-500">{step.detail}</div>
+                  ) : null}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="text-neutral-500 dark:text-neutral-400">
+              {t('process.noSteps', { defaultValue: 'No detailed steps recorded.' })}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}

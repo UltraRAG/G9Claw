@@ -1,6 +1,7 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Activity, CheckCircle2, Loader2, Search, Wrench, XCircle } from 'lucide-react';
 import type {
   ChatMessage,
   ClaudePermissionSuggestion,
@@ -81,26 +82,23 @@ export default function MessagesPaneV2({
 }: MessagesPaneV2Props) {
   const { t } = useTranslation('chat');
   const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
-  const allocatedKeysRef = useRef<Set<string>>(new Set());
   const generatedMessageKeyCounterRef = useRef(0);
 
-  const getMessageKey = useCallback((message: ChatMessage) => {
+  const getMessageKey = useCallback((message: ChatMessage, index: number) => {
     const existingKey = messageKeyMapRef.current.get(message);
     if (existingKey) return existingKey;
 
     const intrinsicKey = getIntrinsicMessageKey(message);
-    let candidateKey = intrinsicKey;
-
-    if (!candidateKey || allocatedKeysRef.current.has(candidateKey)) {
-      do {
-        generatedMessageKeyCounterRef.current += 1;
-        candidateKey = intrinsicKey
-          ? `${intrinsicKey}-${generatedMessageKeyCounterRef.current}`
-          : `message-generated-${generatedMessageKeyCounterRef.current}`;
-      } while (allocatedKeysRef.current.has(candidateKey));
+    if (intrinsicKey) {
+      // Most normalized messages have stable ids/tool ids. Reuse those keys
+      // across renders so periodic process updates do not remount tool rows
+      // and collapse any <details> the user has opened.
+      messageKeyMapRef.current.set(message, intrinsicKey);
+      return intrinsicKey;
     }
 
-    allocatedKeysRef.current.add(candidateKey);
+    generatedMessageKeyCounterRef.current += 1;
+    const candidateKey = `message-generated-${index}-${generatedMessageKeyCounterRef.current}`;
     messageKeyMapRef.current.set(message, candidateKey);
     return candidateKey;
   }, []);
@@ -115,6 +113,14 @@ export default function MessagesPaneV2({
   const isNewConversationEmpty = isEmpty && !selectedSession;
   const isExistingConversationEmpty = isEmpty && Boolean(selectedSession);
   const isReadOnlyBackgroundSession = isBackgroundTaskSession(selectedSession);
+  const liveActivities = useMemo(
+    () => visibleMessages.filter((message) => message.isAgentActivity),
+    [visibleMessages],
+  );
+  const renderableMessages = useMemo(
+    () => visibleMessages.filter((message) => !message.isAgentActivity),
+    [visibleMessages],
+  );
 
   return (
     <div
@@ -222,11 +228,11 @@ export default function MessagesPaneV2({
             </div>
           ) : null}
 
-          {visibleMessages.map((message, index) => {
-            const prevMessage = index > 0 ? visibleMessages[index - 1] : null;
+          {renderableMessages.map((message, index) => {
+            const prevMessage = index > 0 ? renderableMessages[index - 1] : null;
             return (
               <MessageRowV2
-                key={getMessageKey(message)}
+                key={getMessageKey(message, index)}
                 message={message}
                 prevMessage={prevMessage}
                 provider={provider}
@@ -243,7 +249,15 @@ export default function MessagesPaneV2({
           })}
 
           {isAssistantWorking ? (
-            <WorkingIndicator label={resolveWorkingLabel(workingStatus, t)} />
+            <ProcessPanel
+              activities={liveActivities}
+              fallbackLabel={
+                liveActivities.length > 0
+                  ? resolveWorkingLabel(workingStatus, t)
+                  : t('process.waitingForModel', { defaultValue: 'Requesting model' })
+              }
+              t={t}
+            />
           ) : null}
         </div>
       )}
@@ -283,29 +297,100 @@ function resolveWorkingLabel(
   }
 }
 
-// Three-dot bouncing pill that signals the assistant is busy. Lives at the
-// bottom of the message list and is naturally pushed offscreen as new
-// messages arrive — same pattern as ChatGPT/Claude.ai.
-function WorkingIndicator({ label }: { label: string }) {
+function formatDuration(ms?: number | null): string {
+  const totalSeconds = Math.max(0, Math.round(Number(ms) || 0) / 1000);
+  if (totalSeconds < 60) {
+    return `${Math.round(totalSeconds)}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function getActivityIcon(activity: ChatMessage | null) {
+  if (!activity) return Activity;
+  if (activity.state === 'failed' || activity.severity === 'error' || activity.severity === 'warning') return XCircle;
+  if (activity.state === 'completed') return CheckCircle2;
+  if (activity.phase === 'rag') return Search;
+  if (activity.phase === 'tool' || activity.phase === 'subtask') return Wrench;
+  return Loader2;
+}
+
+function summarizeActivities(activities: ChatMessage[]) {
+  const byId = new Map<string, ChatMessage>();
+  for (const activity of activities) {
+    const key = activity.activityId || activity.id || `${activity.runId}-${activity.timestamp}`;
+    byId.set(key, activity);
+  }
+  const latest = Array.from(byId.values());
+  const current = [...latest].reverse().find((activity) => activity.state === 'running') || latest[latest.length - 1] || null;
+  const startedAt = latest[0]?.startedAt || latest[0]?.timestamp;
+  const elapsedMs = startedAt ? Date.now() - Date.parse(String(startedAt)) : 0;
+  const toolCalls = latest.filter((activity) => activity.toolName || activity.phase === 'tool' || activity.phase === 'subtask' || activity.phase === 'rag').length;
+  const errors = latest.filter((activity) => activity.state === 'failed' || activity.severity === 'error').length;
+  const searches = latest.filter((activity) => activity.phase === 'rag').length;
+  const recent = latest.filter((activity) => activity.title).slice(-5);
+  return { current, elapsedMs, toolCalls, errors, searches, recent };
+}
+
+function ProcessPanel({
+  activities,
+  fallbackLabel,
+  t,
+}: {
+  activities: ChatMessage[];
+  fallbackLabel: string;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  const summary = useMemo(() => summarizeActivities(activities), [activities]);
+  const current = summary.current;
+  const CurrentIcon = getActivityIcon(current);
+  const label = current?.title || fallbackLabel;
+  const detail = current?.detail || '';
+  const iconClass =
+    CurrentIcon === Loader2
+      ? 'animate-spin text-neutral-500 dark:text-neutral-400'
+      : current?.state === 'failed' || current?.severity === 'error' || current?.severity === 'warning'
+        ? 'text-amber-600 dark:text-amber-400'
+        : current?.state === 'completed'
+          ? 'text-emerald-600 dark:text-emerald-400'
+          : 'text-neutral-500 dark:text-neutral-400';
+
   return (
     <div
       role="status"
       aria-live="polite"
-      className="flex items-center gap-2 pl-1 text-[12px] text-neutral-500 dark:text-neutral-400"
+      className="rounded-xl border border-neutral-200 bg-white px-3.5 py-3 text-[12px] text-neutral-700 shadow-sm dark:border-neutral-800 dark:bg-neutral-900/70 dark:text-neutral-300"
     >
-      <span
-        className="inline-flex h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400 dark:bg-neutral-500"
-        style={{ animationDelay: '0ms' }}
-      />
-      <span
-        className="inline-flex h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400 dark:bg-neutral-500"
-        style={{ animationDelay: '150ms' }}
-      />
-      <span
-        className="inline-flex h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400 dark:bg-neutral-500"
-        style={{ animationDelay: '300ms' }}
-      />
-      <span className="ml-1.5 tabular-nums">{label}</span>
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <CurrentIcon className={`mt-0.5 h-4 w-4 shrink-0 ${iconClass}`} strokeWidth={2} />
+          <div className="min-w-0">
+            <div className="font-medium text-neutral-900 dark:text-neutral-100">{label}</div>
+            {detail ? (
+              <div className="mt-0.5 truncate text-neutral-500 dark:text-neutral-400">{detail}</div>
+            ) : null}
+          </div>
+        </div>
+        <div className="shrink-0 tabular-nums text-neutral-500 dark:text-neutral-400">
+          {formatDuration(summary.elapsedMs)}
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+        <span>{t('process.metrics.toolCalls', { count: summary.toolCalls, defaultValue: '{{count}} tool calls' })}</span>
+        <span>{t('process.metrics.searches', { count: summary.searches, defaultValue: '{{count}} searches' })}</span>
+        <span>{t('process.metrics.errors', { count: summary.errors, defaultValue: '{{count}} errors' })}</span>
+      </div>
+      {summary.recent.length > 1 ? (
+        <div className="mt-2 space-y-1 border-t border-neutral-100 pt-2 dark:border-neutral-800">
+          {summary.recent.slice(-3).map((activity) => (
+            <div key={activity.activityId || activity.id} className="flex min-w-0 items-center gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-neutral-300 dark:bg-neutral-600" />
+              <span className="truncate">{activity.title || activity.content}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

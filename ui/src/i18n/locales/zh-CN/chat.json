@@ -43,6 +43,21 @@
     "compacting": "正在压缩上下文...",
     "compactingLevel": "正在触发 {{level}} 级压缩：{{label}}"
   },
+  "process": {
+    "waitingForModel": "正在请求模型",
+    "step": "步骤",
+    "noSteps": "暂无详细步骤记录。",
+    "summary": {
+      "completed": "Process completed",
+      "failed": "Process failed",
+      "cancelled": "Process stopped"
+    },
+    "metrics": {
+      "toolCalls": "{{count}} tool calls",
+      "searches": "{{count}} searches",
+      "errors": "{{count}} errors"
+    }
+  },
   "tools": {
     "settings": "工具设置",
     "error": "工具错误",

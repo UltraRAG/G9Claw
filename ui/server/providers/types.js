@@ -20,7 +20,7 @@
  * @typedef {'text' | 'tool_use' | 'tool_result' | 'thinking' | 'stream_delta' | 'stream_end'
  *   | 'error' | 'complete' | 'status' | 'permission_request' | 'permission_cancelled'
  *   | 'session_created' | 'interactive_prompt' | 'task_notification' | 'interrupted'
- *   | 'compact_boundary'} MessageKind
+ *   | 'compact_boundary' | 'agent_activity' | 'agent_activity_summary'} MessageKind
  */
 
 // ─── NormalizedMessage ───────────────────────────────────────────────────────
@@ -51,6 +51,12 @@
  * - interrupted:          content (typically "[Request interrupted by user]")
  * - compact_boundary:     trigger, preTokens?, compactLevel?, compactStage?,
  *                         compactStageLabel?, compactMetadata?
+ * - agent_activity:       runId, activityId, phase, state, title, detail,
+ *                         toolName?, toolId?, startedAt, endedAt?, durationMs?,
+ *                         severity?
+ * - agent_activity_summary: runId, startedAt, endedAt, durationMs, status,
+ *                         toolCallCount, toolErrorCount, ragSearchCount,
+ *                         compactCount, keySteps[]
  */
 
 // ─── Fetch History ───────────────────────────────────────────────────────────

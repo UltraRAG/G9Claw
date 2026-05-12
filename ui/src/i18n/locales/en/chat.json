@@ -43,6 +43,21 @@
     "compacting": "Compacting context...",
     "compactingLevel": "Triggering level {{level}} compaction: {{label}}"
   },
+  "process": {
+    "waitingForModel": "Requesting model",
+    "step": "Step",
+    "noSteps": "No detailed steps recorded.",
+    "summary": {
+      "completed": "Process completed",
+      "failed": "Process failed",
+      "cancelled": "Process stopped"
+    },
+    "metrics": {
+      "toolCalls": "{{count}} tool calls",
+      "searches": "{{count}} searches",
+      "errors": "{{count}} errors"
+    }
+  },
   "tools": {
     "settings": "Tool Settings",
     "error": "Tool Error",

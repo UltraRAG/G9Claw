@@ -11,6 +11,7 @@
  */
 
 import { getSessionMessages } from '../../projects.js';
+import { readActivitySummaries } from '../../services/activity-traces.js';
 import { createNormalizedMessage, generateMessageId } from '../types.js';
 import { extractSlashCommandInvocation, isInternalContent, isInterruptedNotice } from '../utils.js';
 
@@ -796,6 +797,29 @@ function attachToolResults(messages) {
   return messages;
 }
 
+function normalizeActivitySummary(summary, sessionId) {
+  if (!summary || typeof summary !== 'object') {
+    return null;
+  }
+  return createNormalizedMessage({
+    id: `activity_summary_${summary.runId || generateMessageId('activity')}`,
+    sessionId,
+    timestamp: summary.endedAt || summary.startedAt || new Date().toISOString(),
+    provider: PROVIDER,
+    kind: 'agent_activity_summary',
+    runId: summary.runId || '',
+    startedAt: summary.startedAt || '',
+    endedAt: summary.endedAt || '',
+    durationMs: summary.durationMs || 0,
+    status: summary.status || 'completed',
+    toolCallCount: summary.toolCallCount || 0,
+    toolErrorCount: summary.toolErrorCount || 0,
+    ragSearchCount: summary.ragSearchCount || 0,
+    compactCount: summary.compactCount || 0,
+    keySteps: Array.isArray(summary.keySteps) ? summary.keySteps : [],
+  });
+}
+
 /**
  * Normalize a raw Claude event or JSONL entry into NormalizedMessage(s).
  * @param {object} raw
@@ -837,6 +861,7 @@ export const edgeclawAdapter = {
       sessionKind = null,
       parentSessionId = null,
       relativeTranscriptPath = null,
+      projectPath = '',
     } = opts;
 
     if (!projectName) {
@@ -866,9 +891,20 @@ export const edgeclawAdapter = {
       normalized.push(...normalizeMessage(raw, sessionId, { sessionKind }));
     }
 
+    if (projectPath) {
+      const summaries = await readActivitySummaries(projectPath, sessionId);
+      for (const summary of summaries) {
+        const normalizedSummary = normalizeActivitySummary(summary, sessionId);
+        if (normalizedSummary) {
+          normalized.push(normalizedSummary);
+        }
+      }
+      normalized.sort((a, b) => Date.parse(a.timestamp || '') - Date.parse(b.timestamp || ''));
+    }
+
     return {
       messages: attachToolResults(normalized),
-      total,
+      total: total + (projectPath ? normalized.filter((message) => message.kind === 'agent_activity_summary').length : 0),
       hasMore,
       offset: Array.isArray(result) ? 0 : (result.offset ?? offset),
       limit: Array.isArray(result) ? null : (result.limit ?? limit),
