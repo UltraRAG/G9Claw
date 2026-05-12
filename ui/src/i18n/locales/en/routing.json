@@ -1,7 +1,10 @@
 {
   "dashboard": {
     "title": "Router",
+    "total": "Total",
+    "backToProject": "Back to {{project}}",
     "subtitle": "Usage across all projects and sessions.",
+    "projectSubtitle": "Routing stats for {{project}}.",
     "loading": "Loading router…",
     "retry": "Retry",
     "refresh": "Refresh",

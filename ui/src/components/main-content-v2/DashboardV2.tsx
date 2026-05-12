@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Activity,
@@ -239,6 +239,7 @@ export type DashboardV2Props = {
 export default function DashboardV2({ projectFilter, onSelectProject, onDeselectProject }: DashboardV2Props = {}) {
   const { t } = useTranslation('routing');
   const { data, loading, error, refresh } = useRoutingDashboard(projectFilter);
+  const [returnProject, setReturnProject] = useState<{ name: string; displayName: string } | null>(null);
 
   const { groups, generalGroup, recent, filteredOverall } = useMemo(() => {
     if (!data)
@@ -280,6 +281,18 @@ export default function DashboardV2({ projectFilter, onSelectProject, onDeselect
       filteredOverall: computedOverall,
     };
   }, [data, projectFilter]);
+
+  const activeProjectDisplayName = projectFilter && groups.length > 0
+    ? groups[0].displayName
+    : projectFilter;
+
+  useEffect(() => {
+    if (!projectFilter) return;
+    setReturnProject({
+      name: projectFilter,
+      displayName: activeProjectDisplayName || projectFilter,
+    });
+  }, [activeProjectDisplayName, projectFilter]);
 
   if (loading && !data) {
     return (
@@ -323,12 +336,13 @@ export default function DashboardV2({ projectFilter, onSelectProject, onDeselect
     groups.reduce((sum, g) => sum + g.aggregated.routedSessionCount, 0) +
     (generalGroup?.aggregated.routedSessionCount ?? 0);
 
-  const projectDisplayName = projectFilter && groups.length > 0
-    ? groups[0].displayName
-    : projectFilter;
   const subtitle = projectFilter
-    ? `Routing stats for ${projectDisplayName}.`
+    ? (t('dashboard.projectSubtitle', {
+        project: activeProjectDisplayName,
+        defaultValue: `Routing stats for ${activeProjectDisplayName}.`,
+      }) as string)
     : t('dashboard.subtitle', { defaultValue: 'Usage across all projects and sessions.' });
+  const canReturnToProject = !projectFilter && returnProject && onSelectProject;
 
   return (
     <div className="h-full overflow-y-auto bg-white dark:bg-neutral-950">
@@ -343,7 +357,21 @@ export default function DashboardV2({ projectFilter, onSelectProject, onDeselect
                 className="mb-1 inline-flex items-center gap-1 text-[13px] text-neutral-500 transition hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
               >
                 <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.75} />
-                <span>Overview</span>
+                <span>{t('dashboard.total', { defaultValue: 'Total' })}</span>
+              </button>
+            ) : canReturnToProject ? (
+              <button
+                type="button"
+                onClick={() => onSelectProject(returnProject.name)}
+                className="mb-1 inline-flex items-center gap-1 text-[13px] text-neutral-500 transition hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.75} />
+                <span>
+                  {t('dashboard.backToProject', {
+                    project: returnProject.displayName,
+                    defaultValue: `Back to ${returnProject.displayName}`,
+                  })}
+                </span>
               </button>
             ) : null}
             <h2 className="text-[20px] font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
