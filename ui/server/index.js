@@ -1536,6 +1536,7 @@ app.delete('/api/projects/:projectName/files', authenticateToken, async (req, re
 const uploadFilesHandler = async (req, res) => {
     // Dynamic import of multer
     const multer = (await import('multer')).default;
+    const maxUploadFiles = 500;
 
     const uploadMiddleware = multer({
         storage: multer.diskStorage({
@@ -1552,19 +1553,19 @@ const uploadFilesHandler = async (req, res) => {
         }),
         limits: {
             fileSize: 50 * 1024 * 1024, // 50MB limit
-            files: 20 // Max 20 files at once
+            files: maxUploadFiles
         }
     });
 
     // Use multer middleware
-    uploadMiddleware.array('files', 20)(req, res, async (err) => {
+    uploadMiddleware.array('files', maxUploadFiles)(req, res, async (err) => {
         if (err) {
             console.error('Multer error:', err);
             if (err.code === 'LIMIT_FILE_SIZE') {
                 return res.status(400).json({ error: 'File too large. Maximum size is 50MB.' });
             }
             if (err.code === 'LIMIT_FILE_COUNT') {
-                return res.status(400).json({ error: 'Too many files. Maximum is 20 files.' });
+                return res.status(400).json({ error: `Too many files. Maximum is ${maxUploadFiles} files.` });
             }
             return res.status(500).json({ error: err.message });
         }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -11,6 +11,7 @@ import {
   FolderOpen,
   Loader2,
   RefreshCw,
+  Upload,
   X,
 } from 'lucide-react';
 import type { Project } from '../../types/app';
@@ -54,10 +55,15 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activePath, setActivePath] = useState<string | null>(null);
   const [downloadingProject, setDownloadingProject] = useState(false);
+  const [uploadingProject, setUploadingProject] = useState(false);
+  const [uploadMenuOpen, setUploadMenuOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setExpanded(new Set());
     setActivePath(null);
+    setUploadMenuOpen(false);
   }, [selectedProject?.name]);
 
   const flat = useMemo(() => flatten(files, expanded), [files, expanded]);
@@ -76,6 +82,46 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
   }, []);
 
   const projectRoot = selectedProject?.fullPath || selectedProject?.path || '';
+
+  useEffect(() => {
+    folderInputRef.current?.setAttribute('webkitdirectory', '');
+    folderInputRef.current?.setAttribute('directory', '');
+  }, []);
+
+  const uploadSelectedFiles = useCallback(
+    async (fileList: FileList | null) => {
+      if (!selectedProject?.name || !fileList || fileList.length === 0) return;
+
+      const files = Array.from(fileList);
+      const relativePaths = files.map((file) => {
+        const withDirectoryPath = file as File & { webkitRelativePath?: string };
+        return withDirectoryPath.webkitRelativePath || file.name;
+      });
+
+      const formData = new FormData();
+      formData.append('targetPath', '');
+      formData.append('relativePaths', JSON.stringify(relativePaths));
+      for (const file of files) {
+        formData.append('files', file);
+      }
+
+      try {
+        setUploadingProject(true);
+        setUploadMenuOpen(false);
+        const response = await api.uploadFiles(selectedProject.name, formData);
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '');
+          throw new Error(errorText || `Upload failed: ${response.status}`);
+        }
+        await refreshFiles();
+      } catch (error) {
+        console.error('Failed to upload files:', error);
+      } finally {
+        setUploadingProject(false);
+      }
+    },
+    [refreshFiles, selectedProject?.name],
+  );
 
   const handleDownloadProject = useCallback(async () => {
     if (!selectedProject?.name || downloadingProject) return;
@@ -144,6 +190,60 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
           {cwd}
         </span>
         <div className="flex items-center gap-1">
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setUploadMenuOpen((open) => !open)}
+              disabled={uploadingProject}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-neutral-600 transition hover:bg-neutral-100 disabled:opacity-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
+              title={t('fileTree.upload', { defaultValue: 'Upload files or folder' }) as string}
+              aria-label={t('fileTree.upload', { defaultValue: 'Upload files or folder' }) as string}
+            >
+              {uploadingProject ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.75} />
+              ) : (
+                <Upload className="h-3.5 w-3.5" strokeWidth={1.75} />
+              )}
+            </button>
+            {uploadMenuOpen ? (
+              <div className="absolute right-0 top-8 z-20 w-36 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-[12px] shadow-lg dark:border-neutral-800 dark:bg-neutral-950">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="block w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-900"
+                >
+                  {t('fileTree.uploadFiles', { defaultValue: 'Upload files' })}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => folderInputRef.current?.click()}
+                  className="block w-full px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-900"
+                >
+                  {t('fileTree.uploadFolder', { defaultValue: 'Upload folder' })}
+                </button>
+              </div>
+            ) : null}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                void uploadSelectedFiles(event.currentTarget.files);
+                event.currentTarget.value = '';
+              }}
+            />
+            <input
+              ref={folderInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                void uploadSelectedFiles(event.currentTarget.files);
+                event.currentTarget.value = '';
+              }}
+            />
+          </div>
           <button
             type="button"
             onClick={handleDownloadProject}

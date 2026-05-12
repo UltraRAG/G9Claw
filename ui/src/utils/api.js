@@ -227,7 +227,7 @@ export const api = {
     }),
 
   uploadFiles: (projectName, formData) =>
-    authenticatedFetch(`/api/projects/${projectName}/files/upload`, {
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/files/upload`, {
       method: 'POST',
       body: formData,
       headers: {}, // Let browser set Content-Type for FormData
