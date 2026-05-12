@@ -37,6 +37,7 @@ export function getClaudePermissionSuggestion(
   if (!message?.toolResult?.isError) return null;
 
   const errorContent = String(message.toolResult.content || '');
+  if (!isClaudePermissionError(errorContent)) return null;
   if (errorContent.includes('No such tool available')) return null;
 
   const toolName = message?.toolName;
@@ -48,6 +49,20 @@ export function getClaudePermissionSuggestion(
   const settings = getClaudeSettings();
   const isAllowed = settings.allowedTools.includes(entry);
   return { toolName: toolName || 'UnknownTool', entry, isAllowed };
+}
+
+function isClaudePermissionError(content: string): boolean {
+  const lower = content.toLowerCase();
+  return (
+    lower.includes('permission') &&
+    (
+      lower.includes('denied') ||
+      lower.includes('not allowed') ||
+      lower.includes('requires') ||
+      lower.includes('grant') ||
+      lower.includes('allow')
+    )
+  );
 }
 
 export function grantClaudeToolPermission(entry: string | null): PermissionGrantResult {

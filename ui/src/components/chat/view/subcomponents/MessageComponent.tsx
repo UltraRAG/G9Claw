@@ -61,6 +61,25 @@ const getAttachmentAccent = (name?: string, mimeType?: string): string => {
   return 'bg-neutral-500 text-white';
 };
 
+function cleanToolUseErrorContent(content: unknown): string {
+  return String(content || '')
+    .replace(/<\/?tool_use_error>/g, '')
+    .replace(/^InputValidationError:\s*/i, '')
+    .trim();
+}
+
+function isRecoverableToolUseError(content: unknown): boolean {
+  const text = String(content || '');
+  if (!text.includes('<tool_use_error>')) return false;
+
+  const lower = text.toLowerCase();
+  const looksLikePermissionError =
+    lower.includes('permission') &&
+    (lower.includes('denied') || lower.includes('not allowed') || lower.includes('requires') || lower.includes('grant'));
+
+  return !looksLikePermissionError;
+}
+
 const stringifyMessageContent = (content: unknown): string => {
   if (typeof content === 'string') return content;
   if (content === undefined || content === null) return '';
@@ -321,85 +340,103 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
 
                 {/* Tool Result Section */}
                 {message.toolResult && !shouldHideToolResult(message.toolName || 'UnknownTool', message.toolResult) && (
-                  message.toolResult.isError ? (
-                    // Error results - red error box with content
-                    <div
-                      id={`tool-result-${message.toolId}`}
-                      className="relative mt-2 scroll-mt-4 rounded border border-red-200/60 bg-red-50/50 p-3 dark:border-red-800/40 dark:bg-red-950/10"
-                    >
-                      <div className="relative mb-2 flex items-center gap-1.5">
-                        <svg className="h-4 w-4 text-red-500 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                        <span className="text-xs font-medium text-red-700 dark:text-red-300">{t('messageTypes.error')}</span>
-                      </div>
-                      <div className="relative text-sm text-red-900 dark:text-red-100">
-                        <Markdown className="prose prose-sm prose-red max-w-none dark:prose-invert">
-                          {String(message.toolResult.content || '')}
-                        </Markdown>
-                        {permissionSuggestion && (
-                          <div className="mt-4 border-t border-red-200/60 pt-3 dark:border-red-800/60">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (!onGrantToolPermission) return;
-                                  const result = onGrantToolPermission(permissionSuggestion);
-                                  if (result?.success) {
-                                    setPermissionGrantState('granted');
-                                  } else {
-                                    setPermissionGrantState('error');
-                                  }
-                                }}
-                                disabled={permissionSuggestion.isAllowed || permissionGrantState === 'granted'}
-                                className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${permissionSuggestion.isAllowed || permissionGrantState === 'granted'
-                                  ? 'cursor-default border-green-300/70 bg-green-100 text-green-800 dark:border-green-800/60 dark:bg-green-900/30 dark:text-green-200'
-                                  : 'border-red-300/70 bg-white/80 text-red-700 hover:bg-white dark:border-red-800/60 dark:bg-gray-900/40 dark:text-red-200 dark:hover:bg-gray-900/70'
-                                  }`}
-                              >
-                                {permissionSuggestion.isAllowed || permissionGrantState === 'granted'
-                                  ? t('permissions.added')
-                                  : t('permissions.grant', { tool: permissionSuggestion.toolName })}
-                              </button>
-                              {onShowSettings && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    // Prefer the global helper when present so we
-                                    // can land directly on the Permissions tab.
-                                    // Falls back to the prop (which always
-                                    // opens at 'appearance') if the shell isn't
-                                    // mounted with `window.openSettings`.
-                                    if (typeof window !== 'undefined' && window.openSettings) {
-                                      window.openSettings('permissions');
-                                    } else {
-                                      onShowSettings();
-                                    }
-                                  }}
-                                  className="text-xs text-red-700 underline hover:text-red-800 dark:text-red-200 dark:hover:text-red-100"
-                                >
-                                  {t('permissions.openSettings')}
-                                </button>
-                              )}
-                            </div>
-                            <div className="mt-2 text-xs text-red-700/90 dark:text-red-200/80">
-                              {t('permissions.addTo', { entry: permissionSuggestion.entry })}
-                            </div>
-                            {permissionGrantState === 'error' && (
-                              <div className="mt-2 text-xs text-red-700 dark:text-red-200">
-                                {t('permissions.error')}
-                              </div>
-                            )}
-                            {(permissionSuggestion.isAllowed || permissionGrantState === 'granted') && (
-                              <div className="mt-2 text-xs text-green-700 dark:text-green-200">
-                                {t('permissions.retry')}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
+	                  message.toolResult.isError ? (
+	                    (() => {
+	                      const isRecoverable = isRecoverableToolUseError(message.toolResult?.content);
+	                      const title = isRecoverable ? t('toolUseError.title') : t('messageTypes.error');
+
+	                      return (
+	                        <div
+	                          id={`tool-result-${message.toolId}`}
+	                          className="my-1 scroll-mt-4 border-l-2 border-l-red-500 py-0.5 pl-3 dark:border-l-red-400"
+	                        >
+	                          <details className="group/details relative">
+	                            <summary className="flex cursor-pointer select-none list-none items-center gap-1.5 py-0.5 text-xs [&::-webkit-details-marker]:hidden">
+	                              <svg
+	                                className="h-3 w-3 flex-shrink-0 text-gray-400 transition-transform duration-150 group-open/details:rotate-90 dark:text-gray-500"
+	                                fill="none"
+	                                stroke="currentColor"
+	                                viewBox="0 0 24 24"
+	                              >
+	                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+	                              </svg>
+	                              <span className="flex-shrink-0 font-medium text-red-600 dark:text-red-300">
+	                                {title}
+	                              </span>
+	                              {message.toolName ? (
+	                                <>
+	                                  <span className="flex-shrink-0 text-[10px] text-gray-300 dark:text-gray-600">/</span>
+	                                  <span className="truncate text-gray-600 dark:text-gray-400">{message.toolName}</span>
+	                                </>
+	                              ) : null}
+	                            </summary>
+	                            <div className="mt-1.5 pl-[18px] text-xs text-gray-700 dark:text-gray-300">
+	                              <Markdown className="prose prose-sm max-w-none dark:prose-invert">
+	                                {isRecoverable
+	                                  ? cleanToolUseErrorContent(message.toolResult.content)
+	                                  : String(message.toolResult.content || '')}
+	                              </Markdown>
+	                              {permissionSuggestion && (
+	                                <div className="mt-4 border-t border-red-200/60 pt-3 dark:border-red-800/60">
+	                                <div className="flex flex-wrap items-center gap-2">
+	                                  <button
+	                                    type="button"
+                                    onClick={() => {
+                                      if (!onGrantToolPermission) return;
+                                      const result = onGrantToolPermission(permissionSuggestion);
+                                      if (result?.success) {
+                                        setPermissionGrantState('granted');
+                                      } else {
+                                        setPermissionGrantState('error');
+                                      }
+                                    }}
+                                    disabled={permissionSuggestion.isAllowed || permissionGrantState === 'granted'}
+                                    className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${permissionSuggestion.isAllowed || permissionGrantState === 'granted'
+                                      ? 'cursor-default border-green-300/70 bg-green-100 text-green-800 dark:border-green-800/60 dark:bg-green-900/30 dark:text-green-200'
+                                      : 'border-red-300/70 bg-white/80 text-red-700 hover:bg-white dark:border-red-800/60 dark:bg-gray-900/40 dark:text-red-200 dark:hover:bg-gray-900/70'
+                                      }`}
+                                  >
+                                    {permissionSuggestion.isAllowed || permissionGrantState === 'granted'
+                                      ? t('permissions.added')
+                                      : t('permissions.grant', { tool: permissionSuggestion.toolName })}
+                                  </button>
+                                  {onShowSettings && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (typeof window !== 'undefined' && window.openSettings) {
+                                          window.openSettings('permissions');
+                                        } else {
+                                          onShowSettings();
+                                        }
+                                      }}
+                                      className="text-xs text-red-700 underline hover:text-red-800 dark:text-red-200 dark:hover:text-red-100"
+                                    >
+                                      {t('permissions.openSettings')}
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="mt-2 text-xs text-red-700/90 dark:text-red-200/80">
+                                  {t('permissions.addTo', { entry: permissionSuggestion.entry })}
+                                </div>
+                                {permissionGrantState === 'error' && (
+                                  <div className="mt-2 text-xs text-red-700 dark:text-red-200">
+                                    {t('permissions.error')}
+                                  </div>
+                                )}
+                                {(permissionSuggestion.isAllowed || permissionGrantState === 'granted') && (
+                                  <div className="mt-2 text-xs text-green-700 dark:text-green-200">
+	                                    {t('permissions.retry')}
+	                                  </div>
+	                                )}
+	                              </div>
+	                            )}
+	                            </div>
+	                          </details>
+	                        </div>
+	                      );
+	                    })()
                   ) : (
                     // Non-error results - route through ToolRenderer (single source of truth)
                     <div id={`tool-result-${message.toolId}`} className="scroll-mt-4">

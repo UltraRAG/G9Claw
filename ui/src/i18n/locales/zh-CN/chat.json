@@ -89,6 +89,10 @@
   "json": {
     "response": "JSON 响应"
   },
+  "toolUseError": {
+    "title": "Tool Error",
+    "description": ""
+  },
   "permissions": {
     "grant": "授予 {{tool}} 权限",
     "added": "权限已添加",

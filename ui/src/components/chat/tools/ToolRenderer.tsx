@@ -184,7 +184,7 @@ const ToolRendererInner: React.FC<ToolRendererProps> = ({
         toolName="RAG"
         toolId={toolId}
         title={title}
-        defaultOpen
+        defaultOpen={false}
         toolCategory="search"
       >
         <RagResultContent data={ragResult} />

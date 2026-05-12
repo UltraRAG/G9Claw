@@ -89,6 +89,10 @@
   "json": {
     "response": "JSON Response"
   },
+  "toolUseError": {
+    "title": "Tool Error",
+    "description": ""
+  },
   "permissions": {
     "grant": "Grant permission for {{tool}}",
     "added": "Permission added",
