@@ -90,14 +90,14 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
       <div className="group my-1">
         <div className="flex items-start gap-2">
           <div className="flex flex-shrink-0 items-center gap-1.5 pt-0.5">
-            <svg className="h-3 w-3 text-green-500 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="h-3 w-3 text-emerald-500 dark:text-emerald-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
           </div>
           <div className="flex min-w-0 flex-1 items-start gap-2">
-            <div className="min-w-0 flex-1 rounded bg-gray-900 px-2.5 py-1 dark:bg-black">
-              <code className={`font-mono text-xs text-green-400 ${wrapText ? 'whitespace-pre-wrap break-all' : 'block truncate'}`}>
-                <span className="select-none text-green-600 dark:text-green-500">$ </span>{value}
+            <div className="min-w-0 flex-1 rounded-md border border-neutral-200 bg-neutral-100 px-2.5 py-1 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+              <code className={`font-mono text-xs text-emerald-600 dark:text-emerald-300 ${wrapText ? 'whitespace-pre-wrap break-all' : 'block truncate'}`}>
+                <span className="select-none text-emerald-500 dark:text-emerald-400">$ </span>{value}
               </code>
             </div>
             {action === 'copy' && renderCopyButton()}
