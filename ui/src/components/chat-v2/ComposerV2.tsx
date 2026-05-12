@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ArrowUp, AtSign, CircleGauge, Command, ImagePlus, Loader2, Square } from 'lucide-react';
+import { ArrowUp, AtSign, CircleGauge, Command, Loader2, Paperclip, Square } from 'lucide-react';
 import type { PendingPermissionRequest } from '../chat/types/types';
 import CommandMenu from '../chat/view/subcomponents/CommandMenu';
 import PermissionRequestsBanner from '../chat/view/subcomponents/PermissionRequestsBanner';
@@ -229,7 +229,7 @@ export default function ComposerV2({
     bottom: textareaRect ? window.innerHeight - textareaRect.top + 8 : 90,
   };
 
-  const disabled = !input.trim() && !(isLoading && canAbortSession);
+  const disabled = !input.trim() && attachedImages.length === 0 && !(isLoading && canAbortSession);
   const contextStatus = getContextStatus(tokenBudget);
   const contextStatusTitle = contextStatus.known
     ? (t('input.contextStatus', {
@@ -371,9 +371,9 @@ export default function ComposerV2({
                     type="button"
                     onClick={openImagePicker}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-                    title={t('input.attachImages', { defaultValue: 'Attach images' }) as string}
+                    title={t('input.attachFiles', { defaultValue: 'Attach photos or files' }) as string}
                   >
-                    <ImagePlus className="h-4 w-4" strokeWidth={1.75} />
+                    <Paperclip className="h-4 w-4" strokeWidth={1.75} />
                   </button>
                   <button
                     type="button"

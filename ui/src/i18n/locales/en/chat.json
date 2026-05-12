@@ -146,7 +146,7 @@
     "placeholder": "Type / for commands, @ for files, or ask {{provider}} anything...",
     "placeholderDefault": "Type your message...",
     "disabled": "Input disabled",
-    "attachFiles": "Attach files",
+    "attachFiles": "Attach photos or files",
     "attachImages": "Attach images",
     "mentionFile": "Mention a file",
     "slashCommand": "Run a slash command",

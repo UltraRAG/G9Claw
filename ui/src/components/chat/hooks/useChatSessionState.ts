@@ -90,6 +90,8 @@ function chatMessageToNormalized(
     kind: 'text',
     role: msg.type === 'user' ? 'user' : 'assistant',
     content: msg.content || '',
+    images: msg.type === 'user' && Array.isArray(msg.images) ? msg.images : undefined,
+    attachments: msg.type === 'user' && Array.isArray(msg.attachments) ? msg.attachments : undefined,
   } as NormalizedMessage;
 }
 

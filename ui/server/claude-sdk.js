@@ -797,60 +797,58 @@ function extractTokenBudget(resultMessage, sessionId) {
   return storeSessionTokenBudget(sessionId, nextBudget);
 }
 
-/**
- * Handles image processing for SDK queries
- * Saves base64 images to temporary files and returns modified prompt with file paths
- * @param {string} command - Original user prompt
- * @param {Array} images - Array of image objects with base64 data
- * @param {string} cwd - Working directory for temp file creation
- * @returns {Promise<Object>} {modifiedCommand, tempImagePaths, tempDir}
- */
-async function handleImages(command, images, cwd) {
-  const tempImagePaths = [];
-  let tempDir = null;
-
-  if (!images || images.length === 0) {
-    return { modifiedCommand: command, tempImagePaths, tempDir };
+function buildImagePrompt(command, images, sessionId) {
+  if (!Array.isArray(images) || images.length === 0) {
+    return command;
   }
 
-  try {
-    // Create temp directory in the project directory
-    const workingDir = cwd || process.cwd();
-    tempDir = path.join(workingDir, '.tmp', 'images', Date.now().toString());
-    await fs.mkdir(tempDir, { recursive: true });
+  const content = [];
+  const text = typeof command === 'string' && command.trim()
+    ? command
+    : 'Please review the attached image.';
+  content.push({ type: 'text', text });
 
-    // Save each image to a temp file
-    for (const [index, image] of images.entries()) {
-      // Extract base64 data and mime type
-      const matches = image.data.match(/^data:([^;]+);base64,(.+)$/);
-      if (!matches) {
-        console.error('Invalid image data format');
-        continue;
-      }
-
-      const [, mimeType, base64Data] = matches;
-      const extension = mimeType.split('/')[1] || 'png';
-      const filename = `image_${index}.${extension}`;
-      const filepath = path.join(tempDir, filename);
-
-      // Write base64 data to file
-      await fs.writeFile(filepath, Buffer.from(base64Data, 'base64'));
-      tempImagePaths.push(filepath);
+  for (const image of images) {
+    const matches = typeof image?.data === 'string'
+      ? image.data.match(/^data:([^;]+);base64,(.+)$/)
+      : null;
+    if (!matches) {
+      console.error('Invalid image data format');
+      continue;
     }
 
-    // Include the full image paths in the prompt
-    let modifiedCommand = command;
-    if (tempImagePaths.length > 0 && command && command.trim()) {
-      const imageNote = `\n\n[Images provided at the following paths:]\n${tempImagePaths.map((p, i) => `${i + 1}. ${p}`).join('\n')}`;
-      modifiedCommand = command + imageNote;
+    const [, mimeType, base64Data] = matches;
+    if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mimeType)) {
+      console.error(`Unsupported multimodal image type: ${mimeType}`);
+      continue;
     }
 
-    // Images processed
-    return { modifiedCommand, tempImagePaths, tempDir };
-  } catch (error) {
-    console.error('Error processing images for SDK:', error);
-    return { modifiedCommand: command, tempImagePaths, tempDir };
+    content.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: mimeType,
+        data: base64Data,
+      },
+    });
   }
+
+  if (content.length === 1) {
+    return command;
+  }
+
+  return (async function* imagePromptStream() {
+    yield {
+      type: 'user',
+      message: {
+        role: 'user',
+        content,
+      },
+      parent_tool_use_id: null,
+      session_id: sessionId || '',
+      uuid: crypto.randomUUID(),
+    };
+  })();
 }
 
 /**
@@ -988,11 +986,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
       sdkOptions.mcpServers = mcpServers;
     }
 
-    // Handle images - save to temp files and modify prompt
-    const imageResult = await handleImages(command, options.images, options.cwd);
-    const finalCommand = imageResult.modifiedCommand;
-    tempImagePaths = imageResult.tempImagePaths;
-    tempDir = imageResult.tempDir;
+    const finalCommand = buildImagePrompt(command, options.images, sessionId);
 
     sdkOptions.hooks = {
       Notification: [{

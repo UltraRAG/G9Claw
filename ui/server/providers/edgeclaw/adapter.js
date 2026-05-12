@@ -139,6 +139,44 @@ function describeAttachmentPart(part) {
   return detail ? `${icon} ${label}: ${detail}` : `${icon} ${label}`;
 }
 
+function imageFromAttachmentPart(part, index) {
+  if (!part || typeof part !== 'object' || part.type !== 'image') {
+    return null;
+  }
+
+  const source = part.source || {};
+  const mediaType =
+    typeof source.media_type === 'string'
+      ? source.media_type
+      : typeof part.media_type === 'string'
+        ? part.media_type
+        : 'image/png';
+  let data = '';
+  if (source.type === 'base64' && typeof source.data === 'string') {
+    data = source.data.startsWith('data:')
+      ? source.data
+      : `data:${mediaType};base64,${source.data}`;
+  } else if (source.type === 'url' && typeof source.url === 'string') {
+    data = source.url;
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  const extension = mediaType.split('/')[1] || 'png';
+  return {
+    data,
+    name:
+      typeof part.filename === 'string'
+        ? part.filename
+        : typeof part.name === 'string'
+          ? part.name
+          : `image-${index + 1}.${extension}`,
+    mimeType: mediaType,
+  };
+}
+
 function parseTaskNotification(content) {
   if (typeof content !== 'string' || content.trim().length === 0) {
     return null;
@@ -232,7 +270,84 @@ function formatApiErrorContent(raw) {
   return `API error: ${errorCode}${target}.${retryAttempt}`;
 }
 
-function createTextMessage({ id, sessionId, timestamp, role, content }) {
+function repairMojibakeFilename(name) {
+  const original = String(name || '').trim();
+  if (!original) return original;
+  try {
+    const decoded = Buffer.from(original, 'latin1').toString('utf8');
+    const looksMojibake = /[ÃÂÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ]/.test(original);
+    if (looksMojibake && decoded && !decoded.includes('�')) {
+      return decoded;
+    }
+  } catch {
+    // Leave the original string when transcoding is not applicable.
+  }
+  return original;
+}
+
+function inferAttachmentMimeType(name = '', filePath = '') {
+  const ext = String(name || filePath).split('.').pop()?.toLowerCase() || '';
+  switch (ext) {
+    case 'pdf':
+      return 'application/pdf';
+    case 'doc':
+      return 'application/msword';
+    case 'docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'xls':
+      return 'application/vnd.ms-excel';
+    case 'xlsx':
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    case 'ppt':
+      return 'application/vnd.ms-powerpoint';
+    case 'pptx':
+      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    case 'txt':
+    case 'md':
+    case 'csv':
+      return 'text/plain';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function parseUserAttachmentNote(content) {
+  const marker = '[Files attached by user and available for reading in the project:]';
+  const markerIndex = String(content || '').indexOf(marker);
+  if (markerIndex < 0) {
+    return { content, attachments: [] };
+  }
+
+  const visibleContent = String(content).slice(0, markerIndex).trimEnd();
+  const note = String(content).slice(markerIndex + marker.length);
+  const attachments = [];
+
+  for (const rawLine of note.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line.startsWith('- ')) continue;
+    const separator = line.indexOf(': ');
+    if (separator < 0) continue;
+    const rawName = line.slice(2, separator).trim();
+    const filePath = line.slice(separator + 2).trim();
+    if (!rawName || !filePath) continue;
+    const name = repairMojibakeFilename(rawName);
+    attachments.push({
+      name,
+      path: filePath,
+      mimeType: inferAttachmentMimeType(name, filePath),
+    });
+  }
+
+  return { content: visibleContent, attachments };
+}
+
+function createTextMessage({ id, sessionId, timestamp, role, content, images = [], attachments = [] }) {
+  if (role === 'user') {
+    const parsed = parseUserAttachmentNote(content);
+    content = parsed.content;
+    attachments = [...attachments, ...parsed.attachments];
+  }
+
   const taskNotification = parseTaskNotification(content);
   if (taskNotification) {
     return createNormalizedMessage({
@@ -271,11 +386,11 @@ function createTextMessage({ id, sessionId, timestamp, role, content }) {
     }
   }
 
-  if (!content.trim()) {
+  if (!content.trim() && images.length === 0 && attachments.length === 0) {
     return null;
   }
 
-  return createNormalizedMessage({
+  const message = createNormalizedMessage({
     id,
     sessionId,
     timestamp,
@@ -284,6 +399,16 @@ function createTextMessage({ id, sessionId, timestamp, role, content }) {
     role,
     content,
   });
+
+  if (role === 'user' && images.length > 0) {
+    message.images = images;
+  }
+
+  if (role === 'user' && attachments.length > 0) {
+    message.attachments = attachments;
+  }
+
+  return message;
 }
 
 function normalizeContentPart(part, raw, sessionId, partIndex, options) {
@@ -406,39 +531,44 @@ function normalizeUserMessage(raw, sessionId, options) {
   const normalized = [];
 
   if (Array.isArray(content)) {
+    const textParts = [];
+    const images = [];
+
     content.forEach((part, index) => {
       if (part?.type === 'tool_result') {
         normalized.push(...normalizeContentPart(part, raw, sessionId, index, options));
         return;
       }
 
+      const image = imageFromAttachmentPart(part, index);
+      if (image) {
+        images.push(image);
+        return;
+      }
+
       const attachmentLabel = describeAttachmentPart(part);
       if (attachmentLabel) {
-        const message = createTextMessage({
-          id: getBaseId(raw, index),
-          sessionId,
-          timestamp,
-          role: 'user',
-          content: attachmentLabel,
-        });
-        if (message) {
-          normalized.push(message);
-        }
+        textParts.push(attachmentLabel);
         return;
       }
 
       const text = stringifyContent(part);
-      const message = createTextMessage({
-        id: getBaseId(raw, index),
-        sessionId,
-        timestamp,
-        role: 'user',
-        content: text,
-      });
-      if (message) {
-        normalized.push(message);
+      if (text.trim()) {
+        textParts.push(text);
       }
     });
+
+    const message = createTextMessage({
+      id: getBaseId(raw),
+      sessionId,
+      timestamp,
+      role: 'user',
+      content: textParts.join('\n'),
+      images,
+    });
+    if (message) {
+      normalized.push(message);
+    }
     return normalized;
   }
 

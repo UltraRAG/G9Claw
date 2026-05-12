@@ -40,6 +40,19 @@ export interface CompactProgress {
   reason?: string;
 }
 
+export interface NormalizedImage {
+  data: string;
+  name?: string;
+  mimeType?: string;
+}
+
+export interface NormalizedAttachment {
+  name: string;
+  path?: string;
+  size?: number;
+  mimeType?: string;
+}
+
 export interface NormalizedMessage {
   id: string;
   sessionId: string;
@@ -50,7 +63,8 @@ export interface NormalizedMessage {
   // kind-specific fields (flat for simplicity)
   role?: 'user' | 'assistant';
   content?: string;
-  images?: string[];
+  images?: NormalizedImage[];
+  attachments?: NormalizedAttachment[];
   toolName?: string;
   toolInput?: unknown;
   toolId?: string;

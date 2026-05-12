@@ -11,7 +11,15 @@ export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | '
 
 export interface ChatImage {
   data: string;
+  name?: string;
+  mimeType?: string;
+}
+
+export interface ChatAttachment {
   name: string;
+  path?: string;
+  size?: number;
+  mimeType?: string;
 }
 
 export interface ToolResult {
@@ -36,6 +44,7 @@ export interface ChatMessage {
   content?: string;
   timestamp: string | number | Date;
   images?: ChatImage[];
+  attachments?: ChatAttachment[];
   reasoning?: string;
   isThinking?: boolean;
   isStreaming?: boolean;

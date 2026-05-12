@@ -22,13 +22,21 @@ function convertNormalizedMessages(messages: NormalizedMessage[]): ChatMessage[]
     switch (msg.kind) {
       case 'text': {
         const content = msg.content || '';
-        if (!content.trim()) continue;
+        const images = Array.isArray(msg.images)
+          ? msg.images.filter((image) => image && typeof image.data === 'string')
+          : [];
+        const attachments = Array.isArray(msg.attachments)
+          ? msg.attachments.filter((attachment) => attachment && typeof attachment.name === 'string')
+          : [];
+        if (!content.trim() && images.length === 0 && attachments.length === 0) continue;
 
         if (msg.role === 'user') {
           converted.push({
             id: msg.id,
             type: 'user',
             content: unescapeWithMathProtection(decodeHtmlEntities(content)),
+            images,
+            attachments,
             timestamp: msg.timestamp,
           });
         } else {

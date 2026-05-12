@@ -34,7 +34,7 @@
  * @property {MessageKind} kind
  *
  * Additional fields depending on kind:
- * - text:                 role ('user'|'assistant'), content, images?
+ * - text:                 role ('user'|'assistant'), content, images?, attachments?
  * - tool_use:             toolName, toolInput, toolId
  * - tool_result:          toolId, content, isError
  * - thinking:             content

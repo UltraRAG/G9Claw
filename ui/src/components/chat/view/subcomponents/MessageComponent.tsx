@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { FileText } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import type {
@@ -44,6 +45,22 @@ type InteractiveOption = {
 type PermissionGrantState = 'idle' | 'granted' | 'error';
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
+const getAttachmentTypeLabel = (name?: string, mimeType?: string): string => {
+  const ext = String(name || '').split('.').pop()?.toUpperCase();
+  if (ext && ext !== String(name || '').toUpperCase()) return ext;
+  if (mimeType?.includes('/')) return mimeType.split('/').pop()?.toUpperCase() || 'FILE';
+  return 'FILE';
+};
+
+const getAttachmentAccent = (name?: string, mimeType?: string): string => {
+  const label = getAttachmentTypeLabel(name, mimeType).toLowerCase();
+  if (label === 'pdf') return 'bg-red-500 text-white';
+  if (label === 'doc' || label === 'docx') return 'bg-blue-500 text-white';
+  if (label === 'xls' || label === 'xlsx' || label === 'csv') return 'bg-emerald-500 text-white';
+  if (label === 'ppt' || label === 'pptx') return 'bg-orange-500 text-white';
+  return 'bg-neutral-500 text-white';
+};
+
 const stringifyMessageContent = (content: unknown): string => {
   if (typeof content === 'string') return content;
   if (content === undefined || content === null) return '';
@@ -69,6 +86,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
   const taskResultContent = typeof message.taskResult === 'string' ? message.taskResult.trim() : '';
   const messageImages = Array.isArray(message.images)
     ? message.images.filter((image) => image && typeof image.data === 'string')
+    : [];
+  const messageAttachments = Array.isArray(message.attachments)
+    ? message.attachments.filter((attachment) => attachment && typeof attachment.name === 'string')
     : [];
   const userCopyContent = messageContent;
   const formattedMessageContent = useMemo(
@@ -134,22 +154,41 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
         /* User message bubble on the right */
         <div className="flex w-full items-end space-x-0 sm:w-auto sm:max-w-[85%] sm:space-x-3 md:max-w-md lg:max-w-lg xl:max-w-xl">
           <div className="group flex-1 rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:flex-initial sm:px-4">
-            <div className="whitespace-pre-wrap break-words text-sm">
-              {messageContent}
-            </div>
+            {messageAttachments.length > 0 && (
+              <div className="mb-2 grid grid-cols-1 gap-2">
+                {messageAttachments.map((attachment, idx) => (
+                  <div
+                    key={`${attachment.name || 'attachment'}-${idx}`}
+                    className="flex min-w-0 items-center gap-3 rounded-2xl bg-white/90 p-2.5 pr-3 text-neutral-900"
+                  >
+                    <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${getAttachmentAccent(attachment.name, attachment.mimeType)}`}>
+                      <FileText className="h-5 w-5" strokeWidth={2} />
+                    </div>
+                    <div className="min-w-0 text-left">
+                      <div className="truncate text-[13px] font-semibold">{attachment.name}</div>
+                      <div className="mt-0.5 text-[11px] font-medium uppercase text-neutral-500">
+                        {getAttachmentTypeLabel(attachment.name, attachment.mimeType)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
             {messageImages.length > 0 && (
-              <div className="mt-2 grid grid-cols-2 gap-2">
+              <div className="mb-2 grid grid-cols-2 gap-2">
                 {messageImages.map((img, idx) => (
                   <img
                     key={img.name || idx}
                     src={img.data}
                     alt={img.name}
-                    className="h-auto max-w-full cursor-pointer rounded-lg transition-opacity hover:opacity-90"
-                    onClick={() => window.open(img.data, '_blank')}
+                    className="h-auto max-w-full rounded-lg"
                   />
                 ))}
               </div>
             )}
+            <div className="whitespace-pre-wrap break-words text-sm">
+              {messageContent}
+            </div>
             <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
               {shouldShowUserCopyControl && (
                 <MessageCopyControl content={userCopyContent} messageType="user" />
