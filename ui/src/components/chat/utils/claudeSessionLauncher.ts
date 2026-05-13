@@ -10,6 +10,7 @@ type StartClaudeSessionOptions = {
   sessionId?: string | null;
   temporarySessionId?: string;
   permissionMode?: PermissionMode | string;
+  basePermissionMode?: PermissionMode | string;
   claudeModel?: string;
   sessionSummary?: string | null;
   toolsSettings?: ClaudeSettings;
@@ -85,6 +86,7 @@ export function startClaudeSessionCommand({
   sessionId,
   temporarySessionId,
   permissionMode = 'default',
+  basePermissionMode,
   claudeModel,
   sessionSummary,
   toolsSettings = getClaudeSettings(),
@@ -107,6 +109,7 @@ export function startClaudeSessionCommand({
       cwd: resolvedProjectPath,
       toolsSettings,
       permissionMode,
+      basePermissionMode,
       model: claudeModel || safeLocalStorage.getItem('claude-model') || CLAUDE_MODELS.DEFAULT,
       sessionSummary,
       ...(alwaysOnPlanId ? { alwaysOnPlanId } : {}),

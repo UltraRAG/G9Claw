@@ -687,6 +687,8 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
   }
 };
 
+TOOL_CONFIGS.ExitPlanModeV2 = TOOL_CONFIGS.ExitPlanMode;
+
 /**
  * Get configuration for a tool, with fallback to default
  */

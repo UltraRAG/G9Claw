@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTasksSettings } from '../../contexts/TasksSettingsContext';
-import type { ChatInterfaceProps, Provider } from '../chat/types/types';
+import type { ChatInterfaceProps, ChatRunMode, Provider } from '../chat/types/types';
 import {
   getSessionRequestParams,
   isBackgroundTaskSession,
@@ -70,6 +70,7 @@ function ChatInterfaceV2({
   const accumulatedStreamRef = useRef('');
   const pendingViewSessionRef = useRef<PendingViewSession | null>(null);
   const [isAbortPending, setIsAbortPending] = React.useState(false);
+  const [runMode, setRunMode] = React.useState<ChatRunMode>('agent');
 
   const resetStreamingState = useCallback(() => {
     if (streamTimerRef.current) {
@@ -93,6 +94,15 @@ function ChatInterfaceV2({
     setPendingPermissionRequests,
     cyclePermissionMode,
   } = useChatProviderState({ selectedSession });
+
+  useEffect(() => {
+    if (provider !== 'claude' && runMode === 'plan') {
+      setRunMode('agent');
+    }
+  }, [provider, runMode]);
+
+  const effectivePermissionMode =
+    provider === 'claude' && runMode === 'plan' ? 'plan' : permissionMode;
 
   const {
     chatMessages,
@@ -185,7 +195,8 @@ function ChatInterfaceV2({
     selectedSession,
     currentSessionId,
     provider,
-    permissionMode,
+    permissionMode: effectivePermissionMode,
+    basePermissionMode: permissionMode,
     cyclePermissionMode,
     cursorModel,
     claudeModel,
@@ -213,6 +224,10 @@ function ChatInterfaceV2({
     setIsUserScrolledUp,
     setPendingPermissionRequests,
   });
+
+  const handlePlanExecutionApproved = useCallback(() => {
+    setRunMode('agent');
+  }, []);
 
   const handleWebSocketReconnect = useCallback(async () => {
     if (!selectedProject || !selectedSession) return;
@@ -393,6 +408,10 @@ function ChatInterfaceV2({
       handleGrantToolPermission={handleGrantToolPermission}
       permissionMode={permissionMode}
       onPermissionModeChange={setPermissionMode}
+      runMode={runMode}
+      onRunModeChange={setRunMode}
+      planModeAvailable={provider === 'claude'}
+      onPlanExecutionApproved={handlePlanExecutionApproved}
       sendByCtrlEnter={sendByCtrlEnter}
       chromeless={isWelcomeMode}
     />

@@ -49,8 +49,35 @@ const TOOL_APPROVAL_TIMEOUT_MS =
     ? configuredToolApprovalTimeoutMs
     : DEFAULT_TOOL_APPROVAL_TIMEOUT_MS;
 
-const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion']);
+const TOOLS_REQUIRING_INTERACTION = new Set([
+  'AskUserQuestion',
+  'ExitPlanMode',
+  'ExitPlanModeV2',
+  'exit_plan_mode',
+]);
 const BUILT_IN_WEB_TOOLS = ['WebFetch', 'WebSearch'];
+const PLAN_MODE_SAFE_TOOL_ENTRIES = [
+  'Read',
+  'Task',
+  'AskUserQuestion',
+  'ExitPlanMode',
+  'ExitPlanModeV2',
+  'exit_plan_mode',
+  'TodoRead',
+  'TodoWrite',
+  'WebFetch',
+  'WebSearch',
+  'Bash(ls:*)',
+  'Bash(pwd:*)',
+  'Bash(find:*)',
+  'Bash(rg:*)',
+  'Bash(grep:*)',
+  'Bash(cat:*)',
+  'Bash(sed:*)',
+  'Bash(head:*)',
+  'Bash(tail:*)',
+  'Bash(wc:*)'
+];
 const RAG_WEB_TOOL_GUIDANCE = [
   '9GClaw RAG is enabled.',
   'For network search, web research, current public facts, source-backed answers, or user requests mentioning web/search skills, use the 9GClaw RAG skills instead of built-in web tools.',
@@ -365,8 +392,7 @@ async function mapCliOptionsToSDK(options = {}) {
 
   // Add plan mode default tools
   if (permissionMode === 'plan') {
-    const planModeTools = ['Read', 'Task', 'exit_plan_mode', 'TodoRead', 'TodoWrite', 'WebFetch', 'WebSearch'];
-    for (const tool of planModeTools) {
+    for (const tool of PLAN_MODE_SAFE_TOOL_ENTRIES) {
       if (!allowedTools.includes(tool)) {
         allowedTools.push(tool);
       }
@@ -1016,8 +1042,18 @@ async function queryClaudeSDK(command, options = {}, ws) {
       }]
     };
 
+    const isPlanSession = options.permissionMode === 'plan';
+    const basePermissionMode = isPlanSession
+      ? (options.basePermissionMode || 'default')
+      : (options.permissionMode || 'default');
+    let planExitApproved = !isPlanSession;
+
     sdkOptions.canUseTool = async (toolName, input, context) => {
       const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
+      const isExitPlanModeTool =
+        toolName === 'ExitPlanMode' ||
+        toolName === 'ExitPlanModeV2' ||
+        toolName === 'exit_plan_mode';
 
       if (!requiresInteraction) {
         const isDisallowed = (sdkOptions.disallowedTools || []).some(entry =>
@@ -1027,14 +1063,28 @@ async function queryClaudeSDK(command, options = {}, ws) {
           return { behavior: 'deny', message: 'Tool disallowed by settings' };
         }
 
-        if (sdkOptions.permissionMode === 'bypassPermissions') {
-          return { behavior: 'allow', updatedInput: input };
+        if (isPlanSession && !planExitApproved) {
+          const isPlanSafeTool = PLAN_MODE_SAFE_TOOL_ENTRIES.some(entry =>
+            matchesToolPermission(entry, toolName, input)
+          );
+          if (isPlanSafeTool) {
+            return { behavior: 'allow', updatedInput: input };
+          }
+          return {
+            behavior: 'deny',
+            message: 'Plan mode is read-only. Present the final plan with ExitPlanMode before editing files or running implementation commands.'
+          };
         }
 
         const isAllowed = (sdkOptions.allowedTools || []).some(entry =>
           matchesToolPermission(entry, toolName, input)
         );
+
         if (isAllowed) {
+          return { behavior: 'allow', updatedInput: input };
+        }
+
+        if (basePermissionMode === 'bypassPermissions') {
           return { behavior: 'allow', updatedInput: input };
         }
       }
@@ -1114,6 +1164,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
       }
 
       if (decision.allow) {
+        if (isExitPlanModeTool) {
+          planExitApproved = true;
+        }
         if (decision.rememberEntry && typeof decision.rememberEntry === 'string') {
           if (!sdkOptions.allowedTools.includes(decision.rememberEntry)) {
             sdkOptions.allowedTools.push(decision.rememberEntry);

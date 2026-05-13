@@ -109,7 +109,7 @@ function getToolCategory(toolName: string): string {
   if (['TodoWrite', 'TodoRead'].includes(toolName)) return 'todo';
   if (['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'].includes(toolName)) return 'task';
   if (toolName === 'Task') return 'agent';  // Subagent task
-  if (toolName === 'exit_plan_mode' || toolName === 'ExitPlanMode') return 'plan';
+  if (['exit_plan_mode', 'ExitPlanMode', 'ExitPlanModeV2'].includes(toolName)) return 'plan';
   if (toolName === 'AskUserQuestion') return 'question';
   return 'default';
 }

@@ -13,18 +13,20 @@ import type {
 import {
   ArrowUp,
   AtSign,
+  Bot,
   Check,
   ChevronDown,
   CircleGauge,
   Command,
   Hand,
+  ListChecks,
   Loader2,
   Paperclip,
   ShieldAlert,
   Square,
   type LucideIcon,
 } from 'lucide-react';
-import type { PendingPermissionRequest, PermissionMode } from '../chat/types/types';
+import type { ChatRunMode, PendingPermissionRequest, PermissionMode } from '../chat/types/types';
 import CommandMenu from '../chat/view/subcomponents/CommandMenu';
 import PermissionRequestsBanner from '../chat/view/subcomponents/PermissionRequestsBanner';
 import ImageAttachment from '../chat/view/subcomponents/ImageAttachment';
@@ -111,6 +113,10 @@ export type ComposerV2Props = {
   }) => { success: boolean };
   permissionMode: PermissionMode;
   onPermissionModeChange: (mode: PermissionMode) => void;
+  runMode: ChatRunMode;
+  onRunModeChange: (mode: ChatRunMode) => void;
+  planModeAvailable?: boolean;
+  onPlanExecutionApproved?: () => void;
 
   sendByCtrlEnter?: boolean;
 
@@ -160,6 +166,35 @@ const PERMISSION_MODE_OPTIONS: PermissionModeOption[] = [
     defaultDescription: '跳过确认并允许完全访问',
   },
 ];
+
+type RunModeOption = {
+  mode: ChatRunMode;
+  Icon: LucideIcon;
+  labelKey: string;
+  defaultLabel: string;
+};
+
+const RUN_MODE_OPTIONS: RunModeOption[] = [
+  {
+    mode: 'agent',
+    Icon: Bot,
+    labelKey: 'input.runModes.agent',
+    defaultLabel: '智能体',
+  },
+  {
+    mode: 'plan',
+    Icon: ListChecks,
+    labelKey: 'input.runModes.plan',
+    defaultLabel: '计划',
+  },
+];
+
+const BLOCKING_PERMISSION_TOOLS = new Set([
+  'AskUserQuestion',
+  'ExitPlanMode',
+  'ExitPlanModeV2',
+  'exit_plan_mode',
+]);
 
 const DEFAULT_CONTEXT_WINDOW = (() => {
   const parsed = Number(import.meta.env.VITE_CONTEXT_WINDOW);
@@ -258,14 +293,19 @@ export default function ComposerV2({
   handleGrantToolPermission,
   permissionMode,
   onPermissionModeChange,
+  runMode,
+  onRunModeChange,
+  planModeAvailable = true,
+  onPlanExecutionApproved,
   chromeless = false,
 }: ComposerV2Props) {
   const { t } = useTranslation('chat');
   const [isContextPopoverOpen, setIsContextPopoverOpen] = useState(false);
+  const [isRunModeMenuOpen, setIsRunModeMenuOpen] = useState(false);
   const [isPermissionMenuOpen, setIsPermissionMenuOpen] = useState(false);
 
-  const hasQuestionPanel = pendingPermissionRequests.some(
-    (r) => r.toolName === 'AskUserQuestion',
+  const hasBlockingPermissionPanel = pendingPermissionRequests.some(
+    (request) => BLOCKING_PERMISSION_TOOLS.has(request.toolName),
   );
 
   const textareaRect = textareaRef.current?.getBoundingClientRect();
@@ -280,6 +320,13 @@ export default function ComposerV2({
   const selectedPermissionOption =
     PERMISSION_MODE_OPTIONS.find((option) => option.mode === permissionMode) ||
     PERMISSION_MODE_OPTIONS[0];
+  const selectedRunModeOption =
+    RUN_MODE_OPTIONS.find((option) => option.mode === runMode) ||
+    RUN_MODE_OPTIONS[0];
+  const SelectedRunModeIcon = selectedRunModeOption.Icon;
+  const selectedRunModeLabel = t(selectedRunModeOption.labelKey, {
+    defaultValue: selectedRunModeOption.defaultLabel,
+  }) as string;
   const SelectedPermissionIcon = selectedPermissionOption.Icon;
   const selectedPermissionLabel = t(selectedPermissionOption.labelKey, {
     defaultValue: selectedPermissionOption.defaultLabel,
@@ -313,11 +360,12 @@ export default function ComposerV2({
               pendingPermissionRequests={pendingPermissionRequests}
               handlePermissionDecision={handlePermissionDecision}
               handleGrantToolPermission={handleGrantToolPermission}
+              onPlanExecutionApproved={onPlanExecutionApproved}
             />
           </div>
         ) : null}
 
-        {!hasQuestionPanel ? (
+        {!hasBlockingPermissionPanel ? (
           <form
             onSubmit={onSubmit as (event: FormEvent<HTMLFormElement>) => void}
             className="relative"
@@ -444,6 +492,119 @@ export default function ComposerV2({
                   >
                     <Command className="h-4 w-4" strokeWidth={1.75} />
                   </button>
+                  <div
+                    className="relative ml-1"
+                    onBlur={(event) => {
+                      const nextTarget = event.relatedTarget as Node | null;
+                      if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
+                        setIsRunModeMenuOpen(false);
+                      }
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setIsRunModeMenuOpen((open) => !open)}
+                      className={cn(
+                        'inline-flex h-7 max-w-[108px] items-center justify-center gap-1.5 rounded-md px-2 text-[12px] font-medium transition sm:max-w-[140px]',
+                        runMode === 'plan'
+                          ? 'text-blue-600 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-950/30'
+                          : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800',
+                      )}
+                      title={t('input.runModes.change', {
+                        defaultValue: '选择运行模式',
+                      }) as string}
+                      aria-haspopup="menu"
+                      aria-expanded={isRunModeMenuOpen}
+                    >
+                      <SelectedRunModeIcon className="h-4 w-4 shrink-0" strokeWidth={1.9} />
+                      <span className="truncate">{selectedRunModeLabel}</span>
+                      <ChevronDown
+                        className={cn(
+                          'h-3.5 w-3.5 shrink-0 transition-transform',
+                          isRunModeMenuOpen && 'rotate-180',
+                        )}
+                        strokeWidth={2}
+                      />
+                    </button>
+                    {isRunModeMenuOpen ? (
+                      <div
+                        role="menu"
+                        className="absolute bottom-full left-0 z-50 mb-2 w-56 rounded-xl border border-neutral-200 bg-white p-1.5 text-left shadow-lg dark:border-neutral-800 dark:bg-neutral-900"
+                      >
+                        {RUN_MODE_OPTIONS.map((option) => {
+                          const Icon = option.Icon;
+                          const isSelected = runMode === option.mode;
+                          const isPlan = option.mode === 'plan';
+                          const disabled = isPlan && !planModeAvailable;
+                          const label = t(option.labelKey, {
+                            defaultValue: option.defaultLabel,
+                          }) as string;
+                          const description = isPlan
+                            ? (t('input.runModes.planDescription', {
+                                defaultValue: '先产出计划，确认后再执行',
+                              }) as string)
+                            : (t('input.runModes.agentDescription', {
+                                defaultValue: '直接处理并执行任务',
+                              }) as string);
+
+                          return (
+                            <button
+                              key={option.mode}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={isSelected}
+                              disabled={disabled}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                if (disabled) return;
+                                onRunModeChange(option.mode);
+                                setIsRunModeMenuOpen(false);
+                              }}
+                              className={cn(
+                                'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition',
+                                isSelected
+                                  ? 'bg-neutral-100 dark:bg-neutral-800'
+                                  : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/70',
+                                disabled && 'cursor-not-allowed opacity-45',
+                              )}
+                            >
+                              <Icon
+                                className={cn(
+                                  'h-4 w-4 shrink-0',
+                                  isPlan
+                                    ? 'text-blue-600 dark:text-blue-300'
+                                    : 'text-neutral-500 dark:text-neutral-400',
+                                )}
+                                strokeWidth={1.9}
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span
+                                  className={cn(
+                                    'block truncate text-[13px] font-medium',
+                                    isPlan
+                                      ? 'text-blue-700 dark:text-blue-300'
+                                      : 'text-neutral-900 dark:text-neutral-100',
+                                  )}
+                                >
+                                  {label}
+                                </span>
+                                <span className="block truncate text-[11px] text-neutral-500 dark:text-neutral-400">
+                                  {disabled
+                                    ? t('input.runModes.planUnavailable', {
+                                        defaultValue: 'Plan mode is only available for Claude.',
+                                      })
+                                    : description}
+                                </span>
+                              </span>
+                              {isSelected ? (
+                                <Check className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-300" strokeWidth={2} />
+                              ) : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                   <div
                     className="relative"
                     onBlur={(event) => {
