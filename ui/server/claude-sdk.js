@@ -42,7 +42,12 @@ const pendingToolApprovals = new Map();
 const pendingCoalescenceMap = new Map();
 const sessionTokenBudgets = new Map();
 
-const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
+const DEFAULT_TOOL_APPROVAL_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+const configuredToolApprovalTimeoutMs = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10);
+const TOOL_APPROVAL_TIMEOUT_MS =
+  Number.isFinite(configuredToolApprovalTimeoutMs) && configuredToolApprovalTimeoutMs >= 0
+    ? configuredToolApprovalTimeoutMs
+    : DEFAULT_TOOL_APPROVAL_TIMEOUT_MS;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion']);
 const BUILT_IN_WEB_TOOLS = ['WebFetch', 'WebSearch'];
@@ -354,12 +359,6 @@ async function mapCliOptionsToSDK(options = {}) {
     disallowedTools: [],
     skipPermissions: false
   };
-
-  // Handle tool permissions
-  if (settings.skipPermissions && permissionMode !== 'plan') {
-    // When skipping permissions, use bypassPermissions mode
-    sdkOptions.permissionMode = 'bypassPermissions';
-  }
 
   let allowedTools = [...(settings.allowedTools || [])];
   let disallowedTools = [...(settings.disallowedTools || [])];

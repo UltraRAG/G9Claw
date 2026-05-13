@@ -10,8 +10,21 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ArrowUp, AtSign, CircleGauge, Command, Loader2, Paperclip, Square } from 'lucide-react';
-import type { PendingPermissionRequest } from '../chat/types/types';
+import {
+  ArrowUp,
+  AtSign,
+  Check,
+  ChevronDown,
+  CircleGauge,
+  Command,
+  Hand,
+  Loader2,
+  Paperclip,
+  ShieldAlert,
+  Square,
+  type LucideIcon,
+} from 'lucide-react';
+import type { PendingPermissionRequest, PermissionMode } from '../chat/types/types';
 import CommandMenu from '../chat/view/subcomponents/CommandMenu';
 import PermissionRequestsBanner from '../chat/view/subcomponents/PermissionRequestsBanner';
 import ImageAttachment from '../chat/view/subcomponents/ImageAttachment';
@@ -96,6 +109,8 @@ export type ComposerV2Props = {
     entry: string;
     toolName: string;
   }) => { success: boolean };
+  permissionMode: PermissionMode;
+  onPermissionModeChange: (mode: PermissionMode) => void;
 
   sendByCtrlEnter?: boolean;
 
@@ -117,6 +132,34 @@ type ContextStatus = {
   totalLabel: string;
   tone: 'normal' | 'amber' | 'red' | 'unknown';
 };
+
+type PermissionModeOption = {
+  mode: PermissionMode;
+  Icon: LucideIcon;
+  labelKey: string;
+  defaultLabel: string;
+  descriptionKey: string;
+  defaultDescription: string;
+};
+
+const PERMISSION_MODE_OPTIONS: PermissionModeOption[] = [
+  {
+    mode: 'default',
+    Icon: Hand,
+    labelKey: 'input.permissions.default',
+    defaultLabel: '默认权限',
+    descriptionKey: 'input.permissions.defaultDescription',
+    defaultDescription: '需要风险操作时先询问',
+  },
+  {
+    mode: 'bypassPermissions',
+    Icon: ShieldAlert,
+    labelKey: 'input.permissions.bypassPermissions',
+    defaultLabel: '完全访问权限',
+    descriptionKey: 'input.permissions.bypassPermissionsDescription',
+    defaultDescription: '跳过确认并允许完全访问',
+  },
+];
 
 const DEFAULT_CONTEXT_WINDOW = (() => {
   const parsed = Number(import.meta.env.VITE_CONTEXT_WINDOW);
@@ -213,10 +256,13 @@ export default function ComposerV2({
   pendingPermissionRequests,
   handlePermissionDecision,
   handleGrantToolPermission,
+  permissionMode,
+  onPermissionModeChange,
   chromeless = false,
 }: ComposerV2Props) {
   const { t } = useTranslation('chat');
   const [isContextPopoverOpen, setIsContextPopoverOpen] = useState(false);
+  const [isPermissionMenuOpen, setIsPermissionMenuOpen] = useState(false);
 
   const hasQuestionPanel = pendingPermissionRequests.some(
     (r) => r.toolName === 'AskUserQuestion',
@@ -231,6 +277,13 @@ export default function ComposerV2({
 
   const disabled = !input.trim() && attachedImages.length === 0 && !(isLoading && canAbortSession);
   const contextStatus = getContextStatus(tokenBudget);
+  const selectedPermissionOption =
+    PERMISSION_MODE_OPTIONS.find((option) => option.mode === permissionMode) ||
+    PERMISSION_MODE_OPTIONS[0];
+  const SelectedPermissionIcon = selectedPermissionOption.Icon;
+  const selectedPermissionLabel = t(selectedPermissionOption.labelKey, {
+    defaultValue: selectedPermissionOption.defaultLabel,
+  }) as string;
   const contextStatusTitle = contextStatus.known
     ? (t('input.contextStatus', {
         percent: contextStatus.percent,
@@ -366,7 +419,7 @@ export default function ComposerV2({
               </div>
 
               <div className="flex items-center justify-between px-1 pt-1">
-                <div className="flex items-center gap-0.5">
+                <div className="flex min-w-0 items-center gap-0.5">
                   <button
                     type="button"
                     onClick={openImagePicker}
@@ -469,6 +522,107 @@ export default function ComposerV2({
                             })}
                           </div>
                         )}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div
+                    className="relative"
+                    onBlur={(event) => {
+                      const nextTarget = event.relatedTarget as Node | null;
+                      if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
+                        setIsPermissionMenuOpen(false);
+                      }
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setIsPermissionMenuOpen((open) => !open)}
+                      className={cn(
+                        'inline-flex h-7 max-w-[132px] items-center justify-center gap-1.5 rounded-md px-2 text-[12px] font-medium transition sm:max-w-[190px]',
+                        permissionMode === 'bypassPermissions'
+                          ? 'text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/30'
+                          : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800',
+                      )}
+                      title={t('input.permissions.change', {
+                        defaultValue: '选择权限模式',
+                      }) as string}
+                      aria-haspopup="menu"
+                      aria-expanded={isPermissionMenuOpen}
+                    >
+                      <SelectedPermissionIcon className="h-4 w-4 shrink-0" strokeWidth={1.9} />
+                      <span className="truncate">{selectedPermissionLabel}</span>
+                      <ChevronDown
+                        className={cn(
+                          'h-3.5 w-3.5 shrink-0 transition-transform',
+                          isPermissionMenuOpen && 'rotate-180',
+                        )}
+                        strokeWidth={2}
+                      />
+                    </button>
+                    {isPermissionMenuOpen ? (
+                      <div
+                        role="menu"
+                        className="absolute bottom-full left-0 z-50 mb-2 w-60 rounded-xl border border-neutral-200 bg-white p-1.5 text-left shadow-lg dark:border-neutral-800 dark:bg-neutral-900"
+                      >
+                        {PERMISSION_MODE_OPTIONS.map((option) => {
+                          const Icon = option.Icon;
+                          const isSelected = permissionMode === option.mode;
+                          const isDangerous = option.mode === 'bypassPermissions';
+                          const label = t(option.labelKey, {
+                            defaultValue: option.defaultLabel,
+                          }) as string;
+                          const description = t(option.descriptionKey, {
+                            defaultValue: option.defaultDescription,
+                          }) as string;
+
+                          return (
+                            <button
+                              key={option.mode}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={isSelected}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                onPermissionModeChange(option.mode);
+                                setIsPermissionMenuOpen(false);
+                              }}
+                              className={cn(
+                                'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition',
+                                isSelected
+                                  ? 'bg-neutral-100 dark:bg-neutral-800'
+                                  : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/70',
+                              )}
+                            >
+                              <Icon
+                                className={cn(
+                                  'h-4 w-4 shrink-0',
+                                  isDangerous
+                                    ? 'text-amber-600 dark:text-amber-400'
+                                    : 'text-neutral-500 dark:text-neutral-400',
+                                )}
+                                strokeWidth={1.9}
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span
+                                  className={cn(
+                                    'block truncate text-[13px] font-medium',
+                                    isDangerous
+                                      ? 'text-amber-700 dark:text-amber-300'
+                                      : 'text-neutral-900 dark:text-neutral-100',
+                                  )}
+                                >
+                                  {label}
+                                </span>
+                                <span className="block truncate text-[11px] text-neutral-500 dark:text-neutral-400">
+                                  {description}
+                                </span>
+                              </span>
+                              {isSelected ? (
+                                <Check className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-300" strokeWidth={2} />
+                              ) : null}
+                            </button>
+                          );
+                        })}
                       </div>
                     ) : null}
                   </div>

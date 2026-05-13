@@ -753,7 +753,14 @@ export function useChatComposerState({
         };
       };
 
-      const toolsSettings = getToolsSettings();
+      const rawToolsSettings = getToolsSettings();
+      const toolsSettings = {
+        ...rawToolsSettings,
+        // Permission bypass is now chosen per prompt from the composer.
+        // Ignore legacy settings stored before the toggle was removed.
+        skipPermissions: false,
+      };
+      const shouldBypassPermissions = permissionMode === 'bypassPermissions';
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
       const sessionSummary = getNotificationSessionSummary(selectedSession, userVisibleInput);
 
@@ -768,7 +775,7 @@ export function useChatComposerState({
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: cursorModel,
-            skipPermissions: toolsSettings?.skipPermissions || false,
+            skipPermissions: shouldBypassPermissions,
             sessionSummary,
             toolsSettings,
           },

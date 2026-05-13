@@ -20,10 +20,9 @@ type StartClaudeSessionOptions = {
 
 const VALID_PERMISSION_MODES = new Set<PermissionMode>([
   'default',
-  'acceptEdits',
   'bypassPermissions',
-  'plan',
 ]);
+const DEFAULT_PERMISSION_MODE_KEY = 'permissionMode-default';
 
 export const isTemporarySessionId = (sessionId: string | null | undefined) =>
   Boolean(sessionId && sessionId.startsWith('new-session-'));
@@ -58,8 +57,13 @@ export function getNotificationSessionSummary(
 export function getStoredClaudePermissionMode(
   selectedSession: ProjectSession | null,
 ): PermissionMode {
+  const defaultMode = safeLocalStorage.getItem(DEFAULT_PERMISSION_MODE_KEY);
+  const fallbackMode = defaultMode && VALID_PERMISSION_MODES.has(defaultMode as PermissionMode)
+    ? (defaultMode as PermissionMode)
+    : 'default';
+
   if (!selectedSession?.id) {
-    return 'default';
+    return fallbackMode;
   }
 
   const stored = safeLocalStorage.getItem(`permissionMode-${selectedSession.id}`);
@@ -67,7 +71,7 @@ export function getStoredClaudePermissionMode(
     return stored as PermissionMode;
   }
 
-  return 'default';
+  return fallbackMode;
 }
 
 export function getSelectedProjectPath(selectedProject: Project): string {

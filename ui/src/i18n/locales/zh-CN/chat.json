@@ -158,6 +158,13 @@
     "contextStatusUsed": "已用 {{used}} tokens，共 {{total}}。",
     "contextStatusAutoCompact": "接近配置上限时会自动触发上下文压缩。",
     "contextStatusUnknownBody": "暂未收到 token 预算数据。下一次模型返回后会显示。",
+    "permissions": {
+      "change": "选择权限模式",
+      "default": "默认权限",
+      "defaultDescription": "需要风险操作时先询问",
+      "bypassPermissions": "完全访问权限",
+      "bypassPermissionsDescription": "跳过确认并允许完全访问"
+    },
     "send": "发送",
     "stop": "停止",
     "hintText": {

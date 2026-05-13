@@ -17,8 +17,26 @@ const DEFAULT_CLAUDE_MODEL_OPTIONS: ModelOption[] = CLAUDE_MODELS.OPTIONS.map((o
   ...option,
 }));
 
+const DEFAULT_PERMISSION_MODE_KEY = 'permissionMode-default';
+const COMPOSER_PERMISSION_MODES: PermissionMode[] = [
+  'default',
+  'bypassPermissions',
+];
+
+function readStoredPermissionMode(key: string): PermissionMode | null {
+  const stored = localStorage.getItem(key);
+  if (!stored) {
+    return null;
+  }
+  return COMPOSER_PERMISSION_MODES.includes(stored as PermissionMode)
+    ? (stored as PermissionMode)
+    : null;
+}
+
 export function useChatProviderState({ selectedSession }: UseChatProviderStateArgs) {
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
+  const [permissionMode, setPermissionModeState] = useState<PermissionMode>(() => {
+    return readStoredPermissionMode(DEFAULT_PERMISSION_MODE_KEY) || 'default';
+  });
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [provider, setProvider] = useState<SessionProvider>(() => {
     return (localStorage.getItem('selected-provider') as SessionProvider) || 'claude';
@@ -40,12 +58,14 @@ export function useChatProviderState({ selectedSession }: UseChatProviderStateAr
   const lastProviderRef = useRef(provider);
 
   useEffect(() => {
+    const defaultMode = readStoredPermissionMode(DEFAULT_PERMISSION_MODE_KEY);
     if (!selectedSession?.id) {
+      setPermissionModeState(defaultMode || 'default');
       return;
     }
 
-    const savedMode = localStorage.getItem(`permissionMode-${selectedSession.id}`);
-    setPermissionMode((savedMode as PermissionMode) || 'default');
+    const savedMode = readStoredPermissionMode(`permissionMode-${selectedSession.id}`);
+    setPermissionModeState(savedMode || defaultMode || 'default');
   }, [selectedSession?.id]);
 
   useEffect(() => {
@@ -139,21 +159,27 @@ export function useChatProviderState({ selectedSession }: UseChatProviderStateAr
       });
   }, [provider]);
 
+  const setPermissionMode = useCallback((nextMode: PermissionMode) => {
+    const normalizedMode = COMPOSER_PERMISSION_MODES.includes(nextMode)
+      ? nextMode
+      : 'default';
+
+    setPermissionModeState(normalizedMode);
+    localStorage.setItem(DEFAULT_PERMISSION_MODE_KEY, normalizedMode);
+
+    if (selectedSession?.id) {
+      localStorage.setItem(`permissionMode-${selectedSession.id}`, normalizedMode);
+    }
+  }, [selectedSession?.id]);
+
   const cyclePermissionMode = useCallback(() => {
-    const modes: PermissionMode[] =
-      provider === 'codex'
-        ? ['default', 'acceptEdits', 'bypassPermissions']
-        : ['default', 'acceptEdits', 'bypassPermissions', 'plan'];
+    const modes = COMPOSER_PERMISSION_MODES;
 
     const currentIndex = modes.indexOf(permissionMode);
     const nextIndex = (currentIndex + 1) % modes.length;
     const nextMode = modes[nextIndex];
     setPermissionMode(nextMode);
-
-    if (selectedSession?.id) {
-      localStorage.setItem(`permissionMode-${selectedSession.id}`, nextMode);
-    }
-  }, [permissionMode, provider, selectedSession?.id]);
+  }, [permissionMode, setPermissionMode]);
 
   return {
     provider,

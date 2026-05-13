@@ -175,6 +175,13 @@
     "contextStatusUsed": "{{used}} tokens used out of {{total}}.",
     "contextStatusAutoCompact": "Auto compact runs when the conversation approaches the configured limit.",
     "contextStatusUnknownBody": "No token budget has been reported yet. It will appear after the next model response.",
+    "permissions": {
+      "change": "Choose permission mode",
+      "default": "Default permissions",
+      "defaultDescription": "Ask before risky operations",
+      "bypassPermissions": "Full access",
+      "bypassPermissionsDescription": "Skip prompts and allow full access"
+    },
     "send": "Send",
     "stop": "Stop",
     "hintText": {

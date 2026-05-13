@@ -347,14 +347,9 @@
     "exportSuccess": "Exported {{allowed}} allowed and {{blocked}} blocked tools.",
     "exportError": "Failed to export permissions.",
     "importReadError": "Could not read the selected file.",
-    "importInvalid": "Not a valid permissions export. Expected JSON with allowedTools / disallowedTools / skipPermissions.",
+    "importInvalid": "Not a valid permissions export. Expected JSON with allowedTools / disallowedTools.",
     "importConfirmBody": "Merge {{allowed}} allowed and {{blocked}} blocked tools into your existing permissions?",
     "importSuccess": "Imported. Added {{addedAllowed}} allowed and {{addedBlocked}} blocked tools.",
-    "skipPermissions": {
-      "label": "Skip permission prompts (use with caution)",
-      "claudeDescription": "Equivalent to --dangerously-skip-permissions flag",
-      "cursorDescription": "Equivalent to -f flag in Cursor CLI"
-    },
     "allowedTools": {
       "title": "Allowed Tools",
       "description": "Tools that are automatically allowed without prompting for permission",

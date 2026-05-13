@@ -347,14 +347,9 @@
     "exportSuccess": "已导出 {{allowed}} 个允许工具与 {{blocked}} 个禁用工具。",
     "exportError": "导出权限失败。",
     "importReadError": "无法读取选中的文件。",
-    "importInvalid": "文件不是有效的权限导出（需要包含 allowedTools / disallowedTools / skipPermissions 的 JSON）。",
+    "importInvalid": "文件不是有效的权限导出（需要包含 allowedTools / disallowedTools 的 JSON）。",
     "importConfirmBody": "将导入的 {{allowed}} 个允许工具与 {{blocked}} 个禁用工具合并到现有权限？",
     "importSuccess": "导入完成，新增 {{addedAllowed}} 个允许工具与 {{addedBlocked}} 个禁用工具。",
-    "skipPermissions": {
-      "label": "跳过权限提示（请谨慎使用）",
-      "claudeDescription": "等同于 --dangerously-skip-permissions 标志",
-      "cursorDescription": "等同于 Cursor CLI 中的 -f 标志"
-    },
     "allowedTools": {
       "title": "允许的工具",
       "description": "无需权限提示即可自动使用的工具",

@@ -88,6 +88,7 @@ function ChatInterfaceV2({
     codexModel,
     geminiModel,
     permissionMode,
+    setPermissionMode,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
@@ -390,6 +391,8 @@ function ChatInterfaceV2({
       pendingPermissionRequests={pendingPermissionRequests}
       handlePermissionDecision={handlePermissionDecision}
       handleGrantToolPermission={handleGrantToolPermission}
+      permissionMode={permissionMode}
+      onPermissionModeChange={setPermissionMode}
       sendByCtrlEnter={sendByCtrlEnter}
       chromeless={isWelcomeMode}
     />
