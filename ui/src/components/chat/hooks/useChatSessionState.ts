@@ -240,6 +240,9 @@ export function useChatSessionState({
   prevActiveSessionRef.current = activeSessionId;
 
   const storeMessages = activeSessionId ? sessionStore.getMessages(activeSessionId) : [];
+  const storeActivityMessages = activeSessionId
+    ? sessionStore.getActivityMessages?.(activeSessionId) ?? []
+    : [];
 
   // Reset viewHiddenCount when store messages change
   const prevStoreLenRef = useRef(0);
@@ -257,6 +260,11 @@ export function useChatSessionState({
     if (viewHiddenCount > 0 && viewHiddenCount < all.length) return all.slice(0, -viewHiddenCount);
     return all;
   }, [storeMessages, viewHiddenCount, pendingUserMessage]);
+
+  const activityMessages = useMemo(
+    () => normalizedToChatMessages(storeActivityMessages),
+    [storeActivityMessages],
+  );
 
   /* ---------------------------------------------------------------- */
   /*  addMessage / clearMessages / rewindMessages                     */
@@ -827,6 +835,7 @@ export function useChatSessionState({
 
   return {
     chatMessages,
+    activityMessages,
     addMessage,
     clearMessages,
     rewindMessages,

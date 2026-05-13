@@ -20,6 +20,7 @@ type MessagesPaneV2Props = {
   onTouchMove: () => void;
   isLoadingSessionMessages: boolean;
   chatMessages: ChatMessage[];
+  activityMessages?: ChatMessage[];
   visibleMessages: ChatMessage[];
   visibleMessageCount: number;
   isLoadingMoreMessages: boolean;
@@ -57,6 +58,7 @@ export default function MessagesPaneV2({
   onTouchMove,
   isLoadingSessionMessages,
   chatMessages,
+  activityMessages = [],
   visibleMessages,
   visibleMessageCount,
   isLoadingMoreMessages,
@@ -114,8 +116,8 @@ export default function MessagesPaneV2({
   const isExistingConversationEmpty = isEmpty && Boolean(selectedSession);
   const isReadOnlyBackgroundSession = isBackgroundTaskSession(selectedSession);
   const liveActivities = useMemo(
-    () => visibleMessages.filter((message) => message.isAgentActivity),
-    [visibleMessages],
+    () => activityMessages.filter((message) => message.isAgentActivity),
+    [activityMessages],
   );
   const renderableMessages = useMemo(
     () => visibleMessages.filter((message) => !message.isAgentActivity),

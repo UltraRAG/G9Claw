@@ -124,6 +124,7 @@ export type SessionStatus = 'idle' | 'loading' | 'streaming' | 'error';
 export interface SessionSlot {
   serverMessages: NormalizedMessage[];
   realtimeMessages: NormalizedMessage[];
+  activityMessages: NormalizedMessage[];
   merged: NormalizedMessage[];
   /** @internal Cache-invalidation refs for computeMerged */
   _lastServerRef: NormalizedMessage[];
@@ -142,6 +143,7 @@ function createEmptySlot(): SessionSlot {
   return {
     serverMessages: EMPTY,
     realtimeMessages: EMPTY,
+    activityMessages: EMPTY,
     merged: EMPTY,
     _lastServerRef: EMPTY,
     _lastRealtimeRef: EMPTY,
@@ -474,6 +476,33 @@ export function useSessionStore() {
     notify(sessionId);
   }, [getSlot, notify]);
 
+  const upsertActivity = useCallback((sessionId: string, msg: NormalizedMessage) => {
+    const slot = getSlot(sessionId);
+    const key = msg.activityId || msg.id;
+    const existingIndex = slot.activityMessages.findIndex((activity) =>
+      (activity.activityId || activity.id) === key
+    );
+    if (existingIndex >= 0) {
+      const updated = [...slot.activityMessages];
+      updated[existingIndex] = msg;
+      slot.activityMessages = updated;
+    } else {
+      slot.activityMessages = [...slot.activityMessages, msg];
+    }
+    notify(sessionId);
+  }, [getSlot, notify]);
+
+  const setActivities = useCallback((sessionId: string, msgs: NormalizedMessage[]) => {
+    const slot = getSlot(sessionId);
+    const byKey = new Map<string, NormalizedMessage>();
+    for (const msg of msgs) {
+      if (msg.kind !== 'agent_activity') continue;
+      byKey.set(msg.activityId || msg.id, msg);
+    }
+    slot.activityMessages = Array.from(byKey.values());
+    notify(sessionId);
+  }, [getSlot, notify]);
+
   /**
    * Append multiple realtime messages at once (batch).
    */
@@ -622,6 +651,10 @@ export function useSessionStore() {
     return storeRef.current.get(sessionId)?.merged ?? [];
   }, []);
 
+  const getActivityMessages = useCallback((sessionId: string): NormalizedMessage[] => {
+    return storeRef.current.get(sessionId)?.activityMessages ?? [];
+  }, []);
+
   /**
    * Get session slot (for status, pagination info, etc.).
    */
@@ -635,6 +668,8 @@ export function useSessionStore() {
     fetchFromServer,
     fetchMore,
     appendRealtime,
+    upsertActivity,
+    setActivities,
     appendRealtimeBatch,
     refreshFromServer,
     setActiveSession,
@@ -644,12 +679,13 @@ export function useSessionStore() {
     finalizeStreaming,
     clearRealtime,
     getMessages,
+    getActivityMessages,
     getSessionSlot,
   }), [
     getSlot, has, fetchFromServer, fetchMore,
-    appendRealtime, appendRealtimeBatch, refreshFromServer,
+    appendRealtime, upsertActivity, setActivities, appendRealtimeBatch, refreshFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
-    clearRealtime, getMessages, getSessionSlot,
+    clearRealtime, getMessages, getActivityMessages, getSessionSlot,
   ]);
 }
 

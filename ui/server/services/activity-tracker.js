@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { createNormalizedMessage } from '../providers/types.js';
 import { appendActivitySummary } from './activity-traces.js';
+import { SubagentActivityBridge } from './subagent-activity-bridge.js';
 
 const PROVIDER = 'claude';
 const HEARTBEAT_AFTER_MS = 8000;
@@ -162,6 +163,8 @@ export class ActivityTracker {
     this.streamActivitySent = false;
     this.completed = false;
     this.heartbeatTimer = null;
+    this.subagentBridge = null;
+    this.subagentBridgeStarting = null;
   }
 
   start() {
@@ -179,7 +182,21 @@ export class ActivityTracker {
   setSessionId(sessionId) {
     if (sessionId) {
       this.sessionId = sessionId;
+      this.subagentBridge?.setSessionId(sessionId);
+      if (this.hasRunningSubtask()) {
+        this.ensureSubagentBridgeStarted();
+      }
     }
+  }
+
+  setWriter(ws) {
+    this.ws = ws;
+  }
+
+  getSnapshot() {
+    return Array.from(this.activitiesById.values()).map((activity) =>
+      this.createMessage({ kind: 'agent_activity', ...activity })
+    );
   }
 
   observe(message) {
@@ -273,6 +290,10 @@ export class ActivityTracker {
       toolId: message.toolId || '',
       severity: 'info',
     });
+
+    if (message.toolName === 'Task') {
+      this.ensureSubagentBridgeStarted();
+    }
   }
 
   observeToolResult(message) {
@@ -290,6 +311,74 @@ export class ActivityTracker {
       toolName: existing?.toolName || '',
       toolId: message.toolId || '',
       severity: failed ? 'warning' : 'info',
+    });
+  }
+
+  ensureSubagentBridgeStarted() {
+    if (this.completed || !this.projectRoot || !this.sessionId || this.subagentBridge || this.subagentBridgeStarting) {
+      return;
+    }
+
+    this.subagentBridge = new SubagentActivityBridge({
+      projectRoot: this.projectRoot,
+      sessionId: this.sessionId,
+      onToolUse: (event) => this.observeSubagentToolUse(event),
+      onToolResult: (event) => this.observeSubagentToolResult(event),
+    });
+    this.subagentBridgeStarting = this.subagentBridge.start()
+      .catch((error) => {
+        console.warn('[ActivityTracker] Failed to start subagent activity bridge:', error?.message || error);
+        this.subagentBridge?.stop();
+        this.subagentBridge = null;
+      })
+      .finally(() => {
+        this.subagentBridgeStarting = null;
+      });
+  }
+
+  observeSubagentToolUse(event) {
+    if (!event?.toolId || this.completed) {
+      return;
+    }
+
+    const description = describeToolUse({
+      toolName: event.toolName,
+      toolInput: event.toolInput,
+    });
+    const activityId = `${this.runId}:subagent:${event.agentId || 'agent'}:${event.toolId}`;
+    this.toolActivities.set(`subagent:${event.agentId || 'agent'}:${event.toolId}`, activityId);
+    this.emit({
+      activityId,
+      phase: description.phase === 'rag' ? 'rag' : 'subtask',
+      state: 'running',
+      title: `子任务：${description.title}`,
+      detail: description.detail,
+      toolName: event.toolName,
+      toolId: event.toolId,
+      severity: 'info',
+      startedAt: event.timestamp,
+    });
+  }
+
+  observeSubagentToolResult(event) {
+    if (!event?.toolId || this.completed) {
+      return;
+    }
+
+    const key = `subagent:${event.agentId || 'agent'}:${event.toolId}`;
+    const activityId = this.toolActivities.get(key) || `${this.runId}:subagent-result:${event.agentId || 'agent'}:${event.toolId}`;
+    const existing = this.activitiesById.get(activityId);
+    const failed = Boolean(event.isError);
+    this.emit({
+      activityId,
+      phase: existing?.phase || 'subtask',
+      state: failed ? 'failed' : 'completed',
+      title: failed ? 'Tool Error' : (existing?.title || '子任务工具完成'),
+      detail: failed ? truncate(stripToolUseErrorTags(event.content)) : (existing?.detail || ''),
+      toolName: existing?.toolName || '',
+      toolId: event.toolId,
+      severity: failed ? 'warning' : 'info',
+      endedAt: event.timestamp,
     });
   }
 
@@ -313,6 +402,20 @@ export class ActivityTracker {
       return;
     }
     const seconds = Math.max(8, Math.round(elapsed / 1000));
+    const runningSubtask = this.findRunningSubtask();
+
+    if (runningSubtask) {
+      this.emit({
+        ...runningSubtask,
+        title: '子任务运行中',
+        detail: runningSubtask.detail
+          ? `${runningSubtask.detail} · 已运行 ${seconds}s`
+          : `已运行 ${seconds}s`,
+        updateLastEvent: false,
+      });
+      return;
+    }
+
     this.emit({
       activityId: `${this.runId}:provider_wait`,
       phase: 'provider_wait',
@@ -333,6 +436,8 @@ export class ActivityTracker {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+    this.subagentBridge?.stop();
+    this.subagentBridge = null;
 
     const endedAt = nowIso();
     const state = status === 'failed' ? 'failed' : status === 'cancelled' ? 'cancelled' : 'completed';
@@ -361,6 +466,16 @@ export class ActivityTracker {
         console.warn('[ActivityTracker] Failed to persist summary:', error?.message || error);
       }
     }
+  }
+
+  findRunningSubtask() {
+    return Array.from(this.activitiesById.values())
+      .reverse()
+      .find((activity) => activity.phase === 'subtask' && activity.state === 'running');
+  }
+
+  hasRunningSubtask() {
+    return Boolean(this.findRunningSubtask());
   }
 
   createSummary({ status, endedAt }) {

@@ -1134,9 +1134,13 @@ async function queryClaudeSDK(command, options = {}, ws) {
     // reply land as a single block instead of typing in real time.
     sdkOptions.includePartialMessages = true;
 
-    // Set stream-close timeout for interactive tools (Query constructor reads it synchronously). Claude Agent SDK has a default of 5s and this overrides it
+    // Set stream-close timeout for long-running tools/sub-agents. The SDK reads
+    // this synchronously in Query construction. Keep it comfortably above the
+    // longest expected agent turn so a quiet parent stream does not disconnect
+    // upstream while a sub-agent is still working.
     const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
-    process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '300000';
+    process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT =
+      process.env.EDGECLAW_STREAM_CLOSE_TIMEOUT_MS || '3600000';
 
     let queryInstance;
     try {
@@ -1417,6 +1421,14 @@ function getClaudeSDKSessionTokenBudget(sessionId) {
   return getSessionTokenBudget(sessionId);
 }
 
+function getClaudeSDKSessionActivitySnapshot(sessionId) {
+  const session = getSession(sessionId);
+  if (!session?.activityTracker || typeof session.activityTracker.getSnapshot !== 'function') {
+    return [];
+  }
+  return session.activityTracker.getSnapshot();
+}
+
 /**
  * Get pending tool approvals for a specific session.
  * @param {string} sessionId - The session ID
@@ -1450,6 +1462,13 @@ function reconnectSessionWriter(sessionId, newRawWs) {
   const runtime = getSessionRuntime(sessionId);
   if (!runtime?.writer?.updateWebSocket) return false;
   runtime.writer.updateWebSocket(newRawWs);
+  const activeSession = getSession(sessionId);
+  if (activeSession?.writer?.updateWebSocket && activeSession.writer !== runtime.writer) {
+    activeSession.writer.updateWebSocket(newRawWs);
+  }
+  if (activeSession?.activityTracker?.setWriter) {
+    activeSession.activityTracker.setWriter(activeSession.writer || runtime.writer);
+  }
   flushUndeliveredCronNotifications(sessionId);
   void drainSessionCronNotifications(sessionId).then(() => {
     flushUndeliveredCronNotifications(sessionId);
@@ -1469,6 +1488,7 @@ export {
   getActiveClaudeSDKSessions,
   getActiveClaudeSDKSessionDetails,
   getClaudeSDKSessionTokenBudget,
+  getClaudeSDKSessionActivitySnapshot,
   resolveToolApproval,
   getPendingApprovalsForSession,
   reconnectSessionWriter

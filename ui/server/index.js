@@ -50,7 +50,7 @@ import mime from 'mime-types';
 import JSZip from 'jszip';
 
 import { getProjects, getSessions, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
-import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, getActiveClaudeSDKSessionDetails, getClaudeSDKSessionTokenBudget, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
+import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, getActiveClaudeSDKSessionDetails, getClaudeSDKSessionTokenBudget, getClaudeSDKSessionActivitySnapshot, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from './openai-codex.js';
 import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
@@ -1917,7 +1917,10 @@ function handleChatConnection(ws, request) {
                     sessionId,
                     provider,
                     isProcessing: isActive,
-                    ...(provider === 'claude' && { tokenBudget: getClaudeSDKSessionTokenBudget(sessionId) })
+                    ...(provider === 'claude' && {
+                        tokenBudget: getClaudeSDKSessionTokenBudget(sessionId),
+                        activitySnapshot: getClaudeSDKSessionActivitySnapshot(sessionId)
+                    })
                 });
             } else if (data.type === 'get-pending-permissions') {
                 // Return pending permission requests for a session

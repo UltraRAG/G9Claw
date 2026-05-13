@@ -95,6 +95,7 @@ function ChatInterfaceV2({
 
   const {
     chatMessages,
+    activityMessages,
     addMessage,
     clearMessages,
     rewindMessages,
@@ -425,6 +426,7 @@ function ChatInterfaceV2({
         onTouchMove={handleScroll}
         isLoadingSessionMessages={isLoadingSessionMessages}
         chatMessages={chatMessages}
+        activityMessages={activityMessages}
         visibleMessages={visibleMessages}
         visibleMessageCount={visibleMessageCount}
         isLoadingMoreMessages={isLoadingMoreMessages}

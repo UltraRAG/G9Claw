@@ -48,6 +48,7 @@ type LatestChatMessage = {
   compactProgress?: CompactProgress;
   compact_progress?: CompactProgress;
   tokenBudget?: unknown;
+  activitySnapshot?: NormalizedMessage[];
   newSessionId?: string;
   aborted?: boolean;
   [key: string]: any;
@@ -148,6 +149,9 @@ export function useChatRealtimeHandlers({
           if (msg.tokenBudget) {
             setTokenBudget(msg.tokenBudget as Record<string, unknown>);
           }
+          if (Array.isArray(msg.activitySnapshot)) {
+            sessionStore.setActivities?.(statusSessionId, msg.activitySnapshot as NormalizedMessage[]);
+          }
 
           const status = msg.status;
           if (status) {
@@ -193,6 +197,13 @@ export function useChatRealtimeHandlers({
     /* ---------------------------------------------------------------- */
 
     const sid = msg.sessionId || activeViewSessionId;
+
+    if (msg.kind === 'agent_activity') {
+      if (sid) {
+        sessionStore.upsertActivity?.(sid, msg as NormalizedMessage);
+      }
+      return;
+    }
 
     // --- Streaming: buffer for performance ---
     if (msg.kind === 'stream_delta') {
