@@ -48,14 +48,15 @@
     "step": "步骤",
     "noSteps": "暂无详细步骤记录。",
     "summary": {
-      "completed": "Process completed",
-      "failed": "Process failed",
-      "cancelled": "Process stopped"
+      "processed": "已处理 {{duration}}",
+      "completed": "处理完成",
+      "failed": "处理失败",
+      "cancelled": "处理已停止"
     },
     "metrics": {
-      "toolCalls": "{{count}} tool calls",
-      "searches": "{{count}} searches",
-      "errors": "{{count}} errors"
+      "toolCalls": "{{count}} 次工具调用",
+      "searches": "{{count}} 次搜索",
+      "errors": "{{count}} 个错误"
     }
   },
   "tools": {

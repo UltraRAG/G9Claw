@@ -52,6 +52,301 @@ type MessagesPaneV2Props = {
   workingStatus?: ClaudeWorkStatus | null;
 };
 
+type RenderableMessageItem = {
+  message: ChatMessage;
+  originalIndex: number;
+  processSummary?: ChatMessage | null;
+  processDetailMessages?: ChatMessage[];
+};
+
+type ActivitySummaryAttachment = {
+  message: ChatMessage;
+  originalIndex: number;
+};
+
+type MessageTurn = {
+  start: number;
+  end: number;
+  summary: ActivitySummaryAttachment | null;
+};
+
+type BuildRenderableMessageItemsOptions = {
+  isAssistantWorking?: boolean;
+};
+
+function getActivitySummaryKey(message: ChatMessage, index: number): string {
+  return message.runId || message.id || `${message.startedAt || ''}-${message.endedAt || ''}-${index}`;
+}
+
+function canHostProcessSummary(message: ChatMessage): boolean {
+  return (
+    message.type === 'assistant' &&
+    !message.isAgentActivitySummary &&
+    !message.isAgentActivity &&
+    !message.isToolUse &&
+    !message.isInteractivePrompt &&
+    !message.isSubagentContainer &&
+    !message.isTaskNotification &&
+    !message.isThinking &&
+    typeof message.content === 'string' &&
+    message.content.trim().length > 0
+  );
+}
+
+function isCollapsibleProcessMessage(message: ChatMessage): boolean {
+  if (message.isAgentActivity || message.isAgentActivitySummary) {
+    return false;
+  }
+  return message.type !== 'user';
+}
+
+function parseMessageTime(value: unknown): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function createMessageTurns(messages: ChatMessage[]): MessageTurn[] {
+  if (messages.length === 0) {
+    return [];
+  }
+
+  const starts: number[] = [];
+  messages.forEach((message, index) => {
+    if (message.type === 'user') {
+      starts.push(index);
+    }
+  });
+
+  if (starts.length === 0 || starts[0] > 0) {
+    starts.unshift(0);
+  }
+
+  return starts.map((start, index) => ({
+    start,
+    end: starts[index + 1] ?? messages.length,
+    summary: null,
+  }));
+}
+
+function findTurnIndexByPosition(turns: MessageTurn[], index: number): number {
+  return turns.findIndex((turn) => index >= turn.start && index < turn.end);
+}
+
+function findTurnIndexByTime(messages: ChatMessage[], turns: MessageTurn[], timestamp: number): number {
+  let matchedIndex = -1;
+
+  for (let turnIndex = 0; turnIndex < turns.length; turnIndex += 1) {
+    const startMessage = messages[turns[turnIndex].start];
+    if (startMessage?.type !== 'user') {
+      continue;
+    }
+
+    const startTime = parseMessageTime(startMessage.timestamp);
+    if (startTime == null) {
+      continue;
+    }
+
+    if (startTime <= timestamp) {
+      matchedIndex = turnIndex;
+      continue;
+    }
+
+    if (startTime > timestamp) {
+      break;
+    }
+  }
+
+  return matchedIndex;
+}
+
+function getSummaryAnchorTime(summary: ChatMessage): number | null {
+  return (
+    parseMessageTime(summary.startedAt) ??
+    parseMessageTime(summary.timestamp) ??
+    parseMessageTime(summary.endedAt)
+  );
+}
+
+function getSummarySortTime(summary: ChatMessage): number {
+  return (
+    parseMessageTime(summary.endedAt) ??
+    parseMessageTime(summary.timestamp) ??
+    parseMessageTime(summary.startedAt) ??
+    0
+  );
+}
+
+function isNewerSummary(
+  next: ActivitySummaryAttachment,
+  current: ActivitySummaryAttachment | null,
+): boolean {
+  if (!current) {
+    return true;
+  }
+  const nextTime = getSummarySortTime(next.message);
+  const currentTime = getSummarySortTime(current.message);
+  if (nextTime !== currentTime) {
+    return nextTime > currentTime;
+  }
+  return next.originalIndex > current.originalIndex;
+}
+
+function attachSummariesToTurns(messages: ChatMessage[], turns: MessageTurn[]): void {
+  const summariesByKey = new Map<string, ActivitySummaryAttachment>();
+
+  messages.forEach((message, originalIndex) => {
+    if (message.isAgentActivitySummary) {
+      summariesByKey.set(getActivitySummaryKey(message, originalIndex), { message, originalIndex });
+    }
+  });
+
+  const summaries = Array.from(summariesByKey.values()).sort(
+    (a, b) => a.originalIndex - b.originalIndex,
+  );
+
+  for (const summary of summaries) {
+    const anchorTime = getSummaryAnchorTime(summary.message);
+    const turnIndexFromTime = anchorTime == null ? -1 : findTurnIndexByTime(messages, turns, anchorTime);
+    const turnIndex = turnIndexFromTime >= 0
+      ? turnIndexFromTime
+      : findTurnIndexByPosition(turns, summary.originalIndex);
+
+    if (turnIndex < 0) {
+      continue;
+    }
+
+    if (isNewerSummary(summary, turns[turnIndex].summary)) {
+      turns[turnIndex].summary = summary;
+    }
+  }
+}
+
+function getTurnDurationMs(messages: ChatMessage[], turn: MessageTurn, hostIndex: number): number {
+  let startTime: number | null = null;
+  for (let index = turn.start; index <= hostIndex; index += 1) {
+    startTime = parseMessageTime(messages[index]?.timestamp);
+    if (startTime != null) {
+      break;
+    }
+  }
+
+  const endTime = parseMessageTime(messages[hostIndex]?.timestamp);
+  if (startTime == null || endTime == null) {
+    return 0;
+  }
+  return Math.max(0, endTime - startTime);
+}
+
+function createSyntheticProcessSummary(
+  messages: ChatMessage[],
+  turn: MessageTurn,
+  hostIndex: number,
+  detailMessages: ChatMessage[],
+): ChatMessage {
+  const host = messages[hostIndex];
+  const startedAt = messages[turn.start]?.timestamp;
+  const endedAt = host?.timestamp;
+  const toolCallCount = detailMessages.filter((message) =>
+    message.isToolUse || Boolean(message.toolName),
+  ).length;
+  const toolErrorCount = detailMessages.filter((message) =>
+    message.toolResult?.isError || message.type === 'error',
+  ).length;
+  const ragSearchCount = detailMessages.filter((message) =>
+    message.phase === 'rag' || /search|检索/i.test(`${message.toolName || ''} ${message.content || ''}`),
+  ).length;
+
+  return {
+    id: `process_summary_${host?.id || hostIndex}`,
+    type: 'system',
+    content: 'Process summary',
+    timestamp: endedAt || new Date().toISOString(),
+    isAgentActivitySummary: true,
+    startedAt: startedAt ? String(startedAt) : '',
+    endedAt: endedAt ? String(endedAt) : '',
+    durationMs: getTurnDurationMs(messages, turn, hostIndex),
+    state: 'completed',
+    toolCallCount,
+    toolErrorCount,
+    ragSearchCount,
+    compactCount: detailMessages.filter((message) => message.isCompactBoundary).length,
+    keySteps: [],
+  };
+}
+
+export function buildRenderableMessageItems(
+  messages: ChatMessage[],
+  options: BuildRenderableMessageItemsOptions = {},
+): RenderableMessageItem[] {
+  const items: RenderableMessageItem[] = [];
+  const itemsByIndex = new Map<number, RenderableMessageItem>();
+  const collapsedIndices = new Set<number>();
+  const turns = createMessageTurns(messages);
+
+  messages.forEach((message, originalIndex) => {
+    if (message.isAgentActivitySummary) {
+      return;
+    }
+
+    const item: RenderableMessageItem = { message, originalIndex, processSummary: null, processDetailMessages: [] };
+    items.push(item);
+    itemsByIndex.set(originalIndex, item);
+  });
+
+  attachSummariesToTurns(messages, turns);
+
+  turns.forEach((turn, turnIndex) => {
+    let host: RenderableMessageItem | null = null;
+    for (let index = turn.end - 1; index >= turn.start; index -= 1) {
+      const message = messages[index];
+      if (!message || !canHostProcessSummary(message)) {
+        continue;
+      }
+      host = itemsByIndex.get(index) || null;
+      if (host) break;
+    }
+
+    if (!host) {
+      if (turn.summary) {
+        items.push({ message: turn.summary.message, originalIndex: turn.summary.originalIndex, processSummary: null });
+      }
+      return;
+    }
+
+    const isLatestTurn = turnIndex === turns.length - 1;
+    const shouldKeepTurnExpanded = Boolean(options.isAssistantWorking && isLatestTurn);
+    if (shouldKeepTurnExpanded) {
+      return;
+    }
+
+    const detailMessages: ChatMessage[] = [];
+    for (let index = turn.start; index < turn.end; index += 1) {
+      if (index === host.originalIndex) {
+        continue;
+      }
+      const message = messages[index];
+      if (!message || !isCollapsibleProcessMessage(message)) {
+        continue;
+      }
+      detailMessages.push(message);
+      collapsedIndices.add(index);
+    }
+
+    if (detailMessages.length === 0 && !turn.summary) {
+      return;
+    }
+
+    host.processSummary =
+      turn.summary?.message || createSyntheticProcessSummary(messages, turn, host.originalIndex, detailMessages);
+    host.processDetailMessages = detailMessages;
+  });
+
+  return items
+    .filter((item) => !collapsedIndices.has(item.originalIndex))
+    .sort((a, b) => a.originalIndex - b.originalIndex);
+}
+
 export default function MessagesPaneV2({
   scrollContainerRef,
   onWheel,
@@ -60,14 +355,6 @@ export default function MessagesPaneV2({
   chatMessages,
   activityMessages = [],
   visibleMessages,
-  visibleMessageCount,
-  isLoadingMoreMessages,
-  hasMoreMessages,
-  totalMessages,
-  loadEarlierMessages,
-  loadAllMessages,
-  allMessagesLoaded,
-  isLoadingAllMessages,
   provider,
   selectedProject,
   selectedSession,
@@ -122,6 +409,10 @@ export default function MessagesPaneV2({
   const renderableMessages = useMemo(
     () => visibleMessages.filter((message) => !message.isAgentActivity),
     [visibleMessages],
+  );
+  const renderableMessageItems = useMemo(
+    () => buildRenderableMessageItems(renderableMessages, { isAssistantWorking }),
+    [isAssistantWorking, renderableMessages],
   );
 
   return (
@@ -185,58 +476,15 @@ export default function MessagesPaneV2({
         </div>
       ) : (
         <div className="mx-auto max-w-[860px] space-y-8 px-6 py-10">
-          {/* Loading older messages indicator */}
-          {isLoadingMoreMessages && !isLoadingAllMessages && !allMessagesLoaded ? (
-            <div className="py-3 text-center text-[12px] text-neutral-500 dark:text-neutral-400">
-              {t('messages.loadingOlder', { defaultValue: 'Loading older messages…' })}
-            </div>
-          ) : null}
-
-          {hasMoreMessages && !isLoadingMoreMessages && !allMessagesLoaded ? (
-            <div className="flex items-center justify-between border-b border-neutral-200 pb-3 text-[12px] text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-              <span>
-                {t('messages.showingOf', {
-                  shown: chatMessages.length,
-                  total: totalMessages,
-                  defaultValue: `Showing ${chatMessages.length} of ${totalMessages}`,
-                })}
-              </span>
-              <button
-                type="button"
-                onClick={loadEarlierMessages}
-                className="text-[12px] text-neutral-700 underline-offset-2 hover:underline dark:text-neutral-300"
-              >
-                {t('messages.loadEarlier', { defaultValue: 'Load earlier' })}
-              </button>
-            </div>
-          ) : null}
-
-          {!hasMoreMessages && chatMessages.length > visibleMessageCount ? (
-            <div className="flex items-center justify-between border-b border-neutral-200 pb-3 text-[12px] text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-              <span>
-                {t('messages.showingLast', {
-                  count: visibleMessageCount,
-                  total: chatMessages.length,
-                  defaultValue: `Showing last ${visibleMessageCount} of ${chatMessages.length}`,
-                })}
-              </span>
-              <button
-                type="button"
-                onClick={loadAllMessages}
-                className="text-[12px] text-neutral-700 underline-offset-2 hover:underline dark:text-neutral-300"
-              >
-                {t('messages.loadAll', { defaultValue: 'Load all' })}
-              </button>
-            </div>
-          ) : null}
-
-          {renderableMessages.map((message, index) => {
-            const prevMessage = index > 0 ? renderableMessages[index - 1] : null;
+          {renderableMessageItems.map((item, index) => {
+            const prevMessage = index > 0 ? renderableMessageItems[index - 1].message : null;
             return (
               <MessageRowV2
-                key={getMessageKey(message, index)}
-                message={message}
+                key={getMessageKey(item.message, index)}
+                message={item.message}
                 prevMessage={prevMessage}
+                processSummary={item.processSummary}
+                processDetailMessages={item.processDetailMessages}
                 provider={provider}
                 selectedProject={selectedProject}
                 createDiff={createDiff}

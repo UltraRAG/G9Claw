@@ -43,7 +43,7 @@ export async function readActivitySummaries(projectRoot, sessionId) {
     return [];
   }
 
-  return raw
+  const summaries = raw
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
@@ -55,4 +55,15 @@ export async function readActivitySummaries(projectRoot, sessionId) {
       }
     })
     .filter(Boolean);
+
+  const byRun = new Map();
+  for (const summary of summaries) {
+    const key = summary.runId || `${summary.startedAt || ''}:${summary.endedAt || ''}`;
+    if (!key) {
+      continue;
+    }
+    byRun.set(key, summary);
+  }
+
+  return Array.from(byRun.values());
 }

@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Activity, AlertTriangle, ChevronDown, ChevronRight, FileText } from 'lucide-react';
 import type {
@@ -32,6 +32,8 @@ const getAttachmentAccent = (name?: string, mimeType?: string): string => {
 type MessageRowV2Props = {
   message: ChatMessage;
   prevMessage: ChatMessage | null;
+  processSummary?: ChatMessage | null;
+  processDetailMessages?: ChatMessage[];
   provider: SessionProvider;
   selectedProject: Project | null;
   createDiff: (oldStr: string, newStr: string) => DiffLine[];
@@ -66,6 +68,8 @@ const shouldDelegate = (message: ChatMessage): boolean => {
 function MessageRowV2({
   message,
   prevMessage,
+  processSummary,
+  processDetailMessages = [],
   provider,
   selectedProject,
   createDiff,
@@ -102,15 +106,17 @@ function MessageRowV2({
     return <ProcessSummaryRow message={message} t={t} />;
   }
 
-  if (delegate) {
-    // Wrap legacy output in a neutral container so gradients/colors from the
-    // legacy theme get a zinc frame — keeps the prototype aesthetic while
-    // preserving every tool/permission renderer.
-    return (
-      <div className="ui-v2-legacy-row">
-        <MessageComponent
-          message={message}
-          prevMessage={prevMessage}
+  const rowProcessSummary = processSummary ? (
+    <ProcessSummaryRow
+      message={processSummary}
+      detailMessages={processDetailMessages}
+      renderDetailMessage={(detailMessage, index) => (
+        <MessageRowV2
+          key={detailMessage.id || `${processSummary.id || 'process-detail'}-${index}`}
+          message={detailMessage}
+          prevMessage={index > 0 ? processDetailMessages[index - 1] : null}
+          provider={provider}
+          selectedProject={selectedProject}
           createDiff={createDiff}
           onFileOpen={onFileOpen}
           onShowSettings={onShowSettings}
@@ -118,11 +124,36 @@ function MessageRowV2({
           autoExpandTools={autoExpandTools}
           showRawParameters={showRawParameters}
           showThinking={showThinking}
-          selectedProject={selectedProject ?? null}
-          provider={provider}
-          hideHeader
         />
-      </div>
+      )}
+      t={t}
+    />
+  ) : null;
+
+  if (delegate) {
+    // Wrap legacy output in a neutral container so gradients/colors from the
+    // legacy theme get a zinc frame — keeps the prototype aesthetic while
+    // preserving every tool/permission renderer.
+    return (
+      <>
+        {rowProcessSummary}
+        <div className="ui-v2-legacy-row">
+          <MessageComponent
+            message={message}
+            prevMessage={prevMessage}
+            createDiff={createDiff}
+            onFileOpen={onFileOpen}
+            onShowSettings={onShowSettings}
+            onGrantToolPermission={onGrantToolPermission}
+            autoExpandTools={autoExpandTools}
+            showRawParameters={showRawParameters}
+            showThinking={showThinking}
+            selectedProject={selectedProject ?? null}
+            provider={provider}
+            hideHeader
+          />
+        </div>
+      </>
     );
   }
 
@@ -203,13 +234,16 @@ function MessageRowV2({
 
   // Assistant: plain prose, no avatar and no bubble.
   return (
-    <div className="min-w-0 text-[14px] leading-relaxed text-neutral-900 dark:text-neutral-100">
-      {message.isStreaming && !formattedContent ? (
-        <span className="inline-block h-4 w-2 animate-pulse bg-neutral-400 dark:bg-neutral-500" />
-      ) : (
-        <Markdown>{formattedContent}</Markdown>
-      )}
-    </div>
+    <>
+      {rowProcessSummary}
+      <div className="min-w-0 text-[14px] leading-relaxed text-neutral-900 dark:text-neutral-100">
+        {message.isStreaming && !formattedContent ? (
+          <span className="inline-block h-4 w-2 animate-pulse bg-neutral-400 dark:bg-neutral-500" />
+        ) : (
+          <Markdown>{formattedContent}</Markdown>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -247,9 +281,13 @@ function normalizeKeySteps(value: unknown): Array<{
 
 function ProcessSummaryRow({
   message,
+  detailMessages = [],
+  renderDetailMessage,
   t,
 }: {
   message: ChatMessage;
+  detailMessages?: ChatMessage[];
+  renderDetailMessage?: (message: ChatMessage, index: number) => ReactNode;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -266,6 +304,10 @@ function ProcessSummaryRow({
   const searches = Number(message.ragSearchCount || 0);
   const errors = Number(message.toolErrorCount || 0);
   const duration = formatDuration(message.durationMs);
+  const collapsedLabel = t('process.summary.processed', {
+    duration,
+    defaultValue: `Processed ${duration}`,
+  });
   const metaParts = [
     toolCalls > 0 ? t('process.metrics.toolCalls', { count: toolCalls, defaultValue: '{{count}} tool calls' }) : null,
     searches > 0 ? t('process.metrics.searches', { count: searches, defaultValue: '{{count}} searches' }) : null,
@@ -274,49 +316,60 @@ function ProcessSummaryRow({
   ].filter(Boolean);
 
   return (
-    <div className="rounded-xl border border-neutral-200 bg-neutral-50/80 text-[12px] text-neutral-700 dark:border-neutral-800 dark:bg-neutral-900/55 dark:text-neutral-300">
+    <div className="border-b border-neutral-200 pb-3 text-[12px] text-neutral-700 dark:border-neutral-800 dark:text-neutral-300">
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
-        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left"
+        className="flex w-full items-center gap-1.5 text-left text-[13px] font-medium text-neutral-500 transition hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
       >
+        <Activity className="h-4 w-4 shrink-0" strokeWidth={2} />
+        <span>{collapsedLabel}</span>
         {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-neutral-500" strokeWidth={2} />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
         ) : (
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-neutral-500" strokeWidth={2} />
+          <ChevronRight className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
         )}
-        <Activity className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-400" strokeWidth={2} />
-        <span className="font-medium text-neutral-900 dark:text-neutral-100">{title}</span>
-        <span className="min-w-0 truncate text-neutral-500 dark:text-neutral-400">
-          {metaParts.join(' · ')}
-        </span>
       </button>
       {expanded ? (
-        <div className="space-y-1 border-t border-neutral-200 px-3.5 py-2.5 dark:border-neutral-800">
-          {steps.length > 0 ? (
-            steps.map((step, index) => (
-              <div
-                key={step.activityId || `${message.id || 'process'}-${index}`}
-                className="flex min-w-0 items-start gap-2 text-[12px] text-neutral-600 dark:text-neutral-400"
-              >
-                <span
-                  className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
-                    step.state === 'failed' || step.severity === 'error' || step.severity === 'warning'
-                      ? 'bg-amber-500'
-                      : 'bg-neutral-300 dark:bg-neutral-600'
-                  }`}
-                />
-                <div className="min-w-0">
-                  <div className="truncate">{step.title || t('process.step', { defaultValue: 'Step' })}</div>
-                  {step.detail ? (
-                    <div className="truncate text-neutral-400 dark:text-neutral-500">{step.detail}</div>
-                  ) : null}
-                </div>
-              </div>
-            ))
+        <div className="mt-2 rounded-lg border border-neutral-200 bg-neutral-50/70 px-3 py-2.5 dark:border-neutral-800 dark:bg-neutral-900/55">
+          <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-neutral-500 dark:text-neutral-400">
+            <span className="font-medium text-neutral-900 dark:text-neutral-100">{title}</span>
+            {metaParts.length > 0 ? <span>{metaParts.join(' · ')}</span> : null}
+          </div>
+          {detailMessages.length > 0 && renderDetailMessage ? (
+            <div className="space-y-4">
+              {detailMessages.map((detailMessage, index) =>
+                renderDetailMessage(detailMessage, index),
+              )}
+            </div>
           ) : (
-            <div className="text-neutral-500 dark:text-neutral-400">
-              {t('process.noSteps', { defaultValue: 'No detailed steps recorded.' })}
+            <div className="space-y-1">
+              {steps.length > 0 ? (
+                steps.map((step, index) => (
+                  <div
+                    key={step.activityId || `${message.id || 'process'}-${index}`}
+                    className="flex min-w-0 items-start gap-2 text-[12px] text-neutral-600 dark:text-neutral-400"
+                  >
+                    <span
+                      className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
+                        step.state === 'failed' || step.severity === 'error' || step.severity === 'warning'
+                          ? 'bg-amber-500'
+                          : 'bg-neutral-300 dark:bg-neutral-600'
+                      }`}
+                    />
+                    <div className="min-w-0">
+                      <div className="truncate">{step.title || t('process.step', { defaultValue: 'Step' })}</div>
+                      {step.detail ? (
+                        <div className="truncate text-neutral-400 dark:text-neutral-500">{step.detail}</div>
+                      ) : null}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-neutral-500 dark:text-neutral-400">
+                  {t('process.noSteps', { defaultValue: 'No detailed steps recorded.' })}
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -48,6 +48,7 @@
     "step": "Step",
     "noSteps": "No detailed steps recorded.",
     "summary": {
+      "processed": "Processed {{duration}}",
       "completed": "Process completed",
       "failed": "Process failed",
       "cancelled": "Process stopped"

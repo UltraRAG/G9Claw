@@ -14,7 +14,7 @@ import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messag
 import { normalizedToChatMessages } from './useChatMessages';
 
 const MESSAGES_PER_PAGE = 20;
-const INITIAL_VISIBLE_MESSAGES = 100;
+const INITIAL_VISIBLE_MESSAGES = Number.POSITIVE_INFINITY;
 
 type PendingViewSession = {
   sessionId: string | null;
@@ -496,12 +496,14 @@ export function useChatSessionState({
       projectName: selectedProject.name,
       projectPath: selectedProject.fullPath || selectedProject.path || '',
       ...sessionRequestParams,
-      limit: MESSAGES_PER_PAGE,
+      limit: null,
       offset: 0,
     }).then(slot => {
       if (slot) {
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
+        setAllMessagesLoaded(!slot.hasMore);
+        allMessagesLoadedRef.current = !slot.hasMore;
         if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
       }
       setIsLoadingSessionMessages(false);
