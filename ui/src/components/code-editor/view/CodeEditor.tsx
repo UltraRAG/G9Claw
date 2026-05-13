@@ -15,6 +15,7 @@ import CodeEditorHeader from './subcomponents/CodeEditorHeader';
 import CodeEditorLoadingState from './subcomponents/CodeEditorLoadingState';
 import CodeEditorSurface from './subcomponents/CodeEditorSurface';
 import CodeEditorBinaryFile from './subcomponents/CodeEditorBinaryFile';
+import CodeEditorImageFile from './subcomponents/CodeEditorImageFile';
 import { api } from '../../../utils/api';
 
 type CodeEditorProps = {
@@ -59,6 +60,7 @@ export default function CodeEditor({
     saveSuccess,
     saveError,
     isBinary,
+    isImage,
     handleSave,
     handleDownload,
   } = useCodeEditorDocument({
@@ -85,6 +87,14 @@ export default function CodeEditor({
     const previewUrl = api.projectPreviewUrl(projectName, file.path, projectRoot || projectPath);
     window.open(previewUrl, '_blank', 'noopener');
   }, [file.path, file.projectName, projectPath, projectRoot]);
+
+  const imageUrl = useMemo(() => {
+    if (!isImage || !file.projectName) {
+      return null;
+    }
+
+    return api.projectPreviewUrl(file.projectName, file.path, projectRoot || projectPath);
+  }, [file.path, file.projectName, isImage, projectPath, projectRoot]);
 
   const minimapExtension = useMemo(
     () => (
@@ -162,8 +172,30 @@ export default function CodeEditor({
     wordWrap,
   ]);
 
+  const actionLabels = {
+    showingChanges: t('header.showingChanges'),
+    editMarkdown: t('actions.editMarkdown'),
+    previewMarkdown: t('actions.previewMarkdown'),
+    download: t('actions.download'),
+    openHtmlPreview: t('actions.openHtmlPreview'),
+    save: t('actions.save'),
+    saving: t('actions.saving'),
+    saved: t('actions.saved'),
+    fullscreen: t('actions.fullscreen'),
+    exitFullscreen: t('actions.exitFullscreen'),
+    close: t('actions.close'),
+  };
+
+  const handleShortcutSave = useCallback(() => {
+    if (isBinary || isImage) {
+      return;
+    }
+
+    void handleSave();
+  }, [handleSave, isBinary, isImage]);
+
   useEditorKeyboardShortcuts({
-    onSave: handleSave,
+    onSave: handleShortcutSave,
     onClose,
     dependency: content,
   });
@@ -174,6 +206,8 @@ export default function CodeEditor({
         isDarkMode={isDarkMode}
         isSidebar={isSidebar}
         loadingText={t('loading', { fileName: file.name })}
+        closeLabel={t('actions.close')}
+        onClose={onClose}
       />
     );
   }
@@ -186,9 +220,27 @@ export default function CodeEditor({
         isSidebar={isSidebar}
         isFullscreen={isFullscreen}
         onClose={onClose}
+        onDownload={() => void handleDownload()}
         onToggleFullscreen={() => setIsFullscreen((previous) => !previous)}
         title={t('binaryFile.title', 'Binary File')}
         message={t('binaryFile.message', 'The file "{{fileName}}" cannot be displayed in the text editor because it is a binary file.', { fileName: file.name })}
+        labels={actionLabels}
+      />
+    );
+  }
+
+  if (isImage) {
+    return (
+      <CodeEditorImageFile
+        file={file}
+        imageUrl={imageUrl}
+        isSidebar={isSidebar}
+        isFullscreen={isFullscreen}
+        onClose={onClose}
+        onDownload={() => void handleDownload()}
+        onToggleFullscreen={() => setIsFullscreen((previous) => !previous)}
+        labels={actionLabels}
+        unavailableMessage={t('imageFile.unavailable', 'Image preview unavailable.')}
       />
     );
   }
@@ -225,19 +277,7 @@ export default function CodeEditor({
             onSave={handleSave}
             onToggleFullscreen={() => setIsFullscreen((previous) => !previous)}
             onClose={onClose}
-            labels={{
-              showingChanges: t('header.showingChanges'),
-              editMarkdown: t('actions.editMarkdown'),
-              previewMarkdown: t('actions.previewMarkdown'),
-              download: t('actions.download'),
-              openHtmlPreview: t('actions.openHtmlPreview'),
-              save: t('actions.save'),
-              saving: t('actions.saving'),
-              saved: t('actions.saved'),
-              fullscreen: t('actions.fullscreen'),
-              exitFullscreen: t('actions.exitFullscreen'),
-              close: t('actions.close'),
-            }}
+            labels={actionLabels}
           />
 
           {saveError && (

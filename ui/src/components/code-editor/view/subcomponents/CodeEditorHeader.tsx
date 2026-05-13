@@ -1,4 +1,4 @@
-import { Code2, Download, ExternalLink, Eye, Maximize2, Minimize2, Save, X } from 'lucide-react';
+import { Code2, Download, Eye, Maximize2, Minimize2, Save, X } from 'lucide-react';
 import type { CodeEditorFile } from '../../types/types';
 
 type CodeEditorHeaderProps = {
@@ -10,6 +10,7 @@ type CodeEditorHeaderProps = {
   markdownPreview: boolean;
   saving: boolean;
   saveSuccess: boolean;
+  showSave?: boolean;
   onToggleMarkdownPreview: () => void;
   onOpenHtmlPreview: () => void;
   onDownload: () => void;
@@ -40,6 +41,7 @@ export default function CodeEditorHeader({
   markdownPreview,
   saving,
   saveSuccess,
+  showSave = true,
   onToggleMarkdownPreview,
   onOpenHtmlPreview,
   onDownload,
@@ -100,7 +102,7 @@ export default function CodeEditorHeader({
             className={iconBtn}
             title={labels.openHtmlPreview}
           >
-            <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.75} />
+            <Eye className="h-3.5 w-3.5" strokeWidth={1.75} />
           </button>
         )}
 
@@ -108,31 +110,33 @@ export default function CodeEditorHeader({
           <Download className="h-3.5 w-3.5" strokeWidth={1.75} />
         </button>
 
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={saving}
-          className={
-            saveSuccess
-              ? 'flex h-7 w-7 items-center justify-center rounded-md bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
-              : `${iconBtn} disabled:opacity-50`
-          }
-          title={saveTitle}
-        >
-          {saveSuccess ? (
-            <svg
-              className="h-3.5 w-3.5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-          ) : (
-            <Save className="h-3.5 w-3.5" strokeWidth={1.75} />
-          )}
-        </button>
+        {showSave ? (
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving}
+            className={
+              saveSuccess
+                ? 'flex h-7 w-7 items-center justify-center rounded-md bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
+                : `${iconBtn} disabled:opacity-50`
+            }
+            title={saveTitle}
+          >
+            {saveSuccess ? (
+              <svg
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <Save className="h-3.5 w-3.5" strokeWidth={1.75} />
+            )}
+          </button>
+        ) : null}
 
         {!isSidebar && (
           <button

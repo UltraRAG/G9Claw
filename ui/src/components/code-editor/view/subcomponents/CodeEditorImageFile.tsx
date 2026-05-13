@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+import { Image as ImageIcon } from 'lucide-react';
 import type { CodeEditorFile } from '../../types/types';
 import CodeEditorHeader from './CodeEditorHeader';
 
@@ -15,63 +17,34 @@ type CodeEditorActionLabels = {
   close: string;
 };
 
-type CodeEditorBinaryFileProps = {
+type CodeEditorImageFileProps = {
   file: CodeEditorFile;
+  imageUrl: string | null;
   isSidebar: boolean;
   isFullscreen: boolean;
   onClose: () => void;
   onDownload: () => void;
   onToggleFullscreen: () => void;
-  title: string;
-  message: string;
   labels: CodeEditorActionLabels;
+  unavailableMessage: string;
 };
 
-export default function CodeEditorBinaryFile({
+export default function CodeEditorImageFile({
   file,
+  imageUrl,
   isSidebar,
   isFullscreen,
   onClose,
   onDownload,
   onToggleFullscreen,
-  title,
-  message,
   labels,
-}: CodeEditorBinaryFileProps) {
-  const binaryContent = (
-    <div className="flex h-full w-full flex-col items-center justify-center bg-white p-8 dark:bg-neutral-950">
-      <div className="flex max-w-md flex-col items-center gap-4 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-neutral-100 dark:bg-neutral-900">
-          <svg
-            className="h-7 w-7 text-neutral-500 dark:text-neutral-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.5}
-              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-            />
-          </svg>
-        </div>
-        <div>
-          <h3 className="mb-1 text-[14px] font-medium text-neutral-900 dark:text-neutral-100">
-            {title}
-          </h3>
-          <p className="text-[13px] text-neutral-500 dark:text-neutral-400">{message}</p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="mt-2 rounded-md bg-neutral-900 px-4 py-1.5 text-[13px] text-white transition-colors hover:opacity-90 dark:bg-neutral-100 dark:text-neutral-900"
-        >
-          {labels.close}
-        </button>
-      </div>
-    </div>
-  );
+  unavailableMessage,
+}: CodeEditorImageFileProps) {
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  useEffect(() => {
+    setLoadFailed(false);
+  }, [imageUrl]);
 
   const headerTopBar = (
     <CodeEditorHeader
@@ -94,11 +67,40 @@ export default function CodeEditorBinaryFile({
     />
   );
 
+  const imageContent = (
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-neutral-50 p-4 dark:bg-neutral-950">
+      {imageUrl && !loadFailed ? (
+        <img
+          src={imageUrl}
+          alt={file.name}
+          onError={() => setLoadFailed(true)}
+          className="max-h-full max-w-full object-contain"
+        />
+      ) : (
+        <div className="flex max-w-sm flex-col items-center gap-3 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-neutral-500 shadow-sm dark:bg-neutral-900 dark:text-neutral-400">
+            <ImageIcon className="h-7 w-7" strokeWidth={1.5} />
+          </div>
+          <p className="text-[13px] text-neutral-500 dark:text-neutral-400">
+            {unavailableMessage}
+          </p>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md bg-neutral-900 px-4 py-1.5 text-[13px] text-white transition-colors hover:opacity-90 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            {labels.close}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
   if (isSidebar) {
     return (
       <div className="flex h-full w-full flex-col bg-white dark:bg-neutral-950">
         {headerTopBar}
-        {binaryContent}
+        {imageContent}
       </div>
     );
   }
@@ -109,13 +111,13 @@ export default function CodeEditorBinaryFile({
 
   const innerClassName = isFullscreen
     ? 'bg-white dark:bg-neutral-950 flex flex-col w-full h-full'
-    : 'bg-white dark:bg-neutral-950 flex flex-col w-full h-full md:rounded-xl md:border md:border-neutral-200 dark:md:border-neutral-800 md:shadow-xl md:w-full md:max-w-2xl md:h-auto md:max-h-[60vh]';
+    : 'bg-white dark:bg-neutral-950 flex flex-col w-full h-full md:rounded-xl md:border md:border-neutral-200 dark:md:border-neutral-800 md:shadow-xl md:w-full md:max-w-6xl md:h-[80vh] md:max-h-[80vh]';
 
   return (
     <div className={containerClassName}>
       <div className={innerClassName}>
         {headerTopBar}
-        {binaryContent}
+        {imageContent}
       </div>
     </div>
   );

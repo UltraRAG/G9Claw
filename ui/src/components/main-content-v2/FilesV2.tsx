@@ -6,7 +6,7 @@ import {
   ChevronRight,
   ChevronsDownUp,
   Download,
-  ExternalLink,
+  Eye,
   Folder,
   FolderOpen,
   Loader2,
@@ -455,7 +455,7 @@ export default function FilesV2({ selectedProject, onFileOpen, onClose }: FilesV
                       title={t('fileTree.openHtmlPreview', { defaultValue: 'Open HTML preview in new tab' }) as string}
                       aria-label={t('fileTree.openHtmlPreview', { defaultValue: 'Open HTML preview in new tab' }) as string}
                     >
-                      <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.75} />
+                      <Eye className="h-3.5 w-3.5" strokeWidth={1.75} />
                     </button>
                   ) : null}
                 </li>

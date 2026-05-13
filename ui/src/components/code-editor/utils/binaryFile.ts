@@ -1,4 +1,8 @@
-// Binary file extensions (images are handled by ImageViewer, not here)
+const IMAGE_EXTENSIONS = [
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'tiff', 'avif',
+];
+
+// Binary file extensions (images are handled by the image preview, not CodeMirror)
 const BINARY_EXTENSIONS = [
   // Archives
   'zip', 'tar', 'gz', 'rar', '7z', 'bz2', 'xz',
@@ -19,4 +23,9 @@ const BINARY_EXTENSIONS = [
 export const isBinaryFile = (filename: string): boolean => {
   const ext = filename.split('.').pop()?.toLowerCase();
   return BINARY_EXTENSIONS.includes(ext ?? '');
+};
+
+export const isImageFile = (filename: string): boolean => {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  return IMAGE_EXTENSIONS.includes(ext ?? '');
 };

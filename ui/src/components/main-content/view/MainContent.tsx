@@ -160,7 +160,6 @@ function MainContent({
     editingFile,
     editorWidth,
     editorExpanded,
-    hasManualWidth,
     resizeHandleRef,
     handleFileOpen,
     handleCloseEditor,
@@ -733,14 +732,12 @@ function MainContent({
             isMobile={isMobile}
             editorExpanded={editorExpanded}
             editorWidth={editorWidth}
-            hasManualWidth={hasManualWidth}
             resizeHandleRef={resizeHandleRef}
             onResizeStart={handleResizeStart}
             onCloseEditor={handleCloseEditor}
             onToggleEditorExpand={handleToggleEditorExpand}
             projectPath={selectedProject.path}
             projectRoot={selectedProject.fullPath || selectedProject.path}
-            fillSpace={activeTab === 'files'}
           />
         )}
       </div>

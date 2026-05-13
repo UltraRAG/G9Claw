@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../../utils/api';
 import type { CodeEditorFile } from '../types/types';
-import { isBinaryFile } from '../utils/binaryFile';
+import { isBinaryFile, isImageFile } from '../utils/binaryFile';
 
 type UseCodeEditorDocumentParams = {
   file: CodeEditorFile;
@@ -23,6 +23,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isBinary, setIsBinary] = useState(false);
+  const [isImage, setIsImage] = useState(false);
   const fileProjectName = file.projectName ?? projectPath;
   const filePath = file.path;
   const fileName = file.name;
@@ -34,9 +35,18 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
       try {
         setLoading(true);
         setIsBinary(false);
+        setIsImage(false);
+
+        if (isImageFile(file.name)) {
+          setContent('');
+          setIsImage(true);
+          setLoading(false);
+          return;
+        }
 
         // Check if file is binary by extension
         if (isBinaryFile(file.name)) {
+          setContent('');
           setIsBinary(true);
           setLoading(false);
           return;
@@ -108,20 +118,40 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
     }
   }, [content, filePath, fileProjectName]);
 
-  const handleDownload = useCallback(() => {
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
+  const handleDownload = useCallback(async () => {
+    try {
+      let blob: Blob;
 
-    anchor.href = url;
-    anchor.download = file.name;
+      if (isImage || isBinary) {
+        if (!fileProjectName) {
+          throw new Error('Missing project identifier');
+        }
 
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
+        const response = await api.readFileBlob(fileProjectName, filePath);
+        if (!response.ok) {
+          throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+        }
 
-    URL.revokeObjectURL(url);
-  }, [content, file.name]);
+        blob = await response.blob();
+      } else {
+        blob = new Blob([content], { type: 'text/plain' });
+      }
+
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+
+      anchor.href = url;
+      anchor.download = file.name;
+
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error downloading file:', error);
+    }
+  }, [content, file.name, filePath, fileProjectName, isBinary, isImage]);
 
   return {
     content,
@@ -131,6 +161,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
     saveSuccess,
     saveError,
     isBinary,
+    isImage,
     handleSave,
     handleDownload,
   };

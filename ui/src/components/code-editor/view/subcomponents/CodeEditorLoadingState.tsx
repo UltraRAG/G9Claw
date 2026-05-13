@@ -1,16 +1,33 @@
+import { X } from 'lucide-react';
 import { getEditorLoadingStyles } from '../../utils/editorStyles';
 
 type CodeEditorLoadingStateProps = {
   isDarkMode: boolean;
   isSidebar: boolean;
   loadingText: string;
+  closeLabel: string;
+  onClose: () => void;
 };
 
 export default function CodeEditorLoadingState({
   isDarkMode,
   isSidebar,
   loadingText,
+  closeLabel,
+  onClose,
 }: CodeEditorLoadingStateProps) {
+  const closeButton = (
+    <button
+      type="button"
+      onClick={onClose}
+      className="absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+      title={closeLabel}
+      aria-label={closeLabel}
+    >
+      <X className="h-3.5 w-3.5" strokeWidth={1.75} />
+    </button>
+  );
+
   const spinner = (
     <div className="flex items-center gap-3 text-[13px] text-neutral-600 dark:text-neutral-300">
       <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-900 dark:border-neutral-700 dark:border-t-neutral-100" />
@@ -22,12 +39,14 @@ export default function CodeEditorLoadingState({
     <>
       <style>{getEditorLoadingStyles(isDarkMode)}</style>
       {isSidebar ? (
-        <div className="flex h-full w-full items-center justify-center bg-white dark:bg-neutral-950">
+        <div className="relative flex h-full w-full items-center justify-center bg-white dark:bg-neutral-950">
+          {closeButton}
           {spinner}
         </div>
       ) : (
         <div className="fixed inset-0 z-[9999] md:flex md:items-center md:justify-center md:bg-black/40 md:backdrop-blur-sm">
-          <div className="code-editor-loading flex h-full w-full items-center justify-center bg-white p-8 dark:bg-neutral-950 md:h-auto md:w-auto md:rounded-xl md:border md:border-neutral-200 dark:md:border-neutral-800">
+          <div className="code-editor-loading relative flex h-full w-full items-center justify-center bg-white p-8 dark:bg-neutral-950 md:h-auto md:w-auto md:rounded-xl md:border md:border-neutral-200 dark:md:border-neutral-800">
+            {closeButton}
             {spinner}
           </div>
         </div>
