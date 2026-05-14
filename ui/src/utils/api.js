@@ -177,9 +177,10 @@ export const api = {
       method: 'POST',
     }),
   sessions: (projectName, limit = 5, offset = 0) =>
-    authenticatedFetch(`/api/projects/${projectName}/sessions?limit=${limit}&offset=${offset}`, {
-      timeoutMs: PROJECTS_REQUEST_TIMEOUT_MS,
-    }),
+    authenticatedFetch(
+      `/api/projects/${encodeURIComponent(projectName)}/sessions?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`,
+      { timeoutMs: PROJECTS_REQUEST_TIMEOUT_MS },
+    ),
   // Unified endpoint — all providers through one URL
   unifiedSessionMessages: (sessionId, provider = 'claude', { projectName = '', projectPath = '', limit = null, offset = 0 } = {}) => {
     const params = new URLSearchParams();

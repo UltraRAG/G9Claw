@@ -91,6 +91,65 @@ const getProjectSessions = (project: Project): ProjectSession[] => {
   ];
 };
 
+const mergeClaudeSessionPreviewWithLoaded = (
+  previousProject: Project | undefined,
+  nextProject: Project,
+): Project => {
+  const previousSessions = previousProject?.sessions ?? [];
+  const nextSessions = nextProject.sessions ?? [];
+  const nextTotal =
+    typeof nextProject.sessionMeta?.total === 'number'
+      ? nextProject.sessionMeta.total
+      : null;
+
+  if (
+    !previousProject ||
+    previousSessions.length <= nextSessions.length ||
+    nextSessions.length > PROJECT_SESSION_PREVIEW_LIMIT
+  ) {
+    return nextProject;
+  }
+
+  if (nextTotal === 0) {
+    return nextProject;
+  }
+
+  const nextIds = new Set(nextSessions.map((session) => session.id));
+  const preservedLoadedSessions = previousSessions.filter(
+    (session) => session.id && !nextIds.has(session.id),
+  );
+  const sessions = [...nextSessions, ...preservedLoadedSessions].slice(
+    0,
+    nextTotal ?? Number.MAX_SAFE_INTEGER,
+  );
+
+  return {
+    ...nextProject,
+    sessions,
+    sessionMeta: {
+      ...(nextProject.sessionMeta ?? {}),
+      hasMore:
+        typeof nextTotal === 'number'
+          ? sessions.length < nextTotal
+          : nextProject.sessionMeta?.hasMore,
+    },
+  };
+};
+
+export const mergeProjectsPreservingLoadedSessions = (
+  previousProjects: Project[],
+  nextProjects: Project[],
+): Project[] => {
+  if (previousProjects.length === 0) {
+    return nextProjects;
+  }
+
+  const previousByName = new Map(previousProjects.map((project) => [project.name, project]));
+  return nextProjects.map((project) =>
+    mergeClaudeSessionPreviewWithLoaded(previousByName.get(project.name), project),
+  );
+};
+
 const resetProjectSessionPreview = (project: Project): Project => {
   const sessions = project.sessions ?? [];
   if (sessions.length <= PROJECT_SESSION_PREVIEW_LIMIT) {
@@ -250,12 +309,10 @@ export function useProjectsState({
           }
 
           setProjects((prevProjects) => {
-            if (prevProjects.length === 0) {
-              return projectData;
-            }
+            const mergedProjects = mergeProjectsPreservingLoadedSessions(prevProjects, projectData);
 
-            return projectsHaveChanges(prevProjects, projectData, true)
-              ? projectData
+            return projectsHaveChanges(prevProjects, mergedProjects, true)
+              ? mergedProjects
               : prevProjects;
           });
           setProjectsLoadError(null);
@@ -359,7 +416,10 @@ export function useProjectsState({
       (selectedSession && activeSessions.has(selectedSession.id)) ||
       (activeSessions.size > 0 && Array.from(activeSessions).some((id) => id.startsWith('new-session-')));
 
-    const updatedProjects = projectsMessage.projects;
+    const updatedProjects = mergeProjectsPreservingLoadedSessions(
+      projects,
+      projectsMessage.projects,
+    );
 
     if (
       hasActiveSession &&
@@ -600,13 +660,13 @@ export function useProjectsState({
   }, []);
 
   const loadMoreSessions = useCallback(
-    async (projectName: string) => {
-      if (!projectName) return;
-      if (loadingMoreSessionsRef.current.has(projectName)) return;
+    async (projectName: string): Promise<boolean> => {
+      if (!projectName) return false;
+      if (loadingMoreSessionsRef.current.has(projectName)) return false;
 
       const project = projectsRef.current.find((p) => p.name === projectName);
-      if (!project) return;
-      if (project.sessionMeta?.hasMore === false) return;
+      if (!project) return false;
+      if (project.sessionMeta?.hasMore === false) return false;
 
       const offset = (project.sessions ?? []).length;
       setProjectLoading(projectName, true);
@@ -622,11 +682,16 @@ export function useProjectsState({
           total?: number;
         };
         const incoming = Array.isArray(data.sessions) ? data.sessions : [];
+        const currentIds = new Set((project.sessions ?? []).map((session) => session.id));
+        const incomingUniqueSessions = incoming.filter(
+          (session) => session?.id && !currentIds.has(session.id),
+        );
+        const hasMore = Boolean(data.hasMore && incomingUniqueSessions.length > 0);
 
         const mergeSessions = (existing: ProjectSession[]): ProjectSession[] => {
           const seen = new Set(existing.map((s) => s.id));
           const merged = [...existing];
-          for (const session of incoming) {
+          for (const session of incomingUniqueSessions) {
             if (!session?.id || seen.has(session.id)) continue;
             seen.add(session.id);
             merged.push(session);
@@ -639,7 +704,7 @@ export function useProjectsState({
           sessions: mergeSessions(target.sessions ?? []),
           sessionMeta: {
             ...(target.sessionMeta ?? {}),
-            hasMore: Boolean(data.hasMore),
+            hasMore,
             total: typeof data.total === 'number' ? data.total : target.sessionMeta?.total,
           },
         });
@@ -651,8 +716,10 @@ export function useProjectsState({
         setSelectedProject((prev) =>
           prev && prev.name === projectName ? applyToProject(prev) : prev,
         );
+        return incomingUniqueSessions.length > 0 || !hasMore;
       } catch (error) {
         console.error('loadMoreSessions failed for project', projectName, error);
+        return false;
       } finally {
         setProjectLoading(projectName, false);
       }
@@ -664,16 +731,17 @@ export function useProjectsState({
     try {
       const response = await api.projects();
       const freshProjects = (await response.json()) as Project[];
+      const mergedProjects = mergeProjectsPreservingLoadedSessions(projectsRef.current, freshProjects);
 
       setProjects((prevProjects) =>
-        projectsHaveChanges(prevProjects, freshProjects, true) ? freshProjects : prevProjects,
+        projectsHaveChanges(prevProjects, mergedProjects, true) ? mergedProjects : prevProjects,
       );
 
       if (!selectedProject) {
         return;
       }
 
-      const refreshedProject = freshProjects.find((project) => project.name === selectedProject.name);
+      const refreshedProject = mergedProjects.find((project) => project.name === selectedProject.name);
       if (!refreshedProject) {
         return;
       }

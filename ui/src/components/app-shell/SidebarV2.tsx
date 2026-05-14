@@ -232,7 +232,7 @@ export type SidebarV2Props = {
   onDeselectProject?: () => void;
   onResetProjectSessionPreview?: (projectName: string) => void;
   onCollapse?: () => void;
-  onLoadMoreSessions?: (projectName: string) => void;
+  onLoadMoreSessions?: (projectName: string) => void | Promise<boolean>;
   onRetryLoad?: () => void;
   loadingMoreProjectIds?: Set<string>;
 };
@@ -673,7 +673,11 @@ export default function SidebarV2({
     const totalSessions =
       typeof project.sessionMeta?.total === 'number' ? project.sessionMeta.total : null;
     const remaining =
-      totalSessions !== null ? Math.max(0, totalSessions - allSessions.length) : null;
+      totalSessions !== null
+        ? Math.max(0, totalSessions - (project.sessions?.length ?? 0))
+        : null;
+    const canRevealLoadedSessions = isCollapsed && hiddenLoadedCount > 0;
+    const canLoadRemoteSessions = !isCollapsed && hasMoreSessions && Boolean(onLoadMoreSessions);
 
     // `flat` mode is used by the General tab where sessions are rendered as a
     // top-level list (no folder ancestor), so the usual ml-6 indent would
@@ -772,20 +776,20 @@ export default function SidebarV2({
           </div>
         )}
 
-        {((isCollapsed && hiddenLoadedCount > 0) || (!isCollapsed && hasMoreSessions && onLoadMoreSessions)) ? (
+        {(canRevealLoadedSessions || canLoadRemoteSessions) ? (
           <button
             type="button"
             onClick={(event) => {
               event.stopPropagation();
               if (isLoadingMore) return;
-              if (isCollapsed) {
+              if (canRevealLoadedSessions) {
                 setCollapsedSessionProjects((previous) => {
                   const next = new Set(previous);
                   next.delete(project.name);
                   return next;
                 });
-              } else {
-                onLoadMoreSessions?.(project.name);
+              } else if (canLoadRemoteSessions) {
+                void onLoadMoreSessions?.(project.name);
               }
             }}
             disabled={isLoadingMore}
@@ -799,7 +803,11 @@ export default function SidebarV2({
             {isLoadingMore
               ? t('sidebar:sessions.loadingMore', { defaultValue: 'Loading more…' })
               : (() => {
-                  const totalMore = hiddenLoadedCount + (remaining !== null && remaining > 0 ? remaining : 0);
+                  const totalMore = canRevealLoadedSessions
+                    ? hiddenLoadedCount
+                    : remaining !== null && remaining > 0
+                      ? remaining
+                      : 0;
                   return totalMore > 0
                     ? t('sidebar:sessions.showMoreCount', {
                         count: totalMore,
