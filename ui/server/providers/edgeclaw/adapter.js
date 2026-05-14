@@ -506,6 +506,7 @@ function normalizeContentPart(part, raw, sessionId, partIndex, options) {
         toolId: part.tool_use_id || part.id || '',
         content: stringifyContent(part.content),
         isError: Boolean(part.is_error),
+        toolUseResult: raw?.toolUseResult,
       })];
     }
 
@@ -753,6 +754,7 @@ function normalizeDirectEvent(raw, sessionId, options) {
       toolId: raw.tool_use_id || raw.toolId || '',
       content: stringifyContent(raw.content ?? raw.output),
       isError: Boolean(raw.is_error || raw.isError),
+      toolUseResult: raw.toolUseResult,
     })];
   }
 

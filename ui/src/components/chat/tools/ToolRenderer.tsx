@@ -3,6 +3,7 @@ import type { Project } from '../../../types/app';
 import type { SubagentChildTool } from '../types/types';
 import { getToolConfig } from './configs/toolConfigs';
 import { OneLineDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer, RagResultContent } from './components';
+import { enrichAskUserQuestionInput } from './utils/askUserQuestionAnswers';
 import { parseRagToolResult } from './utils/ragToolResult';
 
 type DiffLine = {
@@ -145,6 +146,13 @@ const ToolRendererInner: React.FC<ToolRendererProps> = ({
     }
   }, [mode, toolInput, toolResult]);
 
+  const displayData = useMemo(() => {
+    if (mode === 'input' && toolName === 'AskUserQuestion') {
+      return enrichAskUserQuestionInput(parsedData, toolResult);
+    }
+    return parsedData;
+  }, [mode, parsedData, toolName, toolResult]);
+
   const ragResult = useMemo(() => {
     if (mode !== 'result' || toolName !== 'Bash') return null;
     return parseRagToolResult(toolResult);
@@ -224,7 +232,7 @@ const ToolRendererInner: React.FC<ToolRendererProps> = ({
         'title getter',
         toolName,
         () => typeof displayConfig.title === 'function'
-          ? displayConfig.title(parsedData)
+          ? displayConfig.title(displayData)
           : displayConfig.title,
         'Details',
       ),
@@ -238,10 +246,11 @@ const ToolRendererInner: React.FC<ToolRendererProps> = ({
     const contentProps = toObject(safeCall(
       'content props getter',
       toolName,
-      () => displayConfig.getContentProps?.(parsedData, {
+      () => displayConfig.getContentProps?.(displayData, {
         selectedProject,
         createDiff,
-        onFileOpen
+        onFileOpen,
+        toolResult,
       }),
       {},
     ));
