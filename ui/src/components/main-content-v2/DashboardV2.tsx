@@ -39,6 +39,18 @@ function formatCost(n: number): string {
   return `${sign}$${abs.toFixed(2)}`;
 }
 
+const TIER_DISPLAY_ORDER = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING', 'HARD', 'RECORDED'];
+const TIER_DISPLAY_RANK = new Map(TIER_DISPLAY_ORDER.map((tier, index) => [tier, index]));
+
+export function getSortedTierEntries<T>(byTier: Record<string, T> | null | undefined): Array<[string, T]> {
+  return Object.entries(byTier || {}).sort(([tierA], [tierB]) => {
+    const rankA = TIER_DISPLAY_RANK.get(tierA.toUpperCase()) ?? TIER_DISPLAY_ORDER.length;
+    const rankB = TIER_DISPLAY_RANK.get(tierB.toUpperCase()) ?? TIER_DISPLAY_ORDER.length;
+    if (rankA !== rankB) return rankA - rankB;
+    return tierA.localeCompare(tierB);
+  });
+}
+
 function formatTime(iso?: string | null, fallback?: number): string {
   let value: number | null = null;
   if (typeof iso === 'string' && iso) {
@@ -599,7 +611,7 @@ function ProjectGroupCard({
             <div className="mb-3">
               <div className="text-xxs mb-2 text-neutral-400 dark:text-neutral-500">Tier breakdown</div>
               <div className="flex flex-wrap gap-2">
-                {Object.entries(agg.byTier).map(([tier, bucket]) => (
+                {getSortedTierEntries(agg.byTier).map(([tier, bucket]) => (
                   <span
                     key={tier}
                     className="text-xxs inline-flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1 text-neutral-600 dark:border-neutral-700 dark:text-neutral-400"
@@ -643,7 +655,7 @@ const TIER_COLORS: Record<string, string> = {
 };
 
 function TierBar({ byTier }: { byTier: Record<string, { estimatedCost?: number; requestCount?: number }> }) {
-  const entries = Object.entries(byTier).filter(([, b]) => (b?.requestCount ?? 0) > 0);
+  const entries = getSortedTierEntries(byTier).filter(([, b]) => (b?.requestCount ?? 0) > 0);
   if (entries.length === 0) return null;
   const total = entries.reduce((s, [, b]) => s + (b?.estimatedCost ?? 0), 0) || 1;
 
@@ -1055,7 +1067,7 @@ function SessionRow({ session }: { session: DashboardSession }) {
                 orchestrated
               </span>
             )}
-            {Object.keys(routing.byTier || {}).map((tier) => (
+            {getSortedTierEntries(routing.byTier).map(([tier]) => (
               <span key={tier} className="text-xxs rounded bg-blue-100 px-1.5 py-0.5 font-medium text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">
                 {tier}
               </span>
