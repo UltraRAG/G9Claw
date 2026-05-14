@@ -8,7 +8,6 @@ import type {
   MouseEvent,
   ReactNode,
   RefObject,
-  TouchEvent,
 } from 'react';
 import {
   ArrowUp,
@@ -60,12 +59,7 @@ export type ComposerV2Props = {
   onTextareaScrollSync: (target: HTMLTextAreaElement) => void;
   onTextareaInput: (event: FormEvent<HTMLTextAreaElement>) => void;
   onInputFocusChange?: (focused: boolean) => void;
-  onSubmit: (
-    event:
-      | FormEvent<HTMLFormElement>
-      | MouseEvent<HTMLButtonElement>
-      | TouchEvent<HTMLButtonElement>,
-  ) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onAbortSession: () => void;
   openImagePicker: () => void;
   attachedImages: File[];
@@ -95,6 +89,7 @@ export type ComposerV2Props = {
   isLoading: boolean;
   canAbortSession: boolean;
   isAbortPending?: boolean;
+  isSubmitPending?: boolean;
   tokenBudget?: Record<string, unknown> | null;
 
   pendingPermissionRequests: PendingPermissionRequest[];
@@ -287,6 +282,7 @@ export default function ComposerV2({
   isLoading,
   canAbortSession,
   isAbortPending = false,
+  isSubmitPending = false,
   tokenBudget,
   pendingPermissionRequests,
   handlePermissionDecision,
@@ -315,7 +311,9 @@ export default function ComposerV2({
     bottom: textareaRect ? window.innerHeight - textareaRect.top + 8 : 90,
   };
 
-  const disabled = !input.trim() && attachedImages.length === 0 && !(isLoading && canAbortSession);
+  const hasDraftContent = input.trim().length > 0 || attachedImages.length > 0;
+  const hasUploadingImages = uploadingImages.size > 0;
+  const disabled = !hasDraftContent || isLoading || isSubmitPending || hasUploadingImages;
   const contextStatus = getContextStatus(tokenBudget);
   const selectedPermissionOption =
     PERMISSION_MODE_OPTIONS.find((option) => option.mode === permissionMode) ||
@@ -816,20 +814,22 @@ export default function ComposerV2({
                       <button
                         type="submit"
                         disabled={disabled}
-                        onMouseDown={(event) => {
-                          if (disabled) return;
-                          event.preventDefault();
-                          onSubmit(event);
-                        }}
-                        onTouchStart={(event) => {
-                          if (disabled) return;
-                          event.preventDefault();
-                          onSubmit(event);
-                        }}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-900 text-white transition hover:opacity-90 disabled:opacity-40 dark:bg-neutral-50 dark:text-neutral-900"
-                        title={t('input.send', { defaultValue: 'Send' }) as string}
+                        aria-busy={isSubmitPending || hasUploadingImages}
+                        className={cn(
+                          'inline-flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-900 text-white transition hover:opacity-90 disabled:opacity-40 dark:bg-neutral-50 dark:text-neutral-900',
+                          (isSubmitPending || hasUploadingImages) && 'cursor-wait',
+                        )}
+                        title={
+                          isSubmitPending || hasUploadingImages
+                            ? (t('input.sending', { defaultValue: 'Sending...' }) as string)
+                            : (t('input.send', { defaultValue: 'Send' }) as string)
+                        }
                       >
-                        <ArrowUp className="h-4 w-4" strokeWidth={2} />
+                        {isSubmitPending || hasUploadingImages ? (
+                          <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.25} />
+                        ) : (
+                          <ArrowUp className="h-4 w-4" strokeWidth={2} />
+                        )}
                       </button>
                     )}
                   </div>

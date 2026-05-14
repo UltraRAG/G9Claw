@@ -175,6 +175,7 @@ function ChatInterfaceV2({
     attachedImages,
     setAttachedImages,
     uploadingImages,
+    isSubmitPending,
     imageErrors,
     getRootProps,
     getInputProps,
@@ -404,6 +405,7 @@ function ChatInterfaceV2({
       isLoading={isLoading}
       canAbortSession={canAbortSession}
       isAbortPending={isAbortPending}
+      isSubmitPending={isSubmitPending}
       tokenBudget={tokenBudget}
       pendingPermissionRequests={pendingPermissionRequests}
       handlePermissionDecision={handlePermissionDecision}

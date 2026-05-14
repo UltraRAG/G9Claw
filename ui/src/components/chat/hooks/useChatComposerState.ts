@@ -7,7 +7,6 @@ import type {
   KeyboardEvent,
   MouseEvent,
   SetStateAction,
-  TouchEvent,
 } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { authenticatedFetch } from '../../../utils/api';
@@ -165,15 +164,18 @@ export function useChatComposerState({
   const [attachedImages, setAttachedImages] = useState<File[]>([]);
   const [uploadingImages, setUploadingImages] = useState<Map<string, number>>(new Map());
   const [imageErrors, setImageErrors] = useState<Map<string, string>>(new Map());
+  const [isSubmitPending, setIsSubmitPending] = useState(false);
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [thinkingMode, setThinkingMode] = useState('none');
+  const selectedProjectName = selectedProject?.name ?? null;
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputHighlightRef = useRef<HTMLDivElement>(null);
   const handleSubmitRef = useRef<
-    ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
+    ((event: FormEvent<HTMLFormElement> | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
   const inputValueRef = useRef(input);
+  const submitInFlightRef = useRef(false);
 
   // One-shot flag set by `handleCustomCommand` when re-submitting passthrough
   // slash content (e.g. `/projects` for bundled stubs, `/canvas` for skills).
@@ -608,241 +610,257 @@ export function useChatComposerState({
   });
 
   const handleSubmit = useCallback(
-    async (
-      event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
-    ) => {
+    async (event: FormEvent<HTMLFormElement> | KeyboardEvent<HTMLTextAreaElement>) => {
       event.preventDefault();
+      if (submitInFlightRef.current) {
+        return;
+      }
+
       const currentInput = inputValueRef.current;
       const hasAttachments = attachedImages.length > 0;
       if ((!currentInput.trim() && !hasAttachments) || isLoading || !selectedProject) {
         return;
       }
 
-      // Intercept slash commands: if input starts with /commandName, execute as command with args.
-      // Skip when handleCustomCommand just pushed a passthrough back into the
-      // input box — we already executed it once and want this submit to flow
-      // through as a normal user message.
-      const trimmedInput = currentInput.trim();
-      if (skipSlashDetectionOnceRef.current) {
-        skipSlashDetectionOnceRef.current = false;
-      } else if (trimmedInput.startsWith('/')) {
-        const firstSpace = trimmedInput.indexOf(' ');
-        const commandName = firstSpace > 0 ? trimmedInput.slice(0, firstSpace) : trimmedInput;
-        const matchedCommand = slashCommands.find((cmd: SlashCommand) => cmd.name === commandName);
-        if (matchedCommand) {
-          executeCommand(matchedCommand, trimmedInput);
-          setInput('');
-          inputValueRef.current = '';
-          setAttachedImages([]);
-          setUploadingImages(new Map());
-          setImageErrors(new Map());
-          resetCommandMenuState();
-          setIsTextareaExpanded(false);
-          if (textareaRef.current) {
-            textareaRef.current.style.height = 'auto';
+      submitInFlightRef.current = true;
+      setIsSubmitPending(true);
+
+      try {
+        // Intercept slash commands: if input starts with /commandName, execute as command with args.
+        // Skip when handleCustomCommand just pushed a passthrough back into the
+        // input box — we already executed it once and want this submit to flow
+        // through as a normal user message.
+        const trimmedInput = currentInput.trim();
+        if (skipSlashDetectionOnceRef.current) {
+          skipSlashDetectionOnceRef.current = false;
+        } else if (trimmedInput.startsWith('/')) {
+          const firstSpace = trimmedInput.indexOf(' ');
+          const commandName = firstSpace > 0 ? trimmedInput.slice(0, firstSpace) : trimmedInput;
+          const matchedCommand = slashCommands.find((cmd: SlashCommand) => cmd.name === commandName);
+          if (matchedCommand) {
+            executeCommand(matchedCommand, trimmedInput);
+            setInput('');
+            inputValueRef.current = '';
+            setAttachedImages([]);
+            setImageErrors(new Map());
+            resetCommandMenuState();
+            setIsTextareaExpanded(false);
+            if (textareaRef.current) {
+              textareaRef.current.style.height = 'auto';
+            }
+            return;
           }
-          return;
         }
-      }
 
-      const userVisibleInput = trimmedInput || 'Please review the attached file(s).';
-      let messageContent = userVisibleInput;
-      const selectedThinkingMode = thinkingModes.find((mode: { id: string; prefix?: string }) => mode.id === thinkingMode);
-      if (selectedThinkingMode && selectedThinkingMode.prefix) {
-        messageContent = `${selectedThinkingMode.prefix}: ${userVisibleInput}`;
-      }
+        const userVisibleInput = trimmedInput || 'Please review the attached file(s).';
+        let messageContent = userVisibleInput;
+        const selectedThinkingMode = thinkingModes.find(
+          (mode: { id: string; prefix?: string }) => mode.id === thinkingMode,
+        );
+        if (selectedThinkingMode && selectedThinkingMode.prefix) {
+          messageContent = `${selectedThinkingMode.prefix}: ${userVisibleInput}`;
+        }
 
-      let uploadedImages: unknown[] = [];
-      let uploadedFiles: UploadedAttachmentFile[] = [];
-      if (attachedImages.length > 0) {
-        const formData = new FormData();
-        attachedImages.forEach((file) => {
-          formData.append('attachments', file);
+        let uploadedImages: unknown[] = [];
+        let uploadedFiles: UploadedAttachmentFile[] = [];
+        if (attachedImages.length > 0) {
+          setUploadingImages(new Map(attachedImages.map((file) => [file.name, 0])));
+
+          const formData = new FormData();
+          attachedImages.forEach((file) => {
+            formData.append('attachments', file);
+          });
+
+          try {
+            const response = await authenticatedFetch(
+              `/api/projects/${encodeURIComponent(selectedProject.name)}/upload-attachments`,
+              {
+                method: 'POST',
+                headers: {},
+                body: formData,
+              },
+            );
+
+            if (!response.ok) {
+              throw new Error('Failed to upload attachments');
+            }
+
+            const result = await response.json();
+            uploadedImages = Array.isArray(result.images) ? result.images : [];
+            uploadedFiles = Array.isArray(result.files) ? result.files : [];
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown error';
+            console.error('Attachment upload failed:', error);
+            addMessage({
+              type: 'error',
+              content: `Failed to upload attachments: ${message}`,
+              timestamp: new Date(),
+            });
+            return;
+          }
+        }
+
+        messageContent = `${messageContent}${buildAttachmentPathNote(uploadedFiles)}`;
+
+        const pendingSessionId = pendingViewSessionRef.current?.sessionId ?? null;
+        const canResumeCurrentSession =
+          Boolean(currentSessionId) &&
+          (Boolean(selectedSession?.id) || pendingSessionId === currentSessionId);
+        const effectiveSessionId =
+          selectedSession?.id ||
+          (canResumeCurrentSession ? currentSessionId : null) ||
+          (provider === 'cursor' ? sessionStorage.getItem('cursorSessionId') : null);
+        const sessionToActivate = effectiveSessionId || createTemporarySessionId();
+
+        const userMessage: ChatMessage = {
+          type: 'user',
+          content: userVisibleInput,
+          images: uploadedImages as any,
+          attachments: uploadedFiles as any,
+          timestamp: new Date(),
+        };
+
+        addMessage(userMessage);
+        setIsLoading(true); // Processing banner starts
+        setCanAbortSession(true);
+        setClaudeStatus({
+          text: 'Processing',
+          tokens: 0,
+          can_interrupt: true,
         });
 
-        try {
-          const response = await authenticatedFetch(`/api/projects/${encodeURIComponent(selectedProject.name)}/upload-attachments`, {
-            method: 'POST',
-            headers: {},
-            body: formData,
-          });
+        setIsUserScrolledUp(false);
+        setTimeout(() => scrollToBottom(), 100);
 
-          if (!response.ok) {
-            throw new Error('Failed to upload attachments');
+        if (!effectiveSessionId && !selectedSession?.id) {
+          if (typeof window !== 'undefined') {
+            // Reset stale pending IDs from previous interrupted runs before creating a new one.
+            sessionStorage.removeItem('pendingSessionId');
+          }
+          pendingViewSessionRef.current = { sessionId: null, startedAt: Date.now() };
+        }
+        onSessionActive?.(sessionToActivate);
+        if (effectiveSessionId && !isTemporarySessionId(effectiveSessionId)) {
+          onSessionProcessing?.(effectiveSessionId);
+        }
+
+        const getToolsSettings = () => {
+          try {
+            const settingsKey =
+              provider === 'cursor'
+                ? 'cursor-tools-settings'
+                : provider === 'codex'
+                  ? 'codex-settings'
+                  : provider === 'gemini'
+                    ? 'gemini-settings'
+                    : 'claude-settings';
+            const savedSettings = safeLocalStorage.getItem(settingsKey);
+            if (savedSettings) {
+              return JSON.parse(savedSettings);
+            }
+          } catch (error) {
+            console.error('Error loading tools settings:', error);
           }
 
-          const result = await response.json();
-          uploadedImages = Array.isArray(result.images) ? result.images : [];
-          uploadedFiles = Array.isArray(result.files) ? result.files : [];
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          console.error('Attachment upload failed:', error);
-          addMessage({
-            type: 'error',
-            content: `Failed to upload attachments: ${message}`,
-            timestamp: new Date(),
-          });
-          return;
-        }
-      }
+          return {
+            allowedTools: [],
+            disallowedTools: [],
+            skipPermissions: false,
+          };
+        };
 
-      messageContent = `${messageContent}${buildAttachmentPathNote(uploadedFiles)}`;
-
-      const pendingSessionId = pendingViewSessionRef.current?.sessionId ?? null;
-      const canResumeCurrentSession =
-        Boolean(currentSessionId) &&
-        (Boolean(selectedSession?.id) || pendingSessionId === currentSessionId);
-      const effectiveSessionId =
-        selectedSession?.id ||
-        (canResumeCurrentSession ? currentSessionId : null) ||
-        (provider === 'cursor' ? sessionStorage.getItem('cursorSessionId') : null);
-      const sessionToActivate = effectiveSessionId || createTemporarySessionId();
-
-      const userMessage: ChatMessage = {
-        type: 'user',
-        content: userVisibleInput,
-        images: uploadedImages as any,
-        attachments: uploadedFiles as any,
-        timestamp: new Date(),
-      };
-
-      addMessage(userMessage);
-      setIsLoading(true); // Processing banner starts
-      setCanAbortSession(true);
-      setClaudeStatus({
-        text: 'Processing',
-        tokens: 0,
-        can_interrupt: true,
-      });
-
-      setIsUserScrolledUp(false);
-      setTimeout(() => scrollToBottom(), 100);
-
-      if (!effectiveSessionId && !selectedSession?.id) {
-        if (typeof window !== 'undefined') {
-          // Reset stale pending IDs from previous interrupted runs before creating a new one.
-          sessionStorage.removeItem('pendingSessionId');
-        }
-        pendingViewSessionRef.current = { sessionId: null, startedAt: Date.now() };
-      }
-      onSessionActive?.(sessionToActivate);
-      if (effectiveSessionId && !isTemporarySessionId(effectiveSessionId)) {
-        onSessionProcessing?.(effectiveSessionId);
-      }
-
-      const getToolsSettings = () => {
-        try {
-          const settingsKey =
-            provider === 'cursor'
-              ? 'cursor-tools-settings'
-              : provider === 'codex'
-                ? 'codex-settings'
-                : provider === 'gemini'
-                  ? 'gemini-settings'
-                  : 'claude-settings';
-          const savedSettings = safeLocalStorage.getItem(settingsKey);
-          if (savedSettings) {
-            return JSON.parse(savedSettings);
-          }
-        } catch (error) {
-          console.error('Error loading tools settings:', error);
-        }
-
-        return {
-          allowedTools: [],
-          disallowedTools: [],
+        const rawToolsSettings = getToolsSettings();
+        const toolsSettings = {
+          ...rawToolsSettings,
+          // Permission bypass is now chosen per prompt from the composer.
+          // Ignore legacy settings stored before the toggle was removed.
           skipPermissions: false,
         };
-      };
+        const shouldBypassPermissions = permissionMode === 'bypassPermissions';
+        const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+        const sessionSummary = getNotificationSessionSummary(selectedSession, userVisibleInput);
 
-      const rawToolsSettings = getToolsSettings();
-      const toolsSettings = {
-        ...rawToolsSettings,
-        // Permission bypass is now chosen per prompt from the composer.
-        // Ignore legacy settings stored before the toggle was removed.
-        skipPermissions: false,
-      };
-      const shouldBypassPermissions = permissionMode === 'bypassPermissions';
-      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
-      const sessionSummary = getNotificationSessionSummary(selectedSession, userVisibleInput);
-
-      if (provider === 'cursor') {
-        sendMessage({
-          type: 'cursor-command',
-          command: messageContent,
-          sessionId: effectiveSessionId,
-          options: {
-            cwd: resolvedProjectPath,
-            projectPath: resolvedProjectPath,
+        if (provider === 'cursor') {
+          sendMessage({
+            type: 'cursor-command',
+            command: messageContent,
             sessionId: effectiveSessionId,
-            resume: Boolean(effectiveSessionId),
-            model: cursorModel,
-            skipPermissions: shouldBypassPermissions,
-            sessionSummary,
+            options: {
+              cwd: resolvedProjectPath,
+              projectPath: resolvedProjectPath,
+              sessionId: effectiveSessionId,
+              resume: Boolean(effectiveSessionId),
+              model: cursorModel,
+              skipPermissions: shouldBypassPermissions,
+              sessionSummary,
+              toolsSettings,
+            },
+          });
+        } else if (provider === 'codex') {
+          sendMessage({
+            type: 'codex-command',
+            command: messageContent,
+            sessionId: effectiveSessionId,
+            options: {
+              cwd: resolvedProjectPath,
+              projectPath: resolvedProjectPath,
+              sessionId: effectiveSessionId,
+              resume: Boolean(effectiveSessionId),
+              model: codexModel,
+              sessionSummary,
+              permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
+            },
+          });
+        } else if (provider === 'gemini') {
+          sendMessage({
+            type: 'gemini-command',
+            command: messageContent,
+            sessionId: effectiveSessionId,
+            options: {
+              cwd: resolvedProjectPath,
+              projectPath: resolvedProjectPath,
+              sessionId: effectiveSessionId,
+              resume: Boolean(effectiveSessionId),
+              model: geminiModel,
+              sessionSummary,
+              permissionMode,
+              toolsSettings,
+            },
+          });
+        } else {
+          startClaudeSessionCommand({
+            sendMessage,
+            selectedProject,
+            command: messageContent,
+            sessionId: effectiveSessionId,
+            temporarySessionId: sessionToActivate,
             toolsSettings,
-          },
-        });
-      } else if (provider === 'codex') {
-        sendMessage({
-          type: 'codex-command',
-          command: messageContent,
-          sessionId: effectiveSessionId,
-          options: {
-            cwd: resolvedProjectPath,
-            projectPath: resolvedProjectPath,
-            sessionId: effectiveSessionId,
-            resume: Boolean(effectiveSessionId),
-            model: codexModel,
-            sessionSummary,
-            permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
-          },
-        });
-      } else if (provider === 'gemini') {
-        sendMessage({
-          type: 'gemini-command',
-          command: messageContent,
-          sessionId: effectiveSessionId,
-          options: {
-            cwd: resolvedProjectPath,
-            projectPath: resolvedProjectPath,
-            sessionId: effectiveSessionId,
-            resume: Boolean(effectiveSessionId),
-            model: geminiModel,
-            sessionSummary,
             permissionMode,
-            toolsSettings,
-          },
-        });
-      } else {
-        startClaudeSessionCommand({
-          sendMessage,
-          selectedProject,
-          command: messageContent,
-          sessionId: effectiveSessionId,
-          temporarySessionId: sessionToActivate,
-          toolsSettings,
-          permissionMode,
-          basePermissionMode,
-          claudeModel,
-          sessionSummary,
-          images: uploadedImages,
-        });
+            basePermissionMode,
+            claudeModel,
+            sessionSummary,
+            images: uploadedImages,
+          });
+        }
+
+        setInput('');
+        inputValueRef.current = '';
+        resetCommandMenuState();
+        setAttachedImages([]);
+        setImageErrors(new Map());
+        setIsTextareaExpanded(false);
+        setThinkingMode('none');
+
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+        }
+
+        safeLocalStorage.removeItem(`draft_input_${selectedProject.name}`);
+      } finally {
+        setUploadingImages(new Map());
+        submitInFlightRef.current = false;
+        setIsSubmitPending(false);
       }
-
-      setInput('');
-      inputValueRef.current = '';
-      resetCommandMenuState();
-      setAttachedImages([]);
-      setUploadingImages(new Map());
-      setImageErrors(new Map());
-      setIsTextareaExpanded(false);
-      setThinkingMode('none');
-
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-
-      safeLocalStorage.removeItem(`draft_input_${selectedProject.name}`);
     },
     [
       selectedSession,
@@ -883,27 +901,27 @@ export function useChatComposerState({
   }, [input]);
 
   useEffect(() => {
-    if (!selectedProject) {
+    if (!selectedProjectName) {
       return;
     }
-    const savedInput = safeLocalStorage.getItem(`draft_input_${selectedProject.name}`) || '';
+    const savedInput = safeLocalStorage.getItem(`draft_input_${selectedProjectName}`) || '';
     setInput((previous) => {
       const next = previous === savedInput ? previous : savedInput;
       inputValueRef.current = next;
       return next;
     });
-  }, [selectedProject?.name]);
+  }, [selectedProjectName]);
 
   useEffect(() => {
-    if (!selectedProject) {
+    if (!selectedProjectName) {
       return;
     }
     if (input !== '') {
-      safeLocalStorage.setItem(`draft_input_${selectedProject.name}`, input);
+      safeLocalStorage.setItem(`draft_input_${selectedProjectName}`, input);
     } else {
-      safeLocalStorage.removeItem(`draft_input_${selectedProject.name}`);
+      safeLocalStorage.removeItem(`draft_input_${selectedProjectName}`);
     }
-  }, [input, selectedProject]);
+  }, [input, selectedProjectName]);
 
   useEffect(() => {
     if (!textareaRef.current) {
@@ -1165,6 +1183,7 @@ export function useChatComposerState({
     attachedImages,
     setAttachedImages,
     uploadingImages,
+    isSubmitPending,
     imageErrors,
     getRootProps,
     getInputProps,
