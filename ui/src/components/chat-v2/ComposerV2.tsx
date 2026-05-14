@@ -466,11 +466,124 @@ export default function ComposerV2({
                 />
               </div>
 
-              <div className="flex items-center justify-between px-1 pt-1">
-                <div className="flex min-w-0 items-center gap-0.5">
-                  <button
-                    type="button"
-                    onClick={openImagePicker}
+                <div className="flex items-center justify-between px-1 pt-1">
+                  <div className="flex min-w-0 items-center gap-0.5">
+                    <div
+                      className="relative mr-1"
+                      onBlur={(event) => {
+                        const nextTarget = event.relatedTarget as Node | null;
+                        if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
+                          setIsRunModeMenuOpen(false);
+                        }
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setIsRunModeMenuOpen((open) => !open)}
+                        className={cn(
+                          'inline-flex h-7 max-w-[108px] items-center justify-center gap-1.5 rounded-md px-2 text-[12px] font-medium transition sm:max-w-[140px]',
+                          runMode === 'plan'
+                            ? 'text-blue-600 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-950/30'
+                            : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800',
+                        )}
+                        title={t('input.runModes.change', {
+                          defaultValue: '选择运行模式',
+                        }) as string}
+                        aria-haspopup="menu"
+                        aria-expanded={isRunModeMenuOpen}
+                      >
+                        <SelectedRunModeIcon className="h-4 w-4 shrink-0" strokeWidth={1.9} />
+                        <span className="truncate">{selectedRunModeLabel}</span>
+                        <ChevronDown
+                          className={cn(
+                            'h-3.5 w-3.5 shrink-0 transition-transform',
+                            isRunModeMenuOpen && 'rotate-180',
+                          )}
+                          strokeWidth={2}
+                        />
+                      </button>
+                      {isRunModeMenuOpen ? (
+                        <div
+                          role="menu"
+                          className="absolute bottom-full left-0 z-50 mb-2 w-56 rounded-xl border border-neutral-200 bg-white p-1.5 text-left shadow-lg dark:border-neutral-800 dark:bg-neutral-900"
+                        >
+                          {RUN_MODE_OPTIONS.map((option) => {
+                            const Icon = option.Icon;
+                            const isSelected = runMode === option.mode;
+                            const isPlan = option.mode === 'plan';
+                            const disabled = isPlan && !planModeAvailable;
+                            const label = t(option.labelKey, {
+                              defaultValue: option.defaultLabel,
+                            }) as string;
+                            const description = isPlan
+                              ? (t('input.runModes.planDescription', {
+                                  defaultValue: '先产出计划，确认后再执行',
+                                }) as string)
+                              : (t('input.runModes.agentDescription', {
+                                  defaultValue: '直接处理并执行任务',
+                                }) as string);
+
+                            return (
+                              <button
+                                key={option.mode}
+                                type="button"
+                                role="menuitemradio"
+                                aria-checked={isSelected}
+                                disabled={disabled}
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => {
+                                  if (disabled) return;
+                                  onRunModeChange(option.mode);
+                                  setIsRunModeMenuOpen(false);
+                                }}
+                                className={cn(
+                                  'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition',
+                                  isSelected
+                                    ? 'bg-neutral-100 dark:bg-neutral-800'
+                                    : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/70',
+                                  disabled && 'cursor-not-allowed opacity-45',
+                                )}
+                              >
+                                <Icon
+                                  className={cn(
+                                    'h-4 w-4 shrink-0',
+                                    isPlan
+                                      ? 'text-blue-600 dark:text-blue-300'
+                                      : 'text-neutral-500 dark:text-neutral-400',
+                                  )}
+                                  strokeWidth={1.9}
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span
+                                    className={cn(
+                                      'block truncate text-[13px] font-medium',
+                                      isPlan
+                                        ? 'text-blue-700 dark:text-blue-300'
+                                        : 'text-neutral-900 dark:text-neutral-100',
+                                    )}
+                                  >
+                                    {label}
+                                  </span>
+                                  <span className="block truncate text-[11px] text-neutral-500 dark:text-neutral-400">
+                                    {disabled
+                                      ? t('input.runModes.planUnavailable', {
+                                          defaultValue: 'Plan mode is only available for Claude.',
+                                        })
+                                      : description}
+                                  </span>
+                                </span>
+                                {isSelected ? (
+                                  <Check className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-300" strokeWidth={2} />
+                                ) : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={openImagePicker}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
                     title={t('input.attachFiles', { defaultValue: 'Attach photos or files' }) as string}
                   >
@@ -492,202 +605,8 @@ export default function ComposerV2({
                   >
                     <Command className="h-4 w-4" strokeWidth={1.75} />
                   </button>
-                  <div
-                    className="relative ml-1"
-                    onBlur={(event) => {
-                      const nextTarget = event.relatedTarget as Node | null;
-                      if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
-                        setIsRunModeMenuOpen(false);
-                      }
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setIsRunModeMenuOpen((open) => !open)}
-                      className={cn(
-                        'inline-flex h-7 max-w-[108px] items-center justify-center gap-1.5 rounded-md px-2 text-[12px] font-medium transition sm:max-w-[140px]',
-                        runMode === 'plan'
-                          ? 'text-blue-600 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-950/30'
-                          : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800',
-                      )}
-                      title={t('input.runModes.change', {
-                        defaultValue: '选择运行模式',
-                      }) as string}
-                      aria-haspopup="menu"
-                      aria-expanded={isRunModeMenuOpen}
-                    >
-                      <SelectedRunModeIcon className="h-4 w-4 shrink-0" strokeWidth={1.9} />
-                      <span className="truncate">{selectedRunModeLabel}</span>
-                      <ChevronDown
-                        className={cn(
-                          'h-3.5 w-3.5 shrink-0 transition-transform',
-                          isRunModeMenuOpen && 'rotate-180',
-                        )}
-                        strokeWidth={2}
-                      />
-                    </button>
-                    {isRunModeMenuOpen ? (
-                      <div
-                        role="menu"
-                        className="absolute bottom-full left-0 z-50 mb-2 w-56 rounded-xl border border-neutral-200 bg-white p-1.5 text-left shadow-lg dark:border-neutral-800 dark:bg-neutral-900"
-                      >
-                        {RUN_MODE_OPTIONS.map((option) => {
-                          const Icon = option.Icon;
-                          const isSelected = runMode === option.mode;
-                          const isPlan = option.mode === 'plan';
-                          const disabled = isPlan && !planModeAvailable;
-                          const label = t(option.labelKey, {
-                            defaultValue: option.defaultLabel,
-                          }) as string;
-                          const description = isPlan
-                            ? (t('input.runModes.planDescription', {
-                                defaultValue: '先产出计划，确认后再执行',
-                              }) as string)
-                            : (t('input.runModes.agentDescription', {
-                                defaultValue: '直接处理并执行任务',
-                              }) as string);
-
-                          return (
-                            <button
-                              key={option.mode}
-                              type="button"
-                              role="menuitemradio"
-                              aria-checked={isSelected}
-                              disabled={disabled}
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => {
-                                if (disabled) return;
-                                onRunModeChange(option.mode);
-                                setIsRunModeMenuOpen(false);
-                              }}
-                              className={cn(
-                                'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition',
-                                isSelected
-                                  ? 'bg-neutral-100 dark:bg-neutral-800'
-                                  : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/70',
-                                disabled && 'cursor-not-allowed opacity-45',
-                              )}
-                            >
-                              <Icon
-                                className={cn(
-                                  'h-4 w-4 shrink-0',
-                                  isPlan
-                                    ? 'text-blue-600 dark:text-blue-300'
-                                    : 'text-neutral-500 dark:text-neutral-400',
-                                )}
-                                strokeWidth={1.9}
-                              />
-                              <span className="min-w-0 flex-1">
-                                <span
-                                  className={cn(
-                                    'block truncate text-[13px] font-medium',
-                                    isPlan
-                                      ? 'text-blue-700 dark:text-blue-300'
-                                      : 'text-neutral-900 dark:text-neutral-100',
-                                  )}
-                                >
-                                  {label}
-                                </span>
-                                <span className="block truncate text-[11px] text-neutral-500 dark:text-neutral-400">
-                                  {disabled
-                                    ? t('input.runModes.planUnavailable', {
-                                        defaultValue: 'Plan mode is only available for Claude.',
-                                      })
-                                    : description}
-                                </span>
-                              </span>
-                              {isSelected ? (
-                                <Check className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-300" strokeWidth={2} />
-                              ) : null}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div
-                    className="relative"
-                    onBlur={(event) => {
-                      const nextTarget = event.relatedTarget as Node | null;
-                      if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
-                        setIsContextPopoverOpen(false);
-                      }
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setIsContextPopoverOpen((open) => !open)}
-                      className={cn(
-                        'inline-flex h-7 min-w-[44px] items-center justify-center gap-1 rounded-md px-1.5 text-[11px] tabular-nums transition',
-                        contextStatus.tone === 'red'
-                          ? 'text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30'
-                          : contextStatus.tone === 'amber'
-                            ? 'text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/30'
-                            : contextStatus.tone === 'normal'
-                              ? 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'
-                              : 'text-neutral-400 hover:bg-neutral-100 dark:text-neutral-500 dark:hover:bg-neutral-800',
-                      )}
-                      title={contextStatusTitle}
-                      aria-label={contextStatusTitle}
-                      aria-expanded={isContextPopoverOpen}
-                    >
-                      <CircleGauge className="h-4 w-4" strokeWidth={1.75} />
-                      <span>{contextStatus.known ? `${contextStatus.percent}%` : '--'}</span>
-                    </button>
-                    {isContextPopoverOpen ? (
-                      <div
-                        role="status"
-                        className="absolute bottom-full left-0 z-50 mb-2 w-64 rounded-lg border border-neutral-200 bg-white p-3 text-left text-[12px] leading-5 text-neutral-700 shadow-lg dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-200"
-                      >
-                        <div className="mb-1 flex items-center justify-between gap-2">
-                          <span className="font-medium text-neutral-900 dark:text-neutral-100">
-                            {t('input.contextStatusTitle', { defaultValue: 'Context window' })}
-                          </span>
-                          <span
-                            className={cn(
-                              'rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums',
-                              contextStatus.tone === 'red'
-                                ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300'
-                                : contextStatus.tone === 'amber'
-                                  ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
-                                  : contextStatus.tone === 'normal'
-                                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300'
-                                    : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400',
-                            )}
-                          >
-                            {contextStatus.known ? `${contextStatus.percent}%` : '--'}
-                          </span>
-                        </div>
-                        {contextStatus.known ? (
-                          <>
-                            <div className="text-neutral-500 dark:text-neutral-400">
-                              {t('input.contextStatusUsed', {
-                                used: contextStatus.used.toLocaleString(),
-                                total: contextStatus.total.toLocaleString(),
-                                defaultValue:
-                                  `${contextStatus.used.toLocaleString()} tokens used out of ${contextStatus.total.toLocaleString()}.`,
-                              })}
-                            </div>
-                            <div className="mt-2 text-neutral-500 dark:text-neutral-400">
-                              {t('input.contextStatusAutoCompact', {
-                                defaultValue:
-                                  'Auto compact runs when the conversation approaches the configured limit.',
-                              })}
-                            </div>
-                          </>
-                        ) : (
-                          <div className="text-neutral-500 dark:text-neutral-400">
-                            {t('input.contextStatusUnknownBody', {
-                              defaultValue:
-                                'No token budget has been reported yet. It will appear after the next model response.',
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div
-                    className="relative"
+                    <div
+                      className="relative"
                     onBlur={(event) => {
                       const nextTarget = event.relatedTarget as Node | null;
                       if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
@@ -787,50 +706,134 @@ export default function ComposerV2({
                       </div>
                     ) : null}
                   </div>
-                </div>
+                  </div>
 
-                {isLoading && canAbortSession ? (
-                  <button
-                    type="button"
-                    onClick={onAbortSession}
-                    disabled={isAbortPending}
-                    className={cn(
-                      'inline-flex h-8 w-8 items-center justify-center rounded-lg bg-red-500 text-white transition hover:bg-red-600',
-                      isAbortPending && 'cursor-wait opacity-70 hover:bg-red-500',
-                    )}
-                    title={
-                      isAbortPending
-                        ? (t('input.stopping', { defaultValue: 'Stopping...' }) as string)
-                        : (t('input.stop', { defaultValue: 'Stop' }) as string)
-                    }
-                  >
-                    {isAbortPending ? (
-                      <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.25} />
+                  <div className="ml-2 flex shrink-0 items-center gap-1">
+                    <div
+                      className="relative"
+                      onBlur={(event) => {
+                        const nextTarget = event.relatedTarget as Node | null;
+                        if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
+                          setIsContextPopoverOpen(false);
+                        }
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setIsContextPopoverOpen((open) => !open)}
+                        className={cn(
+                          'inline-flex h-7 min-w-[44px] items-center justify-center gap-1 rounded-md px-1.5 text-[11px] tabular-nums transition',
+                          contextStatus.tone === 'red'
+                            ? 'text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30'
+                            : contextStatus.tone === 'amber'
+                              ? 'text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/30'
+                              : contextStatus.tone === 'normal'
+                                ? 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'
+                                : 'text-neutral-400 hover:bg-neutral-100 dark:text-neutral-500 dark:hover:bg-neutral-800',
+                        )}
+                        title={contextStatusTitle}
+                        aria-label={contextStatusTitle}
+                        aria-expanded={isContextPopoverOpen}
+                      >
+                        <CircleGauge className="h-4 w-4" strokeWidth={1.75} />
+                        <span>{contextStatus.known ? `${contextStatus.percent}%` : '--'}</span>
+                      </button>
+                      {isContextPopoverOpen ? (
+                        <div
+                          role="status"
+                          className="absolute bottom-full right-0 z-50 mb-2 w-64 rounded-lg border border-neutral-200 bg-white p-3 text-left text-[12px] leading-5 text-neutral-700 shadow-lg dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-200"
+                        >
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <span className="font-medium text-neutral-900 dark:text-neutral-100">
+                              {t('input.contextStatusTitle', { defaultValue: 'Context window' })}
+                            </span>
+                            <span
+                              className={cn(
+                                'rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums',
+                                contextStatus.tone === 'red'
+                                  ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300'
+                                  : contextStatus.tone === 'amber'
+                                    ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
+                                    : contextStatus.tone === 'normal'
+                                      ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300'
+                                      : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400',
+                              )}
+                            >
+                              {contextStatus.known ? `${contextStatus.percent}%` : '--'}
+                            </span>
+                          </div>
+                          {contextStatus.known ? (
+                            <>
+                              <div className="text-neutral-500 dark:text-neutral-400">
+                                {t('input.contextStatusUsed', {
+                                  used: contextStatus.used.toLocaleString(),
+                                  total: contextStatus.total.toLocaleString(),
+                                  defaultValue:
+                                    `${contextStatus.used.toLocaleString()} tokens used out of ${contextStatus.total.toLocaleString()}.`,
+                                })}
+                              </div>
+                              <div className="mt-2 text-neutral-500 dark:text-neutral-400">
+                                {t('input.contextStatusAutoCompact', {
+                                  defaultValue:
+                                    'Auto compact runs when the conversation approaches the configured limit.',
+                                })}
+                              </div>
+                            </>
+                          ) : (
+                            <div className="text-neutral-500 dark:text-neutral-400">
+                              {t('input.contextStatusUnknownBody', {
+                                defaultValue:
+                                  'No token budget has been reported yet. It will appear after the next model response.',
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {isLoading && canAbortSession ? (
+                      <button
+                        type="button"
+                        onClick={onAbortSession}
+                        disabled={isAbortPending}
+                        className={cn(
+                          'inline-flex h-8 w-8 items-center justify-center rounded-lg bg-red-500 text-white transition hover:bg-red-600',
+                          isAbortPending && 'cursor-wait opacity-70 hover:bg-red-500',
+                        )}
+                        title={
+                          isAbortPending
+                            ? (t('input.stopping', { defaultValue: 'Stopping...' }) as string)
+                            : (t('input.stop', { defaultValue: 'Stop' }) as string)
+                        }
+                      >
+                        {isAbortPending ? (
+                          <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.25} />
+                        ) : (
+                          <Square className="h-3.5 w-3.5" strokeWidth={2.5} fill="currentColor" />
+                        )}
+                      </button>
                     ) : (
-                      <Square className="h-3.5 w-3.5" strokeWidth={2.5} fill="currentColor" />
+                      <button
+                        type="submit"
+                        disabled={disabled}
+                        onMouseDown={(event) => {
+                          if (disabled) return;
+                          event.preventDefault();
+                          onSubmit(event);
+                        }}
+                        onTouchStart={(event) => {
+                          if (disabled) return;
+                          event.preventDefault();
+                          onSubmit(event);
+                        }}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-900 text-white transition hover:opacity-90 disabled:opacity-40 dark:bg-neutral-50 dark:text-neutral-900"
+                        title={t('input.send', { defaultValue: 'Send' }) as string}
+                      >
+                        <ArrowUp className="h-4 w-4" strokeWidth={2} />
+                      </button>
                     )}
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    disabled={disabled}
-                    onMouseDown={(event) => {
-                      if (disabled) return;
-                      event.preventDefault();
-                      onSubmit(event);
-                    }}
-                    onTouchStart={(event) => {
-                      if (disabled) return;
-                      event.preventDefault();
-                      onSubmit(event);
-                    }}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-900 text-white transition hover:opacity-90 disabled:opacity-40 dark:bg-neutral-50 dark:text-neutral-900"
-                    title={t('input.send', { defaultValue: 'Send' }) as string}
-                  >
-                    <ArrowUp className="h-4 w-4" strokeWidth={2} />
-                  </button>
-                )}
-              </div>
+                  </div>
+                </div>
             </div>
           </form>
         ) : null}
