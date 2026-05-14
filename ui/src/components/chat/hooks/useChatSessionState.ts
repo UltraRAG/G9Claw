@@ -95,6 +95,59 @@ function chatMessageToNormalized(
   } as NormalizedMessage;
 }
 
+function normalizeUserMessageText(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+function parseChatMessageTime(value: ChatMessage['timestamp']): number | null {
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : null;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function hasEquivalentUserMessage(messages: ChatMessage[], pendingUserMessage: ChatMessage): boolean {
+  const pendingText = normalizeUserMessageText(pendingUserMessage.content);
+  const pendingTime = parseChatMessageTime(pendingUserMessage.timestamp);
+  const pendingImageCount = Array.isArray(pendingUserMessage.images) ? pendingUserMessage.images.length : 0;
+  const pendingAttachmentNames = Array.isArray(pendingUserMessage.attachments)
+    ? pendingUserMessage.attachments.map((attachment) => attachment.name || '').filter(Boolean).sort()
+    : [];
+
+  return messages.some((message) => {
+    if (message.type !== 'user') return false;
+    if (normalizeUserMessageText(message.content) !== pendingText) return false;
+
+    const imageCount = Array.isArray(message.images) ? message.images.length : 0;
+    if (imageCount !== pendingImageCount) return false;
+
+    const attachmentNames = Array.isArray(message.attachments)
+      ? message.attachments.map((attachment) => attachment.name || '').filter(Boolean).sort()
+      : [];
+    if (attachmentNames.join('\n') !== pendingAttachmentNames.join('\n')) return false;
+
+    if (pendingTime == null) return true;
+    const messageTime = parseChatMessageTime(message.timestamp);
+    if (messageTime == null) return true;
+    return Math.abs(messageTime - pendingTime) <= 10_000;
+  });
+}
+
+export function mergePendingUserMessage(
+  messages: ChatMessage[],
+  pendingUserMessage: ChatMessage | null,
+): ChatMessage[] {
+  if (!pendingUserMessage || hasEquivalentUserMessage(messages, pendingUserMessage)) {
+    return messages;
+  }
+  return [pendingUserMessage, ...messages];
+}
+
 /* ------------------------------------------------------------------ */
 /*  Hook                                                              */
 /* ------------------------------------------------------------------ */
@@ -244,9 +297,9 @@ export function useChatSessionState({
       const normalized = chatMessageToNormalized(pendingUserMessage, activeSessionId, prov);
       if (normalized) {
         sessionStore.appendRealtime(activeSessionId, normalized);
+        setPendingUserMessage(null);
       }
     }
-    setPendingUserMessage(null);
   }
   prevActiveSessionRef.current = activeSessionId;
 
@@ -264,12 +317,15 @@ export function useChatSessionState({
 
   const chatMessages = useMemo(() => {
     const all = normalizedToChatMessages(storeMessages);
-    // Show pending user message when no session data exists yet (new session, pre-backend-response)
-    if (pendingUserMessage && all.length === 0) {
-      return [pendingUserMessage];
+    // Keep the optimistic user message visible until the backend has replayed
+    // that same user turn. Assistant/tool messages can arrive first for a new
+    // session, and hiding the pending user line makes the final transcript look
+    // like the user's request was lost.
+    const withPendingUser = mergePendingUserMessage(all, pendingUserMessage);
+    if (viewHiddenCount > 0 && viewHiddenCount < withPendingUser.length) {
+      return withPendingUser.slice(0, -viewHiddenCount);
     }
-    if (viewHiddenCount > 0 && viewHiddenCount < all.length) return all.slice(0, -viewHiddenCount);
-    return all;
+    return withPendingUser;
   }, [storeMessages, viewHiddenCount, pendingUserMessage]);
 
   const activityMessages = useMemo(

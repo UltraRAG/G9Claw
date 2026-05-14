@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Activity, CheckCircle2, Loader2, Search, Wrench, XCircle } from 'lucide-react';
+import { XCircle } from 'lucide-react';
 import type {
   ChatMessage,
+  ChatRunMode,
   ClaudePermissionSuggestion,
   ClaudeWorkStatus,
   PermissionGrantResult,
@@ -11,6 +12,8 @@ import type {
 import { isBackgroundTaskSession, type Project, type ProjectSession, type SessionProvider } from '../../types/app';
 import { getIntrinsicMessageKey } from '../chat/utils/messageKeys';
 import MessageRowV2 from './MessageRowV2';
+import { ProcessLiveStatus, ProcessRunHeader, type ProcessTraceStep } from './ProcessTrace';
+import { formatProcessDuration } from './processTraceUtils';
 
 type DiffLine = { type: string; content: string; lineNum: number };
 
@@ -46,12 +49,13 @@ type MessagesPaneV2Props = {
   showThinking?: boolean;
   setInput: Dispatch<SetStateAction<string>>;
   // While the assistant is producing a response (request sent → `complete`
-  // event), we render a small "working" pill at the bottom of the list so the
-  // user always has a visible signal that the model is doing something —
-  // streaming bubbles arrive in 100ms-buffered chunks and tool runs can sit
-  // silent for a while, so without this the UI looks frozen.
+  // event), we keep lightweight process rows in the transcript so the user
+  // always has a visible signal that the model is still doing work. Streaming
+  // bubbles arrive in buffered chunks and tool runs can sit silent for a while,
+  // so without these rows the UI looks frozen.
   isAssistantWorking?: boolean;
   workingStatus?: ClaudeWorkStatus | null;
+  runMode?: ChatRunMode;
 };
 
 type RenderableMessageItem = {
@@ -84,6 +88,17 @@ type MessageTurn = {
   start: number;
   end: number;
   summary: ActivitySummaryAttachment | null;
+};
+
+export type LiveProcessGroup = {
+  id: string;
+  afterOriginalIndex: number;
+  beforeOriginalIndex: number | null;
+  startIndex: number;
+  endIndex: number;
+  messages: ChatMessage[];
+  detailMessages: ChatMessage[];
+  isRunning: boolean;
 };
 
 type BuildRenderableMessageItemsOptions = {
@@ -193,6 +208,44 @@ function isCollapsibleProcessMessage(message: ChatMessage): boolean {
     return false;
   }
   return message.type !== 'user';
+}
+
+const USER_VISIBLE_TOOL_NAMES = new Set([
+  'AskUserQuestion',
+  'ExitPlanMode',
+  'ExitPlanModeV2',
+  'exit_plan_mode',
+]);
+
+function isLiveProcessMessage(message: ChatMessage): boolean {
+  if (message.isAgentActivity || message.isAgentActivitySummary) {
+    return false;
+  }
+  if (message.isInteractivePrompt || message.type === 'error') {
+    return false;
+  }
+  if (message.isToolUse && USER_VISIBLE_TOOL_NAMES.has(String(message.toolName || ''))) {
+    return false;
+  }
+  return Boolean(
+    message.isToolUse ||
+      message.isSubagentContainer ||
+      message.isTaskNotification ||
+      message.isCompactBoundary ||
+      message.isThinking ||
+      message.type === 'tool',
+  );
+}
+
+function isExpandableLiveProcessMessage(message: ChatMessage): boolean {
+  if (!message.isToolUse || message.isSubagentContainer) {
+    return false;
+  }
+  const toolName = String(message.toolName || '');
+  if (!toolName || toolName === 'Task' || USER_VISIBLE_TOOL_NAMES.has(toolName)) {
+    return false;
+  }
+  return true;
 }
 
 function parseMessageTime(value: unknown): number | null {
@@ -378,9 +431,19 @@ export function buildRenderableMessageItems(
   const itemsByIndex = new Map<number, RenderableMessageItem>();
   const collapsedIndices = new Set<number>();
   const turns = createMessageTurns(messages);
+  const liveTurn = options.isAssistantWorking ? turns[turns.length - 1] : null;
 
   messages.forEach((message, originalIndex) => {
     if (message.isAgentActivitySummary) {
+      return;
+    }
+    if (
+      liveTurn &&
+      originalIndex >= liveTurn.start &&
+      originalIndex < liveTurn.end &&
+      isLiveProcessMessage(message)
+    ) {
+      collapsedIndices.add(originalIndex);
       return;
     }
 
@@ -442,16 +505,94 @@ export function buildRenderableMessageItems(
     .sort((a, b) => a.originalIndex - b.originalIndex);
 }
 
+export function getLiveProcessDetailMessages(messages: ChatMessage[]): ChatMessage[] {
+  return getLiveProcessGroups(messages, { isAssistantWorking: true })
+    .flatMap((group) => group.detailMessages);
+}
+
+export function getLiveProcessGroups(
+  messages: ChatMessage[],
+  options: BuildRenderableMessageItemsOptions = {},
+): LiveProcessGroup[] {
+  const turns = createMessageTurns(messages);
+  const liveTurn = turns[turns.length - 1];
+  if (!liveTurn) {
+    return [];
+  }
+
+  const groups: Omit<LiveProcessGroup, 'isRunning'>[] = [];
+  let previousVisibleIndex = liveTurn.start;
+  let groupStartIndex = -1;
+  let groupMessages: ChatMessage[] = [];
+
+  const finishGroup = (beforeOriginalIndex: number | null) => {
+    if (groupMessages.length === 0 || previousVisibleIndex < 0) {
+      groupStartIndex = -1;
+      groupMessages = [];
+      return;
+    }
+
+    const first = groupMessages[0];
+    const last = groupMessages[groupMessages.length - 1];
+    groups.push({
+      id: [
+        'live-process',
+        first.id || first.toolId || groupStartIndex,
+        last.id || last.toolId || beforeOriginalIndex || messages.length,
+      ].join('-'),
+      afterOriginalIndex: previousVisibleIndex,
+      beforeOriginalIndex,
+      startIndex: groupStartIndex,
+      endIndex: beforeOriginalIndex ?? messages.length,
+      messages: groupMessages,
+      detailMessages: groupMessages.filter(isExpandableLiveProcessMessage),
+    });
+    groupStartIndex = -1;
+    groupMessages = [];
+  };
+
+  for (let index = liveTurn.start; index < liveTurn.end; index += 1) {
+    const message = messages[index];
+    if (!message || message.isAgentActivity || message.isAgentActivitySummary) {
+      continue;
+    }
+
+    if (isLiveProcessMessage(message)) {
+      if (groupMessages.length === 0) {
+        groupStartIndex = index;
+      }
+      groupMessages.push(message);
+      continue;
+    }
+
+    finishGroup(index);
+    previousVisibleIndex = index;
+  }
+
+  finishGroup(null);
+
+  return groups.map((group, index) => {
+    const isLatestGroup = index === groups.length - 1;
+    const isOpenEnded = group.beforeOriginalIndex == null;
+    return {
+      ...group,
+      isRunning: Boolean(options.isAssistantWorking && isLatestGroup && isOpenEnded),
+    };
+  });
+}
+
 function MeasuredMessageItem({
   itemKey,
   message,
   isLast,
+  compactBottomSpacing = false,
   onHeightChange,
   children,
 }: {
   itemKey: string;
   message: ChatMessage;
   isLast: boolean;
+  compactBottomSpacing?: boolean;
   onHeightChange: (itemKey: string, height: number) => void;
   children: ReactNode;
 }) {
@@ -475,7 +616,7 @@ function MeasuredMessageItem({
   return (
     <div
       ref={itemRef}
-      className={`chat-message ${isLast ? '' : 'pb-8'}`}
+      className={`chat-message ${isLast ? '' : compactBottomSpacing ? 'pb-3' : 'pb-8'}`}
       data-message-timestamp={message.timestamp ? String(message.timestamp) : undefined}
     >
       {children}
@@ -506,6 +647,7 @@ export default function MessagesPaneV2({
   setInput,
   isAssistantWorking = false,
   workingStatus,
+  runMode = 'agent',
 }: MessagesPaneV2Props) {
   const { t } = useTranslation('chat');
   const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
@@ -553,6 +695,26 @@ export default function MessagesPaneV2({
     () => visibleMessages.filter((message) => !message.isAgentActivity),
     [visibleMessages],
   );
+  const liveProcessDetailMessages = useMemo(
+    () => isAssistantWorking ? getLiveProcessDetailMessages(renderableMessages) : [],
+    [isAssistantWorking, renderableMessages],
+  );
+  const liveProcessGroups = useMemo(
+    () => isAssistantWorking
+      ? getLiveProcessGroups(renderableMessages, { isAssistantWorking })
+        .filter((group) => shouldRenderLiveProcessGroup(group, runMode))
+      : [],
+    [isAssistantWorking, renderableMessages, runMode],
+  );
+  const liveProcessGroupsByAnchor = useMemo(() => {
+    const groupsByAnchor = new Map<number, LiveProcessGroup[]>();
+    for (const group of liveProcessGroups) {
+      const groups = groupsByAnchor.get(group.afterOriginalIndex) || [];
+      groups.push(group);
+      groupsByAnchor.set(group.afterOriginalIndex, groups);
+    }
+    return groupsByAnchor;
+  }, [liveProcessGroups]);
   const renderableMessageItems = useMemo(
     () => buildRenderableMessageItems(renderableMessages, { isAssistantWorking }),
     [isAssistantWorking, renderableMessages],
@@ -591,6 +753,30 @@ export default function MessagesPaneV2({
   const windowedMessageItems = shouldVirtualizeMessages
     ? keyedMessageItems.slice(virtualWindow.startIndex, virtualWindow.endIndex)
     : keyedMessageItems;
+  const liveProcessHeaderIndex = useMemo(() => {
+    if (!isAssistantWorking) return -1;
+    for (let index = keyedMessageItems.length - 1; index >= 0; index -= 1) {
+      if (keyedMessageItems[index].message.type === 'user') {
+        return Math.min(index + 1, keyedMessageItems.length);
+      }
+    }
+    return keyedMessageItems.length > 0 ? 0 : -1;
+  }, [isAssistantWorking, keyedMessageItems]);
+  const hasLiveAssistantContent = useMemo(() => {
+    if (!isAssistantWorking || liveProcessHeaderIndex < 0) return false;
+    return keyedMessageItems.slice(liveProcessHeaderIndex).some((item) => (
+      item.message.type === 'assistant' &&
+      !item.message.isThinking &&
+      !item.message.isToolUse &&
+      typeof item.message.content === 'string' &&
+      item.message.content.trim().length > 0
+    ));
+  }, [isAssistantWorking, keyedMessageItems, liveProcessHeaderIndex]);
+  const liveStatusStep = useMemo(
+    () => getLiveStatusStep(liveActivities, workingStatus, hasLiveAssistantContent, t),
+    [hasLiveAssistantContent, liveActivities, t, workingStatus],
+  );
+  const shouldRenderBottomLiveStatus = isAssistantWorking && liveProcessGroups.length === 0;
 
   const bumpHeightVersion = useCallback(() => {
     if (heightVersionRafRef.current !== null) return;
@@ -662,41 +848,27 @@ export default function MessagesPaneV2({
     };
   }, [scrollContainerRef]);
 
-  const renderMessageItem = useCallback((item: KeyedRenderableMessageItem) => {
-    const previousMessage = item.renderIndex > 0 ? keyedMessageItems[item.renderIndex - 1].message : null;
-    const isLast = !isAssistantWorking && item.renderIndex === keyedMessageItems.length - 1;
-
-    return (
-      <MeasuredMessageItem
-        key={item.itemKey}
-        itemKey={item.itemKey}
-        message={item.message}
-        isLast={isLast}
-        onHeightChange={handleMeasuredItemHeight}
-      >
-        <MessageRowV2
-          message={item.message}
-          prevMessage={previousMessage}
-          processSummary={item.processSummary}
-          processDetailMessages={item.processDetailMessages}
-          provider={provider}
-          selectedProject={selectedProject}
-          createDiff={createDiff}
-          onFileOpen={onFileOpen}
-          onShowSettings={onShowSettings}
-          onGrantToolPermission={onGrantToolPermission}
-          autoExpandTools={autoExpandTools}
-          showRawParameters={showRawParameters}
-          showThinking={showThinking}
-        />
-      </MeasuredMessageItem>
-    );
-  }, [
+  const renderLiveProcessDetailMessages = useCallback((detailMessages: ChatMessage[], groupId: string) => (
+    detailMessages.map((message: ChatMessage, index: number) => (
+      <MessageRowV2
+        key={`${groupId}-${getMessageKey(message, index)}`}
+        message={message}
+        prevMessage={index > 0 ? detailMessages[index - 1] : null}
+        provider={provider}
+        selectedProject={selectedProject}
+        createDiff={createDiff}
+        onFileOpen={onFileOpen}
+        onShowSettings={onShowSettings}
+        onGrantToolPermission={onGrantToolPermission}
+        autoExpandTools={autoExpandTools}
+        showRawParameters={showRawParameters}
+        showThinking={showThinking}
+      />
+    ))
+  ), [
     autoExpandTools,
     createDiff,
-    handleMeasuredItemHeight,
-    isAssistantWorking,
-    keyedMessageItems,
+    getMessageKey,
     onFileOpen,
     onGrantToolPermission,
     onShowSettings,
@@ -704,6 +876,83 @@ export default function MessagesPaneV2({
     selectedProject,
     showRawParameters,
     showThinking,
+  ]);
+
+  const renderLiveProcessGroup = useCallback((group: LiveProcessGroup, index: number) => {
+    const isLatestGroup = liveProcessGroups[liveProcessGroups.length - 1]?.id === group.id;
+    const step = getLiveProcessGroupStep(group, t, group.isRunning && isLatestGroup ? liveStatusStep : null);
+
+    return (
+      <ProcessLiveStatus
+        key={group.id || `${group.afterOriginalIndex}-${index}`}
+        step={step}
+        compact
+      >
+        {group.detailMessages.length > 0
+          ? renderLiveProcessDetailMessages(group.detailMessages, group.id)
+          : null}
+      </ProcessLiveStatus>
+    );
+  }, [liveProcessGroups, liveStatusStep, renderLiveProcessDetailMessages, t]);
+
+  const renderMessageItem = useCallback((item: KeyedRenderableMessageItem) => {
+    const previousMessage = item.renderIndex > 0 ? keyedMessageItems[item.renderIndex - 1].message : null;
+    const isLast = !isAssistantWorking && item.renderIndex === keyedMessageItems.length - 1;
+    const anchoredLiveGroups = liveProcessGroupsByAnchor.get(item.originalIndex) || [];
+    const rendersLiveHeaderAfterItem = item.renderIndex === liveProcessHeaderIndex - 1;
+
+    return (
+      <Fragment key={item.itemKey}>
+        {liveProcessHeaderIndex === 0 && item.renderIndex === 0 ? (
+          <LiveProcessHeader activities={liveActivities} t={t} />
+        ) : null}
+        <MeasuredMessageItem
+          itemKey={item.itemKey}
+          message={item.message}
+          isLast={isLast}
+          compactBottomSpacing={anchoredLiveGroups.length > 0 || rendersLiveHeaderAfterItem}
+          onHeightChange={handleMeasuredItemHeight}
+        >
+          <MessageRowV2
+            message={item.message}
+            prevMessage={previousMessage}
+            processSummary={item.processSummary}
+            processDetailMessages={item.processDetailMessages}
+            provider={provider}
+            selectedProject={selectedProject}
+            createDiff={createDiff}
+            onFileOpen={onFileOpen}
+            onShowSettings={onShowSettings}
+            onGrantToolPermission={onGrantToolPermission}
+            autoExpandTools={autoExpandTools}
+            showRawParameters={showRawParameters}
+            showThinking={showThinking}
+          />
+          {rendersLiveHeaderAfterItem ? (
+            <LiveProcessHeader activities={liveActivities} t={t} />
+          ) : null}
+          {anchoredLiveGroups.map(renderLiveProcessGroup)}
+        </MeasuredMessageItem>
+      </Fragment>
+    );
+  }, [
+    autoExpandTools,
+    createDiff,
+    handleMeasuredItemHeight,
+    isAssistantWorking,
+    keyedMessageItems,
+    liveActivities,
+    liveProcessHeaderIndex,
+    liveProcessGroupsByAnchor,
+    onFileOpen,
+    onGrantToolPermission,
+    onShowSettings,
+    provider,
+    renderLiveProcessGroup,
+    selectedProject,
+    showRawParameters,
+    showThinking,
+    t,
   ]);
 
   return (
@@ -801,18 +1050,18 @@ export default function MessagesPaneV2({
             <div aria-hidden="true" style={{ height: virtualWindow.bottomPadding }} />
           ) : null}
 
-          {isAssistantWorking ? (
-            <div className={keyedMessageItems.length > 0 ? 'pt-8' : ''}>
-              <ProcessPanel
-                activities={liveActivities}
-                fallbackLabel={
-                  liveActivities.length > 0
-                    ? resolveWorkingLabel(workingStatus, t)
-                    : t('process.waitingForModel', { defaultValue: 'Requesting model' })
-                }
-                t={t}
-              />
-            </div>
+          {isAssistantWorking &&
+          liveProcessHeaderIndex === keyedMessageItems.length &&
+          keyedMessageItems[liveProcessHeaderIndex - 1]?.message.type !== 'user' ? (
+            <LiveProcessHeader activities={liveActivities} t={t} />
+          ) : null}
+
+          {shouldRenderBottomLiveStatus ? (
+            <ProcessLiveStatus step={liveStatusStep}>
+              {liveProcessDetailMessages.length > 0
+                ? renderLiveProcessDetailMessages(liveProcessDetailMessages, 'bottom-live-process')
+                : null}
+            </ProcessLiveStatus>
           ) : null}
         </div>
       )}
@@ -820,132 +1069,341 @@ export default function MessagesPaneV2({
   );
 }
 
-// Map raw status strings the realtime layer hands us to localized labels.
-// Strings come from a few places (`useChatComposerState`, the realtime
-// handler default, possible future SDK-sourced values) and may be any of:
-// "Processing" / "Working..." / "Working" / "Waiting for permission".
-// Anything we don't recognize falls through verbatim — better than showing
-// a wrong-but-translated string.
-function resolveWorkingLabel(
-  status: ClaudeWorkStatus | null | undefined,
-  t: (key: string, options?: Record<string, unknown>) => string,
-): string {
-  const fallback = t('working.default', { defaultValue: 'Working' });
-  const raw = status?.text;
-  if (!raw) return fallback;
-  const normalized = raw.replace(/[.…\s]+$/u, '').trim().toLowerCase();
-  switch (normalized) {
-    case '':
-    case 'working':
-      return fallback;
-    case 'processing':
-      return t('working.processing', { defaultValue: 'Processing' });
-    case 'thinking':
-      return t('working.thinking', { defaultValue: 'Thinking' });
-    case 'waiting for permission':
-      return t('working.waitingForPermission', { defaultValue: 'Waiting for permission' });
-    case 'compacting':
-    case 'compacting context':
-      return t('working.compacting', { defaultValue: 'Compacting context...' });
-    default:
-      return raw;
-  }
-}
-
-function formatDuration(ms?: number | null): string {
-  const totalSeconds = Math.max(0, Math.round(Number(ms) || 0) / 1000);
-  if (totalSeconds < 60) {
-    return `${Math.round(totalSeconds)}s`;
-  }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.round(totalSeconds % 60);
-  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
-}
-
-function getActivityIcon(activity: ChatMessage | null) {
-  if (!activity) return Activity;
-  if (activity.state === 'failed' || activity.severity === 'error' || activity.severity === 'warning') return XCircle;
-  if (activity.state === 'completed') return CheckCircle2;
-  if (activity.phase === 'rag') return Search;
-  if (activity.phase === 'tool' || activity.phase === 'subtask') return Wrench;
-  return Loader2;
-}
-
-function summarizeActivities(activities: ChatMessage[]) {
+function getLatestActivity(activities: ChatMessage[]): ChatMessage | null {
   const byId = new Map<string, ChatMessage>();
   for (const activity of activities) {
     const key = activity.activityId || activity.id || `${activity.runId}-${activity.timestamp}`;
     byId.set(key, activity);
   }
   const latest = Array.from(byId.values());
-  const current = [...latest].reverse().find((activity) => activity.state === 'running') || latest[latest.length - 1] || null;
-  const startedAt = latest[0]?.startedAt || latest[0]?.timestamp;
-  const elapsedMs = startedAt ? Date.now() - Date.parse(String(startedAt)) : 0;
-  const toolCalls = latest.filter((activity) => activity.toolName || activity.phase === 'tool' || activity.phase === 'subtask' || activity.phase === 'rag').length;
-  const errors = latest.filter((activity) => activity.state === 'failed' || activity.severity === 'error').length;
-  const searches = latest.filter((activity) => activity.phase === 'rag').length;
-  const recent = latest.filter((activity) => activity.title).slice(-5);
-  return { current, elapsedMs, toolCalls, errors, searches, recent };
+  return [...latest].reverse().find((activity) => activity.state === 'running') || latest[latest.length - 1] || null;
 }
 
-function ProcessPanel({
+function activityToLiveStep(activity: ChatMessage): ProcessTraceStep {
+  return {
+    id: activity.activityId || activity.id,
+    title: activity.title || activity.content || activity.toolName || '',
+    detail: activity.detail || '',
+    state: activity.state || 'running',
+    severity: activity.severity,
+    phase: activity.phase,
+    toolName: activity.toolName,
+  };
+}
+
+function parseToolInput(value: unknown): Record<string, unknown> {
+  if (!value) return {};
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== 'string') {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function getToolInputString(message: ChatMessage, key: string): string {
+  const input = parseToolInput(message.toolInput);
+  const value = input[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function getToolTarget(message: ChatMessage): string {
+  return (
+    getToolInputString(message, 'file_path') ||
+    getToolInputString(message, 'path') ||
+    getToolInputString(message, 'pattern') ||
+    getToolInputString(message, 'query') ||
+    getToolInputString(message, 'command') ||
+    ''
+  );
+}
+
+function getDisplayTarget(target: string): string {
+  if (!target) return '';
+  const normalized = target.replace(/\\/g, '/');
+  return normalized.split('/').filter(Boolean).pop() || target;
+}
+
+function getLiveProcessToolKind(message: ChatMessage): 'edit' | 'read' | 'search' | 'command' | 'subagent' | 'compact' | 'thinking' | 'tool' {
+  if (message.isCompactBoundary) return 'compact';
+  if (message.isThinking) return 'thinking';
+  if (message.isSubagentContainer || message.toolName === 'Task' || message.isTaskNotification) return 'subagent';
+
+  const toolName = String(message.toolName || '').toLowerCase();
+  if (/edit|write|applypatch|patch|update|create/.test(toolName)) return 'edit';
+  if (/read/.test(toolName)) return 'read';
+  if (/grep|glob|search|websearch|rag|find/.test(toolName) || message.phase === 'rag') return 'search';
+  if (/bash|shell|terminal|exec|command|run/.test(toolName)) return 'command';
+  return 'tool';
+}
+
+function shouldRenderLiveProcessGroup(group: LiveProcessGroup, runMode: ChatRunMode): boolean {
+  if (runMode !== 'plan') {
+    return true;
+  }
+  return !group.messages.every((message) => message.isCompactBoundary);
+}
+
+function uniqueCount(values: string[]): number {
+  const normalized = values.map((value) => value.trim()).filter(Boolean);
+  return normalized.length > 0 ? new Set(normalized).size : values.length;
+}
+
+function formatLiveProcessCompletedTitle(
+  group: LiveProcessGroup,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  const editTargets: string[] = [];
+  const readTargets: string[] = [];
+  let searchCount = 0;
+  let commandCount = 0;
+  let otherToolCount = 0;
+  let hasSubagent = false;
+  let hasCompact = false;
+  let hasThinking = false;
+
+  for (const message of group.messages) {
+    const kind = getLiveProcessToolKind(message);
+    if (kind === 'edit') {
+      editTargets.push(getToolTarget(message));
+    } else if (kind === 'read') {
+      readTargets.push(getToolTarget(message));
+    } else if (kind === 'search') {
+      searchCount += 1;
+    } else if (kind === 'command') {
+      commandCount += 1;
+    } else if (kind === 'subagent') {
+      hasSubagent = true;
+    } else if (kind === 'compact') {
+      hasCompact = true;
+    } else if (kind === 'thinking') {
+      hasThinking = true;
+    } else {
+      otherToolCount += 1;
+    }
+  }
+
+  const labels: string[] = [];
+  const editCount = uniqueCount(editTargets);
+  const readCount = uniqueCount(readTargets);
+
+  if (editCount > 0) {
+    labels.push(t('process.live.editedFiles', {
+      count: editCount,
+      defaultValue: `Edited ${editCount} ${editCount === 1 ? 'file' : 'files'}`,
+    }));
+  }
+  if (readCount > 0) {
+    labels.push(t('process.live.exploredFiles', {
+      count: readCount,
+      defaultValue: `Explored ${readCount} ${readCount === 1 ? 'file' : 'files'}`,
+    }));
+  }
+  if (searchCount > 0) {
+    labels.push(t('process.live.searches', {
+      count: searchCount,
+      defaultValue: `Searched ${searchCount} ${searchCount === 1 ? 'time' : 'times'}`,
+    }));
+  }
+  if (commandCount > 0) {
+    labels.push(t('process.live.commands', {
+      count: commandCount,
+      defaultValue: `Ran ${commandCount} ${commandCount === 1 ? 'command' : 'commands'}`,
+    }));
+  }
+  if (hasSubagent) {
+    labels.push(t('process.live.subagentCompleted', { defaultValue: 'Subagent finished' }));
+  }
+  if (hasCompact) {
+    labels.push(t('process.live.compactCompleted', { defaultValue: 'Compacted context' }));
+  }
+  if (hasThinking) {
+    labels.push(t('process.live.thoughtCompleted', { defaultValue: 'Thought through next step' }));
+  }
+  if (labels.length === 0 && otherToolCount > 0) {
+    labels.push(t('process.live.toolCalls', {
+      count: otherToolCount,
+      defaultValue: `Used ${otherToolCount} ${otherToolCount === 1 ? 'tool' : 'tools'}`,
+    }));
+  }
+
+  return labels.join(', ');
+}
+
+function getRunningLiveProcessTitle(
+  group: LiveProcessGroup,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  const latestMessage = [...group.messages].reverse().find((message) => isLiveProcessMessage(message));
+  if (!latestMessage) {
+    return t('working.processing', { defaultValue: 'Processing' });
+  }
+
+  const kind = getLiveProcessToolKind(latestMessage);
+  const target = getDisplayTarget(getToolTarget(latestMessage));
+  if (kind === 'edit') {
+    return target
+      ? t('process.live.runningEditTarget', { target, defaultValue: `Editing ${target}` })
+      : t('process.live.runningEdit', { defaultValue: 'Editing file' });
+  }
+  if (kind === 'read') {
+    return target
+      ? t('process.live.runningReadTarget', { target, defaultValue: `Reading ${target}` })
+      : t('process.live.runningRead', { defaultValue: 'Reading file' });
+  }
+  if (kind === 'search') {
+    return target
+      ? t('process.live.runningSearchTarget', { target, defaultValue: `Searching ${target}` })
+      : t('process.live.runningSearch', { defaultValue: 'Searching' });
+  }
+  if (kind === 'command') {
+    return target
+      ? t('process.live.runningCommandTarget', { target, defaultValue: `Running ${target}` })
+      : t('process.live.runningCommand', { defaultValue: 'Running command' });
+  }
+  if (kind === 'subagent') {
+    return t('process.live.runningSubagent', { defaultValue: 'Running subagent' });
+  }
+  if (kind === 'compact') {
+    return t('working.compacting', { defaultValue: 'Compacting context...' });
+  }
+  if (kind === 'thinking') {
+    return t('working.thinking', { defaultValue: 'Thinking' });
+  }
+  return latestMessage.title || latestMessage.content || latestMessage.toolName || t('working.processing', { defaultValue: 'Processing' });
+}
+
+function getLiveProcessGroupStep(
+  group: LiveProcessGroup,
+  t: (key: string, options?: Record<string, unknown>) => string,
+  fallbackRunningStep: ProcessTraceStep | null,
+): ProcessTraceStep {
+  const fallbackPhase = String(fallbackRunningStep?.phase || '');
+  const canUseFallbackStep = fallbackRunningStep?.title &&
+    !['generation', 'thinking', 'permission'].includes(fallbackPhase);
+  if (group.isRunning && canUseFallbackStep) {
+    return {
+      ...fallbackRunningStep,
+      id: group.id,
+      state: fallbackRunningStep.state || 'running',
+    };
+  }
+
+  const title = group.isRunning
+    ? getRunningLiveProcessTitle(group, t)
+    : formatLiveProcessCompletedTitle(group, t);
+  const latestMessage = group.messages[group.messages.length - 1];
+  const kind = latestMessage ? getLiveProcessToolKind(latestMessage) : 'tool';
+
+  return {
+    id: group.id,
+    title,
+    state: group.isRunning ? 'running' : 'completed',
+    phase: kind === 'search' ? 'rag' : kind === 'command' ? 'tool' : latestMessage?.phase,
+    toolName: latestMessage?.toolName,
+  };
+}
+
+function getLiveStatusStep(
+  activities: ChatMessage[],
+  workingStatus: ClaudeWorkStatus | null | undefined,
+  hasAssistantContent: boolean,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): ProcessTraceStep {
+  const latestActivity = getLatestActivity(activities);
+  if (latestActivity) {
+    return activityToLiveStep(latestActivity);
+  }
+
+  if (workingStatus?.compactProgress) {
+    const progress = workingStatus.compactProgress;
+    return {
+      id: 'live-compact',
+      title: t('working.compacting', { defaultValue: 'Compacting context...' }),
+      detail: progress.label || progress.stage || '',
+      phase: 'compact',
+      state: progress.state || 'running',
+    };
+  }
+
+  const rawStatus = String(workingStatus?.text || '').toLowerCase();
+  if (rawStatus.includes('permission')) {
+    return {
+      id: 'live-permission',
+      title: t('working.waitingForPermission', { defaultValue: 'Waiting for permission' }),
+      phase: 'permission',
+      state: 'running',
+      severity: 'warning',
+    };
+  }
+  if (rawStatus.includes('compact')) {
+    return {
+      id: 'live-compact',
+      title: t('working.compacting', { defaultValue: 'Compacting context...' }),
+      phase: 'compact',
+      state: 'running',
+    };
+  }
+
+  return hasAssistantContent
+    ? {
+        id: 'live-generation',
+        title: t('working.generating', { defaultValue: '正在生成回复' }),
+        phase: 'generation',
+        state: 'running',
+      }
+    : {
+        id: 'live-thinking',
+        title: t('working.thinking', { defaultValue: 'Thinking' }),
+        phase: 'thinking',
+        state: 'running',
+      };
+}
+
+function getLiveProcessStartedAtMs(activities: ChatMessage[], fallbackStartedAtMs: number): number {
+  const byId = new Map<string, ChatMessage>();
+  for (const activity of activities) {
+    const key = activity.activityId || activity.id || `${activity.runId}-${activity.timestamp}`;
+    byId.set(key, activity);
+  }
+  const latest = Array.from(byId.values());
+  const startedAt = latest[0]?.startedAt || latest[0]?.timestamp;
+  const startedAtMs = startedAt ? Date.parse(String(startedAt)) : fallbackStartedAtMs;
+  return Number.isFinite(startedAtMs) ? startedAtMs : fallbackStartedAtMs;
+}
+
+function LiveProcessHeader({
   activities,
-  fallbackLabel,
   t,
 }: {
   activities: ChatMessage[];
-  fallbackLabel: string;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
-  const summary = useMemo(() => summarizeActivities(activities), [activities]);
-  const current = summary.current;
-  const CurrentIcon = getActivityIcon(current);
-  const label = current?.title || fallbackLabel;
-  const detail = current?.detail || '';
-  const iconClass =
-    CurrentIcon === Loader2
-      ? 'animate-spin text-neutral-500 dark:text-neutral-400'
-      : current?.state === 'failed' || current?.severity === 'error' || current?.severity === 'warning'
-        ? 'text-amber-600 dark:text-amber-400'
-        : current?.state === 'completed'
-          ? 'text-emerald-600 dark:text-emerald-400'
-          : 'text-neutral-500 dark:text-neutral-400';
+  const fallbackStartedAtRef = useRef(Date.now());
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="rounded-xl border border-neutral-200 bg-white px-3.5 py-3 text-[12px] text-neutral-700 shadow-sm dark:border-neutral-800 dark:bg-neutral-900/70 dark:text-neutral-300"
-    >
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-2.5">
-          <CurrentIcon className={`mt-0.5 h-4 w-4 shrink-0 ${iconClass}`} strokeWidth={2} />
-          <div className="min-w-0">
-            <div className="font-medium text-neutral-900 dark:text-neutral-100">{label}</div>
-            {detail ? (
-              <div className="mt-0.5 truncate text-neutral-500 dark:text-neutral-400">{detail}</div>
-            ) : null}
-          </div>
-        </div>
-        <div className="shrink-0 tabular-nums text-neutral-500 dark:text-neutral-400">
-          {formatDuration(summary.elapsedMs)}
-        </div>
-      </div>
-      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-        <span>{t('process.metrics.toolCalls', { count: summary.toolCalls, defaultValue: '{{count}} tool calls' })}</span>
-        <span>{t('process.metrics.searches', { count: summary.searches, defaultValue: '{{count}} searches' })}</span>
-        <span>{t('process.metrics.errors', { count: summary.errors, defaultValue: '{{count}} errors' })}</span>
-      </div>
-      {summary.recent.length > 1 ? (
-        <div className="mt-2 space-y-1 border-t border-neutral-100 pt-2 dark:border-neutral-800">
-          {summary.recent.slice(-3).map((activity) => (
-            <div key={activity.activityId || activity.id} className="flex min-w-0 items-center gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-neutral-300 dark:bg-neutral-600" />
-              <span className="truncate">{activity.title || activity.content}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </div>
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const elapsedMs = useMemo(
+    () => nowMs - getLiveProcessStartedAtMs(activities, fallbackStartedAtRef.current),
+    [activities, nowMs],
   );
+  const duration = formatProcessDuration(elapsedMs);
+  const label = t('process.summary.processed', {
+    duration,
+    defaultValue: `Processed ${duration}`,
+  });
+
+  return <ProcessRunHeader label={label} />;
 }

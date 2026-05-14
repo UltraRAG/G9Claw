@@ -409,17 +409,19 @@ export async function* runAgent({
       ? systemContextNoGit
       : baseSystemContext
 
-  // Override permission mode if agent defines one
-  // However, don't override if parent is in bypassPermissions or acceptEdits mode - those should always take precedence
+  // Override permission mode if agent defines one. Parent plan mode takes
+  // precedence so subagents cannot implement before ExitPlanMode approval.
   // For async agents, also set shouldAvoidPermissionPrompts since they can't show UI
   const agentPermissionMode = agentDefinition.permissionMode
   const agentGetAppState = () => {
     const state = toolUseContext.getAppState()
     let toolPermissionContext = state.toolPermissionContext
 
-    // Override permission mode if agent defines one (unless parent is bypassPermissions, acceptEdits, or auto)
+    // Override permission mode if agent defines one (unless parent is plan,
+    // bypassPermissions, acceptEdits, or auto)
     if (
       agentPermissionMode &&
+      state.toolPermissionContext.mode !== 'plan' &&
       state.toolPermissionContext.mode !== 'bypassPermissions' &&
       state.toolPermissionContext.mode !== 'acceptEdits' &&
       !(

@@ -475,6 +475,7 @@ function ChatInterfaceV2({
         setInput={setInput}
         isAssistantWorking={isLoading}
         workingStatus={claudeStatus}
+        runMode={runMode}
       />
       {composer}
     </div>

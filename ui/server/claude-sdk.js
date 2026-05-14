@@ -58,6 +58,8 @@ const TOOLS_REQUIRING_INTERACTION = new Set([
 const BUILT_IN_WEB_TOOLS = ['WebFetch', 'WebSearch'];
 const PLAN_MODE_SAFE_TOOL_ENTRIES = [
   'Read',
+  'Glob',
+  'Grep',
   'Task',
   'AskUserQuestion',
   'ExitPlanMode',
@@ -66,18 +68,17 @@ const PLAN_MODE_SAFE_TOOL_ENTRIES = [
   'TodoRead',
   'TodoWrite',
   'WebFetch',
-  'WebSearch',
-  'Bash(ls:*)',
-  'Bash(pwd:*)',
-  'Bash(find:*)',
-  'Bash(rg:*)',
-  'Bash(grep:*)',
-  'Bash(cat:*)',
-  'Bash(sed:*)',
-  'Bash(head:*)',
-  'Bash(tail:*)',
-  'Bash(wc:*)'
+  'WebSearch'
 ];
+const PLAN_MODE_MUTATING_TOOL_NAMES = new Set([
+  'Edit',
+  'Write',
+  'MultiEdit',
+  'NotebookEdit',
+  'SkillManage',
+]);
+const PLAN_MODE_READ_ONLY_MESSAGE =
+  'Plan mode is read-only. Present the final plan with ExitPlanMode before editing files or running implementation commands.';
 const RAG_WEB_TOOL_GUIDANCE = [
   '9GClaw RAG is enabled.',
   'For network search, web research, current public facts, source-backed answers, or user requests mentioning web/search skills, use the 9GClaw RAG skills instead of built-in web tools.',
@@ -360,6 +361,36 @@ function matchesToolPermission(entry, toolName, input) {
   return false;
 }
 
+function isPlanModeSafeTool(toolName, input) {
+  return PLAN_MODE_SAFE_TOOL_ENTRIES.some(entry =>
+    matchesToolPermission(entry, toolName, input)
+  );
+}
+
+function getPermissionEntryToolName(entry) {
+  const match = entry.match(/^([^(]+)/);
+  return (match?.[1] || entry).trim();
+}
+
+function filterPlanModeAllowedTools(allowedTools) {
+  return allowedTools.filter(tool => {
+    if (typeof tool !== 'string') {
+      return false;
+    }
+    const toolName = getPermissionEntryToolName(tool);
+    if (PLAN_MODE_SAFE_TOOL_ENTRIES.includes(tool)) {
+      return true;
+    }
+    if (PLAN_MODE_MUTATING_TOOL_NAMES.has(toolName)) {
+      return false;
+    }
+    if (toolName === 'Bash') {
+      return false;
+    }
+    return true;
+  });
+}
+
 /**
  * Maps CLI options to SDK-compatible options format
  * @param {Object} options - CLI options
@@ -392,6 +423,7 @@ async function mapCliOptionsToSDK(options = {}) {
 
   // Add plan mode default tools
   if (permissionMode === 'plan') {
+    allowedTools = filterPlanModeAllowedTools(allowedTools);
     for (const tool of PLAN_MODE_SAFE_TOOL_ENTRIES) {
       if (!allowedTools.includes(tool)) {
         allowedTools.push(tool);
@@ -526,6 +558,7 @@ function buildStoredQueryOptions(options = {}, sessionId) {
     sessionId,
     cwd: options.cwd,
     permissionMode: options.permissionMode,
+    basePermissionMode: options.basePermissionMode,
     model: options.model,
     sessionSummary: options.sessionSummary,
     alwaysOnPlanId: options.alwaysOnPlanId,
@@ -1064,15 +1097,12 @@ async function queryClaudeSDK(command, options = {}, ws) {
         }
 
         if (isPlanSession && !planExitApproved) {
-          const isPlanSafeTool = PLAN_MODE_SAFE_TOOL_ENTRIES.some(entry =>
-            matchesToolPermission(entry, toolName, input)
-          );
-          if (isPlanSafeTool) {
+          if (isPlanModeSafeTool(toolName, input)) {
             return { behavior: 'allow', updatedInput: input };
           }
           return {
             behavior: 'deny',
-            message: 'Plan mode is read-only. Present the final plan with ExitPlanMode before editing files or running implementation commands.'
+            message: PLAN_MODE_READ_ONLY_MESSAGE
           };
         }
 

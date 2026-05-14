@@ -207,6 +207,24 @@ function isConfirmedUserMessageDuplicate(
   });
 }
 
+function isLocalUserMessage(message: NormalizedMessage): boolean {
+  return (
+    message.kind === 'text' &&
+    message.role === 'user' &&
+    message.id.startsWith('local_')
+  );
+}
+
+function shouldKeepRealtimeAfterServerRefresh(
+  realtimeMessage: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+): boolean {
+  if (isLocalUserMessage(realtimeMessage)) {
+    return !isConfirmedUserMessageDuplicate(realtimeMessage, serverMessages);
+  }
+  return false;
+}
+
 /**
  * The backend pushes a synthetic `interrupted` notice the moment abort fires
  * (id: `local_interrupt_…`), but the Claude SDK also persists a matching
@@ -411,6 +429,9 @@ export function useSessionStore() {
         const watermark = Math.max(fetchStartedAt, latestServerTs);
         slot.realtimeMessages = slot.realtimeMessages.filter(m => {
           if (m.id.startsWith('__streaming_')) return true;
+          if (isLocalUserMessage(m)) {
+            return !isConfirmedUserMessageDuplicate(m, messages);
+          }
           return (Date.parse(m.timestamp) || 0) > watermark;
         });
       }
@@ -594,8 +615,13 @@ export function useSessionStore() {
       slot.fetchedAt = Date.now();
       slot.offset = slot.serverMessages.length;
       slot.lastError = null;
-      // drop realtime messages that the server has caught up with to prevent unbounded growth.
-      slot.realtimeMessages = [];
+      // Drop realtime messages that the server has caught up with, but keep an
+      // optimistic user turn until the server actually replays that same user
+      // message. Some providers stream assistant/tool records before the user
+      // text appears in the persisted transcript.
+      slot.realtimeMessages = slot.realtimeMessages.filter((message) =>
+        shouldKeepRealtimeAfterServerRefresh(message, slot.serverMessages),
+      );
       recomputeMergedIfNeeded(slot);
       notify(sessionId);
     } catch (error) {

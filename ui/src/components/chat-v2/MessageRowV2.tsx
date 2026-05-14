@@ -1,6 +1,6 @@
-import { memo, useMemo, useState, type ReactNode } from 'react';
+import { memo, useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Activity, AlertTriangle, ChevronDown, ChevronRight, FileText } from 'lucide-react';
+import { AlertTriangle, FileText } from 'lucide-react';
 import type {
   ChatMessage,
   ClaudePermissionSuggestion,
@@ -10,6 +10,12 @@ import type { Project, SessionProvider } from '../../types/app';
 import MessageComponent from '../chat/view/subcomponents/MessageComponent';
 import { Markdown } from '../chat/view/subcomponents/Markdown';
 import { formatUsageLimitText } from '../chat/utils/chatFormatting';
+import {
+  ProcessTrace,
+  type ProcessTraceMetric,
+  type ProcessTraceStep,
+} from './ProcessTrace';
+import { formatProcessDuration } from './processTraceUtils';
 
 type DiffLine = { type: string; content: string; lineNum: number };
 
@@ -249,32 +255,18 @@ function MessageRowV2({
 
 export default memo(MessageRowV2);
 
-function formatDuration(ms?: number | null): string {
-  const totalSeconds = Math.max(0, Math.round(Number(ms) || 0) / 1000);
-  if (totalSeconds < 60) {
-    return `${Math.round(totalSeconds)}s`;
-  }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.round(totalSeconds % 60);
-  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
-}
-
-function normalizeKeySteps(value: unknown): Array<{
-  activityId?: string;
-  title?: string;
-  detail?: string;
-  state?: string;
-  severity?: string;
-}> {
+function normalizeKeySteps(value: unknown): ProcessTraceStep[] {
   return Array.isArray(value)
     ? value
         .filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object')
         .map((step) => ({
-          activityId: typeof step.activityId === 'string' ? step.activityId : undefined,
+          id: typeof step.activityId === 'string' ? step.activityId : undefined,
           title: typeof step.title === 'string' ? step.title : undefined,
           detail: typeof step.detail === 'string' ? step.detail : undefined,
           state: typeof step.state === 'string' ? step.state : undefined,
           severity: typeof step.severity === 'string' ? step.severity : undefined,
+          phase: typeof step.phase === 'string' ? step.phase : undefined,
+          toolName: typeof step.toolName === 'string' ? step.toolName : undefined,
         }))
     : [];
 }
@@ -290,7 +282,6 @@ function ProcessSummaryRow({
   renderDetailMessage?: (message: ChatMessage, index: number) => ReactNode;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const steps = useMemo(() => normalizeKeySteps(message.keySteps), [message.keySteps]);
   const status = String(message.state || 'completed');
   const isFailed = status === 'failed';
@@ -303,77 +294,55 @@ function ProcessSummaryRow({
   const toolCalls = Number(message.toolCallCount || 0);
   const searches = Number(message.ragSearchCount || 0);
   const errors = Number(message.toolErrorCount || 0);
-  const duration = formatDuration(message.durationMs);
+  const duration = formatProcessDuration(message.durationMs);
   const collapsedLabel = t('process.summary.processed', {
     duration,
     defaultValue: `Processed ${duration}`,
   });
-  const metaParts = [
-    toolCalls > 0 ? t('process.metrics.toolCalls', { count: toolCalls, defaultValue: '{{count}} tool calls' }) : null,
-    searches > 0 ? t('process.metrics.searches', { count: searches, defaultValue: '{{count}} searches' }) : null,
-    errors > 0 ? t('process.metrics.errors', { count: errors, defaultValue: '{{count}} errors' }) : null,
-    duration,
-  ].filter(Boolean);
+  const metrics: ProcessTraceMetric[] = [
+    toolCalls > 0
+      ? {
+          key: 'toolCalls',
+          label: t('process.metrics.toolCalls', { count: toolCalls, defaultValue: '{{count}} tool calls' }),
+        }
+      : null,
+    searches > 0
+      ? {
+          key: 'searches',
+          label: t('process.metrics.searches', { count: searches, defaultValue: '{{count}} searches' }),
+        }
+      : null,
+    errors > 0
+      ? {
+          key: 'errors',
+          label: t('process.metrics.errors', { count: errors, defaultValue: '{{count}} errors' }),
+        }
+      : null,
+  ].filter((metric): metric is ProcessTraceMetric => Boolean(metric));
+  const fallbackSteps: ProcessTraceStep[] =
+    steps.length > 0
+      ? steps
+      : [
+          {
+            id: `${message.id || 'process'}-empty`,
+            title: t('process.noSteps', { defaultValue: 'No detailed steps recorded.' }),
+            state: status,
+          },
+        ];
 
   return (
-    <div className="border-b border-neutral-200 pb-3 text-[12px] text-neutral-700 dark:border-neutral-800 dark:text-neutral-300">
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        className="flex w-full items-center gap-1.5 text-left text-[13px] font-medium text-neutral-500 transition hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
-      >
-        <Activity className="h-4 w-4 shrink-0" strokeWidth={2} />
-        <span>{collapsedLabel}</span>
-        {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
-        )}
-      </button>
-      {expanded ? (
-        <div className="mt-2 rounded-lg border border-neutral-200 bg-neutral-50/70 px-3 py-2.5 dark:border-neutral-800 dark:bg-neutral-900/55">
-          <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-neutral-500 dark:text-neutral-400">
-            <span className="font-medium text-neutral-900 dark:text-neutral-100">{title}</span>
-            {metaParts.length > 0 ? <span>{metaParts.join(' · ')}</span> : null}
-          </div>
-          {detailMessages.length > 0 && renderDetailMessage ? (
-            <div className="space-y-4">
-              {detailMessages.map((detailMessage, index) =>
-                renderDetailMessage(detailMessage, index),
-              )}
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {steps.length > 0 ? (
-                steps.map((step, index) => (
-                  <div
-                    key={step.activityId || `${message.id || 'process'}-${index}`}
-                    className="flex min-w-0 items-start gap-2 text-[12px] text-neutral-600 dark:text-neutral-400"
-                  >
-                    <span
-                      className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
-                        step.state === 'failed' || step.severity === 'error' || step.severity === 'warning'
-                          ? 'bg-amber-500'
-                          : 'bg-neutral-300 dark:bg-neutral-600'
-                      }`}
-                    />
-                    <div className="min-w-0">
-                      <div className="truncate">{step.title || t('process.step', { defaultValue: 'Step' })}</div>
-                      {step.detail ? (
-                        <div className="truncate text-neutral-400 dark:text-neutral-500">{step.detail}</div>
-                      ) : null}
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="text-neutral-500 dark:text-neutral-400">
-                  {t('process.noSteps', { defaultValue: 'No detailed steps recorded.' })}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      ) : null}
-    </div>
+    <ProcessTrace
+      label={collapsedLabel}
+      statusLabel={title}
+      status={status}
+      metrics={metrics}
+      steps={detailMessages.length > 0 && renderDetailMessage ? [] : fallbackSteps}
+    >
+      {detailMessages.length > 0 && renderDetailMessage
+        ? detailMessages.map((detailMessage, index) =>
+            renderDetailMessage(detailMessage, index),
+          )
+        : null}
+    </ProcessTrace>
   );
 }

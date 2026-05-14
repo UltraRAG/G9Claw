@@ -39,6 +39,7 @@
     "default": "处理中",
     "processing": "处理中",
     "thinking": "思考中",
+    "generating": "正在生成回复",
     "waitingForPermission": "等待授权",
     "compacting": "正在压缩上下文...",
     "compactingLevel": "正在触发 {{level}} 级压缩：{{label}}"
@@ -57,6 +58,30 @@
       "toolCalls": "{{count}} 次工具调用",
       "searches": "{{count}} 次搜索",
       "errors": "{{count}} 个错误"
+    },
+    "live": {
+      "editedFiles_one": "已编辑 {{count}} 个文件",
+      "editedFiles_other": "已编辑 {{count}} 个文件",
+      "exploredFiles_one": "已探索 {{count}} 个文件",
+      "exploredFiles_other": "已探索 {{count}} 个文件",
+      "searches_one": "已搜索 {{count}} 次",
+      "searches_other": "已搜索 {{count}} 次",
+      "commands_one": "已运行 {{count}} 条命令",
+      "commands_other": "已运行 {{count}} 条命令",
+      "toolCalls_one": "已调用 {{count}} 个工具",
+      "toolCalls_other": "已调用 {{count}} 个工具",
+      "subagentCompleted": "子代理已完成",
+      "compactCompleted": "已压缩上下文",
+      "thoughtCompleted": "已完成思考",
+      "runningEdit": "正在编辑文件",
+      "runningEditTarget": "正在编辑 {{target}}",
+      "runningRead": "正在读取文件",
+      "runningReadTarget": "正在读取 {{target}}",
+      "runningSearch": "正在搜索",
+      "runningSearchTarget": "正在搜索 {{target}}",
+      "runningCommand": "正在运行命令",
+      "runningCommandTarget": "正在运行 {{target}}",
+      "runningSubagent": "正在运行子代理"
     }
   },
   "tools": {

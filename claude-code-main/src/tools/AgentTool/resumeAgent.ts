@@ -156,9 +156,13 @@ export async function resumeAgentBackground({
     permissionMode,
   )
 
+  const workerMode =
+    appState.toolPermissionContext.mode === 'plan'
+      ? 'plan'
+      : selectedAgent.permissionMode ?? 'acceptEdits'
   const workerPermissionContext = {
     ...appState.toolPermissionContext,
-    mode: selectedAgent.permissionMode ?? 'acceptEdits',
+    mode: workerMode,
   }
   const workerTools = isResumedFork
     ? toolUseContext.options.tools

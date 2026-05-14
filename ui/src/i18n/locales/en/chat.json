@@ -39,6 +39,7 @@
     "default": "Working",
     "processing": "Processing",
     "thinking": "Thinking",
+    "generating": "Generating response",
     "waitingForPermission": "Waiting for permission",
     "compacting": "Compacting context...",
     "compactingLevel": "Triggering level {{level}} compaction: {{label}}"
@@ -57,6 +58,30 @@
       "toolCalls": "{{count}} tool calls",
       "searches": "{{count}} searches",
       "errors": "{{count}} errors"
+    },
+    "live": {
+      "editedFiles_one": "Edited {{count}} file",
+      "editedFiles_other": "Edited {{count}} files",
+      "exploredFiles_one": "Explored {{count}} file",
+      "exploredFiles_other": "Explored {{count}} files",
+      "searches_one": "Searched {{count}} time",
+      "searches_other": "Searched {{count}} times",
+      "commands_one": "Ran {{count}} command",
+      "commands_other": "Ran {{count}} commands",
+      "toolCalls_one": "Used {{count}} tool",
+      "toolCalls_other": "Used {{count}} tools",
+      "subagentCompleted": "Subagent finished",
+      "compactCompleted": "Compacted context",
+      "thoughtCompleted": "Thought through next step",
+      "runningEdit": "Editing file",
+      "runningEditTarget": "Editing {{target}}",
+      "runningRead": "Reading file",
+      "runningReadTarget": "Reading {{target}}",
+      "runningSearch": "Searching",
+      "runningSearchTarget": "Searching {{target}}",
+      "runningCommand": "Running command",
+      "runningCommandTarget": "Running {{target}}",
+      "runningSubagent": "Running subagent"
     }
   },
   "tools": {

@@ -290,7 +290,7 @@ export const AgentTool = buildTool({
         description,
         team_name: teamName,
         use_splitpane: true,
-        plan_mode_required: spawnMode === 'plan',
+        plan_mode_required: permissionMode === 'plan' || spawnMode === 'plan',
         model: model ?? agentDef?.model,
         agent_type: subagent_type,
         invokingRequestId: assistantMessage?.requestId
@@ -569,9 +569,13 @@ export const AgentTool = buildTool({
     // permission mode, so they aren't affected by the parent's tool
     // restrictions. This is computed here so that runAgent doesn't need to
     // import from tools.ts (which would create a circular dependency).
+    const workerMode =
+      appState.toolPermissionContext.mode === 'plan'
+        ? 'plan'
+        : selectedAgent.permissionMode ?? 'acceptEdits';
     const workerPermissionContext = {
       ...appState.toolPermissionContext,
-      mode: selectedAgent.permissionMode ?? 'acceptEdits'
+      mode: workerMode
     };
     const workerTools = assembleToolPool(workerPermissionContext, appState.mcp.tools);
 
