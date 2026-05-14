@@ -359,11 +359,6 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ gitName, gitEmail }),
       }),
-    onboardingStatus: () => authenticatedFetch('/api/user/onboarding-status'),
-    completeOnboarding: () =>
-      authenticatedFetch('/api/user/complete-onboarding', {
-        method: 'POST',
-      }),
   },
 
   // Generic GET method for any endpoint
