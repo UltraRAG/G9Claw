@@ -84,7 +84,7 @@ interface UseChatRealtimeHandlersArgs {
 
 export function useChatRealtimeHandlers({
   provider,
-  selectedProject,
+  selectedProject: _selectedProject,
   selectedSession,
   currentSessionId,
   setCurrentSessionId,
@@ -118,6 +118,13 @@ export function useChatRealtimeHandlers({
       pendingSessionId === currentSessionId ? currentSessionId : null;
     const activeViewSessionId =
       selectedSession?.id || activeCurrentSessionId || pendingSessionId || null;
+    const isCurrentViewSession = (sessionId?: string | null) => (
+      !sessionId ||
+      sessionId === currentSessionId ||
+      sessionId === selectedSession?.id ||
+      sessionId === activeViewSessionId ||
+      sessionId === pendingSessionId
+    );
 
     /* ---------------------------------------------------------------- */
     /*  Legacy messages (no `kind` field) — handle and return           */
@@ -145,8 +152,9 @@ export function useChatRealtimeHandlers({
         case 'session-status': {
           const statusSessionId = msg.sessionId;
           if (!statusSessionId) return;
+          const isCurrentSession = isCurrentViewSession(statusSessionId);
 
-          if (msg.tokenBudget) {
+          if (msg.tokenBudget && isCurrentSession) {
             setTokenBudget(msg.tokenBudget as Record<string, unknown>);
           }
           if (Array.isArray(msg.activitySnapshot)) {
@@ -168,9 +176,6 @@ export function useChatRealtimeHandlers({
           }
 
           // Legacy isProcessing format from check-session-status
-          const isCurrentSession =
-            statusSessionId === currentSessionId || (selectedSession && statusSessionId === selectedSession.id);
-
           if (msg.isProcessing) {
             onSessionProcessing?.(statusSessionId);
             if (isCurrentSession) { setIsLoading(true); setCanAbortSession(true); }
@@ -391,7 +396,9 @@ export function useChatRealtimeHandlers({
 
       case 'status': {
         if (msg.text === 'token_budget' && msg.tokenBudget) {
-          setTokenBudget(msg.tokenBudget as Record<string, unknown>);
+          if (isCurrentViewSession(sid)) {
+            setTokenBudget(msg.tokenBudget as Record<string, unknown>);
+          }
         } else if (msg.text === 'clear_status') {
           setClaudeStatus(null);
         } else if (msg.text) {
@@ -421,7 +428,6 @@ export function useChatRealtimeHandlers({
     }
   }, [
     provider,
-    selectedProject,
     selectedSession,
     currentSessionId,
     setCurrentSessionId,
