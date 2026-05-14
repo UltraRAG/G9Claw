@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   Pencil,
   Plus,
+  RefreshCw,
   Settings as SettingsIcon,
   Trash2,
 } from 'lucide-react';
@@ -215,6 +216,7 @@ export type SidebarV2Props = {
   selectedSession: ProjectSession | null;
   activeTab: AppTab;
   isLoading: boolean;
+  loadError?: string | null;
   processingSessions?: Set<string>;
   unreadSessionIds?: Set<string>;
   onSelectTab: (tab: AppTab) => void;
@@ -229,6 +231,7 @@ export type SidebarV2Props = {
   onResetProjectSessionPreview?: (projectName: string) => void;
   onCollapse?: () => void;
   onLoadMoreSessions?: (projectName: string) => void;
+  onRetryLoad?: () => void;
   loadingMoreProjectIds?: Set<string>;
 };
 
@@ -267,6 +270,7 @@ export default function SidebarV2({
   selectedSession,
   activeTab,
   isLoading,
+  loadError,
   processingSessions,
   unreadSessionIds,
   onSelectProject,
@@ -280,6 +284,7 @@ export default function SidebarV2({
   onResetProjectSessionPreview,
   onCollapse,
   onLoadMoreSessions,
+  onRetryLoad,
   loadingMoreProjectIds,
   onSelectTab,
 }: SidebarV2Props) {
@@ -996,7 +1001,24 @@ export default function SidebarV2({
       </div>
 
       <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-        {isLoading && safeProjects.length === 0 ? (
+        {loadError && safeProjects.length === 0 ? (
+          <div className="px-3 py-4 text-[12px] leading-5 text-neutral-500 dark:text-neutral-400">
+            <div className="font-medium text-neutral-700 dark:text-neutral-300">
+              {t('sidebar:projects.loadFailed', { defaultValue: 'Projects failed to load' })}
+            </div>
+            <div className="mt-1">{loadError}</div>
+            {onRetryLoad ? (
+              <button
+                type="button"
+                onClick={onRetryLoad}
+                className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-md border border-neutral-200 px-2.5 text-[12px] font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-900"
+              >
+                <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.75} />
+                {t('sidebar:projects.retry', { defaultValue: 'Retry' })}
+              </button>
+            ) : null}
+          </div>
+        ) : isLoading && safeProjects.length === 0 ? (
           <div className="px-2 py-4 text-xs text-neutral-500 dark:text-neutral-400">
             {t('sidebar:sessions.loading', { defaultValue: 'Loading...' })}
           </div>

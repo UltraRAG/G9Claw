@@ -13,8 +13,8 @@ import type { SessionStore, NormalizedMessage } from '../../../stores/useSession
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
 import { normalizedToChatMessages } from './useChatMessages';
 
-const MESSAGES_PER_PAGE = 20;
-const INITIAL_VISIBLE_MESSAGES = Number.POSITIVE_INFINITY;
+const MESSAGES_PER_PAGE = 50;
+const INITIAL_VISIBLE_MESSAGES = MESSAGES_PER_PAGE;
 
 type PendingViewSession = {
   sessionId: string | null;
@@ -114,6 +114,7 @@ export function useChatSessionState({
   const [isLoading, setIsLoading] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
+  const [sessionLoadError, setSessionLoadError] = useState<string | null>(null);
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
@@ -144,6 +145,16 @@ export function useChatSessionState({
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
 
   const createDiff = useMemo<DiffCalculator>(() => createCachedDiffCalculator(), []);
+
+  const getSessionLoadErrorMessage = useCallback((error: unknown): string => {
+    if (typeof error === 'string' && error) {
+      return error;
+    }
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    return 'This conversation could not be loaded. The transcript may be too large or the server did not respond in time.';
+  }, []);
 
   /* ---------------------------------------------------------------- */
   /*  Derive chatMessages from the store                              */
@@ -305,6 +316,50 @@ export function useChatSessionState({
     }
   }, [allMessagesLoaded, scrollToBottom]);
 
+  const loadInitialSessionMessages = useCallback(async () => {
+    if (!selectedSession || !selectedProject) {
+      return;
+    }
+
+    const provider = (selectedSession.__provider || localStorage.getItem('selected-provider') as Provider) || 'claude';
+    setSessionLoadError(null);
+    setIsLoadingSessionMessages(true);
+
+    try {
+      const slot = await sessionStore.fetchFromServer(selectedSession.id, {
+        provider: (selectedSession.__provider || provider) as SessionProvider,
+        projectName: selectedProject.name,
+        projectPath: selectedProject.fullPath || selectedProject.path || '',
+        ...sessionRequestParams,
+        limit: MESSAGES_PER_PAGE,
+        offset: 0,
+      });
+
+      if (slot?.status === 'error') {
+        setSessionLoadError(getSessionLoadErrorMessage(slot.lastError));
+        return;
+      }
+
+      if (slot) {
+        setHasMoreMessages(slot.hasMore);
+        setTotalMessages(slot.total);
+        setAllMessagesLoaded(!slot.hasMore);
+        allMessagesLoadedRef.current = !slot.hasMore;
+        if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+      }
+    } catch (error) {
+      setSessionLoadError(getSessionLoadErrorMessage(error));
+    } finally {
+      setIsLoadingSessionMessages(false);
+    }
+  }, [
+    getSessionLoadErrorMessage,
+    selectedProject,
+    selectedSession,
+    sessionRequestParams,
+    sessionStore,
+  ]);
+
   const isNearBottom = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container) return false;
@@ -433,6 +488,7 @@ export function useChatSessionState({
       setCanAbortSession(false);
       setIsLoading(false);
       setCurrentSessionId(null);
+      setSessionLoadError(null);
       sessionStorage.removeItem('cursorSessionId');
       messagesOffsetRef.current = 0;
       setHasMoreMessages(false);
@@ -465,6 +521,7 @@ export function useChatSessionState({
     setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
     setAllMessagesLoaded(false);
     allMessagesLoadedRef.current = false;
+    setSessionLoadError(null);
     setIsLoadingAllMessages(false);
     setLoadAllJustFinished(false);
     setShowLoadAllOverlay(false);
@@ -490,28 +547,10 @@ export function useChatSessionState({
     lastLoadedSessionKeyRef.current = sessionKey;
 
     // Fetch from server → store updates → chatMessages re-derives automatically
-    setIsLoadingSessionMessages(true);
-    sessionStore.fetchFromServer(selectedSession.id, {
-      provider: (selectedSession.__provider || provider) as SessionProvider,
-      projectName: selectedProject.name,
-      projectPath: selectedProject.fullPath || selectedProject.path || '',
-      ...sessionRequestParams,
-      limit: null,
-      offset: 0,
-    }).then(slot => {
-      if (slot) {
-        setHasMoreMessages(slot.hasMore);
-        setTotalMessages(slot.total);
-        setAllMessagesLoaded(!slot.hasMore);
-        allMessagesLoadedRef.current = !slot.hasMore;
-        if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
-      }
-      setIsLoadingSessionMessages(false);
-    }).catch(() => {
-      setIsLoadingSessionMessages(false);
-    });
+    void loadInitialSessionMessages();
   }, [
     currentSessionId,
+    loadInitialSessionMessages,
     pendingViewSessionRef,
     resetStreamingState,
     selectedProject,
@@ -519,9 +558,13 @@ export function useChatSessionState({
     sendMessage,
     ws,
     isReadOnlyBackgroundSession,
-    sessionRequestParams,
     sessionStore,
   ]);
+
+  const retryLoadSessionMessages = useCallback(() => {
+    lastLoadedSessionKeyRef.current = null;
+    void loadInitialSessionMessages();
+  }, [loadInitialSessionMessages]);
 
   // External message update (e.g. WebSocket reconnect, background refresh)
   useEffect(() => {
@@ -617,6 +660,40 @@ export function useChatSessionState({
       }
       setVisibleMessageCount(Infinity);
 
+      const findTargetMessageIndex = () => {
+        if (target.snippet) {
+          const cleanSnippet = target.snippet.replace(/^\.{3}/, '').replace(/\.{3}$/, '').trim();
+          const searchPhrase = cleanSnippet.slice(0, 80).toLowerCase().trim();
+          if (searchPhrase.length >= 10) {
+            const snippetIndex = chatMessages.findIndex((message) => {
+              const text = `${message.content || ''} ${message.toolName || ''}`.toLowerCase();
+              return text.includes(searchPhrase);
+            });
+            if (snippetIndex >= 0) return snippetIndex;
+          }
+        }
+
+        if (target.timestamp) {
+          const targetDate = new Date(target.timestamp).getTime();
+          if (Number.isFinite(targetDate)) {
+            let closestIndex = -1;
+            let closestDiff = Infinity;
+            chatMessages.forEach((message, index) => {
+              const timestamp = new Date(message.timestamp).getTime();
+              if (!Number.isFinite(timestamp)) return;
+              const diff = Math.abs(timestamp - targetDate);
+              if (diff < closestDiff) {
+                closestDiff = diff;
+                closestIndex = index;
+              }
+            });
+            return closestIndex;
+          }
+        }
+
+        return -1;
+      };
+
       const findAndScroll = (retriesLeft: number) => {
         const container = scrollContainerRef.current;
         if (!container) return;
@@ -658,6 +735,17 @@ export function useChatSessionState({
           searchScrollActiveRef.current = false;
         }
       };
+
+      const targetMessageIndex = findTargetMessageIndex();
+      const container = scrollContainerRef.current;
+      if (container && targetMessageIndex >= 0) {
+        const denominator = Math.max(1, chatMessages.length - 1);
+        const targetRatio = targetMessageIndex / denominator;
+        container.scrollTop = Math.max(
+          0,
+          targetRatio * container.scrollHeight - container.clientHeight / 2,
+        );
+      }
 
       setTimeout(() => findAndScroll(15), 150);
     };
@@ -846,6 +934,8 @@ export function useChatSessionState({
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,
+    sessionLoadError,
+    retryLoadSessionMessages,
     isLoadingMoreMessages,
     hasMoreMessages,
     totalMessages,

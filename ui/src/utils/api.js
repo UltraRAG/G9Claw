@@ -1,13 +1,34 @@
 import { DISABLE_LOCAL_AUTH, IS_PLATFORM } from "../constants/config";
 
+export class ApiTimeoutError extends Error {
+  constructor(timeoutMs) {
+    super(`Request timed out after ${timeoutMs}ms`);
+    this.name = 'ApiTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+const PROJECTS_REQUEST_TIMEOUT_MS = 20_000;
+const SESSION_MESSAGES_REQUEST_TIMEOUT_MS = 25_000;
+const SESSION_MESSAGES_FULL_REQUEST_TIMEOUT_MS = 90_000;
+
+export const isApiTimeoutError = (error) => error?.name === 'ApiTimeoutError';
+
+const normalizeTimeoutMs = (value) => {
+  const timeoutMs = Number(value);
+  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
+};
+
 // Utility function for authenticated API calls
 export const authenticatedFetch = (url, options = {}) => {
+  const { timeoutMs: rawTimeoutMs, signal: upstreamSignal, ...fetchOptions } = options;
+  const timeoutMs = normalizeTimeoutMs(rawTimeoutMs);
   const token = localStorage.getItem('auth-token');
 
   const defaultHeaders = {};
 
   // Only set Content-Type for non-FormData requests
-  if (!(options.body instanceof FormData)) {
+  if (!(fetchOptions.body instanceof FormData)) {
     defaultHeaders['Content-Type'] = 'application/json';
   }
 
@@ -15,19 +36,57 @@ export const authenticatedFetch = (url, options = {}) => {
     defaultHeaders['Authorization'] = `Bearer ${token}`;
   }
 
+  let timeoutId = null;
+  let timeoutFired = false;
+  let controller = null;
+  let abortListener = null;
+
+  if (timeoutMs > 0) {
+    controller = new AbortController();
+    timeoutId = globalThis.setTimeout(() => {
+      timeoutFired = true;
+      controller.abort();
+    }, timeoutMs);
+
+    if (upstreamSignal) {
+      if (upstreamSignal.aborted) {
+        controller.abort(upstreamSignal.reason);
+      } else {
+        abortListener = () => controller.abort(upstreamSignal.reason);
+        upstreamSignal.addEventListener('abort', abortListener, { once: true });
+      }
+    }
+  }
+
   return fetch(url, {
-    ...options,
+    ...fetchOptions,
+    signal: controller?.signal ?? upstreamSignal,
     headers: {
       ...defaultHeaders,
-      ...options.headers,
+      ...fetchOptions.headers,
     },
-  }).then((response) => {
-    const refreshedToken = response.headers.get('X-Refreshed-Token');
-    if (refreshedToken) {
-      localStorage.setItem('auth-token', refreshedToken);
-    }
-    return response;
-  });
+  })
+    .then((response) => {
+      const refreshedToken = response.headers.get('X-Refreshed-Token');
+      if (refreshedToken) {
+        localStorage.setItem('auth-token', refreshedToken);
+      }
+      return response;
+    })
+    .catch((error) => {
+      if (timeoutFired) {
+        throw new ApiTimeoutError(timeoutMs);
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (timeoutId !== null) {
+        globalThis.clearTimeout(timeoutId);
+      }
+      if (upstreamSignal && abortListener) {
+        upstreamSignal.removeEventListener('abort', abortListener);
+      }
+    });
 };
 
 const normalizePathForUrl = (value) => String(value || '').replace(/\\/g, '/');
@@ -82,7 +141,7 @@ export const api = {
 
   // Protected endpoints
   // config endpoint removed - no longer needed (frontend uses window.location)
-  projects: () => authenticatedFetch('/api/projects'),
+  projects: () => authenticatedFetch('/api/projects', { timeoutMs: PROJECTS_REQUEST_TIMEOUT_MS }),
   projectCronJobs: (projectName) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/cron-jobs`),
   projectAlwaysOnRunHistory: (projectName, limit = 500) =>
@@ -118,7 +177,9 @@ export const api = {
       method: 'POST',
     }),
   sessions: (projectName, limit = 5, offset = 0) =>
-    authenticatedFetch(`/api/projects/${projectName}/sessions?limit=${limit}&offset=${offset}`),
+    authenticatedFetch(`/api/projects/${projectName}/sessions?limit=${limit}&offset=${offset}`, {
+      timeoutMs: PROJECTS_REQUEST_TIMEOUT_MS,
+    }),
   // Unified endpoint — all providers through one URL
   unifiedSessionMessages: (sessionId, provider = 'claude', { projectName = '', projectPath = '', limit = null, offset = 0 } = {}) => {
     const params = new URLSearchParams();
@@ -130,7 +191,9 @@ export const api = {
       params.append('offset', String(offset));
     }
     const queryString = params.toString();
-    return authenticatedFetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages${queryString ? `?${queryString}` : ''}`);
+    return authenticatedFetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages${queryString ? `?${queryString}` : ''}`, {
+      timeoutMs: limit === null ? SESSION_MESSAGES_FULL_REQUEST_TIMEOUT_MS : SESSION_MESSAGES_REQUEST_TIMEOUT_MS,
+    });
   },
   renameProject: (projectName, displayName) =>
     authenticatedFetch(`/api/projects/${projectName}/rename`, {

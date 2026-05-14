@@ -201,10 +201,24 @@ async function detectTaskMasterFolder(projectPath) {
 
 // Cache for extracted project directories
 const projectDirectoryCache = new Map();
+const CODEX_INDEX_CACHE_TTL_MS = 10_000;
+const CODEX_SESSION_HEAD_BYTES = 64 * 1024;
+const CODEX_SESSION_TAIL_BYTES = 256 * 1024;
+const CODEX_SESSION_FULL_PARSE_MAX_BYTES = 2 * 1024 * 1024;
+const JSONL_RECENT_INITIAL_BYTES = 256 * 1024;
+const JSONL_RECENT_MAX_BYTES = 8 * 1024 * 1024;
+let codexSessionsIndexCache = {
+  expiresAt: 0,
+  sessionsByProject: null,
+};
 
 // Clear cache when needed (called when project files change)
 function clearProjectDirectoryCache() {
   projectDirectoryCache.clear();
+  codexSessionsIndexCache = {
+    expiresAt: 0,
+    sessionsByProject: null,
+  };
 }
 
 // Path for the built-in "general" scratch project. Kept in sync with
@@ -1909,6 +1923,101 @@ async function readJsonlEntries(filePath) {
   return entries;
 }
 
+function parseJsonlTextEntries(text) {
+  const entries = [];
+
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    try {
+      entries.push(JSON.parse(line));
+    } catch {
+      // Ignore partial or concurrently-written JSONL records.
+    }
+  }
+
+  return entries;
+}
+
+async function readFileSlice(filePath, position, length) {
+  const handle = await fs.open(filePath, 'r');
+
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, position);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readFileHeadTailText(filePath, headBytes, tailBytes) {
+  const stats = await fs.stat(filePath);
+  if (stats.size <= headBytes + tailBytes) {
+    return {
+      text: await fs.readFile(filePath, 'utf8'),
+      stats,
+    };
+  }
+
+  const head = await readFileSlice(filePath, 0, Math.min(headBytes, stats.size));
+  const tailStart = Math.max(0, stats.size - tailBytes);
+  const tail = await readFileSlice(filePath, tailStart, stats.size - tailStart);
+  const firstTailNewline = tail.indexOf('\n');
+  const completeTail = firstTailNewline >= 0 ? tail.slice(firstTailNewline + 1) : '';
+
+  return {
+    text: `${head}\n${completeTail}`,
+    stats,
+  };
+}
+
+async function readRecentJsonlEntries(filePath, limit, filterFn = null) {
+  const safeLimit = Number.isFinite(limit) ? Math.max(0, limit) : 0;
+  if (safeLimit === 0) {
+    return { entries: [], hasMore: false };
+  }
+
+  try {
+    const stats = await fs.stat(filePath);
+    if (stats.size === 0) {
+      return { entries: [], hasMore: false };
+    }
+
+    let readBytes = Math.min(stats.size, JSONL_RECENT_INITIAL_BYTES);
+
+    while (true) {
+      const position = Math.max(0, stats.size - readBytes);
+      const text = await readFileSlice(filePath, position, stats.size - position);
+      const newlineIndex = position > 0 ? text.indexOf('\n') : -1;
+      const completeText = position > 0
+        ? (newlineIndex >= 0 ? text.slice(newlineIndex + 1) : '')
+        : text;
+
+      const entries = [];
+      for (const entry of parseJsonlTextEntries(completeText)) {
+        if (!filterFn || filterFn(entry)) {
+          entries.push(entry);
+        }
+      }
+
+      if (entries.length >= safeLimit || position === 0 || readBytes >= JSONL_RECENT_MAX_BYTES) {
+        return {
+          entries: entries.slice(-safeLimit),
+          hasMore: position > 0,
+        };
+      }
+
+      readBytes = Math.min(stats.size, readBytes * 2, JSONL_RECENT_MAX_BYTES);
+    }
+  } catch (error) {
+    console.warn(`Error reading recent JSONL entries from ${filePath}:`, error.message);
+    return { entries: [], hasMore: false };
+  }
+}
+
 async function resolveCronTranscriptPath(projectName, sessionId, outputFile) {
   if (typeof outputFile !== 'string' || outputFile.trim().length === 0) {
     return null;
@@ -2191,6 +2300,23 @@ function buildSessionMessagesResult(sortedMessages, limit = null, offset = 0) {
   };
 }
 
+function buildRecentSessionMessagesResult(sortedMessages, limit, offset = 0, hasMore = false) {
+  if (limit === null) {
+    return sortedMessages;
+  }
+
+  const safeOffset = Number.isFinite(offset) ? Math.max(0, offset) : 0;
+  const safeLimit = Number.isFinite(limit) ? Math.max(0, limit) : 0;
+
+  return {
+    messages: sortedMessages,
+    total: sortedMessages.length + (hasMore ? safeLimit : 0),
+    hasMore,
+    offset: safeOffset,
+    limit: safeLimit,
+  };
+}
+
 // Get messages for a specific session with pagination support
 async function getSessionMessages(projectName, sessionId, options = {}) {
   const {
@@ -2213,13 +2339,24 @@ async function getSessionMessages(projectName, sessionId, options = {}) {
         return buildEmptySessionMessagesResult(limit, offset);
       }
 
-      const messages = await readJsonlEntries(transcriptPath);
       const transcriptDir = path.dirname(transcriptPath);
       const transcriptDirEntries = await fs.readdir(transcriptDir, { withFileTypes: true }).catch(() => []);
       const agentFiles = transcriptDirEntries
         .filter(entry => entry.isFile() && isAgentToolHistoryFilename(entry.name))
         .map(entry => entry.name);
 
+      if (limit !== null && offset === 0) {
+        const recent = await readRecentJsonlEntries(transcriptPath, limit);
+        await attachAgentToolsToMessages(recent.entries, agentFiles, transcriptDir);
+
+        const sortedMessages = recent.entries.sort((a, b) =>
+          new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
+        );
+
+        return buildRecentSessionMessagesResult(sortedMessages, limit, offset, recent.hasMore);
+      }
+
+      const messages = await readJsonlEntries(transcriptPath);
       await attachAgentToolsToMessages(messages, agentFiles, transcriptDir);
 
       const sortedMessages = messages.sort((a, b) =>
@@ -2242,10 +2379,31 @@ async function getSessionMessages(projectName, sessionId, options = {}) {
       return buildEmptySessionMessagesResult(limit, offset);
     }
 
+    const directSessionFile = path.join(projectDir, `${sessionId}.jsonl`);
+    const sessionFiles = fsSync.existsSync(directSessionFile)
+      ? [path.basename(directSessionFile)]
+      : jsonlFiles;
+
+    if (limit !== null && offset === 0 && sessionFiles.length === 1) {
+      const jsonlFile = path.join(projectDir, sessionFiles[0]);
+      const recent = await readRecentJsonlEntries(
+        jsonlFile,
+        limit,
+        entry => entry.sessionId === sessionId
+      );
+      await attachAgentToolsToMessages(recent.entries, agentFiles, projectDir);
+
+      const sortedMessages = recent.entries.sort((a, b) =>
+        new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
+      );
+
+      return buildRecentSessionMessagesResult(sortedMessages, limit, offset, recent.hasMore);
+    }
+
     const messages = [];
 
     // Process all JSONL files to find messages for this session
-    for (const file of jsonlFiles) {
+    for (const file of sessionFiles) {
       const jsonlFile = path.join(projectDir, file);
       const fileStream = fsSync.createReadStream(jsonlFile);
       const rl = readline.createInterface({
@@ -2709,12 +2867,21 @@ async function findCodexJsonlFiles(dir) {
 }
 
 async function buildCodexSessionsIndex() {
+  const now = Date.now();
+  if (codexSessionsIndexCache.sessionsByProject && codexSessionsIndexCache.expiresAt > now) {
+    return codexSessionsIndexCache.sessionsByProject;
+  }
+
   const codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions');
   const sessionsByProject = new Map();
 
   try {
     await fs.access(codexSessionsDir);
   } catch (error) {
+    codexSessionsIndexCache = {
+      expiresAt: Date.now() + CODEX_INDEX_CACHE_TTL_MS,
+      sessionsByProject,
+    };
     return sessionsByProject;
   }
 
@@ -2722,7 +2889,7 @@ async function buildCodexSessionsIndex() {
 
   for (const filePath of jsonlFiles) {
     try {
-      const sessionData = await parseCodexSessionFile(filePath);
+      const sessionData = await parseCodexSessionFileFast(filePath);
       if (!sessionData || !sessionData.id) {
         continue;
       }
@@ -2756,6 +2923,11 @@ async function buildCodexSessionsIndex() {
   for (const sessions of sessionsByProject.values()) {
     sessions.sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
   }
+
+  codexSessionsIndexCache = {
+    expiresAt: Date.now() + CODEX_INDEX_CACHE_TTL_MS,
+    sessionsByProject,
+  };
 
   return sessionsByProject;
 }
@@ -2800,6 +2972,73 @@ function isVisibleCodexUserMessage(payload) {
   }
   
   return true;
+}
+
+function buildCodexSummary(lastUserMessage) {
+  if (typeof lastUserMessage !== 'string' || lastUserMessage.trim().length === 0) {
+    return 'Codex Session';
+  }
+
+  const normalized = lastUserMessage.trim().replace(/\s+/g, ' ');
+  return normalized.length > 50 ? `${normalized.substring(0, 50)}...` : normalized;
+}
+
+async function parseCodexSessionFileFast(filePath) {
+  try {
+    const { text, stats } = await readFileHeadTailText(
+      filePath,
+      CODEX_SESSION_HEAD_BYTES,
+      CODEX_SESSION_TAIL_BYTES
+    );
+    const entries = parseJsonlTextEntries(text);
+    let sessionMeta = null;
+    let lastTimestamp = null;
+    let lastUserMessage = null;
+    let messageCount = 0;
+
+    for (const entry of entries) {
+      if (entry.timestamp) {
+        lastTimestamp = entry.timestamp;
+      }
+
+      if (entry.type === 'session_meta' && entry.payload) {
+        sessionMeta = {
+          id: entry.payload.id,
+          cwd: entry.payload.cwd,
+          model: entry.payload.model || entry.payload.model_provider,
+          timestamp: entry.timestamp,
+          git: entry.payload.git
+        };
+      }
+
+      if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload)) {
+        messageCount++;
+        lastUserMessage = entry.payload.message || lastUserMessage;
+      }
+
+      if (entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload.role === 'assistant') {
+        messageCount++;
+      }
+    }
+
+    if (!sessionMeta && stats.size <= CODEX_SESSION_FULL_PARSE_MAX_BYTES) {
+      return parseCodexSessionFile(filePath);
+    }
+
+    if (!sessionMeta) {
+      return null;
+    }
+
+    return {
+      ...sessionMeta,
+      timestamp: lastTimestamp || sessionMeta.timestamp || stats.mtime.toISOString(),
+      summary: buildCodexSummary(lastUserMessage),
+      messageCount
+    };
+  } catch (error) {
+    console.warn(`Error fast-parsing Codex session file ${filePath}:`, error.message);
+    return null;
+  }
 }
 
 // Parse a Codex session JSONL file to extract metadata
@@ -2859,9 +3098,7 @@ async function parseCodexSessionFile(filePath) {
       return {
         ...sessionMeta,
         timestamp: lastTimestamp || sessionMeta.timestamp,
-        summary: lastUserMessage ?
-          (lastUserMessage.length > 50 ? lastUserMessage.substring(0, 50) + '...' : lastUserMessage) :
-          'Codex Session',
+        summary: buildCodexSummary(lastUserMessage),
         messageCount
       };
     }
@@ -2907,11 +3144,6 @@ async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
 
     const messages = [];
     let tokenUsage = null;
-    const fileStream = fsSync.createReadStream(sessionFilePath);
-    const rl = readline.createInterface({
-      input: fileStream,
-      crlfDelay: Infinity
-    });
 
     // Helper to extract text from Codex content array
     const extractText = (content) => {
@@ -2930,159 +3162,185 @@ async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
         .join('\n');
     };
 
+    const appendCodexEntryMessage = (entry) => {
+      // Extract token usage from token_count events (keep latest)
+      if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
+        const info = entry.payload.info;
+        if (info.total_token_usage) {
+          tokenUsage = {
+            used: info.total_token_usage.total_tokens || 0,
+            total: info.model_context_window || 200000
+          };
+        }
+      }
+
+      // Use event_msg.user_message for user-visible inputs.
+      if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload)) {
+        messages.push({
+          type: 'user',
+          timestamp: entry.timestamp,
+          message: {
+            role: 'user',
+            content: entry.payload.message
+          }
+        });
+      }
+
+      // response_item.message may include internal prompts for non-assistant roles.
+      // Keep only assistant output from response_item.
+      if (
+        entry.type === 'response_item' &&
+        entry.payload?.type === 'message' &&
+        entry.payload.role === 'assistant'
+      ) {
+        const content = entry.payload.content;
+        const textContent = extractText(content);
+
+        // Only add if there's actual content
+        if (textContent?.trim()) {
+          messages.push({
+            type: 'assistant',
+            timestamp: entry.timestamp,
+            message: {
+              role: 'assistant',
+              content: textContent
+            }
+          });
+        }
+      }
+
+      if (entry.type === 'response_item' && entry.payload?.type === 'reasoning') {
+        const summaryText = entry.payload.summary
+          ?.map(s => s.text)
+          .filter(Boolean)
+          .join('\n');
+        if (summaryText?.trim()) {
+          messages.push({
+            type: 'thinking',
+            timestamp: entry.timestamp,
+            message: {
+              role: 'assistant',
+              content: summaryText
+            }
+          });
+        }
+      }
+
+      if (entry.type === 'response_item' && entry.payload?.type === 'function_call') {
+        let toolName = entry.payload.name;
+        let toolInput = entry.payload.arguments;
+
+        // Map Codex tool names to Claude equivalents
+        if (toolName === 'shell_command') {
+          toolName = 'Bash';
+          try {
+            const args = JSON.parse(entry.payload.arguments);
+            toolInput = JSON.stringify({ command: args.command });
+          } catch (e) {
+            // Keep original if parsing fails
+          }
+        }
+
+        messages.push({
+          type: 'tool_use',
+          timestamp: entry.timestamp,
+          toolName: toolName,
+          toolInput: toolInput,
+          toolCallId: entry.payload.call_id
+        });
+      }
+
+      if (entry.type === 'response_item' && entry.payload?.type === 'function_call_output') {
+        messages.push({
+          type: 'tool_result',
+          timestamp: entry.timestamp,
+          toolCallId: entry.payload.call_id,
+          output: entry.payload.output
+        });
+      }
+
+      if (entry.type === 'response_item' && entry.payload?.type === 'custom_tool_call') {
+        const toolName = entry.payload.name || 'custom_tool';
+        const input = entry.payload.input || '';
+
+        if (toolName === 'apply_patch') {
+          // Parse Codex patch format and convert to Claude Edit format
+          const fileMatch = input.match(/\*\*\* Update File: (.+)/);
+          const filePath = fileMatch ? fileMatch[1].trim() : 'unknown';
+
+          // Extract old and new content from patch
+          const lines = input.split('\n');
+          const oldLines = [];
+          const newLines = [];
+
+          for (const line of lines) {
+            if (line.startsWith('-') && !line.startsWith('---')) {
+              oldLines.push(line.substring(1));
+            } else if (line.startsWith('+') && !line.startsWith('+++')) {
+              newLines.push(line.substring(1));
+            }
+          }
+
+          messages.push({
+            type: 'tool_use',
+            timestamp: entry.timestamp,
+            toolName: 'Edit',
+            toolInput: JSON.stringify({
+              file_path: filePath,
+              old_string: oldLines.join('\n'),
+              new_string: newLines.join('\n')
+            }),
+            toolCallId: entry.payload.call_id
+          });
+        } else {
+          messages.push({
+            type: 'tool_use',
+            timestamp: entry.timestamp,
+            toolName: toolName,
+            toolInput: input,
+            toolCallId: entry.payload.call_id
+          });
+        }
+      }
+
+      if (entry.type === 'response_item' && entry.payload?.type === 'custom_tool_call_output') {
+        messages.push({
+          type: 'tool_result',
+          timestamp: entry.timestamp,
+          toolCallId: entry.payload.call_id,
+          output: entry.payload.output || ''
+        });
+      }
+    };
+
+    if (limit !== null && offset === 0) {
+      const recentEntryLimit = Math.max(limit * 8, 200);
+      const recent = await readRecentJsonlEntries(sessionFilePath, recentEntryLimit);
+
+      for (const entry of recent.entries) {
+        appendCodexEntryMessage(entry);
+      }
+
+      messages.sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+      const visibleMessages = messages.slice(-limit);
+
+      return {
+        ...buildRecentSessionMessagesResult(visibleMessages, limit, offset, recent.hasMore),
+        tokenUsage
+      };
+    }
+
+    const fileStream = fsSync.createReadStream(sessionFilePath);
+    const rl = readline.createInterface({
+      input: fileStream,
+      crlfDelay: Infinity
+    });
+
     for await (const line of rl) {
       if (line.trim()) {
         try {
           const entry = JSON.parse(line);
-
-          // Extract token usage from token_count events (keep latest)
-          if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
-            const info = entry.payload.info;
-            if (info.total_token_usage) {
-              tokenUsage = {
-                used: info.total_token_usage.total_tokens || 0,
-                total: info.model_context_window || 200000
-              };
-            }
-          }
-          
-          // Use event_msg.user_message for user-visible inputs.
-          if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload)) {
-            messages.push({
-              type: 'user',
-              timestamp: entry.timestamp,
-              message: {
-                role: 'user',
-                content: entry.payload.message
-              }
-            });
-          }
-
-          // response_item.message may include internal prompts for non-assistant roles.
-          // Keep only assistant output from response_item.
-          if (
-            entry.type === 'response_item' &&
-            entry.payload?.type === 'message' &&
-            entry.payload.role === 'assistant'
-          ) {
-            const content = entry.payload.content;
-            const textContent = extractText(content);
-
-            // Only add if there's actual content
-            if (textContent?.trim()) {
-              messages.push({
-                type: 'assistant',
-                timestamp: entry.timestamp,
-                message: {
-                  role: 'assistant',
-                  content: textContent
-                }
-              });
-            }
-          }
-
-          if (entry.type === 'response_item' && entry.payload?.type === 'reasoning') {
-            const summaryText = entry.payload.summary
-              ?.map(s => s.text)
-              .filter(Boolean)
-              .join('\n');
-            if (summaryText?.trim()) {
-              messages.push({
-                type: 'thinking',
-                timestamp: entry.timestamp,
-                message: {
-                  role: 'assistant',
-                  content: summaryText
-                }
-              });
-            }
-          }
-
-          if (entry.type === 'response_item' && entry.payload?.type === 'function_call') {
-            let toolName = entry.payload.name;
-            let toolInput = entry.payload.arguments;
-
-            // Map Codex tool names to Claude equivalents
-            if (toolName === 'shell_command') {
-              toolName = 'Bash';
-              try {
-                const args = JSON.parse(entry.payload.arguments);
-                toolInput = JSON.stringify({ command: args.command });
-              } catch (e) {
-                // Keep original if parsing fails
-              }
-            }
-
-            messages.push({
-              type: 'tool_use',
-              timestamp: entry.timestamp,
-              toolName: toolName,
-              toolInput: toolInput,
-              toolCallId: entry.payload.call_id
-            });
-          }
-
-          if (entry.type === 'response_item' && entry.payload?.type === 'function_call_output') {
-            messages.push({
-              type: 'tool_result',
-              timestamp: entry.timestamp,
-              toolCallId: entry.payload.call_id,
-              output: entry.payload.output
-            });
-          }
-
-          if (entry.type === 'response_item' && entry.payload?.type === 'custom_tool_call') {
-            const toolName = entry.payload.name || 'custom_tool';
-            const input = entry.payload.input || '';
-
-            if (toolName === 'apply_patch') {
-              // Parse Codex patch format and convert to Claude Edit format
-              const fileMatch = input.match(/\*\*\* Update File: (.+)/);
-              const filePath = fileMatch ? fileMatch[1].trim() : 'unknown';
-
-              // Extract old and new content from patch
-              const lines = input.split('\n');
-              const oldLines = [];
-              const newLines = [];
-
-              for (const line of lines) {
-                if (line.startsWith('-') && !line.startsWith('---')) {
-                  oldLines.push(line.substring(1));
-                } else if (line.startsWith('+') && !line.startsWith('+++')) {
-                  newLines.push(line.substring(1));
-                }
-              }
-
-              messages.push({
-                type: 'tool_use',
-                timestamp: entry.timestamp,
-                toolName: 'Edit',
-                toolInput: JSON.stringify({
-                  file_path: filePath,
-                  old_string: oldLines.join('\n'),
-                  new_string: newLines.join('\n')
-                }),
-                toolCallId: entry.payload.call_id
-              });
-            } else {
-              messages.push({
-                type: 'tool_use',
-                timestamp: entry.timestamp,
-                toolName: toolName,
-                toolInput: input,
-                toolCallId: entry.payload.call_id
-              });
-            }
-          }
-
-          if (entry.type === 'response_item' && entry.payload?.type === 'custom_tool_call_output') {
-            messages.push({
-              type: 'tool_result',
-              timestamp: entry.timestamp,
-              toolCallId: entry.payload.call_id,
-              output: entry.payload.output || ''
-            });
-          }
+          appendCodexEntryMessage(entry);
 
         } catch (parseError) {
           // Skip malformed lines

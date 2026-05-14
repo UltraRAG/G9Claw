@@ -2,9 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ChatInterfaceV2 from '../../chat-v2/ChatInterfaceV2';
 import AlwaysOnV2 from '../../main-content-v2/AlwaysOnV2';
-import FilesV2 from '../../main-content-v2/FilesV2';
-import ShellV2 from '../../main-content-v2/ShellV2';
-import GitV2 from '../../main-content-v2/GitV2';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
 import DashboardV2 from '../../main-content-v2/DashboardV2';
 import TasksV2 from '../../main-content-v2/TasksV2';
@@ -19,7 +16,6 @@ import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
 import { useEditorSidebar } from '../../code-editor/hooks/useEditorSidebar';
-import EditorSidebar from '../../code-editor/view/EditorSidebar';
 import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
 import type {
   AlwaysOnSessionTarget,
@@ -47,7 +43,12 @@ import { findAlwaysOnProjectByRoot } from '../../../utils/alwaysOnProjectMatchin
 import MainContentStateView from './subcomponents/MainContentStateView';
 import ErrorBoundary from './ErrorBoundary';
 import MemoryPanel from './memory/MemoryPanel';
-import SkillsV2 from '../../main-content-v2/SkillsV2';
+
+const FilesV2 = React.lazy(() => import('../../main-content-v2/FilesV2'));
+const ShellV2 = React.lazy(() => import('../../main-content-v2/ShellV2'));
+const GitV2 = React.lazy(() => import('../../main-content-v2/GitV2'));
+const SkillsV2 = React.lazy(() => import('../../main-content-v2/SkillsV2'));
+const EditorSidebar = React.lazy(() => import('../../code-editor/view/EditorSidebar'));
 
 type TaskMasterContextValue = {
   currentProject?: Project | null;
@@ -72,6 +73,14 @@ const AUTO_EXECUTION_POLL_INTERVAL_MS = 15000;
 const FILES_CHAT_DEFAULT_WIDTH = 460;
 const FILES_CHAT_MIN_WIDTH = 320;
 const FILES_TREE_MIN_WIDTH = 280;
+
+function ToolLoadingFallback() {
+  return (
+    <div className="flex h-full min-h-0 w-full items-center justify-center text-sm text-neutral-500 dark:text-neutral-400">
+      Loading...
+    </div>
+  );
+}
 
 async function readJsonPayload<T>(response: Response): Promise<T | null> {
   try {
@@ -125,6 +134,8 @@ function MainContent({
   isMobile,
   onMenuClick,
   isLoading,
+  projectsLoadError,
+  onRetryProjectsLoad,
   onInputFocusChange,
   onSessionActive,
   onSessionInactive,
@@ -677,6 +688,18 @@ function MainContent({
     );
   }
 
+  if (projectsLoadError && projects.length === 0) {
+    return (
+      <MainContentStateView
+        mode="error"
+        isMobile={isMobile}
+        onMenuClick={onMenuClick}
+        message={projectsLoadError}
+        onRetry={onRetryProjectsLoad}
+      />
+    );
+  }
+
   if (!selectedProject && activeTab !== 'dashboard') {
     return (
       <MainContentStateView
@@ -726,20 +749,22 @@ function MainContent({
           onSelectProjectByName={onSelectProjectByName}
         />
 
-        {selectedProject && (
-          <EditorSidebar
-            editingFile={editingFile}
-            isMobile={isMobile}
-            editorExpanded={editorExpanded}
-            editorWidth={editorWidth}
-            resizeHandleRef={resizeHandleRef}
-            onResizeStart={handleResizeStart}
-            onCloseEditor={handleCloseEditor}
-            onToggleEditorExpand={handleToggleEditorExpand}
-            projectPath={selectedProject.path}
-            projectRoot={selectedProject.fullPath || selectedProject.path}
-          />
-        )}
+        {selectedProject && editingFile ? (
+          <React.Suspense fallback={null}>
+            <EditorSidebar
+              editingFile={editingFile}
+              isMobile={isMobile}
+              editorExpanded={editorExpanded}
+              editorWidth={editorWidth}
+              resizeHandleRef={resizeHandleRef}
+              onResizeStart={handleResizeStart}
+              onCloseEditor={handleCloseEditor}
+              onToggleEditorExpand={handleToggleEditorExpand}
+              projectPath={selectedProject.path}
+              projectRoot={selectedProject.fullPath || selectedProject.path}
+            />
+          </React.Suspense>
+        ) : null}
       </div>
       {toast ? (
         <div
@@ -957,7 +982,9 @@ function SplitBody(props: SplitBodyProps) {
     return (
       <div className={cn('flex min-h-0 min-w-0 flex-1 overflow-hidden', editorExpanded && 'hidden')}>
         <div className="flex h-full w-full min-w-0 flex-col overflow-hidden">
-          {renderTool()}
+          <React.Suspense fallback={<ToolLoadingFallback />}>
+            {renderTool()}
+          </React.Suspense>
         </div>
       </div>
     );
@@ -1030,11 +1057,13 @@ function SplitBody(props: SplitBodyProps) {
             className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
             style={{ minWidth: `${FILES_TREE_MIN_WIDTH}px` }}
           >
-            <FilesV2
-              selectedProject={selectedProject}
-              onFileOpen={handleFileOpen}
-              onClose={() => setActiveTab('chat')}
-            />
+            <React.Suspense fallback={<ToolLoadingFallback />}>
+              <FilesV2
+                selectedProject={selectedProject}
+                onFileOpen={handleFileOpen}
+                onClose={() => setActiveTab('chat')}
+              />
+            </React.Suspense>
           </div>
         </>
       ) : null}

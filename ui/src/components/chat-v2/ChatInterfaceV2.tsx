@@ -115,6 +115,8 @@ function ChatInterfaceV2({
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,
+    sessionLoadError,
+    retryLoadSessionMessages,
     isLoadingMoreMessages,
     hasMoreMessages,
     totalMessages,
@@ -447,6 +449,8 @@ function ChatInterfaceV2({
         onWheel={handleScroll}
         onTouchMove={handleScroll}
         isLoadingSessionMessages={isLoadingSessionMessages}
+        sessionLoadError={sessionLoadError}
+        onRetrySessionLoad={retryLoadSessionMessages}
         chatMessages={chatMessages}
         activityMessages={activityMessages}
         visibleMessages={visibleMessages}

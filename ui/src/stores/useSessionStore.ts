@@ -9,7 +9,7 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { SessionProvider } from '../types/app';
-import { authenticatedFetch } from '../utils/api';
+import { authenticatedFetch, isApiTimeoutError } from '../utils/api';
 
 // ─── NormalizedMessage (mirrors server/adapters/types.js) ────────────────────
 
@@ -131,6 +131,7 @@ export interface SessionSlot {
   _lastRealtimeRef: NormalizedMessage[];
   status: SessionStatus;
   fetchedAt: number;
+  lastError: string | null;
   total: number;
   hasMore: boolean;
   offset: number;
@@ -149,6 +150,7 @@ function createEmptySlot(): SessionSlot {
     _lastRealtimeRef: EMPTY,
     status: 'idle',
     fetchedAt: 0,
+    lastError: null,
     total: 0,
     hasMore: false,
     offset: 0,
@@ -291,6 +293,23 @@ function recomputeMergedIfNeeded(slot: SessionSlot): boolean {
 const STALE_THRESHOLD_MS = 30_000;
 
 const MAX_REALTIME_MESSAGES = 500;
+const SESSION_MESSAGES_REQUEST_TIMEOUT_MS = 25_000;
+const SESSION_MESSAGES_FULL_REQUEST_TIMEOUT_MS = 90_000;
+const SESSION_REFRESH_MESSAGE_LIMIT = 120;
+
+function getSessionRequestTimeoutMs(limit?: number | null): number {
+  return limit === null ? SESSION_MESSAGES_FULL_REQUEST_TIMEOUT_MS : SESSION_MESSAGES_REQUEST_TIMEOUT_MS;
+}
+
+function getSessionStoreErrorMessage(error: unknown): string {
+  if (isApiTimeoutError(error)) {
+    return 'Loading messages timed out. The transcript may be very large or the server is slow.';
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return 'Failed to load messages.';
+}
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
 
@@ -362,7 +381,9 @@ export function useSessionStore() {
 
       const qs = params.toString();
       const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
-      const response = await authenticatedFetch(url);
+      const response = await authenticatedFetch(url, {
+        timeoutMs: getSessionRequestTimeoutMs(opts.limit),
+      });
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
@@ -376,6 +397,7 @@ export function useSessionStore() {
       slot.hasMore = Boolean(data.hasMore);
       slot.offset = (opts.offset ?? 0) + messages.length;
       slot.fetchedAt = Date.now();
+      slot.lastError = null;
       slot.status = 'idle';
 
       // Prune realtime messages covered by server data.  Use the later of
@@ -403,6 +425,7 @@ export function useSessionStore() {
     } catch (error) {
       console.error(`[SessionStore] fetch failed for ${sessionId}:`, error);
       slot.status = 'error';
+      slot.lastError = getSessionStoreErrorMessage(error);
       notify(sessionId);
       return slot;
     }
@@ -443,7 +466,9 @@ export function useSessionStore() {
     const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
 
     try {
-      const response = await authenticatedFetch(url);
+      const response = await authenticatedFetch(url, {
+        timeoutMs: getSessionRequestTimeoutMs(limit),
+      });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       const olderMessages: NormalizedMessage[] = data.messages || [];
@@ -544,9 +569,21 @@ export function useSessionStore() {
         params.append('relativeTranscriptPath', opts.relativeTranscriptPath);
       }
 
+      const refreshLimit = Math.max(
+        1,
+        Math.min(
+          SESSION_REFRESH_MESSAGE_LIMIT,
+          Math.max(slot.serverMessages.length, 50),
+        ),
+      );
+      params.append('limit', String(refreshLimit));
+      params.append('offset', '0');
+
       const qs = params.toString();
       const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
-      const response = await authenticatedFetch(url);
+      const response = await authenticatedFetch(url, {
+        timeoutMs: getSessionRequestTimeoutMs(refreshLimit),
+      });
 
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
@@ -555,6 +592,8 @@ export function useSessionStore() {
       slot.total = data.total ?? slot.serverMessages.length;
       slot.hasMore = Boolean(data.hasMore);
       slot.fetchedAt = Date.now();
+      slot.offset = slot.serverMessages.length;
+      slot.lastError = null;
       // drop realtime messages that the server has caught up with to prevent unbounded growth.
       slot.realtimeMessages = [];
       recomputeMergedIfNeeded(slot);

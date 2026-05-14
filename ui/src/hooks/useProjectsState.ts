@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
-import { api } from '../utils/api';
+import { api, isApiTimeoutError } from '../utils/api';
 import type {
   AppSocketMessage,
   AppTab,
@@ -21,12 +21,26 @@ type UseProjectsStateArgs = {
 
 type FetchProjectsOptions = {
   showLoadingState?: boolean;
+  retryCount?: number;
 };
 
 const PROJECT_SESSION_PREVIEW_LIMIT = 5;
 const SESSION_PAGE_SIZE = 30;
+const PROJECT_LOAD_RETRY_DELAY_MS = 650;
 
 const serialize = (value: unknown) => JSON.stringify(value ?? null);
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const getProjectsLoadErrorMessage = (error: unknown): string => {
+  if (isApiTimeoutError(error)) {
+    return 'Project loading timed out. The server is still reachable, but the project index took too long to respond.';
+  }
+  if (error instanceof Error && error.message) {
+    return `Failed to load projects: ${error.message}`;
+  }
+  return 'Failed to load projects.';
+};
 
 const projectsHaveChanges = (
   prevProjects: Project[],
@@ -190,6 +204,7 @@ export function useProjectsState({
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
+  const [projectsLoadError, setProjectsLoadError] = useState<string | null>(null);
   const [loadingProgress, setLoadingProgress] = useState<LoadingProgress | null>(null);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -211,30 +226,54 @@ export function useProjectsState({
     projectsRef.current = projects;
   }, [projects]);
 
-  const fetchProjects = useCallback(async ({ showLoadingState = true }: FetchProjectsOptions = {}) => {
+  const fetchProjects = useCallback(async ({
+    showLoadingState = true,
+    retryCount = showLoadingState ? 1 : 0,
+  }: FetchProjectsOptions = {}) => {
+    let lastError: unknown = null;
+
     try {
       if (showLoadingState) {
         setIsLoadingProjects(true);
       }
-      const response = await api.projects();
-      const projectData = (await response.json()) as Project[];
 
-      if (!Array.isArray(projectData)) {
-        console.error('Error fetching projects: expected array, got', projectData);
-        return;
+      for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+        try {
+          const response = await api.projects();
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const projectData = (await response.json()) as Project[];
+          if (!Array.isArray(projectData)) {
+            throw new Error('expected an array response');
+          }
+
+          setProjects((prevProjects) => {
+            if (prevProjects.length === 0) {
+              return projectData;
+            }
+
+            return projectsHaveChanges(prevProjects, projectData, true)
+              ? projectData
+              : prevProjects;
+          });
+          setProjectsLoadError(null);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (attempt < retryCount) {
+            await wait(PROJECT_LOAD_RETRY_DELAY_MS * (attempt + 1));
+          }
+        }
       }
 
-      setProjects((prevProjects) => {
-        if (prevProjects.length === 0) {
-          return projectData;
-        }
-
-        return projectsHaveChanges(prevProjects, projectData, true)
-          ? projectData
-          : prevProjects;
-      });
+      throw lastError;
     } catch (error) {
       console.error('Error fetching projects:', error);
+      if (showLoadingState || projectsRef.current.length === 0) {
+        setProjectsLoadError(getProjectsLoadErrorMessage(error));
+      }
     } finally {
       if (showLoadingState) {
         setIsLoadingProjects(false);
@@ -709,7 +748,11 @@ export function useProjectsState({
       onSessionDelete: handleSessionDelete,
       onProjectDelete: handleProjectDelete,
       isLoading: isLoadingProjects,
+      loadError: projectsLoadError,
       loadingProgress,
+      onRetryLoad: () => {
+        void fetchProjects({ showLoadingState: true, retryCount: 1 });
+      },
       onRefresh: handleSidebarRefresh,
       onShowSettings: () => setShowSettings(true),
       showSettings,
@@ -726,6 +769,8 @@ export function useProjectsState({
       handleSidebarRefresh,
       isLoadingProjects,
       isMobile,
+      projectsLoadError,
+      fetchProjects,
       loadingProgress,
       projects,
       settingsInitialTab,
@@ -742,6 +787,7 @@ export function useProjectsState({
     activeTab,
     sidebarOpen,
     isLoadingProjects,
+    projectsLoadError,
     loadingProgress,
     isInputFocused,
     showSettings,

@@ -122,6 +122,7 @@ export default function AppShellV2() {
     activeTab,
     sidebarOpen,
     isLoadingProjects,
+    projectsLoadError,
     externalMessageUpdate,
     setActiveTab,
     setSelectedSession,
@@ -129,6 +130,7 @@ export default function AppShellV2() {
     setIsInputFocused,
     setShowSettings,
     openSettings,
+    fetchProjects,
     refreshProjectsSilently,
     sidebarSharedProps,
     handleProjectSelect,
@@ -546,6 +548,7 @@ export default function AppShellV2() {
       selectedSession={selectedSession}
       activeTab={activeTab}
       isLoading={isLoadingProjects}
+      loadError={sidebarSharedProps.loadError}
       processingSessions={processingSessions}
       unreadSessionIds={unreadSessionIds}
       onSelectTab={handleSelectTab}
@@ -560,6 +563,7 @@ export default function AppShellV2() {
 	      onResetProjectSessionPreview={handleResetProjectSessionPreview}
 	      onCollapse={onCollapseSidebar}
 	      onLoadMoreSessions={loadMoreSessions}
+	      onRetryLoad={sidebarSharedProps.onRetryLoad}
 	      loadingMoreProjectIds={loadingMoreProjectIds}
 	    />
   );
@@ -604,6 +608,10 @@ export default function AppShellV2() {
           isMobile={isMobile}
           onMenuClick={onMenuClick}
           isLoading={isLoadingProjects}
+          projectsLoadError={projectsLoadError}
+          onRetryProjectsLoad={() => {
+            void fetchProjects({ showLoadingState: true, retryCount: 1 });
+          }}
           onInputFocusChange={setIsInputFocused}
           onSessionActive={markSessionAsActive}
           onSessionInactive={markSessionAsInactive}

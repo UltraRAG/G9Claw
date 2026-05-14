@@ -43,6 +43,8 @@ export type MainContentProps = {
   isMobile: boolean;
   onMenuClick: () => void;
   isLoading: boolean;
+  projectsLoadError?: string | null;
+  onRetryProjectsLoad?: () => void;
   onInputFocusChange: (focused: boolean) => void;
   onSessionActive: SessionLifecycleHandler;
   onSessionInactive: SessionLifecycleHandler;
@@ -63,9 +65,11 @@ export type MainContentProps = {
 };
 
 export type MainContentStateViewProps = {
-  mode: 'loading' | 'empty';
+  mode: 'loading' | 'empty' | 'error';
   isMobile: boolean;
   onMenuClick: () => void;
+  message?: string | null;
+  onRetry?: () => void;
 };
 
 export type MobileMenuButtonProps = {

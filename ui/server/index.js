@@ -48,6 +48,7 @@ import pty from 'node-pty';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 import JSZip from 'jszip';
+import compression from 'compression';
 
 import { getProjects, getSessions, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, getActiveClaudeSDKSessionDetails, getClaudeSDKSessionTokenBudget, getClaudeSDKSessionActivitySnapshot, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
@@ -112,8 +113,11 @@ const WATCHER_IGNORED_PATTERNS = [
     '**/.DS_Store'
 ];
 const WATCHER_DEBOUNCE_MS = 300;
+const WATCHER_MIN_REFRESH_INTERVAL_MS = 1500;
 let projectsWatchers = [];
 let projectsWatcherDebounceTimer = null;
+let pendingProjectsWatcherChange = null;
+let lastProjectsWatcherRefreshAt = 0;
 const connectedClients = new Set();
 const alwaysOnHeartbeat = createAlwaysOnHeartbeatManager({
     getActiveClaudeSessions: getActiveClaudeSDKSessionDetails
@@ -310,6 +314,7 @@ async function setupProjectsWatcher() {
         clearTimeout(projectsWatcherDebounceTimer);
         projectsWatcherDebounceTimer = null;
     }
+    pendingProjectsWatcherChange = null;
 
     await Promise.all(
         projectsWatchers.map(async (watcher) => {
@@ -322,48 +327,75 @@ async function setupProjectsWatcher() {
     );
     projectsWatchers = [];
 
-    const debouncedUpdate = (eventType, filePath, provider, rootPath) => {
+    const scheduleWatcherUpdate = () => {
         if (projectsWatcherDebounceTimer) {
             clearTimeout(projectsWatcherDebounceTimer);
         }
 
-        projectsWatcherDebounceTimer = setTimeout(async () => {
-            // Prevent reentrant calls
-            if (isGetProjectsRunning) {
-                return;
+        const elapsedSinceLastRefresh = Date.now() - lastProjectsWatcherRefreshAt;
+        const delay = Math.max(
+            WATCHER_DEBOUNCE_MS,
+            WATCHER_MIN_REFRESH_INTERVAL_MS - elapsedSinceLastRefresh
+        );
+        projectsWatcherDebounceTimer = setTimeout(flushWatcherUpdate, delay);
+    };
+
+    const flushWatcherUpdate = async () => {
+        projectsWatcherDebounceTimer = null;
+
+        if (!pendingProjectsWatcherChange) {
+            return;
+        }
+
+        if (isGetProjectsRunning) {
+            scheduleWatcherUpdate();
+            return;
+        }
+
+        const change = pendingProjectsWatcherChange;
+        pendingProjectsWatcherChange = null;
+
+        try {
+            isGetProjectsRunning = true;
+
+            // Clear project directory cache when files change
+            clearProjectDirectoryCache();
+
+            // Background watcher refreshes should not drive the foreground
+            // loading-progress UI. They are frequent during model writes and
+            // only need to coalesce sidebar/session metadata updates.
+            const updatedProjects = await getProjects();
+            lastProjectsWatcherRefreshAt = Date.now();
+
+            // Notify all connected clients about the project changes
+            const updateMessage = JSON.stringify({
+                type: 'projects_updated',
+                projects: updatedProjects,
+                timestamp: new Date().toISOString(),
+                changeType: change.eventType,
+                changedFile: path.relative(change.rootPath, change.filePath),
+                watchProvider: change.provider
+            });
+
+            connectedClients.forEach(client => {
+                if (client.readyState === WebSocket.OPEN) {
+                    client.send(updateMessage);
+                }
+            });
+
+        } catch (error) {
+            console.error('[ERROR] Error handling project changes:', error);
+        } finally {
+            isGetProjectsRunning = false;
+            if (pendingProjectsWatcherChange) {
+                scheduleWatcherUpdate();
             }
+        }
+    };
 
-            try {
-                isGetProjectsRunning = true;
-
-                // Clear project directory cache when files change
-                clearProjectDirectoryCache();
-
-                // Get updated projects list
-                const updatedProjects = await getProjects(broadcastProgress);
-
-                // Notify all connected clients about the project changes
-                const updateMessage = JSON.stringify({
-                    type: 'projects_updated',
-                    projects: updatedProjects,
-                    timestamp: new Date().toISOString(),
-                    changeType: eventType,
-                    changedFile: path.relative(rootPath, filePath),
-                    watchProvider: provider
-                });
-
-                connectedClients.forEach(client => {
-                    if (client.readyState === WebSocket.OPEN) {
-                        client.send(updateMessage);
-                    }
-                });
-
-            } catch (error) {
-                console.error('[ERROR] Error handling project changes:', error);
-            } finally {
-                isGetProjectsRunning = false;
-            }
-        }, WATCHER_DEBOUNCE_MS);
+    const debouncedUpdate = (eventType, filePath, provider, rootPath) => {
+        pendingProjectsWatcherChange = { eventType, filePath, provider, rootPath };
+        scheduleWatcherUpdate();
     };
 
     for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {
@@ -521,6 +553,21 @@ const wss = new WebSocketServer({
 app.locals.wss = wss;
 
 app.use(cors({ exposedHeaders: ['X-Refreshed-Token'] }));
+app.use(compression({
+    threshold: 1024,
+    filter: (req, res) => {
+        if (req.headers['x-no-compression']) {
+            return false;
+        }
+
+        const contentType = res.getHeader('Content-Type');
+        if (typeof contentType === 'string' && contentType.includes('text/event-stream')) {
+            return false;
+        }
+
+        return compression.filter(req, res);
+    },
+}));
 app.use(express.json({
     limit: '50mb',
     type: (req) => {

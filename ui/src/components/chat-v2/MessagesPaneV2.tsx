@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useRef } from 'react';
-import type { Dispatch, RefObject, SetStateAction } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Activity, CheckCircle2, Loader2, Search, Wrench, XCircle } from 'lucide-react';
 import type {
@@ -19,6 +19,8 @@ type MessagesPaneV2Props = {
   onWheel: () => void;
   onTouchMove: () => void;
   isLoadingSessionMessages: boolean;
+  sessionLoadError?: string | null;
+  onRetrySessionLoad?: () => void;
   chatMessages: ChatMessage[];
   activityMessages?: ChatMessage[];
   visibleMessages: ChatMessage[];
@@ -59,6 +61,20 @@ type RenderableMessageItem = {
   processDetailMessages?: ChatMessage[];
 };
 
+type KeyedRenderableMessageItem = RenderableMessageItem & {
+  itemKey: string;
+  renderIndex: number;
+  estimatedHeight: number;
+};
+
+export type VirtualMessageWindow = {
+  startIndex: number;
+  endIndex: number;
+  topPadding: number;
+  bottomPadding: number;
+  totalHeight: number;
+};
+
 type ActivitySummaryAttachment = {
   message: ChatMessage;
   originalIndex: number;
@@ -74,8 +90,87 @@ type BuildRenderableMessageItemsOptions = {
   isAssistantWorking?: boolean;
 };
 
+const MESSAGE_VIRTUALIZATION_THRESHOLD = 160;
+const MESSAGE_WINDOW_OVERSCAN = 12;
+const MESSAGE_GAP_PX = 32;
+
 function getActivitySummaryKey(message: ChatMessage, index: number): string {
   return message.runId || message.id || `${message.startedAt || ''}-${message.endedAt || ''}-${index}`;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function upperBound(values: number[], target: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (values[mid] <= target) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  return low;
+}
+
+function getMessageTextLength(message: ChatMessage): number {
+  const contentLength = typeof message.content === 'string' ? message.content.length : 0;
+  const toolInputLength = typeof message.toolInput === 'string' ? message.toolInput.length : 0;
+  const outputLength = typeof message.toolResult?.content === 'string' ? message.toolResult.content.length : 0;
+  return contentLength + Math.min(toolInputLength + outputLength, 2400);
+}
+
+export function estimateMessageItemHeight(item: RenderableMessageItem): number {
+  const textLength = getMessageTextLength(item.message);
+  const roughLines = Math.ceil(textLength / 92);
+  const baseHeight = item.message.type === 'user' ? 64 : 92;
+  const processSummaryHeight = item.processSummary ? 58 : 0;
+  const attachmentHeight = Array.isArray(item.message.attachments) && item.message.attachments.length > 0 ? 56 : 0;
+  const imageHeight = Array.isArray(item.message.images) && item.message.images.length > 0 ? 180 : 0;
+  const toolHeight = item.message.isToolUse || item.message.toolName ? 140 : 0;
+
+  return clampNumber(
+    baseHeight + roughLines * 20 + processSummaryHeight + attachmentHeight + imageHeight + toolHeight + MESSAGE_GAP_PX,
+    72,
+    720,
+  );
+}
+
+export function getVirtualMessageWindow(
+  itemHeights: number[],
+  scrollTop: number,
+  viewportHeight: number,
+  overscan = MESSAGE_WINDOW_OVERSCAN,
+): VirtualMessageWindow {
+  if (itemHeights.length === 0) {
+    return { startIndex: 0, endIndex: 0, topPadding: 0, bottomPadding: 0, totalHeight: 0 };
+  }
+
+  const prefixOffsets = [0];
+  for (const height of itemHeights) {
+    prefixOffsets.push(prefixOffsets[prefixOffsets.length - 1] + Math.max(1, height));
+  }
+
+  const totalHeight = prefixOffsets[prefixOffsets.length - 1];
+  const safeScrollTop = clampNumber(Number.isFinite(scrollTop) ? scrollTop : 0, 0, totalHeight);
+  const safeViewportHeight = Math.max(1, Number.isFinite(viewportHeight) && viewportHeight > 0
+    ? viewportHeight
+    : 900);
+  const rawStart = Math.max(0, upperBound(prefixOffsets, safeScrollTop) - 1);
+  const rawEnd = Math.min(itemHeights.length, upperBound(prefixOffsets, safeScrollTop + safeViewportHeight));
+  const startIndex = Math.max(0, rawStart - overscan);
+  const endIndex = Math.min(itemHeights.length, Math.max(startIndex + 1, rawEnd + overscan));
+
+  return {
+    startIndex,
+    endIndex,
+    topPadding: prefixOffsets[startIndex],
+    bottomPadding: Math.max(0, totalHeight - prefixOffsets[endIndex]),
+    totalHeight,
+  };
 }
 
 function canHostProcessSummary(message: ChatMessage): boolean {
@@ -347,11 +442,54 @@ export function buildRenderableMessageItems(
     .sort((a, b) => a.originalIndex - b.originalIndex);
 }
 
+function MeasuredMessageItem({
+  itemKey,
+  message,
+  isLast,
+  onHeightChange,
+  children,
+}: {
+  itemKey: string;
+  message: ChatMessage;
+  isLast: boolean;
+  onHeightChange: (itemKey: string, height: number) => void;
+  children: ReactNode;
+}) {
+  const itemRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const node = itemRef.current;
+    if (!node) return undefined;
+
+    const reportHeight = () => {
+      onHeightChange(itemKey, node.getBoundingClientRect().height);
+    };
+
+    reportHeight();
+    const observer = new ResizeObserver(reportHeight);
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, [itemKey, onHeightChange]);
+
+  return (
+    <div
+      ref={itemRef}
+      className={`chat-message ${isLast ? '' : 'pb-8'}`}
+      data-message-timestamp={message.timestamp ? String(message.timestamp) : undefined}
+    >
+      {children}
+    </div>
+  );
+}
+
 export default function MessagesPaneV2({
   scrollContainerRef,
   onWheel,
   onTouchMove,
   isLoadingSessionMessages,
+  sessionLoadError,
+  onRetrySessionLoad,
   chatMessages,
   activityMessages = [],
   visibleMessages,
@@ -372,6 +510,10 @@ export default function MessagesPaneV2({
   const { t } = useTranslation('chat');
   const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
   const generatedMessageKeyCounterRef = useRef(0);
+  const measuredHeightsRef = useRef<Map<string, number>>(new Map());
+  const heightVersionRafRef = useRef<number | null>(null);
+  const [heightVersion, setHeightVersion] = useState(0);
+  const [scrollViewport, setScrollViewport] = useState({ scrollTop: 0, height: 0 });
 
   const getMessageKey = useCallback((message: ChatMessage, index: number) => {
     const existingKey = messageKeyMapRef.current.get(message);
@@ -399,8 +541,9 @@ export default function MessagesPaneV2({
   ];
 
   const isEmpty = !isLoadingSessionMessages && chatMessages.length === 0;
+  const hasSessionLoadError = Boolean(!isLoadingSessionMessages && sessionLoadError && chatMessages.length === 0);
   const isNewConversationEmpty = isEmpty && !selectedSession;
-  const isExistingConversationEmpty = isEmpty && Boolean(selectedSession);
+  const isExistingConversationEmpty = isEmpty && Boolean(selectedSession) && !hasSessionLoadError;
   const isReadOnlyBackgroundSession = isBackgroundTaskSession(selectedSession);
   const liveActivities = useMemo(
     () => activityMessages.filter((message) => message.isAgentActivity),
@@ -414,6 +557,154 @@ export default function MessagesPaneV2({
     () => buildRenderableMessageItems(renderableMessages, { isAssistantWorking }),
     [isAssistantWorking, renderableMessages],
   );
+  const keyedMessageItems = useMemo<KeyedRenderableMessageItem[]>(
+    () => renderableMessageItems.map((item, index) => ({
+      ...item,
+      itemKey: getMessageKey(item.message, index),
+      renderIndex: index,
+      estimatedHeight: estimateMessageItemHeight(item),
+    })),
+    [getMessageKey, renderableMessageItems],
+  );
+  const measuredItemHeights = useMemo(
+    () => keyedMessageItems.map((item) => measuredHeightsRef.current.get(item.itemKey) ?? item.estimatedHeight),
+    [heightVersion, keyedMessageItems],
+  );
+  const shouldVirtualizeMessages = keyedMessageItems.length > MESSAGE_VIRTUALIZATION_THRESHOLD;
+  const virtualWindow = useMemo(
+    () => shouldVirtualizeMessages
+      ? getVirtualMessageWindow(
+          measuredItemHeights,
+          scrollViewport.scrollTop,
+          scrollViewport.height,
+          MESSAGE_WINDOW_OVERSCAN,
+        )
+      : {
+          startIndex: 0,
+          endIndex: keyedMessageItems.length,
+          topPadding: 0,
+          bottomPadding: 0,
+          totalHeight: measuredItemHeights.reduce((sum, height) => sum + height, 0),
+        },
+    [keyedMessageItems.length, measuredItemHeights, scrollViewport.height, scrollViewport.scrollTop, shouldVirtualizeMessages],
+  );
+  const windowedMessageItems = shouldVirtualizeMessages
+    ? keyedMessageItems.slice(virtualWindow.startIndex, virtualWindow.endIndex)
+    : keyedMessageItems;
+
+  const bumpHeightVersion = useCallback(() => {
+    if (heightVersionRafRef.current !== null) return;
+    heightVersionRafRef.current = requestAnimationFrame(() => {
+      heightVersionRafRef.current = null;
+      setHeightVersion((version) => version + 1);
+    });
+  }, []);
+
+  const handleMeasuredItemHeight = useCallback((itemKey: string, height: number) => {
+    const normalizedHeight = Math.max(1, Math.ceil(height));
+    const currentHeight = measuredHeightsRef.current.get(itemKey);
+    if (currentHeight !== undefined && Math.abs(currentHeight - normalizedHeight) < 2) {
+      return;
+    }
+
+    measuredHeightsRef.current.set(itemKey, normalizedHeight);
+    bumpHeightVersion();
+  }, [bumpHeightVersion]);
+
+  useEffect(() => () => {
+    if (heightVersionRafRef.current !== null) {
+      cancelAnimationFrame(heightVersionRafRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    const validKeys = new Set(keyedMessageItems.map((item) => item.itemKey));
+    let changed = false;
+
+    for (const itemKey of measuredHeightsRef.current.keys()) {
+      if (!validKeys.has(itemKey)) {
+        measuredHeightsRef.current.delete(itemKey);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      bumpHeightVersion();
+    }
+  }, [bumpHeightVersion, keyedMessageItems]);
+
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return undefined;
+
+    let frame = 0;
+    const updateViewport = () => {
+      frame = 0;
+      setScrollViewport({
+        scrollTop: container.scrollTop,
+        height: container.clientHeight,
+      });
+    };
+    const scheduleViewportUpdate = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(updateViewport);
+    };
+
+    updateViewport();
+    container.addEventListener('scroll', scheduleViewportUpdate, { passive: true });
+    const resizeObserver = new ResizeObserver(scheduleViewportUpdate);
+    resizeObserver.observe(container);
+
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      container.removeEventListener('scroll', scheduleViewportUpdate);
+      resizeObserver.disconnect();
+    };
+  }, [scrollContainerRef]);
+
+  const renderMessageItem = useCallback((item: KeyedRenderableMessageItem) => {
+    const previousMessage = item.renderIndex > 0 ? keyedMessageItems[item.renderIndex - 1].message : null;
+    const isLast = !isAssistantWorking && item.renderIndex === keyedMessageItems.length - 1;
+
+    return (
+      <MeasuredMessageItem
+        key={item.itemKey}
+        itemKey={item.itemKey}
+        message={item.message}
+        isLast={isLast}
+        onHeightChange={handleMeasuredItemHeight}
+      >
+        <MessageRowV2
+          message={item.message}
+          prevMessage={previousMessage}
+          processSummary={item.processSummary}
+          processDetailMessages={item.processDetailMessages}
+          provider={provider}
+          selectedProject={selectedProject}
+          createDiff={createDiff}
+          onFileOpen={onFileOpen}
+          onShowSettings={onShowSettings}
+          onGrantToolPermission={onGrantToolPermission}
+          autoExpandTools={autoExpandTools}
+          showRawParameters={showRawParameters}
+          showThinking={showThinking}
+        />
+      </MeasuredMessageItem>
+    );
+  }, [
+    autoExpandTools,
+    createDiff,
+    handleMeasuredItemHeight,
+    isAssistantWorking,
+    keyedMessageItems,
+    onFileOpen,
+    onGrantToolPermission,
+    onShowSettings,
+    provider,
+    selectedProject,
+    showRawParameters,
+    showThinking,
+  ]);
 
   return (
     <div
@@ -422,7 +713,26 @@ export default function MessagesPaneV2({
       onTouchMove={onTouchMove}
       className="relative flex-1 overflow-y-auto overflow-x-hidden bg-white dark:bg-neutral-950"
     >
-      {isLoadingSessionMessages && chatMessages.length === 0 ? (
+      {hasSessionLoadError ? (
+        <div className="mx-auto flex h-full max-w-[720px] flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+          <XCircle className="h-5 w-5 text-amber-600 dark:text-amber-400" strokeWidth={1.75} />
+          <div className="text-[15px] font-medium text-neutral-900 dark:text-neutral-100">
+            {t('session.loadFailedTitle', { defaultValue: 'Could not load this conversation' })}
+          </div>
+          <div className="max-w-[520px] text-[13px] leading-5 text-neutral-500 dark:text-neutral-400">
+            {sessionLoadError}
+          </div>
+          {onRetrySessionLoad ? (
+            <button
+              type="button"
+              onClick={onRetrySessionLoad}
+              className="inline-flex h-8 items-center rounded-md border border-neutral-200 px-3 text-[13px] font-medium text-neutral-700 transition hover:bg-neutral-50 dark:border-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-900"
+            >
+              {t('session.retryLoad', { defaultValue: 'Retry' })}
+            </button>
+          ) : null}
+        </div>
+      ) : isLoadingSessionMessages && chatMessages.length === 0 ? (
         <div className="mx-auto flex h-full max-w-[720px] items-center justify-center px-6 py-10 text-[13px] text-neutral-500 dark:text-neutral-400">
           <div className="flex items-center gap-2">
             <div className="h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-neutral-400" />
@@ -475,39 +785,34 @@ export default function MessagesPaneV2({
           </div>
         </div>
       ) : (
-        <div className="mx-auto max-w-[860px] space-y-8 px-6 py-10">
-          {renderableMessageItems.map((item, index) => {
-            const prevMessage = index > 0 ? renderableMessageItems[index - 1].message : null;
-            return (
-              <MessageRowV2
-                key={getMessageKey(item.message, index)}
-                message={item.message}
-                prevMessage={prevMessage}
-                processSummary={item.processSummary}
-                processDetailMessages={item.processDetailMessages}
-                provider={provider}
-                selectedProject={selectedProject}
-                createDiff={createDiff}
-                onFileOpen={onFileOpen}
-                onShowSettings={onShowSettings}
-                onGrantToolPermission={onGrantToolPermission}
-                autoExpandTools={autoExpandTools}
-                showRawParameters={showRawParameters}
-                showThinking={showThinking}
-              />
-            );
-          })}
+        <div
+          className="mx-auto max-w-[860px] px-6 py-10"
+          data-virtualized-messages={shouldVirtualizeMessages ? 'true' : undefined}
+          data-rendered-message-count={windowedMessageItems.length}
+          data-total-message-count={keyedMessageItems.length}
+        >
+          {shouldVirtualizeMessages && virtualWindow.topPadding > 0 ? (
+            <div aria-hidden="true" style={{ height: virtualWindow.topPadding }} />
+          ) : null}
+
+          {windowedMessageItems.map(renderMessageItem)}
+
+          {shouldVirtualizeMessages && virtualWindow.bottomPadding > 0 ? (
+            <div aria-hidden="true" style={{ height: virtualWindow.bottomPadding }} />
+          ) : null}
 
           {isAssistantWorking ? (
-            <ProcessPanel
-              activities={liveActivities}
-              fallbackLabel={
-                liveActivities.length > 0
-                  ? resolveWorkingLabel(workingStatus, t)
-                  : t('process.waitingForModel', { defaultValue: 'Requesting model' })
-              }
-              t={t}
-            />
+            <div className={keyedMessageItems.length > 0 ? 'pt-8' : ''}>
+              <ProcessPanel
+                activities={liveActivities}
+                fallbackLabel={
+                  liveActivities.length > 0
+                    ? resolveWorkingLabel(workingStatus, t)
+                    : t('process.waitingForModel', { defaultValue: 'Requesting model' })
+                }
+                t={t}
+              />
+            </div>
           ) : null}
         </div>
       )}

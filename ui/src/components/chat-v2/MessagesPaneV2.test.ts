@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../chat/types/types';
-import { buildRenderableMessageItems } from './MessagesPaneV2';
+import { buildRenderableMessageItems, getVirtualMessageWindow } from './MessagesPaneV2';
 
 const at = (seconds: number) => `2026-05-13T09:00:${String(seconds).padStart(2, '0')}.000Z`;
 
@@ -135,5 +135,27 @@ describe('buildRenderableMessageItems', () => {
     expect(items.map((item) => item.message.id)).toEqual(['u1', 'a2']);
     expect(items[1].processSummary?.id).toBe('run-1');
     expect(items[1].processDetailMessages?.map((item) => item.id)).toEqual(['a1', 't1']);
+  });
+});
+
+describe('getVirtualMessageWindow', () => {
+  it('renders only the overscanned viewport range', () => {
+    const window = getVirtualMessageWindow([100, 100, 100, 100, 100, 100], 250, 200, 1);
+
+    expect(window.startIndex).toBe(1);
+    expect(window.endIndex).toBe(6);
+    expect(window.topPadding).toBe(100);
+    expect(window.bottomPadding).toBe(0);
+    expect(window.totalHeight).toBe(600);
+  });
+
+  it('keeps a valid one-item window for tiny viewports', () => {
+    const window = getVirtualMessageWindow([120, 140, 160], 0, 1, 0);
+
+    expect(window.startIndex).toBe(0);
+    expect(window.endIndex).toBe(1);
+    expect(window.topPadding).toBe(0);
+    expect(window.bottomPadding).toBe(300);
+    expect(window.totalHeight).toBe(420);
   });
 });
