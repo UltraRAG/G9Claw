@@ -2480,8 +2480,26 @@ async function deleteProject(projectName, force = false) {
       }
     }
 
-    // Remove from project config
-    delete config[projectName];
+    // Remove from project config. Some projects can have both a Claude CLI
+    // directory key and a manually-added config key for the same path because
+    // older encoders disagreed on whether underscores should be escaped. If
+    // we only remove the visible directory key, the manual config entry will
+    // recreate an empty project on the next refresh.
+    const deletedConfigKeys = new Set([projectName]);
+    const comparableProjectPath = normalizeComparablePath(projectPath);
+    if (comparableProjectPath) {
+      for (const [configProjectName, projectConfig] of Object.entries(config)) {
+        const configuredPath = projectConfig?.path || projectConfig?.originalPath;
+        if (normalizeComparablePath(configuredPath) === comparableProjectPath) {
+          deletedConfigKeys.add(configProjectName);
+        }
+      }
+    }
+
+    for (const configProjectName of deletedConfigKeys) {
+      delete config[configProjectName];
+      projectDirectoryCache.delete(configProjectName);
+    }
     await saveProjectConfig(config);
 
     return true;

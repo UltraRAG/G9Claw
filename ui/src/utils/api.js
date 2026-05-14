@@ -169,7 +169,7 @@ export const api = {
       method: 'DELETE',
     }),
   deleteProject: (projectName, force = false) =>
-    authenticatedFetch(`/api/projects/${projectName}${force ? '?force=true' : ''}`, {
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}${force ? '?force=true' : ''}`, {
       method: 'DELETE',
     }),
   searchConversationsUrl: (query, limit = 50) => {
