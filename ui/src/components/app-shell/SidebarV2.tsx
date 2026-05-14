@@ -11,6 +11,8 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Folder,
   MessageSquarePlus,
   PanelLeftClose,
@@ -498,12 +500,27 @@ export default function SidebarV2({
   const handleProjectClick = useCallback(
     (project: Project) => {
       if (renamingProject === project.name) return;
-      onSelectProject(project);
       toggleProjectExpanded(project);
-      navToProject(project.name);
     },
-    [navToProject, onSelectProject, renamingProject, toggleProjectExpanded],
+    [renamingProject, toggleProjectExpanded],
   );
+
+  const areAllProjectsExpanded =
+    otherProjects.length > 0 && otherProjects.every((project) => expandedGroups.has(project.name));
+
+  const handleToggleAllProjects = useCallback(() => {
+    setExpandedGroups((previous) => {
+      const next = new Set(previous);
+
+      if (areAllProjectsExpanded) {
+        otherProjects.forEach((project) => next.delete(project.name));
+      } else {
+        otherProjects.forEach((project) => next.add(project.name));
+      }
+
+      return next;
+    });
+  }, [areAllProjectsExpanded, otherProjects]);
 
   const handleSessionClick = useCallback(
     (project: Project, sessionId: string) => {
@@ -1028,6 +1045,28 @@ export default function SidebarV2({
               <span className="flex-1 text-[11px] font-medium uppercase tracking-[0.04em] text-neutral-500/90 dark:text-neutral-400/80">
                 {t('sidebar:projects.title', { defaultValue: 'Projects' })}
               </span>
+              <button
+                type="button"
+                onClick={handleToggleAllProjects}
+                disabled={otherProjects.length === 0}
+                aria-label={
+                  areAllProjectsExpanded
+                    ? t('sidebar:actions.collapseAll', { defaultValue: 'Collapse all projects' }) as string
+                    : t('sidebar:actions.expandAll', { defaultValue: 'Expand all projects' }) as string
+                }
+                title={
+                  areAllProjectsExpanded
+                    ? t('sidebar:actions.collapseAll', { defaultValue: 'Collapse all projects' }) as string
+                    : t('sidebar:actions.expandAll', { defaultValue: 'Expand all projects' }) as string
+                }
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+              >
+                {areAllProjectsExpanded ? (
+                  <ChevronsDownUp className="h-3.5 w-3.5" strokeWidth={1.75} />
+                ) : (
+                  <ChevronsUpDown className="h-3.5 w-3.5" strokeWidth={1.75} />
+                )}
+              </button>
               <button
                 type="button"
                 onClick={onCreateProject}
