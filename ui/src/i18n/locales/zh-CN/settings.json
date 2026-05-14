@@ -68,7 +68,7 @@
       "dragging": "正在拖拽手柄",
       "closePanel": "关闭设置面板",
       "openPanel": "打开设置面板",
-      "draggingStatus": "正在拖拽...",
+      "draggingStatus": "正在拖拽…",
       "toggleAndMove": "点击切换，拖拽移动"
     }
   },
@@ -109,7 +109,7 @@
       "enable": "启用推送通知",
       "disable": "关闭推送通知",
       "enabled": "推送通知已启用",
-      "loading": "更新中...",
+      "loading": "更新中…",
       "unsupported": "此浏览器不支持推送通知。",
       "denied": "推送通知已被阻止，请在浏览器设置中允许。"
     },
@@ -181,7 +181,7 @@
       "url": "URL",
       "envVars": "环境变量（KEY=值，每行一个）",
       "headers": "请求头（KEY=值，每行一个）",
-      "selectProject": "选择项目..."
+      "selectProject": "选择项目…"
     },
     "placeholders": {
       "serverName": "我的服务"
@@ -199,7 +199,7 @@
     "projectPath": "路径：{{path}}",
     "actions": {
       "cancel": "取消",
-      "saving": "保存中...",
+      "saving": "保存中…",
       "addServer": "添加服务器",
       "updateServer": "更新服务器"
     }
@@ -207,7 +207,7 @@
   "saveStatus": {
     "success": "设置保存成功！",
     "error": "保存设置失败",
-    "saving": "保存中..."
+    "saving": "保存中…"
   },
   "footerActions": {
     "save": "保存设置",
@@ -226,7 +226,7 @@
     },
     "actions": {
       "save": "保存配置",
-      "saving": "保存中..."
+      "saving": "保存中…"
     },
     "status": {
       "success": "保存成功"
@@ -279,13 +279,13 @@
       "description": "了解如何使用外部 API 从您的应用程序触发 Claude/Cursor 会话。",
       "viewLink": "查看 API 文档 →"
     },
-    "loading": "加载中...",
+    "loading": "加载中…",
     "version": {
       "updateAvailable": "有可用更新：v{{version}}"
     }
   },
   "tasks": {
-    "checking": "正在检查 TaskMaster 安装...",
+    "checking": "正在检查 TaskMaster 安装…",
     "notInstalled": {
       "title": "未安装 TaskMaster AI CLI",
       "description": "需要 TaskMaster CLI 才能使用任务管理功能。安装它以开始使用：",
@@ -305,11 +305,11 @@
   },
   "agents": {
     "authStatus": {
-      "checking": "检查中...",
+      "checking": "检查中…",
       "connected": "已连接",
       "notConnected": "未连接",
       "disconnected": "已断开",
-      "checkingAuth": "正在检查认证状态...",
+      "checkingAuth": "正在检查认证状态…",
       "loggedInAs": "登录为 {{email}}",
       "authenticatedUser": "已认证用户"
     },
@@ -455,7 +455,7 @@
     }
   },
   "edgeClawConfig": {
-    "loading": "正在加载 9GClaw 配置...",
+    "loading": "正在加载 9GClaw 配置…",
     "header": {
       "configFile": "配置文件",
       "configPreview": "配置预览",
@@ -466,7 +466,7 @@
       "rawYaml": "原始 YAML"
     },
     "actions": {
-      "opening": "正在打开...",
+      "opening": "正在打开…",
       "revealFile": "显示文件",
       "refresh": "刷新"
     },
@@ -525,6 +525,7 @@
     "installFailed": "安装失败",
     "uninstallFailed": "卸载失败",
     "toggleFailed": "切换失败",
+    "starterPluginLabel": "入门插件",
     "buildYourOwn": "构建您自己的插件",
     "starter": "入门模板",
     "docs": "文档",
@@ -532,6 +533,12 @@
       "name": "项目统计",
       "badge": "入门",
       "description": "查看项目的文件数、代码行数、文件类型分布以及最近活动。",
+      "install": "安装"
+    },
+    "terminalPlugin": {
+      "name": "终端",
+      "badge": "官方",
+      "description": "在界面内直接使用拥有完整 Shell 访问能力的集成终端。",
       "install": "安装"
     },
     "morePlugins": "更多",

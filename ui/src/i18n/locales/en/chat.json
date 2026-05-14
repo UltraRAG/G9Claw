@@ -131,7 +131,7 @@
     "response": "JSON Response"
   },
   "toolUseError": {
-    "title": "Tool Error",
+    "title": "Tool error",
     "description": ""
   },
   "permissions": {
@@ -191,6 +191,7 @@
     "placeholder": "Type / for commands, @ for files, or ask {{provider}} anything...",
     "placeholderDefault": "Type your message...",
     "disabled": "Input disabled",
+    "attachFile": "Attach file",
     "attachFiles": "Attach photos or files",
     "attachImages": "Attach images",
     "mentionFile": "Mention a file",
@@ -209,7 +210,14 @@
       "bypassPermissionsDescription": "Skip prompts and allow full access"
     },
     "send": "Send",
+    "sending": "Sending...",
     "stop": "Stop",
+    "stopping": "Stopping...",
+    "attachmentOnlyMessage": "Please review the attached file(s).",
+    "errors": {
+      "fileTooLarge": "File too large (max {{maxSize}})",
+      "uploadFailed": "Failed to upload attachments: {{message}}"
+    },
     "hintText": {
       "ctrlEnter": "Ctrl+Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
       "enter": "Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands"
@@ -228,6 +236,16 @@
       "project": "Project",
       "user": "User",
       "other": "Other"
+    }
+  },
+  "slash": {
+    "command": {
+      "cancelled": "Command execution cancelled",
+      "error": "Error executing command: {{message}}"
+    },
+    "switchProject": {
+      "success": "Switched to project: `{{projectName}}`",
+      "notFound": "No project matched `{{projectName}}`. Try the project's directory name (sidebar tooltip)."
     }
   },
   "thinkingMode": {
@@ -366,5 +384,9 @@
   "composer": {
     "placeholder": "Tell 9GClaw what you want to get done",
     "welcomePlaceholder": "Tell 9GClaw what you want to get done"
+  },
+  "welcome": {
+    "greetingWithProject": "What would you like to work on today?",
+    "noProject": "Choose a project from the sidebar to get started"
   }
 }

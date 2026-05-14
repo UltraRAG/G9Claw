@@ -35,6 +35,7 @@ import zhSidebar from './locales/zh-CN/sidebar.json';
 import zhChat from './locales/zh-CN/chat.json';
 import zhAlwaysOn from './locales/zh-CN/alwaysOn.json';
 import zhRouting from './locales/zh-CN/routing.json';
+import zhTasks from './locales/zh-CN/tasks.json';
 // eslint-disable-next-line import-x/order
 import zhCodeEditor from './locales/zh-CN/codeEditor.json';
 
@@ -75,6 +76,7 @@ i18n
         sidebar: zhSidebar,
         chat: zhChat,
         codeEditor: zhCodeEditor,
+        tasks: zhTasks,
         alwaysOn: zhAlwaysOn,
         routing: zhRouting,
       },

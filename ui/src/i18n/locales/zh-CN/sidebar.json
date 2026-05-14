@@ -5,8 +5,8 @@
     "deleteProject": "删除项目",
     "renameProject": "重命名项目",
     "noProjects": "未找到项目",
-    "loadingProjects": "加载项目中...",
-    "searchPlaceholder": "搜索项目...",
+    "loadingProjects": "加载项目中…",
+    "searchPlaceholder": "搜索项目…",
     "projectNamePlaceholder": "项目名称",
     "starred": "星标",
     "all": "全部",
@@ -42,9 +42,9 @@
     "renameSession": "重命名会话",
     "noSessions": "暂无会话",
     "unsaved": "尚未保存",
-    "loadingSessions": "加载会话中...",
+    "loadingSessions": "加载会话中…",
     "unnamed": "未命名",
-    "loading": "加载中...",
+    "loading": "加载中…",
     "loadingMore": "加载更多中…",
     "showMore": "显示更多会话",
     "showMoreCount": "显示更多 ({{count}})"
@@ -93,7 +93,7 @@
   "status": {
     "active": "活动",
     "inactive": "非活动",
-    "thinking": "思考中...",
+    "thinking": "思考中…",
     "error": "错误",
     "aborted": "已中止",
     "unknown": "未知"
@@ -130,8 +130,8 @@
   "search": {
     "modeProjects": "项目",
     "modeConversations": "对话",
-    "conversationsPlaceholder": "搜索对话内容...",
-    "searching": "搜索中...",
+    "conversationsPlaceholder": "搜索对话内容…",
+    "searching": "搜索中…",
     "noResults": "未找到结果",
     "tryDifferentQuery": "尝试不同的搜索词",
     "matches_one": "{{count}} 个匹配",

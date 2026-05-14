@@ -41,7 +41,7 @@
     "thinking": "思考中",
     "generating": "正在生成回复",
     "waitingForPermission": "等待授权",
-    "compacting": "正在压缩上下文...",
+    "compacting": "正在压缩上下文…",
     "compactingLevel": "正在触发 {{level}} 级压缩：{{label}}"
   },
   "process": {
@@ -124,14 +124,14 @@
     "instructionDetail": "在 CLI 中，您可以使用方向键或输入数字来交互式地选择此选项。"
   },
   "thinking": {
-    "title": "思考中...",
-    "emoji": "💭 思考中..."
+    "title": "思考中…",
+    "emoji": "💭 思考中…"
   },
   "json": {
     "response": "JSON 响应"
   },
   "toolUseError": {
-    "title": "Tool Error",
+    "title": "工具错误",
     "description": ""
   },
   "permissions": {
@@ -169,19 +169,37 @@
     },
     "technicalDetails": "技术细节"
   },
+  "gemini": {
+    "permissionMode": "Gemini 权限模式",
+    "description": "控制 Gemini CLI 如何处理操作审批。",
+    "modes": {
+      "default": {
+        "title": "标准模式（执行前询问）",
+        "description": "Gemini 在执行命令、写入文件和获取网络资源前会请求批准。"
+      },
+      "autoEdit": {
+        "title": "自动编辑（跳过文件审批）",
+        "description": "Gemini 会自动批准文件编辑和网页获取，但执行 Shell 命令前仍会询问。"
+      },
+      "yolo": {
+        "title": "YOLO 模式（跳过所有权限确认）",
+        "description": "Gemini 会在不询问的情况下执行所有操作，请谨慎使用。"
+      }
+    }
+  },
   "input": {
-    "placeholder": "输入 / 调用命令，@ 选择文件，或向 {{provider}} 提问...",
-    "placeholderDefault": "输入您的消息...",
+    "placeholder": "输入 / 调用命令，@ 选择文件，或向 {{provider}} 提问…",
+    "placeholderDefault": "输入消息…",
     "disabled": "输入已禁用",
     "attachFile": "上传附件",
     "attachFiles": "附加照片或文件",
     "attachImages": "附加图片",
     "mentionFile": "引用文件",
     "slashCommand": "运行斜杠命令",
-    "contextStatus": "背景信息窗口：{{percent}}% 已用。已用 {{used}} tokens，共 {{total}}。接近上限时会自动压缩上下文。",
+    "contextStatus": "上下文窗口：{{percent}}% 已用。已用 {{used}} token，共 {{total}}。接近上限时会自动压缩上下文。",
     "contextStatusUnknown": "上下文占用未知。下一次模型返回后会显示。",
-    "contextStatusTitle": "背景信息窗口",
-    "contextStatusUsed": "已用 {{used}} tokens，共 {{total}}。",
+    "contextStatusTitle": "上下文窗口",
+    "contextStatusUsed": "已用 {{used}} token，共 {{total}}。",
     "contextStatusAutoCompact": "接近配置上限时会自动触发上下文压缩。",
     "contextStatusUnknownBody": "暂未收到 token 预算数据。下一次模型返回后会显示。",
     "permissions": {
@@ -192,7 +210,14 @@
       "bypassPermissionsDescription": "跳过确认并允许完全访问"
     },
     "send": "发送",
+    "sending": "发送中…",
     "stop": "停止",
+    "stopping": "正在停止…",
+    "attachmentOnlyMessage": "请查看附件。",
+    "errors": {
+      "fileTooLarge": "文件过大（最大 {{maxSize}}）",
+      "uploadFailed": "附件上传失败：{{message}}"
+    },
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",
       "enter": "Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令"
@@ -211,6 +236,16 @@
       "project": "项目",
       "user": "用户",
       "other": "其他"
+    }
+  },
+  "slash": {
+    "command": {
+      "cancelled": "命令执行已取消",
+      "error": "执行命令出错：{{message}}"
+    },
+    "switchProject": {
+      "success": "已切换到项目：`{{projectName}}`",
+      "notFound": "没有匹配 `{{projectName}}` 的项目。请尝试使用侧边栏提示里的项目目录名。"
     }
   },
   "thinkingMode": {
@@ -273,8 +308,8 @@
       "description": "询问有关代码的问题、请求更改或获取开发任务的帮助"
     },
     "loading": {
-      "olderMessages": "正在加载更早的消息...",
-      "sessionMessages": "正在加载会话消息..."
+      "olderMessages": "正在加载更早的消息…",
+      "sessionMessages": "正在加载会话消息…"
     },
     "messages": {
       "showingOf": "显示 {{shown}} / {{total}} 条消息",
@@ -282,7 +317,7 @@
       "showingLast": "显示最近 {{count}} 条消息（共 {{total}} 条）",
       "loadEarlier": "加载更早的消息",
       "loadAll": "加载全部消息",
-      "loadingAll": "正在加载全部消息...",
+      "loadingAll": "正在加载全部消息…",
       "allLoaded": "全部消息已加载",
       "perfWarning": "已加载全部消息 - 滚动可能变慢。点击「滚动到底部」恢复性能。"
     }
@@ -294,8 +329,8 @@
     },
     "status": {
       "newSession": "新会话",
-      "initializing": "初始化中...",
-      "restarting": "重启中..."
+      "initializing": "初始化中…",
+      "restarting": "重启中…"
     },
     "actions": {
       "disconnect": "断开连接",
@@ -305,39 +340,39 @@
       "connect": "在 Shell 中继续",
       "connectTitle": "连接到 Shell"
     },
-    "loading": "正在加载终端...",
-    "connecting": "正在连接到 Shell...",
+    "loading": "正在加载终端…",
+    "connecting": "正在连接到 Shell…",
     "startSession": "启动新的 Claude 会话",
-    "resumeSession": "恢复会话：{{displayName}}...",
+    "resumeSession": "恢复会话：{{displayName}}…",
     "runCommand": "在 {{projectName}} 中运行 {{command}}",
     "startCli": "在 {{projectName}} 中启动 Claude CLI",
     "defaultCommand": "命令"
   },
   "claudeStatus": {
     "actions": {
-      "thinking": "Thinking",
-      "processing": "Processing",
-      "analyzing": "Analyzing",
-      "working": "Working",
-      "computing": "Computing",
-      "reasoning": "Reasoning"
+      "thinking": "思考中",
+      "processing": "处理中",
+      "analyzing": "分析中",
+      "working": "工作中",
+      "computing": "计算中",
+      "reasoning": "推理中"
     },
     "state": {
-      "live": "Live",
-      "paused": "Paused"
+      "live": "实时",
+      "paused": "已暂停"
     },
     "elapsed": {
       "seconds": "{{count}}s",
       "minutesSeconds": "{{minutes}}m {{seconds}}s",
-      "label": "{{time}} elapsed",
-      "startingNow": "Starting now"
+      "label": "已用 {{time}}",
+      "startingNow": "刚刚开始"
     },
     "controls": {
-      "stopGeneration": "Stop Generation",
-      "pressEscToStop": "Press Esc anytime to stop"
+      "stopGeneration": "停止生成",
+      "pressEscToStop": "随时按 Esc 停止"
     },
     "providers": {
-      "assistant": "Assistant"
+      "assistant": "助手"
     }
   },
   "projectSelection": {

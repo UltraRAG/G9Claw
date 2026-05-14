@@ -8,6 +8,7 @@ import type {
   MouseEvent,
   SetStateAction,
 } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
 import { authenticatedFetch } from '../../../utils/api';
 import { thinkingModes } from '../constants/thinkingModes';
@@ -155,6 +156,7 @@ export function useChatComposerState({
   setIsUserScrolledUp,
   setPendingPermissionRequests,
 }: UseChatComposerStateArgs) {
+  const { t } = useTranslation('chat');
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
       return safeLocalStorage.getItem(`draft_input_${selectedProject.name}`) || '';
@@ -357,8 +359,14 @@ export function useChatComposerState({
           addMessage({
             type: 'assistant',
             content: switched
-              ? `Switched to project: \`${targetName}\``
-              : `No project matched \`${targetName}\`. Try the project's directory name (sidebar tooltip).`,
+              ? t('slash.switchProject.success', {
+                  projectName: targetName,
+                  defaultValue: 'Switched to project: `{{projectName}}`',
+                })
+              : t('slash.switchProject.notFound', {
+                  projectName: targetName,
+                  defaultValue: "No project matched `{{projectName}}`. Try the project's directory name (sidebar tooltip).",
+                }),
             timestamp: Date.now(),
           });
           break;
@@ -375,6 +383,7 @@ export function useChatComposerState({
       clearMessages,
       rewindMessages,
       onLaunchAlwaysOnPlanExecution,
+      t,
     ],
   );
 
@@ -388,7 +397,7 @@ export function useChatComposerState({
       if (!confirmed) {
         addMessage({
           type: 'assistant',
-          content: 'Command execution cancelled',
+          content: t('slash.command.cancelled', { defaultValue: 'Command execution cancelled' }),
           timestamp: Date.now(),
         });
         return;
@@ -413,7 +422,7 @@ export function useChatComposerState({
         handleSubmitRef.current(createFakeSubmitEvent());
       }
     }, 0);
-  }, [addMessage]);
+  }, [addMessage, t]);
 
   const executeCommand = useCallback(
     async (command: SlashCommand, rawInput?: string) => {
@@ -473,7 +482,10 @@ export function useChatComposerState({
         console.error('Error executing command:', error);
         addMessage({
           type: 'assistant',
-          content: `Error executing command: ${message}`,
+          content: t('slash.command.error', {
+            message,
+            defaultValue: 'Error executing command: {{message}}',
+          }),
           timestamp: Date.now(),
         });
       }
@@ -491,6 +503,7 @@ export function useChatComposerState({
       selectedProject,
       addMessage,
       tokenBudget,
+      t,
     ],
   );
 
@@ -551,7 +564,13 @@ export function useChatComposerState({
           const fileName = file.name || 'Unknown file';
           setImageErrors((previous) => {
             const next = new Map(previous);
-            next.set(fileName, 'File too large (max 20MB)');
+            next.set(
+              fileName,
+              t('input.errors.fileTooLarge', {
+                maxSize: '20MB',
+                defaultValue: 'File too large (max {{maxSize}})',
+              }),
+            );
             return next;
           });
           return false;
@@ -567,7 +586,7 @@ export function useChatComposerState({
     if (validFiles.length > 0) {
       setAttachedImages((previous) => [...previous, ...validFiles].slice(0, MAX_ATTACHMENTS));
     }
-  }, []);
+  }, [t]);
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -652,7 +671,9 @@ export function useChatComposerState({
           }
         }
 
-        const userVisibleInput = trimmedInput || 'Please review the attached file(s).';
+        const userVisibleInput = trimmedInput || t('input.attachmentOnlyMessage', {
+          defaultValue: 'Please review the attached file(s).',
+        });
         let messageContent = userVisibleInput;
         const selectedThinkingMode = thinkingModes.find(
           (mode: { id: string; prefix?: string }) => mode.id === thinkingMode,
@@ -693,7 +714,10 @@ export function useChatComposerState({
             console.error('Attachment upload failed:', error);
             addMessage({
               type: 'error',
-              content: `Failed to upload attachments: ${message}`,
+              content: t('input.errors.uploadFailed', {
+                message,
+                defaultValue: 'Failed to upload attachments: {{message}}',
+              }),
               timestamp: new Date(),
             });
             return;
@@ -888,6 +912,7 @@ export function useChatComposerState({
       setIsLoading,
       setIsUserScrolledUp,
       slashCommands,
+      t,
       thinkingMode,
     ],
   );
