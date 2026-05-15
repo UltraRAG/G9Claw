@@ -10,11 +10,95 @@ import {
   AnthropicChatRequest,
   ConversionOptions,
 } from "../types/llm";
+import { formatBase64 } from "./image";
 
 // Simple logger function
 function log(...args: any[]) {
   // Can be extended to use a proper logger
   console.log(...args);
+}
+
+function safeStringify(value: any): string {
+  try {
+    return JSON.stringify(value, (key, nestedValue) => {
+      if (key === "data" && typeof nestedValue === "string") {
+        return `[omitted ${nestedValue.length} chars of binary data]`;
+      }
+      return nestedValue;
+    });
+  } catch {
+    return String(value);
+  }
+}
+
+function convertAnthropicImageBlock(part: any) {
+  const source = part?.source || {};
+  const mediaType =
+    typeof source.media_type === "string"
+      ? source.media_type
+      : typeof part?.media_type === "string"
+        ? part.media_type
+        : "image/jpeg";
+  const url =
+    source.type === "base64" && typeof source.data === "string"
+      ? formatBase64(source.data, mediaType)
+      : typeof source.url === "string"
+        ? source.url
+        : "";
+
+  if (!url) return null;
+
+  return {
+    type: "image_url" as const,
+    image_url: { url },
+    media_type: mediaType,
+  };
+}
+
+function extractImagesFromToolResultContent(content: any) {
+  if (!Array.isArray(content)) return [];
+
+  return content
+    .map((part) => (part?.type === "image" ? convertAnthropicImageBlock(part) : null))
+    .filter(Boolean);
+}
+
+function toolResultContentToText(content: any): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return safeStringify(content ?? "");
+
+  const parts = content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part?.type === "text" && typeof part.text === "string") {
+        return part.text;
+      }
+      if (part?.type === "image") {
+        const mediaType =
+          part.source?.media_type || part.media_type || "unknown image";
+        return `[Image (${mediaType}) attached as visual content]`;
+      }
+      if (part?.type === "document") {
+        const mediaType =
+          part.source?.media_type || part.media_type || "document";
+        return `[Document (${mediaType}) attached as document content]`;
+      }
+      return safeStringify(part);
+    })
+    .filter(Boolean);
+
+  return parts.join("\n") || "[Tool result contained non-text content]";
+}
+
+function textAndImageContent(textBlocks: string[], imageParts: any[]) {
+  return [
+    ...(
+      textBlocks.length > 0
+        ? [{ type: "text" as const, text: textBlocks.join("") }]
+        : []
+    ),
+    ...imageParts,
+  ];
 }
 
 export function convertToolsToOpenAI(
@@ -285,7 +369,7 @@ export function convertFromAnthropic(
           role: "assistant",
           content: pendingTextContent.join("") || null,
           tool_calls:
-            pendingToolCalls.length > 0 ? pendingToolCalls : undefined,
+            pendingToolCalls.length > 0 ? [...pendingToolCalls] : undefined,
         };
         if (assistantMessage.tool_calls && pendingTextContent.length === 0) {
           assistantMessage.content = null;
@@ -301,12 +385,16 @@ export function convertFromAnthropic(
       });
     } else if (Array.isArray(msg.content)) {
       const textBlocks: string[] = [];
+      const imageParts: any[] = [];
       const toolCalls: any[] = [];
       const toolResults: any[] = [];
 
       msg.content.forEach((block) => {
         if (block.type === "text") {
           textBlocks.push(block.text);
+        } else if (block.type === "image") {
+          const imagePart = convertAnthropicImageBlock(block);
+          if (imagePart) imageParts.push(imagePart);
         } else if (block.type === "tool_use") {
           toolCalls.push({
             id: block.id,
@@ -326,7 +414,7 @@ export function convertFromAnthropic(
           const assistantMessage: UnifiedMessage = {
             role: "assistant",
             content: pendingTextContent.join("") || null,
-            tool_calls: pendingToolCalls,
+            tool_calls: [...pendingToolCalls],
           };
           if (pendingTextContent.length === 0) {
             assistantMessage.content = null;
@@ -336,16 +424,40 @@ export function convertFromAnthropic(
           pendingTextContent.length = 0;
         }
 
+        const toolResultImageParts: any[] = [];
+
         toolResults.forEach((toolResult) => {
+          toolResultImageParts.push(
+            ...extractImagesFromToolResultContent(toolResult.content),
+          );
           messages.push({
             role: "tool",
-            content:
-              typeof toolResult.content === "string"
-                ? toolResult.content
-                : JSON.stringify(toolResult.content),
+            content: toolResultContentToText(toolResult.content),
             tool_call_id: toolResult.tool_use_id,
           });
         });
+
+        if (toolResultImageParts.length > 0) {
+          messages.push({
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "[Visual content from tool result]",
+              },
+              ...toolResultImageParts,
+              ...textAndImageContent(textBlocks, imageParts),
+            ],
+          });
+        } else if (textBlocks.length > 0 || imageParts.length > 0) {
+          messages.push({
+            role: "user",
+            content:
+              imageParts.length > 0
+                ? textAndImageContent(textBlocks, imageParts)
+                : textBlocks.join(""),
+          });
+        }
       } else if (msg.role === "assistant") {
         if (lastRole === "assistant") {
           pendingToolCalls.push(...toolCalls);
@@ -355,7 +467,7 @@ export function convertFromAnthropic(
             const prevAssistantMessage: UnifiedMessage = {
               role: "assistant",
               content: pendingTextContent.join("") || null,
-              tool_calls: pendingToolCalls,
+              tool_calls: [...pendingToolCalls],
             };
             if (pendingTextContent.length === 0) {
               prevAssistantMessage.content = null;
@@ -373,7 +485,7 @@ export function convertFromAnthropic(
           const assistantMessage: UnifiedMessage = {
             role: "assistant",
             content: pendingTextContent.join("") || null,
-            tool_calls: pendingToolCalls,
+            tool_calls: [...pendingToolCalls],
           };
           if (pendingTextContent.length === 0) {
             assistantMessage.content = null;
@@ -383,14 +495,18 @@ export function convertFromAnthropic(
           pendingTextContent.length = 0;
         }
 
+        const contentParts = textAndImageContent(textBlocks, imageParts);
         const message: UnifiedMessage = {
           role: msg.role,
-          content: textBlocks.join("") || null,
+          content:
+            imageParts.length > 0
+              ? contentParts
+              : textBlocks.join("") || null,
         };
 
         if (toolCalls.length > 0) {
           message.tool_calls = toolCalls;
-          if (textBlocks.length === 0) {
+          if (contentParts.length === 0) {
             message.content = null;
           }
         }
@@ -402,7 +518,7 @@ export function convertFromAnthropic(
         const assistantMessage: UnifiedMessage = {
           role: "assistant",
           content: pendingTextContent.join("") || null,
-          tool_calls: pendingToolCalls,
+          tool_calls: [...pendingToolCalls],
         };
         if (pendingTextContent.length === 0) {
           assistantMessage.content = null;
@@ -425,7 +541,7 @@ export function convertFromAnthropic(
     const assistantMessage: UnifiedMessage = {
       role: "assistant",
       content: pendingTextContent.join("") || null,
-      tool_calls: pendingToolCalls,
+      tool_calls: [...pendingToolCalls],
     };
     if (pendingTextContent.length === 0) {
       assistantMessage.content = null;

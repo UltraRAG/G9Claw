@@ -15,6 +15,85 @@ import { getThinkLevel } from "@/utils/thinking";
 import { createApiError } from "@/api/middleware";
 import { formatBase64 } from "@/utils/image";
 
+function safeStringify(value: any): string {
+  try {
+    return JSON.stringify(value, (key, nestedValue) => {
+      if (key === "data" && typeof nestedValue === "string") {
+        return `[omitted ${nestedValue.length} chars of binary data]`;
+      }
+      return nestedValue;
+    });
+  } catch {
+    return String(value);
+  }
+}
+
+function convertAnthropicImageBlock(part: any) {
+  const source = part?.source || {};
+  const mediaType =
+    typeof source.media_type === "string"
+      ? source.media_type
+      : typeof part?.media_type === "string"
+        ? part.media_type
+        : "image/jpeg";
+  const url =
+    source.type === "base64" && typeof source.data === "string"
+      ? formatBase64(source.data, mediaType)
+      : typeof source.url === "string"
+        ? source.url
+        : "";
+
+  if (!url) return null;
+
+  return {
+    type: "image_url" as const,
+    image_url: { url },
+    media_type: mediaType,
+  };
+}
+
+function extractImagesFromToolResultContent(content: any) {
+  if (!Array.isArray(content)) return [];
+
+  return content
+    .map((part) => (part?.type === "image" ? convertAnthropicImageBlock(part) : null))
+    .filter(Boolean);
+}
+
+function toolResultContentToText(content: any): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return safeStringify(content ?? "");
+
+  const parts = content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part?.type === "text" && typeof part.text === "string") {
+        return part.text;
+      }
+      if (part?.type === "image") {
+        const mediaType =
+          part.source?.media_type || part.media_type || "unknown image";
+        return `[Image (${mediaType}) attached as visual content]`;
+      }
+      if (part?.type === "document") {
+        const mediaType =
+          part.source?.media_type || part.media_type || "document";
+        return `[Document (${mediaType}) attached as document content]`;
+      }
+      return safeStringify(part);
+    })
+    .filter(Boolean);
+
+  return parts.join("\n") || "[Tool result contained non-text content]";
+}
+
+function convertTextOrImagePart(part: any) {
+  if (part?.type === "image") {
+    return convertAnthropicImageBlock(part);
+  }
+  return part;
+}
+
 export class AnthropicTransformer implements Transformer {
   name = "Anthropic";
   endPoint = "/v1/messages";
@@ -87,14 +166,15 @@ export class AnthropicTransformer implements Transformer {
             const toolParts = msg.content.filter(
               (c: any) => c.type === "tool_result" && c.tool_use_id
             );
+            const toolResultImageParts: any[] = [];
             if (toolParts.length) {
               toolParts.forEach((tool: any) => {
+                toolResultImageParts.push(
+                  ...extractImagesFromToolResultContent(tool.content)
+                );
                 const toolMessage: UnifiedMessage = {
                   role: "tool",
-                  content:
-                    typeof tool.content === "string"
-                      ? tool.content
-                      : JSON.stringify(tool.content),
+                  content: toolResultContentToText(tool.content),
                   tool_call_id: tool.tool_use_id,
                   cache_control: tool.cache_control,
                 };
@@ -107,27 +187,24 @@ export class AnthropicTransformer implements Transformer {
                 (c.type === "text" && c.text) ||
                 (c.type === "image" && c.source)
             );
-            if (textAndMediaParts.length) {
+            const convertedTextAndMediaParts = textAndMediaParts
+              .map(convertTextOrImagePart)
+              .filter(Boolean);
+            const visualParts =
+              toolResultImageParts.length > 0
+                ? [
+                    {
+                      type: "text" as const,
+                      text: "[Visual content from tool result]",
+                    },
+                    ...toolResultImageParts,
+                    ...convertedTextAndMediaParts,
+                  ]
+                : convertedTextAndMediaParts;
+            if (visualParts.length) {
               messages.push({
                 role: "user",
-                content: textAndMediaParts.map((part: any) => {
-                  if (part?.type === "image") {
-                    return {
-                      type: "image_url",
-                      image_url: {
-                        url:
-                          part.source?.type === "base64"
-                            ? formatBase64(
-                                part.source.data,
-                                part.source.media_type
-                              )
-                            : part.source.url,
-                      },
-                      media_type: part.source.media_type,
-                    };
-                  }
-                  return part;
-                }),
+                content: visualParts,
               });
             }
           } else if (msg.role === "assistant") {
