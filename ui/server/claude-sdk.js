@@ -41,6 +41,9 @@ const sessionRuntimes = new Map();
 const pendingToolApprovals = new Map();
 const pendingCoalescenceMap = new Map();
 const sessionTokenBudgets = new Map();
+const DEFAULT_CLAUDE_PLANS_DIR = path.join(os.homedir(), '.claude', 'plans');
+const DEFAULT_CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+const MAX_PLAN_FILE_BYTES = 2 * 1024 * 1024;
 
 const DEFAULT_TOOL_APPROVAL_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 const configuredToolApprovalTimeoutMs = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10);
@@ -194,6 +197,240 @@ function addUniqueItems(items, additions) {
     }
   }
   return out;
+}
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isExitPlanModeToolName(toolName) {
+  return (
+    toolName === 'ExitPlanMode' ||
+    toolName === 'ExitPlanModeV2' ||
+    toolName === 'exit_plan_mode'
+  );
+}
+
+function normalizeTildePath(filePath) {
+  if (typeof filePath !== 'string' || !filePath.trim()) {
+    return null;
+  }
+  const trimmed = filePath.trim();
+  if (trimmed === '~') {
+    return os.homedir();
+  }
+  if (trimmed.startsWith(`~${path.sep}`) || trimmed.startsWith('~/')) {
+    return path.join(os.homedir(), trimmed.slice(2));
+  }
+  return trimmed;
+}
+
+function isPathInside(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function normalizePlanFilePath(filePath, cwd = null) {
+  const expanded = normalizeTildePath(filePath);
+  if (!expanded) {
+    return null;
+  }
+  const resolved = path.isAbsolute(expanded)
+    ? path.resolve(expanded)
+    : path.resolve(cwd || process.cwd(), expanded);
+  if (!resolved.endsWith('.md')) {
+    return null;
+  }
+
+  const allowedRoots = [DEFAULT_CLAUDE_PLANS_DIR];
+  if (cwd) {
+    allowedRoots.push(path.resolve(cwd));
+  }
+
+  return allowedRoots.some(root => isPathInside(resolved, path.resolve(root))) ? resolved : null;
+}
+
+async function readPlanFile(filePath, cwd = null) {
+  const resolved = normalizePlanFilePath(filePath, cwd);
+  if (!resolved) {
+    return null;
+  }
+
+  try {
+    const stat = await fs.stat(resolved);
+    if (!stat.isFile() || stat.size > MAX_PLAN_FILE_BYTES) {
+      return null;
+    }
+    const content = await fs.readFile(resolved, 'utf8');
+    return content.trim() ? { plan: content, planFilePath: resolved } : null;
+  } catch {
+    return null;
+  }
+}
+
+function getProjectNameCandidates(cwd) {
+  if (!cwd) {
+    return [];
+  }
+  const resolved = path.resolve(cwd);
+  return Array.from(new Set([
+    resolved.replace(/[\\/]/g, '-'),
+    resolved.replace(/[\\/:\s~]/g, '-'),
+    resolved.replace(/[\\/:\s~_]/g, '-'),
+  ]));
+}
+
+async function findTranscriptFile(sessionId, cwd = null) {
+  if (!sessionId) {
+    return null;
+  }
+
+  const fileName = `${sessionId}.jsonl`;
+  for (const projectName of getProjectNameCandidates(cwd)) {
+    const candidate = path.join(DEFAULT_CLAUDE_PROJECTS_DIR, projectName, fileName);
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // Continue to slower fallback.
+    }
+  }
+
+  try {
+    const projectDirs = await fs.readdir(DEFAULT_CLAUDE_PROJECTS_DIR, { withFileTypes: true });
+    for (const entry of projectDirs) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const candidate = path.join(DEFAULT_CLAUDE_PROJECTS_DIR, entry.name, fileName);
+      try {
+        await fs.access(candidate);
+        return candidate;
+      } catch {
+        // Continue scanning project directories.
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function extractPlanPathFromValue(value, depth = 0) {
+  if (depth > 5 || !value) {
+    return null;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.replace(/\\/g, '/');
+    return normalized.includes('/.claude/plans/') && normalized.endsWith('.md')
+      ? value
+      : null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = extractPlanPathFromValue(item, depth + 1);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const preferredKeys = ['planFilePath', 'file_path', 'path'];
+  for (const key of preferredKeys) {
+    const found = extractPlanPathFromValue(value[key], depth + 1);
+    if (found) {
+      return found;
+    }
+  }
+
+  for (const nested of Object.values(value)) {
+    const found = extractPlanPathFromValue(nested, depth + 1);
+    if (found) {
+      return found;
+    }
+  }
+
+  return null;
+}
+
+async function readPlanFromTranscript(sessionId, cwd = null, agentId = null) {
+  const transcriptFile = await findTranscriptFile(sessionId, cwd);
+  if (!transcriptFile) {
+    return null;
+  }
+
+  let transcript;
+  try {
+    transcript = await fs.readFile(transcriptFile, 'utf8');
+  } catch {
+    return null;
+  }
+
+  let slug = null;
+  let planFilePath = null;
+  for (const line of transcript.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    try {
+      const entry = JSON.parse(trimmed);
+      if (typeof entry?.slug === 'string' && entry.slug.trim()) {
+        slug = entry.slug.trim();
+      }
+      const foundPath = extractPlanPathFromValue(entry);
+      if (foundPath) {
+        planFilePath = foundPath;
+      }
+    } catch {
+      // Ignore malformed or partially-written JSONL lines.
+    }
+  }
+
+  if (planFilePath) {
+    const directPlan = await readPlanFile(planFilePath, cwd);
+    if (directPlan) {
+      return directPlan;
+    }
+  }
+
+  if (!slug) {
+    return null;
+  }
+
+  const fileName = agentId ? `${slug}-agent-${agentId}.md` : `${slug}.md`;
+  return readPlanFile(path.join(DEFAULT_CLAUDE_PLANS_DIR, fileName), cwd);
+}
+
+async function enrichExitPlanModeInput(toolName, input, context = {}) {
+  if (!isExitPlanModeToolName(toolName) || !isRecord(input)) {
+    return input;
+  }
+
+  if (typeof input.plan === 'string' && input.plan.trim()) {
+    return input;
+  }
+
+  const fromInputPath = await readPlanFile(input.planFilePath, context.cwd);
+  const fromTranscript = fromInputPath
+    || await readPlanFromTranscript(context.sessionId, context.cwd, context.agentId);
+  if (!fromTranscript) {
+    return input;
+  }
+
+  return {
+    ...input,
+    plan: fromTranscript.plan,
+    planFilePath: input.planFilePath || fromTranscript.planFilePath,
+  };
 }
 
 async function buildClaudeSubprocessEnv() {
@@ -1083,10 +1320,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
     sdkOptions.canUseTool = async (toolName, input, context) => {
       const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
-      const isExitPlanModeTool =
-        toolName === 'ExitPlanMode' ||
-        toolName === 'ExitPlanModeV2' ||
-        toolName === 'exit_plan_mode';
+      const isExitPlanModeTool = isExitPlanModeToolName(toolName);
 
       if (!requiresInteraction) {
         const isDisallowed = (sdkOptions.disallowedTools || []).some(entry =>
@@ -1119,8 +1353,13 @@ async function queryClaudeSDK(command, options = {}, ws) {
         }
       }
 
-      const permKey = buildServerPermissionKey(toolName, input);
       const effectiveSessionId = capturedSessionId || sessionId || null;
+      const permissionInput = await enrichExitPlanModeInput(toolName, input, {
+        sessionId: effectiveSessionId,
+        cwd: options.cwd || options.projectPath || null,
+        agentId: context?.agentID || context?.agentId || null,
+      });
+      const permKey = buildServerPermissionKey(toolName, permissionInput);
       const coalescenceKey = permKey ? `${effectiveSessionId || 'none'}:${permKey}` : null;
 
       if (coalescenceKey && !requiresInteraction) {
@@ -1136,7 +1375,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
                 sdkOptions.disallowedTools = sdkOptions.disallowedTools.filter(entry => entry !== decision.rememberEntry);
               }
             }
-            return { behavior: 'allow', updatedInput: decision.updatedInput ?? input };
+            return { behavior: 'allow', updatedInput: decision.updatedInput ?? permissionInput };
           }
           if (decision?.cancelled) {
             return { behavior: 'deny', message: 'Permission request cancelled' };
@@ -1152,7 +1391,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
         pendingCoalescenceMap.set(coalescenceKey, { requestId, promise: coalescencePromise });
       }
 
-      const permissionMessage = createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: effectiveSessionId, provider: 'claude' });
+      const permissionMessage = createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input: permissionInput, sessionId: effectiveSessionId, provider: 'claude' });
       ws.send(permissionMessage);
       activityTracker.observe(permissionMessage);
       emitNotification(createNotificationEvent({
@@ -1172,7 +1411,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
         metadata: {
           _sessionId: effectiveSessionId,
           _toolName: toolName,
-          _input: input,
+          _input: permissionInput,
           _receivedAt: new Date(),
         },
         onCancel: (reason) => {
@@ -1205,7 +1444,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
             sdkOptions.disallowedTools = sdkOptions.disallowedTools.filter(entry => entry !== decision.rememberEntry);
           }
         }
-        return { behavior: 'allow', updatedInput: decision.updatedInput ?? input };
+        return { behavior: 'allow', updatedInput: decision.updatedInput ?? permissionInput };
       }
 
       return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };
@@ -1320,6 +1559,13 @@ async function queryClaudeSDK(command, options = {}, ws) {
         // Preserve parentToolUseId from SDK wrapper for subagent tool grouping
         if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
           msg.parentToolUseId = transformedMessage.parentToolUseId;
+        }
+        if (msg.kind === 'tool_use' && isExitPlanModeToolName(msg.toolName)) {
+          msg.toolInput = await enrichExitPlanModeInput(msg.toolName, msg.toolInput, {
+            sessionId: sid,
+            cwd: options.cwd || options.projectPath || null,
+            agentId: transformedMessage.agentID || transformedMessage.agentId || null,
+          });
         }
         activityTracker.observe(msg);
         ws.send(msg);

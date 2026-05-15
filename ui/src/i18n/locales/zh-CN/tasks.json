@@ -1,4 +1,11 @@
 {
+  "compact": {
+    "title": "任务",
+    "summary": "{{count}} 个任务 · {{inProgress}} 个进行中",
+    "refresh": "刷新",
+    "loading": "正在加载…",
+    "empty": "暂无任务。请先在旧版任务面板中初始化 Task Master。"
+  },
   "notConfigured": {
     "title": "TaskMaster AI 尚未配置",
     "description": "TaskMaster 可以借助 AI 将复杂项目拆解成可管理的任务",
@@ -123,9 +130,10 @@
     "modified": "修改于：{{date}}"
   },
   "statuses": {
-    "pending": "待处理",
+    "pending": "未开始",
     "in-progress": "进行中",
     "done": "已完成",
+    "review": "待审查",
     "blocked": "受阻",
     "deferred": "已延期",
     "cancelled": "已取消"

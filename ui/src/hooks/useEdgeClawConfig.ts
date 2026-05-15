@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { authenticatedFetch } from '../utils/api';
 import { useWebSocket } from '../contexts/WebSocketContext';
+import i18n from '../i18n/config.js';
 
 type ConfigValidation = {
   valid: boolean;
@@ -39,6 +40,10 @@ type ReloadInfo = {
   source: ReloadSource;
   at: number;
 };
+
+function configText(key: string, options?: Record<string, unknown>): string {
+  return i18n.t(`settings:edgeClawConfig.messages.${key}`, options);
+}
 
 export function useEdgeClawConfig() {
   const [path, setPath] = useState('');
@@ -83,10 +88,10 @@ export function useEdgeClawConfig() {
     try {
       const response = await authenticatedFetch('/api/config');
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Failed to load config');
+      if (!response.ok) throw new Error(data.error || configText('failedLoad'));
       applyResponse(data, 'refresh');
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Failed to load config');
+      setError(caught instanceof Error ? caught.message : configText('failedLoad'));
     } finally {
       setLoading(false);
     }
@@ -107,7 +112,7 @@ export function useEdgeClawConfig() {
     // If the user has unsaved changes, preserve them and just surface a notice.
     if (isDirty && source === 'watcher') {
       setExternalChangeNotice(
-        'Config was changed on disk by an external edit. Your unsaved draft is kept — click Refresh to discard and load the new version.',
+        configText('externalChangedDirty'),
       );
       // Still update validation/reload summary (non-destructive fields)
       setValidation(payload.validation);
@@ -129,7 +134,7 @@ export function useEdgeClawConfig() {
       source,
     );
     if (source === 'watcher') {
-      setExternalChangeNotice('Config was updated on disk — the new version is now loaded.');
+      setExternalChangeNotice(configText('externalUpdated'));
     } else {
       setExternalChangeNotice(null);
     }
@@ -145,12 +150,12 @@ export function useEdgeClawConfig() {
         body: JSON.stringify({ raw }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || data.validation?.errors?.join(', ') || 'Failed to save config');
+      if (!response.ok) throw new Error(data.error || data.validation?.errors?.join(', ') || configText('failedSave'));
       applyResponse(data, 'ui-save');
-      setMessage('Saved and reloaded');
+      setMessage(configText('savedReloaded'));
       setExternalChangeNotice(null);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Failed to save config');
+      setError(caught instanceof Error ? caught.message : configText('failedSave'));
     } finally {
       setSaving(false);
     }
@@ -163,11 +168,11 @@ export function useEdgeClawConfig() {
     try {
       const response = await authenticatedFetch('/api/config/reload', { method: 'POST' });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Failed to reload config');
+      if (!response.ok) throw new Error(data.error || configText('failedReload'));
       applyResponse(data, 'ui-reload');
-      setMessage('Reloaded current config');
+      setMessage(configText('reloadedCurrent'));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Failed to reload config');
+      setError(caught instanceof Error ? caught.message : configText('failedReload'));
     } finally {
       setSaving(false);
     }
@@ -180,9 +185,9 @@ export function useEdgeClawConfig() {
       const response = await authenticatedFetch('/api/config/open', { method: 'POST' });
       const data = await response.json();
       if (!data.success && data.error) throw new Error(data.error);
-      setMessage(`Config file: ${data.path}`);
+      setMessage(configText('configFile', { path: data.path }));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Failed to open config file');
+      setError(caught instanceof Error ? caught.message : configText('failedOpen'));
     } finally {
       setOpening(false);
     }

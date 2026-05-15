@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   AlertCircle,
   CheckCircle2,
@@ -113,13 +114,6 @@ const SECTIONS: Array<{ id: SectionId; labelKey: string; descriptionKey: string 
 // ── Reload-status presentation (kept identical to legacy raw view) ──────
 
 type SubsystemKey = 'processEnv' | 'memory' | 'router' | 'gateway' | 'proxy';
-const SUBSYSTEM_LABELS: Record<SubsystemKey, string> = {
-  processEnv: 'Process Env',
-  memory: 'Memory',
-  router: 'Router (CCR)',
-  gateway: 'Gateway',
-  proxy: 'Proxy',
-};
 
 type SubsystemResult = {
   reloaded?: boolean;
@@ -152,8 +146,9 @@ function SubsystemIcon({ state }: { state: 'ok' | 'skipped' | 'error' | 'unknown
 }
 
 function ReloadSummary({ reload }: { reload: ConfigReload | null }) {
+  const { t } = useTranslation('settings');
   if (!reload) {
-    return <div className="text-sm text-muted-foreground">No reload has run yet.</div>;
+    return <div className="text-sm text-muted-foreground">{t('edgeClawConfig.reload.empty')}</div>;
   }
   const keys: SubsystemKey[] = ['processEnv', 'memory', 'router', 'gateway', 'proxy'];
   return (
@@ -161,12 +156,20 @@ function ReloadSummary({ reload }: { reload: ConfigReload | null }) {
       {keys.map((key) => {
         const result = reload[key] as SubsystemResult | undefined;
         const state = classifySubsystem(result);
-        const detail = result?.error || result?.reason || result?.note || (state === 'ok' ? 'Reloaded' : state === 'unknown' ? 'No data' : '');
+        const detail =
+          result?.error ||
+          result?.reason ||
+          result?.note ||
+          (state === 'ok'
+            ? t('edgeClawConfig.reload.reloaded')
+            : state === 'unknown'
+              ? t('edgeClawConfig.reload.noData')
+              : '');
         return (
           <div key={key} className={`flex flex-col gap-1 rounded-lg border px-3 py-2 text-xs ${subsystemBadgeClasses(state)}`}>
             <div className="flex items-center gap-1.5 font-medium">
               <SubsystemIcon state={state} />
-              <span>{SUBSYSTEM_LABELS[key]}</span>
+              <span>{t(`edgeClawConfig.reload.subsystems.${key}`)}</span>
             </div>
             {detail && <div className="text-[11px] opacity-80">{detail}</div>}
           </div>
@@ -176,12 +179,12 @@ function ReloadSummary({ reload }: { reload: ConfigReload | null }) {
   );
 }
 
-function sourceLabel(source: string): string {
+function sourceLabel(source: string, t: TFunction<'settings'>): string {
   switch (source) {
-    case 'ui-save':   return 'UI save';
-    case 'ui-reload': return 'UI reload';
-    case 'watcher':   return 'External file edit';
-    case 'refresh':   return 'Manual refresh';
+    case 'ui-save':   return t('edgeClawConfig.reload.sources.uiSave');
+    case 'ui-reload': return t('edgeClawConfig.reload.sources.uiReload');
+    case 'watcher':   return t('edgeClawConfig.reload.sources.watcher');
+    case 'refresh':   return t('edgeClawConfig.reload.sources.refresh');
     default:          return source;
   }
 }
@@ -321,34 +324,35 @@ function FormRow({ label, description, children }: { label: string; description?
 // ── Section components ─────────────────────────────────────────────────
 
 function RuntimeSection({ config, onChange }: { config: EdgeClawConfig; onChange: (next: EdgeClawConfig) => void }) {
+  const { t } = useTranslation('settings');
   const r = config.runtime ?? {};
   const set = <K extends keyof NonNullable<EdgeClawConfig['runtime']>>(key: K, value: NonNullable<EdgeClawConfig['runtime']>[K]) =>
     onChange(patch(config, ['runtime', key as string], value));
   return (
-    <SettingsSection title="Runtime" description="Ports the server binds to and request timeouts.">
+    <SettingsSection title={t('edgeClawConfig.runtime.title')} description={t('edgeClawConfig.runtime.description')}>
       <SettingsCard divided>
-        <FormRow label="Host" description="Bind interface for the HTTP/WebSocket server.">
+        <FormRow label={t('edgeClawConfig.runtime.fields.host.label')} description={t('edgeClawConfig.runtime.fields.host.description')}>
           <TextInput value={r.host} placeholder="0.0.0.0" onChange={(v) => set('host', v)} />
         </FormRow>
-        <FormRow label="Server port" description="Express + WebSocket port.">
+        <FormRow label={t('edgeClawConfig.runtime.fields.serverPort.label')} description={t('edgeClawConfig.runtime.fields.serverPort.description')}>
           <NumberInput value={r.serverPort} placeholder="3001" onChange={(v) => set('serverPort', v as any)} />
         </FormRow>
-        <FormRow label="Vite port" description="Frontend dev server (only used when running `npm run dev`).">
+        <FormRow label={t('edgeClawConfig.runtime.fields.vitePort.label')} description={t('edgeClawConfig.runtime.fields.vitePort.description')}>
           <NumberInput value={r.vitePort} placeholder="5173" onChange={(v) => set('vitePort', v as any)} />
         </FormRow>
-        <FormRow label="Proxy port" description="Local LLM proxy (Claude Agent SDK target).">
+        <FormRow label={t('edgeClawConfig.runtime.fields.proxyPort.label')} description={t('edgeClawConfig.runtime.fields.proxyPort.description')}>
           <NumberInput value={r.proxyPort} placeholder="18080" onChange={(v) => set('proxyPort', v as any)} />
         </FormRow>
-        <FormRow label="Context window" description="Fallback token budget when a model entry does not set one.">
+        <FormRow label={t('edgeClawConfig.runtime.fields.contextWindow.label')} description={t('edgeClawConfig.runtime.fields.contextWindow.description')}>
           <NumberInput value={r.contextWindow} placeholder="160000" onChange={(v) => set('contextWindow', v as any)} />
         </FormRow>
-        <FormRow label="API timeout (ms)" description="Per-request upstream timeout.">
+        <FormRow label={t('edgeClawConfig.runtime.fields.apiTimeoutMs.label')} description={t('edgeClawConfig.runtime.fields.apiTimeoutMs.description')}>
           <NumberInput value={r.apiTimeoutMs} placeholder="120000" onChange={(v) => set('apiTimeoutMs', v as any)} />
         </FormRow>
-        <FormRow label="Database path" description="SQLite auth/projects database (~ expands to home).">
+        <FormRow label={t('edgeClawConfig.runtime.fields.databasePath.label')} description={t('edgeClawConfig.runtime.fields.databasePath.description')}>
           <TextInput value={r.databasePath} placeholder="~/.edgeclaw/auth.db" monospace onChange={(v) => set('databasePath', v)} />
         </FormRow>
-        <FormRow label="Workspaces root" description="Directory under which projects are scanned.">
+        <FormRow label={t('edgeClawConfig.runtime.fields.workspacesRoot.label')} description={t('edgeClawConfig.runtime.fields.workspacesRoot.description')}>
           <TextInput value={r.workspacesRoot} placeholder="~" monospace onChange={(v) => set('workspacesRoot', v)} />
         </FormRow>
       </SettingsCard>
@@ -357,6 +361,7 @@ function RuntimeSection({ config, onChange }: { config: EdgeClawConfig; onChange
 }
 
 function ProvidersEditor({ config, onChange }: { config: EdgeClawConfig; onChange: (next: EdgeClawConfig) => void }) {
+  const { t } = useTranslation('settings');
   const providers = config.models?.providers ?? {};
   const ids = Object.keys(providers);
 
@@ -382,14 +387,14 @@ function ProvidersEditor({ config, onChange }: { config: EdgeClawConfig; onChang
     <SettingsCard className="space-y-3 p-4">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm font-semibold text-foreground">Providers</div>
-          <div className="text-xs text-muted-foreground">Upstream LLM endpoints. The provider id is referenced by model entries.</div>
+          <div className="text-sm font-semibold text-foreground">{t('edgeClawConfig.models.providers.title')}</div>
+          <div className="text-xs text-muted-foreground">{t('edgeClawConfig.models.providers.description')}</div>
         </div>
-        <Button variant="outline" size="sm" onClick={addProvider}>+ Add provider</Button>
+        <Button variant="outline" size="sm" onClick={addProvider}>{t('edgeClawConfig.models.providers.add')}</Button>
       </div>
       {ids.length === 0 && (
         <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
-          No providers configured.
+          {t('edgeClawConfig.models.providers.empty')}
         </div>
       )}
       {ids.map((id) => {
@@ -404,11 +409,13 @@ function ProvidersEditor({ config, onChange }: { config: EdgeClawConfig; onChang
                 onChange={(e) => renameProvider(id, e.target.value.trim())}
                 className="flex-1 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs text-foreground outline-none focus:ring-1 focus:ring-ring"
               />
-              <Button variant="ghost" size="sm" onClick={() => removeProvider(id)} className="text-destructive hover:text-destructive">Remove</Button>
+              <Button variant="ghost" size="sm" onClick={() => removeProvider(id)} className="text-destructive hover:text-destructive">
+                {t('edgeClawConfig.common.remove')}
+              </Button>
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <label className="text-xs text-muted-foreground">
-                <span className="mb-1 block">Type</span>
+                <span className="mb-1 block">{t('edgeClawConfig.models.providers.fields.type')}</span>
                 <Select
                   value={p.type ?? 'openai-chat'}
                   onChange={(v) => setProvider(id, { ...p, type: v })}
@@ -422,22 +429,22 @@ function ProvidersEditor({ config, onChange }: { config: EdgeClawConfig; onChang
                 />
               </label>
               <label className="text-xs text-muted-foreground">
-                <span className="mb-1 block">Base URL</span>
+                <span className="mb-1 block">{t('edgeClawConfig.models.providers.fields.baseUrl')}</span>
                 <TextInput value={p.baseUrl} placeholder="https://api.example.com" monospace onChange={(v) => setProvider(id, { ...p, baseUrl: v })} />
               </label>
             </div>
             <label className="block text-xs text-muted-foreground">
-              <span className="mb-1 block">API key</span>
+              <span className="mb-1 block">{t('edgeClawConfig.models.providers.fields.apiKey')}</span>
               <TextInput
                 type="password"
                 value={p.apiKey}
-                placeholder={isMaskedKey ? 'Existing key kept — type to replace' : 'sk-...'}
+                placeholder={isMaskedKey ? t('edgeClawConfig.common.maskedKeyPlaceholder') : 'sk-...'}
                 onChange={(v) => setProvider(id, { ...p, apiKey: v })}
               />
               {isMaskedKey && (
                 <span className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                   <Info className="h-3 w-3" />
-                  Key hidden; leave as-is to keep, retype to replace.
+                  {t('edgeClawConfig.common.maskedKeyHint')}
                 </span>
               )}
             </label>
@@ -449,6 +456,7 @@ function ProvidersEditor({ config, onChange }: { config: EdgeClawConfig; onChang
 }
 
 function EntriesEditor({ config, onChange }: { config: EdgeClawConfig; onChange: (next: EdgeClawConfig) => void }) {
+  const { t } = useTranslation('settings');
   const entries = config.models?.entries ?? {};
   const providerIds = Object.keys(config.models?.providers ?? {});
   const ids = Object.keys(entries);
@@ -477,19 +485,21 @@ function EntriesEditor({ config, onChange }: { config: EdgeClawConfig; onChange:
     <SettingsCard className="space-y-3 p-4">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm font-semibold text-foreground">Model entries</div>
-          <div className="text-xs text-muted-foreground">Named model bindings — agents reference these by id.</div>
+          <div className="text-sm font-semibold text-foreground">{t('edgeClawConfig.models.entries.title')}</div>
+          <div className="text-xs text-muted-foreground">{t('edgeClawConfig.models.entries.description')}</div>
         </div>
-        <Button variant="outline" size="sm" onClick={addEntry} disabled={providerIds.length === 0}>+ Add entry</Button>
+        <Button variant="outline" size="sm" onClick={addEntry} disabled={providerIds.length === 0}>
+          {t('edgeClawConfig.models.entries.add')}
+        </Button>
       </div>
       {providerIds.length === 0 && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          Add at least one provider before creating model entries.
+          {t('edgeClawConfig.models.entries.needProvider')}
         </div>
       )}
       {ids.length === 0 && providerIds.length > 0 && (
         <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
-          No entries yet.
+          {t('edgeClawConfig.models.entries.empty')}
         </div>
       )}
       {ids.map((id) => {
@@ -503,30 +513,32 @@ function EntriesEditor({ config, onChange }: { config: EdgeClawConfig; onChange:
                 onChange={(e) => renameEntry(id, e.target.value.trim())}
                 className="flex-1 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs text-foreground outline-none focus:ring-1 focus:ring-ring"
               />
-              <Button variant="ghost" size="sm" onClick={() => removeEntry(id)} className="text-destructive hover:text-destructive">Remove</Button>
+              <Button variant="ghost" size="sm" onClick={() => removeEntry(id)} className="text-destructive hover:text-destructive">
+                {t('edgeClawConfig.common.remove')}
+              </Button>
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <label className="text-xs text-muted-foreground">
-                <span className="mb-1 block">Provider</span>
+                <span className="mb-1 block">{t('edgeClawConfig.models.entries.fields.provider')}</span>
                 <Select
                   value={entry.provider}
                   onChange={(v) => setEntry(id, { ...entry, provider: v })}
                   options={[
-                    { value: '', label: '— pick provider —' },
+                    { value: '', label: t('edgeClawConfig.models.entries.pickProvider') },
                     ...providerIds.map((pid) => ({ value: pid, label: pid })),
                   ]}
                 />
               </label>
               <label className="text-xs text-muted-foreground">
-                <span className="mb-1 block">Model name</span>
+                <span className="mb-1 block">{t('edgeClawConfig.models.entries.fields.modelName')}</span>
                 <TextInput value={entry.name} placeholder="claude-sonnet-4-5" monospace onChange={(v) => setEntry(id, { ...entry, name: v })} />
               </label>
             </div>
             <label className="block text-xs text-muted-foreground">
-              <span className="mb-1 block">Context window (optional)</span>
+              <span className="mb-1 block">{t('edgeClawConfig.models.entries.fields.contextWindow')}</span>
               <NumberInput value={entry.contextWindow} placeholder="160000" onChange={(v) => setEntry(id, { ...entry, contextWindow: v })} />
               <span className="mt-1 block text-[11px] leading-snug text-muted-foreground/80">
-                Used for this model's token budget and auto-compaction threshold.
+                {t('edgeClawConfig.models.entries.contextHint')}
               </span>
             </label>
           </div>
@@ -537,8 +549,9 @@ function EntriesEditor({ config, onChange }: { config: EdgeClawConfig; onChange:
 }
 
 function ModelsSection({ config, onChange }: { config: EdgeClawConfig; onChange: (next: EdgeClawConfig) => void }) {
+  const { t } = useTranslation('settings');
   return (
-    <SettingsSection title="Models" description="Define upstream providers and the named model entries that agents bind to.">
+    <SettingsSection title={t('edgeClawConfig.models.title')} description={t('edgeClawConfig.models.description')}>
       <div className="space-y-4">
         <ProvidersEditor config={config} onChange={onChange} />
         <EntriesEditor  config={config} onChange={onChange} />
@@ -548,27 +561,28 @@ function ModelsSection({ config, onChange }: { config: EdgeClawConfig; onChange:
 }
 
 function AgentsSection({ config, onChange }: { config: EdgeClawConfig; onChange: (next: EdgeClawConfig) => void }) {
+  const { t } = useTranslation('settings');
   const entries = config.models?.entries ?? {};
   const entryIds = Object.keys(entries);
   const main = config.agents?.main ?? {};
   const subagents = config.agents?.subagents ?? {};
 
   const entryOptions = [
-    { value: '', label: '— pick model entry —' },
+    { value: '', label: t('edgeClawConfig.agents.pickModelEntry') },
     ...entryIds.map((id) => ({ value: id, label: id })),
   ];
   const subOptions = [
-    { value: 'inherit', label: 'inherit (use main agent\'s model)' },
+    { value: 'inherit', label: t('edgeClawConfig.agents.inheritMain') },
     ...entryIds.map((id) => ({ value: id, label: id })),
   ];
 
   return (
-    <SettingsSection title="Agents" description="Bind agent roles to named model entries.">
+    <SettingsSection title={t('edgeClawConfig.agents.title')} description={t('edgeClawConfig.agents.description')}>
       <SettingsCard divided>
-        <FormRow label="Main agent model" description="Used by the primary chat agent.">
+        <FormRow label={t('edgeClawConfig.agents.fields.mainModel.label')} description={t('edgeClawConfig.agents.fields.mainModel.description')}>
           <Select value={main.model} options={entryOptions} onChange={(v) => onChange(patch(config, ['agents', 'main', 'model'], v))} />
         </FormRow>
-        <FormRow label="Subagents default" description="Used by tool-spawned subagents (e.g. tasks).">
+        <FormRow label={t('edgeClawConfig.agents.fields.subagentsDefault.label')} description={t('edgeClawConfig.agents.fields.subagentsDefault.description')}>
           <Select value={subagents.default} options={subOptions} onChange={(v) => onChange(patch(config, ['agents', 'subagents', 'default'], v))} />
         </FormRow>
       </SettingsCard>
@@ -585,6 +599,7 @@ function AlwaysOnSection({
   projects: SettingsProject[];
   onChange: (next: EdgeClawConfig) => void;
 }) {
+  const { t } = useTranslation('settings');
   const trigger = config.alwaysOn?.discovery?.trigger ?? {};
   const projectRows = projects
     .map(project => ({ project, root: getAlwaysOnProjectRoot(project) }))
@@ -592,36 +607,36 @@ function AlwaysOnSection({
 
   return (
     <SettingsSection
-      title="Always-On"
-      description="Configure automatic discovery globally and opt individual workspaces in."
+      title={t('edgeClawConfig.alwaysOn.title')}
+      description={t('edgeClawConfig.alwaysOn.description')}
     >
       <div className="space-y-4">
         <SettingsCard divided>
           <SettingsRow
-            label="Auto discovery"
-            description="When enabled, Always-On can periodically inspect opted-in workspaces and propose follow-up plans."
+            label={t('edgeClawConfig.alwaysOn.fields.autoDiscovery.label')}
+            description={t('edgeClawConfig.alwaysOn.fields.autoDiscovery.description')}
           >
             <SettingsToggle
               checked={trigger.enabled === true}
-              ariaLabel="Toggle automatic discovery"
+              ariaLabel={t('edgeClawConfig.alwaysOn.fields.autoDiscovery.ariaLabel')}
               onChange={(value) => onChange(patch(config, ['alwaysOn', 'discovery', 'trigger', 'enabled'], value))}
             />
           </SettingsRow>
-          <FormRow label="Tick interval (minutes)" description="How often the daemon checks opted-in workspaces.">
+          <FormRow label={t('edgeClawConfig.alwaysOn.fields.tickInterval.label')} description={t('edgeClawConfig.alwaysOn.fields.tickInterval.description')}>
             <NumberInput
               value={trigger.tickIntervalMinutes}
               placeholder="5"
               onChange={(value) => onChange(patch(config, ['alwaysOn', 'discovery', 'trigger', 'tickIntervalMinutes'], value))}
             />
           </FormRow>
-          <FormRow label="Cooldown (minutes)" description="Minimum time between discovery runs per workspace.">
+          <FormRow label={t('edgeClawConfig.alwaysOn.fields.cooldown.label')} description={t('edgeClawConfig.alwaysOn.fields.cooldown.description')}>
             <NumberInput
               value={trigger.cooldownMinutes}
               placeholder="60"
               onChange={(value) => onChange(patch(config, ['alwaysOn', 'discovery', 'trigger', 'cooldownMinutes'], value))}
             />
           </FormRow>
-          <FormRow label="Daily budget" description="Maximum automatic discovery runs per workspace per day.">
+          <FormRow label={t('edgeClawConfig.alwaysOn.fields.dailyBudget.label')} description={t('edgeClawConfig.alwaysOn.fields.dailyBudget.description')}>
             <NumberInput
               value={trigger.dailyBudget}
               placeholder="4"
@@ -631,13 +646,13 @@ function AlwaysOnSection({
         </SettingsCard>
 
         <SettingsSection
-          title="Workspace opt-in"
-          description="Only enabled workspaces receive Always-On heartbeats and scheduled discovery checks."
+          title={t('edgeClawConfig.alwaysOn.workspace.title')}
+          description={t('edgeClawConfig.alwaysOn.workspace.description')}
         >
           <SettingsCard divided>
             {projectRows.length === 0 ? (
               <div className="px-4 py-6 text-sm text-muted-foreground">
-                No recognized projects yet. Add or open a workspace first.
+                {t('edgeClawConfig.alwaysOn.workspace.empty')}
               </div>
             ) : (
               projectRows.map(({ project, root }) => (
@@ -648,7 +663,7 @@ function AlwaysOnSection({
                 >
                   <SettingsToggle
                     checked={isAlwaysOnProjectEnabled(config, project)}
-                    ariaLabel={`Toggle Always-On discovery for ${project.displayName || project.name}`}
+                    ariaLabel={t('edgeClawConfig.alwaysOn.workspace.toggleAria', { project: project.displayName || project.name })}
                     onChange={(enabled) => onChange(setAlwaysOnProjectEnabled(config, project, enabled))}
                   />
                 </SettingsRow>
@@ -662,24 +677,25 @@ function AlwaysOnSection({
 }
 
 function MemorySection({ config, onChange }: { config: EdgeClawConfig; onChange: (next: EdgeClawConfig) => void }) {
+  const { t } = useTranslation('settings');
   const m = config.memory ?? {};
   const entryIds = Object.keys(config.models?.entries ?? {});
   const options = [
-    { value: 'inherit', label: 'inherit (use main agent\'s model)' },
+    { value: 'inherit', label: t('edgeClawConfig.agents.inheritMain') },
     ...entryIds.map((id) => ({ value: id, label: id })),
   ];
   return (
-    <SettingsSection title="Memory" description="9GClaw memory service — embeddings & summarisation pipelines.">
+    <SettingsSection title={t('edgeClawConfig.memory.title')} description={t('edgeClawConfig.memory.description')}>
       <SettingsCard>
-        <SettingsRow label="Enabled" description="Toggles the memory service. Disabled by default.">
+        <SettingsRow label={t('edgeClawConfig.common.enabled')} description={t('edgeClawConfig.memory.enabledDescription')}>
           <SettingsToggle
             checked={Boolean(m.enabled)}
-            ariaLabel="Toggle memory service"
+            ariaLabel={t('edgeClawConfig.memory.toggleAria')}
             onChange={(v) => onChange(patch(config, ['memory', 'enabled'], v))}
           />
         </SettingsRow>
         {m.enabled && (
-          <FormRow label="Memory model" description="Model used by the memory pipeline.">
+          <FormRow label={t('edgeClawConfig.memory.model.label')} description={t('edgeClawConfig.memory.model.description')}>
             <Select value={m.model ?? 'inherit'} options={options} onChange={(v) => onChange(patch(config, ['memory', 'model'], v))} />
           </FormRow>
         )}
@@ -696,8 +712,8 @@ function RagEndpointCard({
   config,
   endpointKey,
   baseUrlPlaceholder,
-  urlLabel = 'Base URL',
-  urlDescription = 'Service root; scripts call POST /search under this URL.',
+  urlLabel,
+  urlDescription,
   keyPlaceholder,
   showDefaultTopK = true,
   onChange,
@@ -707,12 +723,13 @@ function RagEndpointCard({
   config: EdgeClawConfig;
   endpointKey: RagEndpointKey;
   baseUrlPlaceholder: string;
-  urlLabel?: string;
-  urlDescription?: string;
+  urlLabel: string;
+  urlDescription: string;
   keyPlaceholder: string;
   showDefaultTopK?: boolean;
   onChange: (next: EdgeClawConfig) => void;
 }) {
+  const { t } = useTranslation('settings');
   const endpoint = config.rag?.[endpointKey] ?? {};
   const localKnowledge =
     endpointKey === 'localKnowledge'
@@ -738,18 +755,18 @@ function RagEndpointCard({
           onChange={(v) => set('baseUrl', v)}
         />
       </FormRow>
-      <FormRow label="API key" description="Stored in config.yaml and exported to the RAG scripts at runtime.">
+      <FormRow label={t('edgeClawConfig.rag.endpoint.apiKey.label')} description={t('edgeClawConfig.rag.endpoint.apiKey.description')}>
         <div>
           <TextInput
             type="password"
             value={endpoint.apiKey}
-            placeholder={isMaskedKey ? 'Existing key kept - type to replace' : keyPlaceholder}
+            placeholder={isMaskedKey ? t('edgeClawConfig.common.maskedKeyPlaceholder') : keyPlaceholder}
             onChange={(v) => set('apiKey', v)}
           />
           {isMaskedKey && (
             <span className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
               <Info className="h-3 w-3" />
-              Key hidden; leave as-is to keep, retype to replace.
+              {t('edgeClawConfig.common.maskedKeyHint')}
             </span>
           )}
         </div>
@@ -757,8 +774,8 @@ function RagEndpointCard({
       {localKnowledge && (
         <>
           <FormRow
-            label="Model name"
-            description="Retriever model name passed to the local knowledge service."
+            label={t('edgeClawConfig.rag.endpoint.modelName.label')}
+            description={t('edgeClawConfig.rag.endpoint.modelName.description')}
           >
             <TextInput
               value={localKnowledge.modelName}
@@ -768,8 +785,8 @@ function RagEndpointCard({
             />
           </FormRow>
           <FormRow
-            label="Search URL"
-            description="Local knowledge search endpoint. Scripts POST text/top_k directly to this URL."
+            label={t('edgeClawConfig.rag.endpoint.searchUrl.label')}
+            description={t('edgeClawConfig.rag.endpoint.searchUrl.description')}
           >
             <TextInput
               value={localKnowledge.databaseUrl}
@@ -781,7 +798,7 @@ function RagEndpointCard({
         </>
       )}
       {showDefaultTopK && (
-        <FormRow label="Default top K" description="Used when a skill does not pass --top-k explicitly.">
+        <FormRow label={t('edgeClawConfig.rag.endpoint.defaultTopK.label')} description={t('edgeClawConfig.rag.endpoint.defaultTopK.description')}>
           <NumberInput
             value={endpoint.defaultTopK}
             placeholder="8"
@@ -794,21 +811,22 @@ function RagEndpointCard({
 }
 
 function RagSection({ config, onChange }: { config: EdgeClawConfig; onChange: (next: EdgeClawConfig) => void }) {
+  const { t } = useTranslation('settings');
   const rag = config.rag ?? {};
   return (
     <SettingsSection
       title="RAG"
-      description="Local retriever and GLM web search APIs used by the bundled 9GClaw RAG skills."
+      description={t('edgeClawConfig.rag.description')}
     >
       <div className="space-y-4">
         <SettingsCard>
           <SettingsRow
-            label="Enabled"
-            description="When on, 9GClaw exports EDGECLAW_RAG_* env vars so RAG skills can call these APIs."
+            label={t('edgeClawConfig.common.enabled')}
+            description={t('edgeClawConfig.rag.enabledDescription')}
           >
             <SettingsToggle
               checked={Boolean(rag.enabled)}
-              ariaLabel="Toggle RAG"
+              ariaLabel={t('edgeClawConfig.rag.toggleAria')}
               onChange={(v) => onChange(patch(config, ['rag', 'enabled'], v))}
             />
           </SettingsRow>
@@ -816,38 +834,38 @@ function RagSection({ config, onChange }: { config: EdgeClawConfig; onChange: (n
 
         <SettingsCard>
           <SettingsRow
-            label="Disable built-in web tools"
-            description="When RAG is enabled, hide WebFetch/WebSearch from model-visible tools so web search goes through 9GClaw RAG skills."
+            label={t('edgeClawConfig.rag.disableBuiltIn.label')}
+            description={t('edgeClawConfig.rag.disableBuiltIn.description')}
           >
             <SettingsToggle
               checked={rag.disableBuiltInWebTools !== false}
-              ariaLabel="Disable built-in web tools"
+              ariaLabel={t('edgeClawConfig.rag.disableBuiltIn.ariaLabel')}
               onChange={(v) => onChange(patch(config, ['rag', 'disableBuiltInWebTools'], v))}
             />
           </SettingsRow>
         </SettingsCard>
 
         <RagEndpointCard
-          title="Local knowledge / Retriever"
-          description="Private or curated knowledge base retrieval endpoint, including Milvus-backed services."
+          title={t('edgeClawConfig.rag.localKnowledge.title')}
+          description={t('edgeClawConfig.rag.localKnowledge.description')}
           config={config}
           endpointKey="localKnowledge"
           baseUrlPlaceholder="http://127.0.0.1:52005/v1"
-          urlLabel="Embedding / Model URL"
-          urlDescription="Embedding or model service URL used by the retriever stack. If Search URL is empty, scripts fall back to POST /search under this URL."
+          urlLabel={t('edgeClawConfig.rag.localKnowledge.urlLabel')}
+          urlDescription={t('edgeClawConfig.rag.localKnowledge.urlDescription')}
           keyPlaceholder="retriever-api-key"
           showDefaultTopK={false}
           onChange={onChange}
         />
 
         <RagEndpointCard
-          title="Z.AI / GLM Web Search"
-          description="Public web search endpoint used for current information and URL-backed citations."
+          title={t('edgeClawConfig.rag.glmWebSearch.title')}
+          description={t('edgeClawConfig.rag.glmWebSearch.description')}
           config={config}
           endpointKey="glmWebSearch"
           baseUrlPlaceholder="https://api.z.ai/api/paas/v4/web_search"
-          urlLabel="Endpoint URL"
-          urlDescription="Direct POST endpoint. Z.AI uses /api/paas/v4/web_search; root URLs still fall back to POST /search."
+          urlLabel={t('edgeClawConfig.rag.glmWebSearch.urlLabel')}
+          urlDescription={t('edgeClawConfig.rag.glmWebSearch.urlDescription')}
           keyPlaceholder="glm-web-search-api-key"
           onChange={onChange}
         />
@@ -857,17 +875,18 @@ function RagSection({ config, onChange }: { config: EdgeClawConfig; onChange: (n
 }
 
 function RouterSection({ config, onChange }: { config: EdgeClawConfig; onChange: (next: EdgeClawConfig) => void }) {
+  const { t } = useTranslation('settings');
   const r = config.router ?? {};
   return (
-    <SettingsSection title="Router" description="Embedded Claude Code Router (CCR) for fan-out across providers.">
+    <SettingsSection title={t('edgeClawConfig.router.title')} description={t('edgeClawConfig.router.description')}>
       <SettingsCard>
         <SettingsRow
-          label="Enabled"
-          description="When on, agents use the router instead of the configured provider directly. Detailed routes still live in the YAML — toggle this and use the Raw YAML tab to fine-tune."
+          label={t('edgeClawConfig.common.enabled')}
+          description={t('edgeClawConfig.router.enabledDescription')}
         >
           <SettingsToggle
             checked={Boolean(r.enabled)}
-            ariaLabel="Toggle router"
+            ariaLabel={t('edgeClawConfig.router.toggleAria')}
             onChange={(v) => onChange(patch(config, ['router', 'enabled'], v))}
           />
         </SettingsRow>
@@ -877,19 +896,20 @@ function RouterSection({ config, onChange }: { config: EdgeClawConfig; onChange:
 }
 
 function GatewaySection({ config, onChange }: { config: EdgeClawConfig; onChange: (next: EdgeClawConfig) => void }) {
+  const { t } = useTranslation('settings');
   const g = config.gateway ?? {};
   return (
-    <SettingsSection title="Gateway" description="Messaging gateway (Feishu / Telegram / Discord / Slack) — channel-level secrets are best edited via Raw YAML.">
+    <SettingsSection title={t('edgeClawConfig.gateway.title')} description={t('edgeClawConfig.gateway.description')}>
       <SettingsCard divided>
-        <SettingsRow label="Enabled" description="When on, the gateway home is generated and channels with credentials come online.">
+        <SettingsRow label={t('edgeClawConfig.common.enabled')} description={t('edgeClawConfig.gateway.enabledDescription')}>
           <SettingsToggle
             checked={Boolean(g.enabled)}
-            ariaLabel="Toggle gateway"
+            ariaLabel={t('edgeClawConfig.gateway.toggleAria')}
             onChange={(v) => onChange(patch(config, ['gateway', 'enabled'], v))}
           />
         </SettingsRow>
         {g.enabled && (
-          <FormRow label="Gateway home" description="Working directory for gateway state and per-channel configs.">
+          <FormRow label={t('edgeClawConfig.gateway.home.label')} description={t('edgeClawConfig.gateway.home.description')}>
             <TextInput value={g.home} placeholder="~/.edgeclaw/gateway" monospace onChange={(v) => onChange(patch(config, ['gateway', 'home'], v))} />
           </FormRow>
         )}
@@ -912,6 +932,7 @@ function RawYamlView({
   externalChangeNotice: string | null;
   dismissExternalNotice: () => void;
 }) {
+  const { t } = useTranslation('settings');
   return (
     <div className="space-y-4">
       {externalChangeNotice && (
@@ -922,7 +943,7 @@ function RawYamlView({
             onClick={dismissExternalNotice}
             className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide hover:bg-amber-500/20"
           >
-            Dismiss
+            {t('edgeClawConfig.common.dismiss')}
           </button>
         </div>
       )}
@@ -939,19 +960,19 @@ function RawYamlView({
         {validation?.valid ? (
           <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
             <CheckCircle2 className="h-3.5 w-3.5" />
-            Config is valid {isDirty && <span className="text-muted-foreground">(unsaved)</span>}
+            {t('edgeClawConfig.validation.valid')} {isDirty && <span className="text-muted-foreground">{t('edgeClawConfig.validation.unsavedSuffix')}</span>}
           </div>
         ) : (
           <div className="flex items-center gap-2 text-xs text-destructive">
             <AlertCircle className="h-3.5 w-3.5" />
-            Config has validation errors
+            {t('edgeClawConfig.validation.invalid')}
           </div>
         )}
       </div>
 
       {validation && validation.errors.length > 0 && (
         <div className="text-destructive">
-          <div className="mb-1 text-xs font-semibold">Errors</div>
+          <div className="mb-1 text-xs font-semibold">{t('edgeClawConfig.validation.errors')}</div>
           <ul className="list-disc space-y-1 pl-4 text-xs">
             {validation.errors.map((item) => <li key={item}>{item}</li>)}
           </ul>
@@ -959,7 +980,7 @@ function RawYamlView({
       )}
       {validation && validation.warnings.length > 0 && (
         <div className="text-amber-600 dark:text-amber-400">
-          <div className="mb-1 text-xs font-semibold">Warnings</div>
+          <div className="mb-1 text-xs font-semibold">{t('edgeClawConfig.validation.warnings')}</div>
           <ul className="list-disc space-y-1 pl-4 text-xs">
             {validation.warnings.map((item) => <li key={item}>{item}</li>)}
           </ul>
@@ -1110,13 +1131,13 @@ export default function EdgeClawConfigTab({ projects = [] }: { projects?: Settin
               onClick={dismissExternalNotice}
               className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide hover:bg-amber-500/20"
             >
-              Dismiss
+              {t('edgeClawConfig.common.dismiss')}
             </button>
           </div>
         )}
         {parseError && view === 'form' && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-            YAML on disk failed to parse — switch to Raw YAML to fix it.
+            {t('edgeClawConfig.parse.failed')}
           </div>
         )}
       </SettingsCard>
@@ -1159,7 +1180,9 @@ export default function EdgeClawConfigTab({ projects = [] }: { projects?: Settin
               </>
             ) : (
               <SettingsCard className="p-6 text-sm text-muted-foreground">
-                Could not parse the YAML on disk. Switch to <strong className="font-medium text-foreground">Raw YAML</strong> to inspect and fix it.
+                {t('edgeClawConfig.parse.cardPrefix')}{' '}
+                <strong className="font-medium text-foreground">{t('edgeClawConfig.viewMode.rawYaml')}</strong>
+                {t('edgeClawConfig.parse.cardSuffix')}
               </SettingsCard>
             )}
 
@@ -1171,12 +1194,12 @@ export default function EdgeClawConfigTab({ projects = [] }: { projects?: Settin
               {validation?.valid ? (
                 <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
                   <CheckCircle2 className="h-3.5 w-3.5" />
-                  Config is valid {isDirty && <span className="text-muted-foreground">(unsaved)</span>}
+                  {t('edgeClawConfig.validation.valid')} {isDirty && <span className="text-muted-foreground">{t('edgeClawConfig.validation.unsavedSuffix')}</span>}
                 </div>
               ) : (
                 <div className="flex items-center gap-2 text-xs text-destructive">
                   <AlertCircle className="h-3.5 w-3.5" />
-                  Config has validation errors — see below
+                  {t('edgeClawConfig.validation.invalidSeeBelow')}
                 </div>
               )}
               {validation && validation.errors.length > 0 && (
@@ -1210,10 +1233,13 @@ export default function EdgeClawConfigTab({ projects = [] }: { projects?: Settin
       {/* Subsystem reload card — same in both modes, stays at the bottom so
           users always see the impact of their last save. */}
       <SettingsSection
-        title="Subsystem reload status"
+        title={t('edgeClawConfig.reload.title')}
         description={lastReloadInfo
-          ? `Last reload: ${sourceLabel(lastReloadInfo.source)} at ${new Date(lastReloadInfo.at).toLocaleTimeString()}`
-          : 'Reload status will appear after the first save or external edit.'}
+          ? t('edgeClawConfig.reload.last', {
+              source: sourceLabel(lastReloadInfo.source, t),
+              time: new Date(lastReloadInfo.at).toLocaleTimeString(),
+            })
+          : t('edgeClawConfig.reload.placeholder')}
       >
         <SettingsCard className="p-4">
           <ReloadSummary reload={reload} />
@@ -1226,11 +1252,11 @@ export default function EdgeClawConfigTab({ projects = [] }: { projects?: Settin
       <div className="sticky bottom-0 flex items-center justify-end gap-2 rounded-xl border border-border bg-card/90 p-3 backdrop-blur">
         <Button variant="outline" size="sm" onClick={reloadConfig} disabled={saving}>
           <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-          Reload current
+          {t('edgeClawConfig.actions.reloadCurrent')}
         </Button>
         <Button size="sm" onClick={save} disabled={saving || !isDirty}>
           <Save className="mr-1.5 h-3.5 w-3.5" />
-          {saving ? 'Saving...' : 'Save & reload'}
+          {saving ? t('edgeClawConfig.actions.saving') : t('edgeClawConfig.actions.saveReload')}
         </Button>
       </div>
     </div>

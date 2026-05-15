@@ -5,6 +5,46 @@ import { parseRagToolResult } from '../utils/ragToolResult';
  * Defines display behavior for all tool types 
  */
 
+function normalizeMarkdownText(text: string): string {
+  return text.replace(/\\n/g, '\n').trim();
+}
+
+function extractMarkdownText(value: unknown): string {
+  if (typeof value === 'string') {
+    return normalizeMarkdownText(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => extractMarkdownText(item))
+      .filter(Boolean)
+      .join('\n\n');
+  }
+
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const key of ['plan', 'planContent', 'content', 'markdown', 'text', 'body']) {
+    const content = extractMarkdownText(record[key]);
+    if (content) return content;
+  }
+
+  return '';
+}
+
+function parseMaybeJson(value: any): any {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
 export interface ToolDisplayConfig {
   input: {
     type: 'one-line' | 'collapsible' | 'hidden';
@@ -607,25 +647,15 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
       defaultOpen: true,
       contentType: 'markdown',
       getContentProps: (input) => ({
-        content: input.plan?.replace(/\\n/g, '\n') || input.plan
+        content: extractMarkdownText(input)
       })
     },
     result: {
       type: 'collapsible',
       contentType: 'markdown',
       getContentProps: (result) => {
-        try {
-          let parsed = result.content;
-          if (typeof parsed === 'string') {
-            parsed = JSON.parse(parsed);
-          }
-          return {
-            content: parsed.plan?.replace(/\\n/g, '\n') || parsed.plan
-          };
-        } catch (e) {
-          console.warn('Failed to parse plan content:', e);
-          return { content: '' };
-        }
+        const parsed = parseMaybeJson(result.content);
+        return { content: extractMarkdownText(parsed) };
       }
     }
   },
@@ -638,25 +668,15 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
       defaultOpen: true,
       contentType: 'markdown',
       getContentProps: (input) => ({
-        content: input.plan?.replace(/\\n/g, '\n') || input.plan
+        content: extractMarkdownText(input)
       })
     },
     result: {
       type: 'collapsible',
       contentType: 'markdown',
       getContentProps: (result) => {
-        try {
-          let parsed = result.content;
-          if (typeof parsed === 'string') {
-            parsed = JSON.parse(parsed);
-          }
-          return {
-            content: parsed.plan?.replace(/\\n/g, '\n') || parsed.plan
-          };
-        } catch (e) {
-          console.warn('Failed to parse plan content:', e);
-          return { content: '' };
-        }
+        const parsed = parseMaybeJson(result.content);
+        return { content: extractMarkdownText(parsed) };
       }
     }
   },

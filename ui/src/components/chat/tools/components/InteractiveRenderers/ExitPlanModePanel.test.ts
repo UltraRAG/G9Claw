@@ -14,6 +14,16 @@ describe('extractPlanMarkdown', () => {
     );
   });
 
+  it('does not render ExitPlanModeV2 permission hints as the plan body', () => {
+    expect(extractPlanMarkdown({
+      allowedPrompts: [{ tool: 'Bash', prompt: 'Create files' }],
+    })).toBe('计划正文正在同步，请确认是否执行。');
+  });
+
+  it('does not render an empty ExitPlanModeV2 input as raw JSON', () => {
+    expect(extractPlanMarkdown({})).toBe('计划正文正在同步，请确认是否执行。');
+  });
+
   it('stringifies unknown inputs for debugging instead of returning empty content', () => {
     expect(extractPlanMarkdown({ requestId: 'plan-1' })).toContain('"requestId": "plan-1"');
   });

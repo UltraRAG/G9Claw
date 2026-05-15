@@ -1,4 +1,11 @@
 {
+  "compact": {
+    "title": "Tasks",
+    "summary": "{{count}} tasks · {{inProgress}} in progress",
+    "refresh": "Refresh",
+    "loading": "Loading…",
+    "empty": "No tasks yet. Initialize Task Master from the legacy tasks panel to get started."
+  },
   "notConfigured": {
     "title": "TaskMaster AI is not configured",
     "description": "TaskMaster helps break down complex projects into manageable tasks with AI-powered assistance",
@@ -123,9 +130,10 @@
     "modified": "Modified: {{date}}"
   },
   "statuses": {
-    "pending": "Pending",
+    "pending": "Not started",
     "in-progress": "In Progress",
     "done": "Done",
+    "review": "In review",
     "blocked": "Blocked",
     "deferred": "Deferred",
     "cancelled": "Cancelled"

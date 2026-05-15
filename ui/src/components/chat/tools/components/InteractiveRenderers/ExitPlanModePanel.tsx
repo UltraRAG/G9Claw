@@ -38,7 +38,19 @@ export function extractPlanMarkdown(input: unknown): string {
   if (plan) return plan;
 
   if (input === undefined || input === null) {
-    return 'Plan is ready for approval.';
+    return '计划正文正在同步，请确认是否执行。';
+  }
+
+  if (typeof input === 'object' && !Array.isArray(input)) {
+    const record = input as Record<string, unknown>;
+    const keys = Object.keys(record);
+    const onlyPermissionHints = keys.length === 0 || keys.every((key) => (
+      key === 'allowedPrompts' ||
+      key === 'planFilePath'
+    ));
+    if (onlyPermissionHints) {
+      return '计划正文正在同步，请确认是否执行。';
+    }
   }
 
   try {

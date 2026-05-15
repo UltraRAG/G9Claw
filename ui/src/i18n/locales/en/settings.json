@@ -468,7 +468,10 @@
     "actions": {
       "opening": "Opening...",
       "revealFile": "Reveal File",
-      "refresh": "Refresh"
+      "refresh": "Refresh",
+      "reloadCurrent": "Reload current",
+      "saving": "Saving...",
+      "saveReload": "Save & reload"
     },
     "sections": {
       "runtime": {
@@ -503,6 +506,236 @@
         "label": "Gateway",
         "description": "Messaging gateway home + channels"
       }
+    },
+    "common": {
+      "dismiss": "Dismiss",
+      "enabled": "Enabled",
+      "remove": "Remove",
+      "maskedKeyPlaceholder": "Existing key kept — type to replace",
+      "maskedKeyHint": "Key hidden; leave as-is to keep, retype to replace."
+    },
+    "reload": {
+      "title": "Subsystem reload status",
+      "empty": "No reload has run yet.",
+      "reloaded": "Reloaded",
+      "noData": "No data",
+      "last": "Last reload: {{source}} at {{time}}",
+      "placeholder": "Reload status will appear after the first save or external edit.",
+      "sources": {
+        "uiSave": "UI save",
+        "uiReload": "UI reload",
+        "watcher": "External file edit",
+        "refresh": "Manual refresh"
+      },
+      "subsystems": {
+        "processEnv": "Process Env",
+        "memory": "Memory",
+        "router": "Router (CCR)",
+        "gateway": "Gateway",
+        "proxy": "Proxy"
+      }
+    },
+    "runtime": {
+      "title": "Runtime",
+      "description": "Ports the server binds to and request timeouts.",
+      "fields": {
+        "host": {
+          "label": "Host",
+          "description": "Bind interface for the HTTP/WebSocket server."
+        },
+        "serverPort": {
+          "label": "Server port",
+          "description": "Express + WebSocket port."
+        },
+        "vitePort": {
+          "label": "Vite port",
+          "description": "Frontend dev server (only used when running npm run dev)."
+        },
+        "proxyPort": {
+          "label": "Proxy port",
+          "description": "Local LLM proxy (Claude Agent SDK target)."
+        },
+        "contextWindow": {
+          "label": "Context window",
+          "description": "Fallback token budget when a model entry does not set one."
+        },
+        "apiTimeoutMs": {
+          "label": "API timeout (ms)",
+          "description": "Per-request upstream timeout."
+        },
+        "databasePath": {
+          "label": "Database path",
+          "description": "SQLite auth/projects database (~ expands to home)."
+        },
+        "workspacesRoot": {
+          "label": "Workspaces root",
+          "description": "Directory under which projects are scanned."
+        }
+      }
+    },
+    "models": {
+      "title": "Models",
+      "description": "Define upstream providers and the named model entries that agents bind to.",
+      "providers": {
+        "title": "Providers",
+        "description": "Upstream LLM endpoints. The provider id is referenced by model entries.",
+        "add": "+ Add provider",
+        "empty": "No providers configured.",
+        "fields": {
+          "type": "Type",
+          "baseUrl": "Base URL",
+          "apiKey": "API key"
+        }
+      },
+      "entries": {
+        "title": "Model entries",
+        "description": "Named model bindings — agents reference these by id.",
+        "add": "+ Add entry",
+        "needProvider": "Add at least one provider before creating model entries.",
+        "empty": "No entries yet.",
+        "pickProvider": "— pick provider —",
+        "contextHint": "Used for this model's token budget and auto-compaction threshold.",
+        "fields": {
+          "provider": "Provider",
+          "modelName": "Model name",
+          "contextWindow": "Context window (optional)"
+        }
+      }
+    },
+    "agents": {
+      "title": "Agents",
+      "description": "Bind agent roles to named model entries.",
+      "pickModelEntry": "— pick model entry —",
+      "inheritMain": "inherit (use main agent's model)",
+      "fields": {
+        "mainModel": {
+          "label": "Main agent model",
+          "description": "Used by the primary chat agent."
+        },
+        "subagentsDefault": {
+          "label": "Subagents default",
+          "description": "Used by tool-spawned subagents (e.g. tasks)."
+        }
+      }
+    },
+    "alwaysOn": {
+      "title": "Always-On",
+      "description": "Configure automatic discovery globally and opt individual workspaces in.",
+      "fields": {
+        "autoDiscovery": {
+          "label": "Auto discovery",
+          "description": "When enabled, Always-On can periodically inspect opted-in workspaces and propose follow-up plans.",
+          "ariaLabel": "Toggle automatic discovery"
+        },
+        "tickInterval": {
+          "label": "Tick interval (minutes)",
+          "description": "How often the daemon checks opted-in workspaces."
+        },
+        "cooldown": {
+          "label": "Cooldown (minutes)",
+          "description": "Minimum time between discovery runs per workspace."
+        },
+        "dailyBudget": {
+          "label": "Daily budget",
+          "description": "Maximum automatic discovery runs per workspace per day."
+        }
+      },
+      "workspace": {
+        "title": "Workspace opt-in",
+        "description": "Only enabled workspaces receive Always-On heartbeats and scheduled discovery checks.",
+        "empty": "No recognized projects yet. Add or open a workspace first.",
+        "toggleAria": "Toggle Always-On discovery for {{project}}"
+      }
+    },
+    "memory": {
+      "title": "Memory",
+      "description": "9GClaw memory service — embeddings & summarisation pipelines.",
+      "enabledDescription": "Toggles the memory service. Disabled by default.",
+      "toggleAria": "Toggle memory service",
+      "model": {
+        "label": "Memory model",
+        "description": "Model used by the memory pipeline."
+      }
+    },
+    "rag": {
+      "description": "Local retriever and GLM web search APIs used by the bundled 9GClaw RAG skills.",
+      "enabledDescription": "When on, 9GClaw exports EDGECLAW_RAG_* env vars so RAG skills can call these APIs.",
+      "toggleAria": "Toggle RAG",
+      "disableBuiltIn": {
+        "label": "Disable built-in web tools",
+        "description": "When RAG is enabled, hide WebFetch/WebSearch from model-visible tools so web search goes through 9GClaw RAG skills.",
+        "ariaLabel": "Disable built-in web tools"
+      },
+      "localKnowledge": {
+        "title": "Local knowledge / Retriever",
+        "description": "Private or curated knowledge base retrieval endpoint, including Milvus-backed services.",
+        "urlLabel": "Embedding / Model URL",
+        "urlDescription": "Embedding or model service URL used by the retriever stack. If Search URL is empty, scripts fall back to POST /search under this URL."
+      },
+      "glmWebSearch": {
+        "title": "Z.AI / GLM Web Search",
+        "description": "Public web search endpoint used for current information and URL-backed citations.",
+        "urlLabel": "Endpoint URL",
+        "urlDescription": "Direct POST endpoint. Z.AI uses /api/paas/v4/web_search; root URLs still fall back to POST /search."
+      },
+      "endpoint": {
+        "apiKey": {
+          "label": "API key",
+          "description": "Stored in config.yaml and exported to the RAG scripts at runtime."
+        },
+        "modelName": {
+          "label": "Model name",
+          "description": "Retriever model name passed to the local knowledge service."
+        },
+        "searchUrl": {
+          "label": "Search URL",
+          "description": "Local knowledge search endpoint. Scripts POST text/top_k directly to this URL."
+        },
+        "defaultTopK": {
+          "label": "Default top K",
+          "description": "Used when a skill does not pass --top-k explicitly."
+        }
+      }
+    },
+    "router": {
+      "title": "Router",
+      "description": "Embedded Claude Code Router (CCR) for fan-out across providers.",
+      "enabledDescription": "When on, agents use the router instead of the configured provider directly. Detailed routes still live in the YAML — toggle this and use the Raw YAML tab to fine-tune.",
+      "toggleAria": "Toggle router"
+    },
+    "gateway": {
+      "title": "Gateway",
+      "description": "Messaging gateway (Feishu / Telegram / Discord / Slack) — channel-level secrets are best edited via Raw YAML.",
+      "enabledDescription": "When on, the gateway home is generated and channels with credentials come online.",
+      "toggleAria": "Toggle gateway",
+      "home": {
+        "label": "Gateway home",
+        "description": "Working directory for gateway state and per-channel configs."
+      }
+    },
+    "validation": {
+      "valid": "Config is valid",
+      "unsavedSuffix": "(unsaved)",
+      "invalid": "Config has validation errors",
+      "invalidSeeBelow": "Config has validation errors — see below",
+      "errors": "Errors",
+      "warnings": "Warnings"
+    },
+    "parse": {
+      "failed": "YAML on disk failed to parse — switch to Raw YAML to fix it.",
+      "cardPrefix": "Could not parse the YAML on disk. Switch to",
+      "cardSuffix": "to inspect and fix it."
+    },
+    "messages": {
+      "externalChangedDirty": "Config was changed on disk by an external edit. Your unsaved draft is kept — click Refresh to discard and load the new version.",
+      "externalUpdated": "Config was updated on disk — the new version is now loaded.",
+      "savedReloaded": "Saved and reloaded",
+      "reloadedCurrent": "Reloaded current config",
+      "configFile": "Config file: {{path}}",
+      "failedLoad": "Failed to load config",
+      "failedSave": "Failed to save config",
+      "failedReload": "Failed to reload config",
+      "failedOpen": "Failed to open config file"
     }
   },
   "pluginSettings": {

@@ -468,7 +468,10 @@
     "actions": {
       "opening": "正在打开…",
       "revealFile": "显示文件",
-      "refresh": "刷新"
+      "refresh": "刷新",
+      "reloadCurrent": "重载当前配置",
+      "saving": "保存中…",
+      "saveReload": "保存并重载"
     },
     "sections": {
       "runtime": {
@@ -503,6 +506,236 @@
         "label": "网关",
         "description": "消息网关主页和频道"
       }
+    },
+    "common": {
+      "dismiss": "关闭",
+      "enabled": "启用",
+      "remove": "移除",
+      "maskedKeyPlaceholder": "已保留现有 key，输入新值可替换",
+      "maskedKeyHint": "key 已隐藏；保持不变则继续使用现有值，重新输入则替换。"
+    },
+    "reload": {
+      "title": "子系统重载状态",
+      "empty": "还没有执行过重载。",
+      "reloaded": "已重载",
+      "noData": "无数据",
+      "last": "上次重载：{{source}}，{{time}}",
+      "placeholder": "首次保存或外部编辑后会显示重载状态。",
+      "sources": {
+        "uiSave": "界面保存",
+        "uiReload": "界面重载",
+        "watcher": "外部文件编辑",
+        "refresh": "手动刷新"
+      },
+      "subsystems": {
+        "processEnv": "进程环境",
+        "memory": "记忆",
+        "router": "路由（CCR）",
+        "gateway": "网关",
+        "proxy": "代理"
+      }
+    },
+    "runtime": {
+      "title": "运行时",
+      "description": "服务绑定端口和请求超时设置。",
+      "fields": {
+        "host": {
+          "label": "Host",
+          "description": "HTTP/WebSocket 服务绑定的网络接口。"
+        },
+        "serverPort": {
+          "label": "Server port",
+          "description": "Express + WebSocket 端口。"
+        },
+        "vitePort": {
+          "label": "Vite port",
+          "description": "前端开发服务端口，仅在运行 npm run dev 时使用。"
+        },
+        "proxyPort": {
+          "label": "Proxy port",
+          "description": "本地 LLM 代理端口（Claude Agent SDK 目标）。"
+        },
+        "contextWindow": {
+          "label": "Context window",
+          "description": "模型条目未单独配置时使用的默认 token 预算。"
+        },
+        "apiTimeoutMs": {
+          "label": "API timeout (ms)",
+          "description": "每次上游请求的超时时间。"
+        },
+        "databasePath": {
+          "label": "Database path",
+          "description": "SQLite 账户/项目数据库路径（~ 会展开为用户目录）。"
+        },
+        "workspacesRoot": {
+          "label": "Workspaces root",
+          "description": "扫描项目时使用的工作区根目录。"
+        }
+      }
+    },
+    "models": {
+      "title": "模型",
+      "description": "配置上游提供商以及智能体引用的命名模型条目。",
+      "providers": {
+        "title": "提供商",
+        "description": "上游 LLM 接口；模型条目会通过提供商 id 引用这里的配置。",
+        "add": "+ 添加提供商",
+        "empty": "尚未配置提供商。",
+        "fields": {
+          "type": "类型",
+          "baseUrl": "Base URL",
+          "apiKey": "API key"
+        }
+      },
+      "entries": {
+        "title": "模型条目",
+        "description": "命名模型绑定；智能体会通过 id 引用这些条目。",
+        "add": "+ 添加条目",
+        "needProvider": "请先添加至少一个提供商，再创建模型条目。",
+        "empty": "暂无模型条目。",
+        "pickProvider": "— 选择提供商 —",
+        "contextHint": "用于该模型的 token 预算和自动压缩阈值。",
+        "fields": {
+          "provider": "提供商",
+          "modelName": "模型名称",
+          "contextWindow": "Context window（可选）"
+        }
+      }
+    },
+    "agents": {
+      "title": "智能体",
+      "description": "将不同智能体角色绑定到命名模型条目。",
+      "pickModelEntry": "— 选择模型条目 —",
+      "inheritMain": "inherit（使用主智能体模型）",
+      "fields": {
+        "mainModel": {
+          "label": "主智能体模型",
+          "description": "主聊天智能体使用的模型。"
+        },
+        "subagentsDefault": {
+          "label": "子智能体默认模型",
+          "description": "由工具拉起的子智能体使用的默认模型，例如任务处理。"
+        }
+      }
+    },
+    "alwaysOn": {
+      "title": "常驻",
+      "description": "配置全局自动发现，并为单个工作区开启常驻能力。",
+      "fields": {
+        "autoDiscovery": {
+          "label": "自动发现",
+          "description": "启用后，Always-On 会定期检查已开启的工作区，并提出后续计划。",
+          "ariaLabel": "切换自动发现"
+        },
+        "tickInterval": {
+          "label": "检查间隔（分钟）",
+          "description": "守护进程检查已开启工作区的频率。"
+        },
+        "cooldown": {
+          "label": "冷却时间（分钟）",
+          "description": "同一工作区两次自动发现之间的最短间隔。"
+        },
+        "dailyBudget": {
+          "label": "每日预算",
+          "description": "每个工作区每天允许的自动发现次数上限。"
+        }
+      },
+      "workspace": {
+        "title": "工作区启用",
+        "description": "只有已启用的工作区会接收 Always-On 心跳和定时发现检查。",
+        "empty": "还没有识别到项目。请先添加或打开一个工作区。",
+        "toggleAria": "切换 {{project}} 的 Always-On 自动发现"
+      }
+    },
+    "memory": {
+      "title": "记忆",
+      "description": "9GClaw 记忆服务，用于 embeddings 和摘要流程。",
+      "enabledDescription": "控制记忆服务开关，默认关闭。",
+      "toggleAria": "切换记忆服务",
+      "model": {
+        "label": "记忆模型",
+        "description": "记忆流程使用的模型。"
+      }
+    },
+    "rag": {
+      "description": "内置 9GClaw RAG 技能使用的本地检索器和 GLM Web Search API。",
+      "enabledDescription": "启用后，9GClaw 会导出 EDGECLAW_RAG_* 环境变量，供 RAG 技能调用这些 API。",
+      "toggleAria": "切换 RAG",
+      "disableBuiltIn": {
+        "label": "禁用内置 Web 工具",
+        "description": "启用 RAG 后，从模型可见工具中隐藏 WebFetch/WebSearch，让网络搜索走 9GClaw RAG 技能。",
+        "ariaLabel": "禁用内置 Web 工具"
+      },
+      "localKnowledge": {
+        "title": "本地知识库 / Retriever",
+        "description": "私有或精选知识库检索接口，包括基于 Milvus 的服务。",
+        "urlLabel": "Embedding / Model URL",
+        "urlDescription": "检索链路使用的 embedding 或模型服务 URL。如果 Search URL 为空，脚本会回退到此 URL 下的 POST /search。"
+      },
+      "glmWebSearch": {
+        "title": "Z.AI / GLM Web Search",
+        "description": "用于实时信息和带 URL 引用的公开 Web Search 接口。",
+        "urlLabel": "Endpoint URL",
+        "urlDescription": "直接 POST 的接口。Z.AI 使用 /api/paas/v4/web_search；如果填写根 URL，脚本仍会回退到 POST /search。"
+      },
+      "endpoint": {
+        "apiKey": {
+          "label": "API key",
+          "description": "保存在 config.yaml 中，并在运行时导出给 RAG 脚本。"
+        },
+        "modelName": {
+          "label": "模型名称",
+          "description": "传给本地知识库服务的检索模型名称。"
+        },
+        "searchUrl": {
+          "label": "Search URL",
+          "description": "本地知识库搜索接口；脚本会直接向此 URL POST text/top_k。"
+        },
+        "defaultTopK": {
+          "label": "默认 top K",
+          "description": "技能未显式传入 --top-k 时使用的默认值。"
+        }
+      }
+    },
+    "router": {
+      "title": "路由（CCR）",
+      "description": "内置 Claude Code Router（CCR），用于跨 provider 分流。",
+      "enabledDescription": "启用后，智能体会使用路由器，而不是直接调用配置的 provider。详细路由仍保存在 YAML 中；可在 Raw YAML 里微调。",
+      "toggleAria": "切换路由"
+    },
+    "gateway": {
+      "title": "网关",
+      "description": "消息网关（Feishu / Telegram / Discord / Slack）；频道级密钥建议在 Raw YAML 中编辑。",
+      "enabledDescription": "启用后会生成网关 home，并启动已配置凭据的频道。",
+      "toggleAria": "切换网关",
+      "home": {
+        "label": "网关 home",
+        "description": "网关状态和各频道配置的工作目录。"
+      }
+    },
+    "validation": {
+      "valid": "配置有效",
+      "unsavedSuffix": "（未保存）",
+      "invalid": "配置存在校验错误",
+      "invalidSeeBelow": "配置存在校验错误，请查看下方详情",
+      "errors": "错误",
+      "warnings": "警告"
+    },
+    "parse": {
+      "failed": "磁盘上的 YAML 解析失败，请切换到 Raw YAML 修复。",
+      "cardPrefix": "无法解析磁盘上的 YAML。请切换到",
+      "cardSuffix": "查看并修复。"
+    },
+    "messages": {
+      "externalChangedDirty": "配置文件已被外部编辑修改。你当前未保存的草稿会保留；点击“刷新”可丢弃草稿并加载新版本。",
+      "externalUpdated": "配置文件已在磁盘上更新，当前已加载新版本。",
+      "savedReloaded": "已保存并重载",
+      "reloadedCurrent": "已重载当前配置",
+      "configFile": "配置文件：{{path}}",
+      "failedLoad": "加载配置失败",
+      "failedSave": "保存配置失败",
+      "failedReload": "重载配置失败",
+      "failedOpen": "打开配置文件失败"
     }
   },
   "pluginSettings": {
