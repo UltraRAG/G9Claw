@@ -11,12 +11,12 @@ node_modules/
 dist/
 build/
 .cache/
+apps/macos-native/build/
+apps/macos-native/DerivedData/
+apps/macos-native/**/*.xcuserstate
+apps/macos-native/**/*.xcuserdata/
 *.log
 .proxy.log
-
-# Electron 实验存档（已废弃，详见 apps/electron-archived/README.md 顶部）
-apps/electron-archived/dist-electron/
-apps/electron-archived/node_modules/
 
 # OS / IDE
 .DS_Store

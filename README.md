@@ -11,6 +11,7 @@
 | `claude-code-main/` | Bun CLI、本地 Anthropic -> OpenAI 代理、`start.sh` |
 | `ui/` | Web UI 前后端 |
 | `edgeclaw-memory-core/` | 记忆检索 / 索引核心 |
+| `apps/macos-native/` | 原生 macOS 15+ SwiftUI/AppKit 桌面端 |
 
 ## 前置条件
 
@@ -18,6 +19,9 @@
 - Node.js 22+
 - npm
 - 一条可用的 OpenAI 兼容 API
+- Xcode 26+（仅开发原生 macOS App 时需要）
+
+原生 macOS App 不启动 Node/Bun runtime，也不开放 localhost HTTP/WebSocket 端口；旧 Web/UI server 代码只作为 parity 迁移参考。
 
 ## 第一步：创建统一 YAML 配置
 

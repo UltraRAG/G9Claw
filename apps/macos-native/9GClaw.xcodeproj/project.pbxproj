@@ -1,0 +1,481 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B001 /* 9GClawApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F001 /* 9GClawApp.swift */; };
+		B002 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F002 /* RootView.swift */; };
+		B010 /* AppModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F010 /* AppModels.swift */; };
+		B011 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F011 /* AppState.swift */; };
+		B012 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = F012 /* DesignTokens.swift */; };
+		B013 /* ParityCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = F013 /* ParityCatalog.swift */; };
+		B020 /* AppPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = F020 /* AppPaths.swift */; };
+		B021 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F021 /* KeychainStore.swift */; };
+		B022 /* ProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F022 /* ProviderClient.swift */; };
+		B023 /* WorkspaceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F023 /* WorkspaceService.swift */; };
+		B024 /* GitService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F024 /* GitService.swift */; };
+		B025 /* TerminalService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F025 /* TerminalService.swift */; };
+		B026 /* TaskMemorySkillsServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = F026 /* TaskMemorySkillsServices.swift */; };
+		B030 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F030 /* SidebarView.swift */; };
+		B031 /* MainAreaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F031 /* MainAreaView.swift */; };
+		B032 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F032 /* ChatView.swift */; };
+		B033 /* ToolTabsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F033 /* ToolTabsViews.swift */; };
+		B034 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F034 /* SettingsView.swift */; };
+		B100 /* ParityLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100 /* ParityLogicTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		CP001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = P0001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = T0001;
+			remoteInfo = 9GClaw;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		APP01 /* 9GClaw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = 9GClaw.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		TEST01 /* 9GClawTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = 9GClawTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F001 /* 9GClawApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = 9GClawApp.swift; sourceTree = "<group>"; };
+		F002 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		F010 /* AppModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModels.swift; sourceTree = "<group>"; };
+		F011 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		F012 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
+		F013 /* ParityCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityCatalog.swift; sourceTree = "<group>"; };
+		F020 /* AppPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPaths.swift; sourceTree = "<group>"; };
+		F021 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		F022 /* ProviderClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderClient.swift; sourceTree = "<group>"; };
+		F023 /* WorkspaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceService.swift; sourceTree = "<group>"; };
+		F024 /* GitService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitService.swift; sourceTree = "<group>"; };
+		F025 /* TerminalService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalService.swift; sourceTree = "<group>"; };
+		F026 /* TaskMemorySkillsServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskMemorySkillsServices.swift; sourceTree = "<group>"; };
+		F030 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		F031 /* MainAreaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainAreaView.swift; sourceTree = "<group>"; };
+		F032 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		F033 /* ToolTabsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolTabsViews.swift; sourceTree = "<group>"; };
+		F034 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		F100 /* ParityLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityLogicTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		BF001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		BF100 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		G0001 = {
+			isa = PBXGroup;
+			children = (
+				G0100 /* 9GClaw */,
+				G1000 /* 9GClawTests */,
+				G9000 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		G0100 /* 9GClaw */ = {
+			isa = PBXGroup;
+			children = (
+				G0110 /* App */,
+				G0120 /* Core */,
+				G0130 /* Services */,
+				G0140 /* Views */,
+			);
+			path = 9GClaw;
+			sourceTree = "<group>";
+		};
+		G0110 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				F001 /* 9GClawApp.swift */,
+				F002 /* RootView.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		G0120 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				F010 /* AppModels.swift */,
+				F011 /* AppState.swift */,
+				F012 /* DesignTokens.swift */,
+				F013 /* ParityCatalog.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		G0130 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				F020 /* AppPaths.swift */,
+				F021 /* KeychainStore.swift */,
+				F022 /* ProviderClient.swift */,
+				F023 /* WorkspaceService.swift */,
+				F024 /* GitService.swift */,
+				F025 /* TerminalService.swift */,
+				F026 /* TaskMemorySkillsServices.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		G0140 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				F030 /* SidebarView.swift */,
+				F031 /* MainAreaView.swift */,
+				F032 /* ChatView.swift */,
+				F033 /* ToolTabsViews.swift */,
+				F034 /* SettingsView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		G1000 /* 9GClawTests */ = {
+			isa = PBXGroup;
+			children = (
+				F100 /* ParityLogicTests.swift */,
+			);
+			path = 9GClawTests;
+			sourceTree = "<group>";
+		};
+		G9000 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				APP01 /* 9GClaw.app */,
+				TEST01 /* 9GClawTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		T0001 /* 9GClaw */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CLT001 /* Build configuration list for PBXNativeTarget "9GClaw" */;
+			buildPhases = (
+				BS001 /* Sources */,
+				BF001 /* Frameworks */,
+				BR001 /* Resources */,
+			);
+			buildRules = ();
+			dependencies = ();
+			name = 9GClaw;
+			productName = 9GClaw;
+			productReference = APP01 /* 9GClaw.app */;
+			productType = "com.apple.product-type.application";
+		};
+		T0100 /* 9GClawTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CLT100 /* Build configuration list for PBXNativeTarget "9GClawTests" */;
+			buildPhases = (
+				BS100 /* Sources */,
+				BF100 /* Frameworks */,
+				BR100 /* Resources */,
+			);
+			buildRules = ();
+			dependencies = (
+				TD001 /* PBXTargetDependency */,
+			);
+			name = 9GClawTests;
+			productName = 9GClawTests;
+			productReference = TEST01 /* 9GClawTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		P0001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2650;
+				LastUpgradeCheck = 2650;
+				TargetAttributes = {
+					T0001 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+					T0100 = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = T0001;
+					};
+				};
+			};
+			buildConfigurationList = CLP001 /* Build configuration list for PBXProject "9GClaw" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = G0001;
+			productRefGroup = G9000 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				T0001 /* 9GClaw */,
+				T0100 /* 9GClawTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		BR001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		BR100 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		BS001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B001 /* 9GClawApp.swift in Sources */,
+				B002 /* RootView.swift in Sources */,
+				B010 /* AppModels.swift in Sources */,
+				B011 /* AppState.swift in Sources */,
+				B012 /* DesignTokens.swift in Sources */,
+				B013 /* ParityCatalog.swift in Sources */,
+				B020 /* AppPaths.swift in Sources */,
+				B021 /* KeychainStore.swift in Sources */,
+				B022 /* ProviderClient.swift in Sources */,
+				B023 /* WorkspaceService.swift in Sources */,
+				B024 /* GitService.swift in Sources */,
+				B025 /* TerminalService.swift in Sources */,
+				B026 /* TaskMemorySkillsServices.swift in Sources */,
+				B030 /* SidebarView.swift in Sources */,
+				B031 /* MainAreaView.swift in Sources */,
+				B032 /* ChatView.swift in Sources */,
+				B033 /* ToolTabsViews.swift in Sources */,
+				B034 /* SettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BS100 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B100 /* ParityLogicTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		TD001 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = T0001 /* 9GClaw */; targetProxy = CP001 /* PBXContainerItemProxy */; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		CFGP01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		CFGP02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		CFGT01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = 9GClaw;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = cc.edgeclaw.9gclaw.native;
+				PRODUCT_MODULE_NAME = NineGClaw;
+				PRODUCT_NAME = 9GClaw;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		CFGT02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = 9GClaw;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = cc.edgeclaw.9gclaw.native;
+				PRODUCT_MODULE_NAME = NineGClaw;
+				PRODUCT_NAME = 9GClaw;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		CFGU01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = cc.edgeclaw.9gclaw.nativeTests;
+				PRODUCT_MODULE_NAME = NineGClawTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/9GClaw.app/Contents/MacOS/9GClaw";
+			};
+			name = Debug;
+		};
+		CFGU02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = cc.edgeclaw.9gclaw.nativeTests;
+				PRODUCT_MODULE_NAME = NineGClawTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/9GClaw.app/Contents/MacOS/9GClaw";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		CLP001 /* Build configuration list for PBXProject "9GClaw" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFGP01 /* Debug */,
+				CFGP02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CLT001 /* Build configuration list for PBXNativeTarget "9GClaw" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFGT01 /* Debug */,
+				CFGT02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CLT100 /* Build configuration list for PBXNativeTarget "9GClawTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFGU01 /* Debug */,
+				CFGU02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = P0001 /* Project object */;
+}
