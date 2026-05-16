@@ -25,6 +25,8 @@
 		B032 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F032 /* ChatView.swift */; };
 		B033 /* ToolTabsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F033 /* ToolTabsViews.swift */; };
 		B034 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F034 /* SettingsView.swift */; };
+		B040 /* 9gclaw-logo.png in Resources */ = {isa = PBXBuildFile; fileRef = F040 /* 9gclaw-logo.png */; };
+		B041 /* 9gclaw-logo-white.png in Resources */ = {isa = PBXBuildFile; fileRef = F041 /* 9gclaw-logo-white.png */; };
 		B100 /* ParityLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100 /* ParityLogicTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -59,6 +61,8 @@
 		F032 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		F033 /* ToolTabsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolTabsViews.swift; sourceTree = "<group>"; };
 		F034 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		F040 /* 9gclaw-logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "9gclaw-logo.png"; sourceTree = "<group>"; };
+		F041 /* 9gclaw-logo-white.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "9gclaw-logo-white.png"; sourceTree = "<group>"; };
 		F100 /* ParityLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityLogicTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -81,6 +85,7 @@
 			isa = PBXGroup;
 			children = (
 				G0110 /* App */,
+				G0150 /* Assets */,
 				G0120 /* Core */,
 				G0130 /* Services */,
 				G0140 /* Views */,
@@ -132,6 +137,15 @@
 				F034 /* SettingsView.swift */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		G0150 /* Assets */ = {
+			isa = PBXGroup;
+			children = (
+				F040 /* 9gclaw-logo.png */,
+				F041 /* 9gclaw-logo-white.png */,
+			);
+			path = Assets;
 			sourceTree = "<group>";
 		};
 		G1000 /* 9GClawTests */ = {
@@ -225,7 +239,10 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		BR001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		BR001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (
+				B040 /* 9gclaw-logo.png in Resources */,
+				B041 /* 9gclaw-logo-white.png in Resources */,
+			); runOnlyForDeploymentPostprocessing = 0; };
 		BR100 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
@@ -376,9 +393,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = 9GClaw;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = 9GClaw/App/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cc.edgeclaw.9gclaw.native;
@@ -398,9 +414,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = 9GClaw;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = 9GClaw/App/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cc.edgeclaw.9gclaw.native;

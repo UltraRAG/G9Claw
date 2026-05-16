@@ -2,22 +2,47 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var state: AppState
+    @AppStorage("sidebar-v2-width") private var sidebarWidth = Double(DesignTokens.sidebarDefaultWidth)
 
     var body: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             if state.isSidebarVisible {
-                SidebarView()
+                SidebarView(width: $sidebarWidth)
                     .environmentObject(state)
-                    .frame(minWidth: 280, idealWidth: 318, maxWidth: 380)
+                    .frame(width: CGFloat(sidebarWidth))
             }
 
             MainAreaView()
                 .environmentObject(state)
-                .frame(minWidth: 760)
+                .frame(minWidth: 760, maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(DesignTokens.background)
+        .overlay {
+            if state.showSettings {
+                SettingsModalView {
+                    state.showSettings = false
+                }
+                .environmentObject(state)
+                .transition(.opacity.combined(with: .scale(scale: 0.985)))
+            }
+            if state.showProjectCreationWizard {
+                ProjectCreationWizardView {
+                    state.showProjectCreationWizard = false
+                }
+                .environmentObject(state)
+                .transition(.opacity.combined(with: .scale(scale: 0.985)))
+            }
+        }
+        .animation(.easeOut(duration: 0.14), value: state.showSettings)
+        .animation(.easeOut(duration: 0.14), value: state.showProjectCreationWizard)
         .task {
             await state.bootstrap()
+        }
+        .onAppear {
+            sidebarWidth = min(
+                Double(DesignTokens.sidebarMaxWidth),
+                max(Double(DesignTokens.sidebarMinWidth), sidebarWidth)
+            )
         }
     }
 }

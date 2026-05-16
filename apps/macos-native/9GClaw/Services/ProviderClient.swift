@@ -7,6 +7,9 @@ struct AgentRequest: Sendable {
     var providerConfig: ProviderConfig
     var apiKey: String
     var priorMessages: [ChatMessage]
+    var timeoutMs: Int
+    var contextWindow: Int
+    var permissionMode: ComposerPermissionMode
 }
 
 enum AgentEvent: Sendable, Equatable {
@@ -25,20 +28,33 @@ enum AgentEvent: Sendable, Equatable {
 enum ProviderClientError: Error, LocalizedError {
     case missingBaseURL
     case missingModel
+    case missingAPIKey
+    case invalidURL(String)
+    case httpError(statusCode: Int, body: String)
     case unsupportedProvider(SessionProvider)
     case invalidResponse
+    case transport(String)
 
     var errorDescription: String? {
         switch self {
         case .missingBaseURL: "Provider base URL is not configured."
         case .missingModel: "Provider model is not configured."
+        case .missingAPIKey: "Provider API key is not configured. Add it in Settings or ~/.edgeclaw/config.yaml."
+        case .invalidURL(let value): "Provider base URL is invalid: \(value)"
+        case .httpError(let statusCode, let body):
+            if body.isEmpty {
+                "Provider request failed with HTTP \(statusCode)."
+            } else {
+                "Provider request failed with HTTP \(statusCode): \(body)"
+            }
         case .unsupportedProvider(let provider): "\(provider.displayName) is not implemented yet in native AgentCore."
         case .invalidResponse: "Provider returned an invalid response."
+        case .transport(let message): message
         }
     }
 }
 
-struct ProviderClient: Sendable {
+struct NativeAgentRuntime: Sendable {
     func stream(request: AgentRequest) -> AsyncThrowingStream<AgentEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -61,7 +77,7 @@ struct ProviderClient: Sendable {
                     continuation.finish()
                 } catch {
                     continuation.yield(.error(error.localizedDescription))
-                    continuation.finish(throwing: error)
+                    continuation.finish()
                 }
             }
 
@@ -97,10 +113,11 @@ struct ProviderClient: Sendable {
         request: AgentRequest,
         continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     ) async throws {
-        let endpoint = endpointURL(baseURL: request.providerConfig.baseURL, suffix: "chat/completions")
+        let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: "chat/completions")
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
-        applyHeaders(to: &urlRequest, request: request)
+        urlRequest.timeoutInterval = timeoutInterval(from: request.timeoutMs)
+        try applyHeaders(to: &urlRequest, request: request)
         let messages = request.priorMessages.map(openAIMessage).filter { !$0.isEmpty } + [
             ["role": "user", "content": request.prompt]
         ]
@@ -108,17 +125,14 @@ struct ProviderClient: Sendable {
             "model": request.providerConfig.model,
             "messages": messages,
             "stream": true,
+            "stream_options": [
+                "include_usage": true,
+            ],
         ])
 
         try await streamSSE(urlRequest: urlRequest, continuation: continuation) { object in
-            if let choices = object["choices"] as? [[String: Any]],
-               let delta = choices.first?["delta"] as? [String: Any],
-               let content = delta["content"] as? String,
-               !content.isEmpty {
-                continuation.yield(.contentDelta(content))
-            }
-            if let usage = object["usage"] as? [String: Any] {
-                Self.yieldUsage(usage, continuation: continuation)
+            for event in Self.openAIChatEvents(from: object, contextWindow: request.contextWindow) {
+                continuation.yield(event)
             }
         }
     }
@@ -127,10 +141,11 @@ struct ProviderClient: Sendable {
         request: AgentRequest,
         continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     ) async throws {
-        let endpoint = endpointURL(baseURL: request.providerConfig.baseURL, suffix: "responses")
+        let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: "responses")
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
-        applyHeaders(to: &urlRequest, request: request)
+        urlRequest.timeoutInterval = timeoutInterval(from: request.timeoutMs)
+        try applyHeaders(to: &urlRequest, request: request)
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": request.providerConfig.model,
             "input": request.prompt,
@@ -144,7 +159,7 @@ struct ProviderClient: Sendable {
                 continuation.yield(.contentDelta(delta))
             }
             if let usage = object["usage"] as? [String: Any] {
-                Self.yieldUsage(usage, continuation: continuation)
+                Self.yieldUsage(usage, contextWindow: request.contextWindow, continuation: continuation)
             }
         }
     }
@@ -153,10 +168,11 @@ struct ProviderClient: Sendable {
         request: AgentRequest,
         continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     ) async throws {
-        let endpoint = endpointURL(baseURL: request.providerConfig.baseURL, suffix: "v1/messages")
+        let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: "v1/messages")
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
-        applyHeaders(to: &urlRequest, request: request)
+        urlRequest.timeoutInterval = timeoutInterval(from: request.timeoutMs)
+        try applyHeaders(to: &urlRequest, request: request)
         urlRequest.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": request.providerConfig.model,
@@ -173,7 +189,7 @@ struct ProviderClient: Sendable {
                 continuation.yield(.contentDelta(text))
             }
             if let usage = object["usage"] as? [String: Any] {
-                Self.yieldUsage(usage, continuation: continuation)
+                Self.yieldUsage(usage, contextWindow: request.contextWindow, continuation: continuation)
             }
         }
     }
@@ -183,10 +199,19 @@ struct ProviderClient: Sendable {
         continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation,
         handleObject: @escaping ([String: Any]) -> Void
     ) async throws {
-        let (bytes, response) = try await URLSession.shared.bytes(for: urlRequest)
-        guard let httpResponse = response as? HTTPURLResponse,
-              200..<300 ~= httpResponse.statusCode else {
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await URLSession.shared.bytes(for: urlRequest)
+        } catch {
+            throw mapTransportError(error)
+        }
+        guard let statusCode = (response as? HTTPURLResponse)?.statusCode else {
             throw ProviderClientError.invalidResponse
+        }
+        guard 200..<300 ~= statusCode else {
+            let body = try await readErrorBody(from: bytes)
+            throw ProviderClientError.httpError(statusCode: statusCode, body: body)
         }
 
         continuation.yield(.status("streaming"))
@@ -203,19 +228,48 @@ struct ProviderClient: Sendable {
         }
     }
 
-    private static func endpointURL(baseURL: String, suffix: String) -> URL {
-        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    static func endpointURL(baseURL: String, suffix: String) throws -> URL {
+        let trimmed = baseURL
+            .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if trimmed.hasSuffix(suffix) {
-            return URL(string: trimmed)!
+        let normalizedSuffix = suffix
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let value: String
+        if trimmed.hasSuffix("/\(normalizedSuffix)") || trimmed.hasSuffix(normalizedSuffix) {
+            value = trimmed
+        } else {
+            value = "\(trimmed)/\(normalizedSuffix)"
         }
-        return URL(string: "\(trimmed)/\(suffix)")!
+        guard let url = URL(string: value), let scheme = url.scheme, !scheme.isEmpty else {
+            throw ProviderClientError.invalidURL(baseURL)
+        }
+        return url
     }
 
-    private static func applyHeaders(to request: inout URLRequest, request agentRequest: AgentRequest) {
+    static func openAIChatEvents(from object: [String: Any], contextWindow: Int) -> [AgentEvent] {
+        var events: [AgentEvent] = []
+        if let choices = object["choices"] as? [[String: Any]],
+           let delta = choices.first?["delta"] as? [String: Any],
+           let content = delta["content"] as? String,
+           !content.isEmpty {
+            events.append(.contentDelta(content))
+        }
+        if let usage = object["usage"] as? [String: Any],
+           let budget = tokenBudget(from: usage, contextWindow: contextWindow) {
+            events.append(.tokenBudget(used: budget.used, total: budget.total))
+        }
+        return events
+    }
+
+    private static func applyHeaders(to request: inout URLRequest, request agentRequest: AgentRequest) throws {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(agentRequest.apiKey)", forHTTPHeaderField: "Authorization")
+        let apiKey = agentRequest.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else {
+            throw ProviderClientError.missingAPIKey
+        }
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         for (key, value) in agentRequest.providerConfig.headers {
             request.setValue(value, forHTTPHeaderField: key)
         }
@@ -229,13 +283,53 @@ struct ProviderClient: Sendable {
 
     private static func yieldUsage(
         _ usage: [String: Any],
+        contextWindow: Int,
         continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     ) {
         let input = usage["input_tokens"] as? Int ?? usage["prompt_tokens"] as? Int ?? 0
         let output = usage["output_tokens"] as? Int ?? usage["completion_tokens"] as? Int ?? 0
         let total = usage["total_tokens"] as? Int ?? input + output
-        if total > 0 {
-            continuation.yield(.tokenBudget(used: total, total: 160_000))
+        if let budget = tokenBudget(from: usage, contextWindow: contextWindow), total > 0 {
+            continuation.yield(.tokenBudget(used: budget.used, total: budget.total))
         }
     }
+
+    private static func tokenBudget(from usage: [String: Any], contextWindow: Int) -> TokenBudget? {
+        let input = usage["input_tokens"] as? Int ?? usage["prompt_tokens"] as? Int ?? 0
+        let output = usage["output_tokens"] as? Int ?? usage["completion_tokens"] as? Int ?? 0
+        let total = usage["total_tokens"] as? Int ?? input + output
+        guard total > 0 else { return nil }
+        return TokenBudget(used: total, total: max(contextWindow, total))
+    }
+
+    private static func timeoutInterval(from milliseconds: Int) -> TimeInterval {
+        TimeInterval(max(milliseconds, 1_000)) / 1_000.0
+    }
+
+    private static func readErrorBody(from bytes: URLSession.AsyncBytes) async throws -> String {
+        var body = ""
+        for try await line in bytes.lines {
+            if !body.isEmpty { body += "\n" }
+            body += line
+            if body.count > 4_096 {
+                return String(body.prefix(4_096)) + "..."
+            }
+        }
+        return body.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func mapTransportError(_ error: Error) -> Error {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorAppTransportSecurityRequiresSecureConnection {
+            return ProviderClientError.transport(
+                "App Transport Security blocked the HTTP provider request. Rebuild and launch the latest 9GClaw app bundle so NSAppTransportSecurity is included."
+            )
+        }
+        if nsError.domain == NSURLErrorDomain {
+            return ProviderClientError.transport("Network request failed: \(nsError.localizedDescription)")
+        }
+        return error
+    }
 }
+
+typealias ProviderClient = NativeAgentRuntime

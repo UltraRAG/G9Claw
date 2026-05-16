@@ -27,6 +27,10 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(result.resolvedPath, "/Users/tester/project")
     }
 
+    func testProjectNameMatchesWebManualProjectSlugPolicy() {
+        XCTAssertEqual(WorkspaceService.projectName(for: "/Users/tester/My_Project"), "-Users-tester-My-Project")
+    }
+
     func testProjectSortingByNameMatchesSidebarPolicy() {
         let now = Date()
         let projects = [
@@ -55,6 +59,186 @@ final class ParityLogicTests: XCTestCase {
         ]
 
         XCTAssertEqual(WorkspaceService.sortedProjects([old, recent], order: .date).first?.name, "recent")
+    }
+
+    func testLegacyConfigLoaderReadsDefaultProviderSettings() {
+        let yaml = """
+        runtime:
+          workspacesRoot: ~/Workspace
+        gateway:
+          runtimePaths:
+            generalCwd: ~/Claude/general
+        models:
+          providers:
+            edgeclaw:
+              type: openai-chat
+              baseUrl: http://example.local/v1
+              apiKey: local-secret
+          entries:
+            default:
+              provider: edgeclaw
+              name: qwen3.6-27b
+        """
+
+        let snapshot = LegacyConfigLoader.snapshot(from: yaml)
+
+        XCTAssertEqual(snapshot?.baseURL, "http://example.local/v1")
+        XCTAssertEqual(snapshot?.apiKey, "local-secret")
+        XCTAssertEqual(snapshot?.model, "qwen3.6-27b")
+        XCTAssertEqual(snapshot?.workspacesRoot, "~/Workspace")
+        XCTAssertEqual(snapshot?.generalWorkspacePath, "~/Claude/general")
+    }
+
+    func testNativeConfigServiceResolvesRouterDefaultEntry() {
+        let yaml = """
+        runtime:
+          apiTimeoutMs: 90000
+          contextWindow: 120000
+          workspacesRoot: /Users/tester
+        gateway:
+          runtimePaths:
+            generalCwd: /Users/tester/Claude/general
+        models:
+          providers:
+            edgeclaw:
+              type: openai-chat
+              baseUrl: http://example.local/v1
+              apiKey: local-secret
+              headers:
+                X-Test: enabled
+            edgeclaw_router:
+              type: openai-chat
+              baseUrl: http://router.local/v1
+              apiKey: router-secret
+          entries:
+            default:
+              provider: edgeclaw
+              name: qwen3.6-27b
+              contextWindow: 160000
+            router_small:
+              provider: edgeclaw_router
+              name: qwen3.6-35b-a3b
+              contextWindow: 64000
+        router:
+          routes:
+            default:
+              model: router_small
+        """
+
+        let snapshot = NativeConfigService.snapshot(from: yaml)
+
+        XCTAssertEqual(snapshot?.defaultEntryID, "router_small")
+        XCTAssertEqual(snapshot?.providerConfig.baseURL, "http://router.local/v1")
+        XCTAssertEqual(snapshot?.providerConfig.model, "qwen3.6-35b-a3b")
+        XCTAssertEqual(snapshot?.apiKey, "router-secret")
+        XCTAssertEqual(snapshot?.apiTimeoutMs, 90_000)
+        XCTAssertEqual(snapshot?.contextWindow, 64_000)
+    }
+
+    func testNativeAgentRuntimeEndpointDoesNotDuplicateChatCompletions() throws {
+        let full = try NativeAgentRuntime.endpointURL(
+            baseURL: "https://openrouter.ai/api/v1/chat/completions",
+            suffix: "chat/completions"
+        )
+        let base = try NativeAgentRuntime.endpointURL(
+            baseURL: "http://example.local/v1/",
+            suffix: "chat/completions"
+        )
+
+        XCTAssertEqual(full.absoluteString, "https://openrouter.ai/api/v1/chat/completions")
+        XCTAssertEqual(base.absoluteString, "http://example.local/v1/chat/completions")
+    }
+
+    func testNativeAgentRuntimeNormalizesOpenAIChatStreamEvents() {
+        let object: [String: Any] = [
+            "choices": [
+                [
+                    "delta": ["content": "hello"],
+                ],
+            ],
+            "usage": [
+                "prompt_tokens": 3,
+                "completion_tokens": 4,
+                "total_tokens": 7,
+            ],
+        ]
+
+        let events = NativeAgentRuntime.openAIChatEvents(from: object, contextWindow: 160_000)
+
+        XCTAssertEqual(events, [
+            .contentDelta("hello"),
+            .tokenBudget(used: 7, total: 160_000),
+        ])
+    }
+
+    func testAppInfoPlistIncludesATSForHTTPProviders() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let plistURL = repoRoot
+            .appendingPathComponent("9GClaw")
+            .appendingPathComponent("App")
+            .appendingPathComponent("Info.plist")
+        let data = try Data(contentsOf: plistURL)
+        var format: PropertyListSerialization.PropertyListFormat = .xml
+        let rawPlist = try PropertyListSerialization.propertyList(from: data, options: [], format: &format)
+        let plist = try XCTUnwrap(rawPlist as? [String: Any])
+        let ats = try XCTUnwrap(plist["NSAppTransportSecurity"] as? [String: Any])
+
+        XCTAssertEqual(ats["NSAllowsArbitraryLoads"] as? Bool, true)
+        XCTAssertEqual(ats["NSAllowsLocalNetworking"] as? Bool, true)
+        let exceptionDomains = try XCTUnwrap(ats["NSExceptionDomains"] as? [String: Any])
+        let edgeclawHTTPProvider = try XCTUnwrap(exceptionDomains["58.57.119.12"] as? [String: Any])
+        XCTAssertEqual(edgeclawHTTPProvider["NSExceptionAllowsInsecureHTTPLoads"] as? Bool, true)
+    }
+
+    func testYAMLScalarEditorUpdatesNestedScalarsWithoutReordering() {
+        let yaml = """
+        runtime:
+          host: 0.0.0.0
+          serverPort: 3001
+        router:
+          enabled: true
+        """
+
+        let updated = YAMLScalarEditor.set(path: "runtime.serverPort", value: "3002", in: yaml)
+
+        XCTAssertTrue(updated.contains("runtime:"))
+        XCTAssertTrue(updated.contains("  serverPort: 3002"))
+        XCTAssertTrue(updated.contains("router:"))
+    }
+
+    func testSkillsSlugValidationRejectsTraversal() {
+        XCTAssertTrue(SkillsService.isSafeSlug("review-helper"))
+        XCTAssertTrue(SkillsService.isSafeSlug("team.skill_1"))
+        XCTAssertFalse(SkillsService.isSafeSlug("../escape"))
+        XCTAssertFalse(SkillsService.isSafeSlug("nested/path"))
+        XCTAssertFalse(SkillsService.isSafeSlug(".."))
+    }
+
+    func testSkillValidationRequiresSkillMarkdownFrontmatter() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("9gclaw-skill-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let service = SkillsService()
+        var result = service.validate(source: root)
+        XCTAssertFalse(result.ok)
+        XCTAssertTrue(result.hardFails.contains { $0.code == "no_skill_md" })
+
+        try """
+        ---
+        name: Reviewer
+        description: Checks diffs for regressions before shipping changes.
+        ---
+
+        # Reviewer
+        """.write(to: root.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+
+        result = service.validate(source: root)
+        XCTAssertTrue(result.ok)
+        XCTAssertTrue(result.hardFails.isEmpty)
     }
 
     private func project(name: String, displayName: String, date: Date) -> WorkspaceProject {
