@@ -11,6 +11,7 @@ enum L10nKey: String, CaseIterable {
     case allow
     case allowedTools
     case allowedToolsDetail
+    case allowedToolPlaceholder
     case alwaysOn
     case appearance
     case askPlaceholder
@@ -18,6 +19,7 @@ enum L10nKey: String, CaseIterable {
     case attachHelp
     case back
     case blockedTools
+    case blockedToolPlaceholder
     case browse
     case cancel
     case chatRunModeAgent
@@ -30,6 +32,14 @@ enum L10nKey: String, CaseIterable {
     case connecting
     case clear
     case codeEditor
+    case wordWrap
+    case wordWrapDetail
+    case showMinimap
+    case showMinimapDetail
+    case lineNumbers
+    case lineNumbersDetail
+    case fontSize
+    case fontSizeDetail
     case commandHelp
     case complete
     case config
@@ -91,11 +101,16 @@ enum L10nKey: String, CaseIterable {
     case permissionModeDefault
     case permissionModeDefaultDetail
     case permissions
+    case permissionsManageDetail
+    case blockedToolsDetail
+    case patternExamples
+    case allowAllGitLogCommands
+    case allowAllGitDiffCommands
+    case allowAllWrites
+    case blockAllRmCommands
     case preview
     case processFailed
     case projectAdded
-    case projectDeleteUnavailable
-    case projectRenameUnavailable
     case projectSorting
     case projects
     case pull
@@ -113,8 +128,6 @@ enum L10nKey: String, CaseIterable {
     case saved
     case save
     case send
-    case sessionDeleteUnavailable
-    case sessionRenameUnavailable
     case settings
     case settingsSaved
     case shell
@@ -215,9 +228,61 @@ enum L10nKey: String, CaseIterable {
     case rawYAML
     case recentRoutes
     case recurring
+    case reloaded
     case runtime
+    case runtimeDetail
     case models
     case agents
+    case host
+    case serverPort
+    case vitePort
+    case proxyPort
+    case contextWindow
+    case apiTimeoutMs
+    case httpsProxy
+    case databasePath
+    case workspacesRoot
+    case generalWorkspace
+    case model
+    case defaultConfig
+    case tickIntervalMinutes
+    case cooldownMinutes
+    case dailyBudget
+    case heartbeatStaleSeconds
+    case recentUserMsgMinutes
+    case preferClient
+    case memoryDetail
+    case reasoningMode
+    case autoIndexIntervalMinutes
+    case autoDreamIntervalMinutes
+    case captureStrategy
+    case maxMessageChars
+    case heartbeatBatchSize
+    case localKnowledgeBaseURL
+    case embeddingModel
+    case databaseURL
+    case defaultTopK
+    case glmWebSearchBaseURL
+    case glmDefaultTopK
+    case port
+    case defaultRouteModel
+    case backgroundRouteModel
+    case thinkRouteModel
+    case longContextRouteModel
+    case webSearchRouteModel
+    case longContextThreshold
+    case judgeModel
+    case defaultTier
+    case subagentPolicy
+    case savingsBaselineModel
+    case home
+    case unauthorizedDMBehavior
+    case sessionMetadata
+    case userBindings
+    case generalCWD
+    case generalJSONL
+    case boundProjectJSONL
+    case baseURL
     case reload
     case reloadCurrent
     case reloadDetail
@@ -232,6 +297,7 @@ enum L10nKey: String, CaseIterable {
     case routerLog
     case routerLogDetail
     case runHistory
+    case skipped
     case saveAndReload
     case savedAndReloaded
     case saveShortcut
@@ -269,6 +335,8 @@ enum L10nKey: String, CaseIterable {
     case permissionsShareDetail
     case recentActivity
     case toggle
+    case on
+    case off
 }
 
 struct LocalizationService {
@@ -308,6 +376,7 @@ struct LocalizationService {
         .allow: "Allow",
         .allowedTools: "Allowed tools",
         .allowedToolsDetail: "Tools that auto-run without prompting.",
+        .allowedToolPlaceholder: #"e.g. "Bash(git log:*)" or "Write""#,
         .alwaysOn: "Always-on",
         .appearance: "Appearance",
         .askPlaceholder: "Ask 9GClaw",
@@ -315,6 +384,7 @@ struct LocalizationService {
         .attachHelp: "Attach photos or files",
         .back: "Back",
         .blockedTools: "Blocked tools",
+        .blockedToolPlaceholder: #"e.g. "Bash(rm:*)""#,
         .browse: "Browse",
         .cancel: "Cancel",
         .chatRunModeAgent: "Agent",
@@ -327,6 +397,14 @@ struct LocalizationService {
         .connecting: "Connecting",
         .clear: "Clear",
         .codeEditor: "Code Editor",
+        .wordWrap: "Word Wrap",
+        .wordWrapDetail: "Wrap long lines in the native editor.",
+        .showMinimap: "Show Minimap",
+        .showMinimapDetail: "Reserve space for a lightweight minimap column.",
+        .lineNumbers: "Line Numbers",
+        .lineNumbersDetail: "Show line numbers in editable text files.",
+        .fontSize: "Font Size",
+        .fontSizeDetail: "Code editor font size.",
         .commandHelp: "Run a command",
         .complete: "Complete",
         .config: "Config",
@@ -388,11 +466,16 @@ struct LocalizationService {
         .permissionModeDefault: "Default permissions",
         .permissionModeDefaultDetail: "Ask before running tools that need approval.",
         .permissions: "Permissions",
+        .permissionsManageDetail: "Manage which tools the assistant can run without asking.",
+        .blockedToolsDetail: "Tools the assistant is never allowed to use.",
+        .patternExamples: "Pattern examples",
+        .allowAllGitLogCommands: "allow all git log commands",
+        .allowAllGitDiffCommands: "allow all git diff commands",
+        .allowAllWrites: "allow all writes",
+        .blockAllRmCommands: "block all rm commands",
         .preview: "Preview",
         .processFailed: "Process failed",
         .projectAdded: "Project added",
-        .projectDeleteUnavailable: "Project delete is not implemented in this UI parity pass.",
-        .projectRenameUnavailable: "Project rename is not implemented in this UI parity pass.",
         .projectSorting: "Project Sorting",
         .projects: "Projects",
         .pull: "Pull",
@@ -410,8 +493,6 @@ struct LocalizationService {
         .saved: "Saved",
         .save: "Save",
         .send: "Send",
-        .sessionDeleteUnavailable: "Session delete is not implemented in this UI parity pass.",
-        .sessionRenameUnavailable: "Session rename is not implemented in this UI parity pass.",
         .settings: "Settings",
         .settingsSaved: "Settings saved",
         .shell: "Shell",
@@ -512,9 +593,61 @@ struct LocalizationService {
         .rawYAML: "Raw YAML",
         .recentRoutes: "Recent routes",
         .recurring: "recurring",
+        .reloaded: "reloaded",
         .runtime: "Runtime",
+        .runtimeDetail: "Local paths and native runtime defaults.",
         .models: "Models",
         .agents: "Agents",
+        .host: "Host",
+        .serverPort: "Server Port",
+        .vitePort: "Vite Port",
+        .proxyPort: "Proxy Port",
+        .contextWindow: "Context Window",
+        .apiTimeoutMs: "API Timeout Ms",
+        .httpsProxy: "HTTPS Proxy",
+        .databasePath: "Database Path",
+        .workspacesRoot: "Workspaces Root",
+        .generalWorkspace: "General Workspace",
+        .model: "Model",
+        .defaultConfig: "Default",
+        .tickIntervalMinutes: "Tick Interval Minutes",
+        .cooldownMinutes: "Cooldown Minutes",
+        .dailyBudget: "Daily Budget",
+        .heartbeatStaleSeconds: "Heartbeat Stale Seconds",
+        .recentUserMsgMinutes: "Recent User Msg Minutes",
+        .preferClient: "Prefer Client",
+        .memoryDetail: "Enable project and user memory capture.",
+        .reasoningMode: "Reasoning Mode",
+        .autoIndexIntervalMinutes: "Auto Index Interval Minutes",
+        .autoDreamIntervalMinutes: "Auto Dream Interval Minutes",
+        .captureStrategy: "Capture Strategy",
+        .maxMessageChars: "Max Message Chars",
+        .heartbeatBatchSize: "Heartbeat Batch Size",
+        .localKnowledgeBaseURL: "Local Knowledge Base URL",
+        .embeddingModel: "Embedding Model",
+        .databaseURL: "Database URL",
+        .defaultTopK: "Default Top K",
+        .glmWebSearchBaseURL: "GLM Web Search Base URL",
+        .glmDefaultTopK: "GLM Default Top K",
+        .port: "Port",
+        .defaultRouteModel: "Default Route Model",
+        .backgroundRouteModel: "Background Route Model",
+        .thinkRouteModel: "Think Route Model",
+        .longContextRouteModel: "Long Context Route Model",
+        .webSearchRouteModel: "Web Search Route Model",
+        .longContextThreshold: "Long Context Threshold",
+        .judgeModel: "Judge Model",
+        .defaultTier: "Default Tier",
+        .subagentPolicy: "Subagent Policy",
+        .savingsBaselineModel: "Savings Baseline Model",
+        .home: "Home",
+        .unauthorizedDMBehavior: "Unauthorized DM Behavior",
+        .sessionMetadata: "Session Metadata",
+        .userBindings: "User Bindings",
+        .generalCWD: "General CWD",
+        .generalJSONL: "General JSONL",
+        .boundProjectJSONL: "Bound Project JSONL",
+        .baseURL: "Base URL",
         .reload: "Reload",
         .reloadCurrent: "Reload Current",
         .reloadDetail: "Last save and reload impact for native services.",
@@ -529,6 +662,7 @@ struct LocalizationService {
         .routerLog: "Log",
         .routerLogDetail: "Write router request logs for debugging.",
         .runHistory: "Run History",
+        .skipped: "skipped",
         .saveAndReload: "Save & Reload",
         .savedAndReloaded: "Saved and reloaded",
         .saveShortcut: "Cmd+S save · Esc close",
@@ -566,6 +700,8 @@ struct LocalizationService {
         .permissionsShareDetail: "Share or back up your tool permissions as JSON.",
         .recentActivity: "Recent Activity",
         .toggle: "Toggle",
+        .on: "On",
+        .off: "Off",
     ]
 
     static let chineseSimplified: [L10nKey: String] = [
@@ -574,6 +710,7 @@ struct LocalizationService {
         .allow: "允许",
         .allowedTools: "允许的工具",
         .allowedToolsDetail: "无需确认即可自动运行的工具。",
+        .allowedToolPlaceholder: #"例如 "Bash(git log:*)" 或 "Write""#,
         .alwaysOn: "常驻",
         .appearance: "外观",
         .askPlaceholder: "询问 9GClaw",
@@ -581,6 +718,7 @@ struct LocalizationService {
         .attachHelp: "添加图片或文件",
         .back: "返回",
         .blockedTools: "禁用工具",
+        .blockedToolPlaceholder: #"例如 "Bash(rm:*)""#,
         .browse: "浏览",
         .cancel: "取消",
         .chatRunModeAgent: "智能体",
@@ -593,6 +731,14 @@ struct LocalizationService {
         .connecting: "正在连接",
         .clear: "清空",
         .codeEditor: "代码编辑器",
+        .wordWrap: "自动换行",
+        .wordWrapDetail: "在原生编辑器中自动折行较长内容。",
+        .showMinimap: "显示缩略图",
+        .showMinimapDetail: "为轻量代码缩略图预留一列空间。",
+        .lineNumbers: "显示行号",
+        .lineNumbersDetail: "在可编辑文本文件中显示行号。",
+        .fontSize: "字体大小",
+        .fontSizeDetail: "代码编辑器字体大小。",
         .commandHelp: "运行命令",
         .complete: "完成",
         .config: "配置",
@@ -654,11 +800,16 @@ struct LocalizationService {
         .permissionModeDefault: "默认权限",
         .permissionModeDefaultDetail: "运行需要审批的工具前先询问。",
         .permissions: "权限",
+        .permissionsManageDetail: "管理助手无需询问即可运行哪些工具。",
+        .blockedToolsDetail: "助手永远不允许使用的工具。",
+        .patternExamples: "规则示例",
+        .allowAllGitLogCommands: "允许所有 git log 命令",
+        .allowAllGitDiffCommands: "允许所有 git diff 命令",
+        .allowAllWrites: "允许所有写入操作",
+        .blockAllRmCommands: "禁止所有 rm 命令",
         .preview: "预览",
         .processFailed: "进程失败",
         .projectAdded: "项目已添加",
-        .projectDeleteUnavailable: "本轮 UI 对齐尚未实现项目删除。",
-        .projectRenameUnavailable: "本轮 UI 对齐尚未实现项目重命名。",
         .projectSorting: "项目排序",
         .projects: "项目",
         .pull: "拉取",
@@ -676,8 +827,6 @@ struct LocalizationService {
         .saved: "已保存",
         .save: "保存",
         .send: "发送",
-        .sessionDeleteUnavailable: "本轮 UI 对齐尚未实现会话删除。",
-        .sessionRenameUnavailable: "本轮 UI 对齐尚未实现会话重命名。",
         .settings: "设置",
         .settingsSaved: "设置已保存",
         .shell: "Shell",
@@ -778,9 +927,61 @@ struct LocalizationService {
         .rawYAML: "Raw YAML",
         .recentRoutes: "最近路由",
         .recurring: "重复",
+        .reloaded: "已重新加载",
         .runtime: "运行时",
+        .runtimeDetail: "本地路径和原生运行时默认值。",
         .models: "模型",
         .agents: "智能体",
+        .host: "主机",
+        .serverPort: "服务端口",
+        .vitePort: "Vite 端口",
+        .proxyPort: "代理端口",
+        .contextWindow: "上下文窗口",
+        .apiTimeoutMs: "API 超时（毫秒）",
+        .httpsProxy: "HTTPS 代理",
+        .databasePath: "数据库路径",
+        .workspacesRoot: "工作区根目录",
+        .generalWorkspace: "通用工作区",
+        .model: "模型",
+        .defaultConfig: "默认",
+        .tickIntervalMinutes: "轮询间隔（分钟）",
+        .cooldownMinutes: "冷却时间（分钟）",
+        .dailyBudget: "每日预算",
+        .heartbeatStaleSeconds: "心跳过期秒数",
+        .recentUserMsgMinutes: "最近用户消息分钟数",
+        .preferClient: "优先客户端",
+        .memoryDetail: "启用项目和用户记忆捕获。",
+        .reasoningMode: "推理模式",
+        .autoIndexIntervalMinutes: "自动索引间隔（分钟）",
+        .autoDreamIntervalMinutes: "自动 Dream 间隔（分钟）",
+        .captureStrategy: "捕获策略",
+        .maxMessageChars: "最大消息字符数",
+        .heartbeatBatchSize: "心跳批量大小",
+        .localKnowledgeBaseURL: "本地知识库 URL",
+        .embeddingModel: "Embedding 模型",
+        .databaseURL: "数据库 URL",
+        .defaultTopK: "默认 Top K",
+        .glmWebSearchBaseURL: "GLM Web 搜索 Base URL",
+        .glmDefaultTopK: "GLM 默认 Top K",
+        .port: "端口",
+        .defaultRouteModel: "默认路由模型",
+        .backgroundRouteModel: "后台路由模型",
+        .thinkRouteModel: "思考路由模型",
+        .longContextRouteModel: "长上下文路由模型",
+        .webSearchRouteModel: "Web 搜索路由模型",
+        .longContextThreshold: "长上下文阈值",
+        .judgeModel: "判断模型",
+        .defaultTier: "默认层级",
+        .subagentPolicy: "子智能体策略",
+        .savingsBaselineModel: "节省基准模型",
+        .home: "主目录",
+        .unauthorizedDMBehavior: "未授权私信行为",
+        .sessionMetadata: "会话元数据",
+        .userBindings: "用户绑定",
+        .generalCWD: "通用 CWD",
+        .generalJSONL: "通用 JSONL",
+        .boundProjectJSONL: "绑定项目 JSONL",
+        .baseURL: "Base URL",
         .reload: "重新加载",
         .reloadCurrent: "重新加载当前配置",
         .reloadDetail: "最近保存和重新加载对原生服务的影响。",
@@ -795,6 +996,7 @@ struct LocalizationService {
         .routerLog: "日志",
         .routerLogDetail: "写入路由请求日志用于调试。",
         .runHistory: "运行历史",
+        .skipped: "已跳过",
         .saveAndReload: "保存并重新加载",
         .savedAndReloaded: "已保存并重新加载",
         .saveShortcut: "Cmd+S 保存 · Esc 关闭",
@@ -832,6 +1034,8 @@ struct LocalizationService {
         .permissionsShareDetail: "以 JSON 共享或备份工具权限。",
         .recentActivity: "最近活动",
         .toggle: "切换",
+        .on: "开",
+        .off: "关",
     ]
 }
 

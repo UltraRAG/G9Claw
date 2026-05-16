@@ -11,6 +11,8 @@ final class AppState: ObservableObject {
     @Published var isSidebarVisible = true
     @Published var messagesBySession: [String: [ChatMessage]] = [:]
     @Published var activitiesBySession: [String: [AgentActivity]] = [:]
+    @Published var turnsBySession: [String: [AgentTurn]] = [:]
+    @Published var turnItemsBySession: [String: [AgentTurnItem]] = [:]
     @Published var composerText = ""
     @Published var composerRunMode: ChatRunMode = .agent
     @Published var composerPermissionMode: ComposerPermissionMode = .default
@@ -29,6 +31,7 @@ final class AppState: ObservableObject {
     @Published var settingsInitialTab: SettingsMainTab = .appearance
     @Published var edgeClawConfigText = ""
     @Published var settingsSaveNotice: String?
+    @Published var toolRefreshRevision = 0
 
     let keychain = KeychainStore()
     let settingsStore = AppSettingsStore()
@@ -43,7 +46,11 @@ final class AppState: ObservableObject {
     let alwaysOnService = AlwaysOnService()
 
     private var activeAgentTask: Task<Void, Never>?
+    private var activeRunToken: UUID?
+    private var activitySequence = 0
     private var permissionContinuations: [UUID: CheckedContinuation<AgentPermissionDecision, Never>] = [:]
+    private var pendingAssistantDeltas: [UUID: String] = [:]
+    private var assistantDeltaFlushTasks: [UUID: Task<Void, Never>] = [:]
     private var hasBootstrapped = false
 
     init() {
@@ -85,6 +92,11 @@ final class AppState: ObservableObject {
         return activitiesBySession[selectedSessionID] ?? []
     }
 
+    var currentTurnItems: [AgentTurnItem] {
+        guard let selectedSessionID else { return [] }
+        return (turnItemsBySession[selectedSessionID] ?? []).sorted { $0.sequence < $1.sequence }
+    }
+
     var isCurrentSessionStreaming: Bool {
         currentMessages.contains { $0.isStreaming }
     }
@@ -117,6 +129,10 @@ final class AppState: ObservableObject {
         statusLine = t(.projectsRefreshed)
     }
 
+    func bumpToolRefresh() {
+        toolRefreshRevision += 1
+    }
+
     func selectProject(_ project: WorkspaceProject) {
         selectedProjectID = project.id
         selectedSessionID = nil
@@ -146,6 +162,19 @@ final class AppState: ObservableObject {
         refreshNativeToolData()
     }
 
+    func toggleComposerRunMode() {
+        composerRunMode = composerRunMode == .agent ? .plan : .agent
+    }
+
+    @discardableResult
+    func consumeComposerRunModeForSend() -> ChatRunMode {
+        let runMode = composerRunMode
+        if runMode == .plan {
+            composerRunMode = .agent
+        }
+        return runMode
+    }
+
     @discardableResult
     func createSessionForSelectedProject(title: String = "New Session") -> ProjectSession? {
         guard let projectIndex = selectedProjectIndex else { return nil }
@@ -156,7 +185,8 @@ final class AppState: ObservableObject {
             summary: "",
             createdAt: Date(),
             updatedAt: nil,
-            lastActivity: Date(),
+            lastActivity: nil,
+            lastConversationAt: nil,
             state: .idle
         )
         projects[projectIndex].sessions.insert(session, at: 0)
@@ -237,7 +267,9 @@ final class AppState: ObservableObject {
             _ = createSessionForSelectedProject(title: promptTitle(from: prompt))
         }
         guard let sessionID = selectedSessionID else { return }
+        finishCurrentRunAsSuperseded()
         let historyBeforeSend = currentMessages
+        let requestedRunMode = consumeComposerRunModeForSend()
 
         composerText = ""
         pendingAttachments = []
@@ -261,6 +293,14 @@ final class AppState: ObservableObject {
             tokenBudget: nil
         )
         append(userMessage)
+        touchSessionConversation(sessionID)
+        if let selectedProject, !prompt.isEmpty {
+            _ = memoryService.upsert(
+                name: "session-\(String(sessionID.prefix(8)))",
+                summary: prompt,
+                projectName: selectedProject.name
+            )
+        }
         activitiesBySession[sessionID] = [
             AgentActivity(
                 id: "run-\(assistantID.uuidString)",
@@ -270,7 +310,9 @@ final class AppState: ObservableObject {
                 phase: .status,
                 state: .running,
                 createdAt: Date(),
-                updatedAt: Date()
+                updatedAt: Date(),
+                anchorBlockID: assistantID.uuidString,
+                sequence: nextActivitySequence()
             )
         ]
 
@@ -298,18 +340,36 @@ final class AppState: ObservableObject {
             handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID)
             return
         }
+        let basePrompt = agentPrompt(prompt: prompt, attachments: attachments)
+        let memoryContext = memoryService.recallForTurn(
+            prompt: basePrompt,
+            projectName: selectedProject?.name,
+            projectRoot: selectedWorkspaceContext?.rootPath
+        )
+        let promptWithMemory: String
+        if memoryContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            promptWithMemory = basePrompt
+        } else {
+            promptWithMemory = """
+            \(basePrompt)
+
+            Relevant 9GClaw memory context:
+            \(memoryContext)
+            """
+        }
 
         let request = AgentRequest(
             sessionId: sessionID,
             projectPath: effectiveSelectedWorkspacePath,
-            prompt: prompt.isEmpty ? t(.reviewAttachedFiles) : prompt,
+            prompt: promptWithMemory,
+            attachments: attachments,
             providerConfig: providerConfig,
             apiKey: apiKey,
             priorMessages: historyBeforeSend,
             timeoutMs: nativeConfig?.apiTimeoutMs ?? settings.apiTimeoutMs,
             contextWindow: nativeConfig?.contextWindow ?? settings.contextWindow,
             permissionMode: composerPermissionMode,
-            runMode: composerRunMode,
+            runMode: requestedRunMode,
             workspaceContext: selectedWorkspaceContext,
             toolSettings: settings.permissions,
             routerRoute: nativeConfig?.defaultEntryID ?? "default",
@@ -318,28 +378,110 @@ final class AppState: ObservableObject {
                 return await self.requestAgentPermission(permission)
             }
         )
+        if let selectedProject {
+            routingService.recordRequest(
+                sessionID: sessionID,
+                title: selectedSession?.displayTitle ?? promptTitle(from: prompt),
+                projectName: selectedProject.displayName,
+                model: providerConfig.model,
+                route: request.routerRoute,
+                tier: requestedRunMode == .plan ? "REASONING" : "COMPLEX"
+            )
+        }
 
-        activeAgentTask?.cancel()
+        let runToken = UUID()
+        activeRunToken = runToken
         activeAgentTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            var sawTerminalEvent = false
             do {
                 for try await event in providerClient.stream(request: request) {
-                    self.handleAgentEvent(event, assistantID: assistantID)
+                    if event.isTerminal {
+                        sawTerminalEvent = true
+                    }
+                    self.handleAgentEvent(event, assistantID: assistantID, runToken: runToken)
+                }
+                if !sawTerminalEvent {
+                    self.handleAgentEvent(.complete(sessionId: sessionID), assistantID: assistantID, runToken: runToken)
                 }
             } catch {
-                self.handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID)
+                self.handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, runToken: runToken)
             }
         }
     }
 
+    private func agentPrompt(prompt: String, attachments: [FileAttachment]) -> String {
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !attachments.isEmpty else {
+            return trimmedPrompt.isEmpty ? t(.reviewAttachedFiles) : trimmedPrompt
+        }
+
+        var lines: [String] = []
+        if trimmedPrompt.isEmpty {
+            lines.append(t(.reviewAttachedFiles))
+        } else {
+            lines.append(trimmedPrompt)
+        }
+        lines.append("")
+        lines.append("Attached files:")
+        for attachment in attachments {
+            let mime = attachment.mimeType ?? "unknown"
+            lines.append("- \(attachment.fileName) (\(mime)): \(attachment.path)")
+            if attachment.isImage {
+                lines.append("  Image attachment is included as model input when the provider supports vision.")
+            } else if let excerpt = attachmentTextExcerpt(attachment) {
+                lines.append("  Excerpt:")
+                lines.append(excerpt.split(separator: "\n").map { "    \($0)" }.joined(separator: "\n"))
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func attachmentTextExcerpt(_ attachment: FileAttachment) -> String? {
+        let url = URL(fileURLWithPath: attachment.path)
+        let textExtensions = Set(["md", "txt", "swift", "js", "ts", "tsx", "jsx", "json", "yaml", "yml", "py", "rb", "go", "rs", "html", "css", "csv", "xml"])
+        guard textExtensions.contains(url.pathExtension.lowercased()) else { return nil }
+        guard
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+            let size = attributes[.size] as? NSNumber,
+            size.intValue <= 512_000,
+            let text = try? String(contentsOf: url, encoding: .utf8)
+        else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(8_000))
+    }
+
     func abortActiveRun() {
         activeAgentTask?.cancel()
+        activeAgentTask = nil
+        flushAllPendingAssistantDeltas()
+        assistantDeltaFlushTasks.values.forEach { $0.cancel() }
+        assistantDeltaFlushTasks.removeAll()
+        activeRunToken = nil
         resolveAllPendingPermissions(decision: .deny)
         if let selectedSessionID {
             markSession(selectedSessionID, state: .idle)
             finishStreamingMessage(sessionID: selectedSessionID)
+            cancelRunningActivities(sessionID: selectedSessionID)
         }
         statusLine = t(.stopGeneration)
+    }
+
+    private func finishCurrentRunAsSuperseded() {
+        guard activeRunToken != nil || activeAgentTask != nil || isCurrentSessionStreaming else { return }
+        activeAgentTask?.cancel()
+        activeAgentTask = nil
+        flushAllPendingAssistantDeltas()
+        assistantDeltaFlushTasks.values.forEach { $0.cancel() }
+        assistantDeltaFlushTasks.removeAll()
+        activeRunToken = nil
+        resolveAllPendingPermissions(decision: .deny)
+        if let selectedSessionID {
+            finishStreamingMessage(sessionID: selectedSessionID)
+            cancelRunningActivities(sessionID: selectedSessionID)
+            markSession(selectedSessionID, state: .idle)
+        }
     }
 
     func runShell(command: String) {
@@ -382,6 +524,82 @@ final class AppState: ObservableObject {
                 gitOutput = error.localizedDescription
             }
         }
+    }
+
+    func runGitFetch() {
+        runGitOperation(label: t(.fetch)) { service, repo in
+            try await service.fetch(repo: repo)
+        }
+    }
+
+    func runGitPull() {
+        runGitOperation(label: t(.pull)) { service, repo in
+            try await service.pull(repo: repo)
+        }
+    }
+
+    func runGitPush() {
+        runGitOperation(label: t(.push)) { service, repo in
+            try await service.push(repo: repo)
+        }
+    }
+
+    func renameProject(_ project: WorkspaceProject, displayName: String) {
+        let nextName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !nextName.isEmpty else { return }
+        guard let index = projects.firstIndex(where: { $0.id == project.id }) else { return }
+        projects[index].displayName = nextName
+        projects[index].lastActivity = Date()
+        do {
+            try persistManualProject(projects[index])
+            statusLine = "\(t(.rename)) \(nextName)"
+        } catch {
+            errorBanner = error.localizedDescription
+        }
+    }
+
+    func deleteProject(_ project: WorkspaceProject) {
+        guard let index = projects.firstIndex(where: { $0.id == project.id }) else { return }
+        let removed = projects.remove(at: index)
+        for session in removed.allSessions {
+            removeSessionArtifacts(session.id)
+        }
+        do {
+            try removeManualProjectFromConfig(removed)
+        } catch {
+            errorBanner = error.localizedDescription
+        }
+        if selectedProjectID == removed.id {
+            selectedProjectID = projects.first?.id
+            selectedSessionID = nil
+        }
+        statusLine = "\(t(.delete)) \(removed.displayName)"
+        refreshNativeToolData()
+    }
+
+    func renameSession(_ session: ProjectSession, in project: WorkspaceProject, title: String) {
+        let nextTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !nextTitle.isEmpty,
+              let projectIndex = projects.firstIndex(where: { $0.id == project.id }) else { return }
+        renameSession(in: &projects[projectIndex].sessions, sessionID: session.id, title: nextTitle)
+        renameSession(in: &projects[projectIndex].codexSessions, sessionID: session.id, title: nextTitle)
+        renameSession(in: &projects[projectIndex].cursorSessions, sessionID: session.id, title: nextTitle)
+        renameSession(in: &projects[projectIndex].geminiSessions, sessionID: session.id, title: nextTitle)
+        statusLine = "\(t(.rename)) \(nextTitle)"
+    }
+
+    func deleteSession(_ session: ProjectSession, in project: WorkspaceProject) {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == project.id }) else { return }
+        removeSession(from: &projects[projectIndex].sessions, sessionID: session.id)
+        removeSession(from: &projects[projectIndex].codexSessions, sessionID: session.id)
+        removeSession(from: &projects[projectIndex].cursorSessions, sessionID: session.id)
+        removeSession(from: &projects[projectIndex].geminiSessions, sessionID: session.id)
+        removeSessionArtifacts(session.id)
+        if selectedSessionID == session.id {
+            selectedSessionID = nil
+        }
+        statusLine = "\(t(.delete)) \(session.displayTitle)"
+        refreshNativeToolData()
     }
 
     func saveSettings() {
@@ -547,7 +765,9 @@ final class AppState: ObservableObject {
                     inputJSON: request.inputJSON,
                     reason: request.reason,
                     scope: request.scope,
-                    createdAt: Date()
+                    createdAt: Date(),
+                    kind: request.kind,
+                    interactivePayload: request.interactivePayload
                 )
             )
         }
@@ -557,11 +777,11 @@ final class AppState: ObservableObject {
         }
     }
 
-    func approvePermission(_ id: UUID) {
+    func approvePermission(_ id: UUID, updatedInputJSON: String? = nil) {
         guard let request = pendingPermissions.first(where: { $0.id == id }) else { return }
         pendingPermissions.removeAll { $0.id == id }
         statusLine = t(.permissionAllowedFormat, request.toolName)
-        permissionContinuations.removeValue(forKey: id)?.resume(returning: .allow(remember: false))
+        permissionContinuations.removeValue(forKey: id)?.resume(returning: .allow(remember: false, updatedInputJSON: updatedInputJSON))
     }
 
     func denyPermission(_ id: UUID) {
@@ -691,6 +911,21 @@ final class AppState: ObservableObject {
             "originalPath": project.rootPath,
             "displayName": project.displayName,
         ]
+        root["projects"] = rawProjects
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url)
+    }
+
+    private func removeManualProjectFromConfig(_ project: WorkspaceProject) throws {
+        let url = Self.claudeProjectConfigURL()
+        var root: [String: Any] = [:]
+        if let data = try? Data(contentsOf: url),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            root = json
+        }
+        var rawProjects = root["projects"] as? [String: Any] ?? [:]
+        rawProjects.removeValue(forKey: project.name)
         root["projects"] = rawProjects
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
@@ -916,28 +1151,82 @@ final class AppState: ObservableObject {
         return projects.firstIndex(where: { $0.id == selectedProjectID })
     }
 
+    private func runGitOperation(label: String, operation: @escaping @Sendable (GitService, URL) async throws -> String) {
+        guard let selectedProject else {
+            gitOutput = "No project selected."
+            return
+        }
+        gitOutput = "\(label)..."
+        let service = gitService
+        let repo = URL(fileURLWithPath: effectiveWorkspacePath(for: selectedProject))
+        Task { @MainActor in
+            do {
+                gitOutput = try await operation(service, repo)
+                if gitOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    gitOutput = "\(label) complete."
+                }
+            } catch {
+                gitOutput = error.localizedDescription
+            }
+        }
+    }
+
+    private func renameSession(in sessions: inout [ProjectSession], sessionID: String, title: String) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        sessions[index].title = title
+        sessions[index].updatedAt = Date()
+    }
+
+    private func removeSession(from sessions: inout [ProjectSession], sessionID: String) {
+        sessions.removeAll { $0.id == sessionID }
+    }
+
+    private func removeSessionArtifacts(_ sessionID: String) {
+        messagesBySession.removeValue(forKey: sessionID)
+        activitiesBySession.removeValue(forKey: sessionID)
+        turnsBySession.removeValue(forKey: sessionID)
+        turnItemsBySession.removeValue(forKey: sessionID)
+        guard let paths = try? AppPaths.current() else { return }
+        try? FileManager.default.removeItem(at: paths.sessions.appendingPathComponent("\(sessionID).json"))
+    }
+
     private func append(_ message: ChatMessage) {
         var messages = messagesBySession[message.sessionId] ?? []
         messages.append(message)
         messagesBySession[message.sessionId] = messages
     }
 
-    private func handleAgentEvent(_ event: AgentEvent, assistantID: UUID) {
+    private func handleAgentEvent(_ event: AgentEvent, assistantID: UUID, runToken: UUID? = nil) {
+        if let runToken, activeRunToken != runToken {
+            return
+        }
         switch event {
+        case .turnStarted(let turn):
+            upsertTurn(turn)
+        case .turnItemStarted(let item), .turnItemUpdated(let item), .turnItemCompleted(let item):
+            upsertTurnItem(item)
+        case .turnCompleted(let turn):
+            upsertTurn(turn)
         case .sessionCreated(let sessionId):
             statusLine = t(.sessionStartedFormat, sessionId)
         case .contentDelta(let text):
-            appendAssistantDelta(text, assistantID: assistantID)
+            queueAssistantDelta(text, assistantID: assistantID)
         case .toolUse(let id, let name, let inputJSON):
+            flushPendingAssistantDelta(assistantID: assistantID)
             upsertActivity(
                 id: id,
                 title: t(.runningToolFormat, name),
                 detail: inputJSON,
                 phase: activityPhase(for: name),
-                state: .running
+                state: .running,
+                toolName: name,
+                detailMessages: [inputJSON],
+                expandedDefault: false,
+                anchorBlockID: assistantID.uuidString
             )
             appendAssistantBlock(.toolCall(ToolCall(id: id, name: name, inputJSON: inputJSON, status: .pending)), assistantID: assistantID)
         case .toolResult(let id, let output, let isError):
+            flushPendingAssistantDelta(assistantID: assistantID)
             updateActivity(id: id, state: isError ? .failed : .completed, detail: output)
             appendAssistantBlock(.toolResult(ToolResult(toolCallId: id, output: output, isError: isError)), assistantID: assistantID)
         case .permissionRequest(let request):
@@ -946,16 +1235,21 @@ final class AppState: ObservableObject {
                 title: request.reason,
                 detail: request.inputJSON,
                 phase: activityPhase(for: request.toolName),
-                state: .running
+                state: .running,
+                toolName: request.toolName,
+                detailMessages: [request.inputJSON],
+                expandedDefault: request.kind == .askUserQuestion,
+                anchorBlockID: assistantID.uuidString
             )
         case .status(let status):
             statusLine = status
             upsertActivity(
-                id: "status",
+                id: statusActivityID(status, assistantID: assistantID),
                 title: statusTitle(status),
                 detail: statusDetail(status),
                 phase: .status,
-                state: .running
+                state: .running,
+                anchorBlockID: assistantID.uuidString
             )
         case .tokenBudget(let used, let total):
             updateTokenBudget(TokenBudget(used: used, total: total), assistantID: assistantID)
@@ -970,26 +1264,103 @@ final class AppState: ObservableObject {
                 )
             }
         case .streamEnd:
+            flushPendingAssistantDelta(assistantID: assistantID)
             if let selectedSessionID {
                 finishStreamingMessage(sessionID: selectedSessionID)
-                completeRunningActivities(sessionID: selectedSessionID)
+                completeRunningActivities(sessionID: selectedSessionID, anchorBlockID: assistantID.uuidString)
             }
         case .complete(let sessionId):
+            flushPendingAssistantDelta(assistantID: assistantID)
+            finishStreamingMessage(sessionID: sessionId)
             markSession(sessionId, state: .idle)
-            completeRunningActivities(sessionID: sessionId)
+            touchSessionConversation(sessionId)
+            completeRunningActivities(sessionID: sessionId, anchorBlockID: assistantID.uuidString)
             statusLine = t(.complete)
+            finalizeAgentRun(runToken: runToken)
         case .aborted(let sessionId):
+            flushPendingAssistantDelta(assistantID: assistantID)
+            finishStreamingMessage(sessionID: sessionId)
             markSession(sessionId, state: .idle)
-            cancelRunningActivities(sessionID: sessionId)
+            cancelRunningActivities(sessionID: sessionId, anchorBlockID: assistantID.uuidString)
             statusLine = t(.aborted)
+            finalizeAgentRun(runToken: runToken)
         case .error(let message):
+            flushPendingAssistantDelta(assistantID: assistantID)
             appendAssistantDelta("\n\(message)", assistantID: assistantID)
             if let selectedSessionID {
                 markSession(selectedSessionID, state: .failed)
+                touchSessionConversation(selectedSessionID)
                 finishStreamingMessage(sessionID: selectedSessionID)
-                failRunningActivities(sessionID: selectedSessionID, message: message)
+                failRunningActivities(sessionID: selectedSessionID, message: message, anchorBlockID: assistantID.uuidString)
             }
             errorBanner = message
+            finalizeAgentRun(runToken: runToken)
+        }
+    }
+
+    private func upsertTurn(_ turn: AgentTurn) {
+        var turns = turnsBySession[turn.sessionId] ?? []
+        if let index = turns.firstIndex(where: { $0.id == turn.id }) {
+            turns[index] = turn
+        } else {
+            turns.append(turn)
+        }
+        turnsBySession[turn.sessionId] = turns.sorted { $0.startedAt < $1.startedAt }
+        for item in turn.items {
+            upsertTurnItem(item)
+        }
+    }
+
+    private func upsertTurnItem(_ item: AgentTurnItem) {
+        guard item.isRenderable else { return }
+        var items = turnItemsBySession[item.sessionId] ?? []
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            items[index] = item
+        } else {
+            items.append(item)
+        }
+        turnItemsBySession[item.sessionId] = items.sorted {
+            if $0.turnId == $1.turnId {
+                return $0.sequence < $1.sequence
+            }
+            return $0.createdAt < $1.createdAt
+        }
+    }
+
+    private func finalizeAgentRun(runToken: UUID?) {
+        guard runToken == nil || activeRunToken == runToken else { return }
+        flushAllPendingAssistantDeltas()
+        if !pendingPermissions.isEmpty || !permissionContinuations.isEmpty {
+            resolveAllPendingPermissions(decision: .deny)
+        }
+        assistantDeltaFlushTasks.values.forEach { $0.cancel() }
+        assistantDeltaFlushTasks.removeAll()
+        activeRunToken = nil
+        activeAgentTask = nil
+    }
+
+    private func queueAssistantDelta(_ text: String, assistantID: UUID) {
+        guard !text.isEmpty else { return }
+        pendingAssistantDeltas[assistantID, default: ""] += text
+        guard assistantDeltaFlushTasks[assistantID] == nil else { return }
+        assistantDeltaFlushTasks[assistantID] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 24_000_000)
+            guard let self else { return }
+            self.assistantDeltaFlushTasks[assistantID] = nil
+            self.flushPendingAssistantDelta(assistantID: assistantID)
+        }
+    }
+
+    private func flushPendingAssistantDelta(assistantID: UUID) {
+        guard let text = pendingAssistantDeltas.removeValue(forKey: assistantID), !text.isEmpty else { return }
+        assistantDeltaFlushTasks[assistantID]?.cancel()
+        assistantDeltaFlushTasks[assistantID] = nil
+        appendAssistantDelta(text, assistantID: assistantID)
+    }
+
+    private func flushAllPendingAssistantDeltas() {
+        for assistantID in Array(pendingAssistantDeltas.keys) {
+            flushPendingAssistantDelta(assistantID: assistantID)
         }
     }
 
@@ -1000,10 +1371,11 @@ final class AppState: ObservableObject {
         var message = messages[index]
         if message.blocks.isEmpty {
             message.blocks = [.text(text)]
-        } else if case .text(let existing) = message.blocks[0] {
-            message.blocks[0] = .text(existing + text)
+        } else if let lastIndex = message.blocks.indices.last,
+                  case .text(let existing) = message.blocks[lastIndex] {
+            message.blocks[lastIndex] = .text(existing + text)
         } else {
-            message.blocks.insert(.text(text), at: 0)
+            message.blocks.append(.text(text))
         }
         messages[index] = message
         messagesBySession[selectedSessionID] = messages
@@ -1046,7 +1418,23 @@ final class AppState: ObservableObject {
     private func updateSessionState(in sessions: inout [ProjectSession], sessionId: String, state: SessionState) {
         guard let index = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         sessions[index].state = state
-        sessions[index].lastActivity = Date()
+    }
+
+    private func touchSessionConversation(_ sessionID: String) {
+        for projectIndex in projects.indices {
+            touchSessionConversation(in: &projects[projectIndex].sessions, sessionID: sessionID)
+            touchSessionConversation(in: &projects[projectIndex].codexSessions, sessionID: sessionID)
+            touchSessionConversation(in: &projects[projectIndex].cursorSessions, sessionID: sessionID)
+            touchSessionConversation(in: &projects[projectIndex].geminiSessions, sessionID: sessionID)
+        }
+    }
+
+    private func touchSessionConversation(in sessions: inout [ProjectSession], sessionID: String) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        let now = Date()
+        sessions[index].lastConversationAt = now
+        sessions[index].lastActivity = now
+        sessions[index].updatedAt = now
     }
 
     private func upsertActivity(
@@ -1054,7 +1442,11 @@ final class AppState: ObservableObject {
         title: String,
         detail: String,
         phase: AgentActivityPhase,
-        state: AgentActivityState
+        state: AgentActivityState,
+        toolName: String? = nil,
+        detailMessages: [String] = [],
+        expandedDefault: Bool = false,
+        anchorBlockID: String? = nil
     ) {
         guard let selectedSessionID else { return }
         var activities = activitiesBySession[selectedSessionID] ?? []
@@ -1063,6 +1455,12 @@ final class AppState: ObservableObject {
             activities[index].detail = detail
             activities[index].phase = phase
             activities[index].state = state
+            activities[index].toolName = toolName ?? activities[index].toolName
+            if !detailMessages.isEmpty {
+                activities[index].detailMessages = detailMessages
+            }
+            activities[index].expandedDefault = expandedDefault || activities[index].expandedDefault
+            activities[index].anchorBlockID = anchorBlockID ?? activities[index].anchorBlockID
             activities[index].updatedAt = Date()
         } else {
             activities.append(
@@ -1074,11 +1472,21 @@ final class AppState: ObservableObject {
                     phase: phase,
                     state: state,
                     createdAt: Date(),
-                    updatedAt: Date()
+                    updatedAt: Date(),
+                    toolName: toolName,
+                    detailMessages: detailMessages,
+                    expandedDefault: expandedDefault,
+                    anchorBlockID: anchorBlockID,
+                    sequence: nextActivitySequence()
                 )
             )
         }
         activitiesBySession[selectedSessionID] = activities
+    }
+
+    private func nextActivitySequence() -> Int {
+        activitySequence += 1
+        return activitySequence
     }
 
     private func updateActivity(id: String, state: AgentActivityState, detail: String) {
@@ -1087,29 +1495,37 @@ final class AppState: ObservableObject {
               let index = activities.firstIndex(where: { $0.id == id }) else { return }
         activities[index].state = state
         activities[index].detail = detail
+        if !detail.isEmpty {
+            activities[index].detailMessages.append(detail)
+        }
+        if state != .running {
+            activities[index].endedAt = Date()
+        }
         activities[index].updatedAt = Date()
         activitiesBySession[selectedSessionID] = activities
     }
 
-    private func completeRunningActivities(sessionID: String) {
+    private func completeRunningActivities(sessionID: String, anchorBlockID: String? = nil) {
         guard var activities = activitiesBySession[sessionID] else { return }
-        for index in activities.indices where activities[index].state == .running {
+        for index in activities.indices where activities[index].state == .running && activityMatchesAnchor(activities[index], anchorBlockID: anchorBlockID) {
             activities[index].state = .completed
+            activities[index].endedAt = Date()
             activities[index].updatedAt = Date()
         }
         activitiesBySession[sessionID] = activities
     }
 
-    private func cancelRunningActivities(sessionID: String) {
+    private func cancelRunningActivities(sessionID: String, anchorBlockID: String? = nil) {
         guard var activities = activitiesBySession[sessionID] else { return }
-        for index in activities.indices where activities[index].state == .running {
+        for index in activities.indices where activities[index].state == .running && activityMatchesAnchor(activities[index], anchorBlockID: anchorBlockID) {
             activities[index].state = .cancelled
+            activities[index].endedAt = Date()
             activities[index].updatedAt = Date()
         }
         activitiesBySession[sessionID] = activities
     }
 
-    private func failRunningActivities(sessionID: String, message: String) {
+    private func failRunningActivities(sessionID: String, message: String, anchorBlockID: String? = nil) {
         guard var activities = activitiesBySession[sessionID] else { return }
         if activities.isEmpty {
             activities.append(
@@ -1121,17 +1537,24 @@ final class AppState: ObservableObject {
                     phase: .status,
                     state: .failed,
                     createdAt: Date(),
-                    updatedAt: Date()
+                    updatedAt: Date(),
+                    anchorBlockID: anchorBlockID
                 )
             )
         } else {
-            for index in activities.indices where activities[index].state == .running {
+            for index in activities.indices where activities[index].state == .running && activityMatchesAnchor(activities[index], anchorBlockID: anchorBlockID) {
                 activities[index].state = .failed
                 activities[index].detail = message
+                activities[index].endedAt = Date()
                 activities[index].updatedAt = Date()
             }
         }
         activitiesBySession[sessionID] = activities
+    }
+
+    private func activityMatchesAnchor(_ activity: AgentActivity, anchorBlockID: String?) -> Bool {
+        guard let anchorBlockID else { return true }
+        return activity.anchorBlockID == anchorBlockID
     }
 
     private func resolveAllPendingPermissions(decision: AgentPermissionDecision) {
@@ -1157,21 +1580,31 @@ final class AppState: ObservableObject {
 
     private func statusTitle(_ status: String) -> String {
         switch status.lowercased() {
-        case "connecting": t(.connecting)
-        case "streaming": t(.receivingResponse)
-        case "thinking", "processing": t(.working)
-        case "waiting for permission": "Permission required"
-        default: status.isEmpty ? t(.working) : status.capitalized
+        case "connecting": return t(.connecting)
+        case "streaming": return t(.receivingResponse)
+        case "thinking", "processing": return t(.working)
+        case "continuing": return settings.language.resolved() == .chineseSimplified ? "正在继续" : "Continuing"
+        case "executing plan": return settings.language.resolved() == .chineseSimplified ? "正在执行计划" : "Executing plan"
+        case "waiting for permission": return "Permission required"
+        case let value where value.hasPrefix("running "):
+            let tool = String(value.dropFirst("running ".count))
+            return settings.language.resolved() == .chineseSimplified ? "正在执行 \(tool)" : "Running \(tool)"
+        case let value where value.hasPrefix("recovering "):
+            let tool = String(value.dropFirst("recovering ".count))
+            return settings.language.resolved() == .chineseSimplified ? "正在恢复 \(tool)" : "Recovering \(tool)"
+        default: return status.isEmpty ? t(.working) : status.capitalized
         }
     }
 
     private func statusDetail(_ status: String) -> String {
         switch status.lowercased() {
-        case "connecting": t(.openingRemoteModelStream)
-        case "streaming": t(.streamingAssistantOutput)
-        case "thinking", "processing": t(.agentStatusUpdate)
-        case "waiting for permission": "Approve or deny the requested tool action."
-        default: t(.agentStatusUpdate)
+        case "connecting": return t(.openingRemoteModelStream)
+        case "streaming": return t(.streamingAssistantOutput)
+        case "thinking", "processing": return t(.agentStatusUpdate)
+        case "continuing": return settings.language.resolved() == .chineseSimplified ? "模型还没有完成任务，正在推进下一步。" : "The model has not completed the task yet, continuing the next step."
+        case "executing plan": return settings.language.resolved() == .chineseSimplified ? "计划已确认，正在切换到执行。" : "The plan was approved; switching to implementation."
+        case "waiting for permission": return "Approve or deny the requested tool action."
+        default: return t(.agentStatusUpdate)
         }
     }
 
@@ -1190,6 +1623,26 @@ final class AppState: ObservableObject {
             return .subagent
         }
         return .tool
+    }
+
+    private func statusActivityID(_ status: String, assistantID: UUID) -> String {
+        let normalized = status
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.isEmpty {
+            return "status-\(assistantID.uuidString)-working"
+        }
+        if normalized == "connecting" ||
+            normalized == "streaming" ||
+            normalized == "thinking" ||
+            normalized == "processing" ||
+            normalized == "waiting for permission" {
+            return "status-\(assistantID.uuidString)-\(normalized.replacingOccurrences(of: " ", with: "-"))"
+        }
+        if normalized.hasPrefix("reconnecting") || normalized.contains("重试") || normalized.contains("retry") {
+            return "status-\(assistantID.uuidString)-reconnecting"
+        }
+        return "status-\(assistantID.uuidString)-\(UUID().uuidString)"
     }
 }
 

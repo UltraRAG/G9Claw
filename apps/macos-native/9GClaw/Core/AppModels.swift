@@ -216,6 +216,7 @@ struct ProjectSession: Identifiable, Hashable, Codable {
     var createdAt: Date
     var updatedAt: Date?
     var lastActivity: Date?
+    var lastConversationAt: Date? = nil
     var state: SessionState
 
     var displayTitle: String {
@@ -224,7 +225,7 @@ struct ProjectSession: Identifiable, Hashable, Codable {
     }
 
     var activityDate: Date {
-        lastActivity ?? updatedAt ?? createdAt
+        lastConversationAt ?? lastActivity ?? updatedAt ?? createdAt
     }
 }
 
@@ -263,12 +264,59 @@ struct ChatMessage: Identifiable, Hashable, Codable {
 struct AgentActivity: Identifiable, Hashable, Codable {
     var id: String
     var sessionId: String
+    var runID: String? = nil
     var title: String
     var detail: String
     var phase: AgentActivityPhase
     var state: AgentActivityState
     var createdAt: Date
     var updatedAt: Date
+    var toolName: String? = nil
+    var detailMessages: [String] = []
+    var expandedDefault: Bool = false
+    var anchorBlockID: String? = nil
+    var sequence: Int? = nil
+    var endedAt: Date? = nil
+    var summaryMetrics: [String: Int]? = nil
+}
+
+extension AgentActivity {
+    var isMeaningfulProcessTrace: Bool {
+        if toolName != nil { return true }
+        if phase != .status { return true }
+        if state == .failed || state == .cancelled { return true }
+        let haystack = "\(title) \(detail)".lowercased()
+        return haystack.contains("compact") ||
+            haystack.contains("压缩") ||
+            haystack.contains("permission") ||
+            haystack.contains("权限")
+    }
+
+    var shouldRenderInProcessTrace: Bool {
+        isMeaningfulProcessTrace || (state == .running && phase == .status)
+    }
+
+    static func processTraceActivities(_ activities: [AgentActivity]) -> [AgentActivity] {
+        activities
+            .filter(\.shouldRenderInProcessTrace)
+            .filter { activity in
+                !activity.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    !activity.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    activity.toolName != nil
+            }
+            .sorted { $0.createdAt < $1.createdAt }
+    }
+
+    static func processTraceActivities(_ activities: [AgentActivity], anchoredTo anchorBlockID: String?) -> [AgentActivity] {
+        guard let anchorBlockID else {
+            return processTraceActivities(activities)
+        }
+        return processTraceActivities(activities.filter { $0.anchorBlockID == anchorBlockID })
+    }
+
+    static func hasRenderableProcessTrace(_ activities: [AgentActivity]) -> Bool {
+        !processTraceActivities(activities).isEmpty
+    }
 }
 
 enum AgentActivityPhase: String, Codable {
@@ -310,11 +358,121 @@ struct ToolResult: Hashable, Codable {
     var isError: Bool
 }
 
+enum PermissionRequestKind: String, Hashable, Codable, Sendable {
+    case tool
+    case askUserQuestion
+    case exitPlanMode
+}
+
+struct AgentQuestionOption: Identifiable, Hashable, Codable, Sendable {
+    var label: String
+    var description: String?
+
+    var id: String { label }
+}
+
+struct AgentQuestion: Identifiable, Hashable, Codable, Sendable {
+    var header: String?
+    var question: String
+    var options: [AgentQuestionOption]
+    var multiSelect: Bool
+
+    var id: String { question }
+}
+
+struct AgentInteractivePayload: Hashable, Codable, Sendable {
+    var questions: [AgentQuestion]
+
+    static func askUserQuestion(from inputJSON: String) -> AgentInteractivePayload? {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        if let rawQuestions = object["questions"] as? [[String: Any]] {
+            let questions = rawQuestions.compactMap(normalizedQuestion(from:))
+            return questions.isEmpty ? nil : AgentInteractivePayload(questions: questions)
+        }
+
+        guard let legacyQuestion = (object["question"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !legacyQuestion.isEmpty else {
+            return nil
+        }
+        let options = normalizedOptions(from: object["options"])
+        return AgentInteractivePayload(
+            questions: [
+                AgentQuestion(
+                    header: (object["header"] as? String)?.nilIfBlank,
+                    question: legacyQuestion,
+                    options: options,
+                    multiSelect: object["multiSelect"] as? Bool ?? false
+                )
+            ]
+        )
+    }
+
+    static func updatedInputJSON(originalInputJSON: String, answers: [String: String]) -> String {
+        var object: [String: Any] = [:]
+        if let data = originalInputJSON.data(using: .utf8),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            object = parsed
+        }
+        object["answers"] = answers
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+              let string = String(data: data, encoding: .utf8) else {
+            return #"{"answers":{}}"#
+        }
+        return string
+    }
+
+    private static func normalizedQuestion(from object: [String: Any]) -> AgentQuestion? {
+        guard let question = (object["question"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !question.isEmpty else {
+            return nil
+        }
+        return AgentQuestion(
+            header: (object["header"] as? String)?.nilIfBlank,
+            question: question,
+            options: normalizedOptions(from: object["options"]),
+            multiSelect: object["multiSelect"] as? Bool ?? false
+        )
+    }
+
+    private static func normalizedOptions(from rawValue: Any?) -> [AgentQuestionOption] {
+        if let strings = rawValue as? [String] {
+            return strings
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .map { AgentQuestionOption(label: $0, description: nil) }
+        }
+        if let objects = rawValue as? [[String: Any]] {
+            return objects.compactMap { option in
+                guard let label = (option["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !label.isEmpty else {
+                    return nil
+                }
+                return AgentQuestionOption(label: label, description: (option["description"] as? String)?.nilIfBlank)
+            }
+        }
+        return []
+    }
+}
+
 struct FileAttachment: Identifiable, Hashable, Codable {
     var id: UUID
     var fileName: String
     var path: String
     var mimeType: String?
+
+    var isImage: Bool {
+        if mimeType?.lowercased().hasPrefix("image/") == true {
+            return true
+        }
+        return ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"].contains(
+            URL(fileURLWithPath: path).pathExtension.lowercased()
+        )
+    }
 }
 
 struct PermissionRequest: Identifiable, Hashable, Codable {
@@ -325,6 +483,8 @@ struct PermissionRequest: Identifiable, Hashable, Codable {
     var reason: String
     var scope: PermissionScope
     var createdAt: Date
+    var kind: PermissionRequestKind = .tool
+    var interactivePayload: AgentInteractivePayload? = nil
 }
 
 enum PermissionScope: String, Codable {
@@ -555,6 +715,7 @@ struct MemoryRecord: Identifiable, Hashable, Codable {
     var type: MemoryRecordType = .project
     var relativePath: String = ""
     var deprecated: Bool = false
+    var content: String = ""
 }
 
 enum MemoryRecordType: String, Codable, CaseIterable, Identifiable {
@@ -585,6 +746,161 @@ struct MemoryDashboardSnapshot: Hashable, Codable {
     var caseTraces: [String]
     var indexTraces: [String]
     var dreamTraces: [String]
+    var overview: MemoryOverview = .empty
+    var settings: MemorySettingsSnapshot = .defaults
+    var workspace: MemoryWorkspaceSnapshot = .empty
+    var caseTraceRecords: [MemoryTraceRecord] = []
+    var indexTraceRecords: [MemoryTraceRecord] = []
+    var dreamTraceRecords: [MemoryTraceRecord] = []
+    var lastDreamSnapshot: MemoryDreamSnapshot?
+    var scheduler: MemorySchedulerSnapshot = .disabled
+}
+
+struct MemoryOverview: Hashable, Codable {
+    var totalEntries: Int
+    var projectEntries: Int
+    var feedbackEntries: Int
+    var userEntries: Int
+    var latestMemoryAt: Date?
+    var lastIndexedAt: Date?
+    var lastDreamAt: Date?
+    var schedulerEnabled: Bool
+
+    static let empty = MemoryOverview(
+        totalEntries: 0,
+        projectEntries: 0,
+        feedbackEntries: 0,
+        userEntries: 0,
+        latestMemoryAt: nil,
+        lastIndexedAt: nil,
+        lastDreamAt: nil,
+        schedulerEnabled: false
+    )
+}
+
+struct MemorySettingsSnapshot: Hashable, Codable {
+    var reasoningMode: String
+    var autoIndexIntervalMinutes: Int
+    var autoDreamIntervalMinutes: Int
+
+    static let defaults = MemorySettingsSnapshot(
+        reasoningMode: "answer_first",
+        autoIndexIntervalMinutes: 30,
+        autoDreamIntervalMinutes: 60
+    )
+}
+
+struct MemoryWorkspaceSnapshot: Hashable, Codable {
+    var workspaceMode: String
+    var projectPath: String?
+    var selectedProjectId: String?
+    var selectedProject: MemoryProjectMeta?
+    var generalProjects: [MemoryProjectMeta]
+    var projectMeta: MemoryProjectMeta?
+    var manifestPath: String
+    var manifestContent: String
+    var totalFiles: Int
+    var totalProjects: Int
+    var totalFeedback: Int
+    var projectEntries: [MemoryRecord]
+    var feedbackEntries: [MemoryRecord]
+    var deprecatedProjectEntries: [MemoryRecord]
+    var deprecatedFeedbackEntries: [MemoryRecord]
+
+    static let empty = MemoryWorkspaceSnapshot(
+        workspaceMode: "project",
+        projectPath: nil,
+        selectedProjectId: nil,
+        selectedProject: nil,
+        generalProjects: [],
+        projectMeta: nil,
+        manifestPath: "MEMORY.md",
+        manifestContent: "",
+        totalFiles: 0,
+        totalProjects: 0,
+        totalFeedback: 0,
+        projectEntries: [],
+        feedbackEntries: [],
+        deprecatedProjectEntries: [],
+        deprecatedFeedbackEntries: []
+    )
+}
+
+struct MemoryProjectMeta: Identifiable, Hashable, Codable {
+    var id: String { projectId }
+    var projectId: String
+    var projectName: String
+    var description: String
+    var status: String
+    var workspacePath: String?
+    var relativePath: String?
+    var sourceType: String
+    var readOnly: Bool
+    var updatedAt: Date?
+}
+
+struct MemoryTraceRecord: Identifiable, Hashable, Codable {
+    var id: String
+    var title: String
+    var status: String
+    var trigger: String
+    var createdAt: Date
+    var meta: [String: String]
+    var context: String
+    var toolEvents: String
+    var reply: String
+    var steps: [MemoryTraceStep]
+}
+
+struct MemoryTraceStep: Identifiable, Hashable, Codable {
+    var id: String
+    var title: String
+    var detail: String
+    var status: String
+    var createdAt: Date
+}
+
+enum MemoryJobKind: String, Codable, Hashable, CaseIterable, Identifiable {
+    case recall
+    case index
+    case dream
+    case rollback
+
+    var id: String { rawValue }
+}
+
+enum MemoryJobPhase: String, Codable, Hashable {
+    case idle
+    case running
+    case completed
+    case failed
+}
+
+struct MemoryJobState: Identifiable, Hashable, Codable {
+    var id: MemoryJobKind { kind }
+    var kind: MemoryJobKind
+    var phase: MemoryJobPhase
+    var message: String
+    var traceID: String?
+    var startedAt: Date?
+    var endedAt: Date?
+
+    static func idle(_ kind: MemoryJobKind) -> MemoryJobState {
+        MemoryJobState(kind: kind, phase: .idle, message: "", traceID: nil, startedAt: nil, endedAt: nil)
+    }
+}
+
+struct MemoryDreamSnapshot: Hashable, Codable {
+    var capturedAt: Date
+    var rollbackReady: Bool
+    var summary: String
+}
+
+struct MemorySchedulerSnapshot: Hashable, Codable {
+    var enabled: Bool
+    var status: String
+
+    static let disabled = MemorySchedulerSnapshot(enabled: false, status: "disabled")
 }
 
 enum SkillScope: String, Codable, CaseIterable, Identifiable {
@@ -619,6 +935,26 @@ struct SkillValidationResult: Hashable, Codable {
     var warnings: [SkillValidationIssue]
     var fileCount: Int
     var totalBytes: Int
+}
+
+struct SkillHubSearchResult: Identifiable, Hashable, Codable {
+    var id: String { slug }
+    var slug: String
+    var name: String
+    var score: Double?
+}
+
+struct SkillHubInstallResult: Hashable, Codable {
+    var ok: Bool
+    var slug: String
+    var scope: SkillScope
+    var installPath: String
+    var installed: Bool
+    var skill: SkillRecord?
+    var stdout: String
+    var stderr: String
+    var exitCode: Int32
+    var needsForce: Bool
 }
 
 struct RoutingBucket: Hashable, Codable {
@@ -698,4 +1034,11 @@ struct AlwaysOnRunHistory: Identifiable, Hashable, Codable {
     var sourceId: String
     var outputLog: String
     var sessionId: String?
+}
+
+private extension String {
+    var nilIfBlank: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }

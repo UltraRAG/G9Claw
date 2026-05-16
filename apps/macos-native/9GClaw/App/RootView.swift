@@ -10,6 +10,10 @@ struct RootView: View {
                 SidebarView(width: $sidebarWidth)
                     .environmentObject(state)
                     .frame(width: CGFloat(sidebarWidth))
+            } else {
+                CollapsedSidebarRail()
+                    .environmentObject(state)
+                    .frame(width: DesignTokens.sidebarCollapsedRailWidth)
             }
 
             MainAreaView()
@@ -38,11 +42,26 @@ struct RootView: View {
         .task {
             await state.bootstrap()
         }
+        .preferredColorScheme(state.settings.colorScheme.swiftUIColorScheme)
+        .ignoresSafeArea(.container, edges: .top)
         .onAppear {
             sidebarWidth = min(
                 Double(DesignTokens.sidebarMaxWidth),
                 max(Double(DesignTokens.sidebarMinWidth), sidebarWidth)
             )
+        }
+    }
+}
+
+private extension AppColorScheme {
+    var swiftUIColorScheme: ColorScheme? {
+        switch self {
+        case .system:
+            return nil
+        case .light:
+            return .light
+        case .dark:
+            return .dark
         }
     }
 }

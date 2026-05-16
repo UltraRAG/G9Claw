@@ -14,9 +14,11 @@
 		B012 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = F012 /* DesignTokens.swift */; };
 		B013 /* ParityCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = F013 /* ParityCatalog.swift */; };
 		B014 /* LocalizationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F014 /* LocalizationService.swift */; };
+		B015 /* AgentTurnModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F015 /* AgentTurnModels.swift */; };
 		B020 /* AppPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = F020 /* AppPaths.swift */; };
 		B021 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F021 /* KeychainStore.swift */; };
 		B027 /* AppSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F027 /* AppSettingsStore.swift */; };
+		B028 /* NativeAgentCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F028 /* NativeAgentCore.swift */; };
 		B022 /* ProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F022 /* ProviderClient.swift */; };
 		B023 /* WorkspaceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F023 /* WorkspaceService.swift */; };
 		B024 /* GitService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F024 /* GitService.swift */; };
@@ -27,9 +29,13 @@
 		B032 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F032 /* ChatView.swift */; };
 		B033 /* ToolTabsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F033 /* ToolTabsViews.swift */; };
 		B034 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F034 /* SettingsView.swift */; };
+		B035 /* MarkdownRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F035 /* MarkdownRenderer.swift */; };
 		B040 /* 9gclaw-logo.png in Resources */ = {isa = PBXBuildFile; fileRef = F040 /* 9gclaw-logo.png */; };
 		B041 /* 9gclaw-logo-white.png in Resources */ = {isa = PBXBuildFile; fileRef = F041 /* 9gclaw-logo-white.png */; };
+		B042 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F042 /* Assets.xcassets */; };
 		B100 /* ParityLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100 /* ParityLogicTests.swift */; };
+		BF901 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FW901 /* AppIntents.framework */; };
+		BF902 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FW901 /* AppIntents.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -52,9 +58,11 @@
 		F012 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		F013 /* ParityCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityCatalog.swift; sourceTree = "<group>"; };
 		F014 /* LocalizationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationService.swift; sourceTree = "<group>"; };
+		F015 /* AgentTurnModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTurnModels.swift; sourceTree = "<group>"; };
 		F020 /* AppPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPaths.swift; sourceTree = "<group>"; };
 		F021 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		F027 /* AppSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsStore.swift; sourceTree = "<group>"; };
+		F028 /* NativeAgentCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAgentCore.swift; sourceTree = "<group>"; };
 		F022 /* ProviderClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderClient.swift; sourceTree = "<group>"; };
 		F023 /* WorkspaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceService.swift; sourceTree = "<group>"; };
 		F024 /* GitService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitService.swift; sourceTree = "<group>"; };
@@ -65,14 +73,21 @@
 		F032 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		F033 /* ToolTabsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolTabsViews.swift; sourceTree = "<group>"; };
 		F034 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		F035 /* MarkdownRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownRenderer.swift; sourceTree = "<group>"; };
 		F040 /* 9gclaw-logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "9gclaw-logo.png"; sourceTree = "<group>"; };
 		F041 /* 9gclaw-logo-white.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "9gclaw-logo-white.png"; sourceTree = "<group>"; };
+		F042 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F100 /* ParityLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityLogicTests.swift; sourceTree = "<group>"; };
+		FW901 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		BF001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		BF100 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+			BF001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (
+					BF901 /* AppIntents.framework in Frameworks */,
+				); runOnlyForDeploymentPostprocessing = 0; };
+			BF100 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (
+					BF902 /* AppIntents.framework in Frameworks */,
+				); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -81,6 +96,7 @@
 			children = (
 				G0100 /* 9GClaw */,
 				G1000 /* 9GClawTests */,
+				G8000 /* Frameworks */,
 				G9000 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -114,6 +130,7 @@
 				F012 /* DesignTokens.swift */,
 				F013 /* ParityCatalog.swift */,
 				F014 /* LocalizationService.swift */,
+				F015 /* AgentTurnModels.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -124,6 +141,7 @@
 				F020 /* AppPaths.swift */,
 				F021 /* KeychainStore.swift */,
 				F027 /* AppSettingsStore.swift */,
+				F028 /* NativeAgentCore.swift */,
 				F022 /* ProviderClient.swift */,
 				F023 /* WorkspaceService.swift */,
 				F024 /* GitService.swift */,
@@ -141,6 +159,7 @@
 				F032 /* ChatView.swift */,
 				F033 /* ToolTabsViews.swift */,
 				F034 /* SettingsView.swift */,
+				F035 /* MarkdownRenderer.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -148,6 +167,7 @@
 		G0150 /* Assets */ = {
 			isa = PBXGroup;
 			children = (
+				F042 /* Assets.xcassets */,
 				F040 /* 9gclaw-logo.png */,
 				F041 /* 9gclaw-logo-white.png */,
 			);
@@ -161,6 +181,14 @@
 			);
 			path = 9GClawTests;
 			sourceTree = "<group>";
+		};
+			G8000 /* Frameworks */ = {
+				isa = PBXGroup;
+				children = (
+					FW901 /* AppIntents.framework */,
+				);
+				name = Frameworks;
+				sourceTree = "<group>";
 		};
 		G9000 /* Products */ = {
 			isa = PBXGroup;
@@ -246,6 +274,7 @@
 
 /* Begin PBXResourcesBuildPhase section */
 		BR001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (
+				B042 /* Assets.xcassets in Resources */,
 				B040 /* 9gclaw-logo.png in Resources */,
 				B041 /* 9gclaw-logo-white.png in Resources */,
 			); runOnlyForDeploymentPostprocessing = 0; };
@@ -264,9 +293,11 @@
 				B012 /* DesignTokens.swift in Sources */,
 				B013 /* ParityCatalog.swift in Sources */,
 				B014 /* LocalizationService.swift in Sources */,
+				B015 /* AgentTurnModels.swift in Sources */,
 				B020 /* AppPaths.swift in Sources */,
 				B021 /* KeychainStore.swift in Sources */,
 				B027 /* AppSettingsStore.swift in Sources */,
+				B028 /* NativeAgentCore.swift in Sources */,
 				B022 /* ProviderClient.swift in Sources */,
 				B023 /* WorkspaceService.swift in Sources */,
 				B024 /* GitService.swift in Sources */,
@@ -277,6 +308,7 @@
 				B032 /* ChatView.swift in Sources */,
 				B033 /* ToolTabsViews.swift in Sources */,
 				B034 /* SettingsView.swift in Sources */,
+				B035 /* MarkdownRenderer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -342,6 +374,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -387,6 +420,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 			};
@@ -395,19 +429,23 @@
 		CFGT01 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = 9GClaw/App/Info.plist;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				ENABLE_ASSISTANT_INTENTS_PROVIDER_VALIDATION = NO;
+					GENERATE_INFOPLIST_FILE = NO;
+					INFOPLIST_FILE = 9GClaw/App/Info.plist;
+					LM_FILTER_WARNINGS = YES;
+					MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cc.edgeclaw.9gclaw.native;
 				PRODUCT_MODULE_NAME = NineGClaw;
 				PRODUCT_NAME = 9GClaw;
+				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 6.0;
 			};
@@ -416,19 +454,23 @@
 		CFGT02 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = 9GClaw/App/Info.plist;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				ENABLE_ASSISTANT_INTENTS_PROVIDER_VALIDATION = NO;
+					GENERATE_INFOPLIST_FILE = NO;
+					INFOPLIST_FILE = 9GClaw/App/Info.plist;
+					LM_FILTER_WARNINGS = YES;
+					MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cc.edgeclaw.9gclaw.native;
 				PRODUCT_MODULE_NAME = NineGClaw;
 				PRODUCT_NAME = 9GClaw;
+				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 6.0;
 			};
@@ -440,11 +482,14 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_STYLE = Manual;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+					ENABLE_ASSISTANT_INTENTS_PROVIDER_VALIDATION = NO;
+					GENERATE_INFOPLIST_FILE = YES;
+					LM_FILTER_WARNINGS = YES;
+					MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cc.edgeclaw.9gclaw.nativeTests;
 				PRODUCT_MODULE_NAME = NineGClawTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/9GClaw.app/Contents/MacOS/9GClaw";
@@ -457,11 +502,14 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_STYLE = Manual;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+					ENABLE_ASSISTANT_INTENTS_PROVIDER_VALIDATION = NO;
+					GENERATE_INFOPLIST_FILE = YES;
+					LM_FILTER_WARNINGS = YES;
+					MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cc.edgeclaw.9gclaw.nativeTests;
 				PRODUCT_MODULE_NAME = NineGClawTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/9GClaw.app/Contents/MacOS/9GClaw";

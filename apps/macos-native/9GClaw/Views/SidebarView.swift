@@ -72,7 +72,8 @@ struct SidebarView: View {
         }
         .padding(.leading, 8)
         .padding(.trailing, 16)
-        .frame(height: DesignTokens.sidebarHeaderHeight)
+        .padding(.top, 30)
+        .frame(height: DesignTokens.sidebarHeaderHeight + 30)
     }
 
     private var sectionToggle: some View {
@@ -163,7 +164,9 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 2) {
             sectionHeader(
                 title: state.t(.general),
-                rightActionIcon: "square.and.pencil",
+                leftActionIcon: isGeneralExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical",
+                leftAction: toggleGeneralExpanded,
+                rightActionIcon: "plus",
                 rightAction: {
                     if let generalProject {
                         expandedProjectIDs.insert(generalProject.id)
@@ -174,8 +177,7 @@ struct SidebarView: View {
             )
 
             if let generalProject {
-                sessionRows(for: generalProject, flat: true)
-                    .padding(.horizontal, 4)
+                projectGroup(generalProject)
             } else {
                 Text(state.t(.noGeneralWorkspaceFound))
                     .font(.system(size: 11))
@@ -278,10 +280,14 @@ struct SidebarView: View {
         }
         .contextMenu {
             Button(state.t(.rename)) {
-                state.errorBanner = state.t(.projectRenameUnavailable)
+                if let nextName = promptText(title: state.t(.rename), initialValue: project.displayName) {
+                    state.renameProject(project, displayName: nextName)
+                }
             }
             Button(state.t(.delete), role: .destructive) {
-                state.errorBanner = state.t(.projectDeleteUnavailable)
+                if confirmDelete(name: project.displayName) {
+                    state.deleteProject(project)
+                }
             }
         }
     }
@@ -385,12 +391,39 @@ struct SidebarView: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button(state.t(.rename)) {
-                state.errorBanner = state.t(.sessionRenameUnavailable)
+                if let nextTitle = promptText(title: state.t(.rename), initialValue: session.displayTitle) {
+                    state.renameSession(session, in: project, title: nextTitle)
+                }
             }
             Button(state.t(.delete), role: .destructive) {
-                state.errorBanner = state.t(.sessionDeleteUnavailable)
+                if confirmDelete(name: session.displayTitle) {
+                    state.deleteSession(session, in: project)
+                }
             }
         }
+    }
+
+    private func promptText(title: String, initialValue: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.stringValue = initialValue
+        alert.accessoryView = field
+        alert.addButton(withTitle: title)
+        alert.addButton(withTitle: state.t(.cancel))
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private func confirmDelete(name: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "\(state.t(.delete)) \(name)?"
+        alert.informativeText = state.t(.cannotBeUndone)
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: state.t(.delete))
+        alert.addButton(withTitle: state.t(.cancel))
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private var footer: some View {
@@ -463,6 +496,11 @@ struct SidebarView: View {
         !otherProjects.isEmpty && otherProjects.allSatisfy { expandedProjectIDs.contains($0.id) }
     }
 
+    private var isGeneralExpanded: Bool {
+        guard let generalProject else { return false }
+        return expandedProjectIDs.contains(generalProject.id)
+    }
+
     private func toggleProject(_ project: WorkspaceProject) {
         if expandedProjectIDs.contains(project.id) {
             expandedProjectIDs.remove(project.id)
@@ -477,6 +515,16 @@ struct SidebarView: View {
             otherProjects.forEach { expandedProjectIDs.remove($0.id) }
         } else {
             otherProjects.forEach { expandedProjectIDs.insert($0.id) }
+        }
+    }
+
+    private func toggleGeneralExpanded() {
+        guard let generalProject else { return }
+        if expandedProjectIDs.contains(generalProject.id) {
+            expandedProjectIDs.remove(generalProject.id)
+        } else {
+            expandedProjectIDs.insert(generalProject.id)
+            state.selectProject(generalProject)
         }
     }
 
@@ -506,6 +554,38 @@ struct SidebarView: View {
 
     private func clamp(_ value: Double, min: Double, max: Double) -> Double {
         Swift.min(max, Swift.max(min, value))
+    }
+}
+
+struct CollapsedSidebarRail: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Button {
+                    state.isSidebarVisible = true
+                } label: {
+                    Image(systemName: "sidebar.left")
+                        .font(.system(size: 16, weight: .regular))
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(WebIconButtonStyle())
+                .help(state.t(.showSidebar))
+            }
+            .padding(.trailing, 10)
+            .padding(.top, 30)
+            .frame(height: DesignTokens.sidebarHeaderHeight + 30)
+
+            Spacer(minLength: 0)
+        }
+        .background(DesignTokens.sidebarBackground)
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(DesignTokens.separator)
+                .frame(width: 1)
+        }
     }
 }
 
@@ -802,8 +882,10 @@ private struct WebIconButtonStyle: ButtonStyle {
 }
 
 private struct LogoImage: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
-        if let image = Self.image {
+        if let image = image {
             Image(nsImage: image)
                 .resizable()
                 .scaledToFit()
@@ -824,11 +906,15 @@ private struct LogoImage: View {
         }
     }
 
-    private static var image: NSImage? {
-        if let url = Bundle.main.url(forResource: "9gclaw-logo", withExtension: "png") {
+    private var image: NSImage? {
+        let resourceName = colorScheme == .dark ? "9gclaw-logo-white" : "9gclaw-logo"
+        if let url = Bundle.main.url(forResource: resourceName, withExtension: "png") {
             return NSImage(contentsOf: url)
         }
-        return NSImage(named: "9gclaw-logo")
+        if let fallback = Bundle.main.url(forResource: "9gclaw-logo", withExtension: "png") {
+            return NSImage(contentsOf: fallback)
+        }
+        return NSImage(named: resourceName) ?? NSImage(named: "9gclaw-logo")
     }
 }
 

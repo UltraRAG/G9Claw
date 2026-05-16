@@ -18,67 +18,75 @@ struct MainAreaView: View {
 
     private var header: some View {
         GeometryReader { proxy in
-            let switcherMaxWidth = min(620, max(280, proxy.size.width * 0.70))
+            let availableWidth = proxy.size.width
+            let showSessionTitle = availableWidth >= 1160
+            let horizontalPadding: CGFloat = availableWidth < 760 ? 14 : 24
+            let controlGap: CGFloat = availableWidth < 1080 ? 8 : 16
+            let toolMaxWidth = min(max(560, availableWidth * 0.70), availableWidth - 220)
 
             HStack(spacing: 0) {
-                if !state.isSidebarVisible {
-                    Button {
-                        state.isSidebarVisible = true
-                    } label: {
-                        Image(systemName: "sidebar.left")
-                            .font(.system(size: 16))
-                            .frame(width: 32, height: 32)
-                    }
-                    .buttonStyle(MainHeaderIconButtonStyle())
-                    .padding(.trailing, 16)
-                    .help(state.t(.showSidebar))
-                }
+                breadcrumb(showSessionTitle: showSessionTitle)
+                    .frame(minWidth: min(240, max(150, availableWidth * 0.24)), maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(3)
+                    .clipped()
 
-                breadcrumb
-                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-
-                toolSwitcher(maxWidth: switcherMaxWidth)
-                    .padding(.leading, 16)
+                toolSwitcher()
+                    .padding(.leading, controlGap)
+                    .frame(width: max(320, toolMaxWidth), alignment: .trailing)
+                    .layoutPriority(2)
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, horizontalPadding)
             .frame(width: proxy.size.width, height: DesignTokens.headerHeight)
         }
         .frame(height: DesignTokens.headerHeight)
         .background(DesignTokens.background)
     }
 
-    private var breadcrumb: some View {
+    private func breadcrumb(showSessionTitle: Bool) -> some View {
         HStack(spacing: 8) {
             Text(state.selectedProject?.displayName ?? "Home")
                 .foregroundStyle(DesignTokens.neutral500)
                 .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(3)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: 80, alignment: .leading)
             Text("/")
                 .foregroundStyle(DesignTokens.neutral400.opacity(0.60))
             Text(state.tabLabel(state.activeTab))
                 .fontWeight(.medium)
                 .foregroundStyle(DesignTokens.text)
-            if let session = state.selectedSession {
+                .lineLimit(1)
+                .layoutPriority(1)
+            if showSessionTitle, let session = state.selectedSession {
                 Text(session.displayTitle)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(DesignTokens.neutral500)
                     .lineLimit(1)
+                    .truncationMode(.tail)
                     .padding(.leading, 8)
+                    .layoutPriority(0)
             }
         }
         .font(.system(size: 13))
         .frame(minWidth: 0, alignment: .leading)
     }
 
-    private func toolSwitcher(maxWidth: CGFloat) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(AppTab.primaryTabs, id: \.id) { tab in
-                    toolButton(tab)
+    @ViewBuilder
+    private func toolSwitcher() -> some View {
+        GeometryReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(AppTab.primaryTabs, id: \.id) { tab in
+                        toolButton(tab)
+                    }
                 }
+                .frame(minWidth: proxy.size.width, alignment: .trailing)
             }
+            .frame(width: proxy.size.width, height: 36, alignment: .trailing)
         }
         .frame(height: 36)
-        .frame(maxWidth: maxWidth)
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     private func toolButton(_ tab: AppTab) -> some View {
@@ -94,6 +102,8 @@ struct MainAreaView: View {
                     .imageScale(.small)
                 Text(state.tabLabel(tab))
                     .font(.system(size: 13, weight: isActive ? .medium : .regular))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .padding(.horizontal, 10)
             .frame(height: 32)
@@ -112,7 +122,9 @@ struct MainAreaView: View {
                 }
             }
         }
+        .fixedSize(horizontal: true, vertical: false)
         .buttonStyle(.plain)
+        .help(state.tabLabel(tab))
     }
 
     @ViewBuilder

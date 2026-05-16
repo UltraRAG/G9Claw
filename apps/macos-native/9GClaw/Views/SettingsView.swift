@@ -243,16 +243,16 @@ private struct SettingsContentView: View {
 
             SettingsSectionBlock(title: state.t(.codeEditor)) {
                 SettingsCardBlock(divided: true) {
-                    SettingsRowBlock(title: "Word Wrap", detail: "Wrap long lines in the native editor.") {
+                    SettingsRowBlock(title: state.t(.wordWrap), detail: state.t(.wordWrapDetail)) {
                         Toggle("", isOn: $state.settings.codeEditor.wordWrap).labelsHidden()
                     }
-                    SettingsRowBlock(title: "Show Minimap", detail: "Reserve space for a lightweight minimap column.") {
+                    SettingsRowBlock(title: state.t(.showMinimap), detail: state.t(.showMinimapDetail)) {
                         Toggle("", isOn: $state.settings.codeEditor.showMinimap).labelsHidden()
                     }
-                    SettingsRowBlock(title: "Line Numbers", detail: "Show line numbers in editable text files.") {
+                    SettingsRowBlock(title: state.t(.lineNumbers), detail: state.t(.lineNumbersDetail)) {
                         Toggle("", isOn: $state.settings.codeEditor.lineNumbers).labelsHidden()
                     }
-                    SettingsRowBlock(title: "Font Size", detail: "Code editor font size.") {
+                    SettingsRowBlock(title: state.t(.fontSize), detail: state.t(.fontSizeDetail)) {
                         Picker("", selection: $state.settings.codeEditor.fontSize) {
                             ForEach([10, 11, 12, 13, 14, 15, 16, 18, 20], id: \.self) { size in
                                 Text("\(size)px").tag(size)
@@ -270,7 +270,7 @@ private struct SettingsContentView: View {
         VStack(alignment: .leading, spacing: 26) {
             SettingsSectionBlock(
                 title: state.t(.permissions),
-                detail: "Manage which tools the assistant can run without asking."
+                detail: state.t(.permissionsManageDetail)
             ) {
                 HStack(spacing: 8) {
                     Button {
@@ -297,29 +297,29 @@ private struct SettingsContentView: View {
                 tint: DesignTokens.success,
                 items: state.settings.permissions.allowedTools,
                 quickItems: ToolPermissionSettings.quickAllowedTools,
-                placeholder: #"e.g. "Bash(git log:*)" or "Write""#,
+                placeholder: state.t(.allowedToolPlaceholder),
                 onAdd: state.addAllowedTool,
                 onRemove: state.removeAllowedTool
             )
 
             PermissionListSection(
                 title: state.t(.blockedTools),
-                detail: "Tools the assistant is never allowed to use.",
+                detail: state.t(.blockedToolsDetail),
                 tint: DesignTokens.danger,
                 items: state.settings.permissions.disallowedTools,
                 quickItems: ToolPermissionSettings.quickBlockedTools,
-                placeholder: #"e.g. "Bash(rm:*)""#,
+                placeholder: state.t(.blockedToolPlaceholder),
                 onAdd: state.addBlockedTool,
                 onRemove: state.removeBlockedTool
             )
 
-            SettingsSectionBlock(title: "Pattern examples") {
+            SettingsSectionBlock(title: state.t(.patternExamples)) {
                 SettingsCardBlock {
                     VStack(alignment: .leading, spacing: 8) {
-                        CodeExample("Bash(git log:*)", "allow all git log commands")
-                        CodeExample("Bash(git diff:*)", "allow all git diff commands")
-                        CodeExample("Write", "allow all writes")
-                        CodeExample("Bash(rm:*)", "block all rm commands")
+                        CodeExample("Bash(git log:*)", state.t(.allowAllGitLogCommands))
+                        CodeExample("Bash(git diff:*)", state.t(.allowAllGitDiffCommands))
+                        CodeExample("Write", state.t(.allowAllWrites))
+                        CodeExample("Bash(rm:*)", state.t(.blockAllRmCommands))
                     }
                     .padding(14)
                 }
@@ -510,10 +510,10 @@ private struct SettingsContentView: View {
         SettingsSectionBlock(title: state.t(.reload), detail: state.t(.reloadDetail)) {
             SettingsCardBlock {
                 VStack(alignment: .leading, spacing: 8) {
-                    ReloadSummaryRow(name: state.t(.processEnv), state: "reloaded", detail: state.t(.nativeSettingsApplied))
-                    ReloadSummaryRow(name: state.t(.memory), state: configBool("memory.enabled") ? "reloaded" : "skipped", detail: configBool("memory.enabled") ? state.t(.memoryServiceEnabled) : state.t(.memoryDisabled))
-                    ReloadSummaryRow(name: state.t(.routing), state: configBool("router.enabled") ? "reloaded" : "skipped", detail: configBool("router.enabled") ? state.t(.routerDashboardNative) : state.t(.routerDisabled))
-                    ReloadSummaryRow(name: state.t(.gateway), state: configBool("gateway.enabled") ? "reloaded" : "skipped", detail: configBool("gateway.enabled") ? state.t(.gatewayConfigParsed) : state.t(.gatewayDisabled))
+                    ReloadSummaryRow(name: state.t(.processEnv), isReloaded: true, detail: state.t(.nativeSettingsApplied))
+                    ReloadSummaryRow(name: state.t(.memory), isReloaded: configBool("memory.enabled"), detail: configBool("memory.enabled") ? state.t(.memoryServiceEnabled) : state.t(.memoryDisabled))
+                    ReloadSummaryRow(name: state.t(.routing), isReloaded: configBool("router.enabled"), detail: configBool("router.enabled") ? state.t(.routerDashboardNative) : state.t(.routerDisabled))
+                    ReloadSummaryRow(name: state.t(.gateway), isReloaded: configBool("gateway.enabled"), detail: configBool("gateway.enabled") ? state.t(.gatewayConfigParsed) : state.t(.gatewayDisabled))
                 }
                 .padding(14)
             }
@@ -546,25 +546,25 @@ private struct SettingsContentView: View {
     private var configSectionContent: some View {
         switch configSection {
         case .runtime:
-            SettingsSectionBlock(title: "Runtime", detail: "Local paths and native runtime defaults.") {
+            SettingsSectionBlock(title: state.t(.runtime), detail: state.t(.runtimeDetail)) {
                 SettingsCardBlock(divided: true) {
                     ConfigGrid {
-                        SettingsTextField("Host", text: configBinding("runtime.host"))
-                        SettingsTextField("Server Port", text: configBinding("runtime.serverPort"))
-                        SettingsTextField("Vite Port", text: configBinding("runtime.vitePort"))
-                        SettingsTextField("Proxy Port", text: configBinding("runtime.proxyPort"))
-                        SettingsTextField("Context Window", text: configBinding("runtime.contextWindow"))
-                        SettingsTextField("API Timeout Ms", text: configBinding("runtime.apiTimeoutMs"))
-                        SettingsTextField("HTTPS Proxy", text: configBinding("runtime.httpsProxy"))
-                        SettingsTextField("Database Path", text: configBinding("runtime.databasePath"))
-                        SettingsTextField("Workspaces Root", text: Binding(
+                        SettingsTextField(state.t(.host), text: configBinding("runtime.host"))
+                        SettingsTextField(state.t(.serverPort), text: configBinding("runtime.serverPort"))
+                        SettingsTextField(state.t(.vitePort), text: configBinding("runtime.vitePort"))
+                        SettingsTextField(state.t(.proxyPort), text: configBinding("runtime.proxyPort"))
+                        SettingsTextField(state.t(.contextWindow), text: configBinding("runtime.contextWindow"))
+                        SettingsTextField(state.t(.apiTimeoutMs), text: configBinding("runtime.apiTimeoutMs"))
+                        SettingsTextField(state.t(.httpsProxy), text: configBinding("runtime.httpsProxy"))
+                        SettingsTextField(state.t(.databasePath), text: configBinding("runtime.databasePath"))
+                        SettingsTextField(state.t(.workspacesRoot), text: Binding(
                             get: { state.settings.workspacesRoot },
                             set: { value in
                                 state.settings.workspacesRoot = value
                                 setConfigValue("runtime.workspacesRoot", value)
                             }
                         ))
-                        SettingsTextField("General Workspace", text: Binding(
+                        SettingsTextField(state.t(.generalWorkspace), text: Binding(
                             get: { state.settings.generalWorkspacePath },
                             set: { value in
                                 state.settings.generalWorkspacePath = value
@@ -580,10 +580,10 @@ private struct SettingsContentView: View {
         case .agents:
             VStack(alignment: .leading, spacing: 18) {
                 SettingsSectionBlock(title: state.t(.mainAgent)) {
-                    SettingsCardBlock { ConfigGrid { SettingsTextField("Model", text: configBinding("agents.main.model")) }.padding(14) }
+                    SettingsCardBlock { ConfigGrid { SettingsTextField(state.t(.model), text: configBinding("agents.main.model")) }.padding(14) }
                 }
                 SettingsSectionBlock(title: state.t(.subagents)) {
-                    SettingsCardBlock { ConfigGrid { SettingsTextField("Default", text: configBinding("agents.subagents.default")) }.padding(14) }
+                    SettingsCardBlock { ConfigGrid { SettingsTextField(state.t(.defaultConfig), text: configBinding("agents.subagents.default")) }.padding(14) }
                 }
             }
         case .alwaysOn:
@@ -594,12 +594,12 @@ private struct SettingsContentView: View {
                             WebSettingsToggle(isOn: configBoolBinding("alwaysOn.discovery.trigger.enabled"))
                         }
                         ConfigGrid {
-                            SettingsTextField("Tick Interval Minutes", text: configBinding("alwaysOn.discovery.trigger.tickIntervalMinutes"))
-                            SettingsTextField("Cooldown Minutes", text: configBinding("alwaysOn.discovery.trigger.cooldownMinutes"))
-                            SettingsTextField("Daily Budget", text: configBinding("alwaysOn.discovery.trigger.dailyBudget"))
-                            SettingsTextField("Heartbeat Stale Seconds", text: configBinding("alwaysOn.discovery.trigger.heartbeatStaleSeconds"))
-                            SettingsTextField("Recent User Msg Minutes", text: configBinding("alwaysOn.discovery.trigger.recentUserMsgMinutes"))
-                            SettingsTextField("Prefer Client", text: configBinding("alwaysOn.discovery.trigger.preferClient"))
+                            SettingsTextField(state.t(.tickIntervalMinutes), text: configBinding("alwaysOn.discovery.trigger.tickIntervalMinutes"))
+                            SettingsTextField(state.t(.cooldownMinutes), text: configBinding("alwaysOn.discovery.trigger.cooldownMinutes"))
+                            SettingsTextField(state.t(.dailyBudget), text: configBinding("alwaysOn.discovery.trigger.dailyBudget"))
+                            SettingsTextField(state.t(.heartbeatStaleSeconds), text: configBinding("alwaysOn.discovery.trigger.heartbeatStaleSeconds"))
+                            SettingsTextField(state.t(.recentUserMsgMinutes), text: configBinding("alwaysOn.discovery.trigger.recentUserMsgMinutes"))
+                            SettingsTextField(state.t(.preferClient), text: configBinding("alwaysOn.discovery.trigger.preferClient"))
                         }
                         .padding(14)
                     }
@@ -607,22 +607,22 @@ private struct SettingsContentView: View {
             }
         case .memory:
             VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: "Memory") {
+                SettingsSectionBlock(title: state.t(.memory)) {
                     SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: state.t(.enabled), detail: "Enable project and user memory capture.") {
+                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.memoryDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("memory.enabled"))
                         }
                         SettingsRowBlock(title: state.t(.includeAssistant), detail: state.t(.includeAssistantDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("memory.includeAssistant"))
                         }
                         ConfigGrid {
-                            SettingsTextField("Model", text: configBinding("memory.model"))
-                            SettingsTextField("Reasoning Mode", text: configBinding("memory.reasoningMode"))
-                            SettingsTextField("Auto Index Interval Minutes", text: configBinding("memory.autoIndexIntervalMinutes"))
-                            SettingsTextField("Auto Dream Interval Minutes", text: configBinding("memory.autoDreamIntervalMinutes"))
-                            SettingsTextField("Capture Strategy", text: configBinding("memory.captureStrategy"))
-                            SettingsTextField("Max Message Chars", text: configBinding("memory.maxMessageChars"))
-                            SettingsTextField("Heartbeat Batch Size", text: configBinding("memory.heartbeatBatchSize"))
+                            SettingsTextField(state.t(.model), text: configBinding("memory.model"))
+                            SettingsTextField(state.t(.reasoningMode), text: configBinding("memory.reasoningMode"))
+                            SettingsTextField(state.t(.autoIndexIntervalMinutes), text: configBinding("memory.autoIndexIntervalMinutes"))
+                            SettingsTextField(state.t(.autoDreamIntervalMinutes), text: configBinding("memory.autoDreamIntervalMinutes"))
+                            SettingsTextField(state.t(.captureStrategy), text: configBinding("memory.captureStrategy"))
+                            SettingsTextField(state.t(.maxMessageChars), text: configBinding("memory.maxMessageChars"))
+                            SettingsTextField(state.t(.heartbeatBatchSize), text: configBinding("memory.heartbeatBatchSize"))
                         }
                         .padding(14)
                     }
@@ -639,12 +639,12 @@ private struct SettingsContentView: View {
                             WebSettingsToggle(isOn: configBoolBinding("rag.disableBuiltInWebTools"))
                         }
                         ConfigGrid {
-                            SettingsTextField("Local Knowledge Base URL", text: configBinding("rag.localKnowledge.baseUrl"))
-                            SettingsTextField("Embedding Model", text: configBinding("rag.localKnowledge.modelName"))
-                            SettingsTextField("Database URL", text: configBinding("rag.localKnowledge.databaseUrl"))
-                            SettingsTextField("Default Top K", text: configBinding("rag.localKnowledge.defaultTopK"))
-                            SettingsTextField("GLM Web Search Base URL", text: configBinding("rag.glmWebSearch.baseUrl"))
-                            SettingsTextField("GLM Default Top K", text: configBinding("rag.glmWebSearch.defaultTopK"))
+                            SettingsTextField(state.t(.localKnowledgeBaseURL), text: configBinding("rag.localKnowledge.baseUrl"))
+                            SettingsTextField(state.t(.embeddingModel), text: configBinding("rag.localKnowledge.modelName"))
+                            SettingsTextField(state.t(.databaseURL), text: configBinding("rag.localKnowledge.databaseUrl"))
+                            SettingsTextField(state.t(.defaultTopK), text: configBinding("rag.localKnowledge.defaultTopK"))
+                            SettingsTextField(state.t(.glmWebSearchBaseURL), text: configBinding("rag.glmWebSearch.baseUrl"))
+                            SettingsTextField(state.t(.glmDefaultTopK), text: configBinding("rag.glmWebSearch.defaultTopK"))
                         }
                         .padding(14)
                     }
@@ -661,15 +661,15 @@ private struct SettingsContentView: View {
                             WebSettingsToggle(isOn: configBoolBinding("router.log"))
                         }
                         ConfigGrid {
-                            SettingsTextField("Host", text: configBinding("router.host"))
-                            SettingsTextField("Port", text: configBinding("router.port"))
-                            SettingsTextField("API Timeout Ms", text: configBinding("router.apiTimeoutMs"))
-                            SettingsTextField("Default Route Model", text: configBinding("router.routes.default.model"))
-                            SettingsTextField("Background Route Model", text: configBinding("router.routes.background.model"))
-                            SettingsTextField("Think Route Model", text: configBinding("router.routes.think.model"))
-                            SettingsTextField("Long Context Route Model", text: configBinding("router.routes.longContext.model"))
-                            SettingsTextField("Web Search Route Model", text: configBinding("router.routes.webSearch.model"))
-                            SettingsTextField("Long Context Threshold", text: configBinding("router.routes.longContextThreshold"))
+                            SettingsTextField(state.t(.host), text: configBinding("router.host"))
+                            SettingsTextField(state.t(.port), text: configBinding("router.port"))
+                            SettingsTextField(state.t(.apiTimeoutMs), text: configBinding("router.apiTimeoutMs"))
+                            SettingsTextField(state.t(.defaultRouteModel), text: configBinding("router.routes.default.model"))
+                            SettingsTextField(state.t(.backgroundRouteModel), text: configBinding("router.routes.background.model"))
+                            SettingsTextField(state.t(.thinkRouteModel), text: configBinding("router.routes.think.model"))
+                            SettingsTextField(state.t(.longContextRouteModel), text: configBinding("router.routes.longContext.model"))
+                            SettingsTextField(state.t(.webSearchRouteModel), text: configBinding("router.routes.webSearch.model"))
+                            SettingsTextField(state.t(.longContextThreshold), text: configBinding("router.routes.longContextThreshold"))
                         }
                         .padding(14)
                     }
@@ -680,10 +680,10 @@ private struct SettingsContentView: View {
                             WebSettingsToggle(isOn: configBoolBinding("router.tokenSaver.enabled"))
                         }
                         ConfigGrid {
-                            SettingsTextField("Judge Model", text: configBinding("router.tokenSaver.judgeModel"))
-                            SettingsTextField("Default Tier", text: configBinding("router.tokenSaver.defaultTier"))
-                            SettingsTextField("Subagent Policy", text: configBinding("router.tokenSaver.subagentPolicy"))
-                            SettingsTextField("Savings Baseline Model", text: configBinding("router.tokenStats.savingsBaselineModel"))
+                            SettingsTextField(state.t(.judgeModel), text: configBinding("router.tokenSaver.judgeModel"))
+                            SettingsTextField(state.t(.defaultTier), text: configBinding("router.tokenSaver.defaultTier"))
+                            SettingsTextField(state.t(.subagentPolicy), text: configBinding("router.tokenSaver.subagentPolicy"))
+                            SettingsTextField(state.t(.savingsBaselineModel), text: configBinding("router.tokenStats.savingsBaselineModel"))
                         }
                         .padding(14)
                     }
@@ -706,13 +706,13 @@ private struct SettingsContentView: View {
                             WebSettingsToggle(isOn: configBoolBinding("gateway.threadSessionsPerUser"))
                         }
                         ConfigGrid {
-                            SettingsTextField("Home", text: configBinding("gateway.home"))
-                            SettingsTextField("Unauthorized DM Behavior", text: configBinding("gateway.unauthorizedDmBehavior"))
-                            SettingsTextField("Session Metadata", text: configBinding("gateway.runtimePaths.sessionMetadata"))
-                            SettingsTextField("User Bindings", text: configBinding("gateway.runtimePaths.userBindings"))
-                            SettingsTextField("General CWD", text: configBinding("gateway.runtimePaths.generalCwd"))
-                            SettingsTextField("General JSONL", text: configBinding("gateway.runtimePaths.generalJsonl"))
-                            SettingsTextField("Bound Project JSONL", text: configBinding("gateway.runtimePaths.boundProjectJsonl"))
+                            SettingsTextField(state.t(.home), text: configBinding("gateway.home"))
+                            SettingsTextField(state.t(.unauthorizedDMBehavior), text: configBinding("gateway.unauthorizedDmBehavior"))
+                            SettingsTextField(state.t(.sessionMetadata), text: configBinding("gateway.runtimePaths.sessionMetadata"))
+                            SettingsTextField(state.t(.userBindings), text: configBinding("gateway.runtimePaths.userBindings"))
+                            SettingsTextField(state.t(.generalCWD), text: configBinding("gateway.runtimePaths.generalCwd"))
+                            SettingsTextField(state.t(.generalJSONL), text: configBinding("gateway.runtimePaths.generalJsonl"))
+                            SettingsTextField(state.t(.boundProjectJSONL), text: configBinding("gateway.runtimePaths.boundProjectJsonl"))
                         }
                         .padding(14)
                     }
@@ -788,8 +788,8 @@ private struct SettingsContentView: View {
                         .buttonStyle(WebToolbarButtonStyle())
                 }
                 ConfigGrid {
-                    SettingsTextField("Type", text: configBinding("models.providers.\(provider).type"))
-                    SettingsTextField("Base URL", text: Binding(
+                    SettingsTextField(state.t(.type), text: configBinding("models.providers.\(provider).type"))
+                    SettingsTextField(state.t(.baseURL), text: Binding(
                         get: {
                             provider == "edgeclaw" ? state.settings.providerConfig.baseURL : configValue("models.providers.\(provider).baseUrl")
                         },
@@ -835,7 +835,7 @@ private struct SettingsContentView: View {
                 }
                 ConfigGrid {
                     SettingsTextField(state.t(.provider), text: configBinding("models.entries.\(entry).provider"))
-                    SettingsTextField("Name", text: Binding(
+                    SettingsTextField(state.t(.name), text: Binding(
                         get: {
                             entry == "default" ? state.settings.providerConfig.model : configValue("models.entries.\(entry).name")
                         },
@@ -846,7 +846,7 @@ private struct SettingsContentView: View {
                             setConfigValue("models.entries.\(entry).name", value)
                         }
                     ))
-                    SettingsTextField("Context Window", text: configBinding("models.entries.\(entry).contextWindow"))
+                    SettingsTextField(state.t(.contextWindow), text: configBinding("models.entries.\(entry).contextWindow"))
                 }
             }
             .padding(14)
@@ -1038,12 +1038,12 @@ private struct SettingsContentView: View {
 
     private func renameConfigObject(parentPath: String, oldID: String) {
         let alert = NSAlert()
-        alert.messageText = "Rename \(oldID)"
+        alert.messageText = "\(state.t(.rename)) \(oldID)"
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = oldID
         alert.accessoryView = field
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: state.t(.rename))
+        alert.addButton(withTitle: state.t(.cancel))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let nextID = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !nextID.isEmpty, nextID != oldID else { return }
@@ -1261,8 +1261,9 @@ private struct NoticeBanner: View {
 }
 
 private struct ReloadSummaryRow: View {
+    @EnvironmentObject private var state: AppState
     var name: String
-    var state: String
+    var isReloaded: Bool
     var detail: String
 
     var body: some View {
@@ -1270,12 +1271,12 @@ private struct ReloadSummaryRow: View {
             Text(name)
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .frame(width: 98, alignment: .leading)
-            Text(state)
+            Text(isReloaded ? state.t(.reloaded) : state.t(.skipped))
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(state == "reloaded" ? DesignTokens.success : DesignTokens.tertiaryText)
+                .foregroundStyle(isReloaded ? DesignTokens.success : DesignTokens.tertiaryText)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 2)
-                .background((state == "reloaded" ? DesignTokens.success : DesignTokens.neutral400).opacity(0.10), in: Capsule())
+                .background((isReloaded ? DesignTokens.success : DesignTokens.neutral400).opacity(0.10), in: Capsule())
             Text(detail)
                 .font(.system(size: 12))
                 .foregroundStyle(DesignTokens.tertiaryText)
@@ -1377,7 +1378,7 @@ struct WebSettingsToggle: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(state.t(.toggle))
-        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityValue(isOn ? state.t(.on) : state.t(.off))
     }
 }
 
