@@ -31,7 +31,7 @@ struct MainAreaView: View {
                     }
                     .buttonStyle(MainHeaderIconButtonStyle())
                     .padding(.trailing, 16)
-                    .help("Show sidebar")
+                    .help(state.t(.showSidebar))
                 }
 
                 breadcrumb
@@ -50,17 +50,17 @@ struct MainAreaView: View {
     private var breadcrumb: some View {
         HStack(spacing: 8) {
             Text(state.selectedProject?.displayName ?? "Home")
-                .foregroundStyle(DesignTokens.tertiaryText)
+                .foregroundStyle(DesignTokens.neutral500)
                 .lineLimit(1)
             Text("/")
                 .foregroundStyle(DesignTokens.neutral400.opacity(0.60))
-            Text(state.activeTab.label)
+            Text(state.tabLabel(state.activeTab))
                 .fontWeight(.medium)
                 .foregroundStyle(DesignTokens.text)
             if let session = state.selectedSession {
                 Text(session.displayTitle)
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(DesignTokens.tertiaryText)
+                    .foregroundStyle(DesignTokens.neutral500)
                     .lineLimit(1)
                     .padding(.leading, 8)
             }
@@ -91,8 +91,8 @@ struct MainAreaView: View {
             HStack(spacing: 6) {
                 Image(systemName: tab.systemImage)
                     .font(.system(size: 14, weight: .regular))
-                    .frame(width: 14, height: 14)
-                Text(tab.label)
+                    .imageScale(.small)
+                Text(state.tabLabel(tab))
                     .font(.system(size: 13, weight: isActive ? .medium : .regular))
             }
             .padding(.horizontal, 10)
@@ -108,7 +108,7 @@ struct MainAreaView: View {
                         .fill(DesignTokens.accent)
                         .frame(width: 8, height: 8)
                         .overlay(Circle().stroke(DesignTokens.background, lineWidth: 2))
-                        .offset(x: -4, y: 4)
+                        .offset(x: 4, y: -4)
                 }
             }
         }
@@ -151,7 +151,7 @@ struct MainAreaView: View {
                 .font(.system(size: 12))
                 .lineLimit(2)
             Spacer()
-            Button("Dismiss") {
+            Button(state.t(.dismiss)) {
                 state.errorBanner = nil
             }
             .buttonStyle(.plain)
@@ -167,7 +167,7 @@ struct MainAreaView: View {
 private struct MainHeaderIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(DesignTokens.tertiaryText)
+            .foregroundStyle(DesignTokens.mutedForeground)
             .background(
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .fill(configuration.isPressed ? DesignTokens.neutral100 : Color.clear)

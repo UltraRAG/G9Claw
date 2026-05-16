@@ -31,6 +31,7 @@ final class AppState: ObservableObject {
     @Published var settingsSaveNotice: String?
 
     let keychain = KeychainStore()
+    let settingsStore = AppSettingsStore()
     let providerClient = NativeAgentRuntime()
     let workspaceService = WorkspaceService()
     let gitService = GitService()
@@ -42,6 +43,7 @@ final class AppState: ObservableObject {
     let alwaysOnService = AlwaysOnService()
 
     private var activeAgentTask: Task<Void, Never>?
+    private var permissionContinuations: [UUID: CheckedContinuation<AgentPermissionDecision, Never>] = [:]
     private var hasBootstrapped = false
 
     init() {
@@ -92,6 +94,9 @@ final class AppState: ObservableObject {
         hasBootstrapped = true
         do {
             _ = try AppPaths.current()
+            if let storedSettings = try settingsStore.load() {
+                settings = storedSettings
+            }
             logBundleNetworkPolicy()
             try bootstrapLocalDebugConfigIfNeeded()
             loadEdgeClawConfigText()
@@ -100,7 +105,7 @@ final class AppState: ObservableObject {
             apiKeyDraft = try keychain.readSecret(account: settings.providerConfig.secretAccount) ?? apiKeyDraft
             loadManualProjectsFromClaudeConfig()
             refreshNativeToolData()
-            statusLine = "Native macOS app initialized"
+            statusLine = t(.nativeInitialized)
         } catch {
             errorBanner = error.localizedDescription
             AppLog.write("bootstrap error: \(error.localizedDescription)")
@@ -109,7 +114,7 @@ final class AppState: ObservableObject {
 
     func refreshProjects() async {
         projects = WorkspaceService.sortedProjects(projects, order: settings.projectSortOrder)
-        statusLine = "Projects refreshed"
+        statusLine = t(.projectsRefreshed)
     }
 
     func selectProject(_ project: WorkspaceProject) {
@@ -169,7 +174,7 @@ final class AppState: ObservableObject {
             return
         }
         guard FileManager.default.fileExists(atPath: resolved) else {
-            errorBanner = "Workspace path does not exist."
+            errorBanner = t(.workspacePathDoesNotExist)
             return
         }
         let project = WorkspaceProject(
@@ -218,7 +223,7 @@ final class AppState: ObservableObject {
             }
             createProject(name: displayName, path: resolved)
             showProjectCreationWizard = false
-            statusLine = "Project added"
+            statusLine = t(.projectAdded)
         } catch {
             errorBanner = error.localizedDescription
         }
@@ -260,8 +265,8 @@ final class AppState: ObservableObject {
             AgentActivity(
                 id: "run-\(assistantID.uuidString)",
                 sessionId: sessionID,
-                title: "Processing",
-                detail: "Connecting to provider",
+                title: t(.connecting),
+                detail: t(.openingRemoteModelStream),
                 phase: .status,
                 state: .running,
                 createdAt: Date(),
@@ -297,13 +302,21 @@ final class AppState: ObservableObject {
         let request = AgentRequest(
             sessionId: sessionID,
             projectPath: effectiveSelectedWorkspacePath,
-            prompt: prompt.isEmpty ? "Review the attached files." : prompt,
+            prompt: prompt.isEmpty ? t(.reviewAttachedFiles) : prompt,
             providerConfig: providerConfig,
             apiKey: apiKey,
             priorMessages: historyBeforeSend,
             timeoutMs: nativeConfig?.apiTimeoutMs ?? settings.apiTimeoutMs,
             contextWindow: nativeConfig?.contextWindow ?? settings.contextWindow,
-            permissionMode: composerPermissionMode
+            permissionMode: composerPermissionMode,
+            runMode: composerRunMode,
+            workspaceContext: selectedWorkspaceContext,
+            toolSettings: settings.permissions,
+            routerRoute: nativeConfig?.defaultEntryID ?? "default",
+            permissionHandler: { [weak self] permission in
+                guard let self else { return .deny }
+                return await self.requestAgentPermission(permission)
+            }
         )
 
         activeAgentTask?.cancel()
@@ -321,11 +334,12 @@ final class AppState: ObservableObject {
 
     func abortActiveRun() {
         activeAgentTask?.cancel()
+        resolveAllPendingPermissions(decision: .deny)
         if let selectedSessionID {
             markSession(selectedSessionID, state: .idle)
             finishStreamingMessage(sessionID: selectedSessionID)
         }
-        statusLine = "Generation stopped"
+        statusLine = t(.stopGeneration)
     }
 
     func runShell(command: String) {
@@ -377,9 +391,10 @@ final class AppState: ObservableObject {
             }
             try saveEdgeClawConfigTextIfChanged()
             applyNativeConfigFromCurrentText()
+            try settingsStore.save(settings)
             refreshNativeToolData()
-            settingsSaveNotice = "Saved"
-            statusLine = "Settings saved"
+            settingsSaveNotice = t(.saved)
+            statusLine = t(.settingsSaved)
         } catch {
             errorBanner = error.localizedDescription
         }
@@ -388,6 +403,55 @@ final class AppState: ObservableObject {
     func openSettings(_ tab: SettingsMainTab = .appearance) {
         settingsInitialTab = tab
         showSettings = true
+    }
+
+    func t(_ key: L10nKey, _ args: CVarArg...) -> String {
+        LocalizationService(language: settings.language).text(key, arguments: args)
+    }
+
+    func tabLabel(_ tab: AppTab) -> String {
+        switch tab {
+        case .chat:
+            return t(.agent)
+        case .alwaysOn:
+            return t(.alwaysOn)
+        case .files:
+            return t(.files)
+        case .shell:
+            return t(.shell)
+        case .git:
+            return t(.git)
+        case .tasks:
+            return t(.tasks)
+        case .memory:
+            return t(.memory)
+        case .skills:
+            return t(.skills)
+        case .dashboard:
+            return t(.dashboard)
+        case .preview:
+            return t(.preview)
+        case .plugin(let name):
+            return name
+        }
+    }
+
+    func runModeLabel(_ mode: ChatRunMode) -> String {
+        switch mode {
+        case .agent:
+            return t(.chatRunModeAgent)
+        case .plan:
+            return t(.chatRunModePlan)
+        }
+    }
+
+    func permissionModeLabel(_ mode: ComposerPermissionMode) -> String {
+        switch mode {
+        case .default:
+            return t(.permissionModeDefault)
+        case .bypassPermissions:
+            return t(.permissionModeBypass)
+        }
     }
 
     var selectedWorkspaceContext: WorkspaceContext? {
@@ -471,6 +535,40 @@ final class AppState: ObservableObject {
             settings.permissions.disallowedTools.append(item)
         }
         settings.permissions.lastUpdated = Date()
+    }
+
+    func requestAgentPermission(_ request: AgentPermissionRequest) async -> AgentPermissionDecision {
+        if !pendingPermissions.contains(where: { $0.id == request.id }) {
+            pendingPermissions.append(
+                PermissionRequest(
+                    id: request.id,
+                    sessionId: request.sessionId,
+                    toolName: request.toolName,
+                    inputJSON: request.inputJSON,
+                    reason: request.reason,
+                    scope: request.scope,
+                    createdAt: Date()
+                )
+            )
+        }
+        statusLine = request.reason
+        return await withCheckedContinuation { continuation in
+            permissionContinuations[request.id] = continuation
+        }
+    }
+
+    func approvePermission(_ id: UUID) {
+        guard let request = pendingPermissions.first(where: { $0.id == id }) else { return }
+        pendingPermissions.removeAll { $0.id == id }
+        statusLine = t(.permissionAllowedFormat, request.toolName)
+        permissionContinuations.removeValue(forKey: id)?.resume(returning: .allow(remember: false))
+    }
+
+    func denyPermission(_ id: UUID) {
+        guard let request = pendingPermissions.first(where: { $0.id == id }) else { return }
+        pendingPermissions.removeAll { $0.id == id }
+        statusLine = t(.permissionDeniedFormat, request.toolName)
+        permissionContinuations.removeValue(forKey: id)?.resume(returning: .deny)
     }
 
     private func applyNativeConfigFromCurrentText() {
@@ -827,13 +925,13 @@ final class AppState: ObservableObject {
     private func handleAgentEvent(_ event: AgentEvent, assistantID: UUID) {
         switch event {
         case .sessionCreated(let sessionId):
-            statusLine = "Session \(sessionId) started"
+            statusLine = t(.sessionStartedFormat, sessionId)
         case .contentDelta(let text):
             appendAssistantDelta(text, assistantID: assistantID)
         case .toolUse(let id, let name, let inputJSON):
             upsertActivity(
                 id: id,
-                title: "Running \(name)",
+                title: t(.runningToolFormat, name),
                 detail: inputJSON,
                 phase: activityPhase(for: name),
                 state: .running
@@ -842,6 +940,14 @@ final class AppState: ObservableObject {
         case .toolResult(let id, let output, let isError):
             updateActivity(id: id, state: isError ? .failed : .completed, detail: output)
             appendAssistantBlock(.toolResult(ToolResult(toolCallId: id, output: output, isError: isError)), assistantID: assistantID)
+        case .permissionRequest(let request):
+            upsertActivity(
+                id: "permission-\(request.id.uuidString)",
+                title: request.reason,
+                detail: request.inputJSON,
+                phase: activityPhase(for: request.toolName),
+                state: .running
+            )
         case .status(let status):
             statusLine = status
             upsertActivity(
@@ -871,11 +977,11 @@ final class AppState: ObservableObject {
         case .complete(let sessionId):
             markSession(sessionId, state: .idle)
             completeRunningActivities(sessionID: sessionId)
-            statusLine = "Complete"
+            statusLine = t(.complete)
         case .aborted(let sessionId):
             markSession(sessionId, state: .idle)
             cancelRunningActivities(sessionID: sessionId)
-            statusLine = "Aborted"
+            statusLine = t(.aborted)
         case .error(let message):
             appendAssistantDelta("\n\(message)", assistantID: assistantID)
             if let selectedSessionID {
@@ -925,6 +1031,7 @@ final class AppState: ObservableObject {
             messages[index].isStreaming = false
         }
         messagesBySession[sessionID] = messages
+        persistSessionMessages(sessionID: sessionID)
     }
 
     private func markSession(_ sessionId: String, state: SessionState) {
@@ -1009,7 +1116,7 @@ final class AppState: ObservableObject {
                 AgentActivity(
                     id: "error-\(UUID().uuidString)",
                     sessionId: sessionID,
-                    title: "Process failed",
+                    title: t(.processFailed),
                     detail: message,
                     phase: .status,
                     state: .failed,
@@ -1027,19 +1134,44 @@ final class AppState: ObservableObject {
         activitiesBySession[sessionID] = activities
     }
 
+    private func resolveAllPendingPermissions(decision: AgentPermissionDecision) {
+        let ids = pendingPermissions.map(\.id)
+        pendingPermissions.removeAll()
+        for id in ids {
+            permissionContinuations.removeValue(forKey: id)?.resume(returning: decision)
+        }
+    }
+
+    private func persistSessionMessages(sessionID: String) {
+        guard let messages = messagesBySession[sessionID],
+              let paths = try? AppPaths.current() else { return }
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(messages)
+            try data.write(to: paths.sessions.appendingPathComponent("\(sessionID).json"), options: .atomic)
+        } catch {
+            AppLog.write("session persist error for \(sessionID): \(error.localizedDescription)")
+        }
+    }
+
     private func statusTitle(_ status: String) -> String {
         switch status.lowercased() {
-        case "connecting": "Connecting"
-        case "streaming": "Receiving response"
-        default: status.isEmpty ? "Processing" : status.capitalized
+        case "connecting": t(.connecting)
+        case "streaming": t(.receivingResponse)
+        case "thinking", "processing": t(.working)
+        case "waiting for permission": "Permission required"
+        default: status.isEmpty ? t(.working) : status.capitalized
         }
     }
 
     private func statusDetail(_ status: String) -> String {
         switch status.lowercased() {
-        case "connecting": "Opening the remote model stream"
-        case "streaming": "Streaming assistant output"
-        default: "Agent status update"
+        case "connecting": t(.openingRemoteModelStream)
+        case "streaming": t(.streamingAssistantOutput)
+        case "thinking", "processing": t(.agentStatusUpdate)
+        case "waiting for permission": "Approve or deny the requested tool action."
+        default: t(.agentStatusUpdate)
         }
     }
 

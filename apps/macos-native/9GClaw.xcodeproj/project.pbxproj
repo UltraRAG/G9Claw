@@ -13,8 +13,10 @@
 		B011 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F011 /* AppState.swift */; };
 		B012 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = F012 /* DesignTokens.swift */; };
 		B013 /* ParityCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = F013 /* ParityCatalog.swift */; };
+		B014 /* LocalizationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F014 /* LocalizationService.swift */; };
 		B020 /* AppPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = F020 /* AppPaths.swift */; };
 		B021 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F021 /* KeychainStore.swift */; };
+		B027 /* AppSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F027 /* AppSettingsStore.swift */; };
 		B022 /* ProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F022 /* ProviderClient.swift */; };
 		B023 /* WorkspaceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F023 /* WorkspaceService.swift */; };
 		B024 /* GitService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F024 /* GitService.swift */; };
@@ -49,8 +51,10 @@
 		F011 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		F012 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		F013 /* ParityCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityCatalog.swift; sourceTree = "<group>"; };
+		F014 /* LocalizationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationService.swift; sourceTree = "<group>"; };
 		F020 /* AppPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPaths.swift; sourceTree = "<group>"; };
 		F021 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		F027 /* AppSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsStore.swift; sourceTree = "<group>"; };
 		F022 /* ProviderClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderClient.swift; sourceTree = "<group>"; };
 		F023 /* WorkspaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceService.swift; sourceTree = "<group>"; };
 		F024 /* GitService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitService.swift; sourceTree = "<group>"; };
@@ -109,6 +113,7 @@
 				F011 /* AppState.swift */,
 				F012 /* DesignTokens.swift */,
 				F013 /* ParityCatalog.swift */,
+				F014 /* LocalizationService.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -118,6 +123,7 @@
 			children = (
 				F020 /* AppPaths.swift */,
 				F021 /* KeychainStore.swift */,
+				F027 /* AppSettingsStore.swift */,
 				F022 /* ProviderClient.swift */,
 				F023 /* WorkspaceService.swift */,
 				F024 /* GitService.swift */,
@@ -257,8 +263,10 @@
 				B011 /* AppState.swift in Sources */,
 				B012 /* DesignTokens.swift in Sources */,
 				B013 /* ParityCatalog.swift in Sources */,
+				B014 /* LocalizationService.swift in Sources */,
 				B020 /* AppPaths.swift in Sources */,
 				B021 /* KeychainStore.swift in Sources */,
+				B027 /* AppSettingsStore.swift in Sources */,
 				B022 /* ProviderClient.swift in Sources */,
 				B023 /* WorkspaceService.swift in Sources */,
 				B024 /* GitService.swift in Sources */,

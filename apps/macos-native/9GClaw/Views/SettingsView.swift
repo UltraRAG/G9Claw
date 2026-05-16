@@ -19,12 +19,14 @@ struct SettingsModalView: View {
             DesignTokens.background.opacity(0.80)
                 .ignoresSafeArea()
                 .background(.ultraThinMaterial)
-                .onTapGesture {}
+                .onTapGesture { onClose() }
 
             SettingsContentView(onClose: onClose)
                 .environmentObject(state)
-                .frame(maxWidth: 1120, maxHeight: 760)
-                .padding(26)
+                .frame(maxWidth: 896, maxHeight: .infinity)
+                .frame(height: nil)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 16)
         }
     }
 }
@@ -51,6 +53,8 @@ private struct SettingsContentView: View {
                     activeContent
                         .padding(24)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .transition(.opacity.combined(with: .offset(y: 4)))
+                        .id(activeTab)
                 }
                 .background(DesignTokens.background)
             }
@@ -74,8 +78,8 @@ private struct SettingsContentView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Text("Settings")
-                .font(.system(size: 18, weight: .semibold))
+            Text(state.t(.settings))
+                .font(.system(size: DesignTokens.settingsTitleSize, weight: .semibold))
             if let notice = state.settingsSaveNotice {
                 Text(notice)
                     .font(.system(size: 12, weight: .medium))
@@ -86,15 +90,15 @@ private struct SettingsContentView: View {
                 onClose?()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(width: 30, height: 30)
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 40, height: 40)
             }
             .buttonStyle(SettingsIconButtonStyle())
             .opacity(onClose == nil ? 0 : 1)
             .disabled(onClose == nil)
         }
-        .padding(.horizontal, 20)
-        .frame(height: 56)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .overlay(alignment: .bottom) {
             Rectangle().fill(DesignTokens.separator).frame(height: 1)
         }
@@ -110,7 +114,7 @@ private struct SettingsContentView: View {
                         Image(systemName: tab.systemImage)
                             .font(.system(size: 15))
                             .frame(width: 18)
-                        Text(tab.label)
+                        Text(settingsTabLabel(tab))
                             .font(.system(size: 13, weight: .medium))
                         Spacer()
                     }
@@ -131,6 +135,60 @@ private struct SettingsContentView: View {
         .background(DesignTokens.neutral50.opacity(0.74))
     }
 
+    private func settingsTabLabel(_ tab: SettingsMainTab) -> String {
+        switch tab {
+        case .appearance:
+            return state.t(.appearance)
+        case .permissions:
+            return state.t(.permissions)
+        case .config:
+            return state.t(.config)
+        }
+    }
+
+    private func languageOptionLabel(_ language: AppLanguage) -> String {
+        switch language {
+        case .system:
+            return state.t(.languageSystem)
+        case .english:
+            return state.t(.languageEnglish)
+        case .chineseSimplified:
+            return state.t(.languageChineseSimplified)
+        }
+    }
+
+    private func configViewModeLabel(_ mode: NativeConfigViewMode) -> String {
+        switch mode {
+        case .form:
+            return state.t(.form)
+        case .raw:
+            return state.t(.rawYAML)
+        }
+    }
+
+    private func configSectionLabel(_ section: EdgeClawConfigSection) -> String {
+        switch section {
+        case .runtime:
+            return state.t(.runtime)
+        case .models:
+            return state.t(.models)
+        case .agents:
+            return state.t(.agents)
+        case .alwaysOn:
+            return state.t(.alwaysOn)
+        case .memory:
+            return state.t(.memory)
+        case .rag:
+            return state.t(.rag)
+        case .router:
+            return state.t(.routing)
+        case .gateway:
+            return state.t(.gateway)
+        case .raw:
+            return state.t(.rawYAML)
+        }
+    }
+
     @ViewBuilder
     private var activeContent: some View {
         switch activeTab {
@@ -145,9 +203,9 @@ private struct SettingsContentView: View {
 
     private var appearanceContent: some View {
         VStack(alignment: .leading, spacing: 26) {
-            SettingsSectionBlock(title: "Dark Mode") {
+            SettingsSectionBlock(title: state.t(.appearance)) {
                 SettingsCardBlock {
-                    SettingsRowBlock(title: "Dark Mode", detail: "Toggle between light and dark appearance.") {
+                    SettingsRowBlock(title: state.t(.appearance), detail: "") {
                         WebSettingsToggle(isOn: Binding(
                             get: { state.settings.colorScheme == .dark },
                             set: { state.settings.colorScheme = $0 ? .dark : .light }
@@ -156,12 +214,12 @@ private struct SettingsContentView: View {
                 }
             }
 
-            SettingsSectionBlock(title: "Appearance") {
+            SettingsSectionBlock(title: state.t(.appearance)) {
                 SettingsCardBlock {
-                    SettingsRowBlock(title: "Display Language", detail: "Choose the language used by the interface.") {
+                    SettingsRowBlock(title: state.t(.displayLanguage), detail: state.t(.displayLanguageDetail)) {
                         Picker("", selection: $state.settings.language) {
                             ForEach(AppLanguage.allCases) { language in
-                                Text(language.label).tag(language)
+                                Text(languageOptionLabel(language)).tag(language)
                             }
                         }
                         .labelsHidden()
@@ -170,12 +228,12 @@ private struct SettingsContentView: View {
                 }
             }
 
-            SettingsSectionBlock(title: "Project Sorting") {
+            SettingsSectionBlock(title: state.t(.projectSorting)) {
                 SettingsCardBlock {
-                    SettingsRowBlock(title: "Project Sorting", detail: "Choose how projects are ordered in the sidebar.") {
+                    SettingsRowBlock(title: state.t(.projectSorting), detail: "") {
                         Picker("", selection: $state.settings.projectSortOrder) {
-                            Text("Alphabetical").tag(ProjectSortOrder.name)
-                            Text("Recent Activity").tag(ProjectSortOrder.date)
+                            Text(state.t(.alphabetical)).tag(ProjectSortOrder.name)
+                            Text(state.t(.recentActivity)).tag(ProjectSortOrder.date)
                         }
                         .labelsHidden()
                         .frame(width: 170)
@@ -183,7 +241,7 @@ private struct SettingsContentView: View {
                 }
             }
 
-            SettingsSectionBlock(title: "Code Editor") {
+            SettingsSectionBlock(title: state.t(.codeEditor)) {
                 SettingsCardBlock(divided: true) {
                     SettingsRowBlock(title: "Word Wrap", detail: "Wrap long lines in the native editor.") {
                         Toggle("", isOn: $state.settings.codeEditor.wordWrap).labelsHidden()
@@ -211,31 +269,31 @@ private struct SettingsContentView: View {
     private var permissionsContent: some View {
         VStack(alignment: .leading, spacing: 26) {
             SettingsSectionBlock(
-                title: "Permissions",
+                title: state.t(.permissions),
                 detail: "Manage which tools the assistant can run without asking."
             ) {
                 HStack(spacing: 8) {
                     Button {
                         exportPermissions()
                     } label: {
-                        Label("Export", systemImage: "square.and.arrow.down")
+                        Label(state.t(.exportAction), systemImage: "square.and.arrow.down")
                     }
                     .buttonStyle(WebToolbarButtonStyle())
                     Button {
                         importPermissions()
                     } label: {
-                        Label("Import", systemImage: "square.and.arrow.up")
+                        Label(state.t(.importAction), systemImage: "square.and.arrow.up")
                     }
                     .buttonStyle(WebToolbarButtonStyle())
-                    Text("Share or back up your tool permissions as JSON.")
+                    Text(state.t(.permissionsShareDetail))
                         .font(.system(size: 12))
                         .foregroundStyle(DesignTokens.tertiaryText)
                 }
             }
 
             PermissionListSection(
-                title: "Allowed tools",
-                detail: "Tools that auto-run without prompting.",
+                title: state.t(.allowedTools),
+                detail: state.t(.allowedToolsDetail),
                 tint: DesignTokens.success,
                 items: state.settings.permissions.allowedTools,
                 quickItems: ToolPermissionSettings.quickAllowedTools,
@@ -245,7 +303,7 @@ private struct SettingsContentView: View {
             )
 
             PermissionListSection(
-                title: "Blocked tools",
+                title: state.t(.blockedTools),
                 detail: "Tools the assistant is never allowed to use.",
                 tint: DesignTokens.danger,
                 items: state.settings.permissions.disallowedTools,
@@ -318,10 +376,10 @@ private struct SettingsContentView: View {
                         .frame(width: 22)
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 8) {
-                            Text(configFileURL().path.isEmpty ? "Config preview" : "Config file")
+                            Text(configFileURL().path.isEmpty ? state.t(.configPreview) : state.t(.configFile))
                                 .font(.system(size: 13, weight: .semibold))
                             if isConfigDirty {
-                                Text("UNSAVED")
+                                Text(state.t(.unsaved))
                                     .font(.system(size: 10, weight: .bold))
                                     .tracking(0.6)
                                     .padding(.horizontal, 7)
@@ -346,14 +404,14 @@ private struct SettingsContentView: View {
                         Button {
                             revealConfigFile()
                         } label: {
-                            Label("Reveal File", systemImage: "folder")
+                            Label(state.t(.revealFile), systemImage: "folder")
                                 .lineLimit(1)
                         }
                         .buttonStyle(WebToolbarButtonStyle())
                         Button {
                             reloadConfigFromDisk()
                         } label: {
-                            Label("Refresh", systemImage: "arrow.clockwise")
+                            Label(state.t(.refresh), systemImage: "arrow.clockwise")
                                 .lineLimit(1)
                         }
                         .buttonStyle(WebToolbarButtonStyle())
@@ -370,7 +428,7 @@ private struct SettingsContentView: View {
                 Button {
                     configView = mode
                 } label: {
-                    Label(mode.label, systemImage: mode.systemImage)
+                    Label(configViewModeLabel(mode), systemImage: mode.systemImage)
                         .labelStyle(.titleAndIcon)
                         .lineLimit(1)
                 }
@@ -387,7 +445,7 @@ private struct SettingsContentView: View {
                 Button {
                     configSection = section
                 } label: {
-                    Text(section.label)
+                    Text(configSectionLabel(section))
                         .font(.system(size: 13, weight: configSection == section ? .semibold : .regular))
                         .foregroundStyle(configSection == section ? DesignTokens.text : DesignTokens.tertiaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -407,7 +465,7 @@ private struct SettingsContentView: View {
     private var rawYamlPanel: some View {
         SettingsCardBlock {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Raw YAML")
+                Text(state.t(.rawYAML))
                     .font(.system(size: 13, weight: .semibold))
                 TextEditor(text: $state.edgeClawConfigText)
                     .font(.system(size: 12, design: .monospaced))
@@ -426,11 +484,11 @@ private struct SettingsContentView: View {
             HStack(spacing: 6) {
                 Image(systemName: validation.valid ? "checkmark.circle" : "exclamationmark.triangle")
                     .foregroundStyle(validation.valid ? DesignTokens.success : DesignTokens.danger)
-                Text(validation.valid ? "Config is valid" : "Config has validation errors")
+                Text(validation.valid ? state.t(.configValid) : state.t(.configInvalid))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(validation.valid ? DesignTokens.success : DesignTokens.danger)
                 if isConfigDirty {
-                    Text("Unsaved changes")
+                    Text(state.t(.unsavedChanges))
                         .font(.system(size: 12))
                         .foregroundStyle(DesignTokens.tertiaryText)
                 }
@@ -449,13 +507,13 @@ private struct SettingsContentView: View {
     }
 
     private var reloadSummaryCard: some View {
-        SettingsSectionBlock(title: "Reload", detail: "Last save and reload impact for native services.") {
+        SettingsSectionBlock(title: state.t(.reload), detail: state.t(.reloadDetail)) {
             SettingsCardBlock {
                 VStack(alignment: .leading, spacing: 8) {
-                    ReloadSummaryRow(name: "processEnv", state: "reloaded", detail: "Native settings are applied in process.")
-                    ReloadSummaryRow(name: "memory", state: configBool("memory.enabled") ? "reloaded" : "skipped", detail: configBool("memory.enabled") ? "Memory service enabled." : "memory.enabled is false.")
-                    ReloadSummaryRow(name: "router", state: configBool("router.enabled") ? "reloaded" : "skipped", detail: configBool("router.enabled") ? "Router dashboard uses native records." : "router.enabled is false.")
-                    ReloadSummaryRow(name: "gateway", state: configBool("gateway.enabled") ? "reloaded" : "skipped", detail: configBool("gateway.enabled") ? "Gateway config parsed." : "gateway.enabled is false.")
+                    ReloadSummaryRow(name: state.t(.processEnv), state: "reloaded", detail: state.t(.nativeSettingsApplied))
+                    ReloadSummaryRow(name: state.t(.memory), state: configBool("memory.enabled") ? "reloaded" : "skipped", detail: configBool("memory.enabled") ? state.t(.memoryServiceEnabled) : state.t(.memoryDisabled))
+                    ReloadSummaryRow(name: state.t(.routing), state: configBool("router.enabled") ? "reloaded" : "skipped", detail: configBool("router.enabled") ? state.t(.routerDashboardNative) : state.t(.routerDisabled))
+                    ReloadSummaryRow(name: state.t(.gateway), state: configBool("gateway.enabled") ? "reloaded" : "skipped", detail: configBool("gateway.enabled") ? state.t(.gatewayConfigParsed) : state.t(.gatewayDisabled))
                 }
                 .padding(14)
             }
@@ -468,13 +526,13 @@ private struct SettingsContentView: View {
             Button {
                 reloadConfigFromDisk()
             } label: {
-                Label("Reload Current", systemImage: "arrow.clockwise")
+                Label(state.t(.reloadCurrent), systemImage: "arrow.clockwise")
             }
             .buttonStyle(WebToolbarButtonStyle())
             Button {
                 saveConfigAndReload()
             } label: {
-                Label(isConfigDirty ? "Save & Reload" : "Saved", systemImage: "square.and.arrow.down")
+                Label(isConfigDirty ? state.t(.saveAndReload) : state.t(.saved), systemImage: "square.and.arrow.down")
             }
             .buttonStyle(WebToolbarButtonStyle(isProminent: true))
             .disabled(!isConfigDirty && state.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -521,18 +579,18 @@ private struct SettingsContentView: View {
             modelsConfigContent
         case .agents:
             VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: "Main Agent") {
+                SettingsSectionBlock(title: state.t(.mainAgent)) {
                     SettingsCardBlock { ConfigGrid { SettingsTextField("Model", text: configBinding("agents.main.model")) }.padding(14) }
                 }
-                SettingsSectionBlock(title: "Subagents") {
+                SettingsSectionBlock(title: state.t(.subagents)) {
                     SettingsCardBlock { ConfigGrid { SettingsTextField("Default", text: configBinding("agents.subagents.default")) }.padding(14) }
                 }
             }
         case .alwaysOn:
             VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: "Discovery Trigger") {
+                SettingsSectionBlock(title: state.t(.discoveryTrigger)) {
                     SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: "Enabled", detail: "Run the discovery trigger in the background.") {
+                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.discoveryTriggerDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("alwaysOn.discovery.trigger.enabled"))
                         }
                         ConfigGrid {
@@ -551,10 +609,10 @@ private struct SettingsContentView: View {
             VStack(alignment: .leading, spacing: 18) {
                 SettingsSectionBlock(title: "Memory") {
                     SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: "Enabled", detail: "Enable project and user memory capture.") {
+                        SettingsRowBlock(title: state.t(.enabled), detail: "Enable project and user memory capture.") {
                             WebSettingsToggle(isOn: configBoolBinding("memory.enabled"))
                         }
-                        SettingsRowBlock(title: "Include Assistant", detail: "Include assistant messages in captured memory context.") {
+                        SettingsRowBlock(title: state.t(.includeAssistant), detail: state.t(.includeAssistantDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("memory.includeAssistant"))
                         }
                         ConfigGrid {
@@ -572,12 +630,12 @@ private struct SettingsContentView: View {
             }
         case .rag:
             VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: "RAG") {
+                SettingsSectionBlock(title: state.t(.rag)) {
                     SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: "Enabled", detail: "Enable retrieval-augmented context.") {
+                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.ragDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("rag.enabled"))
                         }
-                        SettingsRowBlock(title: "Disable Built-in Web Tools", detail: "Route search through configured RAG services.") {
+                        SettingsRowBlock(title: state.t(.disableBuiltInWebTools), detail: state.t(.disableBuiltInWebToolsDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("rag.disableBuiltInWebTools"))
                         }
                         ConfigGrid {
@@ -594,12 +652,12 @@ private struct SettingsContentView: View {
             }
         case .router:
             VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: "Router") {
+                SettingsSectionBlock(title: state.t(.routing)) {
                     SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: "Enabled", detail: "Enable model routing and token statistics.") {
+                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.routerDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("router.enabled"))
                         }
-                        SettingsRowBlock(title: "Log", detail: "Write router request logs for debugging.") {
+                        SettingsRowBlock(title: state.t(.routerLog), detail: state.t(.routerLogDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("router.log"))
                         }
                         ConfigGrid {
@@ -616,9 +674,9 @@ private struct SettingsContentView: View {
                         .padding(14)
                     }
                 }
-                SettingsSectionBlock(title: "Token Saver") {
+                SettingsSectionBlock(title: state.t(.tokenSaver)) {
                     SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: "Enabled", detail: "Select model tier from task complexity.") {
+                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.tokenSaverDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("router.tokenSaver.enabled"))
                         }
                         ConfigGrid {
@@ -633,18 +691,18 @@ private struct SettingsContentView: View {
             }
         case .gateway:
             VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: "Gateway") {
+                SettingsSectionBlock(title: state.t(.gateway)) {
                     SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: "Enabled", detail: "Enable external message gateway integrations.") {
+                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.gatewayDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("gateway.enabled"))
                         }
-                        SettingsRowBlock(title: "Allow All Users", detail: "Allow any remote user to interact with the gateway.") {
+                        SettingsRowBlock(title: state.t(.allowAllUsers), detail: state.t(.allowAllUsersDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("gateway.allowAllUsers"))
                         }
-                        SettingsRowBlock(title: "Group Sessions Per User", detail: "Keep channel sessions grouped by user.") {
+                        SettingsRowBlock(title: state.t(.groupSessionsPerUser), detail: state.t(.groupSessionsPerUserDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("gateway.groupSessionsPerUser"))
                         }
-                        SettingsRowBlock(title: "Thread Sessions Per User", detail: "Thread remote sessions separately per user.") {
+                        SettingsRowBlock(title: state.t(.threadSessionsPerUser), detail: state.t(.threadSessionsPerUserDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("gateway.threadSessionsPerUser"))
                         }
                         ConfigGrid {
@@ -667,19 +725,19 @@ private struct SettingsContentView: View {
 
     private var modelsConfigContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            SettingsSectionBlock(title: "Providers", detail: "Provider definitions used by model entries.") {
+            SettingsSectionBlock(title: state.t(.providers), detail: state.t(.providersDetail)) {
                 SettingsCardBlock {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Text("Providers")
+                            Text(state.t(.providers))
                                 .font(.system(size: 13, weight: .semibold))
                             Spacer()
-                            Button("Add Provider") { addProvider() }
+                            Button(state.t(.addProvider)) { addProvider() }
                                 .buttonStyle(WebToolbarButtonStyle())
                         }
                         let providers = configChildIDs(parentPath: "models.providers")
                         if providers.isEmpty {
-                            dashedEmpty("No providers configured.")
+                            dashedEmpty(state.t(.noProvidersConfigured))
                         } else {
                             ForEach(providers, id: \.self) { provider in
                                 providerCard(provider, keychainBacked: provider.hasPrefix("edgeclaw"))
@@ -689,19 +747,19 @@ private struct SettingsContentView: View {
                     .padding(14)
                 }
             }
-            SettingsSectionBlock(title: "Entries", detail: "Named model entries used by agents and routing.") {
+            SettingsSectionBlock(title: state.t(.entries), detail: state.t(.entriesDetail)) {
                 SettingsCardBlock {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Text("Entries")
+                            Text(state.t(.entries))
                                 .font(.system(size: 13, weight: .semibold))
                             Spacer()
-                            Button("Add Entry") { addEntry() }
+                            Button(state.t(.addEntry)) { addEntry() }
                                 .buttonStyle(WebToolbarButtonStyle())
                         }
                         let entries = configChildIDs(parentPath: "models.entries")
                         if entries.isEmpty {
-                            dashedEmpty("No model entries configured.")
+                            dashedEmpty(state.t(.noEntriesConfigured))
                         } else {
                             ForEach(entries, id: \.self) { entry in
                                 entryCard(entry)
@@ -721,12 +779,12 @@ private struct SettingsContentView: View {
                     Text(provider)
                         .font(.system(size: 13, weight: .semibold, design: .monospaced))
                     Spacer()
-                    Text(configValue("models.providers.\(provider).type").isEmpty ? "missing" : configValue("models.providers.\(provider).type"))
+                    Text(configValue("models.providers.\(provider).type").isEmpty ? state.t(.missing) : configValue("models.providers.\(provider).type"))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(DesignTokens.tertiaryText)
-                    Button("Rename") { renameConfigObject(parentPath: "models.providers", oldID: provider) }
+                    Button(state.t(.rename)) { renameConfigObject(parentPath: "models.providers", oldID: provider) }
                         .buttonStyle(WebToolbarButtonStyle())
-                    Button("Remove") { removeConfigObject(path: "models.providers.\(provider)") }
+                    Button(state.t(.remove)) { removeConfigObject(path: "models.providers.\(provider)") }
                         .buttonStyle(WebToolbarButtonStyle())
                 }
                 ConfigGrid {
@@ -744,18 +802,18 @@ private struct SettingsContentView: View {
                     ))
                     if keychainBacked {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("API Key")
+                            Text(state.t(.apiKey))
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(DesignTokens.tertiaryText)
-                            SecureField("Stored in Keychain", text: $state.apiKeyDraft)
+                            SecureField(state.t(.storedInKeychain), text: $state.apiKeyDraft)
                                 .textFieldStyle(WebFieldStyle())
                                 .font(.system(size: 12, design: .monospaced))
-                            Text("Saved to Keychain; YAML apiKey stays blank for local safety.")
+                            Text(state.t(.keychainHelp))
                                 .font(.system(size: 11))
                                 .foregroundStyle(DesignTokens.tertiaryText)
                         }
                     } else {
-                        SettingsTextField("API Key", text: configBinding("models.providers.\(provider).apiKey"))
+                        SettingsTextField(state.t(.apiKey), text: configBinding("models.providers.\(provider).apiKey"))
                     }
                 }
             }
@@ -770,13 +828,13 @@ private struct SettingsContentView: View {
                     Text(entry)
                         .font(.system(size: 13, weight: .semibold, design: .monospaced))
                     Spacer()
-                    Button("Rename") { renameConfigObject(parentPath: "models.entries", oldID: entry) }
+                    Button(state.t(.rename)) { renameConfigObject(parentPath: "models.entries", oldID: entry) }
                         .buttonStyle(WebToolbarButtonStyle())
-                    Button("Remove") { removeConfigObject(path: "models.entries.\(entry)") }
+                    Button(state.t(.remove)) { removeConfigObject(path: "models.entries.\(entry)") }
                         .buttonStyle(WebToolbarButtonStyle())
                 }
                 ConfigGrid {
-                    SettingsTextField("Provider", text: configBinding("models.entries.\(entry).provider"))
+                    SettingsTextField(state.t(.provider), text: configBinding("models.entries.\(entry).provider"))
                     SettingsTextField("Name", text: Binding(
                         get: {
                             entry == "default" ? state.settings.providerConfig.model : configValue("models.entries.\(entry).name")
@@ -839,12 +897,12 @@ private struct SettingsContentView: View {
         do {
             let text = try String(contentsOf: configFileURL(), encoding: .utf8)
             if isConfigDirty {
-                configExternalNotice = "Config was reloaded from disk. Unsaved native edits were discarded."
+            configExternalNotice = state.t(.configReloadedNotice)
             }
             state.edgeClawConfigText = text
             savedConfigText = text
             configError = nil
-            configMessage = "Reloaded current config"
+            configMessage = state.t(.reloadedCurrentConfig)
             applyRuntimeFieldsFromConfig()
         } catch {
             configError = error.localizedDescription
@@ -859,7 +917,7 @@ private struct SettingsContentView: View {
         state.saveSettings()
         savedConfigText = state.edgeClawConfigText
         configError = nil
-        configMessage = "Saved and reloaded"
+        configMessage = state.t(.savedAndReloaded)
         applyRuntimeFieldsFromConfig()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             state.settingsSaveNotice = nil
@@ -1003,7 +1061,7 @@ private struct SettingsContentView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try state.exportPermissions(to: url)
-            state.settingsSaveNotice = "Exported"
+            state.settingsSaveNotice = state.t(.exported)
         } catch {
             state.errorBanner = error.localizedDescription
         }
@@ -1018,7 +1076,7 @@ private struct SettingsContentView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try state.importPermissions(from: url)
-            state.settingsSaveNotice = "Imported"
+            state.settingsSaveNotice = state.t(.imported)
         } catch {
             state.errorBanner = error.localizedDescription
         }
@@ -1026,6 +1084,7 @@ private struct SettingsContentView: View {
 }
 
 private struct PermissionListSection: View {
+    @EnvironmentObject private var state: AppState
     @State private var draft = ""
     var title: String
     var detail: String
@@ -1047,12 +1106,12 @@ private struct PermissionListSection: View {
                         Button {
                             addDraft()
                         } label: {
-                            Label("Add", systemImage: "plus")
+                            Label(state.t(.add), systemImage: "plus")
                         }
                         .buttonStyle(WebToolbarButtonStyle(isProminent: true))
                         .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
-                    Text("Quick add:")
+                    Text(state.t(.quickAdd))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(DesignTokens.tertiaryText)
                     FlowLayout(spacing: 8) {
@@ -1066,7 +1125,7 @@ private struct PermissionListSection: View {
                     }
                     VStack(spacing: 8) {
                         if items.isEmpty {
-                            Text(title == "Allowed tools" ? "No allowed tools configured yet." : "No blocked tools configured.")
+                            Text(title == state.t(.allowedTools) ? state.t(.noAllowedToolsConfigured) : state.t(.noBlockedToolsConfigured))
                                 .font(.system(size: 12))
                                 .foregroundStyle(DesignTokens.tertiaryText)
                                 .frame(maxWidth: .infinity)
@@ -1113,6 +1172,7 @@ private struct PermissionListSection: View {
 }
 
 private struct ConfigSummary: View {
+    @EnvironmentObject private var state: AppState
     var text: String
     var keys: [String]
 
@@ -1123,13 +1183,13 @@ private struct ConfigSummary: View {
                     Text(key)
                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     Spacer()
-                    Text(text.contains(key) ? "present" : "missing")
+                    Text(text.contains(key) ? state.t(.present) : state.t(.missing))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(text.contains(key) ? DesignTokens.success : DesignTokens.warning)
                 }
                 .padding(.vertical, 3)
             }
-            Text("Use Raw YAML for full fidelity editing. Form controls above keep the native runtime in sync with the most common fields.")
+            Text(state.t(.configSummaryHelp))
                 .font(.system(size: 12))
                 .foregroundStyle(DesignTokens.tertiaryText)
         }
@@ -1177,6 +1237,7 @@ private extension EdgeClawConfigSection {
 }
 
 private struct NoticeBanner: View {
+    @EnvironmentObject private var state: AppState
     var text: String
     var tint: Color
     var onDismiss: () -> Void
@@ -1188,7 +1249,7 @@ private struct NoticeBanner: View {
             Text(text)
                 .font(.system(size: 12))
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Dismiss", action: onDismiss)
+            Button(state.t(.dismiss), action: onDismiss)
                 .buttonStyle(.plain)
                 .font(.system(size: 11, weight: .semibold))
         }
@@ -1287,6 +1348,7 @@ struct SettingsCardBlock<Content: View>: View {
 }
 
 struct WebSettingsToggle: View {
+    @EnvironmentObject private var state: AppState
     @Binding var isOn: Bool
 
     var body: some View {
@@ -1314,7 +1376,7 @@ struct WebSettingsToggle: View {
                 }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Toggle")
+        .accessibilityLabel(state.t(.toggle))
         .accessibilityValue(isOn ? "On" : "Off")
     }
 }

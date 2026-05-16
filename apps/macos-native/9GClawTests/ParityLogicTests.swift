@@ -171,6 +171,102 @@ final class ParityLogicTests: XCTestCase {
         ])
     }
 
+    func testNativeAgentRuntimeToolSchemasIncludeClaudeCodeCoreTools() {
+        let tools = AgentToolRegistry.openAITools()
+        let names = tools.compactMap { tool -> String? in
+            guard let function = tool["function"] as? [String: Any] else { return nil }
+            return function["name"] as? String
+        }
+
+        XCTAssertEqual(Set(names), Set(AgentToolRegistry.toolNames))
+        XCTAssertTrue(names.contains("Read"))
+        XCTAssertTrue(names.contains("Write"))
+        XCTAssertTrue(names.contains("Bash"))
+        XCTAssertTrue(names.contains("TodoWrite"))
+    }
+
+    func testNativeAgentRuntimeParsesFallbackJSONToolCall() {
+        let text = """
+        I need to inspect the file.
+        ```json
+        {"tool":"Read","input":{"file_path":"README.md"}}
+        ```
+        """
+
+        let calls = NativeAgentRuntime.fallbackToolCalls(in: text)
+
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.name, "Read")
+        XCTAssertTrue(calls.first?.inputJSON.contains("README.md") == true)
+    }
+
+    func testAgentPathResolverRejectsTraversalOutsideWorkspace() throws {
+        let root = repoRootURL()
+            .appendingPathComponent("9gclaw-agent-root-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertThrowsError(
+            try AgentPathResolver.resolve("../escape.txt", workspacePath: root.path, mustExist: false)
+        )
+    }
+
+    func testAgentEditRequiresUniqueMatchUnlessReplaceAll() throws {
+        XCTAssertThrowsError(
+            try AgentToolExecutor.applyEdit(
+                content: "one fish one fish",
+                oldString: "one",
+                newString: "two",
+                replaceAll: false
+            )
+        )
+
+        XCTAssertEqual(
+            try AgentToolExecutor.applyEdit(
+                content: "one fish one fish",
+                oldString: "one",
+                newString: "two",
+                replaceAll: true
+            ),
+            "two fish two fish"
+        )
+    }
+
+    func testAgentPermissionPolicyRejectsMutatingToolsInPlanMode() {
+        let context = AgentRunContext(request: agentRequest(runMode: .plan, permissionMode: .bypassPermissions))
+        let call = AgentToolCall(
+            id: "call-1",
+            name: "Write",
+            inputJSON: #"{"file_path":"index.html","content":"hi"}"#
+        )
+
+        switch AgentPermissionPolicy.policy(for: call, context: context) {
+        case .deny(let reason):
+            XCTAssertTrue(reason.contains("plan mode"))
+        default:
+            XCTFail("Write should be denied before ExitPlanMode in plan mode.")
+        }
+    }
+
+    func testAgentToolExecutorWritesInsideWorkspace() async throws {
+        let root = repoRootURL()
+            .appendingPathComponent("9gclaw-agent-write-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
+        let call = AgentToolCall(
+            id: "call-write",
+            name: "Write",
+            inputJSON: #"{"file_path":"site/index.html","content":"<h1>Hello</h1>"}"#
+        )
+
+        let result = await AgentToolExecutor.execute(call: call, context: context)
+
+        XCTAssertFalse(result.isError, result.output)
+        let written = try String(contentsOf: root.appendingPathComponent("site/index.html"), encoding: .utf8)
+        XCTAssertEqual(written, "<h1>Hello</h1>")
+    }
+
     func testAppInfoPlistIncludesATSForHTTPProviders() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -190,6 +286,36 @@ final class ParityLogicTests: XCTestCase {
         let exceptionDomains = try XCTUnwrap(ats["NSExceptionDomains"] as? [String: Any])
         let edgeclawHTTPProvider = try XCTUnwrap(exceptionDomains["58.57.119.12"] as? [String: Any])
         XCTAssertEqual(edgeclawHTTPProvider["NSExceptionAllowsInsecureHTTPLoads"] as? Bool, true)
+    }
+
+    func testAppLanguageSystemResolvesChineseAndEnglish() {
+        XCTAssertEqual(AppLanguage.system.resolved(preferredLanguages: ["zh-Hans-US"]), .chineseSimplified)
+        XCTAssertEqual(AppLanguage.system.resolved(preferredLanguages: ["en-US"]), .english)
+        XCTAssertEqual(AppLanguage.english.resolved(preferredLanguages: ["zh-Hans-US"]), .english)
+        XCTAssertEqual(AppLanguage.chineseSimplified.resolved(preferredLanguages: ["en-US"]), .chineseSimplified)
+    }
+
+    func testLocalizationTablesCoverAllKeys() {
+        let allKeys = Set(L10nKey.allCases)
+
+        XCTAssertEqual(Set(LocalizationService.english.keys), allKeys)
+        XCTAssertEqual(Set(LocalizationService.chineseSimplified.keys), allKeys)
+    }
+
+    func testAppSettingsStoreRoundTripsLanguage() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("9gclaw-settings-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AppSettingsStore(url: root.appendingPathComponent("settings.json"))
+        var settings = AppSettings.defaults
+        settings.language = .chineseSimplified
+        settings.projectSortOrder = .date
+
+        try store.save(settings)
+        let loaded = try XCTUnwrap(store.load())
+
+        XCTAssertEqual(loaded.language, .chineseSimplified)
+        XCTAssertEqual(loaded.projectSortOrder, .date)
     }
 
     func testYAMLScalarEditorUpdatesNestedScalarsWithoutReordering() {
@@ -254,5 +380,42 @@ final class ParityLogicTests: XCTestCase {
             createdAt: date,
             lastActivity: date
         )
+    }
+
+    private func agentRequest(
+        projectPath: String = NSTemporaryDirectory(),
+        runMode: ChatRunMode = .agent,
+        permissionMode: ComposerPermissionMode = .default
+    ) -> AgentRequest {
+        AgentRequest(
+            sessionId: "test-session",
+            projectPath: projectPath,
+            prompt: "test",
+            providerConfig: ProviderConfig(
+                provider: .nineGClaw,
+                apiType: .openAIChat,
+                baseURL: "http://example.local/v1",
+                model: "qwen3.6-27b",
+                secretAccount: "test",
+                headers: [:]
+            ),
+            apiKey: "test-key",
+            priorMessages: [],
+            timeoutMs: 1_000,
+            contextWindow: 160_000,
+            permissionMode: permissionMode,
+            runMode: runMode,
+            workspaceContext: nil,
+            toolSettings: .defaults,
+            routerRoute: "default",
+            permissionHandler: nil
+        )
+    }
+
+    private func repoRootURL() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
     }
 }

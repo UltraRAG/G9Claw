@@ -41,7 +41,7 @@ struct FilesView: View {
                     onSave: {
                         do {
                             try state.workspaceService.writeFile(path: editorFile.path, content: state.selectedFileContent)
-                            state.statusLine = "Saved \(editorFile.name)"
+                            state.statusLine = "\(state.t(.saved)) \(editorFile.name)"
                         } catch {
                             state.errorBanner = error.localizedDescription
                         }
@@ -100,11 +100,11 @@ struct FilesView: View {
             }
             Spacer()
             Menu {
-                Button("New File") { create(isDirectory: false) }
-                Button("New Folder") { create(isDirectory: true) }
+                Button(state.t(.newFile)) { create(isDirectory: false) }
+                Button(state.t(.newFolder)) { create(isDirectory: true) }
                 Divider()
-                Button("Upload Files...") { upload(allowDirectories: false) }
-                Button("Upload Folder...") { upload(allowDirectories: true) }
+                Button(state.t(.uploadFiles)) { upload(allowDirectories: false) }
+                Button(state.t(.uploadFolder)) { upload(allowDirectories: true) }
             } label: {
                 Image(systemName: "plus")
             }
@@ -164,13 +164,13 @@ struct FilesView: View {
     private func create(isDirectory: Bool) {
         guard let context = state.selectedWorkspaceContext else { return }
         let alert = NSAlert()
-        alert.messageText = isDirectory ? "New Folder" : "New File"
-        alert.informativeText = "Enter a name."
+        alert.messageText = isDirectory ? state.t(.newFolder) : state.t(.newFile)
+        alert.informativeText = state.t(.enterName)
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = isDirectory ? "New Folder" : "untitled.txt"
+        field.stringValue = isDirectory ? state.t(.newFolder) : "untitled.txt"
         alert.accessoryView = field
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: state.t(.create))
+        alert.addButton(withTitle: state.t(.cancel))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             let parent = state.selectedFile?.isDirectory == true ? state.selectedFile!.path : context.rootPath
@@ -186,12 +186,12 @@ struct FilesView: View {
 
     private func rename(_ file: WorkspaceFile) {
         let alert = NSAlert()
-        alert.messageText = "Rename"
+        alert.messageText = state.t(.rename)
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = file.name
         alert.accessoryView = field
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: state.t(.rename))
+        alert.addButton(withTitle: state.t(.cancel))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             _ = try state.workspaceService.rename(path: file.path, newName: field.stringValue)
@@ -203,10 +203,10 @@ struct FilesView: View {
 
     private func delete(_ file: WorkspaceFile) {
         let alert = NSAlert()
-        alert.messageText = "Delete \(file.name)?"
-        alert.informativeText = "This cannot be undone."
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = "\(state.t(.delete)) \(file.name)?"
+        alert.informativeText = state.t(.cannotBeUndone)
+        alert.addButton(withTitle: state.t(.delete))
+        alert.addButton(withTitle: state.t(.cancel))
         alert.alertStyle = .warning
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
@@ -244,7 +244,7 @@ struct FilesView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try state.workspaceService.exportZip(rootPath: context.rootPath, to: url)
-            state.statusLine = "Downloaded \(url.lastPathComponent)"
+            state.statusLine = "\(state.t(.download)) \(url.lastPathComponent)"
         } catch {
             state.errorBanner = error.localizedDescription
         }
@@ -255,14 +255,14 @@ struct GitView: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        ToolPage(title: "Git", subtitle: state.selectedWorkspaceContext?.rootPath ?? "No project selected") {
-            Button("Status") { state.refreshGitStatus() }.buttonStyle(WebToolbarButtonStyle(isProminent: true))
-            Button("Diff") { state.refreshGitDiff() }.buttonStyle(WebToolbarButtonStyle())
-            Button("Fetch") { state.errorBanner = "Fetch is not implemented in this parity pass." }.buttonStyle(WebToolbarButtonStyle())
-            Button("Pull") { state.errorBanner = "Pull is not implemented in this parity pass." }.buttonStyle(WebToolbarButtonStyle())
-            Button("Push") { state.errorBanner = "Push is not implemented in this parity pass." }.buttonStyle(WebToolbarButtonStyle())
+        ToolPage(title: state.t(.git), subtitle: state.selectedWorkspaceContext?.rootPath ?? state.t(.noProjectSelected)) {
+            Button(state.t(.status)) { state.refreshGitStatus() }.buttonStyle(WebToolbarButtonStyle(isProminent: true))
+            Button(state.t(.diff)) { state.refreshGitDiff() }.buttonStyle(WebToolbarButtonStyle())
+            Button(state.t(.fetch)) { state.errorBanner = "Fetch is not implemented in this parity pass." }.buttonStyle(WebToolbarButtonStyle())
+            Button(state.t(.pull)) { state.errorBanner = "Pull is not implemented in this parity pass." }.buttonStyle(WebToolbarButtonStyle())
+            Button(state.t(.push)) { state.errorBanner = "Push is not implemented in this parity pass." }.buttonStyle(WebToolbarButtonStyle())
         } content: {
-            MonospaceOutput(text: state.gitOutput.isEmpty ? "Run git status to inspect the selected workspace." : state.gitOutput)
+            MonospaceOutput(text: state.gitOutput.isEmpty ? state.t(.gitStatusPrompt) : state.gitOutput)
         }
         .task { state.refreshGitStatus() }
     }
@@ -273,14 +273,14 @@ struct ShellView: View {
     @State private var command = "pwd"
 
     var body: some View {
-        ToolPage(title: "Shell", subtitle: state.selectedWorkspaceContext?.rootPath ?? "No project selected") {
+        ToolPage(title: state.t(.shell), subtitle: state.selectedWorkspaceContext?.rootPath ?? state.t(.noProjectSelected)) {
             HStack(spacing: 8) {
-                TextField("Command", text: $command)
+                TextField(state.t(.command), text: $command)
                     .textFieldStyle(WebFieldStyle())
                     .font(.system(size: 13, design: .monospaced))
                     .frame(width: 360)
                     .onSubmit { state.runShell(command: command) }
-                Button("Run") { state.runShell(command: command) }
+                Button(state.t(.run)) { state.runShell(command: command) }
                     .buttonStyle(WebToolbarButtonStyle(isProminent: true))
             }
         } content: {
@@ -304,10 +304,10 @@ struct TasksView: View {
     @State private var prompt = ""
 
     var body: some View {
-        ToolPage(title: "Tasks", subtitle: "Task plans and execution queue") {
+        ToolPage(title: state.t(.tasks), subtitle: "Task plans and execution queue") {
             TextField("Task title", text: $title).textFieldStyle(WebFieldStyle()).frame(width: 180)
             TextField("Prompt", text: $prompt).textFieldStyle(WebFieldStyle()).frame(width: 280)
-            Button("Queue") {
+            Button(state.t(.queue)) {
                 _ = state.taskService.createPlan(title: title.isEmpty ? "Untitled task" : title, prompt: prompt)
                 title = ""
                 prompt = ""
@@ -338,16 +338,16 @@ struct MemoryView: View {
     var body: some View {
         let snapshot = state.memoryService.dashboard(query: query, projectName: state.selectedProject?.name)
         VStack(spacing: 0) {
-            ToolToolbar(title: "Memory", subtitle: state.selectedWorkspaceContext?.rootPath ?? "Select a project") {
-                TextField("Search memory", text: $query)
+            ToolToolbar(title: state.t(.memory), subtitle: state.selectedWorkspaceContext?.rootPath ?? state.t(.selectProject)) {
+                TextField(state.t(.searchMemory), text: $query)
                     .textFieldStyle(WebFieldStyle())
                     .frame(width: 220)
-                Button("Index") {
+                Button(state.t(.index)) {
                     state.refreshNativeToolData()
                     state.objectWillChange.send()
                 }
                 .buttonStyle(WebToolbarButtonStyle(isProminent: true))
-                Button("Clear") {
+                Button(state.t(.clear)) {
                     state.memoryService.clear(projectName: state.selectedProject?.name)
                     state.objectWillChange.send()
                 }
@@ -356,17 +356,17 @@ struct MemoryView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(spacing: 12) {
-                        Metric("Entries", "\(snapshot.totalEntries)", "externaldrive")
-                        Metric("Project", "\(snapshot.projectEntries)", "folder")
-                        Metric("Feedback", "\(snapshot.feedbackEntries)", "bubble.left.and.bubble.right")
-                        Metric("Latest", snapshot.latestMemoryAt.map(relativeDate) ?? "none", "clock")
+                        Metric(state.t(.entries), "\(snapshot.totalEntries)", "externaldrive")
+                        Metric(state.t(.projects), "\(snapshot.projectEntries)", "folder")
+                        Metric(state.t(.feedback), "\(snapshot.feedbackEntries)", "bubble.left.and.bubble.right")
+                        Metric(state.t(.latest), snapshot.latestMemoryAt.map(relativeDate) ?? state.t(.none), "clock")
                     }
                     HStack(alignment: .top, spacing: 16) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Workspace Memory")
+                            Text(state.t(.workspaceMemory))
                                 .font(.system(size: 13, weight: .semibold))
                             if snapshot.records.isEmpty {
-                                ToolEmptyState(title: "No memory records", detail: "Run Index or add memory files in this workspace.", systemImage: "externaldrive")
+                                ToolEmptyState(title: state.t(.noMemoryRecords), detail: state.t(.noMemoryRecordsDetail), systemImage: "externaldrive")
                                     .frame(height: 240)
                             } else {
                                 ForEach(snapshot.records) { record in
@@ -384,9 +384,9 @@ struct MemoryView: View {
                         .frame(minWidth: 0, maxWidth: .infinity, alignment: .topLeading)
 
                         VStack(alignment: .leading, spacing: 10) {
-                            Text(selectedRecord?.name ?? "User Summary")
+                            Text(selectedRecord?.name ?? state.t(.userSummary))
                                 .font(.system(size: 13, weight: .semibold))
-                            Text(selectedRecord?.summary ?? (snapshot.userSummary.isEmpty ? "No summary yet." : snapshot.userSummary))
+                            Text(selectedRecord?.summary ?? (snapshot.userSummary.isEmpty ? state.t(.noSummaryYet) : snapshot.userSummary))
                                 .font(.system(size: 12))
                                 .foregroundStyle(DesignTokens.secondaryText)
                                 .textSelection(.enabled)
@@ -427,14 +427,14 @@ struct SkillsView: View {
     var body: some View {
         VStack(spacing: 0) {
             ToolToolbar(
-                title: "Skills",
+                title: state.t(.skills),
                 subtitle: state.selectedWorkspaceContext?.isGeneral == true
-                    ? "General chat - user-scope skills only"
-                    : (state.selectedWorkspaceContext?.rootPath ?? "No project selected")
+                    ? state.t(.generalSkillsOnly)
+                    : (state.selectedWorkspaceContext?.rootPath ?? state.t(.noProjectSelected))
             ) {
-                Button("Refresh") { refresh() }.buttonStyle(WebToolbarButtonStyle())
-                Button("Import") { importSkill() }.buttonStyle(WebToolbarButtonStyle())
-                Button("New") {
+                Button(state.t(.refresh)) { refresh() }.buttonStyle(WebToolbarButtonStyle())
+                Button(state.t(.importAction)) { importSkill() }.buttonStyle(WebToolbarButtonStyle())
+                Button(state.t(.newAction)) {
                     newScope = state.selectedWorkspaceContext?.isGeneral == true ? .user : .project
                     showNew = true
                 }
@@ -459,20 +459,20 @@ struct SkillsView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
                 SkillScopeSection(
-                    title: "Project Skills",
+                    title: state.t(.projectSkills),
                     skills: state.skillsService.skills.filter { $0.scope == .project },
                     selectedSkillID: selectedSkillID,
                     onSelect: select
                 )
                 .opacity(state.selectedWorkspaceContext?.isGeneral == true ? 0 : 1)
                 SkillScopeSection(
-                    title: "User Skills",
+                    title: state.t(.userSkills),
                     skills: state.skillsService.skills.filter { $0.scope == .user },
                     selectedSkillID: selectedSkillID,
                     onSelect: select
                 )
                 if state.skillsService.skills.isEmpty {
-                    Text("No skills yet. Click New to install or create one.")
+                    Text(state.t(.noSkillsYet))
                         .font(.system(size: 12))
                         .foregroundStyle(DesignTokens.tertiaryText)
                         .padding(16)
@@ -505,9 +505,9 @@ struct SkillsView: View {
                             .foregroundStyle(DesignTokens.tertiaryText)
                     }
                     Spacer()
-                    Button("Delete") { delete(skill) }.buttonStyle(WebToolbarButtonStyle())
-                    Button("Revert") { editorContent = originalContent }.buttonStyle(WebToolbarButtonStyle()).disabled(editorContent == originalContent)
-                    Button("Save") { save(skill) }.buttonStyle(WebToolbarButtonStyle(isProminent: true)).disabled(editorContent == originalContent)
+                    Button(state.t(.delete)) { delete(skill) }.buttonStyle(WebToolbarButtonStyle())
+                    Button(state.t(.revert)) { editorContent = originalContent }.buttonStyle(WebToolbarButtonStyle()).disabled(editorContent == originalContent)
+                    Button(state.t(.save)) { save(skill) }.buttonStyle(WebToolbarButtonStyle(isProminent: true)).disabled(editorContent == originalContent)
                 }
                 .padding(.horizontal, 18)
                 .frame(height: 74)
@@ -519,28 +519,28 @@ struct SkillsView: View {
                     .padding(12)
             }
         } else {
-            ToolEmptyState(title: "Pick a skill", detail: "Select a skill on the left to view or edit its SKILL.md.", systemImage: "sparkles")
+            ToolEmptyState(title: state.t(.pickSkill), detail: state.t(.pickSkillDetail), systemImage: "sparkles")
         }
     }
 
     private var newSkillSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("New Skill")
+            Text("\(state.t(.newAction)) \(state.t(.skills))")
                 .font(.system(size: 16, weight: .semibold))
-            Picker("Scope", selection: $newScope) {
-                Text("User").tag(SkillScope.user)
-                Text("Project").tag(SkillScope.project)
+            Picker(state.t(.scope), selection: $newScope) {
+                Text(state.t(.user)).tag(SkillScope.user)
+                Text(state.t(.projects)).tag(SkillScope.project)
             }
             .pickerStyle(.segmented)
             .disabled(state.selectedWorkspaceContext?.isGeneral == true)
-            SettingsTextFieldCompat("Slug", text: $newSlug)
-            SettingsTextFieldCompat("Name", text: $newName)
-            SettingsTextFieldCompat("Description", text: $newDescription)
+            SettingsTextFieldCompat(state.t(.slug), text: $newSlug)
+            SettingsTextFieldCompat(state.t(.name), text: $newName)
+            SettingsTextFieldCompat(state.t(.description), text: $newDescription)
             Spacer()
             HStack {
                 Spacer()
-                Button("Cancel") { showNew = false }.buttonStyle(WebToolbarButtonStyle())
-                Button("Create") { createSkill() }.buttonStyle(WebToolbarButtonStyle(isProminent: true))
+                Button(state.t(.cancel)) { showNew = false }.buttonStyle(WebToolbarButtonStyle())
+                Button(state.t(.create)) { createSkill() }.buttonStyle(WebToolbarButtonStyle(isProminent: true))
             }
         }
         .padding(20)
@@ -633,9 +633,9 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Dashboard")
+                        Text(state.t(.routing))
                             .font(.system(size: 20, weight: .semibold))
-                        Text("Model routing, token saver, request log, and cost summary.")
+                        Text(state.t(.modelRoutingSummary))
                             .font(.system(size: 13))
                             .foregroundStyle(DesignTokens.tertiaryText)
                     }
@@ -643,32 +643,32 @@ struct DashboardView: View {
                     Button {
                         state.objectWillChange.send()
                     } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
+                        Label(state.t(.refresh), systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(WebToolbarButtonStyle())
                 }
                 HStack(spacing: 12) {
-                    Metric("Requests", "\(snapshot.routedSessions)", "arrow.triangle.branch")
-                    Metric("Tokens", "\(snapshot.totalTokens)", "number")
-                    Metric("Cost", formatCost(snapshot.estimatedCost), "dollarsign.circle")
+                    Metric(state.t(.requests), "\(snapshot.routedSessions)", "arrow.triangle.branch")
+                    Metric(state.t(.tokens), "\(snapshot.totalTokens)", "number")
+                    Metric(state.t(.cost), formatCost(snapshot.estimatedCost), "dollarsign.circle")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                ToolSection(title: "Recent routes") {
+                ToolSection(title: state.t(.recentRoutes)) {
                     if snapshot.recentSessions.isEmpty {
-                        Text("No routing activity yet. Start a conversation to see stats here.")
+                        Text(state.t(.noRoutingActivity))
                             .font(.system(size: 13))
                             .foregroundStyle(DesignTokens.tertiaryText)
                             .padding(.vertical, 24)
                     } else {
                         HStack {
-                            Text("Session")
+                            Text(state.t(.session))
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            Text("Project")
+                            Text(state.t(.projects))
                                 .frame(width: 140, alignment: .leading)
-                            Text("Tokens")
+                            Text(state.t(.tokens))
                                 .frame(width: 80, alignment: .trailing)
-                            Text("Cost")
+                            Text(state.t(.cost))
                                 .frame(width: 80, alignment: .trailing)
                         }
                         .font(.system(size: 11, weight: .semibold))
@@ -721,7 +721,7 @@ struct AlwaysOnView: View {
 
     var body: some View {
         guard let context = state.selectedWorkspaceContext, !context.isGeneral else {
-            return AnyView(ToolEmptyState(title: "Pick a project", detail: "Always-On is available for project workspaces.", systemImage: "dot.radiowaves.left.and.right"))
+            return AnyView(ToolEmptyState(title: state.t(.pickProject), detail: state.t(.alwaysOnProjectOnly), systemImage: "dot.radiowaves.left.and.right"))
         }
         let plans = state.alwaysOnService.plans(projectRoot: context.rootPath)
         let cronJobs = state.alwaysOnService.cronJobs(projectRoot: context.rootPath)
@@ -729,8 +729,8 @@ struct AlwaysOnView: View {
         return AnyView(
             VStack(spacing: 0) {
                 HStack(spacing: 4) {
-                    TabButton("Plans & Cron Jobs", isActive: subtab == .items) { subtab = .items; selectedRun = nil }
-                    TabButton("Run History", isActive: subtab == .history) { subtab = .history; selectedPlan = nil }
+                    TabButton(state.t(.plansCronJobs), isActive: subtab == .items) { subtab = .items; selectedRun = nil }
+                    TabButton(state.t(.runHistory), isActive: subtab == .history) { subtab = .history; selectedPlan = nil }
                     Spacer()
                 }
                 .padding(.horizontal, 14)
@@ -741,15 +741,15 @@ struct AlwaysOnView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Always-On")
+                                Text(state.t(.alwaysOn))
                                     .font(.system(size: 20, weight: .semibold))
-                                Text("Background discovery agent for this project.")
+                                Text(state.t(.backgroundDiscoveryAgent))
                                     .font(.system(size: 13))
                                     .foregroundStyle(DesignTokens.tertiaryText)
                             }
                             Spacer()
-                            Button("Refresh") { state.objectWillChange.send() }.buttonStyle(WebToolbarButtonStyle())
-                            Button("Discover") {
+                            Button(state.t(.refresh)) { state.objectWillChange.send() }.buttonStyle(WebToolbarButtonStyle())
+                            Button(state.t(.discover)) {
                                 state.startDraftSession(project: state.selectedProject)
                                 state.composerText = "Run Always-On discovery for \(context.displayName)."
                             }
@@ -775,7 +775,7 @@ struct AlwaysOnView: View {
     private func itemsView(plans: [AlwaysOnPlan], cronJobs: [AlwaysOnCronJob], projectRoot: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if plans.isEmpty && cronJobs.isEmpty {
-                Text("No active plans or cron jobs. Completed runs are available in Run History.")
+                Text(state.t(.noActivePlans))
                     .font(.system(size: 13))
                     .foregroundStyle(DesignTokens.tertiaryText)
                     .padding(18)
@@ -783,12 +783,12 @@ struct AlwaysOnView: View {
                 ForEach(plans) { plan in
                     ToolListRow(systemImage: "sparkles", title: plan.title, detail: "\(plan.status.rawValue) · \(relativeDate(plan.updatedAt))") {
                         HStack(spacing: 6) {
-                            Button("View") { selectedPlan = plan }.buttonStyle(WebToolbarButtonStyle())
-                            Button("Run") {
+                            Button(state.t(.review)) { selectedPlan = plan }.buttonStyle(WebToolbarButtonStyle())
+                            Button(state.t(.run)) {
                                 try? state.alwaysOnService.markPlanRunning(plan: plan, projectRoot: projectRoot)
                                 state.objectWillChange.send()
                             }.buttonStyle(WebToolbarButtonStyle(isProminent: true))
-                            Button("Archive") {
+                            Button(state.t(.archive)) {
                                 try? state.alwaysOnService.archive(plan: plan, projectRoot: projectRoot)
                                 state.objectWillChange.send()
                             }.buttonStyle(WebToolbarButtonStyle())
@@ -797,7 +797,7 @@ struct AlwaysOnView: View {
                 }
                 ForEach(cronJobs) { job in
                     ToolListRow(systemImage: "timer", title: cronTitle(job), detail: "\(job.status.rawValue) · \(job.cron)") {
-                        Text(job.recurring ? "recurring" : "one-shot")
+                        Text(job.recurring ? state.t(.recurring) : state.t(.oneShot))
                     }
                 }
             }
@@ -812,7 +812,7 @@ struct AlwaysOnView: View {
             Button {
                 selectedPlan = nil
             } label: {
-                Label("Back", systemImage: "arrow.left")
+                Label(state.t(.back), systemImage: "arrow.left")
             }
             .buttonStyle(WebToolbarButtonStyle())
             Text(plan.title)
@@ -822,7 +822,7 @@ struct AlwaysOnView: View {
                     .font(.system(size: 13))
                     .foregroundStyle(DesignTokens.secondaryText)
             }
-            MarkdownPreview(text: plan.content.isEmpty ? "No plan markdown content." : plan.content)
+            MarkdownPreview(text: plan.content.isEmpty ? state.t(.noPlanContent) : plan.content)
             Text(plan.planFilePath)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(DesignTokens.tertiaryText)
@@ -832,14 +832,14 @@ struct AlwaysOnView: View {
     private func historyView(_ history: [AlwaysOnRunHistory]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if let selectedRun {
-                Button { self.selectedRun = nil } label: { Label("Back", systemImage: "arrow.left") }
+                Button { self.selectedRun = nil } label: { Label(state.t(.back), systemImage: "arrow.left") }
                     .buttonStyle(WebToolbarButtonStyle())
                 Text(selectedRun.title)
                     .font(.system(size: 20, weight: .semibold))
-                MonospaceOutput(text: selectedRun.outputLog.isEmpty ? "No output log was captured for this run." : selectedRun.outputLog)
+                MonospaceOutput(text: selectedRun.outputLog.isEmpty ? state.t(.noOutputLog) : selectedRun.outputLog)
                     .frame(minHeight: 360)
             } else if history.isEmpty {
-                Text("No Always-On runs have been recorded yet.")
+                Text(state.t(.noAlwaysOnRuns))
                     .font(.system(size: 13))
                     .foregroundStyle(DesignTokens.tertiaryText)
             } else {
@@ -905,11 +905,11 @@ private struct FileEditorPane: View {
                         .buttonStyle(WebToolbarButtonStyle())
                 }
                 if file.isHTML {
-                    Button("Open HTML") { NSWorkspace.shared.open(URL(fileURLWithPath: file.path)) }
+                    Button(state.t(.openHTML)) { NSWorkspace.shared.open(URL(fileURLWithPath: file.path)) }
                         .buttonStyle(WebToolbarButtonStyle())
                 }
-                Button("Download") { download() }.buttonStyle(WebToolbarButtonStyle())
-                Button("Save") { onSave() }.buttonStyle(WebToolbarButtonStyle(isProminent: true)).disabled(file.isImage)
+                Button(state.t(.download)) { download() }.buttonStyle(WebToolbarButtonStyle())
+                Button(state.t(.save)) { onSave() }.buttonStyle(WebToolbarButtonStyle(isProminent: true)).disabled(file.isImage)
                 Button { onToggleExpand() } label: { Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") }
                     .buttonStyle(WebToolbarButtonStyle())
                 Button { onClose() } label: { Image(systemName: "xmark") }
@@ -967,6 +967,7 @@ private struct FileEditorPane: View {
 }
 
 private struct FileTreeRow: View {
+    @EnvironmentObject private var state: AppState
     var file: WorkspaceFile
     var isSelected: Bool
     var onOpen: () -> Void
@@ -1014,8 +1015,8 @@ private struct FileTreeRow: View {
             }
         }
         .contextMenu {
-            Button("Rename", action: onRename)
-            Button("Delete", role: .destructive, action: onDelete)
+            Button(state.t(.rename), action: onRename)
+            Button(state.t(.delete), role: .destructive, action: onDelete)
         }
     }
 
@@ -1147,6 +1148,7 @@ private struct SettingsTextFieldCompat: View {
 }
 
 private struct SplitDivider: View {
+    @EnvironmentObject private var state: AppState
     @Binding var width: CGFloat
     var minWidth: CGFloat
     var maxWidth: CGFloat
@@ -1156,7 +1158,7 @@ private struct SplitDivider: View {
 
     var body: some View {
         Rectangle()
-            .fill(dragging ? DesignTokens.accent.opacity(0.45) : DesignTokens.separator)
+            .fill(dragging ? DesignTokens.accent.opacity(0.60) : DesignTokens.separator)
             .frame(width: dragging ? 3 : 1)
             .contentShape(Rectangle().inset(by: -4))
             .gesture(
@@ -1171,7 +1173,7 @@ private struct SplitDivider: View {
                     }
                     .onEnded { _ in dragging = false }
             )
-            .help("Drag to resize")
+            .help(state.t(.dragToResize))
     }
 }
 
@@ -1387,7 +1389,7 @@ struct WebToolbarButtonStyle: ButtonStyle {
             .foregroundStyle(isProminent ? Color.white : DesignTokens.secondaryText)
             .lineLimit(1)
             .padding(.horizontal, 10)
-            .frame(minWidth: isProminent ? 56 : 32, minHeight: 30)
+            .frame(minWidth: isProminent ? 56 : 32, minHeight: 32)
             .background(
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .fill(isProminent ? DesignTokens.neutral900 : DesignTokens.neutral100)
@@ -1410,14 +1412,15 @@ struct WebFieldStyle: TextFieldStyle {
 }
 
 private struct CodeEditorFooterCompat: View {
+    @EnvironmentObject private var state: AppState
     var content: String
 
     var body: some View {
         HStack {
-            Text("\(content.split(separator: "\n", omittingEmptySubsequences: false).count) lines")
-            Text("\(content.count) characters")
+            Text(state.t(.linesFormat, content.split(separator: "\n", omittingEmptySubsequences: false).count))
+            Text(state.t(.charactersFormat, content.count))
             Spacer()
-            Text("Cmd+S save · Esc close")
+            Text(state.t(.saveShortcut))
         }
         .font(.system(size: 11))
         .foregroundStyle(DesignTokens.tertiaryText)

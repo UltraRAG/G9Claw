@@ -28,10 +28,10 @@ struct ChatView: View {
                                 .id("process-live-status")
                         }
                     }
-                    .padding(.horizontal, 48)
-                    .padding(.top, 32)
-                    .padding(.bottom, 24)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, DesignTokens.transcriptPaddingH)
+                    .padding(.vertical, DesignTokens.transcriptPaddingV)
+                    .frame(maxWidth: DesignTokens.transcriptMaxWidth)
+                    .frame(maxWidth: .infinity)
                 }
                 .scrollIndicators(.automatic)
                 .onChange(of: state.currentMessages.count) { _, _ in
@@ -58,8 +58,9 @@ struct ChatView: View {
     private var emptyPromptBlock: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
-            Text("What would you like to work on today?")
-                .font(.system(size: 22, weight: .semibold))
+            Text(state.t(.welcomePrompt))
+                .font(.system(size: DesignTokens.welcomeTitleSize, weight: .medium))
+                .tracking(-0.4)
                 .foregroundStyle(DesignTokens.text)
                 .multilineTextAlignment(.center)
             Spacer(minLength: 0)
@@ -92,6 +93,7 @@ private struct ComposerFooter: View {
     }
 }
 
+
 private struct ComposerCard: View {
     @EnvironmentObject private var state: AppState
     @FocusState private var focused: Bool
@@ -111,7 +113,7 @@ private struct ComposerCard: View {
 
             ZStack(alignment: .topLeading) {
                 if state.composerText.isEmpty {
-                    Text("Ask 9GClaw")
+                    Text(state.t(.askPlaceholder))
                         .font(.system(size: 14))
                         .foregroundStyle(DesignTokens.neutral400)
                         .padding(.horizontal, 8)
@@ -130,14 +132,14 @@ private struct ComposerCard: View {
             HStack(spacing: 2) {
                 runModeButton
                     .padding(.trailing, 4)
-                iconControl("paperclip", help: "Attach photos or files") {
+                iconControl("paperclip", help: state.t(.attachHelp)) {
                     openAttachmentPanel()
                 }
-                iconControl("at", help: "Mention a file") {
+                iconControl("at", help: state.t(.mentionFile)) {
                     state.composerText += "@"
                     focused = true
                 }
-                iconControl("command", help: "Run a command") {
+                iconControl("command", help: state.t(.commandHelp)) {
                     state.composerText += "/"
                     focused = true
                 }
@@ -157,7 +159,7 @@ private struct ComposerCard: View {
                     RoundedRectangle(cornerRadius: DesignTokens.largeRadius, style: .continuous)
                         .stroke(focused ? DesignTokens.neutral300 : DesignTokens.separator, lineWidth: 1)
                 )
-                .shadow(color: .black.opacity(chromeless ? 0.06 : 0.04), radius: 4, y: 1)
+                .shadow(color: .black.opacity(chromeless ? 0.06 : 0.05), radius: 2, y: 1)
         )
     }
 
@@ -197,14 +199,14 @@ private struct ComposerCard: View {
                 Button {
                     state.composerRunMode = mode
                 } label: {
-                    Label(mode.label, systemImage: mode.systemImage)
+                    Label(state.runModeLabel(mode), systemImage: mode.systemImage)
                 }
             }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: state.composerRunMode.systemImage)
                     .font(.system(size: 15))
-                Text(state.composerRunMode.label)
+                Text(state.runModeLabel(state.composerRunMode))
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
@@ -215,7 +217,7 @@ private struct ComposerCard: View {
         }
         .menuStyle(.borderlessButton)
         .buttonStyle(ComposerControlButtonStyle())
-        .help("Choose run mode")
+        .help(state.t(.chooseRunMode))
     }
 
     private var permissionModeButton: some View {
@@ -224,14 +226,14 @@ private struct ComposerCard: View {
                 Button {
                     state.composerPermissionMode = mode
                 } label: {
-                    Label(mode.label, systemImage: mode.systemImage)
+                    Label(state.permissionModeLabel(mode), systemImage: mode.systemImage)
                 }
             }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: state.composerPermissionMode.systemImage)
                     .font(.system(size: 15))
-                Text(state.composerPermissionMode.label)
+                Text(state.permissionModeLabel(state.composerPermissionMode))
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
@@ -242,13 +244,13 @@ private struct ComposerCard: View {
         }
         .menuStyle(.borderlessButton)
         .buttonStyle(ComposerControlButtonStyle())
-        .help("Choose permission mode")
+        .help(state.t(.choosePermissionMode))
     }
 
     private var contextGauge: some View {
         Menu {
-            Text("Context usage: 0%")
-            Text("No token budget has been reported for this session yet.")
+            Text(state.t(.contextUsage))
+            Text(state.t(.contextUsageDetail))
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "gauge")
@@ -266,7 +268,7 @@ private struct ComposerCard: View {
         }
         .menuStyle(.borderlessButton)
         .buttonStyle(ComposerControlButtonStyle())
-        .help("Context usage")
+        .help(state.t(.contextUsage))
     }
 
     private func iconControl(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
@@ -289,17 +291,17 @@ private struct ComposerCard: View {
         } label: {
             Image(systemName: state.isCurrentSessionStreaming ? "stop.fill" : "arrow.up")
                 .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(state.isCurrentSessionStreaming || canSend ? .white : DesignTokens.neutral400)
+                .foregroundStyle(state.isCurrentSessionStreaming ? .white : (canSend ? .white : DesignTokens.neutral400))
                 .frame(width: 32, height: 32)
                 .background(
                     RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
-                        .fill(state.isCurrentSessionStreaming || canSend ? DesignTokens.neutral900 : DesignTokens.neutral200)
+                        .fill(state.isCurrentSessionStreaming ? Color(nsColor: NSColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1)) : (canSend ? DesignTokens.neutral900 : DesignTokens.neutral200))
                 )
         }
         .buttonStyle(.plain)
         .disabled(!state.isCurrentSessionStreaming && !canSend)
         .keyboardShortcut(.return, modifiers: [.command])
-        .help(state.isCurrentSessionStreaming ? "Stop generation" : "Send")
+        .help(state.isCurrentSessionStreaming ? state.t(.stopGeneration) : state.t(.send))
     }
 
     private func openAttachmentPanel() {
@@ -308,7 +310,7 @@ private struct ComposerCard: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
         panel.resolvesAliases = true
-        panel.prompt = "Attach"
+        panel.prompt = state.t(.attach)
         guard panel.runModal() == .OK else { return }
         let attachments = panel.urls.map { url in
             FileAttachment(
@@ -324,6 +326,7 @@ private struct ComposerCard: View {
 }
 
 private struct MessageRow: View {
+    @EnvironmentObject private var state: AppState
     var message: ChatMessage
 
     var body: some View {
@@ -347,7 +350,7 @@ private struct MessageRow: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .frame(maxWidth: 780, alignment: .leading)
+            .frame(maxWidth: (DesignTokens.transcriptMaxWidth - DesignTokens.transcriptPaddingH * 2) * 0.78, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: DesignTokens.userBubbleRadius, style: .continuous)
                     .fill(DesignTokens.neutral100)
@@ -362,13 +365,14 @@ private struct MessageRow: View {
                 blockView(block, compact: false)
             }
             if message.isStreaming && message.plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Rectangle()
+                RoundedRectangle(cornerRadius: 1)
                     .fill(DesignTokens.neutral400)
                     .frame(width: 8, height: 16)
+                    .opacity(0.8)
             }
         }
         .font(.system(size: 14))
-        .lineSpacing(4)
+        .lineSpacing(8.75)
         .foregroundStyle(DesignTokens.text)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -405,7 +409,7 @@ private struct MessageRow: View {
             ToolBlock(title: call.name, detail: call.inputJSON, systemImage: "hammer", tint: DesignTokens.warning)
         case .toolResult(let result):
             ToolBlock(
-                title: result.isError ? "Tool error" : "Tool result",
+                title: result.isError ? state.t(.toolError) : state.t(.toolResult),
                 detail: result.output,
                 systemImage: result.isError ? "exclamationmark.triangle" : "checkmark.circle",
                 tint: result.isError ? DesignTokens.danger : DesignTokens.success
@@ -460,15 +464,19 @@ private struct PermissionBanner: View {
                         Text(request.reason)
                             .font(.system(size: 12))
                             .foregroundStyle(DesignTokens.secondaryText)
+                        if !request.inputJSON.isEmpty {
+                            Text(request.inputJSON)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                                .lineLimit(3)
+                        }
                     }
                     Spacer()
-                    Button("Deny") {
-                        state.pendingPermissions.removeAll { $0.id == request.id }
-                        state.statusLine = "Permission denied for \(request.toolName)"
+                    Button(state.t(.deny)) {
+                        state.denyPermission(request.id)
                     }
-                    Button("Allow") {
-                        state.pendingPermissions.removeAll { $0.id == request.id }
-                        state.statusLine = "Permission allowed for \(request.toolName)"
+                    Button(state.t(.allow)) {
+                        state.approvePermission(request.id)
                     }
                         .buttonStyle(.borderedProminent)
                 }
@@ -487,6 +495,7 @@ private struct PermissionBanner: View {
 }
 
 private struct ProcessLiveStatusRow: View {
+    @EnvironmentObject private var state: AppState
     var activities: [AgentActivity]
     @State private var expanded = false
 
@@ -563,16 +572,16 @@ private struct ProcessLiveStatusRow: View {
     }
 
     private var liveDetail: String {
-        latest?.detail.isEmpty == false ? latest?.detail ?? "" : "Working"
+        latest?.detail.isEmpty == false ? latest?.detail ?? "" : state.t(.working)
     }
 
     private var summaryText: String {
-        if activities.contains(where: { $0.state == .running }) { return "Live" }
-        if activities.contains(where: { $0.state == .failed }) { return "Failed" }
-        if activities.contains(where: { $0.state == .cancelled }) { return "Stopped" }
+        if activities.contains(where: { $0.state == .running }) { return state.t(.live) }
+        if activities.contains(where: { $0.state == .failed }) { return state.t(.failed) }
+        if activities.contains(where: { $0.state == .cancelled }) { return state.t(.stopped) }
         let toolCount = activities.filter { $0.phase != .status }.count
-        if toolCount == 0 { return "Done" }
-        return "\(toolCount) tools"
+        if toolCount == 0 { return state.t(.done) }
+        return state.t(.toolsFormat, toolCount)
     }
 
     private func statusIcon(_ phase: AgentActivityPhase, state: AgentActivityState) -> some View {

@@ -54,7 +54,7 @@ struct SidebarView: View {
                 }
             } label: {
                 LogoImage()
-                    .frame(width: 184, height: 56, alignment: .leading)
+                    .frame(height: 56, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
@@ -68,9 +68,9 @@ struct SidebarView: View {
                     .frame(width: 32, height: 32)
             }
             .buttonStyle(WebIconButtonStyle())
-            .help("Hide sidebar")
+            .help(state.t(.hideSidebar))
         }
-        .padding(.leading, 4)
+        .padding(.leading, 8)
         .padding(.trailing, 16)
         .frame(height: DesignTokens.sidebarHeaderHeight)
     }
@@ -98,7 +98,7 @@ struct SidebarView: View {
                 state.selectProject(generalProject)
             }
         } label: {
-            Text(section.title)
+            Text(sectionTitle(section))
                 .font(.system(size: 12, weight: .medium))
                 .frame(maxWidth: .infinity)
                 .frame(height: 24)
@@ -107,8 +107,8 @@ struct SidebarView: View {
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(activeSection == section ? DesignTokens.background : Color.clear)
                         .shadow(
-                            color: activeSection == section ? .black.opacity(0.08) : .clear,
-                            radius: 2,
+                            color: activeSection == section ? .black.opacity(0.06) : .clear,
+                            radius: 1,
                             y: 1
                         )
                 )
@@ -135,7 +135,7 @@ struct SidebarView: View {
     private var projectsSection: some View {
         VStack(alignment: .leading, spacing: 2) {
             sectionHeader(
-                title: "Projects",
+                title: state.t(.projects),
                 leftActionIcon: areAllProjectsExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical",
                 leftAction: toggleAllProjects,
                 rightActionIcon: "plus",
@@ -145,7 +145,7 @@ struct SidebarView: View {
             )
 
             if otherProjects.isEmpty {
-                Text("No projects found")
+                Text(state.t(.noProjectsFound))
                     .font(.system(size: 11))
                     .foregroundStyle(DesignTokens.tertiaryText)
                     .padding(.horizontal, 12)
@@ -162,7 +162,7 @@ struct SidebarView: View {
     private var generalSection: some View {
         VStack(alignment: .leading, spacing: 2) {
             sectionHeader(
-                title: "General",
+                title: state.t(.general),
                 rightActionIcon: "square.and.pencil",
                 rightAction: {
                     if let generalProject {
@@ -177,7 +177,7 @@ struct SidebarView: View {
                 sessionRows(for: generalProject, flat: true)
                     .padding(.horizontal, 4)
             } else {
-                Text("No general workspace found")
+                Text(state.t(.noGeneralWorkspaceFound))
                     .font(.system(size: 11))
                     .foregroundStyle(DesignTokens.tertiaryText)
                     .padding(.horizontal, 12)
@@ -197,8 +197,8 @@ struct SidebarView: View {
         HStack(spacing: 2) {
             Text(title.uppercased())
                 .font(.system(size: 11, weight: .medium))
-                .tracking(0.44)
-                .foregroundStyle(DesignTokens.tertiaryText.opacity(0.90))
+                .tracking(11 * 0.04)
+                .foregroundStyle(DesignTokens.neutral500.opacity(0.90))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if let leftActionIcon, let leftAction {
@@ -277,11 +277,11 @@ struct SidebarView: View {
             }
         }
         .contextMenu {
-            Button("Rename") {
-                state.errorBanner = "Project rename is not implemented in this UI parity pass."
+            Button(state.t(.rename)) {
+                state.errorBanner = state.t(.projectRenameUnavailable)
             }
-            Button("Delete", role: .destructive) {
-                state.errorBanner = "Project delete is not implemented in this UI parity pass."
+            Button(state.t(.delete), role: .destructive) {
+                state.errorBanner = state.t(.projectDeleteUnavailable)
             }
         }
     }
@@ -298,11 +298,11 @@ struct SidebarView: View {
                     state.startNewSession()
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("New Session")
+                        Text(state.t(.newSession))
                             .font(.system(size: 12.5))
                             .foregroundStyle(DesignTokens.text)
                             .lineLimit(1)
-                        Text("Not saved yet")
+                        Text(state.t(.notSavedYet))
                             .font(.system(size: 11))
                             .foregroundStyle(DesignTokens.tertiaryText)
                     }
@@ -318,7 +318,7 @@ struct SidebarView: View {
             }
 
             if visibleSessions.isEmpty {
-                Text("No sessions yet")
+                Text(state.t(.noSessionsYet))
                     .font(.system(size: 11))
                     .foregroundStyle(DesignTokens.tertiaryText)
                     .padding(.horizontal, 8)
@@ -337,7 +337,7 @@ struct SidebarView: View {
                         collapsedSessionProjectIDs.insert(project.id)
                     }
                 } label: {
-                    Text(isCollapsed ? "Show more (\(allSessions.count - 5))" : "Show less")
+                    Text(isCollapsed ? state.t(.showMoreFormat, allSessions.count - 5) : state.t(.showLess))
                         .font(.system(size: 11))
                         .foregroundStyle(DesignTokens.tertiaryText)
                         .padding(.horizontal, 8)
@@ -384,11 +384,11 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("Rename") {
-                state.errorBanner = "Session rename is not implemented in this UI parity pass."
+            Button(state.t(.rename)) {
+                state.errorBanner = state.t(.sessionRenameUnavailable)
             }
-            Button("Delete", role: .destructive) {
-                state.errorBanner = "Session delete is not implemented in this UI parity pass."
+            Button(state.t(.delete), role: .destructive) {
+                state.errorBanner = state.t(.sessionDeleteUnavailable)
             }
         }
     }
@@ -404,17 +404,14 @@ struct SidebarView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "gearshape")
                         .font(.system(size: 16, weight: .regular))
-                    Text("Settings")
+                    Text(state.t(.settings))
                         .font(.system(size: 13, weight: .medium))
                     Spacer()
                 }
                 .foregroundStyle(DesignTokens.secondaryText)
                 .padding(.horizontal, 24)
                 .frame(height: 36)
-                .background(
-                    RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
-                        .fill(Color.clear)
-                )
+                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.radius))
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 8)
@@ -480,6 +477,15 @@ struct SidebarView: View {
             otherProjects.forEach { expandedProjectIDs.remove($0.id) }
         } else {
             otherProjects.forEach { expandedProjectIDs.insert($0.id) }
+        }
+    }
+
+    private func sectionTitle(_ section: SidebarSection) -> String {
+        switch section {
+        case .projects:
+            return state.t(.projects)
+        case .general:
+            return state.t(.general)
         }
     }
 
@@ -557,9 +563,9 @@ struct ProjectCreationWizardView: View {
                         .foregroundStyle(DesignTokens.accent)
                 }
             VStack(alignment: .leading, spacing: 2) {
-                Text("Create Project")
+                Text(state.t(.createProject))
                     .font(.system(size: 18, weight: .semibold))
-                Text("Add an existing workspace or create a new folder.")
+                Text(state.t(.createProjectSubtitle))
                     .font(.system(size: 12))
                     .foregroundStyle(DesignTokens.tertiaryText)
             }
@@ -592,27 +598,27 @@ struct ProjectCreationWizardView: View {
         switch step {
         case 0:
             VStack(alignment: .leading, spacing: 14) {
-                Text("Choose workspace type")
+                Text(state.t(.chooseWorkspaceType))
                     .font(.system(size: 15, weight: .semibold))
                 HStack(spacing: 12) {
-                    typeCard(.existing, title: "Open Existing", detail: "Register an existing local project folder.", icon: "folder")
-                    typeCard(.new, title: "Create New", detail: "Create a new folder, optionally from Git.", icon: "plus.square")
+                    typeCard(.existing, title: state.t(.openExisting), detail: state.t(.openExistingDetail), icon: "folder")
+                    typeCard(.new, title: state.t(.createNew), detail: state.t(.createNewDetail), icon: "plus.square")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
         case 1:
             VStack(alignment: .leading, spacing: 14) {
-                Text("Configure workspace")
+                Text(state.t(.configureWorkspace))
                     .font(.system(size: 15, weight: .semibold))
-                SettingsTextField("Display Name", text: $displayName)
+                SettingsTextField(state.t(.displayName), text: $displayName)
                 HStack(alignment: .bottom, spacing: 8) {
-                    SettingsTextField("Workspace Path", text: $workspacePath)
-                    Button("Browse") { browseFolder() }
+                    SettingsTextField(state.t(.workspacePath), text: $workspacePath)
+                    Button(state.t(.browse)) { browseFolder() }
                         .buttonStyle(WebToolbarButtonStyle())
                 }
                 if workspaceType == .new {
-                    SettingsTextField("GitHub URL (optional)", text: $githubURL)
-                    Text("If a Git URL is provided, 9GClaw creates the target folder first and clones into it.")
+                    SettingsTextField(state.t(.githubURLOptional), text: $githubURL)
+                    Text(state.t(.gitURLHelp))
                         .font(.system(size: 12))
                         .foregroundStyle(DesignTokens.tertiaryText)
                 }
@@ -620,12 +626,12 @@ struct ProjectCreationWizardView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         default:
             VStack(alignment: .leading, spacing: 16) {
-                Text("Review")
+                Text(state.t(.review))
                     .font(.system(size: 15, weight: .semibold))
                 SettingsCardBlock(divided: true) {
-                    reviewRow("Type", workspaceType == .existing ? "Existing workspace" : "New workspace")
-                    reviewRow("Name", finalDisplayName)
-                    reviewRow("Path", expandedPath)
+                    reviewRow(state.t(.type), workspaceType == .existing ? state.t(.openExisting) : state.t(.createNew))
+                    reviewRow(state.t(.displayName), finalDisplayName)
+                    reviewRow(state.t(.workspacePath), expandedPath)
                     if workspaceType == .new && !githubURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         reviewRow("Git", githubURL)
                     }
@@ -634,7 +640,7 @@ struct ProjectCreationWizardView: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .scaleEffect(0.72)
-                        Text("Creating project...")
+                        Text(state.t(.creatingProject))
                             .font(.system(size: 12))
                             .foregroundStyle(DesignTokens.tertiaryText)
                     }
@@ -646,7 +652,7 @@ struct ProjectCreationWizardView: View {
 
     private var footer: some View {
         HStack {
-            Button("Back") {
+            Button(state.t(.back)) {
                 step = max(0, step - 1)
             }
             .buttonStyle(WebToolbarButtonStyle())
@@ -654,11 +660,11 @@ struct ProjectCreationWizardView: View {
 
             Spacer()
 
-            Button("Cancel", action: onClose)
+            Button(state.t(.cancel), action: onClose)
                 .buttonStyle(WebToolbarButtonStyle())
                 .disabled(isCreating)
 
-            Button(step == 2 ? "Create Project" : "Continue") {
+            Button(step == 2 ? state.t(.createProject) : state.t(.continueAction)) {
                 if step < 2 {
                     step += 1
                 } else {
@@ -709,7 +715,7 @@ struct ProjectCreationWizardView: View {
                 .foregroundStyle(DesignTokens.tertiaryText)
                 .frame(width: 96, alignment: .leading)
             Text(value)
-                .font(.system(size: 12, design: label == "Path" ? .monospaced : .default))
+                .font(.system(size: 12, design: label == state.t(.workspacePath) ? .monospaced : .default))
                 .foregroundStyle(DesignTokens.text)
                 .textSelection(.enabled)
             Spacer()
@@ -733,7 +739,7 @@ struct ProjectCreationWizardView: View {
         let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed }
         let name = URL(fileURLWithPath: expandedPath).lastPathComponent
-        return name.isEmpty ? "Untitled Project" : name
+        return name.isEmpty ? state.t(.createProject) : name
     }
 
     private func browseFolder() {

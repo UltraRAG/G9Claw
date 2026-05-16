@@ -13,19 +13,19 @@ struct NineGClawApp: App {
         .windowStyle(.titleBar)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Session") {
+                Button(state.t(.newSession)) {
                     state.startNewSession()
                 }
                 .keyboardShortcut("n", modifiers: [.command])
             }
 
             CommandMenu("9GClaw") {
-                Button("Refresh Projects") {
+                Button(state.t(.refreshProjects)) {
                     Task { await state.refreshProjects() }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
 
-                Button("Stop Generation") {
+                Button(state.t(.stopGeneration)) {
                     state.abortActiveRun()
                 }
                 .keyboardShortcut(".", modifiers: [.command])

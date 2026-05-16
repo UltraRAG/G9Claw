@@ -321,6 +321,7 @@ struct PermissionRequest: Identifiable, Hashable, Codable {
     var id: UUID
     var sessionId: String
     var toolName: String
+    var inputJSON: String
     var reason: String
     var scope: PermissionScope
     var createdAt: Date

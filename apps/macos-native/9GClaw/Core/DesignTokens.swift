@@ -11,6 +11,12 @@ enum DesignTokens {
     static let separator = neutral800InDark(light: nsColor(229, 229, 229))
     static let accent = Color(nsColor: nsColor(37, 99, 235))
 
+    static let popover = neutral900InDark(light: .white)
+    static let card = neutral950InDark(light: .white)
+    static let mutedForeground = adaptive(light: nsColor(115, 115, 115), dark: nsColor(163, 163, 163))
+    static let ring = adaptive(light: nsColor(77, 77, 77), dark: nsColor(163, 163, 163))
+    static let destructiveForeground = adaptive(light: nsColor(250, 250, 250), dark: nsColor(250, 250, 250))
+
     static let neutral50 = neutral900InDark(light: nsColor(250, 250, 250))
     static let neutral100 = neutral800InDark(light: nsColor(245, 245, 245))
     static let neutral200 = neutral700InDark(light: nsColor(229, 229, 229))
@@ -41,9 +47,22 @@ enum DesignTokens {
 
     static let composerMaxWidth: CGFloat = 720
     static let composerTextMinHeight: CGFloat = 48
+    static let transcriptMaxWidth: CGFloat = 860
+    static let transcriptPaddingH: CGFloat = 24
+    static let transcriptPaddingV: CGFloat = 40
     static let filesChatDefaultWidth: CGFloat = 460
     static let filesChatMinWidth: CGFloat = 320
     static let filesPaneMinWidth: CGFloat = 280
+
+    static let welcomeTitleSize: CGFloat = 26
+    static let settingsTitleSize: CGFloat = 16
+
+    static let interFontName = "Inter"
+    static let interMonoFontName = "SF Mono"
+
+    static func interFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .custom(interFontName, size: size).weight(weight)
+    }
 
     static func selectedRowFill() -> Color {
         neutral200.opacity(0.70)
@@ -97,7 +116,7 @@ enum DesignTokens {
         adaptive(light: light, dark: nsColor(250, 250, 250))
     }
 
-    private static func adaptive(light: NSColor, dark: NSColor) -> Color {
+    static func adaptive(light: NSColor, dark: NSColor) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
             let best = appearance.bestMatch(from: [.darkAqua, .aqua])
             return best == .darkAqua ? dark : light
@@ -119,8 +138,8 @@ struct NativePillButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 13, weight: isActive ? .semibold : .regular))
-            .foregroundStyle(isActive ? DesignTokens.text : DesignTokens.secondaryText)
+            .font(.system(size: 13, weight: isActive ? .medium : .regular))
+            .foregroundStyle(isActive ? DesignTokens.text : DesignTokens.tertiaryText)
             .padding(.horizontal, 10)
             .frame(height: 32)
             .background(

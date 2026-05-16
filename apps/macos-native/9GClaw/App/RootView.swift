@@ -33,8 +33,8 @@ struct RootView: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.985)))
             }
         }
-        .animation(.easeOut(duration: 0.14), value: state.showSettings)
-        .animation(.easeOut(duration: 0.14), value: state.showProjectCreationWizard)
+        .animation(.easeInOut(duration: 0.20), value: state.showSettings)
+        .animation(.easeInOut(duration: 0.20), value: state.showProjectCreationWizard)
         .task {
             await state.bootstrap()
         }
