@@ -925,6 +925,80 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(AgentEvent.status("thinking").isTerminal)
     }
 
+    func testSkillToolSchemaAndPlanPolicyAreAvailable() {
+        let tools = NativeToolRouter.openAITools()
+        let names = tools.compactMap { tool -> String? in
+            guard let function = tool["function"] as? [String: Any] else { return nil }
+            return function["name"] as? String
+        }
+        XCTAssertTrue(names.contains("Skill"))
+
+        let context = AgentRunContext(request: agentRequest(runMode: .plan))
+        let call = AgentToolCall(
+            id: "call-skill",
+            name: "Skill",
+            inputJSON: #"{"skill":"9gclaw-rag:glm-web-search","args":"weather"}"#
+        )
+        XCTAssertEqual(NativeToolRouter.permissionPolicy(for: call, context: context), .allow)
+    }
+
+    func testSkillRuntimeLoadsBundledRAGSkillAndInjectsEnvironment() throws {
+        let request = agentRequest(
+            nativeConfigValues: [
+                "rag.glmWebSearch.baseUrl": "https://api.z.ai/api/paas/v4/web_search",
+                "rag.glmWebSearch.apiKey": "test-rag-key",
+                "rag.glmWebSearch.defaultTopK": "10",
+            ]
+        )
+        let context = AgentRunContext(request: request)
+        let output = try SkillRuntimeService.load(
+            inputJSON: #"{"skill":"9gclaw-rag:glm-web-search","args":"Beijing weather"}"#,
+            context: context
+        )
+
+        XCTAssertTrue(output.contains("9gclaw-rag:glm-web-search"))
+        XCTAssertTrue(output.contains("glm_web_search.py"))
+        XCTAssertTrue(context.invokedSkills.contains("9gclaw-rag:glm-web-search"))
+
+        let environment = SkillRuntimeService.environment(configValues: request.nativeConfigValues)
+        XCTAssertEqual(environment["EDGECLAW_RAG_GLM_WEB_SEARCH_API_KEY"], "test-rag-key")
+        XCTAssertNotNil(environment["CLAUDE_PLUGIN_ROOT"])
+    }
+
+    func testRouterChoosesTierModelWithoutDARPAHardcoding() {
+        let yaml = """
+        models:
+          providers:
+            edgeclaw:
+              type: openai-chat
+              baseUrl: http://example.local/v1
+              apiKey: test
+          entries:
+            default:
+              provider: edgeclaw
+              name: qwen3.6-27b
+            router_small:
+              provider: edgeclaw
+              name: qwen3.6-35b-a3b
+        router:
+          enabled: true
+          routes:
+            default:
+              model: default
+          tokenSaver:
+            tiers:
+              SIMPLE:
+                model: router_small
+              MEDIUM:
+                model: router_small
+              COMPLEX:
+                model: default
+        """
+        let values = NativeConfigService.scalarMap(from: yaml)
+        XCTAssertEqual(NativeRouterRuntime.entryID(forTier: "SIMPLE", values: values), "router_small")
+        XCTAssertFalse(values.keys.contains { $0.lowercased().contains("darpa") })
+    }
+
     private func project(name: String, displayName: String, date: Date) -> WorkspaceProject {
         WorkspaceProject(
             id: UUID(),
@@ -944,7 +1018,8 @@ final class ParityLogicTests: XCTestCase {
         projectPath: String = NSTemporaryDirectory(),
         prompt: String = "test",
         runMode: ChatRunMode = .agent,
-        permissionMode: ComposerPermissionMode = .default
+        permissionMode: ComposerPermissionMode = .default,
+        nativeConfigValues: [String: String] = [:]
     ) -> AgentRequest {
         AgentRequest(
             sessionId: "test-session",
@@ -967,6 +1042,7 @@ final class ParityLogicTests: XCTestCase {
             workspaceContext: nil,
             toolSettings: .defaults,
             routerRoute: "default",
+            nativeConfigValues: nativeConfigValues,
             permissionHandler: nil
         )
     }

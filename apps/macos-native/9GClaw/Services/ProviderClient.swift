@@ -31,6 +31,7 @@ struct AgentRequest: Sendable {
     var workspaceContext: WorkspaceContext?
     var toolSettings: ToolPermissionSettings
     var routerRoute: String
+    var nativeConfigValues: [String: String] = [:]
     var permissionHandler: (@MainActor @Sendable (AgentPermissionRequest) async -> AgentPermissionDecision)?
 }
 
@@ -149,6 +150,8 @@ final class AgentRunContext: @unchecked Sendable {
     var mutatingToolCount: Int
     var failedToolCount: Int
     var recoverableProtocolErrorCount: Int
+    var nativeConfigValues: [String: String]
+    var invokedSkills: [String]
     var lastExecutedToolName: String?
     var lastToolResultWasError: Bool
     private var executedToolSignatures: Set<String>
@@ -168,9 +171,26 @@ final class AgentRunContext: @unchecked Sendable {
         mutatingToolCount = 0
         failedToolCount = 0
         recoverableProtocolErrorCount = 0
+        nativeConfigValues = request.nativeConfigValues
+        invokedSkills = []
         lastExecutedToolName = nil
         lastToolResultWasError = false
         executedToolSignatures = []
+    }
+
+    func recordInvokedSkill(_ skill: String) {
+        let trimmed = skill.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !invokedSkills.contains(trimmed) else { return }
+        invokedSkills.append(trimmed)
+    }
+
+    var hasInvokedRAGSkill: Bool {
+        invokedSkills.contains {
+            $0.contains("9gclaw-rag:") ||
+                $0.contains("glm-web-search") ||
+                $0.contains("rag-research") ||
+                $0.contains("local-knowledge")
+        }
     }
 
     func markToolCallIfNeeded(_ call: AgentToolCall) -> Bool {
@@ -190,7 +210,7 @@ final class AgentRunContext: @unchecked Sendable {
             }
         }
         switch result.toolName {
-        case "Read", "Glob", "Grep", "TodoRead":
+        case "Read", "Glob", "Grep", "TodoRead", "Skill":
             exploratoryToolCount += 1
         case "Write", "Edit", "MultiEdit", "Bash":
             if result.isError {
@@ -444,6 +464,7 @@ struct NativeAgentRuntime: Sendable {
             if rawToolCalls.isEmpty {
                 rawToolCalls = fallbackToolCalls(in: turn.assistantContent)
             }
+            rawToolCalls = rawToolCalls.map(canonicalToolCall)
             var toolInvocations = ToolArgumentNormalizer
                 .normalize(rawToolCalls)
                 .filter { context.markToolCallIfNeeded($0.call) }
@@ -773,6 +794,8 @@ struct NativeAgentRuntime: Sendable {
         Never claim that you created, edited, deleted, or inspected a file unless the corresponding tool result confirms it.
         Prefer small, verifiable steps: inspect files, make precise edits, run focused checks, then summarize.
         For shell commands, use Bash only when needed and keep commands scoped to the workspace.
+        9GClaw RAG/GLM/DARPA capabilities are exposed through the generic Skill tool instead of standalone tool names. For those capabilities, load the skill first, for example {"skill":"9gclaw-rag:glm-web-search","args":"<query>"} or {"skill":"9gclaw-rag:rag-research","args":"<research query>"}, then follow the loaded SKILL.md and its allowed tools.
+        Normal tools such as Bash, Read, Grep, Glob, Edit, and Write remain available for their own tool semantics.
         If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request and no other prose in that assistant turn.
         Example: {"tool":"Read","input":{"file_path":"README.md"}}
         Do not emit markdown fences, language labels such as "bash" or "json", or a prose explanation when requesting a tool.
@@ -839,6 +862,28 @@ struct NativeAgentRuntime: Sendable {
             "role": "assistant",
             "content": trimmed,
         ])
+    }
+
+    private static func canonicalToolCall(_ call: AgentToolCall) -> AgentToolCall {
+        guard call.name.lowercased().hasPrefix("9gclaw-rag:") else { return call }
+        let args: String
+        if let data = call.inputJSON.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            args = (object["args"] as? String)
+                ?? (object["query"] as? String)
+                ?? (object["prompt"] as? String)
+                ?? ""
+        } else {
+            args = ""
+        }
+        return AgentToolCall(
+            id: call.id,
+            name: "Skill",
+            inputJSON: jsonString([
+                "skill": call.name,
+                "args": args,
+            ])
+        )
     }
 
     private static func forcedWorkspaceBootstrapToolCall() -> AgentToolCall {
@@ -1380,6 +1425,7 @@ enum AgentToolRegistry {
         "Glob",
         "Grep",
         "Bash",
+        "Skill",
         "TodoRead",
         "TodoWrite",
         "ExitPlanMode",
@@ -1466,6 +1512,15 @@ enum AgentToolRegistry {
                     "timeout_seconds": integerProperty("Optional timeout in seconds."),
                 ],
                 required: ["command"]
+            ),
+            functionTool(
+                "Skill",
+                "Load a 9GClaw/Claude Code skill by name. Use this before running skill-specific Bash scripts.",
+                [
+                    "skill": stringProperty("Skill name such as 9gclaw-rag:glm-web-search or 9gclaw-rag:rag-research."),
+                    "args": stringProperty("Natural-language arguments or query for the skill."),
+                ],
+                required: ["skill"]
             ),
             functionTool("TodoRead", "Read the current session todo list.", [:], required: []),
             functionTool(
@@ -1573,6 +1628,7 @@ enum AgentPermissionPolicy {
         "Read",
         "Glob",
         "Grep",
+        "Skill",
         "TodoRead",
         "TodoWrite",
         "AskUserQuestion",
@@ -1638,6 +1694,289 @@ enum AgentPermissionPolicy {
     }
 }
 
+struct ResolvedAgentSkill: Sendable, Equatable {
+    var requestedName: String
+    var canonicalName: String
+    var skillFile: String
+    var pluginRoot: String?
+    var summary: String
+    var allowedTools: [String]
+    var content: String
+}
+
+enum SkillRuntimeService {
+    static func load(inputJSON: String, context: AgentRunContext) throws -> String {
+        let input = try AgentToolExecutor.inputObject(from: inputJSON)
+        let requestedSkill = try AgentToolExecutor.requiredString("skill", input: input)
+        let args = (input["args"] as? String).nilIfBlank ?? ""
+        let resolved = try resolve(
+            requestedSkill,
+            workspacePath: context.workspacePath
+        )
+        context.recordInvokedSkill(resolved.canonicalName)
+        let payload: [String: Any] = [
+            "skill": resolved.canonicalName,
+            "requestedSkill": resolved.requestedName,
+            "args": args,
+            "skillFile": resolved.skillFile,
+            "pluginRoot": resolved.pluginRoot ?? "",
+            "summary": resolved.summary,
+            "allowedTools": resolved.allowedTools,
+            "instructions": limitSkillContent(resolved.content),
+        ]
+        return jsonString(payload, pretty: true)
+    }
+
+    static func resolve(_ skill: String, workspacePath: String) throws -> ResolvedAgentSkill {
+        let requested = skill.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !requested.isEmpty else {
+            throw ProviderClientError.toolExecution("Skill name is required.")
+        }
+
+        var candidates: [URL] = []
+        if let rag = ragSkillDirectory(for: requested) {
+            candidates.append(rag)
+        }
+        candidates.append(Self.userSkillsRoot().appendingPathComponent(slugCandidate(requested), isDirectory: true))
+        candidates.append(Self.projectSkillsRoot(workspacePath).appendingPathComponent(slugCandidate(requested), isDirectory: true))
+        if let pluginRoot = ragPluginRoot() {
+            candidates.append(pluginRoot.appendingPathComponent("skills", isDirectory: true).appendingPathComponent(slugCandidate(requested), isDirectory: true))
+        }
+
+        for candidate in candidates {
+            if let resolved = readSkill(at: candidate, requested: requested) {
+                return resolved
+            }
+        }
+
+        for root in searchableSkillRoots(workspacePath: workspacePath) {
+            if let match = scan(root: root, requested: requested) {
+                return match
+            }
+        }
+
+        throw ProviderClientError.toolExecution("Skill not found: \(requested)")
+    }
+
+    static func environment(configValues: [String: String]) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        if let pluginRoot = ragPluginRoot() {
+            environment["CLAUDE_PLUGIN_ROOT"] = pluginRoot.path
+        }
+        environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"] = configValues["rag.localKnowledge.baseUrl"]
+        environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY"] = configValues["rag.localKnowledge.apiKey"]
+        environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME"] = configValues["rag.localKnowledge.modelName"]
+        environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL"] = configValues["rag.localKnowledge.databaseUrl"]
+        environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_TOP_K"] = configValues["rag.localKnowledge.defaultTopK"]
+        environment["EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL"] = configValues["rag.glmWebSearch.baseUrl"]
+        environment["EDGECLAW_RAG_GLM_WEB_SEARCH_API_KEY"] = configValues["rag.glmWebSearch.apiKey"]
+        environment["EDGECLAW_RAG_GLM_WEB_SEARCH_TOP_K"] = configValues["rag.glmWebSearch.defaultTopK"]
+        let prefix = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        environment["PATH"] = [prefix, environment["PATH"]].compactMap { $0 }.joined(separator: ":")
+        return environment.compactMapValues { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : value
+        }
+    }
+
+    private static func searchableSkillRoots(workspacePath: String) -> [URL] {
+        var roots = [
+            userSkillsRoot(),
+            projectSkillsRoot(workspacePath),
+        ]
+        if let pluginRoot = ragPluginRoot() {
+            roots.append(pluginRoot.appendingPathComponent("skills", isDirectory: true))
+        }
+        return roots
+    }
+
+    private static func readSkill(at directory: URL, requested: String) -> ResolvedAgentSkill? {
+        let file = directory.appendingPathComponent("SKILL.md")
+        guard let content = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        let frontmatter = parseFrontmatter(content)
+        let canonical = canonicalName(requested: requested, directory: directory, frontmatter: frontmatter)
+        return ResolvedAgentSkill(
+            requestedName: requested,
+            canonicalName: canonical,
+            skillFile: file.path,
+            pluginRoot: pluginRoot(forSkillFile: file)?.path,
+            summary: summary(from: content, frontmatter: frontmatter),
+            allowedTools: parseAllowedTools(content),
+            content: content
+        )
+    }
+
+    private static func scan(root: URL, requested: String) -> ResolvedAgentSkill? {
+        guard let children = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        let needle = requested.lowercased()
+        for child in children {
+            guard let resolved = readSkill(at: child, requested: requested) else { continue }
+            let haystack = "\(child.lastPathComponent) \(resolved.canonicalName) \(resolved.summary) \(resolved.content.prefix(800))".lowercased()
+            if haystack.contains(needle) {
+                return resolved
+            }
+        }
+        return nil
+    }
+
+    private static func ragSkillDirectory(for requested: String) -> URL? {
+        guard let pluginRoot = ragPluginRoot() else { return nil }
+        let normalized = requested.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let slug: String?
+        switch normalized {
+        case "9gclaw-rag:glm-web-search", "9gclaw-glm-web-search", "glm-web-search":
+            slug = "glm-web-search"
+        case "9gclaw-rag:rag-research", "9gclaw-rag-research", "rag-research":
+            slug = "rag-research"
+        case "9gclaw-rag:local-knowledge", "9gclaw-local-knowledge", "local-knowledge":
+            slug = "local-knowledge"
+        default:
+            slug = nil
+        }
+        return slug.map { pluginRoot.appendingPathComponent("skills", isDirectory: true).appendingPathComponent($0, isDirectory: true) }
+    }
+
+    private static func ragPluginRoot() -> URL? {
+        let manager = FileManager.default
+        let envRoot = ProcessInfo.processInfo.environment["EDGECLAW_REPO_ROOT"].map {
+            URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath)
+                .appendingPathComponent("packages/edgeclaw-rag-plugin", isDirectory: true)
+        }
+        let bundleRoot = Bundle.main.resourceURL?.appendingPathComponent("edgeclaw-rag-plugin", isDirectory: true)
+        let sourceRoot = repoRootFromSourceFile().map {
+            $0.appendingPathComponent("packages/edgeclaw-rag-plugin", isDirectory: true)
+        }
+        let fixedRoot = URL(fileURLWithPath: "/Users/hx/Workspace/edgeclaw-opc/packages/edgeclaw-rag-plugin", isDirectory: true)
+        for candidate in [envRoot, bundleRoot, sourceRoot, fixedRoot].compactMap({ $0 }) {
+            if manager.fileExists(atPath: candidate.appendingPathComponent("skills", isDirectory: true).path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private static func repoRootFromSourceFile() -> URL? {
+        var current = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<10 {
+            let marker = current.appendingPathComponent("packages/edgeclaw-rag-plugin", isDirectory: true)
+            if FileManager.default.fileExists(atPath: marker.path) {
+                return current
+            }
+            current.deleteLastPathComponent()
+        }
+        return nil
+    }
+
+    private static func pluginRoot(forSkillFile file: URL) -> URL? {
+        var current = file.deletingLastPathComponent()
+        for _ in 0..<6 {
+            if current.lastPathComponent == "edgeclaw-rag-plugin" {
+                return current
+            }
+            current.deleteLastPathComponent()
+        }
+        return nil
+    }
+
+    private static func userSkillsRoot() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+    }
+
+    private static func projectSkillsRoot(_ workspacePath: String) -> URL {
+        URL(fileURLWithPath: NSString(string: workspacePath).expandingTildeInPath)
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+    }
+
+    private static func slugCandidate(_ requested: String) -> String {
+        let value = requested.split(separator: ":").last.map(String.init) ?? requested
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func canonicalName(requested: String, directory: URL, frontmatter: [String: String]) -> String {
+        let slug = directory.lastPathComponent
+        if requested.hasPrefix("9gclaw-rag:") {
+            return requested
+        }
+        if let name = frontmatter["name"], name.hasPrefix("9gclaw-") {
+            switch slug {
+            case "glm-web-search": return "9gclaw-rag:glm-web-search"
+            case "rag-research": return "9gclaw-rag:rag-research"
+            case "local-knowledge": return "9gclaw-rag:local-knowledge"
+            default: return name
+            }
+        }
+        return frontmatter["name"]?.nilIfBlank ?? slug
+    }
+
+    private static func parseFrontmatter(_ content: String) -> [String: String] {
+        let lines = content.components(separatedBy: .newlines)
+        guard lines.first?.trimmingCharacters(in: .whitespacesAndNewlines) == "---" else { return [:] }
+        var result: [String: String] = [:]
+        for line in lines.dropFirst() {
+            if line.trimmingCharacters(in: .whitespacesAndNewlines) == "---" { break }
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+            var value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
+                value.removeFirst()
+                value.removeLast()
+            }
+            result[key] = value
+        }
+        return result
+    }
+
+    private static func parseAllowedTools(_ content: String) -> [String] {
+        var tools: [String] = []
+        var inAllowedTools = false
+        for line in content.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed == "allowed-tools:" {
+                inAllowedTools = true
+                continue
+            }
+            if inAllowedTools, trimmed.hasPrefix("- ") {
+                var value = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+                if (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
+                    value.removeFirst()
+                    value.removeLast()
+                }
+                tools.append(value)
+                continue
+            }
+            if inAllowedTools, !trimmed.isEmpty, !trimmed.hasPrefix("#") {
+                break
+            }
+        }
+        return tools
+    }
+
+    private static func summary(from content: String, frontmatter: [String: String]) -> String {
+        if let description = frontmatter["description"].nilIfBlank {
+            return description
+        }
+        for line in content.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, !trimmed.hasPrefix("---"), !trimmed.hasPrefix("#") {
+                return trimmed
+            }
+        }
+        return ""
+    }
+
+    private static func limitSkillContent(_ content: String) -> String {
+        if content.count <= 18_000 { return content }
+        return String(content.prefix(18_000)) + "\n... skill content truncated ..."
+    }
+}
+
 enum AgentToolExecutor {
     static func execute(call: AgentToolCall, context: AgentRunContext) async -> AgentToolResult {
         do {
@@ -1656,7 +1995,9 @@ enum AgentToolExecutor {
             case "Grep":
                 output = try grep(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
             case "Bash":
-                output = try await bash(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+                output = try await bash(inputJSON: call.inputJSON, context: context)
+            case "Skill":
+                output = try SkillRuntimeService.load(inputJSON: call.inputJSON, context: context)
             case "TodoRead":
                 output = context.todosJSON
             case "TodoWrite":
@@ -1842,15 +2183,18 @@ enum AgentToolExecutor {
         return output.isEmpty ? "No matches for \(pattern)." : output.joined(separator: "\n")
     }
 
-    private static func bash(inputJSON: String, workspacePath: String) async throws -> String {
+    private static func bash(inputJSON: String, context: AgentRunContext) async throws -> String {
         let input = try inputObject(from: inputJSON)
         let command = try requiredString("command", input: input)
         let timeout = max(1, min(input["timeout_seconds"] as? Int ?? 120, 600))
+        let workspacePath = context.workspacePath
+        let environment = SkillRuntimeService.environment(configValues: context.nativeConfigValues)
         return try await Task.detached {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
             process.arguments = ["-lc", command]
             process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
+            process.environment = environment
             let stdout = Pipe()
             let stderr = Pipe()
             process.standardOutput = stdout
@@ -1881,7 +2225,7 @@ enum AgentToolExecutor {
         return "Updated todo list."
     }
 
-    private static func requiredString(_ key: String, input: [String: Any]) throws -> String {
+    static func requiredString(_ key: String, input: [String: Any]) throws -> String {
         guard let value = input[key] as? String,
               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ProviderClientError.toolExecution("Missing required string: \(key)")

@@ -51,6 +51,9 @@ final class AppState: ObservableObject {
     private var permissionContinuations: [UUID: CheckedContinuation<AgentPermissionDecision, Never>] = [:]
     private var pendingAssistantDeltas: [UUID: String] = [:]
     private var assistantDeltaFlushTasks: [UUID: Task<Void, Never>] = [:]
+    private var routingModelBySession: [String: String] = [:]
+    private var routingTierBySession: [String: String] = [:]
+    private var routingProjectNameBySession: [String: String] = [:]
     private var hasBootstrapped = false
 
     init() {
@@ -330,10 +333,16 @@ final class AppState: ObservableObject {
         markSession(sessionID, state: .processing)
 
         let nativeConfig = currentNativeConfigSnapshot()
-        let providerConfig = nativeConfig?.providerConfig ?? settings.providerConfig
+        let routeTier = RoutingService.classifyTier(prompt: prompt, runMode: requestedRunMode)
+        let routeEntryID = NativeRouterRuntime.entryID(forTier: routeTier, values: nativeConfig?.rawValues ?? [:])
+        let providerConfig = nativeConfig.flatMap { NativeConfigService.providerConfig(entryID: routeEntryID, values: $0.rawValues) }
+            ?? nativeConfig?.providerConfig
+            ?? settings.providerConfig
         let apiKey: String
         do {
+            let providerID = nativeConfig?.rawValues["models.entries.\(routeEntryID).provider"] ?? "edgeclaw"
             apiKey = try keychain.readSecret(account: providerConfig.secretAccount)
+                ?? nativeConfig?.rawValues["models.providers.\(providerID).apiKey"]
                 ?? nativeConfig?.apiKey
                 ?? apiKeyDraft
         } catch {
@@ -372,22 +381,25 @@ final class AppState: ObservableObject {
             runMode: requestedRunMode,
             workspaceContext: selectedWorkspaceContext,
             toolSettings: settings.permissions,
-            routerRoute: nativeConfig?.defaultEntryID ?? "default",
+            routerRoute: routeEntryID,
+            nativeConfigValues: nativeConfig?.rawValues ?? [:],
             permissionHandler: { [weak self] permission in
                 guard let self else { return .deny }
                 return await self.requestAgentPermission(permission)
             }
         )
-        if let selectedProject {
-            routingService.recordRequest(
-                sessionID: sessionID,
-                title: selectedSession?.displayTitle ?? promptTitle(from: prompt),
-                projectName: selectedProject.displayName,
-                model: providerConfig.model,
-                route: request.routerRoute,
-                tier: requestedRunMode == .plan ? "REASONING" : "COMPLEX"
-            )
-        }
+        let routingProjectName = selectedProject?.displayName ?? "general"
+        routingModelBySession[sessionID] = providerConfig.model
+        routingTierBySession[sessionID] = routeTier
+        routingProjectNameBySession[sessionID] = routingProjectName
+        routingService.recordRequest(
+            sessionID: sessionID,
+            title: selectedSession?.displayTitle ?? promptTitle(from: prompt),
+            projectName: routingProjectName,
+            model: providerConfig.model,
+            route: request.routerRoute,
+            tier: routeTier
+        )
 
         let runToken = UUID()
         activeRunToken = runToken
@@ -1213,6 +1225,14 @@ final class AppState: ObservableObject {
             queueAssistantDelta(text, assistantID: assistantID)
         case .toolUse(let id, let name, let inputJSON):
             flushPendingAssistantDelta(assistantID: assistantID)
+            if name == "Skill", let selectedSessionID {
+                routingService.recordSkillInvocation(
+                    sessionID: selectedSessionID,
+                    title: selectedSession?.displayTitle ?? "New Session",
+                    projectName: routingProjectNameBySession[selectedSessionID] ?? selectedProject?.displayName ?? "general",
+                    skill: Self.skillName(from: inputJSON)
+                )
+            }
             upsertActivity(
                 id: id,
                 title: t(.runningToolFormat, name),
@@ -1253,12 +1273,13 @@ final class AppState: ObservableObject {
             )
         case .tokenBudget(let used, let total):
             updateTokenBudget(TokenBudget(used: used, total: total), assistantID: assistantID)
-            if let selectedSessionID, let selectedProject {
+            if let selectedSessionID {
                 routingService.recordTokens(
                     sessionID: selectedSessionID,
                     title: selectedSession?.displayTitle ?? "New Session",
-                    projectName: selectedProject.displayName,
-                    model: settings.providerConfig.model,
+                    projectName: routingProjectNameBySession[selectedSessionID] ?? selectedProject?.displayName ?? "general",
+                    model: routingModelBySession[selectedSessionID] ?? settings.providerConfig.model,
+                    tier: routingTierBySession[selectedSessionID] ?? "COMPLEX",
                     totalTokens: used,
                     contextWindow: total
                 )
@@ -1379,6 +1400,16 @@ final class AppState: ObservableObject {
         }
         messages[index] = message
         messagesBySession[selectedSessionID] = messages
+    }
+
+    private static func skillName(from inputJSON: String) -> String {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let skill = object["skill"] as? String,
+              !skill.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "unknown"
+        }
+        return skill
     }
 
     private func appendAssistantBlock(_ block: ChatBlock, assistantID: UUID) {
@@ -1613,6 +1644,9 @@ final class AppState: ObservableObject {
         if lower.contains("grep") || lower.contains("glob") || lower.contains("search") || lower.contains("rag") {
             return .search
         }
+        if lower == "skill" {
+            return .tool
+        }
         if lower.contains("bash") || lower.contains("shell") || lower.contains("command") || lower.contains("exec") {
             return .command
         }
@@ -1662,6 +1696,7 @@ struct NativeConfigSnapshot: Equatable {
     var apiTimeoutMs: Int
     var contextWindow: Int
     var defaultEntryID: String
+    var rawValues: [String: String]
 }
 
 enum NativeConfigService {
@@ -1696,7 +1731,8 @@ enum NativeConfigService {
             generalWorkspacePath: generalWorkspacePath,
             apiTimeoutMs: apiTimeoutMs,
             contextWindow: contextWindow,
-            defaultEntryID: entryID
+            defaultEntryID: entryID,
+            rawValues: values
         )
     }
 
@@ -1727,7 +1763,7 @@ enum NativeConfigService {
         return result
     }
 
-    private static func providerConfig(entryID: String, values: [String: String]) -> ProviderConfig? {
+    static func providerConfig(entryID: String, values: [String: String]) -> ProviderConfig? {
         let providerID = values["models.entries.\(entryID).provider"] ?? "edgeclaw"
         let baseURL = values["models.providers.\(providerID).baseUrl"] ?? ""
         let model = values["models.entries.\(entryID).name"] ?? ""
@@ -1771,6 +1807,21 @@ enum NativeConfigService {
             value.removeLast()
         }
         return value
+    }
+}
+
+enum NativeRouterRuntime {
+    static func entryID(forTier tier: String, values: [String: String]) -> String {
+        let routerEnabled = values["router.enabled"]?.lowercased()
+        let defaultRoute = values["router.routes.default.model"]?.nilIfBlank ?? "default"
+        guard routerEnabled != "false" else {
+            return defaultRoute
+        }
+        let tokenSaverModel = values["router.tokenSaver.tiers.\(tier).model"]?.nilIfBlank
+        let tierModel = tokenSaverModel
+            ?? values["router.routes.\(tier.lowercased()).model"]?.nilIfBlank
+            ?? defaultRoute
+        return values["models.entries.\(tierModel).provider"] == nil ? defaultRoute : tierModel
     }
 }
 

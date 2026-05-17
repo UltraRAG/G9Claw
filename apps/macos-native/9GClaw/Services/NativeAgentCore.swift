@@ -290,6 +290,9 @@ actor NativeTurnController {
         if lower == "grep" || lower == "glob" {
             return .webSearch
         }
+        if lower == "skill" {
+            return .toolCall
+        }
         if lower.contains("exitplan") || lower.contains("plan") {
             return .plan
         }

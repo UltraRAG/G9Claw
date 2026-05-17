@@ -1014,6 +1014,27 @@ final class RoutingService {
         load()
     }
 
+    static func classifyTier(prompt: String, runMode: ChatRunMode) -> String {
+        if runMode == .plan { return "REASONING" }
+        let normalized = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let words = normalized.split { $0.isWhitespace || $0.isNewline }
+        if words.count < 20,
+           !containsAny(normalized, ["修改", "优化", "实现", "生成", "创建", "网页", "网站", "代码", "edit", "fix", "build", "implement", "website", "code"]) {
+            return "SIMPLE"
+        }
+        if containsAny(normalized, ["架构", "重构", "全量", "复杂", "深入", "推理", "research", "architecture", "refactor", "reasoning"]) {
+            return "REASONING"
+        }
+        if containsAny(normalized, ["修改", "优化", "实现", "生成", "创建", "网页", "网站", "多文件", "edit", "fix", "build", "implement", "website", "multi-file"]) {
+            return "COMPLEX"
+        }
+        return "MEDIUM"
+    }
+
+    private static func containsAny(_ value: String, _ needles: [String]) -> Bool {
+        needles.contains { value.contains($0) }
+    }
+
     func recordRequest(
         sessionID: String,
         title: String,
@@ -1053,6 +1074,7 @@ final class RoutingService {
         title: String,
         projectName: String,
         model: String,
+        tier: String,
         totalTokens: Int,
         contextWindow: Int
     ) {
@@ -1079,9 +1101,42 @@ final class RoutingService {
         record.totalTokens = max(record.totalTokens, totalTokens)
         record.estimatedCost = max(record.estimatedCost, cost)
         record.savedCost = max(record.savedCost, savedCost)
-        record.byTier["COMPLEX"] = merge(bucket: record.byTier["COMPLEX"], with: bucket)
+        let tierKey = tier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "COMPLEX" : tier
+        record.byTier[tierKey] = merge(bucket: record.byTier[tierKey], with: bucket)
         record.byModel[normalizedModel] = merge(bucket: record.byModel[normalizedModel], with: bucket)
-        record.requestLog.append("\(DateFormatter.routingTime.string(from: Date())) \(normalizedModel) usage · \(totalTokens)/\(contextWindow) tokens")
+        record.requestLog.append("\(DateFormatter.routingTime.string(from: Date())) \(normalizedModel) usage · \(tierKey) · \(totalTokens)/\(contextWindow) tokens")
+        record.requestLog = Array(record.requestLog.suffix(100))
+        tokenRecords[sessionID] = record
+        persist()
+    }
+
+    func recordSkillInvocation(
+        sessionID: String,
+        title: String,
+        projectName: String,
+        skill: String
+    ) {
+        var record = tokenRecords[sessionID] ?? RoutingDashboardSession(
+            id: sessionID,
+            title: title,
+            projectName: projectName,
+            lastActiveAt: Date(),
+            totalTokens: 0,
+            estimatedCost: 0,
+            savedCost: 0,
+            byTier: [:],
+            byModel: [:],
+            requestLog: []
+        )
+        record.title = title
+        record.projectName = projectName
+        record.lastActiveAt = Date()
+        let normalized = skill.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : skill
+        record.byModel["skill:\(normalized)"] = merge(
+            bucket: record.byModel["skill:\(normalized)"],
+            with: RoutingBucket(count: 1, inputTokens: 0, outputTokens: 0, estimatedCost: 0)
+        )
+        record.requestLog.append("\(DateFormatter.routingTime.string(from: Date())) skill invoked · \(normalized)")
         record.requestLog = Array(record.requestLog.suffix(100))
         tokenRecords[sessionID] = record
         persist()
@@ -1110,15 +1165,20 @@ final class RoutingService {
                     requestLog: []
                 )
             }
-        }.sorted { $0.lastActiveAt > $1.lastActiveAt }
+        }
+        let knownIDs = Set(sessions.map(\.id))
+        let orphanRecords = tokenRecords.values.filter { record in
+            !knownIDs.contains(record.id) && (projectFilter == nil || record.projectName == projectFilter)
+        }
+        let allSessions = (sessions + orphanRecords).sorted { $0.lastActiveAt > $1.lastActiveAt }
         return RoutingDashboardSnapshot(
             totalProjects: filtered.count,
-            totalSessions: sessions.count,
-            routedSessions: sessions.filter { !$0.byModel.isEmpty || !$0.byTier.isEmpty }.count,
-            totalTokens: sessions.reduce(0) { $0 + $1.totalTokens },
-            estimatedCost: sessions.reduce(0) { $0 + $1.estimatedCost },
-            savedCost: sessions.reduce(0) { $0 + $1.savedCost },
-            recentSessions: Array(sessions.prefix(40))
+            totalSessions: allSessions.count,
+            routedSessions: allSessions.filter { !$0.byModel.isEmpty || !$0.byTier.isEmpty }.count,
+            totalTokens: allSessions.reduce(0) { $0 + $1.totalTokens },
+            estimatedCost: allSessions.reduce(0) { $0 + $1.estimatedCost },
+            savedCost: allSessions.reduce(0) { $0 + $1.savedCost },
+            recentSessions: Array(allSessions.prefix(40))
         )
     }
 

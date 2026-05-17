@@ -2005,7 +2005,7 @@ private struct ProcessLiveStatusRow: View {
                     }
                 }
                 .padding(.leading, 24)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.opacity)
             }
 
             if compacting {
@@ -2061,6 +2061,9 @@ private struct ProcessLiveStatusRow: View {
         if lower.contains("bash") || activity.phase == .command {
             return target.map { (activity.state == .running ? (isChinese ? "正在执行命令 \($0)" : "Running \($0)") : (isChinese ? "已运行命令 \($0)" : "Ran \($0)")) } ?? (isChinese ? "已运行命令" : "Ran command")
         }
+        if lower == "skill" {
+            return target.map { (activity.state == .running ? (isChinese ? "正在加载技能 \($0)" : "Loading skill \($0)") : (isChinese ? "已加载技能 \($0)" : "Loaded skill \($0)")) } ?? (isChinese ? "已加载技能" : "Loaded skill")
+        }
         if lower == "askuserquestion" {
             return activity.state == .completed ? (isChinese ? "已回答问题" : "Answered question") : (isChinese ? "等待你的回答" : "Waiting for your answer")
         }
@@ -2071,6 +2074,9 @@ private struct ProcessLiveStatusRow: View {
     }
 
     private func compactDetail(for activity: AgentActivity) -> String {
+        if let parsed = parsedRAGSummary(from: activity.detail) {
+            return parsed
+        }
         let detail = compactPreview(activity.detail)
         if detail.hasPrefix("{"), detail.hasSuffix("}") {
             return target(for: activity) ?? ""
@@ -2094,7 +2100,7 @@ private struct ProcessLiveStatusRow: View {
         let sources = [activity.detail] + activity.detailMessages
         for source in sources {
             if let object = jsonObject(source) {
-                for key in ["file_path", "path", "pattern", "query", "command", "description"] {
+                for key in ["skill", "args", "file_path", "path", "pattern", "query", "command", "description"] {
                     if let value = object[key] as? String {
                         return displayTarget(value, key: key)
                     }
@@ -2104,6 +2110,29 @@ private struct ProcessLiveStatusRow: View {
             if !compact.isEmpty, !compact.hasPrefix("{") {
                 return displayTarget(compact, key: "")
             }
+        }
+        return nil
+    }
+
+    private func parsedRAGSummary(from value: String) -> String? {
+        guard let object = jsonObject(value) else { return nil }
+        if let query = object["query"] as? String {
+            let citations = (object["citations"] as? [[String: Any]])?.count
+                ?? (object["results"] as? [[String: Any]])?.count
+                ?? (object["items"] as? [[String: Any]])?.count
+            if let citations, citations > 0 {
+                return isChinese ? "查询 \(query) · \(citations) 条证据" : "Query \(query) · \(citations) citations"
+            }
+            return query
+        }
+        if let skill = object["skill"] as? String {
+            let allowed = (object["allowedTools"] as? [String])?.count ?? 0
+            return allowed > 0
+                ? (isChinese ? "\(skill) · \(allowed) 个允许工具" : "\(skill) · \(allowed) allowed tools")
+                : skill
+        }
+        if let ok = object["ok"] as? Bool, ok == false {
+            return (object["error"] as? String).map { isChinese ? "RAG 错误：\($0)" : "RAG error: \($0)" }
         }
         return nil
     }

@@ -263,6 +263,7 @@ enum L10nKey: String, CaseIterable {
     case databaseURL
     case defaultTopK
     case glmWebSearchBaseURL
+    case glmWebSearchAPIKey
     case glmDefaultTopK
     case port
     case defaultRouteModel
@@ -628,6 +629,7 @@ struct LocalizationService {
         .databaseURL: "Database URL",
         .defaultTopK: "Default Top K",
         .glmWebSearchBaseURL: "GLM Web Search Base URL",
+        .glmWebSearchAPIKey: "GLM Web Search API Key",
         .glmDefaultTopK: "GLM Default Top K",
         .port: "Port",
         .defaultRouteModel: "Default Route Model",
@@ -962,6 +964,7 @@ struct LocalizationService {
         .databaseURL: "数据库 URL",
         .defaultTopK: "默认 Top K",
         .glmWebSearchBaseURL: "GLM Web 搜索 Base URL",
+        .glmWebSearchAPIKey: "GLM Web 搜索 API Key",
         .glmDefaultTopK: "GLM 默认 Top K",
         .port: "端口",
         .defaultRouteModel: "默认路由模型",

@@ -644,6 +644,7 @@ private struct SettingsContentView: View {
                             SettingsTextField(state.t(.databaseURL), text: configBinding("rag.localKnowledge.databaseUrl"))
                             SettingsTextField(state.t(.defaultTopK), text: configBinding("rag.localKnowledge.defaultTopK"))
                             SettingsTextField(state.t(.glmWebSearchBaseURL), text: configBinding("rag.glmWebSearch.baseUrl"))
+                            SettingsTextField(state.t(.glmWebSearchAPIKey), text: configBinding("rag.glmWebSearch.apiKey"))
                             SettingsTextField(state.t(.glmDefaultTopK), text: configBinding("rag.glmWebSearch.defaultTopK"))
                         }
                         .padding(14)
