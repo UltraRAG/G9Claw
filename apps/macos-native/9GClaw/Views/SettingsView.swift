@@ -5,29 +5,8 @@ struct SettingsView: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        SettingsContentView(onClose: nil)
+        SettingsContentView()
             .environmentObject(state)
-    }
-}
-
-struct SettingsModalView: View {
-    @EnvironmentObject private var state: AppState
-    var onClose: () -> Void
-
-    var body: some View {
-        ZStack {
-            DesignTokens.background.opacity(0.80)
-                .ignoresSafeArea()
-                .background(.ultraThinMaterial)
-                .onTapGesture { onClose() }
-
-            SettingsContentView(onClose: onClose)
-                .environmentObject(state)
-                .frame(maxWidth: 896, maxHeight: .infinity)
-                .frame(height: nil)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 16)
-        }
     }
 }
 
@@ -40,99 +19,80 @@ private struct SettingsContentView: View {
     @State private var configMessage: String?
     @State private var configError: String?
     @State private var configExternalNotice: String?
-    var onClose: (() -> Void)?
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            HStack(spacing: 0) {
-                sidebar
-                Divider()
-                    .background(DesignTokens.separator)
-                ScrollView {
+        HStack(spacing: 0) {
+            settingsSidebar
+            Divider()
+            ScrollView {
+                SettingsPageContainer(title: settingsTabLabel(activeTab)) {
+                    if let notice = state.settingsSaveNotice {
+                        Text(notice)
+                            .font(.caption)
+                            .foregroundStyle(DesignTokens.success)
+                    }
                     activeContent
-                        .padding(24)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
                         .transition(.opacity.combined(with: .offset(y: 4)))
                         .id(activeTab)
                 }
-                .background(DesignTokens.background)
             }
+            .background(Color(nsColor: .windowBackgroundColor))
         }
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(DesignTokens.background)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(DesignTokens.separator, lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.16), radius: 28, y: 12)
-        )
+        .background(Color(nsColor: .windowBackgroundColor))
+        .background(SettingsWindowConfigurator())
+        .frame(minWidth: 860, minHeight: 620)
         .onAppear {
             activeTab = state.settingsInitialTab
             if savedConfigText.isEmpty {
                 savedConfigText = state.edgeClawConfigText
             }
         }
+        .onChange(of: state.settingsInitialTab) { _, newValue in
+            activeTab = newValue
+        }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            Text(state.t(.settings))
-                .font(.system(size: DesignTokens.settingsTitleSize, weight: .semibold))
-            if let notice = state.settingsSaveNotice {
-                Text(notice)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(DesignTokens.success)
-            }
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 6) {
             Spacer()
-            Button {
-                onClose?()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .medium))
-                    .frame(width: 40, height: 40)
-            }
-            .buttonStyle(SettingsIconButtonStyle())
-            .opacity(onClose == nil ? 0 : 1)
-            .disabled(onClose == nil)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(DesignTokens.separator).frame(height: 1)
-        }
-    }
-
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 4) {
+                .frame(height: 72)
             ForEach(SettingsMainTab.allCases) { tab in
-                Button {
-                    activeTab = tab
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: tab.systemImage)
-                            .font(.system(size: 15))
-                            .frame(width: 18)
-                        Text(settingsTabLabel(tab))
-                            .font(.system(size: 13, weight: .medium))
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(height: 38)
-                    .foregroundStyle(activeTab == tab ? DesignTokens.text : DesignTokens.tertiaryText)
-                    .background(
-                        RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
-                            .fill(activeTab == tab ? DesignTokens.neutral100 : Color.clear)
-                    )
-                }
-                .buttonStyle(.plain)
+                settingsSidebarRow(tab)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
-        .padding(12)
-        .frame(width: 224)
-        .background(DesignTokens.neutral50.opacity(0.74))
+        .padding(.horizontal, 14)
+        .frame(width: 218)
+        .background {
+            VisualEffectBackground(material: .sidebar, blendingMode: .withinWindow)
+            Color(nsColor: .windowBackgroundColor).opacity(0.28)
+        }
+    }
+
+    private func settingsSidebarRow(_ tab: SettingsMainTab) -> some View {
+        let selected = activeTab == tab
+        return Button {
+            activeTab = tab
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: tab.systemImage)
+                    .font(.system(size: 16, weight: .regular))
+                    .frame(width: 22)
+                Text(settingsTabLabel(tab))
+                    .font(.system(size: 14, weight: selected ? .semibold : .medium))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(selected ? Color.white : DesignTokens.secondaryText)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 42)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(selected ? Color.accentColor : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     private func settingsTabLabel(_ tab: SettingsMainTab) -> String {
@@ -202,20 +162,19 @@ private struct SettingsContentView: View {
     }
 
     private var appearanceContent: some View {
-        VStack(alignment: .leading, spacing: 26) {
+        VStack(alignment: .leading, spacing: 22) {
             SettingsSectionBlock(title: state.t(.appearance)) {
-                SettingsCardBlock {
+                SettingsCardBlock(divided: true) {
                     SettingsRowBlock(title: state.t(.appearance), detail: "") {
-                        WebSettingsToggle(isOn: Binding(
-                            get: { state.settings.colorScheme == .dark },
-                            set: { state.settings.colorScheme = $0 ? .dark : .light }
-                        ))
+                        Picker("", selection: $state.settings.colorScheme) {
+                            ForEach(AppColorScheme.allCases) { scheme in
+                                Text(colorSchemeLabel(scheme)).tag(scheme)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 160)
                     }
-                }
-            }
-
-            SettingsSectionBlock(title: state.t(.appearance)) {
-                SettingsCardBlock {
                     SettingsRowBlock(title: state.t(.displayLanguage), detail: state.t(.displayLanguageDetail)) {
                         Picker("", selection: $state.settings.language) {
                             ForEach(AppLanguage.allCases) { language in
@@ -223,7 +182,8 @@ private struct SettingsContentView: View {
                             }
                         }
                         .labelsHidden()
-                        .frame(width: 150)
+                        .pickerStyle(.menu)
+                        .frame(width: 160)
                     }
                 }
             }
@@ -236,7 +196,8 @@ private struct SettingsContentView: View {
                             Text(state.t(.recentActivity)).tag(ProjectSortOrder.date)
                         }
                         .labelsHidden()
-                        .frame(width: 170)
+                        .pickerStyle(.menu)
+                        .frame(width: 160)
                     }
                 }
             }
@@ -244,13 +205,19 @@ private struct SettingsContentView: View {
             SettingsSectionBlock(title: state.t(.codeEditor)) {
                 SettingsCardBlock(divided: true) {
                     SettingsRowBlock(title: state.t(.wordWrap), detail: state.t(.wordWrapDetail)) {
-                        Toggle("", isOn: $state.settings.codeEditor.wordWrap).labelsHidden()
+                        Toggle("", isOn: $state.settings.codeEditor.wordWrap)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
                     }
                     SettingsRowBlock(title: state.t(.showMinimap), detail: state.t(.showMinimapDetail)) {
-                        Toggle("", isOn: $state.settings.codeEditor.showMinimap).labelsHidden()
+                        Toggle("", isOn: $state.settings.codeEditor.showMinimap)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
                     }
                     SettingsRowBlock(title: state.t(.lineNumbers), detail: state.t(.lineNumbersDetail)) {
-                        Toggle("", isOn: $state.settings.codeEditor.lineNumbers).labelsHidden()
+                        Toggle("", isOn: $state.settings.codeEditor.lineNumbers)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
                     }
                     SettingsRowBlock(title: state.t(.fontSize), detail: state.t(.fontSizeDetail)) {
                         Picker("", selection: $state.settings.codeEditor.fontSize) {
@@ -259,10 +226,23 @@ private struct SettingsContentView: View {
                             }
                         }
                         .labelsHidden()
-                        .frame(width: 90)
+                        .pickerStyle(.menu)
+                        .frame(width: 96)
                     }
                 }
             }
+        }
+        .controlSize(.regular)
+    }
+
+    private func colorSchemeLabel(_ scheme: AppColorScheme) -> String {
+        switch scheme {
+        case .system:
+            return state.t(.languageSystem)
+        case .light:
+            return LocalizationService(language: state.settings.language).language == .chineseSimplified ? "浅色" : "Light"
+        case .dark:
+            return LocalizationService(language: state.settings.language).language == .chineseSimplified ? "深色" : "Dark"
         }
     }
 
@@ -316,10 +296,10 @@ private struct SettingsContentView: View {
             SettingsSectionBlock(title: state.t(.patternExamples)) {
                 SettingsCardBlock {
                     VStack(alignment: .leading, spacing: 8) {
-                        CodeExample("Bash(git log:*)", state.t(.allowAllGitLogCommands))
-                        CodeExample("Bash(git diff:*)", state.t(.allowAllGitDiffCommands))
+                        CodeExample("Shell(git log:*)", state.t(.allowAllGitLogCommands))
+                        CodeExample("Shell(git diff:*)", state.t(.allowAllGitDiffCommands))
                         CodeExample("Write", state.t(.allowAllWrites))
-                        CodeExample("Bash(rm:*)", state.t(.blockAllRmCommands))
+                        CodeExample("Shell(rm:*)", state.t(.blockAllRmCommands))
                     }
                     .padding(14)
                 }
@@ -348,13 +328,10 @@ private struct SettingsContentView: View {
             }
 
             if configView == .form {
-                HStack(alignment: .top, spacing: 18) {
-                    configSectionSidebar
-                    VStack(alignment: .leading, spacing: 16) {
-                        configSectionContent
-                        configValidationSummary
-                    }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                VStack(alignment: .leading, spacing: 16) {
+                    configSectionPicker
+                    configSectionContent
+                    configValidationSummary
                 }
             } else {
                 rawYamlPanel
@@ -366,56 +343,69 @@ private struct SettingsContentView: View {
         }
     }
 
+    private var configSectionPicker: some View {
+        SettingsCardBlock {
+            SettingsRowBlock(title: state.t(.config), detail: "") {
+                Picker("", selection: $configSection) {
+                    ForEach(EdgeClawConfigSection.formSections) { section in
+                        Text(configSectionLabel(section)).tag(section)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 180)
+            }
+        }
+    }
+
     private var configHeaderCard: some View {
         SettingsCardBlock {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 12) {
+                HStack(alignment: .center, spacing: 12) {
                     Image(systemName: "doc.badge.gearshape")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(DesignTokens.tertiaryText)
                         .frame(width: 22)
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            Text(configFileURL().path.isEmpty ? state.t(.configPreview) : state.t(.configFile))
-                                .font(.system(size: 13, weight: .semibold))
-                            if isConfigDirty {
-                                Text(state.t(.unsaved))
-                                    .font(.system(size: 10, weight: .bold))
-                                    .tracking(0.6)
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 2)
-                                    .foregroundStyle(DesignTokens.warning)
-                                    .background(DesignTokens.warning.opacity(0.10), in: Capsule())
-                                    .overlay(Capsule().stroke(DesignTokens.warning.opacity(0.35), lineWidth: 1))
-                            }
-                        }
-                        Text(configFileURL().path)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(DesignTokens.tertiaryText)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(DesignTokens.neutral100, in: RoundedRectangle(cornerRadius: 5))
+                    Text(configFileURL().path.isEmpty ? state.t(.configPreview) : state.t(.configFile))
+                        .font(.system(size: 13, weight: .semibold))
+                    if isConfigDirty {
+                        Text(state.t(.unsaved))
+                            .font(.system(size: 10, weight: .bold))
+                            .tracking(0.6)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .foregroundStyle(DesignTokens.warning)
+                            .background(DesignTokens.warning.opacity(0.10), in: Capsule())
+                            .overlay(Capsule().stroke(DesignTokens.warning.opacity(0.35), lineWidth: 1))
                     }
                     Spacer()
-                    HStack(spacing: 8) {
-                        configViewModeToggle
-                        Button {
-                            revealConfigFile()
-                        } label: {
-                            Label(state.t(.revealFile), systemImage: "folder")
-                                .lineLimit(1)
-                        }
-                        .buttonStyle(WebToolbarButtonStyle())
-                        Button {
-                            reloadConfigFromDisk()
-                        } label: {
-                            Label(state.t(.refresh), systemImage: "arrow.clockwise")
-                                .lineLimit(1)
-                        }
-                        .buttonStyle(WebToolbarButtonStyle())
+                }
+                Text(configFileURL().path)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(DesignTokens.neutral100, in: RoundedRectangle(cornerRadius: 5))
+                HStack(spacing: 8) {
+                    configViewModeToggle
+                    Spacer(minLength: 8)
+                    Button {
+                        revealConfigFile()
+                    } label: {
+                        Label(state.t(.revealFile), systemImage: "folder")
+                            .lineLimit(1)
                     }
+                    .buttonStyle(WebToolbarButtonStyle())
+                    Button {
+                        reloadConfigFromDisk()
+                    } label: {
+                        Label(state.t(.refresh), systemImage: "arrow.clockwise")
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(WebToolbarButtonStyle())
                 }
             }
             .padding(14)
@@ -535,7 +525,7 @@ private struct SettingsContentView: View {
                 Label(isConfigDirty ? state.t(.saveAndReload) : state.t(.saved), systemImage: "square.and.arrow.down")
             }
             .buttonStyle(WebToolbarButtonStyle(isProminent: true))
-            .disabled(!isConfigDirty && state.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(!isConfigDirty)
         }
         .padding(12)
         .background(DesignTokens.background.opacity(0.92), in: RoundedRectangle(cornerRadius: DesignTokens.radius))
@@ -741,7 +731,7 @@ private struct SettingsContentView: View {
                             dashedEmpty(state.t(.noProvidersConfigured))
                         } else {
                             ForEach(providers, id: \.self) { provider in
-                                providerCard(provider, keychainBacked: provider.hasPrefix("edgeclaw"))
+                                providerCard(provider)
                             }
                         }
                     }
@@ -773,7 +763,7 @@ private struct SettingsContentView: View {
         }
     }
 
-    private func providerCard(_ provider: String, keychainBacked: Bool) -> some View {
+    private func providerCard(_ provider: String) -> some View {
         SettingsCardBlock {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -801,22 +791,11 @@ private struct SettingsContentView: View {
                             setConfigValue("models.providers.\(provider).baseUrl", value)
                         }
                     ))
-                    if keychainBacked {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(state.t(.apiKey))
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(DesignTokens.tertiaryText)
-                            SecureField(state.t(.storedInKeychain), text: $state.apiKeyDraft)
-                                .textFieldStyle(WebFieldStyle())
-                                .font(.system(size: 12, design: .monospaced))
-                            Text(state.t(.keychainHelp))
-                                .font(.system(size: 11))
-                                .foregroundStyle(DesignTokens.tertiaryText)
-                        }
-                    } else {
-                        SettingsTextField(state.t(.apiKey), text: configBinding("models.providers.\(provider).apiKey"))
-                    }
+                    SettingsTextField(state.t(.apiKey), text: configBinding("models.providers.\(provider).apiKey"))
                 }
+                Text(state.t(.keychainHelp))
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignTokens.tertiaryText)
             }
             .padding(14)
         }
@@ -1084,6 +1063,26 @@ private struct SettingsContentView: View {
     }
 }
 
+private struct SettingsPageContainer<Content: View>: View {
+    var title: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text(title)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            content()
+        }
+        .padding(.top, 48)
+        .padding(.bottom, 36)
+        .padding(.horizontal, 34)
+        .frame(maxWidth: 760, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+}
+
 private struct PermissionListSection: View {
     @EnvironmentObject private var state: AppState
     @State private var draft = ""
@@ -1102,7 +1101,8 @@ private struct PermissionListSection: View {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 8) {
                         TextField(placeholder, text: $draft)
-                            .textFieldStyle(WebFieldStyle())
+                            .textFieldStyle(.roundedBorder)
+                            .controlSize(.regular)
                             .onSubmit { addDraft() }
                         Button {
                             addDraft()
@@ -1316,16 +1316,15 @@ private struct SettingsSectionBlock<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(title.uppercased())
-                    .font(.system(size: 12, weight: .semibold))
-                    .tracking(0.72)
-                    .foregroundStyle(DesignTokens.tertiaryText)
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
                 if let detail {
                     Text(detail)
-                        .font(.system(size: 12))
-                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             content()
@@ -1341,10 +1340,10 @@ struct SettingsCardBlock<Content: View>: View {
         VStack(spacing: 0) {
             content()
         }
-        .background(DesignTokens.background, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
-                .stroke(DesignTokens.separator, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1)
         )
     }
 }
@@ -1354,32 +1353,12 @@ struct WebSettingsToggle: View {
     @Binding var isOn: Bool
 
     var body: some View {
-        Button {
-            isOn.toggle()
-        } label: {
-            RoundedRectangle(cornerRadius: 999, style: .continuous)
-                .fill(isOn ? DesignTokens.accent : DesignTokens.neutral100)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 999, style: .continuous)
-                        .stroke(isOn ? DesignTokens.accent : DesignTokens.separator, lineWidth: 2)
-                )
-                .frame(width: 48, height: 28)
-                .overlay(alignment: isOn ? .trailing : .leading) {
-                    Circle()
-                        .fill(DesignTokens.background)
-                        .shadow(color: .black.opacity(0.16), radius: 2, y: 1)
-                        .frame(width: 20, height: 20)
-                        .padding(.horizontal, 4)
-                        .overlay {
-                            Image(systemName: isOn ? "moon.fill" : "sun.max.fill")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(isOn ? DesignTokens.accent : DesignTokens.warning)
-                        }
-                }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(state.t(.toggle))
-        .accessibilityValue(isOn ? state.t(.on) : state.t(.off))
+        Toggle("", isOn: $isOn)
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.regular)
+            .accessibilityLabel(state.t(.toggle))
+            .accessibilityValue(isOn ? state.t(.on) : state.t(.off))
     }
 }
 
@@ -1541,19 +1520,35 @@ private struct SettingsRowBlock<Content: View>: View {
     @ViewBuilder var trailing: () -> Content
 
     var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                Text(detail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-            }
-            Spacer()
+        LabeledContent {
             trailing()
+                .controlSize(.regular)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        } label: {
+            SettingsFieldLabel(title: title, detail: detail)
         }
         .padding(.horizontal, 16)
-        .frame(minHeight: 58)
+        .padding(.vertical, 7)
+        .frame(minHeight: 48)
+    }
+}
+
+private struct SettingsFieldLabel: View {
+    var title: String
+    var detail: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.primary)
+            if !detail.isEmpty {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 
@@ -1572,8 +1567,9 @@ struct SettingsTextField: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(DesignTokens.tertiaryText)
             TextField(label, text: $text)
-                .textFieldStyle(WebFieldStyle())
-                .font(.system(size: 12, design: .monospaced))
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.regular)
+                .font(.system(size: 13, design: .monospaced))
         }
     }
 }
@@ -1610,7 +1606,20 @@ private struct PillButtonStyle: ButtonStyle {
             .padding(.horizontal, 10)
             .frame(height: 30)
             .foregroundStyle(isActive ? DesignTokens.text : DesignTokens.tertiaryText)
-            .background(isActive ? DesignTokens.neutral100 : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+            .background {
+                ZStack {
+                    if isActive {
+                        VisualEffectBackground(material: .popover, blendingMode: .withinWindow)
+                    } else {
+                        Color.clear
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                    .stroke(isActive ? .white.opacity(0.45) : Color.clear)
+            )
             .opacity(configuration.isPressed ? 0.75 : 1)
     }
 }
@@ -1618,8 +1627,9 @@ private struct PillButtonStyle: ButtonStyle {
 private struct SettingsIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(DesignTokens.tertiaryText)
-            .background(configuration.isPressed ? DesignTokens.neutral100 : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+            .foregroundStyle(configuration.isPressed ? DesignTokens.text : DesignTokens.secondaryText)
+            .background(GlassControlBackground(isActive: false, cornerRadius: 10, material: .popover, showsShadow: false))
+            .opacity(configuration.isPressed ? 0.82 : 1)
     }
 }
 

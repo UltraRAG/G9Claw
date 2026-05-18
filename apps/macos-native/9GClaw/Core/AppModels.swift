@@ -329,6 +329,56 @@ enum AgentActivityPhase: String, Codable {
     case thinking
 }
 
+enum AgentToolPresentationClassifier {
+    static func phase(forToolName toolName: String) -> AgentActivityPhase {
+        let canonical = AgentToolNameCanonicalizer.canonical(toolName).lowercased()
+        if searchTools.contains(canonical) {
+            return .search
+        }
+        if commandTools.contains(canonical) {
+            return .command
+        }
+        if editTools.contains(canonical) {
+            return .edit
+        }
+        if subagentTools.contains(canonical) {
+            return .subagent
+        }
+        return .tool
+    }
+
+    static func isReadTool(_ toolName: String) -> Bool {
+        AgentToolNameCanonicalizer.canonical(toolName).lowercased() == "read"
+    }
+
+    static func isSearchTool(_ toolName: String) -> Bool {
+        phase(forToolName: toolName) == .search
+    }
+
+    private static let searchTools: Set<String> = [
+        "grep",
+        "glob",
+        "semanticsearch",
+        "websearch",
+        "webfetch",
+    ]
+
+    private static let commandTools: Set<String> = [
+        "shell",
+    ]
+
+    private static let editTools: Set<String> = [
+        "write",
+        "strreplace",
+        "delete",
+        "editnotebook",
+    ]
+
+    private static let subagentTools: Set<String> = [
+        "task",
+    ]
+}
+
 enum AgentActivityState: String, Codable {
     case running
     case completed
@@ -599,24 +649,25 @@ struct ToolPermissionSettings: Hashable, Codable {
     var lastUpdated: Date?
 
     static let quickAllowedTools = [
-        "Bash(git log:*)",
-        "Bash(git diff:*)",
-        "Bash(git status:*)",
+        "Shell(git log:*)",
+        "Shell(git diff:*)",
+        "Shell(git status:*)",
         "Read",
         "Write",
-        "Edit",
+        "StrReplace",
         "Glob",
         "Grep",
-        "MultiEdit",
+        "SemanticSearch",
         "Task",
         "TodoWrite",
     ]
 
     static let quickBlockedTools = [
-        "Bash(rm:*)",
-        "Bash(sudo:*)",
+        "Shell(rm:*)",
+        "Shell(sudo:*)",
         "WebFetch",
         "WebSearch",
+        "Delete",
     ]
 
     static let defaults = ToolPermissionSettings(
@@ -626,7 +677,7 @@ struct ToolPermissionSettings: Hashable, Codable {
     )
 }
 
-enum SettingsMainTab: String, CaseIterable, Identifiable {
+enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
     case appearance
     case permissions
     case config
@@ -754,6 +805,9 @@ struct MemoryDashboardSnapshot: Hashable, Codable {
     var dreamTraceRecords: [MemoryTraceRecord] = []
     var lastDreamSnapshot: MemoryDreamSnapshot?
     var scheduler: MemorySchedulerSnapshot = .disabled
+    var jobStates: [MemoryJobKind: MemoryJobState] = Dictionary(
+        uniqueKeysWithValues: MemoryJobKind.allCases.map { ($0, .idle($0)) }
+    )
 }
 
 struct MemoryOverview: Hashable, Codable {
@@ -961,7 +1015,105 @@ struct RoutingBucket: Hashable, Codable {
     var count: Int
     var inputTokens: Int
     var outputTokens: Int
+    var cacheReadTokens: Int
+    var totalTokens: Int
+    var requestCount: Int
     var estimatedCost: Double
+    var baselineCost: Double
+    var savedCost: Double
+
+    init(
+        count: Int = 0,
+        inputTokens: Int = 0,
+        outputTokens: Int = 0,
+        cacheReadTokens: Int = 0,
+        totalTokens: Int? = nil,
+        requestCount: Int? = nil,
+        estimatedCost: Double = 0,
+        baselineCost: Double = 0,
+        savedCost: Double = 0
+    ) {
+        self.count = count
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.totalTokens = totalTokens ?? inputTokens + outputTokens + cacheReadTokens
+        self.requestCount = requestCount ?? count
+        self.estimatedCost = estimatedCost
+        self.baselineCost = baselineCost
+        self.savedCost = savedCost
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case count
+        case inputTokens
+        case outputTokens
+        case cacheReadTokens
+        case totalTokens
+        case requestCount
+        case estimatedCost
+        case baselineCost
+        case savedCost
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        count = try container.decodeIfPresent(Int.self, forKey: .count) ?? 0
+        inputTokens = try container.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0
+        outputTokens = try container.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0
+        cacheReadTokens = try container.decodeIfPresent(Int.self, forKey: .cacheReadTokens) ?? 0
+        totalTokens = try container.decodeIfPresent(Int.self, forKey: .totalTokens) ?? inputTokens + outputTokens + cacheReadTokens
+        requestCount = try container.decodeIfPresent(Int.self, forKey: .requestCount) ?? count
+        estimatedCost = try container.decodeIfPresent(Double.self, forKey: .estimatedCost) ?? 0
+        baselineCost = try container.decodeIfPresent(Double.self, forKey: .baselineCost) ?? 0
+        savedCost = try container.decodeIfPresent(Double.self, forKey: .savedCost) ?? 0
+    }
+}
+
+struct RoutingRequestLogEntry: Identifiable, Hashable, Codable {
+    var id: String
+    var ts: Date
+    var role: String
+    var tier: String?
+    var model: String
+    var tokens: Int
+    var cost: Double
+    var baselineCost: Double?
+    var savedCost: Double?
+    var query: String?
+    var scenario: String?
+    var route: String?
+    var skill: String?
+
+    init(
+        id: String = UUID().uuidString,
+        ts: Date = Date(),
+        role: String,
+        tier: String? = nil,
+        model: String,
+        tokens: Int = 0,
+        cost: Double = 0,
+        baselineCost: Double? = nil,
+        savedCost: Double? = nil,
+        query: String? = nil,
+        scenario: String? = nil,
+        route: String? = nil,
+        skill: String? = nil
+    ) {
+        self.id = id
+        self.ts = ts
+        self.role = role
+        self.tier = tier
+        self.model = model
+        self.tokens = tokens
+        self.cost = cost
+        self.baselineCost = baselineCost
+        self.savedCost = savedCost
+        self.query = query
+        self.scenario = scenario
+        self.route = route
+        self.skill = skill
+    }
 }
 
 struct RoutingDashboardSession: Identifiable, Hashable, Codable {
@@ -972,9 +1124,107 @@ struct RoutingDashboardSession: Identifiable, Hashable, Codable {
     var totalTokens: Int
     var estimatedCost: Double
     var savedCost: Double
+    var total: RoutingBucket
     var byTier: [String: RoutingBucket]
     var byModel: [String: RoutingBucket]
+    var byScenario: [String: RoutingBucket]
+    var byRole: [String: RoutingBucket]
     var requestLog: [String]
+    var requestEntries: [RoutingRequestLogEntry]
+
+    init(
+        id: String,
+        title: String,
+        projectName: String,
+        lastActiveAt: Date,
+        totalTokens: Int,
+        estimatedCost: Double,
+        savedCost: Double,
+        total: RoutingBucket? = nil,
+        byTier: [String: RoutingBucket],
+        byModel: [String: RoutingBucket],
+        byScenario: [String: RoutingBucket] = [:],
+        byRole: [String: RoutingBucket] = [:],
+        requestLog: [String],
+        requestEntries: [RoutingRequestLogEntry] = []
+    ) {
+        self.id = id
+        self.title = title
+        self.projectName = projectName
+        self.lastActiveAt = lastActiveAt
+        self.totalTokens = totalTokens
+        self.estimatedCost = estimatedCost
+        self.savedCost = savedCost
+        self.total = total ?? RoutingBucket(
+            count: Self.inferredRequestCount(byTier: byTier, byModel: byModel, byRole: byRole),
+            inputTokens: totalTokens,
+            totalTokens: totalTokens,
+            estimatedCost: estimatedCost,
+            baselineCost: estimatedCost + savedCost,
+            savedCost: savedCost
+        )
+        self.byTier = byTier
+        self.byModel = byModel
+        self.byScenario = byScenario
+        self.byRole = byRole
+        self.requestLog = requestLog
+        self.requestEntries = requestEntries
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case projectName
+        case lastActiveAt
+        case totalTokens
+        case estimatedCost
+        case savedCost
+        case total
+        case byTier
+        case byModel
+        case byScenario
+        case byRole
+        case requestLog
+        case requestEntries
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        projectName = try container.decode(String.self, forKey: .projectName)
+        lastActiveAt = try container.decode(Date.self, forKey: .lastActiveAt)
+        totalTokens = try container.decodeIfPresent(Int.self, forKey: .totalTokens) ?? 0
+        estimatedCost = try container.decodeIfPresent(Double.self, forKey: .estimatedCost) ?? 0
+        savedCost = try container.decodeIfPresent(Double.self, forKey: .savedCost) ?? 0
+        byTier = try container.decodeIfPresent([String: RoutingBucket].self, forKey: .byTier) ?? [:]
+        byModel = try container.decodeIfPresent([String: RoutingBucket].self, forKey: .byModel) ?? [:]
+        byScenario = try container.decodeIfPresent([String: RoutingBucket].self, forKey: .byScenario) ?? [:]
+        byRole = try container.decodeIfPresent([String: RoutingBucket].self, forKey: .byRole) ?? [:]
+        requestLog = try container.decodeIfPresent([String].self, forKey: .requestLog) ?? []
+        requestEntries = try container.decodeIfPresent([RoutingRequestLogEntry].self, forKey: .requestEntries) ?? []
+        total = try container.decodeIfPresent(RoutingBucket.self, forKey: .total) ?? RoutingBucket(
+            count: Self.inferredRequestCount(byTier: byTier, byModel: byModel, byRole: byRole),
+            inputTokens: totalTokens,
+            totalTokens: totalTokens,
+            estimatedCost: estimatedCost,
+            baselineCost: estimatedCost + savedCost,
+            savedCost: savedCost
+        )
+    }
+
+    private static func inferredRequestCount(
+        byTier: [String: RoutingBucket],
+        byModel: [String: RoutingBucket],
+        byRole: [String: RoutingBucket]
+    ) -> Int {
+        let sums = [byTier, byModel, byRole].map { buckets in
+            buckets.values.reduce(0) { partial, bucket in
+                partial + max(bucket.count, bucket.requestCount)
+            }
+        }
+        return sums.max() ?? 0
+    }
 }
 
 struct RoutingDashboardSnapshot: Hashable, Codable {

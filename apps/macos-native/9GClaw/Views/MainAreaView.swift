@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MainAreaView: View {
     @EnvironmentObject private var state: AppState
+    @Namespace private var toolSwitcherNamespace
 
     var body: some View {
         VStack(spacing: 0) {
@@ -12,7 +13,9 @@ struct MainAreaView: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(DesignTokens.background)
+        .background {
+            MainGlassBackground()
+        }
         .foregroundStyle(DesignTokens.text)
     }
 
@@ -21,36 +24,42 @@ struct MainAreaView: View {
             let availableWidth = proxy.size.width
             let showSessionTitle = availableWidth >= 1160
             let horizontalPadding: CGFloat = availableWidth < 760 ? 14 : 24
-            let controlGap: CGFloat = availableWidth < 1080 ? 8 : 16
-            let toolMaxWidth = min(max(560, availableWidth * 0.70), availableWidth - 220)
+            let controlGap: CGFloat = availableWidth < 1080 ? 6 : 12
+            let innerWidth = max(0, availableWidth - horizontalPadding * 2)
+            let switcherLayout = MainHeaderToolSwitcherLayout.resolve(
+                availableWidth: innerWidth,
+                activeTab: state.activeTab
+            )
 
             HStack(spacing: 0) {
                 breadcrumb(showSessionTitle: showSessionTitle)
-                    .frame(minWidth: min(240, max(150, availableWidth * 0.24)), maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(4)
                     .clipped()
 
-                toolSwitcher()
+                toolSwitcher(layout: switcherLayout)
                     .padding(.leading, controlGap)
-                    .frame(width: max(320, toolMaxWidth), alignment: .trailing)
-                    .layoutPriority(2)
+                    .frame(width: switcherLayout.estimatedWidth, alignment: .trailing)
+                    .layoutPriority(5)
             }
             .padding(.horizontal, horizontalPadding)
             .frame(width: proxy.size.width, height: DesignTokens.headerHeight)
         }
         .frame(height: DesignTokens.headerHeight)
-        .background(DesignTokens.background)
+        .background {
+            MainGlassBackground()
+        }
     }
 
     private func breadcrumb(showSessionTitle: Bool) -> some View {
-        HStack(spacing: 8) {
-            Text(state.selectedProject?.displayName ?? "Home")
+        let workspaceTitle = state.selectedProject?.displayName ?? state.t(.general)
+
+        return HStack(spacing: 8) {
+            Text(workspaceTitle)
                 .foregroundStyle(DesignTokens.neutral500)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .layoutPriority(3)
-                .fixedSize(horizontal: true, vertical: false)
-                .frame(minWidth: 80, alignment: .leading)
+                .layoutPriority(5)
             Text("/")
                 .foregroundStyle(DesignTokens.neutral400.opacity(0.60))
             Text(state.tabLabel(state.activeTab))
@@ -66,51 +75,65 @@ struct MainAreaView: View {
                     .truncationMode(.tail)
                     .padding(.leading, 8)
                     .layoutPriority(0)
-            }
+                }
         }
         .font(.system(size: 13))
         .frame(minWidth: 0, alignment: .leading)
     }
 
     @ViewBuilder
-    private func toolSwitcher() -> some View {
-        GeometryReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(AppTab.primaryTabs, id: \.id) { tab in
-                        toolButton(tab)
-                    }
-                }
-                .frame(minWidth: proxy.size.width, alignment: .trailing)
+    private func toolSwitcher(layout: MainHeaderToolSwitcherLayout) -> some View {
+        HStack(spacing: MainHeaderToolSwitcherLayout.itemSpacing) {
+            ForEach(layout.visibleTabs, id: \.id) { tab in
+                toolButton(tab, iconOnly: layout.iconOnly)
             }
-            .frame(width: proxy.size.width, height: 36, alignment: .trailing)
         }
-        .frame(height: 36)
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(3)
+        .frame(width: layout.estimatedWidth, height: 34, alignment: .trailing)
+        .background(
+            GlassControlBackground(cornerRadius: 15, material: .popover, showsShadow: false)
+        )
+        .animation(.snappy(duration: 0.22), value: state.activeTab)
     }
 
-    private func toolButton(_ tab: AppTab) -> some View {
+    private func toolButton(_ tab: AppTab, iconOnly: Bool) -> some View {
         let isActive = state.activeTab == tab
         let hasUnread = tab == .alwaysOn && state.projects.flatMap(\.allSessions).contains { $0.state == .unread }
 
         return Button {
-            state.activeTab = tab
+            withAnimation(.snappy(duration: 0.22)) {
+                state.activeTab = tab
+            }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: tab.systemImage)
-                    .font(.system(size: 14, weight: .regular))
+                    .font(.system(size: 13, weight: .regular))
                     .imageScale(.small)
-                Text(state.tabLabel(tab))
-                    .font(.system(size: 13, weight: isActive ? .medium : .regular))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                if !iconOnly {
+                    Text(state.tabLabel(tab))
+                        .font(.system(size: 12.5, weight: isActive ? .semibold : .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
-            .padding(.horizontal, 10)
-            .frame(height: 32)
+            .padding(.horizontal, iconOnly ? 0 : 8)
+            .frame(
+                width: MainHeaderToolSwitcherLayout.buttonWidth(for: tab, iconOnly: iconOnly),
+                height: 28
+            )
             .foregroundStyle(isActive ? DesignTokens.text : DesignTokens.tertiaryText)
             .background(
-                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                    .fill(isActive ? DesignTokens.neutral100 : Color.clear)
+                ZStack {
+                    if isActive {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(DesignTokens.contentSurface.opacity(0.88))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(DesignTokens.separator.opacity(0.55), lineWidth: 1)
+                            )
+                            .matchedGeometryEffect(id: "tool-switcher-pill", in: toolSwitcherNamespace)
+                    }
+                }
             )
             .overlay(alignment: .topTrailing) {
                 if hasUnread {
@@ -121,8 +144,8 @@ struct MainAreaView: View {
                         .offset(x: 4, y: -4)
                 }
             }
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .fixedSize(horizontal: true, vertical: false)
         .buttonStyle(.plain)
         .help(state.tabLabel(tab))
     }
@@ -173,6 +196,75 @@ struct MainAreaView: View {
         .padding(.horizontal, 12)
         .frame(height: 40)
         .background(DesignTokens.danger.opacity(0.10))
+    }
+}
+
+struct MainHeaderToolSwitcherLayout: Equatable {
+    static let itemSpacing: CGFloat = 2
+    static let containerHorizontalPadding: CGFloat = 6
+    private static let iconButtonWidth: CGFloat = 36
+
+    var visibleTabs: [AppTab]
+    var overflowTabs: [AppTab]
+    var iconOnly: Bool
+    var estimatedWidth: CGFloat
+
+    static func resolve(
+        availableWidth: CGFloat,
+        activeTab: AppTab,
+        tabs: [AppTab] = AppTab.primaryTabs
+    ) -> MainHeaderToolSwitcherLayout {
+        let allTabs = uniqueTabs(tabs)
+        guard !allTabs.isEmpty else {
+            return MainHeaderToolSwitcherLayout(visibleTabs: [], overflowTabs: [], iconOnly: false, estimatedWidth: 0)
+        }
+
+        let fullWidth = estimatedWidth(for: allTabs, overflow: [], iconOnly: false)
+        return MainHeaderToolSwitcherLayout(
+            visibleTabs: allTabs,
+            overflowTabs: [],
+            iconOnly: false,
+            estimatedWidth: fullWidth
+        )
+    }
+
+    static func buttonWidth(for tab: AppTab, iconOnly: Bool) -> CGFloat {
+        if iconOnly {
+            return iconButtonWidth
+        }
+        switch tab {
+        case .chat:
+            return 92
+        case .dashboard:
+            return 92
+        case .alwaysOn:
+            return 106
+        case .plugin:
+            return 104
+        default:
+            return 84
+        }
+    }
+
+    private static func estimatedWidth(for visible: [AppTab], overflow: [AppTab], iconOnly: Bool) -> CGFloat {
+        let buttonWidth = visible.reduce(CGFloat(0)) { partial, tab in
+            partial + Self.buttonWidth(for: tab, iconOnly: iconOnly)
+        }
+        let itemCount = visible.count + (overflow.isEmpty ? 0 : 1)
+        let spacing = CGFloat(max(0, itemCount - 1)) * itemSpacing
+        let overflowWidth: CGFloat = 0
+        return containerHorizontalPadding + buttonWidth + overflowWidth + spacing
+    }
+
+    private static func uniqueTabs(_ tabs: [AppTab]) -> [AppTab] {
+        var seen = Set<AppTab>()
+        return tabs.filter { tab in
+            if seen.contains(tab) {
+                return false
+            }
+            seen.insert(tab)
+            return true
+        }
     }
 }
 

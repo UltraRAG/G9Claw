@@ -13,6 +13,13 @@ enum DesignTokens {
 
     static let popover = neutral900InDark(light: .white)
     static let card = neutral950InDark(light: .white)
+    static let contentSurface = adaptive(light: nsColor(255, 255, 255, 0.88), dark: nsColor(24, 24, 26, 0.78))
+    static let cardSurface = adaptive(light: nsColor(255, 255, 255, 0.74), dark: nsColor(30, 30, 32, 0.72))
+    static let cardSurfaceSubtle = adaptive(light: nsColor(250, 250, 250, 0.64), dark: nsColor(38, 38, 40, 0.58))
+    static let controlSurface = adaptive(light: nsColor(255, 255, 255, 0.48), dark: nsColor(46, 46, 48, 0.46))
+    static let controlSurfaceActive = adaptive(light: nsColor(255, 255, 255, 0.82), dark: nsColor(58, 58, 60, 0.70))
+    static let modalSurface = adaptive(light: nsColor(255, 255, 255, 0.96), dark: nsColor(24, 24, 26, 0.96))
+    static let sidebarOverlay = adaptive(light: nsColor(248, 248, 248, 0.44), dark: nsColor(22, 22, 24, 0.44))
     static let mutedForeground = adaptive(light: nsColor(115, 115, 115), dark: nsColor(163, 163, 163))
     static let ring = adaptive(light: nsColor(77, 77, 77), dark: nsColor(163, 163, 163))
     static let destructiveForeground = adaptive(light: nsColor(250, 250, 250), dark: nsColor(250, 250, 250))
@@ -55,7 +62,7 @@ enum DesignTokens {
     static let filesChatMinWidth: CGFloat = 320
     static let filesPaneMinWidth: CGFloat = 280
 
-    static let welcomeTitleSize: CGFloat = 26
+    static let welcomeTitleSize: CGFloat = 24
     static let settingsTitleSize: CGFloat = 16
 
     static let interFontName = "Inter"
@@ -145,9 +152,28 @@ struct NativePillButtonStyle: ButtonStyle {
             .frame(height: 32)
             .background(
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                    .fill(isActive ? DesignTokens.neutral100 : Color.clear)
+                    .fill(isActive ? DesignTokens.controlSurfaceActive : Color.clear)
             )
             .opacity(configuration.isPressed ? 0.72 : 1)
+    }
+}
+
+struct NativeGlassCapsuleButtonStyle: ButtonStyle {
+    var isActive: Bool = false
+    var height: CGFloat = 32
+    var horizontalPadding: CGFloat = 10
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: isActive ? .medium : .regular))
+            .foregroundStyle(isActive ? DesignTokens.text : DesignTokens.secondaryText)
+            .padding(.horizontal, horizontalPadding)
+            .frame(height: height)
+            .background(
+                GlassControlBackground(isActive: isActive, cornerRadius: height / 3)
+            )
+            .opacity(configuration.isPressed ? 0.72 : 1)
+            .animation(.snappy(duration: 0.18, extraBounce: 0.04), value: isActive)
     }
 }
 
@@ -182,5 +208,88 @@ struct VisualEffectBackground: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
+    }
+}
+
+struct AppGlassWindowBackground: View {
+    var body: some View {
+        ZStack {
+            VisualEffectBackground(material: .windowBackground, blendingMode: .behindWindow)
+            DesignTokens.background.opacity(0.24)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+struct SidebarGlassBackground: View {
+    var body: some View {
+        ZStack {
+            VisualEffectBackground(material: .sidebar, blendingMode: .withinWindow)
+            DesignTokens.sidebarOverlay
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+struct MainGlassBackground: View {
+    var body: some View {
+        ZStack {
+            VisualEffectBackground(material: .contentBackground, blendingMode: .withinWindow)
+            DesignTokens.background.opacity(0.16)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+struct GlassControlBackground: View {
+    var isActive: Bool = false
+    var cornerRadius: CGFloat = DesignTokens.radius
+    var material: NSVisualEffectView.Material = .popover
+    var showsShadow: Bool = true
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(.clear)
+            .background(
+                ZStack {
+                    VisualEffectBackground(material: material, blendingMode: .withinWindow)
+                    (isActive ? DesignTokens.controlSurfaceActive : DesignTokens.controlSurface)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .allowsHitTesting(false)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(isActive ? DesignTokens.separator.opacity(0.68) : DesignTokens.separator.opacity(0.44), lineWidth: 1)
+            )
+            .shadow(
+                color: showsShadow ? .black.opacity(isActive ? 0.10 : 0.04) : .clear,
+                radius: showsShadow ? (isActive ? 10 : 4) : 0,
+                y: showsShadow ? (isActive ? 5 : 2) : 0
+            )
+    }
+}
+
+struct ComposerGlassBackground: View {
+    var cornerRadius: CGFloat = DesignTokens.largeRadius
+    var isFocused: Bool = false
+    var chromeless: Bool = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(.clear)
+            .background(
+                ZStack {
+                    VisualEffectBackground(material: .popover, blendingMode: .withinWindow)
+                    DesignTokens.contentSurface
+                }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .allowsHitTesting(false)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(isFocused ? DesignTokens.neutral300 : DesignTokens.separator.opacity(0.80), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(chromeless ? 0.08 : 0.07), radius: 14, y: 8)
     }
 }

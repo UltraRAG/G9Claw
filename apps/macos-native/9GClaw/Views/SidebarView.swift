@@ -3,12 +3,14 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.openSettings) private var openSettings
     @Binding var width: Double
     @AppStorage("sidebar-v2-active-section") private var activeSectionRaw = SidebarSection.projects.rawValue
     @State private var expandedProjectIDs: Set<UUID> = []
     @State private var collapsedSessionProjectIDs: Set<UUID> = []
     @State private var isResizing = false
     @State private var resizeStartWidth = Double(DesignTokens.sidebarDefaultWidth)
+    @Namespace private var sectionToggleGlassNamespace
 
     private var activeSection: SidebarSection {
         get { SidebarSection(rawValue: activeSectionRaw) ?? .projects }
@@ -22,7 +24,9 @@ struct SidebarView: View {
             listBody
             footer
         }
-        .background(DesignTokens.sidebarBackground)
+        .background {
+            SidebarGlassBackground()
+        }
         .overlay(alignment: .trailing) {
             Rectangle()
                 .fill(DesignTokens.separator)
@@ -61,7 +65,9 @@ struct SidebarView: View {
             .help("9GClaw")
 
             Button {
-                state.isSidebarVisible = false
+                withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+                    state.isSidebarVisible = false
+                }
             } label: {
                 Image(systemName: "sidebar.left")
                     .font(.system(size: 16, weight: .regular))
@@ -81,15 +87,34 @@ struct SidebarView: View {
             segmentButton(.projects)
             segmentButton(.general)
         }
-        .padding(2)
-        .frame(height: DesignTokens.sidebarSegmentHeight)
+        .padding(3)
+        .frame(height: DesignTokens.sidebarSegmentHeight + 4)
         .background(
-            RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                .fill(DesignTokens.neutral100)
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(DesignTokens.background.opacity(0.18))
+                    .background(
+                        VisualEffectBackground(material: .hudWindow, blendingMode: .withinWindow)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    )
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(.white.opacity(0.34), lineWidth: 0.7)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(DesignTokens.separator.opacity(0.55), lineWidth: 0.7)
+                LinearGradient(
+                    colors: [.white.opacity(0.30), .white.opacity(0.03), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .allowsHitTesting(false)
+            }
         )
+        .shadow(color: .black.opacity(0.06), radius: 7, y: 3)
         .padding(.horizontal, 12)
         .padding(.top, 12)
         .padding(.bottom, 4)
+        .animation(.spring(response: 0.26, dampingFraction: 0.82), value: activeSection)
     }
 
     private func segmentButton(_ section: SidebarSection) -> some View {
@@ -99,20 +124,29 @@ struct SidebarView: View {
                 state.selectProject(generalProject)
             }
         } label: {
-            Text(sectionTitle(section))
-                .font(.system(size: 12, weight: .medium))
-                .frame(maxWidth: .infinity)
-                .frame(height: 24)
-                .foregroundStyle(activeSection == section ? DesignTokens.text : DesignTokens.tertiaryText)
-                .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(activeSection == section ? DesignTokens.background : Color.clear)
-                        .shadow(
-                            color: activeSection == section ? .black.opacity(0.06) : .clear,
-                            radius: 1,
-                            y: 1
+            ZStack {
+                if activeSection == section {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(DesignTokens.background.opacity(0.58))
+                        .background(
+                            VisualEffectBackground(material: .popover, blendingMode: .withinWindow)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         )
-                )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(.white.opacity(0.58), lineWidth: 0.7)
+                        )
+                        .shadow(color: .black.opacity(0.10), radius: 4, y: 2)
+                        .matchedGeometryEffect(id: "active-sidebar-section", in: sectionToggleGlassNamespace)
+                }
+
+                Text(sectionTitle(section))
+                    .font(.system(size: 12, weight: activeSection == section ? .semibold : .medium))
+                    .foregroundStyle(activeSection == section ? DesignTokens.text : DesignTokens.secondaryText.opacity(0.72))
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 26)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -433,6 +467,8 @@ struct SidebarView: View {
                 .frame(height: 1)
             Button {
                 state.openSettings(.appearance)
+                openSettings()
+                SettingsWindowPresenter.bringToFront()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "gearshape")
@@ -565,7 +601,9 @@ struct CollapsedSidebarRail: View {
             HStack {
                 Spacer()
                 Button {
-                    state.isSidebarVisible = true
+                    withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+                        state.isSidebarVisible = true
+                    }
                 } label: {
                     Image(systemName: "sidebar.left")
                         .font(.system(size: 16, weight: .regular))
@@ -580,7 +618,9 @@ struct CollapsedSidebarRail: View {
 
             Spacer(minLength: 0)
         }
-        .background(DesignTokens.sidebarBackground)
+        .background {
+            SidebarGlassBackground()
+        }
         .overlay(alignment: .trailing) {
             Rectangle()
                 .fill(DesignTokens.separator)
@@ -602,7 +642,7 @@ struct ProjectCreationWizardView: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.50)
+            Color.black.opacity(0.36)
                 .ignoresSafeArea()
                 .background(.ultraThinMaterial)
 
@@ -611,18 +651,18 @@ struct ProjectCreationWizardView: View {
                 progress
                 Divider().background(DesignTokens.separator)
                 content
-                    .frame(minHeight: 300)
-                    .padding(24)
+                    .frame(minHeight: 324)
+                    .padding(28)
                 Divider().background(DesignTokens.separator)
                 footer
             }
-            .frame(maxWidth: 672)
-            .background(DesignTokens.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .frame(maxWidth: 720)
+            .background(DesignTokens.modalSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(DesignTokens.separator, lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.25), radius: 28, y: 14)
+            .shadow(color: .black.opacity(0.22), radius: 34, y: 18)
             .padding(24)
             .onAppear {
                 if workspacePath.isEmpty {
@@ -634,9 +674,9 @@ struct ProjectCreationWizardView: View {
 
     private var wizardHeader: some View {
         HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(DesignTokens.accent.opacity(0.12))
-                .frame(width: 38, height: 38)
+                .frame(width: 40, height: 40)
                 .overlay {
                     Image(systemName: "folder.badge.plus")
                         .font(.system(size: 18, weight: .semibold))
@@ -657,8 +697,8 @@ struct ProjectCreationWizardView: View {
             }
             .buttonStyle(WebIconButtonStyle())
         }
-        .padding(.horizontal, 20)
-        .frame(height: 64)
+        .padding(.horizontal, 24)
+        .frame(height: 72)
     }
 
     private var progress: some View {
@@ -666,11 +706,11 @@ struct ProjectCreationWizardView: View {
             ForEach(0..<3, id: \.self) { index in
                 Capsule()
                     .fill(index <= step ? DesignTokens.accent : DesignTokens.neutral200)
-                    .frame(height: 4)
+                    .frame(height: 5)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.bottom, 12)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 14)
     }
 
     @ViewBuilder
@@ -778,7 +818,7 @@ struct ProjectCreationWizardView: View {
             .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(workspaceType == type ? DesignTokens.accent.opacity(0.08) : DesignTokens.background)
+                    .fill(workspaceType == type ? DesignTokens.accent.opacity(0.08) : DesignTokens.contentSurface)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)

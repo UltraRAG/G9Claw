@@ -1,4 +1,5 @@
 import Foundation
+import PDFKit
 
 struct AgentPermissionRequest: Sendable, Equatable {
     var id: UUID
@@ -56,6 +57,44 @@ struct AgentToolCall: Sendable, Equatable {
     }
 }
 
+enum AgentToolNameCanonicalizer {
+    static func canonical(_ rawName: String) -> String {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("9gclaw-rag:") {
+            return trimmed
+        }
+        switch lower {
+        case "read": return "Read"
+        case "write": return "Write"
+        case "strreplace", "str_replace", "str-replace", "edit", "multiedit", "multi_edit", "multi-edit":
+            return "StrReplace"
+        case "delete", "remove", "unlink": return "Delete"
+        case "editnotebook", "edit_notebook", "edit-notebook", "notebookedit", "notebook_edit", "notebook-edit":
+            return "EditNotebook"
+        case "glob": return "Glob"
+        case "grep": return "Grep"
+        case "semanticsearch", "semantic_search", "semantic-search": return "SemanticSearch"
+        case "bash", "shell", "run_command", "runcommand": return "Shell"
+        case "await", "taskoutput", "task_output", "task-output", "agentoutputtool", "bashoutputtool":
+            return "Await"
+        case "websearch", "web_search", "web-search": return "WebSearch"
+        case "webfetch", "web_fetch", "web-fetch": return "WebFetch"
+        case "readlints", "read_lints", "read-lints", "lints", "lint": return "ReadLints"
+        case "skill", "loadskill", "load_skill": return "Skill"
+        case "task", "taskcreate", "task_create", "task-create", "agent", "subagent", "sub_agent", "sub-agent":
+            return "Task"
+        case "todoread", "todo_read", "todo-read": return "TodoRead"
+        case "todowrite", "todo_write", "todo-write": return "TodoWrite"
+        case "switchmode", "switch_mode", "switch-mode", "exitplanmode", "exit_plan_mode", "exit-plan-mode", "exitplanmodev2":
+            return "SwitchMode"
+        case "askquestion", "ask_question", "ask-question", "askuserquestion", "ask_user_question", "ask-user-question":
+            return "AskQuestion"
+        default: return trimmed
+        }
+    }
+}
+
 struct ToolArgumentNormalizer {
     struct NormalizationError: Error, Sendable, Equatable {
         var message: String
@@ -73,20 +112,22 @@ struct ToolArgumentNormalizer {
     }
 
     static func normalize(_ call: AgentToolCall) -> NormalizedInvocation {
+        let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
         switch canonicalObjectJSONString(call.inputJSON) {
         case .success(let canonical):
+            let canonicalInput = canonicalToolInputJSON(toolName: canonicalName, inputJSON: canonical)
             return NormalizedInvocation(
-                call: AgentToolCall(id: call.id, name: call.name, inputJSON: canonical),
+                call: AgentToolCall(id: call.id, name: canonicalName, inputJSON: canonicalInput),
                 recoveryResult: nil
             )
         case .failure(let error):
-            let safeCall = AgentToolCall(id: call.id, name: call.name, inputJSON: "{}")
-            let output = "\(invalidJSONRecoveryMessage)\n\nTool: \(call.name)\nError: \(error.message)"
+            let safeCall = AgentToolCall(id: call.id, name: canonicalName, inputJSON: "{}")
+            let output = "\(invalidJSONRecoveryMessage)\n\nTool: \(canonicalName)\nError: \(error.message)"
             return NormalizedInvocation(
                 call: safeCall,
                 recoveryResult: AgentToolResult(
                     callId: call.id,
-                    toolName: call.name,
+                    toolName: canonicalName,
                     output: output,
                     isError: true
                 )
@@ -126,6 +167,114 @@ struct ToolArgumentNormalizer {
             return .failure(NormalizationError(message: error.localizedDescription))
         }
     }
+
+    private static func canonicalToolInputJSON(toolName: String, inputJSON: String) -> String {
+        guard let data = inputJSON.data(using: .utf8),
+              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return inputJSON
+        }
+        switch toolName {
+        case "Shell":
+            canonicalizeShellInput(&object)
+        case "Skill":
+            canonicalizeSkillInput(&object)
+        case "Task":
+            canonicalizeTaskInput(&object)
+        case "StrReplace":
+            canonicalizeStrReplaceInput(&object)
+        case "Await":
+            canonicalizeAwaitInput(&object)
+        default:
+            return inputJSON
+        }
+        guard JSONSerialization.isValidJSONObject(object),
+              let canonicalData = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let canonical = String(data: canonicalData, encoding: .utf8) else {
+            return inputJSON
+        }
+        return canonical
+    }
+
+    private static func canonicalizeShellInput(_ object: inout [String: Any]) {
+        if let command = (object["command"] as? String).nilIfBlank {
+            object["command"] = sanitizeXMLParameterWrapper(command)
+        } else {
+            let command = (object["input"] as? String).nilIfBlank
+                ?? (object["input_command"] as? String).nilIfBlank
+                ?? (object["cmd"] as? String).nilIfBlank
+            if let command {
+                object["command"] = sanitizeXMLParameterWrapper(command)
+            }
+        }
+        object.removeValue(forKey: "input")
+        object.removeValue(forKey: "input_command")
+        object.removeValue(forKey: "cmd")
+        if object["timeout"] == nil, let timeoutSeconds = object["timeout_seconds"] {
+            object["timeout"] = timeoutSeconds
+        }
+        object.removeValue(forKey: "timeout_seconds")
+    }
+
+    private static func canonicalizeSkillInput(_ object: inout [String: Any]) {
+        if let skill = (object["skill"] as? String).nilIfBlank {
+            object["skill"] = sanitizeXMLParameterWrapper(skill)
+        }
+        if let args = (object["args"] as? String).nilIfBlank {
+            object["args"] = sanitizeXMLParameterWrapper(args)
+        }
+    }
+
+    private static func canonicalizeTaskInput(_ object: inout [String: Any]) {
+        if object["prompt"] == nil {
+            object["prompt"] = (object["description"] as? String)
+                ?? (object["subject"] as? String)
+                ?? (object["command"] as? String)
+                ?? (object["input"] as? String)
+                ?? ""
+        }
+        if object["type"] == nil, object["subagent_type"] != nil {
+            object["type"] = object["subagent_type"]
+        }
+        object.removeValue(forKey: "subagent_type")
+        object.removeValue(forKey: "input")
+    }
+
+    private static func canonicalizeStrReplaceInput(_ object: inout [String: Any]) {
+        if object["old_string"] == nil, let value = object["oldString"] {
+            object["old_string"] = value
+        }
+        if object["new_string"] == nil, let value = object["newString"] {
+            object["new_string"] = value
+        }
+        object.removeValue(forKey: "oldString")
+        object.removeValue(forKey: "newString")
+    }
+
+    private static func canonicalizeAwaitInput(_ object: inout [String: Any]) {
+        if object["task_id"] == nil {
+            object["task_id"] = object["id"] ?? object["taskId"]
+        }
+        object.removeValue(forKey: "id")
+        object.removeValue(forKey: "taskId")
+    }
+
+    private static func sanitizeXMLParameterWrapper(_ value: String) -> String {
+        var cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let regex = try? NSRegularExpression(pattern: #"(?is)^<parameter(?:\s+[^>]*)?>\s*"#),
+           let match = regex.firstMatch(in: cleaned, range: NSRange(location: 0, length: (cleaned as NSString).length)),
+           match.range.location == 0 {
+            cleaned = (cleaned as NSString).substring(from: match.range.length)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if cleaned.range(of: #"(?is)</parameter>\s*$"#, options: .regularExpression) != nil {
+            cleaned = cleaned.replacingOccurrences(
+                of: #"(?is)</parameter>\s*$"#,
+                with: "",
+                options: .regularExpression
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return cleaned
+    }
 }
 
 struct AgentToolResult: Sendable, Equatable {
@@ -148,8 +297,13 @@ final class AgentRunContext: @unchecked Sendable {
     var successfulToolExecutionCount: Int
     var exploratoryToolCount: Int
     var mutatingToolCount: Int
+    var verificationAfterMutationCount: Int
     var failedToolCount: Int
     var recoverableProtocolErrorCount: Int
+    var providerConfig: ProviderConfig
+    var apiKey: String
+    var timeoutMs: Int
+    var contextWindow: Int
     var nativeConfigValues: [String: String]
     var invokedSkills: [String]
     var lastExecutedToolName: String?
@@ -169,8 +323,13 @@ final class AgentRunContext: @unchecked Sendable {
         successfulToolExecutionCount = 0
         exploratoryToolCount = 0
         mutatingToolCount = 0
+        verificationAfterMutationCount = 0
         failedToolCount = 0
         recoverableProtocolErrorCount = 0
+        providerConfig = request.providerConfig
+        apiKey = request.apiKey
+        timeoutMs = request.timeoutMs
+        contextWindow = request.contextWindow
         nativeConfigValues = request.nativeConfigValues
         invokedSkills = []
         lastExecutedToolName = nil
@@ -210,13 +369,24 @@ final class AgentRunContext: @unchecked Sendable {
             }
         }
         switch result.toolName {
-        case "Read", "Glob", "Grep", "TodoRead", "Skill":
+        case "Read", "Glob", "Grep", "SemanticSearch", "WebSearch", "WebFetch", "ReadLints", "TodoRead", "Skill", "TodoWrite", "AskQuestion", "Await":
             exploratoryToolCount += 1
-        case "Write", "Edit", "MultiEdit", "Bash":
+            if !result.isError, mutatingToolCount > 0 {
+                verificationAfterMutationCount += 1
+            }
+        case "Write", "StrReplace", "Delete", "EditNotebook", "Shell", "Task":
             if result.isError {
                 break
-            } else if result.toolName == "Bash", Self.isReadOnlyBash(call.inputJSON) {
+            } else if result.toolName == "Shell", Self.isReadOnlyShell(call.inputJSON) {
                 exploratoryToolCount += 1
+                if mutatingToolCount > 0 {
+                    verificationAfterMutationCount += 1
+                }
+            } else if result.toolName == "Task", Self.isReadOnlyTask(call.inputJSON) {
+                exploratoryToolCount += 1
+                if mutatingToolCount > 0 {
+                    verificationAfterMutationCount += 1
+                }
             } else {
                 mutatingToolCount += 1
             }
@@ -225,7 +395,7 @@ final class AgentRunContext: @unchecked Sendable {
         }
     }
 
-    private static func isReadOnlyBash(_ inputJSON: String) -> Bool {
+    static func isReadOnlyShell(_ inputJSON: String) -> Bool {
         guard let data = inputJSON.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let command = object["command"] as? String else {
@@ -242,6 +412,17 @@ final class AgentRunContext: @unchecked Sendable {
         let readPrefixes = ["ls", "find", "grep", "rg", "cat", "pwd", "wc", "head", "tail", "stat", "git status", "git diff", "git log"]
         return readPrefixes.contains { trimmed == $0 || trimmed.hasPrefix($0 + " ") }
     }
+
+    static func isReadOnlyTask(_ inputJSON: String) -> Bool {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        let type = ((object["type"] as? String) ?? "generalPurpose")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return ["explore", "cursor-guide", "ci-investigator"].contains(type)
+    }
 }
 
 enum AgentLoopState: Sendable, Equatable {
@@ -253,7 +434,7 @@ enum AgentLoopState: Sendable, Equatable {
 }
 
 enum ContinuationPolicy {
-    static let maxNudges = 3
+    static let maxNudges = 5
     static let maxRecoverableProtocolErrors = 3
 }
 
@@ -262,7 +443,7 @@ enum CompletionGate {
         if context.lastToolResultWasError {
             return false
         }
-        guard NativeAgentRuntime.isWorkspaceMutationRequest(request.prompt.lowercased()) else {
+        guard NativeAgentRuntime.isWorkspaceMutationRequest(request.prompt) else {
             return true
         }
         if context.runMode == .plan, !context.planExited {
@@ -271,8 +452,15 @@ enum CompletionGate {
         if context.mutatingToolCount == 0 {
             return false
         }
+        if NativeAgentRuntime.requiresPostMutationVerification(request.prompt),
+           context.verificationAfterMutationCount == 0 {
+            return false
+        }
         let content = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if content.isEmpty || content == "bash" || content == "json" {
+            return false
+        }
+        if NativeAgentRuntime.looksLikeOngoingWorkspaceWork(content) {
             return false
         }
         return true
@@ -533,15 +721,14 @@ struct NativeAgentRuntime: Sendable {
                 continuation.yield(.turnItemCompleted(recorded.resultItem))
                 continuation.yield(.toolResult(id: call.id, output: result.output, isError: result.isError))
                 context.recordToolResult(result, call: call)
-                if result.toolName == "ExitPlanMode" || result.toolName == "ExitPlanModeV2" || result.toolName == "exit_plan_mode" {
+                if result.toolName == "SwitchMode" {
                     await turnController.markPlanExited()
                     let executeItem = await turnController.recordStatus("executing plan")
                     continuation.yield(.turnItemStarted(executeItem))
                     continuation.yield(.status("executing plan"))
                 }
                 messages.append(openAIToolResultMessage(result))
-                if !result.isError,
-                   result.toolName == "ExitPlanMode" || result.toolName == "ExitPlanModeV2" || result.toolName == "exit_plan_mode" {
+                if !result.isError, result.toolName == "SwitchMode" {
                     messages.append([
                         "role": "user",
                         "content": "The plan was approved. Continue executing it now in agent mode. Use concrete file/search/shell tools and do not stop after restating the plan.",
@@ -725,6 +912,82 @@ struct NativeAgentRuntime: Sendable {
         return events
     }
 
+    static func runSubagent(inputJSON: String, context: AgentRunContext) async throws -> String {
+        let input = try AgentToolExecutor.inputObject(from: inputJSON)
+        let prompt = try AgentToolExecutor.requiredString("prompt", input: input)
+        let description = (input["description"] as? String).nilIfBlank ?? "Subagent"
+        let extraContext = (input["context"] as? String).nilIfBlank ?? ""
+
+        let endpoint = try endpointURL(baseURL: context.providerConfig.baseURL, suffix: "chat/completions")
+        var urlRequest = URLRequest(url: endpoint)
+        urlRequest.httpMethod = "POST"
+        urlRequest.timeoutInterval = timeoutInterval(from: context.timeoutMs)
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let apiKey = context.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else {
+            throw ProviderClientError.missingAPIKey
+        }
+        urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        for (key, value) in context.providerConfig.headers {
+            urlRequest.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let content = """
+        Workspace: \(context.workspacePath)
+        Description: \(description)
+
+        \(extraContext)
+
+        Subtask:
+        \(prompt)
+        """
+        let body: [String: Any] = [
+            "model": context.providerConfig.model,
+            "messages": [
+                [
+                    "role": "system",
+                    "content": "You are a focused read-only subagent. Answer the delegated subtask concisely. Do not claim to edit files, run shell commands, or call tools.",
+                ],
+                [
+                    "role": "user",
+                    "content": content,
+                ],
+            ],
+            "stream": false,
+        ]
+        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: urlRequest)
+        } catch {
+            throw mapTransportError(error)
+        }
+        guard let statusCode = (response as? HTTPURLResponse)?.statusCode else {
+            throw ProviderClientError.invalidResponse
+        }
+        guard 200..<300 ~= statusCode else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw ProviderClientError.httpError(statusCode: statusCode, body: body)
+        }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = object["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let answer = message["content"] as? String,
+              !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ProviderClientError.invalidResponse
+        }
+        return jsonString(
+            [
+                "description": description,
+                "prompt": prompt,
+                "result": answer.trimmingCharacters(in: .whitespacesAndNewlines),
+            ],
+            pretty: true
+        )
+    }
+
     static func fallbackToolCalls(in text: String) -> [AgentToolCall] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
@@ -736,6 +999,14 @@ struct NativeAgentRuntime: Sendable {
         }
         if let responseJSON = wholeXMLEnvelope(named: "response", in: trimmed) {
             return jsonFallbackToolCalls(in: responseJSON)
+        }
+        let invokeCalls = xmlInvokeFallbackToolCalls(in: trimmed)
+        if !invokeCalls.isEmpty {
+            return invokeCalls
+        }
+        let inlineJSONCalls = inlineJSONFallbackToolCalls(in: trimmed)
+        if !inlineJSONCalls.isEmpty {
+            return inlineJSONCalls
         }
         let compactCalls = compactXMLFallbackToolCalls(in: trimmed)
         if !compactCalls.isEmpty {
@@ -760,7 +1031,7 @@ struct NativeAgentRuntime: Sendable {
         if trimmed.range(of: #"^<CALL_[A-Z_]+>"#, options: .regularExpression) != nil {
             return true
         }
-        if lower.hasPrefix("<call") || lower.hasPrefix("<response") || lower.hasPrefix("<command") || lower.hasPrefix("<bash") || lower.hasPrefix("<tool") {
+        if lower.hasPrefix("<call") || lower.hasPrefix("<response") || lower.hasPrefix("<invoke") || lower.hasPrefix("<command") || lower.hasPrefix("<bash") || lower.hasPrefix("<tool") {
             return true
         }
         return !fallbackToolCalls(in: trimmed).isEmpty
@@ -783,7 +1054,7 @@ struct NativeAgentRuntime: Sendable {
 
     private static func nativeAgentSystemPrompt(request: AgentRequest) -> String {
         let modeText = request.runMode == .plan
-            ? "You are in plan mode. Read/search/todo tools are allowed. Do not edit files or run shell commands until ExitPlanMode is called."
+            ? "You are in plan mode. Read/search/todo/question tools are allowed. Do not edit files or run mutating shell commands until SwitchMode is called with mode=\"agent\" and a concrete plan."
             : "You are in agent mode. Use tools to inspect and modify the workspace."
         return """
         You are 9GClaw, a native macOS coding agent with a Claude Code style workflow.
@@ -793,9 +1064,9 @@ struct NativeAgentRuntime: Sendable {
         Use the provided tools for all file reads, file writes, edits, searches, todos, and shell commands.
         Never claim that you created, edited, deleted, or inspected a file unless the corresponding tool result confirms it.
         Prefer small, verifiable steps: inspect files, make precise edits, run focused checks, then summarize.
-        For shell commands, use Bash only when needed and keep commands scoped to the workspace.
-        9GClaw RAG/GLM/DARPA capabilities are exposed through the generic Skill tool instead of standalone tool names. For those capabilities, load the skill first, for example {"skill":"9gclaw-rag:glm-web-search","args":"<query>"} or {"skill":"9gclaw-rag:rag-research","args":"<research query>"}, then follow the loaded SKILL.md and its allowed tools.
-        Normal tools such as Bash, Read, Grep, Glob, Edit, and Write remain available for their own tool semantics.
+        Prefer the canonical tool names: Read, Write, StrReplace, Delete, EditNotebook, Grep, Glob, SemanticSearch, Shell, Await, WebSearch, WebFetch, ReadLints, TodoWrite, AskQuestion, SwitchMode, and Task.
+        For shell commands, use Shell only when needed and keep commands scoped to the workspace. Use run_in_background plus Await for long-running commands.
+        Use WebSearch for current public web results and WebFetch for a specific URL. Use Task for delegated analysis or shell-focused background work.
         If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request and no other prose in that assistant turn.
         Example: {"tool":"Read","input":{"file_path":"README.md"}}
         Do not emit markdown fences, language labels such as "bash" or "json", or a prose explanation when requesting a tool.
@@ -803,7 +1074,7 @@ struct NativeAgentRuntime: Sendable {
     }
 
     static func shouldForceWorkspaceBootstrap(request: AgentRequest, context: AgentRunContext, assistantContent: String) -> Bool {
-        let prompt = request.prompt.lowercased()
+        let prompt = primaryUserPrompt(from: request.prompt).lowercased()
         let content = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let workspaceVerbs = [
             "网页", "网站", "项目", "文件", "代码", "实现", "生成", "修改", "优化", "修复", "完善",
@@ -821,7 +1092,7 @@ struct NativeAgentRuntime: Sendable {
         guard context.continuationNudgeCount < ContinuationPolicy.maxNudges else { return nil }
         guard context.recoverableProtocolErrorCount < ContinuationPolicy.maxRecoverableProtocolErrors else { return nil }
         let content = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let prompt = request.prompt.lowercased()
+        let prompt = primaryUserPrompt(from: request.prompt).lowercased()
         guard isWorkspaceMutationRequest(prompt) else { return nil }
         let refusalPhrases = ["cannot", "can't", "unable", "无法", "不能", "没有权限", "不支持"]
         if refusalPhrases.contains(where: { content.contains($0) }) {
@@ -829,7 +1100,7 @@ struct NativeAgentRuntime: Sendable {
         }
         if request.runMode == .plan, !context.planExited {
             return """
-            Continue the planning turn. If the plan is concrete enough to execute, call ExitPlanMode with the plan so the same turn can proceed to implementation. Do not stop after prose only.
+            Continue the planning turn. If the plan is concrete enough to execute, call SwitchMode with mode="agent" and the plan so the same turn can proceed to implementation. Do not stop after prose only.
             """
         }
         if context.mutatingToolCount == 0 {
@@ -844,15 +1115,71 @@ struct NativeAgentRuntime: Sendable {
             Continue debugging the failed tool step. Use another safe tool call or explain the concrete blocker only if no tool can make progress.
             """
         }
+        if context.mutatingToolCount > 0,
+           requiresPostMutationVerification(prompt),
+           context.verificationAfterMutationCount == 0 {
+            return """
+            Continue the workspace task. You have changed files, but have not verified or read back the result yet.
+            Run a focused read/search/check command, then continue with any remaining edits before giving the final summary.
+            """
+        }
+        if context.mutatingToolCount > 0, looksLikeOngoingWorkspaceWork(content) {
+            return """
+            Continue the implementation. You have started changing the workspace, but the last assistant message still describes in-progress work.
+            Keep using concrete file/search/shell tools until the requested task is actually complete, then give a concise final summary.
+            """
+        }
         return nil
     }
 
+    static func looksLikeOngoingWorkspaceWork(_ content: String) -> Bool {
+        let value = content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else { return true }
+        let completionMarkers = [
+            "已完成", "完成了", "优化完成", "创建完成", "修复完成", "实现完成", "总结", "下面是最终", "以下是最终",
+            "done", "completed", "complete.", "finished", "final summary", "here is the final", "all set",
+        ]
+        if completionMarkers.contains(where: { value.contains($0) }) {
+            return false
+        }
+        let inProgressMarkers = [
+            "let me", "i'll", "i will", "now let", "next", "continue", "start implementing", "apply", "verify", "check",
+            "我将", "我会", "我来", "让我", "现在", "接下来", "下一步", "继续", "开始执行", "开始修改", "先", "然后",
+        ]
+        return inProgressMarkers.contains { value.contains($0) }
+    }
+
+    static func requiresPostMutationVerification(_ prompt: String) -> Bool {
+        let prompt = primaryUserPrompt(from: prompt).lowercased()
+        let verificationVerbs = [
+            "优化", "修复", "完善", "调整", "重构", "检查", "验证", "继续",
+            "optimize", "fix", "improve", "refactor", "verify", "check", "continue",
+        ]
+        return verificationVerbs.contains { prompt.contains($0) }
+    }
+
     static func isWorkspaceMutationRequest(_ prompt: String) -> Bool {
+        let prompt = primaryUserPrompt(from: prompt).lowercased()
         let mutationVerbs = [
-            "创建", "新建", "生成", "做一个", "帮我做", "修改", "优化", "修复", "完善", "继续", "实现", "重写", "调整", "编辑", "保存",
+            "创建", "新建", "生成", "做一个", "帮我做", "修改", "优化", "修复", "完善", "实现", "重写", "调整", "编辑", "保存",
             "create", "build", "generate", "make", "write", "edit", "modify", "fix", "optimize", "implement", "rewrite", "update", "improve", "save",
         ]
         return mutationVerbs.contains { prompt.contains($0) }
+    }
+
+    static func primaryUserPrompt(from prompt: String) -> String {
+        let separators = [
+            "\n\nRelevant 9GClaw memory context:",
+            "\n\nAttached files:",
+            "\n\n附件:",
+        ]
+        var primary = prompt
+        for separator in separators {
+            if let range = primary.range(of: separator) {
+                primary = String(primary[..<range.lowerBound])
+            }
+        }
+        return primary.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func appendAssistantContentIfNeeded(_ content: String, to messages: inout [[String: Any]]) {
@@ -865,7 +1192,10 @@ struct NativeAgentRuntime: Sendable {
     }
 
     private static func canonicalToolCall(_ call: AgentToolCall) -> AgentToolCall {
-        guard call.name.lowercased().hasPrefix("9gclaw-rag:") else { return call }
+        let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+        guard canonicalName.lowercased().hasPrefix("9gclaw-rag:") else {
+            return AgentToolCall(id: call.id, name: canonicalName, inputJSON: call.inputJSON)
+        }
         let args: String
         if let data = call.inputJSON.data(using: .utf8),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -880,7 +1210,7 @@ struct NativeAgentRuntime: Sendable {
             id: call.id,
             name: "Skill",
             inputJSON: jsonString([
-                "skill": call.name,
+                "skill": canonicalName,
                 "args": args,
             ])
         )
@@ -1027,10 +1357,10 @@ struct NativeAgentRuntime: Sendable {
     }
 
     private static func permissionKind(for toolName: String) -> PermissionRequestKind {
-        switch toolName {
-        case "AskUserQuestion":
+        switch AgentToolNameCanonicalizer.canonical(toolName) {
+        case "AskQuestion":
             return .askUserQuestion
-        case "ExitPlanMode", "ExitPlanModeV2", "exit_plan_mode":
+        case "SwitchMode":
             return .exitPlanMode
         default:
             return .tool
@@ -1184,6 +1514,62 @@ struct NativeAgentRuntime: Sendable {
         return toolCalls(fromJSONObject: object)
     }
 
+    private static func inlineJSONFallbackToolCalls(in text: String) -> [AgentToolCall] {
+        guard !text.contains("```") else { return [] }
+        let snippets = balancedJSONObjectSnippets(in: text)
+        guard !snippets.isEmpty else { return [] }
+        var seen = Set<String>()
+        return snippets.flatMap(jsonFallbackToolCalls).compactMap { call in
+            let signature = "\(call.name):\(call.inputJSON)"
+            guard !seen.contains(signature) else { return nil }
+            seen.insert(signature)
+            return call
+        }
+    }
+
+    private static func balancedJSONObjectSnippets(in text: String) -> [String] {
+        var snippets: [String] = []
+        var depth = 0
+        var start: String.Index?
+        var inString = false
+        var escaped = false
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if character == "\\" {
+                    escaped = true
+                } else if character == "\"" {
+                    inString = false
+                }
+            } else {
+                switch character {
+                case "\"":
+                    inString = true
+                case "{":
+                    if depth == 0 {
+                        start = index
+                    }
+                    depth += 1
+                case "}":
+                    if depth > 0 {
+                        depth -= 1
+                        if depth == 0, let snippetStart = start {
+                            snippets.append(String(text[snippetStart...index]))
+                            start = nil
+                        }
+                    }
+                default:
+                    break
+                }
+            }
+            index = text.index(after: index)
+        }
+        return snippets
+    }
+
     private static func xmlFallbackToolCalls(in text: String) -> [AgentToolCall] {
         let pattern = #"(?s)<tool_call\s+name=["']([^"']+)["']\s*>(.*?)</tool_call>"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
@@ -1209,13 +1595,49 @@ struct NativeAgentRuntime: Sendable {
         }
     }
 
+    private static func xmlInvokeFallbackToolCalls(in text: String) -> [AgentToolCall] {
+        let invokePattern = #"(?is)<invoke\s+name=\"([^\"]+)\"\s*>(.*?)</invoke>"#
+        guard let invokeRegex = try? NSRegularExpression(pattern: invokePattern) else { return [] }
+        let nsText = text as NSString
+        return invokeRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).compactMap { match in
+            guard match.numberOfRanges > 2 else { return nil }
+            let rawName = nsText.substring(with: match.range(at: 1))
+            let body = nsText.substring(with: match.range(at: 2))
+            var input: [String: Any] = [:]
+            let parameterPattern = #"(?is)<parameter\s+name=\"([^\"]+)\"\s*>(.*?)</parameter>"#
+            guard let parameterRegex = try? NSRegularExpression(pattern: parameterPattern) else { return nil }
+            let nsBody = body as NSString
+            for parameterMatch in parameterRegex.matches(in: body, range: NSRange(location: 0, length: nsBody.length)) {
+                guard parameterMatch.numberOfRanges > 2 else { continue }
+                let key = nsBody.substring(with: parameterMatch.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+                let value = xmlUnescaped(nsBody.substring(with: parameterMatch.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines))
+                if !key.isEmpty {
+                    input[key] = value
+                }
+            }
+            guard !input.isEmpty else { return nil }
+            return canonicalToolCall(
+                AgentToolCall(id: "fallback-\(UUID().uuidString)", name: rawName, inputJSON: jsonString(input))
+            )
+        }
+    }
+
+    private static func xmlUnescaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&apos;", with: "'")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&amp;", with: "&")
+    }
+
     private static func compactXMLToolCall(name rawName: String, inputJSON rawInput: String) -> AgentToolCall? {
         let input = (try? AgentToolExecutor.inputObject(from: rawInput)) ?? [:]
         let lowerName = rawName.lowercased()
         let toolName: String
         let normalizedInput: [String: Any]
         switch lowerName {
-        case "executebash", "bash", "runcommand":
+        case "executebash", "bash", "shell", "runcommand":
             let command = (input["command"] as? String)
                 ?? (input["input_command"] as? String)
                 ?? (input["input"] as? String)
@@ -1224,7 +1646,7 @@ struct NativeAgentRuntime: Sendable {
                 toolName = "Glob"
                 normalizedInput = ["pattern": "*", "path": "."]
             } else {
-                toolName = "Bash"
+                toolName = "Shell"
                 normalizedInput = ["command": command]
             }
         case "readfile", "read":
@@ -1241,8 +1663,8 @@ struct NativeAgentRuntime: Sendable {
                 "file_path": (input["file_path"] as? String) ?? (input["path"] as? String) ?? "",
                 "content": (input["content"] as? String) ?? "",
             ]
-        case "editfile", "edit":
-            toolName = "Edit"
+        case "editfile", "edit", "strreplace":
+            toolName = "StrReplace"
             normalizedInput = [
                 "file_path": (input["file_path"] as? String) ?? (input["path"] as? String) ?? "",
                 "old_string": (input["old_string"] as? String) ?? "",
@@ -1292,7 +1714,7 @@ struct NativeAgentRuntime: Sendable {
                 toolName = "Glob"
                 normalizedInput = ["pattern": "*", "path": "."]
             } else {
-                toolName = "Bash"
+                toolName = "Shell"
                 normalizedInput = ["command": trimmedCommand, "description": description]
             }
             return AgentToolCall(id: "fallback-\(UUID().uuidString)", name: toolName, inputJSON: jsonString(normalizedInput))
@@ -1314,6 +1736,15 @@ struct NativeAgentRuntime: Sendable {
     }
 
     private static func toolCall(fromJSONObject object: [String: Any]) -> AgentToolCall? {
+        if let skill = object["skill"] as? String, !skill.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return canonicalToolCall(
+                AgentToolCall(
+                    id: object["id"] as? String ?? "fallback-\(UUID().uuidString)",
+                    name: "Skill",
+                    inputJSON: jsonString(object)
+                )
+            )
+        }
         let rawName = object["tool"] as? String
             ?? object["name"] as? String
             ?? (object["function"] as? [String: Any])?["name"] as? String
@@ -1323,7 +1754,7 @@ struct NativeAgentRuntime: Sendable {
             ?? object["arguments"]
             ?? (object["function"] as? [String: Any])?["arguments"]
             ?? [:]
-        if name == "Bash", let command = commandString(from: rawInput),
+        if name == "Shell", let command = commandString(from: rawInput),
            command.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("ls") {
             return AgentToolCall(
                 id: object["id"] as? String ?? "fallback-\(UUID().uuidString)",
@@ -1340,32 +1771,17 @@ struct NativeAgentRuntime: Sendable {
         } else {
             inputJSON = jsonString(rawInput)
         }
-        return AgentToolCall(
-            id: object["id"] as? String ?? "fallback-\(UUID().uuidString)",
-            name: name,
-            inputJSON: inputJSON
+        return canonicalToolCall(
+            AgentToolCall(
+                id: object["id"] as? String ?? "fallback-\(UUID().uuidString)",
+                name: name,
+                inputJSON: inputJSON
+            )
         )
     }
 
     private static func canonicalFallbackToolName(_ rawName: String) -> String {
-        switch rawName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "bash", "executebash", "runcommand":
-            return "Bash"
-        case "read", "readfile":
-            return "Read"
-        case "write", "writefile":
-            return "Write"
-        case "edit", "editfile":
-            return "Edit"
-        case "multiedit", "multi_edit":
-            return "MultiEdit"
-        case "glob":
-            return "Glob"
-        case "grep":
-            return "Grep"
-        default:
-            return rawName
-        }
+        AgentToolNameCanonicalizer.canonical(rawName)
     }
 
     private static func commandString(from rawInput: Any) -> String? {
@@ -1420,27 +1836,33 @@ enum AgentToolRegistry {
     static let toolNames = [
         "Read",
         "Write",
-        "Edit",
-        "MultiEdit",
-        "Glob",
+        "StrReplace",
+        "Delete",
+        "EditNotebook",
         "Grep",
-        "Bash",
-        "Skill",
-        "TodoRead",
+        "Glob",
+        "SemanticSearch",
+        "Shell",
+        "Await",
+        "WebSearch",
+        "WebFetch",
+        "ReadLints",
         "TodoWrite",
-        "ExitPlanMode",
-        "AskUserQuestion",
+        "AskQuestion",
+        "SwitchMode",
+        "Task",
     ]
 
     static func openAITools() -> [[String: Any]] {
         [
             functionTool(
                 "Read",
-                "Read a UTF-8 text file from the workspace.",
+                "Read text, image, PDF, or Jupyter notebook content from the workspace.",
                 [
                     "file_path": stringProperty("Workspace-relative or absolute file path."),
                     "offset": integerProperty("Optional 1-based line offset."),
                     "limit": integerProperty("Optional maximum number of lines to return."),
+                    "pages": stringProperty("Optional PDF page range such as 1-3."),
                 ],
                 required: ["file_path"]
             ),
@@ -1454,21 +1876,13 @@ enum AgentToolRegistry {
                 required: ["file_path", "content"]
             ),
             functionTool(
-                "Edit",
-                "Replace an exact string in a workspace file.",
+                "StrReplace",
+                "Replace exact strings in a workspace file. Supports one replacement or an edits array.",
                 [
                     "file_path": stringProperty("Workspace-relative or absolute file path."),
                     "old_string": stringProperty("Exact text to replace."),
                     "new_string": stringProperty("Replacement text."),
                     "replace_all": boolProperty("Replace every match instead of requiring one unique match."),
-                ],
-                required: ["file_path", "old_string", "new_string"]
-            ),
-            functionTool(
-                "MultiEdit",
-                "Apply multiple exact string replacements to one workspace file.",
-                [
-                    "file_path": stringProperty("Workspace-relative or absolute file path."),
                     "edits": [
                         "type": "array",
                         "items": [
@@ -1482,7 +1896,63 @@ enum AgentToolRegistry {
                         ],
                     ],
                 ],
-                required: ["file_path", "edits"]
+                required: ["file_path"]
+            ),
+            functionTool(
+                "Delete",
+                "Delete a file or, with recursive=true, a directory inside the workspace.",
+                [
+                    "path": stringProperty("Workspace-relative or absolute file or directory path."),
+                    "recursive": boolProperty("Allow deleting directories recursively."),
+                ],
+                required: ["path"]
+            ),
+            functionTool(
+                "EditNotebook",
+                "Replace, insert, or delete a cell in a Jupyter notebook file.",
+                [
+                    "notebook_path": stringProperty("Workspace-relative or absolute .ipynb path."),
+                    "cell_id": stringProperty("Optional notebook cell id."),
+                    "cell_number": integerProperty("Optional 0-based cell index."),
+                    "new_source": stringProperty("New source for replace or insert."),
+                    "cell_type": [
+                        "type": "string",
+                        "enum": ["code", "markdown"],
+                        "description": "Cell type for inserted cells or replacement metadata.",
+                    ],
+                    "edit_mode": [
+                        "type": "string",
+                        "enum": ["replace", "insert", "delete"],
+                        "description": "Notebook edit mode. Defaults to replace.",
+                    ],
+                ],
+                required: ["notebook_path"]
+            ),
+            functionTool(
+                "Grep",
+                "Search text files by regular expression under the workspace, preferring ripgrep.",
+                [
+                    "pattern": stringProperty("Regular expression to search for."),
+                    "path": stringProperty("Optional directory or file to search."),
+                    "glob": stringProperty("Optional glob filter such as *.swift."),
+                    "include": stringProperty("Legacy alias for glob."),
+                    "output_mode": [
+                        "type": "string",
+                        "enum": ["content", "files_with_matches", "count"],
+                        "description": "Result mode. Defaults to files_with_matches.",
+                    ],
+                    "-B": integerProperty("Context lines before each match."),
+                    "-A": integerProperty("Context lines after each match."),
+                    "-C": integerProperty("Context lines before and after each match."),
+                    "context": integerProperty("Alias for -C."),
+                    "-n": boolProperty("Show line numbers in content mode."),
+                    "-i": boolProperty("Case-insensitive search."),
+                    "type": stringProperty("Optional ripgrep file type."),
+                    "head_limit": integerProperty("Maximum returned lines or entries."),
+                    "offset": integerProperty("Number of results to skip before limiting."),
+                    "multiline": boolProperty("Enable multiline matching."),
+                ],
+                required: ["pattern"]
             ),
             functionTool(
                 "Glob",
@@ -1494,35 +1964,71 @@ enum AgentToolRegistry {
                 required: ["pattern"]
             ),
             functionTool(
-                "Grep",
-                "Search text files by regular expression under the workspace.",
+                "SemanticSearch",
+                "Search code by meaning using a deterministic local workspace index.",
                 [
-                    "pattern": stringProperty("Regular expression to search for."),
+                    "query": stringProperty("Natural-language or code concept query."),
                     "path": stringProperty("Optional directory or file to search."),
-                    "include": stringProperty("Optional glob filter such as *.swift."),
+                    "limit": integerProperty("Maximum number of ranked results."),
                 ],
-                required: ["pattern"]
+                required: ["query"]
             ),
             functionTool(
-                "Bash",
+                "Shell",
                 "Run a shell command in the workspace.",
                 [
                     "command": stringProperty("Command to run with /bin/zsh -lc."),
                     "description": stringProperty("Short reason for running the command."),
-                    "timeout_seconds": integerProperty("Optional timeout in seconds."),
+                    "timeout": integerProperty("Optional timeout in milliseconds."),
+                    "run_in_background": boolProperty("Start the command in the background and return a task id."),
                 ],
                 required: ["command"]
             ),
             functionTool(
-                "Skill",
-                "Load a 9GClaw/Claude Code skill by name. Use this before running skill-specific Bash scripts.",
+                "Await",
+                "Wait for or read output from a background Shell or Task.",
                 [
-                    "skill": stringProperty("Skill name such as 9gclaw-rag:glm-web-search or 9gclaw-rag:rag-research."),
-                    "args": stringProperty("Natural-language arguments or query for the skill."),
+                    "task_id": stringProperty("Background task id."),
+                    "block": boolProperty("Whether to block until completion. Defaults to true."),
+                    "timeout": integerProperty("Maximum wait time in milliseconds."),
                 ],
-                required: ["skill"]
+                required: ["task_id"]
             ),
-            functionTool("TodoRead", "Read the current session todo list.", [:], required: []),
+            functionTool(
+                "WebSearch",
+                "Search the web using the configured 9GClaw GLM/RAG search provider.",
+                [
+                    "query": stringProperty("Search query."),
+                    "allowed_domains": [
+                        "type": "array",
+                        "items": stringProperty("Allowed result domain."),
+                    ],
+                    "blocked_domains": [
+                        "type": "array",
+                        "items": stringProperty("Blocked result domain."),
+                    ],
+                ],
+                required: ["query"]
+            ),
+            functionTool(
+                "WebFetch",
+                "Fetch and extract content from a URL.",
+                [
+                    "url": stringProperty("URL to fetch."),
+                    "prompt": stringProperty("Prompt or extraction instruction to apply to fetched content."),
+                ],
+                required: ["url", "prompt"]
+            ),
+            functionTool(
+                "ReadLints",
+                "Read current workspace linter or diagnostic findings when available.",
+                [
+                    "path": stringProperty("Optional file or directory to scope diagnostics."),
+                    "severity": stringProperty("Optional severity filter such as error or warning."),
+                    "limit": integerProperty("Maximum number of diagnostics."),
+                ],
+                required: []
+            ),
             functionTool(
                 "TodoWrite",
                 "Replace the current session todo list.",
@@ -1538,15 +2044,7 @@ enum AgentToolRegistry {
                 required: ["todos"]
             ),
             functionTool(
-                "ExitPlanMode",
-                "Exit plan mode after presenting a concrete plan.",
-                [
-                    "plan": stringProperty("The plan to execute."),
-                ],
-                required: ["plan"]
-            ),
-            functionTool(
-                "AskUserQuestion",
+                "AskQuestion",
                 "Ask the user one or more short blocking questions. Prefer the questions array shape.",
                 [
                     "questions": [
@@ -1579,6 +2077,42 @@ enum AgentToolRegistry {
                     ],
                 ],
                 required: []
+            ),
+            functionTool(
+                "SwitchMode",
+                "Switch between plan and agent mode. Use mode=agent with a concrete plan to execute after planning.",
+                [
+                    "mode": [
+                        "type": "string",
+                        "enum": ["plan", "agent"],
+                        "description": "Target run mode.",
+                    ],
+                    "plan": stringProperty("The plan to execute when switching to agent mode."),
+                ],
+                required: ["mode"]
+            ),
+            functionTool(
+                "Task",
+                "Start a delegated task or subagent.",
+                [
+                    "type": [
+                        "type": "string",
+                        "enum": ["generalPurpose", "explore", "shell", "cursor-guide", "ci-investigator", "best-of-n-runner"],
+                        "description": "Task type. Defaults to generalPurpose.",
+                    ],
+                    "prompt": stringProperty("Concrete task prompt or shell command for type=shell."),
+                    "description": stringProperty("Optional short label."),
+                    "model": stringProperty("Optional model hint."),
+                    "run_in_background": boolProperty("Run task asynchronously and return a task id."),
+                    "cwd": stringProperty("Optional workspace-relative or absolute cwd."),
+                    "isolation": [
+                        "type": "string",
+                        "enum": ["worktree"],
+                        "description": "Optional isolation mode. best-of-n-runner uses worktree isolation.",
+                    ],
+                    "n": integerProperty("Number of isolated attempts for best-of-n-runner."),
+                ],
+                required: ["prompt"]
             ),
         ]
     }
@@ -1628,28 +2162,28 @@ enum AgentPermissionPolicy {
         "Read",
         "Glob",
         "Grep",
+        "SemanticSearch",
+        "WebSearch",
+        "WebFetch",
+        "ReadLints",
         "Skill",
         "TodoRead",
         "TodoWrite",
-        "AskUserQuestion",
-        "ExitPlanMode",
-        "ExitPlanModeV2",
-        "exit_plan_mode",
+        "AskQuestion",
+        "SwitchMode",
+        "Await",
     ])
 
-    static let mutatingTools = Set(["Write", "Edit", "MultiEdit", "Bash"])
-    static let interactiveTools = Set(["AskUserQuestion", "ExitPlanMode", "ExitPlanModeV2", "exit_plan_mode"])
+    static let mutatingTools = Set(["Write", "StrReplace", "Delete", "EditNotebook", "Shell"])
+    static let interactiveTools = Set(["AskQuestion", "SwitchMode"])
 
     static func policy(for call: AgentToolCall, context: AgentRunContext) -> Result {
         let toolName = normalizedToolName(call.name)
-        if context.runMode == .plan, !context.planExited, !planModeSafeTools.contains(toolName) {
-            return .deny("\(toolName) is not allowed in plan mode. Call ExitPlanMode with a plan before mutating the workspace.")
+        if context.runMode == .plan, !context.planExited, !isPlanModeSafe(toolName: toolName, call: call) {
+            return .deny("\(toolName) is not allowed in plan mode. Call SwitchMode with mode=\"agent\" and a plan before mutating the workspace.")
         }
         if matchesAny(ruleSet: context.toolSettings.disallowedTools, call: call) {
             return .deny("\(toolName) is blocked by permissions settings.")
-        }
-        if interactiveTools.contains(toolName) {
-            return .ask("9GClaw wants to run \(toolName).")
         }
         if context.permissionMode == .bypassPermissions {
             return .allow
@@ -1657,19 +2191,14 @@ enum AgentPermissionPolicy {
         if matchesAny(ruleSet: context.toolSettings.allowedTools, call: call) {
             return .allow
         }
-        if mutatingTools.contains(toolName) || interactiveTools.contains(toolName) {
+        if toolRequiresPrompt(toolName: toolName, call: call) || interactiveTools.contains(toolName) {
             return .ask("9GClaw wants to run \(toolName).")
         }
         return .allow
     }
 
     private static func normalizedToolName(_ value: String) -> String {
-        switch value {
-        case "exit_plan_mode", "ExitPlanModeV2":
-            return "ExitPlanMode"
-        default:
-            return value
-        }
+        AgentToolNameCanonicalizer.canonical(value)
     }
 
     private static func matchesAny(ruleSet: [String], call: AgentToolCall) -> Bool {
@@ -1679,11 +2208,20 @@ enum AgentPermissionPolicy {
     private static func matches(rule: String, call: AgentToolCall) -> Bool {
         let trimmed = rule.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        if trimmed == call.name { return true }
-        guard call.name == "Bash", trimmed.hasPrefix("Bash("), trimmed.hasSuffix(")") else {
+        let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+        if trimmed == canonicalName || AgentToolNameCanonicalizer.canonical(trimmed) == canonicalName { return true }
+        guard canonicalName == "Shell" else {
             return false
         }
-        let inner = String(trimmed.dropFirst(5).dropLast())
+        let ruleName: String
+        if trimmed.hasPrefix("Shell("), trimmed.hasSuffix(")") {
+            ruleName = "Shell"
+        } else if trimmed.hasPrefix("Bash("), trimmed.hasSuffix(")") {
+            ruleName = "Bash"
+        } else {
+            return false
+        }
+        let inner = String(trimmed.dropFirst(ruleName.count + 1).dropLast())
         let input = (try? AgentToolExecutor.inputObject(from: call.inputJSON)) ?? [:]
         let command = input["command"] as? String ?? ""
         if inner == "*" { return true }
@@ -1691,6 +2229,27 @@ enum AgentPermissionPolicy {
             return command.hasPrefix(String(inner.dropLast()))
         }
         return command == inner
+    }
+
+    private static func isPlanModeSafe(toolName: String, call: AgentToolCall) -> Bool {
+        if planModeSafeTools.contains(toolName) { return true }
+        if toolName == "Shell" {
+            return AgentRunContext.isReadOnlyShell(call.inputJSON)
+        }
+        if toolName == "Task" {
+            return AgentRunContext.isReadOnlyTask(call.inputJSON)
+        }
+        return false
+    }
+
+    private static func toolRequiresPrompt(toolName: String, call: AgentToolCall) -> Bool {
+        if toolName == "Shell" {
+            return true
+        }
+        if toolName == "Task" {
+            return !AgentRunContext.isReadOnlyTask(call.inputJSON)
+        }
+        return mutatingTools.contains(toolName)
     }
 }
 
@@ -1763,6 +2322,7 @@ enum SkillRuntimeService {
         if let pluginRoot = ragPluginRoot() {
             environment["CLAUDE_PLUGIN_ROOT"] = pluginRoot.path
         }
+        environment["EDGECLAW_RAG_ENABLED"] = configValues["rag.enabled"] ?? "false"
         environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"] = configValues["rag.localKnowledge.baseUrl"]
         environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY"] = configValues["rag.localKnowledge.apiKey"]
         environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME"] = configValues["rag.localKnowledge.modelName"]
@@ -1979,48 +2539,70 @@ enum SkillRuntimeService {
 
 enum AgentToolExecutor {
     static func execute(call: AgentToolCall, context: AgentRunContext) async -> AgentToolResult {
+        let toolName = AgentToolNameCanonicalizer.canonical(call.name)
         do {
             let output: String
-            switch call.name {
+            switch toolName {
             case "Read":
                 output = try read(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
             case "Write":
                 output = try write(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
-            case "Edit":
-                output = try edit(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
-            case "MultiEdit":
-                output = try multiEdit(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
-            case "Glob":
-                output = try glob(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+            case "StrReplace":
+                output = try strReplace(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+            case "Delete":
+                output = try delete(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+            case "EditNotebook":
+                output = try editNotebook(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
             case "Grep":
                 output = try grep(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
-            case "Bash":
-                output = try await bash(inputJSON: call.inputJSON, context: context)
+            case "Glob":
+                output = try glob(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+            case "SemanticSearch":
+                output = try semanticSearch(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+            case "Shell":
+                output = try await shell(inputJSON: call.inputJSON, context: context)
+            case "Await":
+                output = try await awaitTask(inputJSON: call.inputJSON)
+            case "WebSearch":
+                output = try await webSearch(inputJSON: call.inputJSON, context: context)
+            case "WebFetch":
+                output = try await webFetch(inputJSON: call.inputJSON, context: context)
+            case "ReadLints":
+                output = try await readLints(inputJSON: call.inputJSON, context: context)
             case "Skill":
                 output = try SkillRuntimeService.load(inputJSON: call.inputJSON, context: context)
+            case "Task":
+                output = try await runTask(inputJSON: call.inputJSON, context: context)
             case "TodoRead":
                 output = context.todosJSON
             case "TodoWrite":
                 output = try todoWrite(inputJSON: call.inputJSON, context: context)
-            case "ExitPlanMode", "ExitPlanModeV2", "exit_plan_mode":
-                context.planExited = true
+            case "SwitchMode":
                 let input = try inputObject(from: call.inputJSON)
-                output = (input["plan"] as? String).nilIfBlank ?? "Plan mode exited."
-            case "AskUserQuestion":
+                let mode = ((input["mode"] as? String) ?? "agent").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if mode == "agent" {
+                    context.planExited = true
+                    context.runMode = .agent
+                } else if mode == "plan" {
+                    context.planExited = false
+                    context.runMode = .plan
+                }
+                output = (input["plan"] as? String).nilIfBlank ?? "Mode switched to \(mode)."
+            case "AskQuestion":
                 output = askUserQuestionOutput(inputJSON: call.inputJSON)
             default:
-                throw ProviderClientError.toolExecution("Unsupported tool: \(call.name)")
+                throw ProviderClientError.toolExecution("Unsupported tool: \(toolName)")
             }
-            return AgentToolResult(callId: call.id, toolName: call.name, output: limitOutput(output), isError: false)
+            return AgentToolResult(callId: call.id, toolName: toolName, output: limitOutput(output), isError: false)
         } catch {
-            return AgentToolResult(callId: call.id, toolName: call.name, output: error.localizedDescription, isError: true)
+            return AgentToolResult(callId: call.id, toolName: toolName, output: error.localizedDescription, isError: true)
         }
     }
 
     static func askUserQuestionResult(call: AgentToolCall, updatedInputJSON: String) -> AgentToolResult {
         AgentToolResult(
             callId: call.id,
-            toolName: call.name,
+            toolName: AgentToolNameCanonicalizer.canonical(call.name),
             output: limitOutput(askUserQuestionOutput(inputJSON: updatedInputJSON)),
             isError: false
         )
@@ -2078,6 +2660,16 @@ enum AgentToolExecutor {
         let input = try inputObject(from: inputJSON)
         let file = try requiredString("file_path", input: input)
         let url = try AgentPathResolver.resolve(file, workspacePath: workspacePath, mustExist: true)
+        let ext = url.pathExtension.lowercased()
+        if ext == "ipynb" {
+            return try readNotebook(url: url, workspacePath: workspacePath)
+        }
+        if ext == "pdf" {
+            return try readPDF(url: url, workspacePath: workspacePath, pages: (input["pages"] as? String).nilIfBlank)
+        }
+        if imageMimeType(for: url) != nil {
+            return try readImage(url: url, workspacePath: workspacePath)
+        }
         let text = try String(contentsOf: url, encoding: .utf8)
         let lines = text.components(separatedBy: .newlines)
         let offset = max((input["offset"] as? Int ?? 1) - 1, 0)
@@ -2098,35 +2690,93 @@ enum AgentToolExecutor {
         return "Wrote \(content.utf8.count) bytes to \(AgentPathResolver.relativePath(url, workspacePath: workspacePath))."
     }
 
-    private static func edit(inputJSON: String, workspacePath: String) throws -> String {
+    private static func strReplace(inputJSON: String, workspacePath: String) throws -> String {
         let input = try inputObject(from: inputJSON)
         let file = try requiredString("file_path", input: input)
-        let oldString = try requiredString("old_string", input: input)
-        let newString = try requiredString("new_string", input: input)
-        let replaceAll = input["replace_all"] as? Bool ?? false
-        let url = try AgentPathResolver.resolve(file, workspacePath: workspacePath, mustExist: true)
-        let content = try String(contentsOf: url, encoding: .utf8)
-        let updated = try applyEdit(content: content, oldString: oldString, newString: newString, replaceAll: replaceAll)
-        try updated.write(to: url, atomically: true, encoding: .utf8)
-        return "Edited \(AgentPathResolver.relativePath(url, workspacePath: workspacePath))."
-    }
-
-    private static func multiEdit(inputJSON: String, workspacePath: String) throws -> String {
-        let input = try inputObject(from: inputJSON)
-        let file = try requiredString("file_path", input: input)
-        guard let edits = input["edits"] as? [[String: Any]], !edits.isEmpty else {
-            throw ProviderClientError.toolExecution("MultiEdit requires a non-empty edits array.")
-        }
         let url = try AgentPathResolver.resolve(file, workspacePath: workspacePath, mustExist: true)
         var content = try String(contentsOf: url, encoding: .utf8)
-        for edit in edits {
-            let oldString = try requiredString("old_string", input: edit)
-            let newString = try requiredString("new_string", input: edit)
-            let replaceAll = edit["replace_all"] as? Bool ?? false
+        let edits: [[String: Any]]
+        if let batch = input["edits"] as? [[String: Any]], !batch.isEmpty {
+            edits = batch
+        } else {
+            edits = [input]
+        }
+        for editInput in edits {
+            let oldString = try requiredString("old_string", input: editInput)
+            let newString = try requiredString("new_string", input: editInput)
+            let replaceAll = editInput["replace_all"] as? Bool ?? false
             content = try applyEdit(content: content, oldString: oldString, newString: newString, replaceAll: replaceAll)
         }
         try content.write(to: url, atomically: true, encoding: .utf8)
-        return "Applied \(edits.count) edits to \(AgentPathResolver.relativePath(url, workspacePath: workspacePath))."
+        let target = AgentPathResolver.relativePath(url, workspacePath: workspacePath)
+        return edits.count == 1 ? "Edited \(target)." : "Applied \(edits.count) edits to \(target)."
+    }
+
+    private static func delete(inputJSON: String, workspacePath: String) throws -> String {
+        let input = try inputObject(from: inputJSON)
+        let rawPath = try requiredString("path", input: input)
+        let recursive = input["recursive"] as? Bool ?? false
+        let url = try AgentPathResolver.resolve(rawPath, workspacePath: workspacePath, mustExist: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            throw ProviderClientError.toolExecution("Path does not exist: \(rawPath)")
+        }
+        if isDirectory.boolValue, !recursive {
+            throw ProviderClientError.toolExecution("Refusing to delete directory without recursive=true: \(rawPath)")
+        }
+        try FileManager.default.removeItem(at: url)
+        return "Deleted \(AgentPathResolver.relativePath(url, workspacePath: workspacePath))."
+    }
+
+    private static func editNotebook(inputJSON: String, workspacePath: String) throws -> String {
+        let input = try inputObject(from: inputJSON)
+        let notebookPath = try requiredString("notebook_path", input: input)
+        let url = try AgentPathResolver.resolve(notebookPath, workspacePath: workspacePath, mustExist: true)
+        guard url.pathExtension.lowercased() == "ipynb" else {
+            throw ProviderClientError.toolExecution("EditNotebook requires a .ipynb file.")
+        }
+        let data = try Data(contentsOf: url)
+        guard var object = try JSONSerialization.jsonObject(with: data, options: [.mutableContainers]) as? [String: Any],
+              var cells = object["cells"] as? [[String: Any]] else {
+            throw ProviderClientError.toolExecution("Notebook JSON must contain a cells array.")
+        }
+        let mode = ((input["edit_mode"] as? String) ?? "replace").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let index = try notebookCellIndex(input: input, cells: cells, allowEndForInsert: mode == "insert")
+        switch mode {
+        case "insert":
+            let source = (input["new_source"] as? String) ?? ""
+            var cell: [String: Any] = [
+                "cell_type": (input["cell_type"] as? String).nilIfBlank ?? "code",
+                "metadata": [:],
+                "source": notebookSourceArray(source),
+                "id": UUID().uuidString.prefix(8).lowercased(),
+            ]
+            if (cell["cell_type"] as? String) == "code" {
+                cell["outputs"] = []
+                cell["execution_count"] = NSNull()
+            }
+            cells.insert(cell, at: min(max(index, 0), cells.count))
+        case "delete":
+            guard cells.indices.contains(index) else {
+                throw ProviderClientError.toolExecution("Notebook cell index out of range: \(index)")
+            }
+            cells.remove(at: index)
+        case "replace":
+            guard cells.indices.contains(index) else {
+                throw ProviderClientError.toolExecution("Notebook cell index out of range: \(index)")
+            }
+            let source = try requiredString("new_source", input: input)
+            cells[index]["source"] = notebookSourceArray(source)
+            if let cellType = (input["cell_type"] as? String).nilIfBlank {
+                cells[index]["cell_type"] = cellType
+            }
+        default:
+            throw ProviderClientError.toolExecution("Unsupported notebook edit_mode: \(mode)")
+        }
+        object["cells"] = cells
+        let updated = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try updated.write(to: url, options: .atomic)
+        return "Notebook \(mode) applied to \(AgentPathResolver.relativePath(url, workspacePath: workspacePath)) at cell \(index)."
     }
 
     private static func glob(inputJSON: String, workspacePath: String) throws -> String {
@@ -2151,9 +2801,16 @@ enum AgentToolExecutor {
         let pattern = try requiredString("pattern", input: input)
         let searchPath = (input["path"] as? String).nilIfBlank ?? "."
         let root = try AgentPathResolver.resolve(searchPath, workspacePath: workspacePath, mustExist: true)
-        let include = (input["include"] as? String).nilIfBlank
+        if let rgOutput = try runRipgrep(input: input, pattern: pattern, root: root, workspacePath: workspacePath) {
+            return rgOutput
+        }
+        let include = (input["glob"] as? String).nilIfBlank ?? (input["include"] as? String).nilIfBlank
         let includeRegex = try include.map { try AgentPathResolver.globRegex($0) }
-        let regex = try NSRegularExpression(pattern: pattern)
+        let options: NSRegularExpression.Options = (input["-i"] as? Bool ?? false) ? [.caseInsensitive] : []
+        let regex = try NSRegularExpression(pattern: pattern, options: options)
+        let outputMode = (input["output_mode"] as? String).nilIfBlank ?? "files_with_matches"
+        let headLimit = input["head_limit"] as? Int ?? 250
+        let offset = max(input["offset"] as? Int ?? 0, 0)
         let urls: [URL]
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), !isDirectory.boolValue {
@@ -2162,10 +2819,12 @@ enum AgentToolExecutor {
             urls = AgentPathResolver.walk(root)
         }
         var output: [String] = []
+        var counts: [String: Int] = [:]
+        var seenFiles = Set<String>()
         for url in urls {
             let relative = AgentPathResolver.relativePath(url, workspacePath: workspacePath)
             if let includeRegex,
-               includeRegex.firstMatch(in: url.lastPathComponent, range: NSRange(location: 0, length: (url.lastPathComponent as NSString).length)) == nil {
+               includeRegex.firstMatch(in: relative, range: NSRange(location: 0, length: (relative as NSString).length)) == nil {
                 continue
             }
             guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
@@ -2173,47 +2832,669 @@ enum AgentToolExecutor {
             for (index, line) in lines.enumerated() {
                 let nsLine = line as NSString
                 if regex.firstMatch(in: line, range: NSRange(location: 0, length: nsLine.length)) != nil {
-                    output.append("\(relative):\(index + 1):\(line)")
-                    if output.count >= 500 {
-                        return output.joined(separator: "\n")
+                    counts[relative, default: 0] += 1
+                    switch outputMode {
+                    case "content":
+                        output.append("\(relative):\(index + 1):\(line)")
+                    case "count":
+                        break
+                    default:
+                        if seenFiles.insert(relative).inserted {
+                            output.append(relative)
+                        }
                     }
                 }
             }
         }
-        return output.isEmpty ? "No matches for \(pattern)." : output.joined(separator: "\n")
+        if outputMode == "count" {
+            output = counts.keys.sorted().map { "\($0):\(counts[$0] ?? 0)" }
+        }
+        let sliced = output.dropFirst(offset).prefix(headLimit == 0 ? output.count : max(headLimit, 1))
+        return sliced.isEmpty ? "No matches for \(pattern)." : sliced.joined(separator: "\n")
     }
 
-    private static func bash(inputJSON: String, context: AgentRunContext) async throws -> String {
+    private static func semanticSearch(inputJSON: String, workspacePath: String) throws -> String {
         let input = try inputObject(from: inputJSON)
-        let command = try requiredString("command", input: input)
-        let timeout = max(1, min(input["timeout_seconds"] as? Int ?? 120, 600))
-        let workspacePath = context.workspacePath
-        let environment = SkillRuntimeService.environment(configValues: context.nativeConfigValues)
-        return try await Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-lc", command]
-            process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-            process.environment = environment
-            let stdout = Pipe()
-            let stderr = Pipe()
-            process.standardOutput = stdout
-            process.standardError = stderr
-            try process.run()
-            let timeoutTask = Task {
-                try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000_000)
-                if process.isRunning {
-                    process.terminate()
+        let query = try requiredString("query", input: input)
+        let searchPath = (input["path"] as? String).nilIfBlank ?? "."
+        let root = try AgentPathResolver.resolve(searchPath, workspacePath: workspacePath, mustExist: true)
+        let limit = max(1, min(input["limit"] as? Int ?? 20, 100))
+        let terms = semanticTerms(query)
+        guard !terms.isEmpty else {
+            throw ProviderClientError.toolExecution("SemanticSearch query did not contain searchable terms.")
+        }
+        var hits: [[String: Any]] = []
+        for url in AgentPathResolver.walk(root) {
+            guard let text = try? String(contentsOf: url, encoding: .utf8), text.count <= 300_000 else { continue }
+            let relative = AgentPathResolver.relativePath(url, workspacePath: workspacePath)
+            var bestScore = score(relative.lowercased(), terms: terms) * 4
+            var bestLine = 1
+            var bestSnippet = ""
+            for (index, line) in text.components(separatedBy: .newlines).enumerated() {
+                let lineScore = score(line.lowercased(), terms: terms)
+                if lineScore > bestScore {
+                    bestScore = lineScore
+                    bestLine = index + 1
+                    bestSnippet = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             }
-            process.waitUntilExit()
-            timeoutTask.cancel()
-            let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let combined = [out, err].filter { !$0.isEmpty }.joined(separator: "\n")
-            let prefix = "exit code: \(process.terminationStatus)"
-            return combined.isEmpty ? prefix : "\(prefix)\n\(combined)"
+            if bestScore > 0 {
+                hits.append([
+                    "path": relative,
+                    "line": bestLine,
+                    "score": bestScore,
+                    "snippet": bestSnippet.isEmpty ? relative : String(bestSnippet.prefix(500)),
+                ])
+            }
+        }
+        let sorted = hits.sorted {
+            let leftScore = ($0["score"] as? Int) ?? 0
+            let rightScore = ($1["score"] as? Int) ?? 0
+            if leftScore != rightScore { return leftScore > rightScore }
+            return (($0["path"] as? String) ?? "") < (($1["path"] as? String) ?? "")
+        }.prefix(limit)
+        return jsonString(["query": query, "results": Array(sorted)], pretty: true)
+    }
+
+    private static func shell(inputJSON: String, context: AgentRunContext) async throws -> String {
+        let input = try inputObject(from: inputJSON)
+        let command = try requiredString("command", input: input)
+        let timeoutMs = shellTimeoutMilliseconds(input)
+        let cwd = context.workspacePath
+        let environment = SkillRuntimeService.environment(configValues: context.nativeConfigValues)
+        if input["run_in_background"] as? Bool == true {
+            let id = try AgentBackgroundTaskStore.shared.startShell(
+                command: command,
+                cwd: cwd,
+                environment: environment,
+                timeoutMs: timeoutMs,
+                description: (input["description"] as? String).nilIfBlank ?? command
+            )
+            return jsonString(["task_id": id, "status": "running", "description": command], pretty: true)
+        }
+        let result = try await runShellCommand(command: command, cwd: cwd, environment: environment, timeoutMs: timeoutMs)
+        return shellResultText(result)
+    }
+
+    private static func awaitTask(inputJSON: String) async throws -> String {
+        let input = try inputObject(from: inputJSON)
+        let taskId = try requiredString("task_id", input: input)
+        let block = input["block"] as? Bool ?? true
+        let timeoutMs = max(0, min(input["timeout"] as? Int ?? 30_000, 600_000))
+        return try await AgentBackgroundTaskStore.shared.output(taskId: taskId, block: block, timeoutMs: timeoutMs)
+    }
+
+    private static func webSearch(inputJSON: String, context: AgentRunContext) async throws -> String {
+        let input = try inputObject(from: inputJSON)
+        let query = try requiredString("query", input: input)
+        let env = SkillRuntimeService.environment(configValues: context.nativeConfigValues)
+        guard let pluginRoot = env["CLAUDE_PLUGIN_ROOT"], !pluginRoot.isEmpty else {
+            throw ProviderClientError.toolExecution("WebSearch requires the 9GClaw RAG plugin.")
+        }
+        let script = URL(fileURLWithPath: pluginRoot).appendingPathComponent("scripts/glm_web_search.py").path
+        guard FileManager.default.fileExists(atPath: script) else {
+            throw ProviderClientError.toolExecution("WebSearch script not found: \(script)")
+        }
+        var args = ["python3", script, "--query", query]
+        for domain in stringArray(input["allowed_domains"]) {
+            args.append(contentsOf: ["--allowed-domain", domain])
+        }
+        for domain in stringArray(input["blocked_domains"]) {
+            args.append(contentsOf: ["--blocked-domain", domain])
+        }
+        let result = try await runProcess(
+            executable: "/usr/bin/env",
+            arguments: args,
+            cwd: context.workspacePath,
+            environment: env,
+            timeoutMs: 30_000
+        )
+        if result.exitCode != 0 {
+            throw ProviderClientError.toolExecution(shellResultText(result))
+        }
+        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func webFetch(inputJSON: String, context: AgentRunContext) async throws -> String {
+        let input = try inputObject(from: inputJSON)
+        let rawURL = try requiredString("url", input: input)
+        let prompt = try requiredString("prompt", input: input)
+        guard let url = URL(string: rawURL), let scheme = url.scheme?.lowercased(), ["http", "https", "file"].contains(scheme) else {
+            throw ProviderClientError.toolExecution("WebFetch requires an http, https, or file URL.")
+        }
+        let started = Date()
+        let data: Data
+        let statusCode: Int
+        if scheme == "file" {
+            data = try Data(contentsOf: url)
+            statusCode = 200
+        } else {
+            let (fetched, response) = try await URLSession.shared.data(from: url)
+            data = fetched
+            statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        }
+        let extracted = extractFetchedText(data: data, url: url)
+        let result = applyFetchPrompt(prompt, content: extracted)
+        return jsonString([
+            "url": rawURL,
+            "code": statusCode,
+            "bytes": data.count,
+            "durationMs": Int(Date().timeIntervalSince(started) * 1000),
+            "result": result,
+        ], pretty: true)
+    }
+
+    private static func readLints(inputJSON: String, context: AgentRunContext) async throws -> String {
+        let input = try inputObject(from: inputJSON)
+        let limit = max(1, min(input["limit"] as? Int ?? 100, 500))
+        let severityFilter = (input["severity"] as? String).nilIfBlank?.lowercased()
+        let scopedPath = (input["path"] as? String).nilIfBlank ?? "."
+        _ = try AgentPathResolver.resolve(scopedPath, workspacePath: context.workspacePath, mustExist: true)
+        guard let command = context.nativeConfigValues["lint.command"].nilIfBlank else {
+            return jsonString(["diagnostics": [], "message": "No native lint.command is configured and no live LSP diagnostics are available."], pretty: true)
+        }
+        let result = try await runShellCommand(
+            command: command,
+            cwd: context.workspacePath,
+            environment: SkillRuntimeService.environment(configValues: context.nativeConfigValues),
+            timeoutMs: 120_000
+        )
+        let diagnostics = parseLintDiagnostics(result.stdout + "\n" + result.stderr, severity: severityFilter, limit: limit)
+        return jsonString([
+            "diagnostics": diagnostics,
+            "exitCode": result.exitCode,
+            "truncated": diagnostics.count >= limit,
+        ], pretty: true)
+    }
+
+    private static func runTask(inputJSON: String, context: AgentRunContext) async throws -> String {
+        let input = try inputObject(from: inputJSON)
+        let prompt = try requiredString("prompt", input: input)
+        let type = ((input["type"] as? String) ?? "generalPurpose").trimmingCharacters(in: .whitespacesAndNewlines)
+        let description = (input["description"] as? String).nilIfBlank ?? type
+        if input["run_in_background"] as? Bool == true {
+            let n = input["n"] as? Int
+            let timeout = input["timeout"] as? Int
+            let cwd = (input["cwd"] as? String).nilIfBlank
+            let isolation = (input["isolation"] as? String).nilIfBlank
+            let id = AgentBackgroundTaskStore.shared.startAsync(description: description) {
+                var taskInput: [String: Any] = ["description": description]
+                if let n { taskInput["n"] = n }
+                if let timeout { taskInput["timeout"] = timeout }
+                if let cwd { taskInput["cwd"] = cwd }
+                if let isolation { taskInput["isolation"] = isolation }
+                return (try? await runTaskSynchronously(type: type, prompt: prompt, input: taskInput, context: context)) ?? "Task failed."
+            }
+            return jsonString(["task_id": id, "status": "running", "description": description], pretty: true)
+        }
+        return try await runTaskSynchronously(type: type, prompt: prompt, input: input, context: context)
+    }
+
+    private static func readImage(url: URL, workspacePath: String) throws -> String {
+        let data = try Data(contentsOf: url)
+        guard let mime = imageMimeType(for: url) else {
+            throw ProviderClientError.toolExecution("Unsupported image type: \(url.pathExtension)")
+        }
+        return jsonString([
+            "type": "image",
+            "file": [
+                "filePath": AgentPathResolver.relativePath(url, workspacePath: workspacePath),
+                "mediaType": mime,
+                "originalSize": data.count,
+                "base64": data.base64EncodedString(),
+            ],
+        ], pretty: true)
+    }
+
+    private static func readPDF(url: URL, workspacePath: String, pages: String?) throws -> String {
+        let data = try Data(contentsOf: url)
+        guard let document = PDFDocument(data: data) else {
+            throw ProviderClientError.toolExecution("Unable to parse PDF: \(url.lastPathComponent)")
+        }
+        let pageNumbers = parsePDFPages(pages, total: document.pageCount)
+        var sections = [
+            "PDF \(AgentPathResolver.relativePath(url, workspacePath: workspacePath))",
+            "pages: \(document.pageCount)",
+            "selected: \(pageNumbers.map(String.init).joined(separator: ","))",
+            "",
+        ]
+        for number in pageNumbers {
+            guard let page = document.page(at: number - 1) else { continue }
+            sections.append("## Page \(number)")
+            sections.append(page.string?.nilIfBlank ?? "(no extractable text)")
+            sections.append("")
+        }
+        return sections.joined(separator: "\n")
+    }
+
+    private static func readNotebook(url: URL, workspacePath: String) throws -> String {
+        let data = try Data(contentsOf: url)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cells = object["cells"] as? [[String: Any]] else {
+            throw ProviderClientError.toolExecution("Notebook JSON must contain a cells array.")
+        }
+        var output = ["Notebook \(AgentPathResolver.relativePath(url, workspacePath: workspacePath))", "cells: \(cells.count)", ""]
+        for (index, cell) in cells.enumerated() {
+            let type = cell["cell_type"] as? String ?? "unknown"
+            let source = notebookSourceString(cell["source"])
+            output.append("## Cell \(index) [\(type)]")
+            output.append(source.isEmpty ? "(empty)" : String(source.prefix(4_000)))
+            output.append("")
+        }
+        return output.joined(separator: "\n")
+    }
+
+    private static func imageMimeType(for url: URL) -> String? {
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        default: return nil
+        }
+    }
+
+    private static func parsePDFPages(_ value: String?, total: Int) -> [Int] {
+        guard total > 0 else { return [] }
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return Array(1...min(total, 10)) }
+        var pages = Set<Int>()
+        for part in trimmed.split(separator: ",") {
+            let bounds = part.split(separator: "-", maxSplits: 1).compactMap { Int(String($0).trimmingCharacters(in: .whitespaces)) }
+            if bounds.count == 2 {
+                for page in min(bounds[0], bounds[1])...max(bounds[0], bounds[1]) where page >= 1 && page <= total {
+                    pages.insert(page)
+                }
+            } else if let page = bounds.first, page >= 1, page <= total {
+                pages.insert(page)
+            }
+        }
+        return Array(pages).sorted().prefix(10).map { $0 }
+    }
+
+    private static func notebookCellIndex(input: [String: Any], cells: [[String: Any]], allowEndForInsert: Bool) throws -> Int {
+        if let cellID = (input["cell_id"] as? String).nilIfBlank,
+           let index = cells.firstIndex(where: { ($0["id"] as? String) == cellID }) {
+            return allowEndForInsert ? index + 1 : index
+        }
+        if let number = input["cell_number"] as? Int {
+            if allowEndForInsert, number == cells.count { return number }
+            guard cells.indices.contains(number) else {
+                throw ProviderClientError.toolExecution("Notebook cell_number out of range: \(number)")
+            }
+            return number
+        }
+        if allowEndForInsert {
+            return cells.count
+        }
+        throw ProviderClientError.toolExecution("EditNotebook requires cell_id or cell_number for replace/delete.")
+    }
+
+    private static func notebookSourceArray(_ source: String) -> [String] {
+        let parts = source.components(separatedBy: "\n")
+        guard !parts.isEmpty else { return [""] }
+        return parts.enumerated().map { index, line in
+            index == parts.count - 1 ? line : line + "\n"
+        }
+    }
+
+    private static func notebookSourceString(_ source: Any?) -> String {
+        if let value = source as? String { return value }
+        if let lines = source as? [String] { return lines.joined() }
+        return ""
+    }
+
+    private static func runRipgrep(input: [String: Any], pattern: String, root: URL, workspacePath: String) throws -> String? {
+        guard let rg = executableURL(named: "rg") else { return nil }
+        let outputMode = (input["output_mode"] as? String).nilIfBlank ?? "files_with_matches"
+        var args = ["--color", "never"]
+        switch outputMode {
+        case "content":
+            args.append("--line-number")
+        case "count":
+            args.append("--count")
+        default:
+            args.append("--files-with-matches")
+        }
+        if let glob = (input["glob"] as? String).nilIfBlank ?? (input["include"] as? String).nilIfBlank {
+            args.append(contentsOf: ["--glob", glob])
+        }
+        if input["-i"] as? Bool == true { args.append("-i") }
+        if input["multiline"] as? Bool == true { args.append(contentsOf: ["-U", "--multiline-dotall"]) }
+        if let type = (input["type"] as? String).nilIfBlank { args.append(contentsOf: ["--type", type]) }
+        if let context = input["context"] as? Int ?? input["-C"] as? Int { args.append(contentsOf: ["-C", "\(context)"]) }
+        if let before = input["-B"] as? Int { args.append(contentsOf: ["-B", "\(before)"]) }
+        if let after = input["-A"] as? Int { args.append(contentsOf: ["-A", "\(after)"]) }
+        args.append(contentsOf: ["--", pattern, root.path])
+        let result = try runProcessSync(
+            executable: rg.path,
+            arguments: args,
+            cwd: workspacePath,
+            environment: ProcessInfo.processInfo.environment,
+            timeoutMs: 30_000
+        )
+        guard result.exitCode == 0 || result.exitCode == 1 else { return nil }
+        let lines = result.stdout.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        let normalized = lines.map { line in
+            line.replacingOccurrences(of: workspacePath + "/", with: "")
+        }
+        let offset = max(input["offset"] as? Int ?? 0, 0)
+        let headLimit = input["head_limit"] as? Int ?? 250
+        let sliced = normalized.dropFirst(offset).prefix(headLimit == 0 ? normalized.count : max(headLimit, 1))
+        return sliced.isEmpty ? "No matches for \(pattern)." : sliced.joined(separator: "\n")
+    }
+
+    private static func executableURL(named name: String) -> URL? {
+        let paths = (ProcessInfo.processInfo.environment["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+            .split(separator: ":")
+            .map(String.init)
+        for path in paths {
+            let url = URL(fileURLWithPath: path).appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: url.path) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private static func semanticTerms(_ query: String) -> [String] {
+        query.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 2 }
+    }
+
+    private static func score(_ text: String, terms: [String]) -> Int {
+        terms.reduce(0) { partial, term in
+            partial + (text.contains(term) ? 1 : 0)
+        }
+    }
+
+    private static func shellTimeoutMilliseconds(_ input: [String: Any]) -> Int {
+        if let timeout = input["timeout"] as? Int {
+            return max(1_000, min(timeout, 600_000))
+        }
+        if let timeoutSeconds = input["timeout_seconds"] as? Int {
+            return max(1_000, min(timeoutSeconds * 1_000, 600_000))
+        }
+        return 120_000
+    }
+
+    private static func runShellCommand(command: String, cwd: String, environment: [String: String], timeoutMs: Int) async throws -> AgentShellRunResult {
+        try await runProcess(
+            executable: "/bin/zsh",
+            arguments: ["-lc", command],
+            cwd: cwd,
+            environment: environment,
+            timeoutMs: timeoutMs
+        )
+    }
+
+    private static func runProcess(
+        executable: String,
+        arguments: [String],
+        cwd: String,
+        environment: [String: String],
+        timeoutMs: Int
+    ) async throws -> AgentShellRunResult {
+        try await Task.detached {
+            try runProcessSync(executable: executable, arguments: arguments, cwd: cwd, environment: environment, timeoutMs: timeoutMs)
         }.value
+    }
+
+    private static func runProcessSync(
+        executable: String,
+        arguments: [String],
+        cwd: String,
+        environment: [String: String],
+        timeoutMs: Int
+    ) throws -> AgentShellRunResult {
+        let started = Date()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        process.environment = environment
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        var timedOut = false
+        let deadline = Date().addingTimeInterval(Double(max(timeoutMs, 1)) / 1_000.0)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning {
+            timedOut = true
+            process.terminate()
+        }
+        process.waitUntilExit()
+        let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return AgentShellRunResult(
+            stdout: out,
+            stderr: err,
+            exitCode: Int(process.terminationStatus),
+            timedOut: timedOut,
+            durationMs: Int(Date().timeIntervalSince(started) * 1000)
+        )
+    }
+
+    static func shellResultText(_ result: AgentShellRunResult) -> String {
+        var parts = ["exit code: \(result.exitCode)"]
+        if result.timedOut { parts.append("timed out") }
+        if !result.stdout.isEmpty { parts.append(result.stdout.trimmingCharacters(in: .newlines)) }
+        if !result.stderr.isEmpty { parts.append(result.stderr.trimmingCharacters(in: .newlines)) }
+        return parts.joined(separator: "\n")
+    }
+
+    private static func stringArray(_ value: Any?) -> [String] {
+        (value as? [String]) ?? []
+    }
+
+    private static func extractFetchedText(data: Data, url: URL) -> String {
+        if url.pathExtension.lowercased() == "pdf", let document = PDFDocument(data: data) {
+            return (0..<document.pageCount)
+                .compactMap { document.page(at: $0)?.string }
+                .joined(separator: "\n\n")
+        }
+        let raw = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
+        if raw.range(of: "<html", options: [.caseInsensitive]) != nil || raw.range(of: "<body", options: [.caseInsensitive]) != nil {
+            return stripHTML(raw)
+        }
+        return raw
+    }
+
+    private static func stripHTML(_ html: String) -> String {
+        html
+            .replacingOccurrences(of: #"(?is)<script.*?</script>"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"(?is)<style.*?</style>"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"(?s)<[^>]+>"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func applyFetchPrompt(_ prompt: String, content: String) -> String {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = prompt.lowercased()
+        let maxLength = lower.contains("full") || lower.contains("完整") ? 30_000 : 12_000
+        return String(trimmed.prefix(maxLength))
+    }
+
+    private static func parseLintDiagnostics(_ output: String, severity: String?, limit: Int) -> [[String: Any]] {
+        let pattern = #"^(.+?):(\d+):(?:(\d+):)?\s*(?:(error|warning|info|note):)?\s*(.+)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
+        var diagnostics: [[String: Any]] = []
+        for line in output.components(separatedBy: .newlines) {
+            let nsLine = line as NSString
+            guard let match = regex.firstMatch(in: line, range: NSRange(location: 0, length: nsLine.length)),
+                  match.numberOfRanges >= 6 else { continue }
+            let level = match.range(at: 4).location == NSNotFound ? "error" : nsLine.substring(with: match.range(at: 4)).lowercased()
+            if let severity, level != severity { continue }
+            diagnostics.append([
+                "file": nsLine.substring(with: match.range(at: 1)),
+                "line": Int(nsLine.substring(with: match.range(at: 2))) ?? 0,
+                "column": match.range(at: 3).location == NSNotFound ? 0 : (Int(nsLine.substring(with: match.range(at: 3))) ?? 0),
+                "severity": level,
+                "message": nsLine.substring(with: match.range(at: 5)),
+            ])
+            if diagnostics.count >= limit { break }
+        }
+        return diagnostics
+    }
+
+    private static func runTaskSynchronously(type: String, prompt: String, input: [String: Any], context: AgentRunContext) async throws -> String {
+        let normalizedType = type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let scopedContext = try taskScopedContext(input: input, context: context)
+        switch normalizedType {
+        case "shell":
+            return try await shell(
+                inputJSON: jsonString([
+                    "command": prompt,
+                    "description": (input["description"] as? String) ?? "Task shell command",
+                    "timeout": input["timeout"] as? Int ?? 120_000,
+                ]),
+                context: scopedContext
+            )
+        case "best-of-n-runner":
+            let n = max(1, min(input["n"] as? Int ?? 3, 8))
+            var results: [[String: Any]] = []
+            for index in 1...n {
+                let result = try await withIsolatedGitWorktree(workspacePath: scopedContext.workspacePath) { worktreePath in
+                    let isolatedContext = childContext(from: scopedContext, workspacePath: worktreePath)
+                    return try await NativeAgentRuntime.runSubagent(
+                        inputJSON: jsonString([
+                            "prompt": "\(prompt)\n\nAttempt \(index) of \(n). Use this isolated git worktree and return the best concise result.",
+                            "description": "best-of-n \(index)",
+                            "context": "Task isolation: git worktree at \(worktreePath)",
+                        ]),
+                        context: isolatedContext
+                    )
+                }
+                results.append(["attempt": index, "worktree": result.worktreePath, "result": result.output])
+            }
+            return jsonString(["type": type, "attempts": results, "selectedAttempt": 1], pretty: true)
+        case "explore", "cursor-guide", "ci-investigator", "generalpurpose", "general-purpose", "general_purpose":
+            if ((input["isolation"] as? String) ?? "").lowercased() == "worktree" {
+                let result = try await withIsolatedGitWorktree(workspacePath: scopedContext.workspacePath) { worktreePath in
+                    let isolatedContext = childContext(from: scopedContext, workspacePath: worktreePath)
+                    return try await NativeAgentRuntime.runSubagent(
+                        inputJSON: jsonString([
+                            "prompt": prompt,
+                            "description": (input["description"] as? String) ?? type,
+                            "context": "Task type: \(type)\nTask isolation: git worktree at \(worktreePath)",
+                        ]),
+                        context: isolatedContext
+                    )
+                }
+                return jsonString(["type": type, "worktree": result.worktreePath, "result": result.output], pretty: true)
+            }
+            return try await NativeAgentRuntime.runSubagent(
+                inputJSON: jsonString([
+                    "prompt": prompt,
+                    "description": (input["description"] as? String) ?? type,
+                    "context": "Task type: \(type)",
+                ]),
+                context: scopedContext
+            )
+        default:
+            throw ProviderClientError.toolExecution("Unsupported Task type: \(type)")
+        }
+    }
+
+    private static func taskScopedContext(input: [String: Any], context: AgentRunContext) throws -> AgentRunContext {
+        guard let cwd = (input["cwd"] as? String).nilIfBlank else { return context }
+        let url = try AgentPathResolver.resolve(cwd, workspacePath: context.workspacePath, mustExist: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw ProviderClientError.toolExecution("Task cwd must be an existing directory: \(cwd)")
+        }
+        return childContext(from: context, workspacePath: url.path)
+    }
+
+    private static func childContext(from context: AgentRunContext, workspacePath: String) -> AgentRunContext {
+        let request = AgentRequest(
+            sessionId: context.sessionId,
+            projectPath: workspacePath,
+            prompt: "delegated task",
+            providerConfig: context.providerConfig,
+            apiKey: context.apiKey,
+            priorMessages: [],
+            timeoutMs: context.timeoutMs,
+            contextWindow: context.contextWindow,
+            permissionMode: context.permissionMode,
+            runMode: context.runMode,
+            workspaceContext: nil,
+            toolSettings: context.toolSettings,
+            routerRoute: "task",
+            nativeConfigValues: context.nativeConfigValues,
+            permissionHandler: nil
+        )
+        let child = AgentRunContext(request: request)
+        child.planExited = context.planExited
+        child.todosJSON = context.todosJSON
+        return child
+    }
+
+    private static func withIsolatedGitWorktree(
+        workspacePath: String,
+        operation: (String) async throws -> String
+    ) async throws -> (worktreePath: String, output: String) {
+        let environment = SkillRuntimeService.environment(configValues: [:])
+        let repoRoot = try gitOutput(
+            arguments: ["-C", workspacePath, "rev-parse", "--show-toplevel"],
+            cwd: workspacePath,
+            environment: environment
+        )
+        _ = try gitOutput(
+            arguments: ["-C", repoRoot, "rev-parse", "--verify", "HEAD"],
+            cwd: repoRoot,
+            environment: environment
+        )
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("9gclaw-worktrees", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let worktree = parent.appendingPathComponent("worktree-\(UUID().uuidString)", isDirectory: true)
+        let add = try runProcessSync(
+            executable: "/usr/bin/env",
+            arguments: ["git", "-C", repoRoot, "worktree", "add", "--detach", worktree.path, "HEAD"],
+            cwd: repoRoot,
+            environment: environment,
+            timeoutMs: 120_000
+        )
+        guard add.exitCode == 0 else {
+            throw ProviderClientError.toolExecution(shellResultText(add))
+        }
+        defer {
+            _ = try? runProcessSync(
+                executable: "/usr/bin/env",
+                arguments: ["git", "-C", repoRoot, "worktree", "remove", "--force", worktree.path],
+                cwd: repoRoot,
+                environment: environment,
+                timeoutMs: 120_000
+            )
+            try? FileManager.default.removeItem(at: worktree)
+        }
+        let output = try await operation(worktree.path)
+        return (worktree.path, output)
+    }
+
+    private static func gitOutput(arguments: [String], cwd: String, environment: [String: String]) throws -> String {
+        let result = try runProcessSync(
+            executable: "/usr/bin/env",
+            arguments: ["git"] + arguments,
+            cwd: cwd,
+            environment: environment,
+            timeoutMs: 30_000
+        )
+        guard result.exitCode == 0 else {
+            throw ProviderClientError.toolExecution(shellResultText(result))
+        }
+        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func todoWrite(inputJSON: String, context: AgentRunContext) throws -> String {
@@ -2236,6 +3517,160 @@ enum AgentToolExecutor {
     private static func limitOutput(_ output: String) -> String {
         if output.count <= 20_000 { return output }
         return String(output.prefix(20_000)) + "\n... output truncated ..."
+    }
+}
+
+struct AgentShellRunResult: Sendable, Equatable {
+    var stdout: String
+    var stderr: String
+    var exitCode: Int
+    var timedOut: Bool
+    var durationMs: Int
+}
+
+final class AgentBackgroundTaskRecord: @unchecked Sendable {
+    let id: String
+    let description: String
+    let startedAt: Date
+    var status: String
+    var output: String
+    var stdout: String
+    var stderr: String
+    var exitCode: Int?
+    var completedAt: Date?
+    var process: Process?
+
+    init(id: String, description: String, status: String = "running", process: Process? = nil) {
+        self.id = id
+        self.description = description
+        self.startedAt = Date()
+        self.status = status
+        self.output = ""
+        self.stdout = ""
+        self.stderr = ""
+        self.process = process
+    }
+}
+
+final class AgentBackgroundTaskStore: @unchecked Sendable {
+    static let shared = AgentBackgroundTaskStore()
+    private let lock = NSLock()
+    private var records: [String: AgentBackgroundTaskRecord] = [:]
+
+    func startShell(command: String, cwd: String, environment: [String: String], timeoutMs: Int, description: String) throws -> String {
+        let id = "task-\(UUID().uuidString)"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", command]
+        process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        process.environment = environment
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        let record = AgentBackgroundTaskRecord(id: id, description: description, process: process)
+        lock.withLock { records[id] = record }
+        try process.run()
+        Task.detached { [weak self] in
+            let started = Date()
+            let deadline = Date().addingTimeInterval(Double(max(timeoutMs, 1)) / 1_000.0)
+            var timedOut = false
+            while process.isRunning, Date() < deadline {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            if process.isRunning {
+                timedOut = true
+                process.terminate()
+            }
+            process.waitUntilExit()
+            let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let result = AgentShellRunResult(
+                stdout: out,
+                stderr: err,
+                exitCode: Int(process.terminationStatus),
+                timedOut: timedOut,
+                durationMs: Int(Date().timeIntervalSince(started) * 1000)
+            )
+            self?.complete(
+                id: id,
+                output: AgentToolExecutor.shellResultText(result),
+                stdout: result.stdout,
+                stderr: result.stderr,
+                exitCode: result.exitCode
+            )
+        }
+        return id
+    }
+
+    func startAsync(description: String, operation: @escaping @Sendable () async -> String) -> String {
+        let id = "task-\(UUID().uuidString)"
+        let record = AgentBackgroundTaskRecord(id: id, description: description)
+        lock.withLock { records[id] = record }
+        Task.detached { [weak self] in
+            let output = await operation()
+            self?.complete(id: id, output: output, stdout: output, stderr: "", exitCode: 0)
+        }
+        return id
+    }
+
+    func output(taskId: String, block: Bool, timeoutMs: Int) async throws -> String {
+        let deadline = Date().addingTimeInterval(Double(max(timeoutMs, 0)) / 1_000.0)
+        while true {
+            if let snapshot = snapshot(taskId) {
+                if snapshot.status != "running" || !block || Date() >= deadline {
+                    return jsonString([
+                        "task_id": snapshot.id,
+                        "description": snapshot.description,
+                        "status": snapshot.status,
+                        "exitCode": snapshot.exitCode.map { $0 as Any } ?? NSNull(),
+                        "stdout": snapshot.stdout,
+                        "stderr": snapshot.stderr,
+                        "output": snapshot.output,
+                    ], pretty: true)
+                }
+            } else {
+                throw ProviderClientError.toolExecution("Background task not found: \(taskId)")
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    func terminate(sessionId: String? = nil) {
+        lock.withLock {
+            for record in records.values where record.status == "running" {
+                record.process?.terminate()
+                record.status = "cancelled"
+                record.completedAt = Date()
+            }
+        }
+    }
+
+    private func complete(id: String, output: String, stdout: String, stderr: String, exitCode: Int?) {
+        lock.withLock {
+            guard let record = records[id] else { return }
+            record.output = output
+            record.stdout = stdout
+            record.stderr = stderr
+            record.exitCode = exitCode
+            record.status = "completed"
+            record.completedAt = Date()
+            record.process = nil
+        }
+    }
+
+    private func snapshot(_ id: String) -> AgentBackgroundTaskRecord? {
+        lock.withLock {
+            guard let record = records[id] else { return nil }
+            let copy = AgentBackgroundTaskRecord(id: record.id, description: record.description)
+            copy.status = record.status
+            copy.output = record.output
+            copy.stdout = record.stdout
+            copy.stderr = record.stderr
+            copy.exitCode = record.exitCode
+            copy.completedAt = record.completedAt
+            return copy
+        }
     }
 }
 

@@ -32,10 +32,12 @@ actor NativeThreadManager {
     }
 
     func interrupt(sessionId: String) async {
+        AgentBackgroundTaskStore.shared.terminate(sessionId: sessionId)
         await sessions[sessionId]?.interruptActiveTurn(reason: "Interrupted by user.")
     }
 
     func shutdown() async {
+        AgentBackgroundTaskStore.shared.terminate()
         for session in sessions.values {
             await session.interruptActiveTurn(reason: "Shutting down.")
         }
@@ -284,16 +286,16 @@ actor NativeTurnController {
         if lower == "bash" || lower.contains("shell") {
             return .commandExecution
         }
-        if lower == "write" || lower == "edit" || lower == "multiedit" {
+        if lower == "write" || lower == "strreplace" || lower == "delete" || lower == "editnotebook" {
             return .fileChange
         }
-        if lower == "grep" || lower == "glob" {
+        if lower == "grep" || lower == "glob" || lower == "semanticsearch" || lower == "websearch" || lower == "webfetch" || lower == "readlints" {
             return .webSearch
         }
-        if lower == "skill" {
+        if lower == "skill" || lower == "task" || lower == "await" {
             return .toolCall
         }
-        if lower.contains("exitplan") || lower.contains("plan") {
+        if lower.contains("switchmode") || lower.contains("exitplan") || lower.contains("plan") {
             return .plan
         }
         return .toolCall

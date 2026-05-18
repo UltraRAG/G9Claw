@@ -24,6 +24,9 @@ final class MemoryService {
     private var lastIndexedAt: Date?
     private var lastDreamAt: Date?
     private var settings = MemorySettingsSnapshot.defaults
+    private var jobStates: [MemoryJobKind: MemoryJobState] = Dictionary(
+        uniqueKeysWithValues: MemoryJobKind.allCases.map { ($0, .idle($0)) }
+    )
 
     func upsert(name: String, summary: String, projectName: String?) -> MemoryRecord {
         if let index = records.firstIndex(where: { $0.name == name && $0.projectName == projectName }) {
@@ -122,8 +125,7 @@ final class MemoryService {
         try content.write(to: memoryRoot.appendingPathComponent("native-workspace-index.md"), atomically: true, encoding: String.Encoding.utf8)
         loadWorkspaceRecords(projectRoot: root.path, projectName: projectName)
         lastIndexedAt = Date()
-        indexTraceRecords.insert(
-            makeTrace(
+        let trace = makeTrace(
                 kind: "index",
                 title: "Index Sync",
                 status: "completed",
@@ -134,9 +136,8 @@ final class MemoryService {
                     ("index_start", "开始索引", "Workspace: \(root.path)"),
                     ("index_finished", "索引完成", "Files scanned: \(indexedFiles.count)")
                 ]
-            ),
-            at: 0
-        )
+            )
+        indexTraceRecords.insert(trace, at: 0)
         return dashboard(projectName: projectName)
     }
 
@@ -194,7 +195,8 @@ final class MemoryService {
             indexTraceRecords: indexTraceRecords,
             dreamTraceRecords: dreamTraceRecords,
             lastDreamSnapshot: lastDreamSnapshot,
-            scheduler: MemorySchedulerSnapshot(enabled: true, status: "running")
+            scheduler: MemorySchedulerSnapshot(enabled: true, status: "running"),
+            jobStates: jobStates
         )
     }
 
@@ -251,8 +253,7 @@ final class MemoryService {
         let selected = scoped.prefix(8)
         let context = selected.map { "- \($0.name): \($0.summary)" }.joined(separator: "\n")
         let reply = context.isEmpty ? "No memory records matched this turn." : context
-        caseTraceRecords.insert(
-            makeTrace(
+        let trace = makeTrace(
                 kind: "recall",
                 title: normalizedPrompt.isEmpty ? "Memory Recall" : "Recall: \(String(normalizedPrompt.prefix(80)))",
                 status: "completed",
@@ -263,9 +264,9 @@ final class MemoryService {
                     ("recall_start", "开始 Recall", "Prompt: \(String(normalizedPrompt.prefix(240)))"),
                     ("recall_selected", "注入记忆", "Records: \(selected.count)")
                 ]
-            ),
-            at: 0
-        )
+            )
+        caseTraceRecords.insert(trace, at: 0)
+        finishJob(.recall, phase: .completed, message: "Recall 完成", traceID: trace.id)
         return context
     }
 
@@ -334,8 +335,7 @@ final class MemoryService {
             summary: "Dream prepared from \(scoped.count) memory records."
         )
         let summary = scoped.prefix(12).map { "- \($0.name): \($0.summary)" }.joined(separator: "\n")
-        dreamTraceRecords.insert(
-            makeTrace(
+        let trace = makeTrace(
                 kind: "dream",
                 title: "Memory Dream",
                 status: "completed",
@@ -346,9 +346,8 @@ final class MemoryService {
                     ("dream_start", "开始 Dream", "Records: \(scoped.count)"),
                     ("dream_finished", "Dream 完成", "Snapshot captured.")
                 ]
-            ),
-            at: 0
-        )
+            )
+        dreamTraceRecords.insert(trace, at: 0)
         if !summary.isEmpty {
             _ = upsert(name: "memory-dream-\(Int(now.timeIntervalSince1970))", summary: summary, projectName: projectName)
         }
@@ -358,30 +357,48 @@ final class MemoryService {
     @discardableResult
     @MainActor
     func runIndexJob(projectRoot: String?, projectName: String?) async throws -> MemoryDashboardSnapshot {
-        try await Task.sleep(nanoseconds: 180_000_000)
-        return try indexWorkspace(projectRoot: projectRoot, projectName: projectName)
+        beginJob(.index, message: "正在索引当前工作区")
+        do {
+            try await Task.sleep(nanoseconds: 180_000_000)
+            let snapshot = try indexWorkspace(projectRoot: projectRoot, projectName: projectName)
+            finishJob(.index, phase: .completed, message: "索引同步完成", traceID: snapshot.indexTraceRecords.first?.id)
+            return dashboard(projectName: projectName, projectRoot: projectRoot, isGeneral: projectName == nil)
+        } catch {
+            finishJob(.index, phase: .failed, message: error.localizedDescription)
+            throw error
+        }
     }
 
     @discardableResult
     @MainActor
     func runDreamJob(projectName: String?, projectRoot: String?) async -> MemoryDashboardSnapshot {
+        beginJob(.dream, message: "正在运行 Memory Dream")
         try? await Task.sleep(nanoseconds: 180_000_000)
-        return runDream(projectName: projectName, projectRoot: projectRoot)
+        let snapshot = runDream(projectName: projectName, projectRoot: projectRoot)
+        finishJob(.dream, phase: .completed, message: "Memory Dream 完成", traceID: snapshot.dreamTraceRecords.first?.id)
+        return dashboard(projectName: projectName, projectRoot: projectRoot, isGeneral: projectName == nil)
     }
 
     @discardableResult
     @MainActor
     func rollbackDreamJob(projectName: String?, projectRoot: String?) async throws -> MemoryDashboardSnapshot {
-        try await Task.sleep(nanoseconds: 120_000_000)
-        return try rollbackLastDream(projectName: projectName, projectRoot: projectRoot)
+        beginJob(.rollback, message: "正在回滚 Dream")
+        do {
+            try await Task.sleep(nanoseconds: 120_000_000)
+            let snapshot = try rollbackLastDream(projectName: projectName, projectRoot: projectRoot)
+            finishJob(.rollback, phase: .completed, message: "Dream 回滚完成", traceID: snapshot.dreamTraceRecords.first?.id)
+            return dashboard(projectName: projectName, projectRoot: projectRoot, isGeneral: projectName == nil)
+        } catch {
+            finishJob(.rollback, phase: .failed, message: error.localizedDescription)
+            throw error
+        }
     }
 
     func rollbackLastDream(projectName: String?, projectRoot: String?) throws -> MemoryDashboardSnapshot {
         guard let lastDreamSnapshot, lastDreamSnapshot.rollbackReady else {
             throw NSError(domain: "MemoryService", code: 404, userInfo: [NSLocalizedDescriptionKey: "No rollback-ready Dream snapshot is available."])
         }
-        dreamTraceRecords.insert(
-            makeTrace(
+        let trace = makeTrace(
                 kind: "dream",
                 title: "Rollback Last Dream",
                 status: "completed",
@@ -392,9 +409,8 @@ final class MemoryService {
                     ("rollback_start", "开始回滚", "Snapshot: \(ISO8601DateFormatter().string(from: lastDreamSnapshot.capturedAt))"),
                     ("rollback_finished", "回滚完成", "Memory state restored to snapshot metadata.")
                 ]
-            ),
-            at: 0
-        )
+            )
+        dreamTraceRecords.insert(trace, at: 0)
         self.lastDreamSnapshot = MemoryDreamSnapshot(
             capturedAt: lastDreamSnapshot.capturedAt,
             rollbackReady: false,
@@ -518,6 +534,28 @@ final class MemoryService {
                 )
             }
         )
+    }
+
+    private func beginJob(_ kind: MemoryJobKind, message: String) {
+        var next = jobStates[kind] ?? .idle(kind)
+        next.phase = .running
+        next.message = message
+        next.traceID = nil
+        next.startedAt = Date()
+        next.endedAt = nil
+        jobStates[kind] = next
+    }
+
+    private func finishJob(_ kind: MemoryJobKind, phase: MemoryJobPhase, message: String, traceID: String? = nil) {
+        var next = jobStates[kind] ?? .idle(kind)
+        next.phase = phase
+        next.message = message
+        next.traceID = traceID ?? next.traceID
+        if next.startedAt == nil {
+            next.startedAt = Date()
+        }
+        next.endedAt = Date()
+        jobStates[kind] = next
     }
 
     private func recordURL(for record: MemoryRecord, projectRoot: String?) -> URL? {
@@ -1041,29 +1079,35 @@ final class RoutingService {
         projectName: String,
         model: String,
         route: String,
-        tier: String
+        tier: String,
+        query: String? = nil
     ) {
         let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : model
-        var record = tokenRecords[sessionID] ?? RoutingDashboardSession(
-            id: sessionID,
-            title: title,
-            projectName: projectName,
-            lastActiveAt: Date(),
-            totalTokens: 0,
-            estimatedCost: 0,
-            savedCost: 0,
-            byTier: [:],
-            byModel: [:],
-            requestLog: []
-        )
+        let now = Date()
+        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
         record.title = title
         record.projectName = projectName
-        record.lastActiveAt = Date()
+        record.lastActiveAt = now
         let tierKey = tier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "COMPLEX" : tier
-        let requestBucket = RoutingBucket(count: 1, inputTokens: 0, outputTokens: 0, estimatedCost: 0)
-        record.byTier[tierKey] = merge(bucket: record.byTier[tierKey], with: requestBucket)
-        record.byModel[normalizedModel] = merge(bucket: record.byModel[normalizedModel], with: requestBucket)
-        record.requestLog.append("\(DateFormatter.routingTime.string(from: Date())) \(route) -> \(normalizedModel) routed as \(tierKey)")
+        let routeKey = route.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : route
+        let requestBucket = RoutingBucket(count: 1, requestCount: 1)
+        record.total = mergeRequest(bucket: record.total, with: requestBucket)
+        record.byTier[tierKey] = mergeRequest(bucket: record.byTier[tierKey], with: requestBucket)
+        record.byModel[normalizedModel] = mergeRequest(bucket: record.byModel[normalizedModel], with: requestBucket)
+        record.byRole["main"] = mergeRequest(bucket: record.byRole["main"], with: requestBucket)
+        record.byScenario[routeKey] = mergeRequest(bucket: record.byScenario[routeKey], with: requestBucket)
+        let entry = RoutingRequestLogEntry(
+            ts: now,
+            role: "main",
+            tier: tierKey,
+            model: normalizedModel,
+            query: sanitizedQuery(query ?? title),
+            scenario: routeKey,
+            route: routeKey
+        )
+        record.requestEntries.append(entry)
+        record.requestEntries = Array(record.requestEntries.suffix(120))
+        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) \(routeKey) -> \(normalizedModel) routed as \(tierKey)")
         record.requestLog = Array(record.requestLog.suffix(100))
         tokenRecords[sessionID] = record
         persist()
@@ -1082,29 +1126,49 @@ final class RoutingService {
         let cost = estimatedCost(model: normalizedModel, tokens: totalTokens)
         let baselineCost = baselineCost(tokens: totalTokens)
         let savedCost = max(0, baselineCost - cost)
-        let bucket = RoutingBucket(count: 0, inputTokens: totalTokens, outputTokens: 0, estimatedCost: cost)
-        var record = tokenRecords[sessionID] ?? RoutingDashboardSession(
-            id: sessionID,
-            title: title,
-            projectName: projectName,
-            lastActiveAt: Date(),
-            totalTokens: 0,
-            estimatedCost: 0,
-            savedCost: 0,
-            byTier: [:],
-            byModel: [:],
-            requestLog: []
+        let now = Date()
+        let bucket = RoutingBucket(
+            inputTokens: totalTokens,
+            totalTokens: totalTokens,
+            estimatedCost: cost,
+            baselineCost: baselineCost,
+            savedCost: savedCost
         )
+        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
         record.title = title
         record.projectName = projectName
-        record.lastActiveAt = Date()
+        record.lastActiveAt = now
         record.totalTokens = max(record.totalTokens, totalTokens)
         record.estimatedCost = max(record.estimatedCost, cost)
         record.savedCost = max(record.savedCost, savedCost)
         let tierKey = tier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "COMPLEX" : tier
-        record.byTier[tierKey] = merge(bucket: record.byTier[tierKey], with: bucket)
-        record.byModel[normalizedModel] = merge(bucket: record.byModel[normalizedModel], with: bucket)
-        record.requestLog.append("\(DateFormatter.routingTime.string(from: Date())) \(normalizedModel) usage · \(tierKey) · \(totalTokens)/\(contextWindow) tokens")
+        let scenarioKey = latestScenario(in: record) ?? "usage"
+        record.total = mergeUsage(bucket: record.total, with: bucket)
+        record.byTier[tierKey] = mergeUsage(bucket: record.byTier[tierKey], with: bucket)
+        record.byModel[normalizedModel] = mergeUsage(bucket: record.byModel[normalizedModel], with: bucket)
+        record.byRole["main"] = mergeUsage(bucket: record.byRole["main"], with: bucket)
+        record.byScenario[scenarioKey] = mergeUsage(bucket: record.byScenario[scenarioKey], with: bucket)
+        if let index = record.requestEntries.lastIndex(where: { $0.role == "main" && ($0.tier ?? tierKey) == tierKey }) {
+            record.requestEntries[index].tokens = max(record.requestEntries[index].tokens, totalTokens)
+            record.requestEntries[index].cost = max(record.requestEntries[index].cost, cost)
+            record.requestEntries[index].baselineCost = max(record.requestEntries[index].baselineCost ?? 0, baselineCost)
+            record.requestEntries[index].savedCost = max(record.requestEntries[index].savedCost ?? 0, savedCost)
+            record.requestEntries[index].model = normalizedModel
+        } else {
+            record.requestEntries.append(RoutingRequestLogEntry(
+                ts: now,
+                role: "main",
+                tier: tierKey,
+                model: normalizedModel,
+                tokens: totalTokens,
+                cost: cost,
+                baselineCost: baselineCost,
+                savedCost: savedCost,
+                scenario: scenarioKey
+            ))
+        }
+        record.requestEntries = Array(record.requestEntries.suffix(120))
+        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) \(normalizedModel) usage · \(tierKey) · \(totalTokens)/\(contextWindow) tokens")
         record.requestLog = Array(record.requestLog.suffix(100))
         tokenRecords[sessionID] = record
         persist()
@@ -1116,27 +1180,68 @@ final class RoutingService {
         projectName: String,
         skill: String
     ) {
-        var record = tokenRecords[sessionID] ?? RoutingDashboardSession(
-            id: sessionID,
-            title: title,
-            projectName: projectName,
-            lastActiveAt: Date(),
-            totalTokens: 0,
-            estimatedCost: 0,
-            savedCost: 0,
-            byTier: [:],
-            byModel: [:],
-            requestLog: []
-        )
+        let now = Date()
+        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
         record.title = title
         record.projectName = projectName
-        record.lastActiveAt = Date()
+        record.lastActiveAt = now
         let normalized = skill.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : skill
+        let requestBucket = RoutingBucket(count: 1, requestCount: 1)
+        record.total = mergeRequest(bucket: record.total, with: requestBucket)
         record.byModel["skill:\(normalized)"] = merge(
             bucket: record.byModel["skill:\(normalized)"],
-            with: RoutingBucket(count: 1, inputTokens: 0, outputTokens: 0, estimatedCost: 0)
+            with: requestBucket
         )
-        record.requestLog.append("\(DateFormatter.routingTime.string(from: Date())) skill invoked · \(normalized)")
+        record.byScenario["skill"] = mergeRequest(bucket: record.byScenario["skill"], with: requestBucket)
+        record.byRole["main"] = mergeRequest(bucket: record.byRole["main"], with: requestBucket)
+        record.requestEntries.append(RoutingRequestLogEntry(
+            ts: now,
+            role: "main",
+            model: "skill:\(normalized)",
+            query: "Skill invoked",
+            scenario: "skill",
+            skill: normalized
+        ))
+        record.requestEntries = Array(record.requestEntries.suffix(120))
+        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) skill invoked · \(normalized)")
+        record.requestLog = Array(record.requestLog.suffix(100))
+        tokenRecords[sessionID] = record
+        persist()
+    }
+
+    func recordSubagentInvocation(
+        sessionID: String,
+        title: String,
+        projectName: String,
+        model: String,
+        tier: String,
+        inputJSON: String
+    ) {
+        let now = Date()
+        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
+        record.title = title
+        record.projectName = projectName
+        record.lastActiveAt = now
+        let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : model
+        let tierKey = tier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "COMPLEX" : tier
+        let requestBucket = RoutingBucket(count: 1, requestCount: 1)
+        record.total = mergeRequest(bucket: record.total, with: requestBucket)
+        record.byTier[tierKey] = mergeRequest(bucket: record.byTier[tierKey], with: requestBucket)
+        record.byModel[normalizedModel] = mergeRequest(bucket: record.byModel[normalizedModel], with: requestBucket)
+        record.byScenario["subagent"] = mergeRequest(bucket: record.byScenario["subagent"], with: requestBucket)
+        record.byRole["sub"] = mergeRequest(bucket: record.byRole["sub"], with: requestBucket)
+        let query = Self.subagentQuery(from: inputJSON)
+        record.requestEntries.append(RoutingRequestLogEntry(
+            ts: now,
+            role: "sub",
+            tier: tierKey,
+            model: normalizedModel,
+            query: query,
+            scenario: "subagent",
+            route: "background"
+        ))
+        record.requestEntries = Array(record.requestEntries.suffix(120))
+        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) subagent -> \(normalizedModel) routed as \(tierKey)")
         record.requestLog = Array(record.requestLog.suffix(100))
         tokenRecords[sessionID] = record
         persist()
@@ -1199,12 +1304,77 @@ final class RoutingService {
     }
 
     private func merge(bucket existing: RoutingBucket?, with incoming: RoutingBucket) -> RoutingBucket {
-        RoutingBucket(
-            count: max(existing?.count ?? 0, 0) + incoming.count,
-            inputTokens: max(existing?.inputTokens ?? 0, incoming.inputTokens),
-            outputTokens: max(existing?.outputTokens ?? 0, incoming.outputTokens),
-            estimatedCost: max(existing?.estimatedCost ?? 0, incoming.estimatedCost)
+        mergeRequest(bucket: existing, with: incoming)
+    }
+
+    private func mergeRequest(bucket existing: RoutingBucket?, with incoming: RoutingBucket) -> RoutingBucket {
+        let current = existing ?? RoutingBucket()
+        return RoutingBucket(
+            count: current.count + incoming.count,
+            inputTokens: max(current.inputTokens, incoming.inputTokens),
+            outputTokens: max(current.outputTokens, incoming.outputTokens),
+            cacheReadTokens: max(current.cacheReadTokens, incoming.cacheReadTokens),
+            totalTokens: max(current.totalTokens, incoming.totalTokens),
+            requestCount: current.requestCount + max(incoming.requestCount, incoming.count),
+            estimatedCost: max(current.estimatedCost, incoming.estimatedCost),
+            baselineCost: max(current.baselineCost, incoming.baselineCost),
+            savedCost: max(current.savedCost, incoming.savedCost)
         )
+    }
+
+    private func mergeUsage(bucket existing: RoutingBucket?, with incoming: RoutingBucket) -> RoutingBucket {
+        let current = existing ?? RoutingBucket()
+        return RoutingBucket(
+            count: current.count,
+            inputTokens: max(current.inputTokens, incoming.inputTokens),
+            outputTokens: max(current.outputTokens, incoming.outputTokens),
+            cacheReadTokens: max(current.cacheReadTokens, incoming.cacheReadTokens),
+            totalTokens: max(current.totalTokens, incoming.totalTokens),
+            requestCount: current.requestCount,
+            estimatedCost: max(current.estimatedCost, incoming.estimatedCost),
+            baselineCost: max(current.baselineCost, incoming.baselineCost),
+            savedCost: max(current.savedCost, incoming.savedCost)
+        )
+    }
+
+    private func makeSession(id: String, title: String, projectName: String, at date: Date) -> RoutingDashboardSession {
+        RoutingDashboardSession(
+            id: id,
+            title: title,
+            projectName: projectName,
+            lastActiveAt: date,
+            totalTokens: 0,
+            estimatedCost: 0,
+            savedCost: 0,
+            byTier: [:],
+            byModel: [:],
+            requestLog: []
+        )
+    }
+
+    private func latestScenario(in record: RoutingDashboardSession) -> String? {
+        record.requestEntries.last(where: { $0.scenario?.isEmpty == false })?.scenario
+    }
+
+    private func sanitizedQuery(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 180 else { return trimmed }
+        return String(trimmed.prefix(180)) + "…"
+    }
+
+    private static func subagentQuery(from inputJSON: String) -> String {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return "Subagent"
+        }
+        let preferred = [
+            object["description"] as? String,
+            object["prompt"] as? String,
+            object["context"] as? String,
+        ]
+        let value = preferred.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty } ?? "Subagent"
+        guard value.count > 180 else { return value }
+        return String(value.prefix(180)) + "…"
     }
 
     private func load() {
@@ -1213,7 +1383,7 @@ final class RoutingService {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let decoded = try? decoder.decode([String: RoutingDashboardSession].self, from: data) {
-            tokenRecords = decoded
+            tokenRecords = decoded.mapValues { migrateLegacyEntries($0) }
         }
     }
 
@@ -1224,6 +1394,73 @@ final class RoutingService {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(tokenRecords) else { return }
         try? data.write(to: recordsURL, options: .atomic)
+    }
+
+    private func migrateLegacyEntries(_ record: RoutingDashboardSession) -> RoutingDashboardSession {
+        guard record.requestEntries.isEmpty, !record.requestLog.isEmpty else { return record }
+        var migrated = record
+        var entries: [RoutingRequestLogEntry] = []
+        for line in record.requestLog {
+            let body = String(line.dropFirst(min(line.count, 9))).trimmingCharacters(in: .whitespaces)
+            if body.contains(" routed as ") {
+                let parts = body.components(separatedBy: " routed as ")
+                let routeAndModel = parts.first ?? body
+                let tier = parts.dropFirst().first?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let routeParts = routeAndModel.components(separatedBy: " -> ")
+                let route = routeParts.first?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let model = routeParts.dropFirst().first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+                entries.append(RoutingRequestLogEntry(
+                    ts: record.lastActiveAt,
+                    role: "main",
+                    tier: tier?.isEmpty == false ? tier : nil,
+                    model: model,
+                    query: sanitizedQuery(record.title),
+                    scenario: route?.isEmpty == false ? route : nil,
+                    route: route?.isEmpty == false ? route : nil
+                ))
+            } else if body.contains(" usage · ") {
+                let parts = body.components(separatedBy: " · ")
+                let model = parts.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+                let tier = parts.dropFirst().first?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let tokenText = parts.dropFirst(2).first ?? ""
+                let tokens = Int(tokenText.components(separatedBy: "/").first?.filter(\.isNumber) ?? "") ?? 0
+                let cost = estimatedCost(model: model, tokens: tokens)
+                let baseline = baselineCost(tokens: tokens)
+                if let index = entries.indices.last {
+                    entries[index].model = model
+                    entries[index].tier = entries[index].tier ?? tier
+                    entries[index].tokens = max(entries[index].tokens, tokens)
+                    entries[index].cost = max(entries[index].cost, cost)
+                    entries[index].baselineCost = max(entries[index].baselineCost ?? 0, baseline)
+                    entries[index].savedCost = max(entries[index].savedCost ?? 0, max(0, baseline - cost))
+                } else {
+                    entries.append(RoutingRequestLogEntry(
+                        ts: record.lastActiveAt,
+                        role: "main",
+                        tier: tier,
+                        model: model,
+                        tokens: tokens,
+                        cost: cost,
+                        baselineCost: baseline,
+                        savedCost: max(0, baseline - cost),
+                        scenario: "usage"
+                    ))
+                }
+            } else if body.contains("skill invoked ·") {
+                let skill = body.components(separatedBy: "skill invoked ·").dropFirst().first?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+                entries.append(RoutingRequestLogEntry(
+                    ts: record.lastActiveAt,
+                    role: "main",
+                    model: "skill:\(skill)",
+                    query: "Skill invoked",
+                    scenario: "skill",
+                    skill: skill
+                ))
+            }
+        }
+        migrated.requestEntries = entries
+        return migrated
     }
 }
 

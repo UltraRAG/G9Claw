@@ -340,11 +340,13 @@ final class AppState: ObservableObject {
             ?? settings.providerConfig
         let apiKey: String
         do {
-            let providerID = nativeConfig?.rawValues["models.entries.\(routeEntryID).provider"] ?? "edgeclaw"
-            apiKey = try keychain.readSecret(account: providerConfig.secretAccount)
-                ?? nativeConfig?.rawValues["models.providers.\(providerID).apiKey"]
-                ?? nativeConfig?.apiKey
-                ?? apiKeyDraft
+            let keychainValue = try keychain.readSecret(account: providerConfig.secretAccount)
+            apiKey = NativeConfigService.resolvedAPIKey(
+                routeEntryID: routeEntryID,
+                nativeConfig: nativeConfig,
+                keychainValue: keychainValue,
+                apiKeyDraft: apiKeyDraft
+            )
         } catch {
             handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID)
             return
@@ -398,7 +400,8 @@ final class AppState: ObservableObject {
             projectName: routingProjectName,
             model: providerConfig.model,
             route: request.routerRoute,
-            tier: routeTier
+            tier: routeTier,
+            query: prompt
         )
 
         let runToken = UUID()
@@ -632,7 +635,6 @@ final class AppState: ObservableObject {
 
     func openSettings(_ tab: SettingsMainTab = .appearance) {
         settingsInitialTab = tab
-        showSettings = true
     }
 
     func t(_ key: L10nKey, _ args: CVarArg...) -> String {
@@ -721,21 +723,31 @@ final class AppState: ObservableObject {
     }
 
     func addAllowedTool(_ tool: String) {
-        addUnique(tool, to: \.allowedTools)
+        let canonical = canonicalPermissionRule(tool)
+        guard !canonical.isEmpty else { return }
+        settings.permissions.disallowedTools.removeAll { permissionRuleEquals($0, canonical) }
+        addUnique(canonical, to: \.allowedTools)
+        persistSettingsAfterPermissionChange()
     }
 
     func addBlockedTool(_ tool: String) {
-        addUnique(tool, to: \.disallowedTools)
+        let canonical = canonicalPermissionRule(tool)
+        guard !canonical.isEmpty else { return }
+        settings.permissions.allowedTools.removeAll { permissionRuleEquals($0, canonical) }
+        addUnique(canonical, to: \.disallowedTools)
+        persistSettingsAfterPermissionChange()
     }
 
     func removeAllowedTool(_ tool: String) {
-        settings.permissions.allowedTools.removeAll { $0 == tool }
+        settings.permissions.allowedTools.removeAll { permissionRuleEquals($0, tool) }
         settings.permissions.lastUpdated = Date()
+        persistSettingsAfterPermissionChange()
     }
 
     func removeBlockedTool(_ tool: String) {
-        settings.permissions.disallowedTools.removeAll { $0 == tool }
+        settings.permissions.disallowedTools.removeAll { permissionRuleEquals($0, tool) }
         settings.permissions.lastUpdated = Date()
+        persistSettingsAfterPermissionChange()
     }
 
     func exportPermissions(to url: URL) throws {
@@ -758,13 +770,14 @@ final class AppState: ObservableObject {
         guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         let allowed = payload["allowedTools"] as? [String] ?? []
         let blocked = payload["disallowedTools"] as? [String] ?? []
-        for item in allowed where !settings.permissions.allowedTools.contains(item) {
-            settings.permissions.allowedTools.append(item)
-        }
-        for item in blocked where !settings.permissions.disallowedTools.contains(item) {
-            settings.permissions.disallowedTools.append(item)
+        let mergedAllowed = uniqueCanonicalRules(settings.permissions.allowedTools + allowed)
+        let mergedBlocked = uniqueCanonicalRules(settings.permissions.disallowedTools + blocked)
+        settings.permissions.disallowedTools = mergedBlocked
+        settings.permissions.allowedTools = mergedAllowed.filter { allowedRule in
+            !mergedBlocked.contains { blockedRule in permissionRuleEquals(blockedRule, allowedRule) }
         }
         settings.permissions.lastUpdated = Date()
+        persistSettingsAfterPermissionChange()
     }
 
     func requestAgentPermission(_ request: AgentPermissionRequest) async -> AgentPermissionDecision {
@@ -789,11 +802,14 @@ final class AppState: ObservableObject {
         }
     }
 
-    func approvePermission(_ id: UUID, updatedInputJSON: String? = nil) {
+    func approvePermission(_ id: UUID, remember: Bool = false, updatedInputJSON: String? = nil) {
         guard let request = pendingPermissions.first(where: { $0.id == id }) else { return }
         pendingPermissions.removeAll { $0.id == id }
+        if remember {
+            addAllowedTool(request.toolName)
+        }
         statusLine = t(.permissionAllowedFormat, request.toolName)
-        permissionContinuations.removeValue(forKey: id)?.resume(returning: .allow(remember: false, updatedInputJSON: updatedInputJSON))
+        permissionContinuations.removeValue(forKey: id)?.resume(returning: .allow(remember: remember, updatedInputJSON: updatedInputJSON))
     }
 
     func denyPermission(_ id: UUID) {
@@ -1150,11 +1166,44 @@ final class AppState: ObservableObject {
     }
 
     private func addUnique(_ tool: String, to keyPath: WritableKeyPath<ToolPermissionSettings, [String]>) {
-        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = canonicalPermissionRule(tool)
         guard !trimmed.isEmpty else { return }
-        if !settings.permissions[keyPath: keyPath].contains(trimmed) {
+        if !settings.permissions[keyPath: keyPath].contains(where: { permissionRuleEquals($0, trimmed) }) {
             settings.permissions[keyPath: keyPath].append(trimmed)
             settings.permissions.lastUpdated = Date()
+        }
+    }
+
+    private func canonicalPermissionRule(_ tool: String) -> String {
+        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let lowercased = trimmed.lowercased()
+        if lowercased.hasPrefix("bash("), trimmed.hasSuffix(")") {
+            return trimmed
+        }
+        return AgentToolNameCanonicalizer.canonical(trimmed)
+    }
+
+    private func permissionRuleEquals(_ lhs: String, _ rhs: String) -> Bool {
+        canonicalPermissionRule(lhs) == canonicalPermissionRule(rhs)
+    }
+
+    private func uniqueCanonicalRules(_ rules: [String]) -> [String] {
+        var result: [String] = []
+        for rule in rules {
+            let canonical = canonicalPermissionRule(rule)
+            guard !canonical.isEmpty, !result.contains(where: { permissionRuleEquals($0, canonical) }) else { continue }
+            result.append(canonical)
+        }
+        return result
+    }
+
+    private func persistSettingsAfterPermissionChange() {
+        do {
+            try settingsStore.save(settings)
+        } catch {
+            AppLog.write("failed to persist permission settings: \(error.localizedDescription)", file: "permissions.log")
+            errorBanner = error.localizedDescription
         }
     }
 
@@ -1231,6 +1280,15 @@ final class AppState: ObservableObject {
                     title: selectedSession?.displayTitle ?? "New Session",
                     projectName: routingProjectNameBySession[selectedSessionID] ?? selectedProject?.displayName ?? "general",
                     skill: Self.skillName(from: inputJSON)
+                )
+            } else if name == "Agent", let selectedSessionID {
+                routingService.recordSubagentInvocation(
+                    sessionID: selectedSessionID,
+                    title: selectedSession?.displayTitle ?? "New Session",
+                    projectName: routingProjectNameBySession[selectedSessionID] ?? selectedProject?.displayName ?? "general",
+                    model: routingModelBySession[selectedSessionID] ?? "unknown",
+                    tier: routingTierBySession[selectedSessionID] ?? "COMPLEX",
+                    inputJSON: inputJSON
                 )
             }
             upsertActivity(
@@ -1640,23 +1698,7 @@ final class AppState: ObservableObject {
     }
 
     private func activityPhase(for toolName: String) -> AgentActivityPhase {
-        let lower = toolName.lowercased()
-        if lower.contains("grep") || lower.contains("glob") || lower.contains("search") || lower.contains("rag") {
-            return .search
-        }
-        if lower == "skill" {
-            return .tool
-        }
-        if lower.contains("bash") || lower.contains("shell") || lower.contains("command") || lower.contains("exec") {
-            return .command
-        }
-        if lower.contains("edit") || lower.contains("write") || lower.contains("patch") || lower.contains("create") {
-            return .edit
-        }
-        if lower == "task" || lower.contains("agent") {
-            return .subagent
-        }
-        return .tool
+        AgentToolPresentationClassifier.phase(forToolName: toolName)
     }
 
     private func statusActivityID(_ status: String, assistantID: UUID) -> String {
@@ -1764,7 +1806,7 @@ enum NativeConfigService {
     }
 
     static func providerConfig(entryID: String, values: [String: String]) -> ProviderConfig? {
-        let providerID = values["models.entries.\(entryID).provider"] ?? "edgeclaw"
+        let providerID = providerID(entryID: entryID, values: values)
         let baseURL = values["models.providers.\(providerID).baseUrl"] ?? ""
         let model = values["models.entries.\(entryID).name"] ?? ""
         guard !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
@@ -1794,6 +1836,26 @@ enum NativeConfigService {
             secretAccount: providerID == "edgeclaw" ? ProviderConfig.empty.secretAccount : "9gclaw-provider-\(providerID)-api-key",
             headers: headers
         )
+    }
+
+    static func providerID(entryID: String, values: [String: String]) -> String {
+        values["models.entries.\(entryID).provider"]?.nilIfBlank ?? "edgeclaw"
+    }
+
+    static func resolvedAPIKey(
+        routeEntryID: String,
+        nativeConfig: NativeConfigSnapshot?,
+        keychainValue: String?,
+        apiKeyDraft: String
+    ) -> String {
+        guard let nativeConfig else {
+            return keychainValue?.nilIfBlank ?? apiKeyDraft
+        }
+        let providerID = providerID(entryID: routeEntryID, values: nativeConfig.rawValues)
+        return nativeConfig.rawValues["models.providers.\(providerID).apiKey"]?.nilIfBlank
+            ?? nativeConfig.apiKey?.nilIfBlank
+            ?? keychainValue?.nilIfBlank
+            ?? apiKeyDraft
     }
 
     private static func normalizeScalar(_ rawValue: String) -> String {

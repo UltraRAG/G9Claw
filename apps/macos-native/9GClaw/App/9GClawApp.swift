@@ -25,6 +25,14 @@ struct NineGClawApp: App {
                 .keyboardShortcut("n", modifiers: [.command])
             }
 
+            CommandGroup(replacing: .appSettings) {
+                Button(state.t(.settings)) {
+                    state.openSettings(.appearance)
+                    SettingsWindowPresenter.openAndBringToFront()
+                }
+                .keyboardShortcut(",", modifiers: [.command])
+            }
+
             CommandMenu("9GClaw") {
                 Button(state.t(.refreshProjects)) {
                     Task { await state.refreshProjects() }
@@ -41,7 +49,54 @@ struct NineGClawApp: App {
         Settings {
             SettingsView()
                 .environmentObject(state)
-                .frame(width: 760, height: 560)
+                .frame(width: 920, height: 640)
+        }
+    }
+}
+
+@MainActor
+enum SettingsWindowPresenter {
+    static let identifier = NSUserInterfaceItemIdentifier("9GClawSettingsWindow")
+
+    static func configure(window: NSWindow?) {
+        guard let window else { return }
+        window.identifier = identifier
+        window.title = "Settings"
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 860, height: 620)
+    }
+
+    static func openAndBringToFront() {
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        bringToFront()
+    }
+
+    static func bringToFront() {
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow(in: NSApp.windows)?.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            NSApp.activate(ignoringOtherApps: true)
+            settingsWindow(in: NSApp.windows)?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    static func settingsWindow(in windows: [NSWindow]) -> NSWindow? {
+        windows.first { $0.identifier == identifier }
+    }
+}
+
+struct SettingsWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            SettingsWindowPresenter.configure(window: view.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            SettingsWindowPresenter.configure(window: nsView.window)
         }
     }
 }
@@ -91,5 +146,10 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
         window.toolbarStyle = .unifiedCompact
         window.styleMask.insert(.fullSizeContentView)
         window.isMovableByWindowBackground = false
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
     }
 }

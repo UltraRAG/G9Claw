@@ -908,9 +908,10 @@ private struct MemoryJobButton: View {
                         .controlSize(.small)
                         .scaleEffect(0.55)
                 }
-                Text(state.phase == .running && !state.message.isEmpty ? state.message : title)
+                Text(title)
                     .lineLimit(1)
             }
+            .frame(minWidth: title.contains("回滚") ? 126 : 76)
         }
         .buttonStyle(WebToolbarButtonStyle(isProminent: isProminent))
         .disabled(state.phase == .running)
@@ -1769,25 +1770,51 @@ private struct SkillValidationSummary: View {
 
 struct DashboardView: View {
     @EnvironmentObject private var state: AppState
+    @State private var expandedSessions: Set<String> = []
+    @State private var showsTotalDashboard = false
 
     var body: some View {
-        let snapshot = state.routingService.dashboard(projects: state.projects, projectFilter: state.selectedProject?.name)
+        let selectedProject = state.selectedProject
+        let isProjectScoped = selectedProject != nil && !showsTotalDashboard
+        let snapshot = state.routingService.dashboard(
+            projects: state.projects,
+            projectFilter: isProjectScoped ? selectedProject?.name : nil
+        )
         let baseline = max(snapshot.estimatedCost + snapshot.savedCost, snapshot.estimatedCost)
         let savingsRate = baseline > 0 ? snapshot.savedCost / baseline : 0
+        let recentSessions = Array(snapshot.recentSessions.prefix(5))
+        let isChinese = state.settings.language.resolved() == .chineseSimplified
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if state.selectedProject != nil {
-                            Text("← 总计")
-                                .font(.system(size: 13))
-                                .foregroundStyle(DesignTokens.tertiaryText)
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if isProjectScoped {
+                            Button {
+                                withAnimation(.snappy(duration: 0.2)) {
+                                    showsTotalDashboard = true
+                                    expandedSessions.removeAll()
+                                }
+                            } label: {
+                                Label("总计", systemImage: "arrow.left")
+                                    .labelStyle(.titleAndIcon)
+                            }
+                            .buttonStyle(RoutingBackButtonStyle())
                         }
                         Text(state.t(.routing))
-                            .font(.system(size: 20, weight: .semibold))
-                        Text(state.t(.modelRoutingSummary))
-                            .font(.system(size: 13))
-                            .foregroundStyle(DesignTokens.tertiaryText)
+                            .font(.system(size: 19, weight: .semibold))
+                        HStack(spacing: 6) {
+                            Text(isProjectScoped ? "\(selectedProject?.displayName ?? selectedProject?.name ?? "Project") 的路由统计。" : state.t(.modelRoutingSummary))
+                            if !isProjectScoped, selectedProject != nil {
+                                Text("全部项目")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(.thinMaterial, in: Capsule())
+                                    .overlay(Capsule().stroke(DesignTokens.separator))
+                            }
+                        }
+                        .font(.system(size: 13))
+                        .foregroundStyle(DesignTokens.tertiaryText)
                     }
                     Spacer()
                     Button {
@@ -1799,122 +1826,337 @@ struct DashboardView: View {
                 }
 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
-                    RoutingStatCard(icon: "waveform.path.ecg", label: state.t(.requests), value: "\(snapshot.routedSessions)", detail: "\(snapshot.totalSessions) sessions")
-                    RoutingStatCard(icon: "sum", label: state.t(.tokens), value: formatTokens(snapshot.totalTokens), detail: "input/output recorded by native agent")
-                    RoutingStatCard(icon: "dollarsign", label: state.t(.cost), value: formatCost(snapshot.estimatedCost), detail: baseline > 0 ? "不走 Router \(formatCost(baseline))" : nil, hint: snapshot.savedCost > 0 ? "↗ 节省 \(formatCost(snapshot.savedCost)) (\(Int((savingsRate * 100).rounded()))%)" : nil)
+                    RoutingStatCard(
+                        icon: "waveform.path.ecg",
+                        label: state.t(.requests),
+                        value: "\(snapshot.routedSessions)",
+                        detail: isChinese ? "\(snapshot.totalSessions) 个会话" : "\(snapshot.totalSessions) sessions",
+                        compact: true
+                    )
+                    RoutingStatCard(
+                        icon: "sum",
+                        label: state.t(.tokens),
+                        value: formatTokens(snapshot.totalTokens),
+                        detail: isChinese ? "native agent 记录的输入/输出" : "input/output recorded by native agent",
+                        compact: true
+                    )
+                    RoutingStatCard(
+                        icon: "dollarsign",
+                        label: state.t(.cost),
+                        value: formatCost(snapshot.estimatedCost),
+                        detail: baseline > 0 ? (isChinese ? "不走 Router \(formatCost(baseline))" : "No router \(formatCost(baseline))") : nil,
+                        hint: snapshot.savedCost > 0
+                            ? (isChinese ? "↗ 节省 \(formatCost(snapshot.savedCost)) (\(Int((savingsRate * 100).rounded()))%)" : "↗ Saved \(formatCost(snapshot.savedCost)) (\(Int((savingsRate * 100).rounded()))%)")
+                            : nil,
+                        compact: true
+                    )
                 }
 
                 ToolSection(title: state.t(.recentRoutes)) {
-                    if snapshot.recentSessions.isEmpty {
+                    if recentSessions.isEmpty {
                         Text(state.t(.noRoutingActivity))
                             .font(.system(size: 13))
                             .foregroundStyle(DesignTokens.tertiaryText)
-                            .padding(.vertical, 24)
+                            .padding(.vertical, 18)
                     } else {
                         HStack {
                             Text(state.t(.session))
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            Text(state.t(.projects))
-                                .frame(width: 140, alignment: .leading)
+                            Text(isChinese ? "分类" : "Tier")
+                                .frame(width: 76, alignment: .trailing)
                             Text(state.t(.tokens))
-                                .frame(width: 80, alignment: .trailing)
+                                .frame(width: 82, alignment: .trailing)
                             Text(state.t(.cost))
-                                .frame(width: 80, alignment: .trailing)
+                                .frame(width: 72, alignment: .trailing)
+                            Text(isChinese ? "节省" : "Saved")
+                                .frame(width: 72, alignment: .trailing)
                         }
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(DesignTokens.tertiaryText)
                         .padding(.horizontal, 10)
                         .padding(.bottom, 6)
-                        ForEach(snapshot.recentSessions) { session in
-                            HStack(spacing: 12) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(session.title)
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .lineLimit(1)
-                                    Text(session.requestLog.first ?? relativeDate(session.lastActiveAt))
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(DesignTokens.tertiaryText)
-                                        .lineLimit(1)
+                        ForEach(recentSessions) { session in
+                            RoutingSessionRow(
+                                session: session,
+                                expanded: expandedSessions.contains(session.id),
+                                onToggle: {
+                                    withAnimation(.snappy(duration: 0.18)) {
+                                        if expandedSessions.contains(session.id) {
+                                            expandedSessions.remove(session.id)
+                                        } else {
+                                            expandedSessions.insert(session.id)
+                                        }
+                                    }
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                Text(session.projectName)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(DesignTokens.tertiaryText)
-                                    .frame(width: 140, alignment: .leading)
-                                Text("\(session.totalTokens)")
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .frame(width: 80, alignment: .trailing)
-                                Text(formatCost(session.estimatedCost))
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .frame(width: 80, alignment: .trailing)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 9)
-                            .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                            )
                         }
                     }
                 }
 
                 if !snapshot.recentSessions.isEmpty {
-                    VStack(spacing: 0) {
-                        HStack(spacing: 0) {
-                            costCell(title: "实际开销", value: formatCost(snapshot.estimatedCost), detail: "\(snapshot.routedSessions) routed sessions · \(formatTokens(snapshot.totalTokens)) tokens")
-                            Divider()
-                            costCell(title: "不走 Router 开销", value: formatCost(baseline), detail: "按所有路由 token 都交给主模型估算。")
-                            Divider()
-                            costCell(title: "节省", value: formatCost(snapshot.savedCost), detail: baseline > 0 ? "相对基准 \(Int((savingsRate * 100).rounded()))%" : "暂无基准")
-                                .foregroundStyle(DesignTokens.success)
-                        }
-                        .frame(height: 130)
-                        Divider()
-                        ForEach(snapshot.recentSessions.prefix(8)) { session in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(session.title)
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .lineLimit(1)
-                                    Text("\(session.byTier.keys.sorted().first ?? "RECORDED") · \(formatTokens(session.totalTokens)) tokens · \(relativeDate(session.lastActiveAt))")
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(DesignTokens.tertiaryText)
-                                }
-                                Spacer()
-                                Text(formatCost(session.estimatedCost))
-                                    .font(.system(size: 12, design: .monospaced))
-                                Text(session.savedCost > 0 ? "节省 \(formatCost(session.savedCost))" : "—")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(DesignTokens.success)
-                                    .frame(width: 100, alignment: .trailing)
-                            }
-                            .padding(.horizontal, 18)
-                            .frame(height: 58)
-                            Divider()
-                        }
-                    }
-                    .background(DesignTokens.success.opacity(0.055), in: RoundedRectangle(cornerRadius: DesignTokens.radius))
-                    .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.success.opacity(0.35)))
+                    RoutingCostSummaryCard(
+                        actual: snapshot.estimatedCost,
+                        baseline: baseline,
+                        saved: snapshot.savedCost,
+                        sessions: snapshot.routedSessions,
+                        tokens: snapshot.totalTokens,
+                        savingsRate: savingsRate,
+                        isChinese: isChinese
+                    )
                 }
             }
-            .frame(maxWidth: 960, alignment: .topLeading)
+            .frame(maxWidth: 980, alignment: .topLeading)
             .padding(.horizontal, 32)
-            .padding(.vertical, 28)
+            .padding(.vertical, 20)
         }
-        .background(DesignTokens.background)
+        .background(Color.clear)
+        .onChange(of: state.selectedProjectID) { _, _ in
+            showsTotalDashboard = false
+            expandedSessions.removeAll()
+        }
+    }
+}
+
+private struct RoutingBackButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(GlassControlBackground(isActive: false, cornerRadius: 14, showsShadow: false))
+            .opacity(configuration.isPressed ? 0.72 : 1)
+    }
+}
+
+private struct RoutingCostSummaryCard: View {
+    var actual: Double
+    var baseline: Double
+    var saved: Double
+    var sessions: Int
+    var tokens: Int
+    var savingsRate: Double
+    var isChinese: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            metric(isChinese ? "实际开销" : "Actual", formatCost(actual), isChinese ? "\(sessions) 个会话 · \(formatTokens(tokens)) tokens" : "\(sessions) sessions · \(formatTokens(tokens)) tokens", DesignTokens.text)
+            Divider()
+            metric(isChinese ? "不走 Router" : "No router", formatCost(baseline), isChinese ? "按主模型基准估算" : "Estimated on main model", DesignTokens.text)
+            Divider()
+            metric(isChinese ? "节省" : "Saved", formatCost(saved), baseline > 0 ? (isChinese ? "相对基准 \(Int((savingsRate * 100).rounded()))%" : "\(Int((savingsRate * 100).rounded()))% vs baseline") : (isChinese ? "暂无基准" : "No baseline"), DesignTokens.success)
+        }
+        .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
+        .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                .stroke(DesignTokens.success.opacity(0.22))
+        )
     }
 
-    private func costCell(title: String, value: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func metric(_ title: String, _ value: String, _ detail: String, _ color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
             Text(title)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(DesignTokens.tertiaryText)
             Text(value)
                 .font(.system(size: 22, weight: .semibold))
                 .monospacedDigit()
+                .foregroundStyle(color)
             Text(detail)
-                .font(.system(size: 12))
+                .font(.system(size: 11))
                 .foregroundStyle(DesignTokens.tertiaryText)
+                .lineLimit(1)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct RoutingSessionRow: View {
+    var session: RoutingDashboardSession
+    var expanded: Bool
+    var onToggle: () -> Void
+
+    private var primaryTier: String {
+        if let first = session.requestEntries.last(where: { $0.tier != nil })?.tier {
+            return first
+        }
+        return session.byTier.keys.sorted().first ?? "RECORDED"
+    }
+
+    private var entries: [RoutingRequestLogEntry] {
+        session.requestEntries.sorted { $0.ts < $1.ts }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button(action: onToggle) {
+                HStack(spacing: 10) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .frame(width: 14)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(session.title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(DesignTokens.text)
+                            .lineLimit(1)
+                        HStack(spacing: 8) {
+                            Text(session.projectName)
+                            if let skill = entries.last(where: { $0.skill != nil })?.skill {
+                                Text("skill \(skill)")
+                            } else if let query = entries.last?.query, !query.isEmpty {
+                                Text(query)
+                                    .lineLimit(1)
+                            } else {
+                                Text(relativeDate(session.lastActiveAt))
+                            }
+                        }
+                        .font(.system(size: 11))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    TierBadge(tier: primaryTier)
+                        .frame(width: 76, alignment: .trailing)
+                    Text(formatTokens(session.total.totalTokens))
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .frame(width: 82, alignment: .trailing)
+                    Text(formatCost(session.total.estimatedCost))
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .frame(width: 72, alignment: .trailing)
+                    Text(session.total.savedCost > 0 ? formatCost(session.total.savedCost) : "—")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(session.total.savedCost > 0 ? DesignTokens.success : DesignTokens.tertiaryText)
+                        .frame(width: 72, alignment: .trailing)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator.opacity(0.56)))
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if entries.isEmpty {
+                        ForEach(session.requestLog.suffix(8), id: \.self) { line in
+                            Text(line)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                        }
+                    } else {
+                        ForEach(entries) { entry in
+                            RoutingRequestLogRow(entry: entry)
+                        }
+                    }
+                }
+                .padding(.leading, 38)
+                .padding(.trailing, 10)
+                .padding(.vertical, 10)
+                .background(DesignTokens.cardSurface.opacity(0.92), in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+                .clipped()
+            }
+        }
+        .animation(.snappy(duration: 0.18), value: expanded)
+    }
+}
+
+private struct RoutingRequestLogRow: View {
+    var entry: RoutingRequestLogEntry
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: iconName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(iconColor)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(entry.role == "sub" ? "Subagent" : "Main")
+                        .font(.system(size: 12, weight: .semibold))
+                    if let tier = entry.tier {
+                        TierBadge(tier: tier)
+                    }
+                    Text(entry.model)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                    Spacer()
+                    Text(formatTokens(entry.tokens))
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                    Text(formatCost(entry.cost))
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                }
+                if let skill = entry.skill {
+                    Text("Skill: \(skill)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                }
+                if let query = entry.query, !query.isEmpty {
+                    Text(query)
+                        .font(.system(size: 12))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .lineLimit(2)
+                }
+                if let saved = entry.savedCost, saved > 0 {
+                    Text("Baseline \(formatCost(entry.baselineCost ?? 0)) · Saved \(formatCost(saved))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(DesignTokens.success)
+                }
+            }
+        }
+        .padding(10)
+        .background(DesignTokens.cardSurface, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator.opacity(0.62)))
+    }
+
+    private var iconName: String {
+        if entry.skill != nil { return "sparkles" }
+        if entry.role == "sub" { return "square.stack.3d.up" }
+        return "arrow.triangle.branch"
+    }
+
+    private var iconColor: Color {
+        entry.skill != nil ? DesignTokens.warning : DesignTokens.tertiaryText
+    }
+}
+
+private struct TierBadge: View {
+    var tier: String
+
+    var body: some View {
+        Text(tier)
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .foregroundStyle(foreground)
+            .background(background, in: Capsule())
+    }
+
+    private var background: Color {
+        switch tier.uppercased() {
+        case "SIMPLE": DesignTokens.accent.opacity(0.12)
+        case "MEDIUM": DesignTokens.warning.opacity(0.14)
+        case "REASONING": Color.purple.opacity(0.12)
+        default: DesignTokens.success.opacity(0.12)
+        }
+    }
+
+    private var foreground: Color {
+        switch tier.uppercased() {
+        case "SIMPLE": DesignTokens.accent
+        case "MEDIUM": DesignTokens.warning
+        case "REASONING": Color.purple
+        default: DesignTokens.success
+        }
     }
 }
 
@@ -1933,13 +2175,18 @@ struct AlwaysOnView: View {
         let history = state.alwaysOnService.runHistory(projectRoot: context.rootPath)
         return AnyView(
             VStack(spacing: 0) {
-                HStack(spacing: 4) {
-                    TabButton(state.t(.plansCronJobs), isActive: subtab == .items) { subtab = .items; selectedRun = nil }
-                    TabButton(state.t(.runHistory), isActive: subtab == .history) { subtab = .history; selectedPlan = nil }
+                HStack(spacing: 6) {
+                    HStack(spacing: 2) {
+                        TabButton(state.t(.plansCronJobs), isActive: subtab == .items) { subtab = .items; selectedRun = nil }
+                        TabButton(state.t(.runHistory), isActive: subtab == .history) { subtab = .history; selectedPlan = nil }
+                    }
+                    .padding(3)
+                    .background(GlassControlBackground(isActive: false, cornerRadius: 16, material: .popover, showsShadow: false))
                     Spacer()
                 }
-                .padding(.horizontal, 14)
-                .frame(height: 36)
+                .padding(.horizontal, 24)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
                 .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator).frame(height: 1) }
 
                 ScrollView {
@@ -1968,11 +2215,11 @@ struct AlwaysOnView: View {
                             itemsView(plans: plans, cronJobs: cronJobs, projectRoot: context.rootPath)
                         }
                     }
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 20)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 18)
                 }
             }
-            .background(DesignTokens.background)
+            .background(Color.clear)
         )
     }
 
@@ -2005,9 +2252,9 @@ struct AlwaysOnView: View {
                 }
             }
         }
-        .padding(18)
-        .background(DesignTokens.background, in: RoundedRectangle(cornerRadius: DesignTokens.radius))
-        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
+        .padding(16)
+        .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous).stroke(DesignTokens.separator.opacity(0.72)))
     }
 
     private func startDiscovery(context: WorkspaceContext) {
@@ -2561,8 +2808,16 @@ private struct PillTabButtonStyle: ButtonStyle {
             .font(.system(size: 13, weight: isActive ? .medium : .regular))
             .foregroundStyle(isActive ? DesignTokens.text : DesignTokens.tertiaryText)
             .padding(.horizontal, 10)
-            .frame(height: 30)
-            .background(isActive ? DesignTokens.neutral100 : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+            .frame(height: 28)
+            .background(
+                Group {
+                    if isActive {
+                        GlassControlBackground(isActive: true, cornerRadius: 13, material: .popover, showsShadow: false)
+                    } else {
+                        Color.clear
+                    }
+                }
+            )
             .opacity(configuration.isPressed ? 0.75 : 1)
     }
 }
@@ -2766,8 +3021,8 @@ private struct ToolSection<Content: View>: View {
                 content()
             }
             .padding(16)
-            .background(DesignTokens.background, in: RoundedRectangle(cornerRadius: DesignTokens.radius))
-            .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
+            .background(DesignTokens.cardSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator.opacity(0.72)))
         }
     }
 }
@@ -2903,9 +3158,10 @@ private struct RoutingStatCard: View {
     var value: String
     var detail: String?
     var hint: String?
+    var compact = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: compact ? 7 : 10) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
                     .font(.system(size: 13, weight: .medium))
@@ -2915,25 +3171,31 @@ private struct RoutingStatCard: View {
                     .foregroundStyle(DesignTokens.tertiaryText)
             }
             Text(value)
-                .font(.system(size: 28, weight: .semibold))
+                .font(.system(size: compact ? 22 : 26, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(DesignTokens.text)
-            if let detail {
-                Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-                    .lineLimit(2)
-            }
-            if let hint {
-                Text(hint)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(DesignTokens.success)
+            if detail != nil || hint != nil {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if let detail {
+                        Text(detail)
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    if let hint {
+                        Text(hint)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(DesignTokens.success)
+                            .lineLimit(1)
+                    }
+                }
             }
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
-        .background(DesignTokens.background, in: RoundedRectangle(cornerRadius: DesignTokens.radius))
-        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
+        .padding(compact ? 14 : 18)
+        .frame(maxWidth: .infinity, minHeight: compact ? 104 : 120, maxHeight: compact ? 104 : nil, alignment: .topLeading)
+        .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator.opacity(0.72)))
     }
 }
 
@@ -2948,8 +3210,14 @@ struct WebToolbarButtonStyle: ButtonStyle {
             .padding(.horizontal, 10)
             .frame(minWidth: isProminent ? 56 : 32, minHeight: 32)
             .background(
-                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                    .fill(isProminent ? DesignTokens.neutral900 : DesignTokens.neutral100)
+                Group {
+                    if isProminent {
+                        RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                            .fill(DesignTokens.neutral900)
+                    } else {
+                        GlassControlBackground(isActive: false, cornerRadius: DesignTokens.smallRadius, showsShadow: false)
+                    }
+                }
             )
             .opacity(configuration.isPressed ? 0.76 : 1)
     }
@@ -2959,11 +3227,12 @@ struct WebFieldStyle: TextFieldStyle {
     func _body(configuration: TextField<Self._Label>) -> some View {
         configuration
             .font(.system(size: 13))
-            .padding(.horizontal, 10)
-            .frame(height: 32)
-            .background(
+            .padding(.horizontal, 11)
+            .frame(height: 34)
+            .background(DesignTokens.background.opacity(0.92), in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+            .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                    .fill(DesignTokens.neutral100)
+                    .stroke(DesignTokens.separator.opacity(0.66))
             )
     }
 }
