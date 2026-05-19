@@ -184,11 +184,7 @@ final class AppState: ObservableObject {
 
     @discardableResult
     func consumeComposerRunModeForSend() -> ChatRunMode {
-        let runMode = composerRunMode
-        if runMode == .plan {
-            composerRunMode = .agent
-        }
-        return runMode
+        composerRunMode
     }
 
     @discardableResult
@@ -823,6 +819,9 @@ final class AppState: ObservableObject {
         if remember {
             addAllowedTool(request.toolName)
         }
+        if request.kind == .exitPlanMode {
+            updateComposerRunModeAfterPlanDecision(updatedInputJSON: updatedInputJSON)
+        }
         statusLine = t(.permissionAllowedFormat, request.toolName)
         permissionContinuations.removeValue(forKey: id)?.resume(returning: .allow(remember: remember, updatedInputJSON: updatedInputJSON))
     }
@@ -830,8 +829,24 @@ final class AppState: ObservableObject {
     func denyPermission(_ id: UUID) {
         guard let request = pendingPermissions.first(where: { $0.id == id }) else { return }
         pendingPermissions.removeAll { $0.id == id }
+        if request.kind == .exitPlanMode {
+            composerRunMode = .agent
+        }
         statusLine = t(.permissionDeniedFormat, request.toolName)
         permissionContinuations.removeValue(forKey: id)?.resume(returning: .deny)
+    }
+
+    private func updateComposerRunModeAfterPlanDecision(updatedInputJSON: String?) {
+        guard let updatedInputJSON,
+              let data = updatedInputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            composerRunMode = .agent
+            return
+        }
+        let mode = ((object["mode"] as? String) ?? "agent")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        composerRunMode = mode == "plan" ? .plan : .agent
     }
 
     private func applyNativeConfigFromCurrentText() {

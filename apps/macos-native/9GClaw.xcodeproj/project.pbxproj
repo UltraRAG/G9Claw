@@ -33,6 +33,7 @@
 		B040 /* 9gclaw-logo.png in Resources */ = {isa = PBXBuildFile; fileRef = F040 /* 9gclaw-logo.png */; };
 		B041 /* 9gclaw-logo-white.png in Resources */ = {isa = PBXBuildFile; fileRef = F041 /* 9gclaw-logo-white.png */; };
 		B042 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F042 /* Assets.xcassets */; };
+		B043 /* edgeclaw-rag-plugin in Resources */ = {isa = PBXBuildFile; fileRef = F043 /* edgeclaw-rag-plugin */; };
 		B100 /* ParityLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100 /* ParityLogicTests.swift */; };
 		BF901 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FW901 /* AppIntents.framework */; };
 		BF902 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FW901 /* AppIntents.framework */; };
@@ -77,6 +78,7 @@
 		F040 /* 9gclaw-logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "9gclaw-logo.png"; sourceTree = "<group>"; };
 		F041 /* 9gclaw-logo-white.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "9gclaw-logo-white.png"; sourceTree = "<group>"; };
 		F042 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		F043 /* edgeclaw-rag-plugin */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "edgeclaw-rag-plugin"; path = "../../packages/edgeclaw-rag-plugin"; sourceTree = SOURCE_ROOT; };
 		F100 /* ParityLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityLogicTests.swift; sourceTree = "<group>"; };
 		FW901 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -170,6 +172,7 @@
 				F042 /* Assets.xcassets */,
 				F040 /* 9gclaw-logo.png */,
 				F041 /* 9gclaw-logo-white.png */,
+				F043 /* edgeclaw-rag-plugin */,
 			);
 			path = Assets;
 			sourceTree = "<group>";
@@ -277,6 +280,7 @@
 				B042 /* Assets.xcassets in Resources */,
 				B040 /* 9gclaw-logo.png in Resources */,
 				B041 /* 9gclaw-logo-white.png in Resources */,
+				B043 /* edgeclaw-rag-plugin in Resources */,
 			); runOnlyForDeploymentPostprocessing = 0; };
 		BR100 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */

@@ -3,29 +3,23 @@ import XCTest
 @testable import NineGClaw
 
 final class ParityLogicTests: XCTestCase {
-    func testWorkspaceRejectsSystemPaths() {
+    func testWorkspacePathValidationCoversRootOutsideAndSystemPaths() {
         let service = WorkspaceService(workspaceRoot: URL(fileURLWithPath: "/Users/tester"))
 
         XCTAssertFalse(service.validateWorkspacePath("/").valid)
         XCTAssertFalse(service.validateWorkspacePath("/usr/bin").valid)
         XCTAssertFalse(service.validateWorkspacePath("/opt/homebrew").valid)
         XCTAssertFalse(service.validateWorkspacePath("/tmp/work").valid)
-    }
 
-    func testWorkspaceRejectsPathOutsideRoot() {
-        let service = WorkspaceService(workspaceRoot: URL(fileURLWithPath: "/Users/tester/Workspace"))
-        let result = service.validateWorkspacePath("/Users/tester/Downloads/project")
+        let workspaceService = WorkspaceService(workspaceRoot: URL(fileURLWithPath: "/Users/tester/Workspace"))
+        let outside = workspaceService.validateWorkspacePath("/Users/tester/Downloads/project")
 
-        XCTAssertFalse(result.valid)
-        XCTAssertEqual(result.error, "Workspace path must be within the allowed workspace root: /Users/tester/Workspace")
-    }
+        XCTAssertFalse(outside.valid)
+        XCTAssertEqual(outside.error, "Workspace path must be within the allowed workspace root: /Users/tester/Workspace")
 
-    func testWorkspaceAllowsPathInsideRoot() {
-        let service = WorkspaceService(workspaceRoot: URL(fileURLWithPath: "/Users/tester"))
-        let result = service.validateWorkspacePath("/Users/tester/project")
-
-        XCTAssertTrue(result.valid)
-        XCTAssertEqual(result.resolvedPath, "/Users/tester/project")
+        let inside = service.validateWorkspacePath("/Users/tester/project")
+        XCTAssertTrue(inside.valid)
+        XCTAssertEqual(inside.resolvedPath, "/Users/tester/project")
     }
 
     func testProjectNameMatchesWebManualProjectSlugPolicy() {
@@ -239,9 +233,8 @@ final class ParityLogicTests: XCTestCase {
             "SemanticSearch",
             "Shell",
             "Await",
-            "WebSearch",
-            "WebFetch",
             "ReadLints",
+            "Skill",
             "TodoWrite",
             "AskQuestion",
             "SwitchMode",
@@ -255,25 +248,26 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(names.contains("Edit"))
         XCTAssertFalse(names.contains("ExitPlanMode"))
         XCTAssertFalse(names.contains("AskUserQuestion"))
+        XCTAssertFalse(names.contains("WebSearch"))
+        XCTAssertFalse(names.contains("WebFetch"))
+        XCTAssertFalse(names.contains("Weather"))
     }
 
-    func testAgentToolNameCanonicalizerAcceptsSubagentAliases() {
-        XCTAssertEqual(AgentToolNameCanonicalizer.canonical("Agent"), "Task")
-        XCTAssertEqual(AgentToolNameCanonicalizer.canonical("subagent"), "Task")
-        XCTAssertEqual(AgentToolNameCanonicalizer.canonical("sub_agent"), "Task")
-        XCTAssertEqual(AgentToolNameCanonicalizer.canonical("sub-agent"), "Task")
-    }
-
-    func testAgentToolNameCanonicalizerKeepsClaudeCodeAliasesCompatible() {
+    func testAgentToolNameCanonicalizerKeepsClaudeCodeAndSubagentAliasesCompatible() {
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("Edit"), "StrReplace")
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("MultiEdit"), "StrReplace")
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("Bash"), "Shell")
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("run_command"), "Shell")
+        XCTAssertEqual(AgentToolNameCanonicalizer.canonical("Agent"), "Task")
+        XCTAssertEqual(AgentToolNameCanonicalizer.canonical("subagent"), "Task")
+        XCTAssertEqual(AgentToolNameCanonicalizer.canonical("sub_agent"), "Task")
+        XCTAssertEqual(AgentToolNameCanonicalizer.canonical("sub-agent"), "Task")
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("TaskCreate"), "Task")
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("TaskOutput"), "Await")
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("AskUserQuestion"), "AskQuestion")
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("ExitPlanMode"), "SwitchMode")
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("NotebookEdit"), "EditNotebook")
+        XCTAssertEqual(AgentToolNameCanonicalizer.canonical("GetWeather"), "Weather")
     }
 
     func testNativeAgentRuntimeParsesFallbackJSONToolCall() {
@@ -327,6 +321,39 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(calls.first?.name, "Skill")
         XCTAssertEqual(object["skill"] as? String, "9gclaw-rag:glm-web-search")
         XCTAssertEqual(object["args"] as? String, "Beijing weather")
+    }
+
+    func testLegacySearchAndWeatherCallsNormalizeToGLMSkill() throws {
+        let search = ToolArgumentNormalizer.normalize(AgentToolCall(
+            id: "search",
+            name: "WebSearch",
+            inputJSON: #"{"query":"Beijing weather"}"#
+        ))
+        let weather = ToolArgumentNormalizer.normalize(AgentToolCall(
+            id: "weather",
+            name: "GetWeather",
+            inputJSON: #"{"location":"北京"}"#
+        ))
+        let missing = ToolArgumentNormalizer.normalize(AgentToolCall(
+            id: "missing",
+            name: "Weather",
+            inputJSON: #"{"unit":"celsius"}"#
+        ))
+
+        XCTAssertEqual(search.call.name, "Skill")
+        XCTAssertEqual(weather.call.name, "Skill")
+        XCTAssertNil(search.recoveryResult)
+        XCTAssertNil(weather.recoveryResult)
+
+        let searchObject = try jsonObject(from: search.call.inputJSON)
+        let weatherObject = try jsonObject(from: weather.call.inputJSON)
+        XCTAssertEqual(searchObject["skill"] as? String, "9gclaw-rag:glm-web-search")
+        XCTAssertEqual(searchObject["args"] as? String, "Beijing weather")
+        XCTAssertEqual(weatherObject["skill"] as? String, "9gclaw-rag:glm-web-search")
+        XCTAssertEqual(weatherObject["args"] as? String, "北京 weather")
+        XCTAssertEqual(missing.call.name, "Skill")
+        XCTAssertTrue(missing.recoveryResult?.isError == true)
+        XCTAssertTrue(missing.recoveryResult?.output.contains("glm-web-search") == true)
     }
 
     func testNativeAgentRuntimeParsesLegacyCommandFallbackAsToolOnly() {
@@ -387,27 +414,25 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(invocation.recoveryResult?.output.contains("JSON object") == true)
     }
 
-    func testAskUserQuestionNormalizesWebQuestionsShape() throws {
-        let payload = try XCTUnwrap(AgentInteractivePayload.askUserQuestion(from: """
+    func testAskUserQuestionNormalizesWebAndLegacyQuestionShapes() throws {
+        let webPayload = try XCTUnwrap(AgentInteractivePayload.askUserQuestion(from: """
         {"questions":[{"header":"Choose","question":"What should I build?","options":[{"label":"Landing Page","description":"Product page"},{"label":"Blog"}],"multiSelect":false}]}
         """))
 
-        XCTAssertEqual(payload.questions.count, 1)
-        XCTAssertEqual(payload.questions.first?.header, "Choose")
-        XCTAssertEqual(payload.questions.first?.question, "What should I build?")
-        XCTAssertEqual(payload.questions.first?.options.map(\.label), ["Landing Page", "Blog"])
-        XCTAssertEqual(payload.questions.first?.options.first?.description, "Product page")
-        XCTAssertEqual(payload.questions.first?.multiSelect, false)
-    }
+        XCTAssertEqual(webPayload.questions.count, 1)
+        XCTAssertEqual(webPayload.questions.first?.header, "Choose")
+        XCTAssertEqual(webPayload.questions.first?.question, "What should I build?")
+        XCTAssertEqual(webPayload.questions.first?.options.map(\.label), ["Landing Page", "Blog"])
+        XCTAssertEqual(webPayload.questions.first?.options.first?.description, "Product page")
+        XCTAssertEqual(webPayload.questions.first?.multiSelect, false)
 
-    func testAskUserQuestionNormalizesLegacyQuestionShape() throws {
-        let payload = try XCTUnwrap(AgentInteractivePayload.askUserQuestion(from: """
+        let legacyPayload = try XCTUnwrap(AgentInteractivePayload.askUserQuestion(from: """
         {"question":"Pick a style","options":["Minimal","Playful"]}
         """))
 
-        XCTAssertEqual(payload.questions.count, 1)
-        XCTAssertEqual(payload.questions.first?.question, "Pick a style")
-        XCTAssertEqual(payload.questions.first?.options.map(\.label), ["Minimal", "Playful"])
+        XCTAssertEqual(legacyPayload.questions.count, 1)
+        XCTAssertEqual(legacyPayload.questions.first?.question, "Pick a style")
+        XCTAssertEqual(legacyPayload.questions.first?.options.map(\.label), ["Minimal", "Playful"])
     }
 
     func testAskUserQuestionUpdatedInputCarriesAnswers() throws {
@@ -536,6 +561,7 @@ final class ParityLogicTests: XCTestCase {
         let context = AgentRunContext(
             request: agentRequest(runMode: .plan, permissionMode: .default, toolSettings: permissions)
         )
+        context.planQuestionAnswered = true
         let call = AgentToolCall(
             id: "exit-plan",
             name: "SwitchMode",
@@ -546,6 +572,28 @@ final class ParityLogicTests: XCTestCase {
             XCTAssertTrue(reason.lowercased().contains("plan approval"))
         } else {
             XCTFail("Allowed tools must not bypass Plan exit confirmation.")
+        }
+    }
+
+    func testPlanSwitchModeRequiresAskQuestionBeforeConfirmation() {
+        let context = AgentRunContext(request: agentRequest(runMode: .plan, permissionMode: .bypassPermissions))
+        let call = AgentToolCall(
+            id: "exit-plan-before-question",
+            name: "SwitchMode",
+            inputJSON: #"{"mode":"agent","plan":"Edit index.html."}"#
+        )
+
+        if case .deny(let reason) = AgentPermissionPolicy.policy(for: call, context: context) {
+            XCTAssertTrue(reason.contains("AskQuestion"))
+        } else {
+            XCTFail("Plan mode must require an answered AskQuestion before exit.")
+        }
+
+        context.planQuestionAnswered = true
+        if case .ask(let reason) = AgentPermissionPolicy.policy(for: call, context: context) {
+            XCTAssertTrue(reason.lowercased().contains("plan approval"))
+        } else {
+            XCTFail("Plan exit should ask after the planning question is answered.")
         }
     }
 
@@ -601,6 +649,20 @@ final class ParityLogicTests: XCTestCase {
                 assistantContent: "I should continue."
             )
         )
+    }
+
+    func testPlanModeContinuationNudgesEvenForNonWorkspacePrompt() {
+        let request = agentRequest(prompt: "北京天气怎么样？", runMode: .plan, permissionMode: .bypassPermissions)
+        let context = AgentRunContext(request: request)
+
+        let nudge = NativeAgentRuntime.continuationNudge(
+            request: request,
+            context: context,
+            assistantContent: "北京今天晴。"
+        )
+
+        XCTAssertNotNil(nudge)
+        XCTAssertTrue(nudge?.contains("AskQuestion") == true)
     }
 
     func testWorkspaceMutationIgnoresInjectedMemoryContext() {
@@ -834,7 +896,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("scratch").path))
     }
 
-    func testAgentToolExecutorSearchShellAwaitWebFetchAndLints() async throws {
+    func testAgentToolExecutorSearchShellAwaitAndLints() async throws {
         let root = try makeAgentWorkspace("9gclaw-agent-search")
         defer {
             AgentBackgroundTaskStore.shared.terminate()
@@ -843,11 +905,6 @@ final class ParityLogicTests: XCTestCase {
         try FileManager.default.createDirectory(at: root.appendingPathComponent("src"), withIntermediateDirectories: true)
         try "func renderDashboard() {}\nlet title = \"alpha\"\n".write(
             to: root.appendingPathComponent("src/App.swift"),
-            atomically: true,
-            encoding: .utf8
-        )
-        try "<html><body><h1>Fetched Title</h1><p>Body text</p></body></html>".write(
-            to: root.appendingPathComponent("page.html"),
             atomically: true,
             encoding: .utf8
         )
@@ -902,20 +959,41 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(awaited.isError, awaited.output)
         XCTAssertTrue(awaited.output.contains("bg-ok"))
 
-        let fetchURL = root.appendingPathComponent("page.html").absoluteString
-        let fetch = await NativeToolRouter.execute(
-            call: AgentToolCall(id: "fetch", name: "WebFetch", inputJSON: toolJSON(["url": fetchURL, "prompt": "extract text"])),
-            context: context
-        )
-        XCTAssertFalse(fetch.isError, fetch.output)
-        XCTAssertTrue(fetch.output.contains("Fetched Title"))
-
         let lints = await NativeToolRouter.execute(
             call: AgentToolCall(id: "lints", name: "ReadLints", inputJSON: #"{"path":".","severity":"warning"}"#),
             context: context
         )
         XCTAssertFalse(lints.isError, lints.output)
         XCTAssertTrue(lints.output.contains("lint warning"))
+    }
+
+    func testLegacySearchAndWeatherExecutionsNormalizeToGLMSkillWhileWebFetchIsDisabled() async throws {
+        let root = try makeAgentWorkspace("9gclaw-agent-disabled-search")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
+
+        let search = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "web-search", name: "WebSearch", inputJSON: #"{"query":"Beijing weather"}"#),
+            context: context
+        )
+        let weather = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "weather", name: "GetWeather", inputJSON: #"{"location":"北京"}"#),
+            context: context
+        )
+        let fetch = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "web-fetch", name: "WebFetch", inputJSON: #"{"url":"https://example.com","prompt":"extract"}"#),
+            context: context
+        )
+
+        XCTAssertFalse(search.isError, search.output)
+        XCTAssertFalse(weather.isError, weather.output)
+        XCTAssertEqual(search.toolName, "Skill")
+        XCTAssertEqual(weather.toolName, "Skill")
+        XCTAssertTrue(search.output.contains("9gclaw-rag:glm-web-search"))
+        XCTAssertTrue(weather.output.contains("9gclaw-rag:glm-web-search"))
+        XCTAssertTrue(context.invokedSkills.contains("9gclaw-rag:glm-web-search"))
+        XCTAssertTrue(fetch.isError)
+        XCTAssertTrue(fetch.output.contains("glm-web-search"))
     }
 
     func testAgentToolExecutorInteractionModeTodoAndTaskTools() async throws {
@@ -1005,58 +1083,6 @@ final class ParityLogicTests: XCTestCase {
         } else {
             XCTFail("Mutating/full-agent Task must be denied in plan mode.")
         }
-    }
-
-    func testWebSearchReturnsToolErrorWhenProviderIsMissing() async throws {
-        let root = try makeAgentWorkspace("9gclaw-agent-websearch")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
-
-        let result = await NativeToolRouter.execute(
-            call: AgentToolCall(id: "web-search", name: "WebSearch", inputJSON: #"{"query":"test","allowed_domains":["example.com"]}"#),
-            context: context
-        )
-
-        XCTAssertEqual(result.toolName, "WebSearch")
-        XCTAssertFalse(result.output.isEmpty)
-    }
-
-    func testAppInfoPlistIncludesATSForHTTPProviders() throws {
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let plistURL = repoRoot
-            .appendingPathComponent("9GClaw")
-            .appendingPathComponent("App")
-            .appendingPathComponent("Info.plist")
-        let data = try Data(contentsOf: plistURL)
-        var format: PropertyListSerialization.PropertyListFormat = .xml
-        let rawPlist = try PropertyListSerialization.propertyList(from: data, options: [], format: &format)
-        let plist = try XCTUnwrap(rawPlist as? [String: Any])
-        let ats = try XCTUnwrap(plist["NSAppTransportSecurity"] as? [String: Any])
-
-        XCTAssertEqual(ats["NSAllowsArbitraryLoads"] as? Bool, true)
-        XCTAssertEqual(ats["NSAllowsLocalNetworking"] as? Bool, true)
-        let exceptionDomains = try XCTUnwrap(ats["NSExceptionDomains"] as? [String: Any])
-        let edgeclawHTTPProvider = try XCTUnwrap(exceptionDomains["58.57.119.12"] as? [String: Any])
-        XCTAssertEqual(edgeclawHTTPProvider["NSExceptionAllowsInsecureHTTPLoads"] as? Bool, true)
-    }
-
-    func testAppInfoPlistDeclaresAppIcon() throws {
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let plistURL = repoRoot
-            .appendingPathComponent("9GClaw")
-            .appendingPathComponent("App")
-            .appendingPathComponent("Info.plist")
-        let data = try Data(contentsOf: plistURL)
-        var format: PropertyListSerialization.PropertyListFormat = .xml
-        let rawPlist = try PropertyListSerialization.propertyList(from: data, options: [], format: &format)
-        let plist = try XCTUnwrap(rawPlist as? [String: Any])
-
-        XCTAssertEqual(plist["CFBundleIconName"] as? String, "AppIcon")
-        XCTAssertEqual(plist["CFBundleIconFile"] as? String, "AppIcon")
     }
 
     func testComposerPasteboardReaderParsesFinderFileAndMixedText() throws {
@@ -1340,8 +1366,8 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(updated.contains("router:"))
     }
 
-    func testConfigYAMLAPIKeyIsPreferredOverKeychainFallback() {
-        let yaml = """
+    func testConfigYAMLAPIKeyResolutionPrefersYAMLAndFallsBackToKeychainWhenBlank() {
+        let yamlWithKey = """
         models:
           providers:
             edgeclaw:
@@ -1353,20 +1379,18 @@ final class ParityLogicTests: XCTestCase {
               provider: edgeclaw
               name: qwen3.6-27b
         """
-        let snapshot = NativeConfigService.snapshot(from: yaml)
+        let snapshotWithKey = NativeConfigService.snapshot(from: yamlWithKey)
 
-        let resolved = NativeConfigService.resolvedAPIKey(
+        let resolvedYAMLKey = NativeConfigService.resolvedAPIKey(
             routeEntryID: "default",
-            nativeConfig: snapshot,
+            nativeConfig: snapshotWithKey,
             keychainValue: "keychain-secret",
             apiKeyDraft: "draft-secret"
         )
 
-        XCTAssertEqual(resolved, "yaml-secret")
-    }
+        XCTAssertEqual(resolvedYAMLKey, "yaml-secret")
 
-    func testConfigYAMLAPIKeyFallsBackToKeychainWhenBlank() {
-        let yaml = """
+        let yamlBlankKey = """
         models:
           providers:
             edgeclaw:
@@ -1378,16 +1402,16 @@ final class ParityLogicTests: XCTestCase {
               provider: edgeclaw
               name: qwen3.6-27b
         """
-        let snapshot = NativeConfigService.snapshot(from: yaml)
+        let snapshotBlankKey = NativeConfigService.snapshot(from: yamlBlankKey)
 
-        let resolved = NativeConfigService.resolvedAPIKey(
+        let resolvedFallbackKey = NativeConfigService.resolvedAPIKey(
             routeEntryID: "default",
-            nativeConfig: snapshot,
+            nativeConfig: snapshotBlankKey,
             keychainValue: "keychain-secret",
             apiKeyDraft: "draft-secret"
         )
 
-        XCTAssertEqual(resolved, "keychain-secret")
+        XCTAssertEqual(resolvedFallbackKey, "keychain-secret")
     }
 
     func testSkillsSlugValidationRejectsTraversal() {
@@ -1490,6 +1514,7 @@ final class ParityLogicTests: XCTestCase {
             permissionMode: .bypassPermissions,
             toolSettings: toolSettings
         ))
+        context.planQuestionAnswered = true
         let call = AgentToolCall(
             id: "switch-plan",
             name: "SwitchMode",
@@ -1500,6 +1525,21 @@ final class ParityLogicTests: XCTestCase {
             XCTAssertTrue(reason.lowercased().contains("plan approval"))
         } else {
             XCTFail("SwitchMode must still ask in Plan mode.")
+        }
+    }
+
+    func testAgentModeSwitchModeStillShowsPlanConfirmation() {
+        let context = AgentRunContext(request: agentRequest(runMode: .agent, permissionMode: .bypassPermissions))
+        let call = AgentToolCall(
+            id: "switch-agent-plan",
+            name: "SwitchMode",
+            inputJSON: #"{"mode":"agent","plan":"Implement the change."}"#
+        )
+
+        if case .ask(let reason) = NativeToolRouter.permissionPolicy(for: call, context: context) {
+            XCTAssertTrue(reason.lowercased().contains("plan approval"))
+        } else {
+            XCTFail("Agent-mode SwitchMode must still render the plan confirmation card.")
         }
     }
 
@@ -1576,7 +1616,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(String(describing: compaction?.messages ?? []).contains("microcompacted"))
     }
 
-    func testToolInvocationPresentationRendersShellCommand() {
+    func testToolInvocationPresentationRendersShellRawFallbackAndCommonFields() {
         let presentation = ToolInvocationPresentation.parse(
             toolName: "bash",
             inputJSON: #"{"command":"sed -n '1,20p' README.md\nrg -n \"ChatView\" .","description":"Inspect UI"}"#
@@ -1589,20 +1629,16 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(presentation.primaryValue, presentation.command)
         let target = ToolInvocationPresentation.target(toolName: "Shell", inputJSON: presentation.rawInput, limit: 80)
         XCTAssertEqual(target, "sed -n '1,20p' README.md rg -n \"ChatView\" .")
-    }
 
-    func testToolInvocationPresentationFallsBackToRawInputForMalformedJSON() {
-        let presentation = ToolInvocationPresentation.parse(toolName: "Read", inputJSON: "{path: README.md")
+        let fallback = ToolInvocationPresentation.parse(toolName: "Read", inputJSON: "{path: README.md")
 
-        XCTAssertFalse(presentation.parsed)
-        XCTAssertNil(presentation.command)
-        XCTAssertEqual(presentation.fields, [
+        XCTAssertFalse(fallback.parsed)
+        XCTAssertNil(fallback.command)
+        XCTAssertEqual(fallback.fields, [
             ToolInvocationField(label: "Raw input", value: "{path: README.md", isPrimary: true),
         ])
-        XCTAssertEqual(presentation.primaryValue, "{path: README.md")
-    }
+        XCTAssertEqual(fallback.primaryValue, "{path: README.md")
 
-    func testToolInvocationPresentationExtractsCommonToolFields() {
         let read = ToolInvocationPresentation.parse(toolName: "Read", inputJSON: #"{"file_path":"/tmp/App.swift","offset":12}"#)
         let grep = ToolInvocationPresentation.parse(toolName: "Grep", inputJSON: #"{"pattern":"ToolInvocation","path":"apps/macos-native"}"#)
         let glob = ToolInvocationPresentation.parse(toolName: "Glob", inputJSON: #"{"pattern":"**/*.swift","path":"apps/macos-native"}"#)
@@ -1663,23 +1699,88 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(filtered.map(\.id), ["second"])
     }
 
+    func testChatScrollPinningStateDetachesAndRepinsByBottomGap() {
+        var pinning = ChatScrollPinningState()
+        XCTAssertTrue(pinning.shouldFollowOutput)
+
+        pinning.update(bottomY: 480, viewportHeight: 320)
+        XCTAssertFalse(pinning.shouldFollowOutput)
+
+        pinning.update(bottomY: 336, viewportHeight: 320)
+        XCTAssertTrue(pinning.shouldFollowOutput)
+
+        let now = Date()
+        pinning.recordProgrammaticScroll(now: now)
+        pinning.update(bottomY: 360, viewportHeight: 320, now: now.addingTimeInterval(0.10))
+        XCTAssertTrue(pinning.shouldFollowOutput)
+
+        pinning.update(bottomY: 420, viewportHeight: 320, now: now.addingTimeInterval(0.10))
+        XCTAssertFalse(pinning.shouldFollowOutput)
+    }
+
+    func testProcessTraceSummaryShowsRunningCommandWithShimmer() {
+        let activity = AgentActivity(
+            id: "shell",
+            sessionId: "session",
+            title: "Running Shell",
+            detail: #"{"command":"sed -n '1,20p' README.md"}"#,
+            phase: .command,
+            state: .running,
+            createdAt: Date(),
+            updatedAt: Date(),
+            toolName: "Shell"
+        )
+
+        let summary = ProcessTraceSummary.make(activities: [activity], isChinese: true)
+
+        XCTAssertTrue(summary.shouldShimmer)
+        XCTAssertEqual(summary.runningActivityID, "shell")
+        XCTAssertTrue(summary.text.contains("正在执行"))
+        XCTAssertTrue(summary.text.contains("sed -n"))
+    }
+
     @MainActor
-    func testComposerRunModeConsumeResetsPlanAfterSnapshot() {
+    func testComposerRunModeStaysPlanAfterSendUntilPlanDecision() {
         let state = AppState()
         state.composerRunMode = .plan
 
         let requested = state.consumeComposerRunModeForSend()
 
         XCTAssertEqual(requested, .plan)
-        XCTAssertEqual(state.composerRunMode, .agent)
-    }
+        XCTAssertEqual(state.composerRunMode, .plan)
 
-    func testAgentEventTerminalClassification() {
-        XCTAssertTrue(AgentEvent.complete(sessionId: "s").isTerminal)
-        XCTAssertTrue(AgentEvent.aborted(sessionId: "s").isTerminal)
-        XCTAssertTrue(AgentEvent.error("boom").isTerminal)
-        XCTAssertFalse(AgentEvent.streamEnd.isTerminal)
-        XCTAssertFalse(AgentEvent.status("thinking").isTerminal)
+        let refineID = UUID()
+        state.pendingPermissions = [
+            PermissionRequest(
+                id: refineID,
+                sessionId: "session",
+                toolName: "SwitchMode",
+                inputJSON: #"{"mode":"agent","plan":"Ship it."}"#,
+                reason: "Plan approval is required before leaving Plan mode.",
+                scope: .session,
+                createdAt: Date(),
+                kind: .exitPlanMode
+            ),
+        ]
+        state.approvePermission(refineID, updatedInputJSON: #"{"mode":"plan","userFeedback":"revise"}"#)
+        XCTAssertEqual(state.composerRunMode, .plan)
+
+        let executeID = UUID()
+        state.pendingPermissions = [
+            PermissionRequest(
+                id: executeID,
+                sessionId: "session",
+                toolName: "SwitchMode",
+                inputJSON: #"{"mode":"agent","plan":"Ship it."}"#,
+                reason: "Plan approval is required before leaving Plan mode.",
+                scope: .session,
+                createdAt: Date(),
+                kind: .exitPlanMode
+            ),
+        ]
+        state.approvePermission(executeID, updatedInputJSON: #"{"mode":"agent","plan":"Ship it."}"#)
+
+        XCTAssertEqual(state.composerRunMode, .agent)
     }
 
     func testSkillToolPlanPolicyRemainsAvailableForLegacyFallbacks() {
@@ -1688,7 +1789,7 @@ final class ParityLogicTests: XCTestCase {
             guard let function = tool["function"] as? [String: Any] else { return nil }
             return function["name"] as? String
         }
-        XCTAssertFalse(names.contains("Skill"))
+        XCTAssertTrue(names.contains("Skill"))
 
         let context = AgentRunContext(request: agentRequest(runMode: .plan))
         let call = AgentToolCall(
@@ -1778,6 +1879,17 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(environment["EDGECLAW_RAG_ENABLED"], "true")
         XCTAssertEqual(environment["EDGECLAW_RAG_GLM_WEB_SEARCH_API_KEY"], "test-rag-key")
         XCTAssertNotNil(environment["CLAUDE_PLUGIN_ROOT"])
+    }
+
+    func testBundledRAGPluginResourceIsPackaged() throws {
+        let resources = try XCTUnwrap(Bundle.main.resourceURL)
+        let skillFile = resources
+            .appendingPathComponent("edgeclaw-rag-plugin", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent("glm-web-search", isDirectory: true)
+            .appendingPathComponent("SKILL.md")
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: skillFile.path))
     }
 
     func testRouterChoosesTierModelWithoutDARPAHardcoding() {

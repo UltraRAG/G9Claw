@@ -242,6 +242,7 @@ enum AgentToolNameCanonicalizer {
             return "Await"
         case "websearch", "web_search", "web-search": return "WebSearch"
         case "webfetch", "web_fetch", "web-fetch": return "WebFetch"
+        case "weather", "getweather", "get_weather", "get-weather": return "Weather"
         case "readlints", "read_lints", "read-lints", "lints", "lint": return "ReadLints"
         case "skill", "loadskill", "load_skill": return "Skill"
         case "task", "taskcreate", "task_create", "task-create", "agent", "subagent", "sub_agent", "sub-agent":
@@ -277,6 +278,13 @@ struct ToolArgumentNormalizer {
         let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
         switch canonicalObjectJSONString(call.inputJSON) {
         case .success(let canonical):
+            if let legacySearch = canonicalizedLegacySearchInvocation(
+                callId: call.id,
+                toolName: canonicalName,
+                inputJSON: canonical
+            ) {
+                return legacySearch
+            }
             let canonicalInput = canonicalToolInputJSON(toolName: canonicalName, inputJSON: canonical)
             return NormalizedInvocation(
                 call: AgentToolCall(id: call.id, name: canonicalName, inputJSON: canonicalInput),
@@ -295,6 +303,67 @@ struct ToolArgumentNormalizer {
                 )
             )
         }
+    }
+
+    private static func canonicalizedLegacySearchInvocation(
+        callId: String,
+        toolName: String,
+        inputJSON: String
+    ) -> NormalizedInvocation? {
+        guard toolName == "WebSearch" || toolName == "Weather" else { return nil }
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        guard let rawQuery = firstStringValue(
+            keys: ["query", "q", "search_query", "location", "city", "place"],
+            in: object
+        ) else {
+            return NormalizedInvocation(
+                call: AgentToolCall(id: callId, name: "Skill", inputJSON: "{}"),
+                recoveryResult: AgentToolResult(
+                    callId: callId,
+                    toolName: "Skill",
+                    output: "\(toolName) is disabled. Use Skill with 9gclaw-rag:glm-web-search and provide a query.",
+                    isError: true
+                )
+            )
+        }
+        let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        let args = toolName == "Weather" && !lower.contains("weather") && !trimmed.contains("天气")
+            ? "\(trimmed) weather"
+            : trimmed
+        return NormalizedInvocation(
+            call: AgentToolCall(
+                id: callId,
+                name: "Skill",
+                inputJSON: jsonString([
+                    "skill": "9gclaw-rag:glm-web-search",
+                    "args": args,
+                ])
+            ),
+            recoveryResult: nil
+        )
+    }
+
+    private static func firstStringValue(keys: [String], in object: [String: Any]) -> String? {
+        for key in keys {
+            guard let value = object[key] else { continue }
+            let string: String
+            if let raw = value as? String {
+                string = raw
+            } else if let number = value as? NSNumber {
+                string = number.stringValue
+            } else {
+                string = String(describing: value)
+            }
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return nil
     }
 
     static func providerSafeInputJSON(_ inputJSON: String) -> String {
@@ -468,6 +537,7 @@ final class AgentRunContext: @unchecked Sendable {
     var contextWindow: Int
     var nativeConfigValues: [String: String]
     var invokedSkills: [String]
+    var planQuestionAnswered: Bool
     var subagentDepth: Int
     var maxSubagentDepth: Int
     var lastExecutedToolName: String?
@@ -496,6 +566,7 @@ final class AgentRunContext: @unchecked Sendable {
         contextWindow = request.contextWindow
         nativeConfigValues = request.nativeConfigValues
         invokedSkills = []
+        planQuestionAnswered = request.runMode == .agent
         subagentDepth = 0
         maxSubagentDepth = max(0, Int(request.nativeConfigValues["runtime.maxSubagentDepth"] ?? "") ?? 1)
         lastExecutedToolName = nil
@@ -534,8 +605,11 @@ final class AgentRunContext: @unchecked Sendable {
                 recoverableProtocolErrorCount += 1
             }
         }
+        if result.toolName == "AskQuestion", !result.isError {
+            planQuestionAnswered = true
+        }
         switch result.toolName {
-        case "Read", "Glob", "Grep", "SemanticSearch", "WebSearch", "WebFetch", "ReadLints", "TodoRead", "Skill", "TodoWrite", "AskQuestion", "Await":
+        case "Read", "Glob", "Grep", "SemanticSearch", "ReadLints", "TodoRead", "Skill", "TodoWrite", "AskQuestion", "Await":
             exploratoryToolCount += 1
             if !result.isError, mutatingToolCount > 0 {
                 verificationAfterMutationCount += 1
@@ -740,11 +814,11 @@ enum CompletionGate {
         if context.lastToolResultWasError {
             return false
         }
-        guard NativeAgentRuntime.isWorkspaceMutationRequest(request.prompt) else {
-            return true
-        }
         if context.runMode == .plan, !context.planExited {
             return false
+        }
+        guard NativeAgentRuntime.isWorkspaceMutationRequest(request.prompt) else {
+            return true
         }
         if context.mutatingToolCount == 0 {
             return false
@@ -1396,7 +1470,7 @@ struct NativeAgentRuntime: Sendable {
 
     private static func nativeAgentSystemPrompt(request: AgentRequest) -> String {
         let modeText = request.runMode == .plan
-            ? "You are in plan mode. Read/search/todo/question tools are allowed. Do not edit files or run mutating shell commands until SwitchMode is called with mode=\"agent\" and a concrete plan."
+            ? "You are in plan mode. Read/search/todo/question tools are allowed. Ask the user at least one blocking question with AskQuestion before requesting execution. Do not edit files or run mutating shell commands until SwitchMode is called with mode=\"agent\" and a concrete plan, and the user approves it."
             : "You are in agent mode. Use tools to inspect and modify the workspace."
         return """
         You are 9GClaw, a native macOS coding agent with a Claude Code style workflow.
@@ -1406,9 +1480,10 @@ struct NativeAgentRuntime: Sendable {
         Use the provided tools for all file reads, file writes, edits, searches, todos, and shell commands.
         Never claim that you created, edited, deleted, or inspected a file unless the corresponding tool result confirms it.
         Prefer small, verifiable steps: inspect files, make precise edits, run focused checks, then summarize.
-        Prefer the canonical tool names: Read, Write, StrReplace, Delete, EditNotebook, Grep, Glob, SemanticSearch, Shell, Await, WebSearch, WebFetch, ReadLints, TodoWrite, AskQuestion, SwitchMode, and Task.
+        Prefer the canonical tool names: Read, Write, StrReplace, Delete, EditNotebook, Grep, Glob, SemanticSearch, Shell, Await, ReadLints, Skill, TodoWrite, AskQuestion, SwitchMode, and Task.
         For shell commands, use Shell only when needed and keep commands scoped to the workspace. Use run_in_background plus Await for long-running commands.
-        Use WebSearch for current public web results and WebFetch for a specific URL. Use Task for delegated analysis or shell-focused background work.
+        For current public information, weather, or web evidence, call Skill with skill="9gclaw-rag:glm-web-search" or skill="9gclaw-rag:rag-research". Do not call separate weather, web search, or web fetch tools directly.
+        Use Task for delegated analysis or shell-focused background work.
         If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request and no other prose in that assistant turn.
         Example: {"tool":"Read","input":{"file_path":"README.md"}}
         Do not emit markdown fences, language labels such as "bash" or "json", or a prose explanation when requesting a tool.
@@ -1435,15 +1510,20 @@ struct NativeAgentRuntime: Sendable {
         guard context.recoverableProtocolErrorCount < ContinuationPolicy.maxRecoverableProtocolErrors else { return nil }
         let content = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let prompt = primaryUserPrompt(from: request.prompt).lowercased()
+        if request.runMode == .plan, !context.planExited {
+            if !context.planQuestionAnswered {
+                return """
+                Continue the planning turn. Ask the user at least one blocking question with AskQuestion before requesting execution. Do not call SwitchMode mode="agent" until the user answers.
+                """
+            }
+            return """
+            Continue the planning turn. If the plan is concrete enough to execute, call SwitchMode with mode="agent" and the plan so the user can approve implementation. Do not stop after prose only.
+            """
+        }
         guard isWorkspaceMutationRequest(prompt) else { return nil }
         let refusalPhrases = ["cannot", "can't", "unable", "无法", "不能", "没有权限", "不支持"]
         if refusalPhrases.contains(where: { content.contains($0) }) {
             return nil
-        }
-        if request.runMode == .plan, !context.planExited {
-            return """
-            Continue the planning turn. If the plan is concrete enough to execute, call SwitchMode with mode="agent" and the plan so the same turn can proceed to implementation. Do not stop after prose only.
-            """
         }
         if context.mutatingToolCount == 0 {
             return """
@@ -2189,9 +2269,8 @@ enum AgentToolRegistry {
         "SemanticSearch",
         "Shell",
         "Await",
-        "WebSearch",
-        "WebFetch",
         "ReadLints",
+        "Skill",
         "TodoWrite",
         "AskQuestion",
         "SwitchMode",
@@ -2340,31 +2419,6 @@ enum AgentToolRegistry {
                 required: ["task_id"]
             ),
             functionTool(
-                "WebSearch",
-                "Search the web using the configured 9GClaw GLM/RAG search provider.",
-                [
-                    "query": stringProperty("Search query."),
-                    "allowed_domains": [
-                        "type": "array",
-                        "items": stringProperty("Allowed result domain."),
-                    ],
-                    "blocked_domains": [
-                        "type": "array",
-                        "items": stringProperty("Blocked result domain."),
-                    ],
-                ],
-                required: ["query"]
-            ),
-            functionTool(
-                "WebFetch",
-                "Fetch and extract content from a URL.",
-                [
-                    "url": stringProperty("URL to fetch."),
-                    "prompt": stringProperty("Prompt or extraction instruction to apply to fetched content."),
-                ],
-                required: ["url", "prompt"]
-            ),
-            functionTool(
                 "ReadLints",
                 "Read current workspace linter or diagnostic findings when available.",
                 [
@@ -2373,6 +2427,15 @@ enum AgentToolRegistry {
                     "limit": integerProperty("Maximum number of diagnostics."),
                 ],
                 required: []
+            ),
+            functionTool(
+                "Skill",
+                "Load a 9GClaw skill. Use 9gclaw-rag:glm-web-search for public web search and weather, or 9gclaw-rag:rag-research for source-grounded research.",
+                [
+                    "skill": stringProperty("Skill name, for example 9gclaw-rag:glm-web-search."),
+                    "args": stringProperty("User query or task arguments for the skill."),
+                ],
+                required: ["skill"]
             ),
             functionTool(
                 "TodoWrite",
@@ -2508,8 +2571,6 @@ enum AgentPermissionPolicy {
         "Glob",
         "Grep",
         "SemanticSearch",
-        "WebSearch",
-        "WebFetch",
         "ReadLints",
         "Skill",
         "TodoRead",
@@ -2520,7 +2581,7 @@ enum AgentPermissionPolicy {
     ])
 
     static let mutatingTools = Set(["Write", "StrReplace", "Delete", "EditNotebook", "Shell"])
-    static let interactiveTools = Set(["AskQuestion", "SwitchMode"])
+    static let interactiveTools = Set(["AskQuestion"])
 
     static func policy(for call: AgentToolCall, context: AgentRunContext) -> Result {
         let toolName = normalizedToolName(call.name)
@@ -2530,7 +2591,10 @@ enum AgentPermissionPolicy {
         if matchesAny(ruleSet: context.toolSettings.disallowedTools, call: call) {
             return .deny("\(toolName) is blocked by permissions settings.")
         }
-        if context.runMode == .plan, !context.planExited, toolName == "SwitchMode" {
+        if toolName == "SwitchMode", switchModeTarget(call.inputJSON) == "agent" {
+            if context.runMode == .plan, !context.planExited, !context.planQuestionAnswered {
+                return .deny("AskQuestion is required before leaving Plan mode.")
+            }
             return .ask("Plan approval is required before leaving Plan mode.")
         }
         if context.permissionMode == .bypassPermissions {
@@ -2543,6 +2607,16 @@ enum AgentPermissionPolicy {
             return .ask("9GClaw wants to run \(toolName).")
         }
         return .allow
+    }
+
+    private static func switchModeTarget(_ inputJSON: String) -> String {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return "agent"
+        }
+        return ((object["mode"] as? String) ?? "agent")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 
     private static func normalizedToolName(_ value: String) -> String {
@@ -2758,8 +2832,7 @@ enum SkillRuntimeService {
         let sourceRoot = repoRootFromSourceFile().map {
             $0.appendingPathComponent("packages/edgeclaw-rag-plugin", isDirectory: true)
         }
-        let fixedRoot = URL(fileURLWithPath: "/Users/hx/Workspace/edgeclaw-opc/packages/edgeclaw-rag-plugin", isDirectory: true)
-        for candidate in [envRoot, bundleRoot, sourceRoot, fixedRoot].compactMap({ $0 }) {
+        for candidate in [bundleRoot, envRoot, sourceRoot].compactMap({ $0 }) {
             if manager.fileExists(atPath: candidate.appendingPathComponent("skills", isDirectory: true).path) {
                 return candidate
             }
@@ -2887,46 +2960,51 @@ enum SkillRuntimeService {
 
 enum AgentToolExecutor {
     static func execute(call: AgentToolCall, context: AgentRunContext) async -> AgentToolResult {
-        let toolName = AgentToolNameCanonicalizer.canonical(call.name)
+        let invocation = ToolArgumentNormalizer.normalize(call)
+        if let recoveryResult = invocation.recoveryResult {
+            return recoveryResult
+        }
+        let executionCall = invocation.call
+        let toolName = AgentToolNameCanonicalizer.canonical(executionCall.name)
         do {
             let output: String
             switch toolName {
             case "Read":
-                output = try read(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+                output = try read(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "Write":
-                output = try write(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+                output = try write(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "StrReplace":
-                output = try strReplace(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+                output = try strReplace(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "Delete":
-                output = try delete(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+                output = try delete(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "EditNotebook":
-                output = try editNotebook(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+                output = try editNotebook(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "Grep":
-                output = try grep(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+                output = try grep(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "Glob":
-                output = try glob(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+                output = try glob(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "SemanticSearch":
-                output = try semanticSearch(inputJSON: call.inputJSON, workspacePath: context.workspacePath)
+                output = try semanticSearch(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "Shell":
-                output = try await shell(inputJSON: call.inputJSON, context: context)
+                output = try await shell(inputJSON: executionCall.inputJSON, context: context)
             case "Await":
-                output = try await awaitTask(inputJSON: call.inputJSON)
+                output = try await awaitTask(inputJSON: executionCall.inputJSON)
             case "WebSearch":
-                output = try await webSearch(inputJSON: call.inputJSON, context: context)
+                throw ProviderClientError.toolExecution("WebSearch is disabled. Use Skill with 9gclaw-rag:glm-web-search.")
             case "WebFetch":
-                output = try await webFetch(inputJSON: call.inputJSON, context: context)
+                throw ProviderClientError.toolExecution("WebFetch is disabled. Use Skill with 9gclaw-rag:glm-web-search or 9gclaw-rag:rag-research.")
             case "ReadLints":
-                output = try await readLints(inputJSON: call.inputJSON, context: context)
+                output = try await readLints(inputJSON: executionCall.inputJSON, context: context)
             case "Skill":
-                output = try SkillRuntimeService.load(inputJSON: call.inputJSON, context: context)
+                output = try SkillRuntimeService.load(inputJSON: executionCall.inputJSON, context: context)
             case "Task":
-                output = try await runTask(inputJSON: call.inputJSON, context: context)
+                output = try await runTask(inputJSON: executionCall.inputJSON, context: context)
             case "TodoRead":
                 output = context.todosJSON
             case "TodoWrite":
-                output = try todoWrite(inputJSON: call.inputJSON, context: context)
+                output = try todoWrite(inputJSON: executionCall.inputJSON, context: context)
             case "SwitchMode":
-                let input = try inputObject(from: call.inputJSON)
+                let input = try inputObject(from: executionCall.inputJSON)
                 let mode = ((input["mode"] as? String) ?? "agent").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 if mode == "agent" {
                     context.planExited = true
@@ -2941,13 +3019,13 @@ enum AgentToolExecutor {
                     output = (input["plan"] as? String).nilIfBlank ?? "Mode switched to \(mode)."
                 }
             case "AskQuestion":
-                output = askUserQuestionOutput(inputJSON: call.inputJSON)
+                output = askUserQuestionOutput(inputJSON: executionCall.inputJSON)
             default:
                 throw ProviderClientError.toolExecution("Unsupported tool: \(toolName)")
             }
-            return AgentToolResult(callId: call.id, toolName: toolName, output: limitOutput(output), isError: false)
+            return AgentToolResult(callId: executionCall.id, toolName: toolName, output: limitOutput(output), isError: false)
         } catch {
-            return AgentToolResult(callId: call.id, toolName: toolName, output: error.localizedDescription, isError: true)
+            return AgentToolResult(callId: executionCall.id, toolName: toolName, output: error.localizedDescription, isError: true)
         }
     }
 
@@ -3793,6 +3871,7 @@ enum AgentToolExecutor {
         )
         let child = AgentRunContext(request: request)
         child.planExited = context.planExited
+        child.planQuestionAnswered = context.planQuestionAnswered
         child.todosJSON = context.todosJSON
         child.subagentDepth = context.subagentDepth
         child.maxSubagentDepth = context.maxSubagentDepth

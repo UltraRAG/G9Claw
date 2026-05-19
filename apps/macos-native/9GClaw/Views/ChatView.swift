@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 struct ChatView: View {
     @EnvironmentObject private var state: AppState
-    @State private var isPinnedToBottom = true
+    @State private var scrollPinning = ChatScrollPinningState()
 
     var body: some View {
         conversationBody
@@ -60,25 +60,17 @@ struct ChatView: View {
                             .coordinateSpace(name: ChatScrollTarget.coordinateSpace)
                             .scrollIndicators(.automatic)
                             .onPreferenceChange(ChatBottomOffsetPreferenceKey.self) { bottom in
-                                isPinnedToBottom = bottom <= geometry.size.height + 36
+                                scrollPinning.update(bottomY: bottom, viewportHeight: geometry.size.height)
                             }
                             .onChange(of: state.currentMessages.count) { _, _ in
-                                guard isPinnedToBottom else { return }
-                                withAnimation(.easeOut(duration: 0.18)) {
-                                    proxy.scrollTo(ChatScrollTarget.bottom, anchor: .bottom)
-                                }
+                                followBottomIfPinned(proxy)
                             }
                             .onChange(of: state.currentActivities.count) { _, _ in
                                 guard isPinnedToBottom, !traceActivities.isEmpty else { return }
-                                withAnimation(.easeOut(duration: 0.18)) {
-                                    proxy.scrollTo(ChatScrollTarget.bottom, anchor: .bottom)
-                                }
+                                followBottomIfPinned(proxy)
                             }
                             .onChange(of: state.streamRenderRevision) { _, _ in
-                                guard isPinnedToBottom else { return }
-                                withAnimation(.easeOut(duration: 0.16)) {
-                                    proxy.scrollTo(ChatScrollTarget.bottom, anchor: .bottom)
-                                }
+                                followBottomIfPinned(proxy)
                             }
                         }
                     }
@@ -116,6 +108,18 @@ struct ChatView: View {
         AgentActivity.processTraceActivities(state.currentActivities, anchoredTo: latestAssistantID?.uuidString)
     }
 
+    private var isPinnedToBottom: Bool {
+        scrollPinning.isPinnedToBottom
+    }
+
+    private func followBottomIfPinned(_ proxy: ScrollViewProxy) {
+        guard scrollPinning.shouldFollowOutput else { return }
+        scrollPinning.recordProgrammaticScroll()
+        withAnimation(.easeOut(duration: 0.16)) {
+            proxy.scrollTo(ChatScrollTarget.bottom, anchor: .bottom)
+        }
+    }
+
     private var emptyLanding: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
@@ -145,6 +149,38 @@ private struct ChatBottomOffsetPreferenceKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+struct ChatScrollPinningState: Equatable {
+    static let attachThreshold: CGFloat = 24
+    static let detachThreshold: CGFloat = 72
+    static let programmaticGraceInterval: TimeInterval = 0.35
+
+    var isPinnedToBottom = true
+    var lastProgrammaticScrollAt: Date?
+
+    var shouldFollowOutput: Bool {
+        isPinnedToBottom
+    }
+
+    mutating func recordProgrammaticScroll(now: Date = Date()) {
+        isPinnedToBottom = true
+        lastProgrammaticScrollAt = now
+    }
+
+    mutating func update(bottomY: CGFloat, viewportHeight: CGFloat, now: Date = Date()) {
+        let gap = max(0, bottomY - viewportHeight)
+        if let lastProgrammaticScrollAt,
+           now.timeIntervalSince(lastProgrammaticScrollAt) < Self.programmaticGraceInterval,
+           gap <= Self.detachThreshold {
+            return
+        }
+        if gap <= Self.attachThreshold {
+            isPinnedToBottom = true
+        } else if gap >= Self.detachThreshold {
+            isPinnedToBottom = false
+        }
     }
 }
 
@@ -1172,6 +1208,117 @@ struct ToolInvocationPresentation: Equatable {
     }
 }
 
+struct ProcessTraceSummary: Equatable {
+    var text: String
+    var shouldShimmer: Bool
+    var runningActivityID: String?
+
+    static func make(activities: [AgentActivity], isChinese: Bool) -> ProcessTraceSummary {
+        let visible = activities.filter { activity in
+            !activity.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !activity.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                activity.toolName != nil
+        }.sorted { $0.createdAt < $1.createdAt }
+
+        if let running = visible.last(where: { $0.state == .running && $0.toolName != nil }) {
+            return ProcessTraceSummary(
+                text: runningText(for: running, isChinese: isChinese),
+                shouldShimmer: true,
+                runningActivityID: running.id
+            )
+        }
+        if let running = visible.last(where: { $0.state == .running }) {
+            return ProcessTraceSummary(
+                text: running.title.isEmpty ? (isChinese ? "正在处理" : "Processing") : running.title,
+                shouldShimmer: true,
+                runningActivityID: running.id
+            )
+        }
+        return ProcessTraceSummary(text: aggregateText(for: visible, isChinese: isChinese), shouldShimmer: false, runningActivityID: nil)
+    }
+
+    private static func runningText(for activity: AgentActivity, isChinese: Bool) -> String {
+        let targetText = target(for: activity).map { " \($0)" } ?? ""
+        let toolName = activity.toolName ?? ""
+        let phase = AgentToolPresentationClassifier.phase(forToolName: toolName)
+        if AgentToolPresentationClassifier.isReadTool(toolName) {
+            return isChinese ? "正在读取\(targetText)" : "Reading\(targetText)"
+        }
+        switch phase {
+        case .search:
+            return isChinese ? "正在搜索\(targetText)" : "Searching\(targetText)"
+        case .command:
+            return isChinese ? "正在执行\(targetText)" : "Running\(targetText)"
+        case .edit:
+            return isChinese ? "正在编辑\(targetText)" : "Editing\(targetText)"
+        case .subagent:
+            return isChinese ? "正在运行任务\(targetText)" : "Running task\(targetText)"
+        default:
+            let fallback = activity.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return fallback.isEmpty ? (isChinese ? "正在处理" : "Processing") : fallback
+        }
+    }
+
+    private static func aggregateText(for activities: [AgentActivity], isChinese: Bool) -> String {
+        let reads = uniqueTargets(in: activities) { activity in
+            activity.toolName.map(AgentToolPresentationClassifier.isReadTool) == true
+        }.count
+        let edits = uniqueTargets(in: activities) { AgentToolPresentationClassifier.phase(forToolName: $0.toolName ?? "") == .edit }.count
+        let searches = activities.filter { AgentToolPresentationClassifier.phase(forToolName: $0.toolName ?? "") == .search }.count
+        let commands = activities.filter { AgentToolPresentationClassifier.phase(forToolName: $0.toolName ?? "") == .command }.count
+        let otherTools = activities.filter { $0.toolName != nil }.count
+
+        var parts: [String] = []
+        if isChinese {
+            if reads > 0 { parts.append("已探索 \(reads) 个文件") }
+            if searches > 0 { parts.append("\(searches) 次搜索") }
+            if edits > 0 { parts.append("已编辑 \(edits) 个文件") }
+            if commands > 0 { parts.append("已运行 \(commands) 条命令") }
+            if parts.isEmpty, otherTools > 0 { parts.append("已使用 \(otherTools) 个工具") }
+            return parts.isEmpty ? "正在处理" : parts.joined(separator: " ")
+        }
+
+        if reads > 0 { parts.append("explored \(reads) \(reads == 1 ? "file" : "files")") }
+        if searches > 0 { parts.append("\(searches) \(searches == 1 ? "search" : "searches")") }
+        if edits > 0 { parts.append("edited \(edits) \(edits == 1 ? "file" : "files")") }
+        if commands > 0 { parts.append("ran \(commands) \(commands == 1 ? "command" : "commands")") }
+        if parts.isEmpty, otherTools > 0 { parts.append("used \(otherTools) \(otherTools == 1 ? "tool" : "tools")") }
+        return parts.isEmpty ? "Processing" : parts.joined(separator: ", ")
+    }
+
+    private static func uniqueTargets(in activities: [AgentActivity], where predicate: (AgentActivity) -> Bool) -> Set<String> {
+        Set(activities.compactMap { activity in
+            guard predicate(activity) else { return nil }
+            return target(for: activity) ?? activity.id
+        })
+    }
+
+    private static func target(for activity: AgentActivity) -> String? {
+        guard let toolName = activity.toolName else { return nil }
+        let sources = [activity.detail] + activity.detailMessages
+        for source in sources {
+            if let target = ToolInvocationPresentation.target(toolName: toolName, inputJSON: source, limit: 64) {
+                return target
+            }
+            let compact = compact(source, limit: 64)
+            if !compact.isEmpty, !compact.hasPrefix("{") {
+                return compact
+            }
+        }
+        return nil
+    }
+
+    private static func compact(_ value: String, limit: Int) -> String {
+        let normalized = value
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > limit else { return normalized }
+        let index = normalized.index(normalized.startIndex, offsetBy: max(0, limit - 1))
+        return String(normalized[..<index]) + "…"
+    }
+}
+
 private struct InlineProcessToolRow: View {
     @EnvironmentObject private var state: AppState
     var call: ToolCall
@@ -1198,10 +1345,15 @@ private struct InlineProcessToolRow: View {
             } label: {
                 HStack(spacing: 8) {
                     CodexInlineToolIcon(phase: phase, state: stateForRow)
-                    Text(title)
-                        .font(CodexProcessStyle.rowFont)
-                        .foregroundStyle(failed ? DesignTokens.danger.opacity(0.78) : CodexProcessStyle.title)
-                        .lineLimit(1)
+                    if running {
+                        ShimmeringProcessText(text: title, font: CodexProcessStyle.rowFont)
+                            .lineLimit(1)
+                    } else {
+                        Text(title)
+                            .font(CodexProcessStyle.rowFont)
+                            .foregroundStyle(failed ? DesignTokens.danger.opacity(0.78) : CodexProcessStyle.title)
+                            .lineLimit(1)
+                    }
                     if running {
                         ProgressView()
                             .controlSize(.small)
@@ -1483,10 +1635,15 @@ private struct InlineProcessToolGroupRow: View {
             } label: {
                 HStack(spacing: 8) {
                     CodexInlineToolIcon(phase: dominantPhase, state: groupState)
-                    Text(summaryText)
-                        .font(CodexProcessStyle.rowFont)
-                        .foregroundStyle(hasFailure ? DesignTokens.danger.opacity(0.78) : CodexProcessStyle.title)
-                        .lineLimit(1)
+                    if isRunning {
+                        ShimmeringProcessText(text: summaryText, font: CodexProcessStyle.rowFont)
+                            .lineLimit(1)
+                    } else {
+                        Text(summaryText)
+                            .font(CodexProcessStyle.rowFont)
+                            .foregroundStyle(hasFailure ? DesignTokens.danger.opacity(0.78) : CodexProcessStyle.title)
+                            .lineLimit(1)
+                    }
                     if isRunning {
                         ProgressView()
                             .controlSize(.small)
@@ -1543,6 +1700,9 @@ private struct InlineProcessToolGroupRow: View {
     }
 
     private var summaryText: String {
+        if let running = items.last(where: { $0.1 == nil }) {
+            return lineTitle(for: running.0, result: nil)
+        }
         let readTargets = Set(items.compactMap { item -> String? in
             AgentToolPresentationClassifier.isReadTool(item.0.name) ? target(for: item.0) ?? item.0.id : nil
         })
@@ -3239,6 +3399,10 @@ private struct ProcessLiveStatusRow: View {
         visibleActivities.contains { $0.state == .running }
     }
 
+    private var traceSummary: ProcessTraceSummary {
+        ProcessTraceSummary.make(activities: visibleActivities, isChinese: isChinese)
+    }
+
     private var summaryText: String {
         let reads = uniqueTargets { activity in
             activity.toolName.map(AgentToolPresentationClassifier.isReadTool) == true
@@ -3311,10 +3475,10 @@ private struct ProcessLiveStatusRow: View {
                     Image(systemName: traceIcon)
                         .font(.system(size: 15, weight: .regular))
                         .symbolRenderingMode(.hierarchical)
-                    if isThinkingOnly {
-                        ShimmeringProcessText(text: summaryText, font: CodexProcessStyle.rowFont)
+                    if traceSummary.shouldShimmer {
+                        ShimmeringProcessText(text: traceSummary.text, font: CodexProcessStyle.rowFont)
                     } else {
-                        Text(summaryText)
+                        Text(traceSummary.text)
                             .font(CodexProcessStyle.rowFont)
                     }
                     if hasRunningActivity {
