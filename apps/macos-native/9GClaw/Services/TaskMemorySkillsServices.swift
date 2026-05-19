@@ -250,7 +250,23 @@ final class MemoryService {
             .filter { !$0.deprecated }
             .filter { projectName == nil || $0.projectName == projectName || $0.projectName == nil }
             .sorted { $0.updatedAt > $1.updatedAt }
-        let selected = scoped.prefix(8)
+        let terms = Self.recallTerms(from: normalizedPrompt)
+        let selected: [MemoryRecord]
+        if terms.isEmpty {
+            selected = Array(scoped.prefix(5))
+        } else {
+            selected = scoped
+                .map { record in (record, Self.recallScore(record, terms: terms, now: Date())) }
+                .filter { $0.1 > 0 }
+                .sorted {
+                    if $0.1 == $1.1 {
+                        return $0.0.updatedAt > $1.0.updatedAt
+                    }
+                    return $0.1 > $1.1
+                }
+                .prefix(8)
+                .map(\.0)
+        }
         let context = selected.map { "- \($0.name): \($0.summary)" }.joined(separator: "\n")
         let reply = context.isEmpty ? "No memory records matched this turn." : context
         let trace = makeTrace(
@@ -262,7 +278,7 @@ final class MemoryService {
                 reply: reply,
                 steps: [
                     ("recall_start", "开始 Recall", "Prompt: \(String(normalizedPrompt.prefix(240)))"),
-                    ("recall_selected", "注入记忆", "Records: \(selected.count)")
+                    ("recall_selected", context.isEmpty ? "无匹配记忆" : "注入记忆", "Records: \(selected.count), scoped: \(scoped.count), terms: \(terms.joined(separator: ","))")
                 ]
             )
         caseTraceRecords.insert(trace, at: 0)
@@ -498,6 +514,49 @@ final class MemoryService {
         var exportedAt: Date
         var records: [MemoryRecord]
         var settings: MemorySettingsSnapshot
+    }
+
+    private static func recallTerms(from prompt: String) -> [String] {
+        let normalized = prompt.lowercased()
+        let latinTerms = normalized
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 3 }
+        let cjkCharacters = normalized.filter { character in
+            character.unicodeScalars.contains { scalar in
+                (0x4E00...0x9FFF).contains(Int(scalar.value))
+            }
+        }
+        var cjkTerms: [String] = []
+        if cjkCharacters.count >= 2 {
+            let chars = Array(cjkCharacters)
+            for index in chars.indices.dropLast() {
+                cjkTerms.append(String([chars[index], chars[index + 1]]))
+            }
+            if cjkCharacters.count <= 12 {
+                cjkTerms.append(String(cjkCharacters))
+            }
+        }
+        var seen: Set<String> = []
+        return (latinTerms + cjkTerms).filter { seen.insert($0).inserted }
+    }
+
+    private static func recallScore(_ record: MemoryRecord, terms: [String], now: Date) -> Double {
+        let name = record.name.lowercased()
+        let summary = record.summary.lowercased()
+        let content = record.content.lowercased()
+        let path = record.relativePath.lowercased()
+        var score = 0.0
+        for term in terms {
+            if name.contains(term) { score += 5 }
+            if summary.contains(term) { score += 3 }
+            if path.contains(term) { score += 2 }
+            if content.contains(term) { score += 1 }
+        }
+        guard score > 0 else { return 0 }
+        let ageDays = max(0, now.timeIntervalSince(record.updatedAt) / 86_400)
+        let recency = max(0, 1.5 - min(ageDays, 30) / 20)
+        return score + recency
     }
 
     private func makeTrace(

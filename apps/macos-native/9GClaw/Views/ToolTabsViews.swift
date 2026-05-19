@@ -437,7 +437,7 @@ struct MemoryView: View {
                 .environmentObject(state)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 16) {
                         switch subtab {
                         case .projectMemory:
                             projectMemory(snapshot)
@@ -447,8 +447,8 @@ struct MemoryView: View {
                             memoryTrace(snapshot)
                         }
                     }
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 24)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 18)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             }
@@ -467,7 +467,7 @@ struct MemoryView: View {
 
     private func memoryTopbar(_ snapshot: MemoryDashboardSnapshot) -> some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 HStack(spacing: 4) {
                     TabButton("项目记忆", isActive: subtab == .projectMemory) {
                         selectedRecord = nil
@@ -485,11 +485,11 @@ struct MemoryView: View {
 
                 Spacer()
             }
-            .padding(.horizontal, 24)
-            .frame(height: 42)
+            .padding(.horizontal, 20)
+            .frame(height: 38)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     if subtab == .projectMemory {
                         TextField(state.t(.searchMemory), text: $query)
                             .textFieldStyle(WebFieldStyle())
@@ -519,10 +519,10 @@ struct MemoryView: View {
                     }
                     .menuStyle(.borderlessButton)
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
                 .frame(minWidth: 0, alignment: .leading)
             }
-            .frame(height: 42)
+            .frame(height: 38)
 
             HStack(spacing: 10) {
                 Text(state.selectedWorkspaceContext?.rootPath ?? state.t(.selectProject))
@@ -550,19 +550,19 @@ struct MemoryView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(DesignTokens.tertiaryText)
             }
-            .padding(.horizontal, 24)
-            .frame(height: 32)
+            .padding(.horizontal, 20)
+            .frame(height: 28)
             .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator).frame(height: 1) }
         }
     }
 
     private func projectMemory(_ snapshot: MemoryDashboardSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 14) {
             if let meta = snapshot.workspace.projectMeta {
                 MemoryProjectContextCard(meta: meta)
             }
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
                 RoutingStatCard(icon: "externaldrive", label: "条目", value: "\(snapshot.workspace.totalFiles)", detail: "active memory records")
                 RoutingStatCard(icon: "folder", label: "项目", value: "\(snapshot.workspace.totalProjects)", detail: state.selectedWorkspaceContext?.displayName)
                 RoutingStatCard(icon: "bubble.left.and.bubble.right", label: "反馈", value: "\(snapshot.workspace.totalFeedback)", detail: "collaboration feedback")

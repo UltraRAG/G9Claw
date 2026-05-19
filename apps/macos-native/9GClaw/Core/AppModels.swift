@@ -523,6 +523,17 @@ struct FileAttachment: Identifiable, Hashable, Codable {
             URL(fileURLWithPath: path).pathExtension.lowercased()
         )
     }
+
+    var isPDF: Bool {
+        mimeType?.lowercased() == "application/pdf" ||
+            URL(fileURLWithPath: path).pathExtension.lowercased() == "pdf"
+    }
+
+    var isTextLike: Bool {
+        if mimeType?.lowercased().hasPrefix("text/") == true { return true }
+        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+        return ["md", "txt", "swift", "js", "ts", "tsx", "jsx", "json", "yaml", "yml", "py", "rb", "go", "rs", "html", "css", "csv", "xml", "log"].contains(ext)
+    }
 }
 
 struct PermissionRequest: Identifiable, Hashable, Codable {
@@ -740,6 +751,24 @@ struct WorkspaceContext: Hashable, Codable {
 struct TokenBudget: Hashable, Codable {
     var used: Int
     var total: Int
+    var level: ContextBudgetLevel? = nil
+}
+
+enum ContextBudgetLevel: String, Codable, Hashable, Sendable {
+    case normal
+    case attention
+    case warning
+    case compacting
+    case recovering
+
+    static func level(used: Int, total: Int) -> ContextBudgetLevel {
+        guard total > 0 else { return .normal }
+        let ratio = Double(used) / Double(total)
+        if ratio >= 0.95 { return .recovering }
+        if ratio >= 0.80 { return .warning }
+        if ratio >= 0.60 { return .attention }
+        return .normal
+    }
 }
 
 struct TaskPlan: Identifiable, Hashable, Codable {

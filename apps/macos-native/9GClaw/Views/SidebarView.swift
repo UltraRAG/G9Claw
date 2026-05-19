@@ -330,7 +330,7 @@ struct SidebarView: View {
         let allSessions = project.allSessions
         let isCollapsed = collapsedSessionProjectIDs.contains(project.id)
         let visibleSessions = isCollapsed ? Array(allSessions.prefix(5)) : allSessions
-        let showDraftSession = state.selectedProjectID == project.id && state.activeTab == .chat && state.selectedSessionID == nil
+        let showDraftSession = state.isDraftSessionVisible && state.selectedProjectID == project.id && state.activeTab == .chat && state.selectedSessionID == nil
 
         return VStack(alignment: .leading, spacing: 2) {
             if showDraftSession {

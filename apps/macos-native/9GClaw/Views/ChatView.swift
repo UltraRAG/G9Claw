@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct ChatView: View {
     @EnvironmentObject private var state: AppState
+    @State private var isPinnedToBottom = true
 
     var body: some View {
         conversationBody
@@ -17,45 +18,67 @@ struct ChatView: View {
             } else {
                 VStack(spacing: 0) {
                     ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 24) {
-                                ForEach(state.currentMessages) { message in
-                                    if message.id == tracedAssistantID {
-                                        ProcessRunHeader(activities: traceActivities)
-                                            .environmentObject(state)
-                                            .id("process-run-header")
+                        GeometryReader { geometry in
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 18) {
+                                    ForEach(state.currentMessages) { message in
+                                        if message.id == tracedAssistantID {
+                                            ProcessRunHeader(activities: traceActivities)
+                                                .environmentObject(state)
+                                                .id("process-run-header")
+                                        }
+                                        MessageRow(message: message)
+                                            .id(message.id)
+                                        if message.id == tracedAssistantID, !tracedAssistantHasToolBlocks {
+                                            ProcessLiveStatusRow(activities: traceActivities)
+                                                .environmentObject(state)
+                                                .id("process-live-status")
+                                        }
                                     }
-                                    MessageRow(message: message)
-                                        .id(message.id)
-                                    if message.id == tracedAssistantID, !tracedAssistantHasToolBlocks {
+                                    if tracedAssistantID == nil, !traceActivities.isEmpty {
                                         ProcessLiveStatusRow(activities: traceActivities)
                                             .environmentObject(state)
                                             .id("process-live-status")
                                     }
+                                    Color.clear
+                                        .frame(height: 1)
+                                        .id(ChatScrollTarget.bottom)
+                                        .background(
+                                            GeometryReader { bottomProxy in
+                                                Color.clear.preference(
+                                                    key: ChatBottomOffsetPreferenceKey.self,
+                                                    value: bottomProxy.frame(in: .named(ChatScrollTarget.coordinateSpace)).maxY
+                                                )
+                                            }
+                                        )
                                 }
-                                if tracedAssistantID == nil, !traceActivities.isEmpty {
-                                    ProcessLiveStatusRow(activities: traceActivities)
-                                        .environmentObject(state)
-                                        .id("process-live-status")
-                                }
+                                .padding(.horizontal, DesignTokens.transcriptPaddingH)
+                                .padding(.vertical, DesignTokens.transcriptPaddingV)
+                                .frame(maxWidth: DesignTokens.transcriptMaxWidth)
+                                .frame(maxWidth: .infinity)
                             }
-                            .padding(.horizontal, DesignTokens.transcriptPaddingH)
-                            .padding(.vertical, DesignTokens.transcriptPaddingV)
-                            .frame(maxWidth: DesignTokens.transcriptMaxWidth)
-                            .frame(maxWidth: .infinity)
-                        }
-                        .scrollIndicators(.automatic)
-                        .onChange(of: state.currentMessages.count) { _, _ in
-                            if let id = state.currentMessages.last?.id {
+                            .coordinateSpace(name: ChatScrollTarget.coordinateSpace)
+                            .scrollIndicators(.automatic)
+                            .onPreferenceChange(ChatBottomOffsetPreferenceKey.self) { bottom in
+                                isPinnedToBottom = bottom <= geometry.size.height + 36
+                            }
+                            .onChange(of: state.currentMessages.count) { _, _ in
+                                guard isPinnedToBottom else { return }
                                 withAnimation(.easeOut(duration: 0.18)) {
-                                    proxy.scrollTo(id, anchor: .bottom)
+                                    proxy.scrollTo(ChatScrollTarget.bottom, anchor: .bottom)
                                 }
                             }
-                        }
-                        .onChange(of: state.currentActivities.count) { _, _ in
-                            guard !traceActivities.isEmpty else { return }
-                            withAnimation(.easeOut(duration: 0.18)) {
-                                proxy.scrollTo("process-live-status", anchor: .bottom)
+                            .onChange(of: state.currentActivities.count) { _, _ in
+                                guard isPinnedToBottom, !traceActivities.isEmpty else { return }
+                                withAnimation(.easeOut(duration: 0.18)) {
+                                    proxy.scrollTo(ChatScrollTarget.bottom, anchor: .bottom)
+                                }
+                            }
+                            .onChange(of: state.streamRenderRevision) { _, _ in
+                                guard isPinnedToBottom else { return }
+                                withAnimation(.easeOut(duration: 0.16)) {
+                                    proxy.scrollTo(ChatScrollTarget.bottom, anchor: .bottom)
+                                }
                             }
                         }
                     }
@@ -109,6 +132,19 @@ struct ChatView: View {
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private enum ChatScrollTarget {
+    static let bottom = "chat-bottom-sentinel"
+    static let coordinateSpace = "chat-scroll"
+}
+
+private struct ChatBottomOffsetPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
@@ -444,6 +480,14 @@ private struct ComposerCard: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(DesignTokens.text)
                     Spacer()
+                    if latestTokenBudget != nil {
+                        Text(contextLevelLabel)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(contextTone)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(contextTone.opacity(0.10), in: Capsule())
+                    }
                     if let contextPercent {
                         Text("\(contextPercent)%")
                             .font(.system(size: 13, weight: .semibold))
@@ -494,16 +538,45 @@ private struct ComposerCard: View {
             return state.t(.contextUsageDetail)
         }
         if state.settings.language.resolved() == .chineseSimplified {
-            return "已用 \(latestTokenBudget.used.formatted()) token，共 \(latestTokenBudget.total.formatted())。"
+            return "\(contextLevelLabel)：已用 \(latestTokenBudget.used.formatted()) token，共 \(latestTokenBudget.total.formatted())。"
         }
-        return "Used \(latestTokenBudget.used.formatted()) tokens of \(latestTokenBudget.total.formatted())."
+        return "\(contextLevelLabel): Used \(latestTokenBudget.used.formatted()) tokens of \(latestTokenBudget.total.formatted())."
+    }
+
+    private var contextLevel: ContextBudgetLevel? {
+        guard let latestTokenBudget else { return nil }
+        return latestTokenBudget.level ?? ContextBudgetLevel.level(used: latestTokenBudget.used, total: latestTokenBudget.total)
+    }
+
+    private var contextLevelLabel: String {
+        let isChinese = state.settings.language.resolved() == .chineseSimplified
+        switch contextLevel ?? .normal {
+        case .normal:
+            return isChinese ? "正常" : "Normal"
+        case .attention:
+            return isChinese ? "关注" : "Attention"
+        case .warning:
+            return isChinese ? "警告" : "Warning"
+        case .compacting:
+            return isChinese ? "压缩中" : "Compacting"
+        case .recovering:
+            return isChinese ? "恢复中" : "Recovering"
+        }
     }
 
     private var contextTone: Color {
-        guard let contextPercent else { return DesignTokens.neutral400 }
-        if contextPercent >= 90 { return DesignTokens.danger }
-        if contextPercent >= 70 { return DesignTokens.warning }
-        return DesignTokens.tertiaryText
+        switch contextLevel {
+        case .recovering:
+            return DesignTokens.danger
+        case .compacting, .warning:
+            return DesignTokens.warning
+        case .attention:
+            return DesignTokens.accent
+        case .normal:
+            return DesignTokens.tertiaryText
+        case nil:
+            return DesignTokens.neutral400
+        }
     }
 
     private func iconControl(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
@@ -714,15 +787,32 @@ private struct MessageRow: View {
     }
 
     private var assistantRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(assistantSegments.enumerated()), id: \.offset) { _, segment in
-                assistantSegmentView(segment)
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(assistantSegments.enumerated()), id: \.offset) { _, segment in
+                    assistantSegmentView(segment)
+                }
+                if message.isStreaming && message.plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(DesignTokens.neutral400)
+                        .frame(width: 8, height: 16)
+                        .opacity(0.8)
+                }
             }
-            if message.isStreaming && message.plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(DesignTokens.neutral400)
-                    .frame(width: 8, height: 16)
-                .opacity(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !message.plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button {
+                    copyAssistantMessage()
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .frame(width: 24, height: 24)
+                        .background(DesignTokens.neutral100.opacity(0.72), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help(state.settings.language.resolved() == .chineseSimplified ? "复制输出" : "Copy response")
+                .opacity(0.72)
             }
         }
         .font(.system(size: assistantFontSize))
@@ -730,6 +820,11 @@ private struct MessageRow: View {
         .foregroundStyle(DesignTokens.text)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func copyAssistantMessage() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message.plainText, forType: .string)
     }
 
     private var assistantSegments: [AssistantBlockSegment] {
@@ -882,26 +977,226 @@ private enum CodexProcessStyle {
     static let detailStrong = DesignTokens.neutral500.opacity(0.86)
     static let icon = DesignTokens.neutral500.opacity(0.88)
     static let iconMuted = DesignTokens.neutral400.opacity(0.86)
-    static let rowFont = Font.system(size: 14, weight: .medium)
-    static let detailFont = Font.system(size: 12.5, weight: .regular)
-    static let detailMonoFont = Font.system(size: 12, weight: .regular, design: .monospaced)
+    static let rowFont = Font.system(size: 13.5, weight: .medium)
+    static let detailFont = Font.system(size: 12, weight: .regular)
+    static let detailMonoFont = Font.system(size: 11.5, weight: .regular, design: .monospaced)
+}
+
+struct ToolInvocationField: Equatable {
+    var label: String
+    var value: String
+    var isPrimary: Bool = false
+}
+
+struct ToolInvocationPresentation: Equatable {
+    var toolName: String
+    var title: String
+    var command: String?
+    var fields: [ToolInvocationField]
+    var rawInput: String
+    var parsed: Bool
+
+    var primaryValue: String? {
+        if let command, !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return command
+        }
+        return fields.first(where: \.isPrimary)?.value ?? fields.first?.value
+    }
+
+    static func parse(toolName rawToolName: String, inputJSON: String) -> ToolInvocationPresentation {
+        let toolName = AgentToolNameCanonicalizer.canonical(rawToolName)
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ToolInvocationPresentation(
+                toolName: toolName,
+                title: toolName,
+                command: nil,
+                fields: [ToolInvocationField(label: "Raw input", value: inputJSON, isPrimary: true)],
+                rawInput: inputJSON,
+                parsed: false
+            )
+        }
+
+        let presentation = parsedPresentation(toolName: toolName, object: object, rawInput: inputJSON)
+        if presentation.command?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false || !presentation.fields.isEmpty {
+            return presentation
+        }
+        return ToolInvocationPresentation(
+            toolName: toolName,
+            title: toolName,
+            command: nil,
+            fields: [ToolInvocationField(label: "Raw input", value: inputJSON, isPrimary: true)],
+            rawInput: inputJSON,
+            parsed: false
+        )
+    }
+
+    static func target(toolName: String, inputJSON: String, limit: Int = 72) -> String? {
+        parse(toolName: toolName, inputJSON: inputJSON).primaryValue.map { compact($0, limit: limit) }
+    }
+
+    private static func parsedPresentation(toolName: String, object: [String: Any], rawInput: String) -> ToolInvocationPresentation {
+        switch toolName {
+        case "Shell":
+            return ToolInvocationPresentation(
+                toolName: toolName,
+                title: "Shell",
+                command: stringValue(for: ["command", "input_command", "input", "cmd"], in: object),
+                fields: fields([
+                    ("cwd", "Cwd", true),
+                    ("description", "Description", false),
+                    ("timeout", "Timeout", false),
+                ], in: object),
+                rawInput: rawInput,
+                parsed: true
+            )
+        case "Read":
+            return fieldPresentation(toolName, rawInput, object, [
+                (["file_path", "path"], "Path", true),
+                (["offset"], "Offset", false),
+                (["limit"], "Limit", false),
+            ])
+        case "Grep":
+            return fieldPresentation(toolName, rawInput, object, [
+                (["pattern", "query"], "Pattern", true),
+                (["path"], "Path", false),
+                (["glob"], "Glob", false),
+            ])
+        case "Glob":
+            return fieldPresentation(toolName, rawInput, object, [
+                (["pattern", "glob"], "Pattern", true),
+                (["path"], "Path", false),
+            ])
+        case "StrReplace":
+            return fieldPresentation(toolName, rawInput, object, [
+                (["file_path", "path"], "Path", true),
+                (["old_string", "oldString"], "Old", false),
+                (["new_string", "newString"], "New", false),
+                (["replace_all"], "Replace all", false),
+            ])
+        case "Write":
+            return fieldPresentation(toolName, rawInput, object, [
+                (["file_path", "path"], "Path", true),
+                (["content"], "Content", false),
+            ])
+        case "Task":
+            return fieldPresentation(toolName, rawInput, object, [
+                (["description"], "Description", true),
+                (["prompt"], "Prompt", true),
+                (["type", "subagent_type"], "Type", false),
+                (["cwd"], "Cwd", false),
+            ])
+        case "Skill":
+            return fieldPresentation(toolName, rawInput, object, [
+                (["skill"], "Skill", true),
+                (["args"], "Args", false),
+            ])
+        case "WebSearch":
+            return fieldPresentation(toolName, rawInput, object, [
+                (["query", "q"], "Query", true),
+            ])
+        case "WebFetch":
+            return fieldPresentation(toolName, rawInput, object, [
+                (["url"], "URL", true),
+                (["prompt"], "Prompt", false),
+            ])
+        case "SemanticSearch":
+            return fieldPresentation(toolName, rawInput, object, [
+                (["query"], "Query", true),
+                (["path"], "Path", false),
+            ])
+        default:
+            return fieldPresentation(toolName, rawInput, object, [
+                (["file_path", "path"], "Path", true),
+                (["pattern"], "Pattern", true),
+                (["query"], "Query", true),
+                (["description"], "Description", true),
+                (["prompt"], "Prompt", true),
+                (["url"], "URL", true),
+            ])
+        }
+    }
+
+    private static func fieldPresentation(
+        _ toolName: String,
+        _ rawInput: String,
+        _ object: [String: Any],
+        _ specs: [([String], String, Bool)]
+    ) -> ToolInvocationPresentation {
+        var output: [ToolInvocationField] = []
+        for spec in specs {
+            guard let value = stringValue(for: spec.0, in: object),
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            output.append(ToolInvocationField(label: spec.1, value: value, isPrimary: spec.2 && !output.contains(where: \.isPrimary)))
+        }
+        return ToolInvocationPresentation(toolName: toolName, title: toolName, command: nil, fields: output, rawInput: rawInput, parsed: true)
+    }
+
+    private static func fields(_ specs: [(String, String, Bool)], in object: [String: Any]) -> [ToolInvocationField] {
+        specs.compactMap { key, label, primary in
+            guard let value = displayString(object[key]),
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return ToolInvocationField(label: label, value: value, isPrimary: primary)
+        }
+    }
+
+    private static func stringValue(for keys: [String], in object: [String: Any]) -> String? {
+        for key in keys {
+            guard let value = displayString(object[key]) else { continue }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+
+    private static func displayString(_ value: Any?) -> String? {
+        guard let value else { return nil }
+        if let string = value as? String { return string }
+        if let number = value as? NSNumber { return number.stringValue }
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              let string = String(data: data, encoding: .utf8) else {
+            return String(describing: value)
+        }
+        return string
+    }
+
+    private static func compact(_ value: String, limit: Int) -> String {
+        let normalized = value
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > limit else { return normalized }
+        let index = normalized.index(normalized.startIndex, offsetBy: max(0, limit - 1))
+        return String(normalized[..<index]) + "…"
+    }
 }
 
 private struct InlineProcessToolRow: View {
     @EnvironmentObject private var state: AppState
     var call: ToolCall
     var result: ToolResult?
-    @State private var expanded = false
 
     private var failed: Bool { result?.isError == true }
     private var running: Bool { result == nil }
+    private var expansionKey: String { "tool:\(call.id)" }
+    private var expanded: Bool { state.expandedToolRowIDs.contains(expansionKey) }
+    private var presentation: ToolInvocationPresentation {
+        ToolInvocationPresentation.parse(toolName: call.name, inputJSON: call.inputJSON)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             Button {
-                withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    if expanded {
+                        state.expandedToolRowIDs.remove(expansionKey)
+                    } else {
+                        state.expandedToolRowIDs.insert(expansionKey)
+                    }
+                }
             } label: {
-                HStack(spacing: 9) {
+                HStack(spacing: 8) {
                     CodexInlineToolIcon(phase: phase, state: stateForRow)
                     Text(title)
                         .font(CodexProcessStyle.rowFont)
@@ -923,21 +1218,28 @@ private struct InlineProcessToolRow: View {
             .buttonStyle(.plain)
 
             if expanded {
-                VStack(alignment: .leading, spacing: 7) {
-                    detailBlock(label: isChinese ? "输入" : "Input", value: call.inputJSON)
+                VStack(alignment: .leading, spacing: 6) {
+                    ToolInvocationDetailCard(
+                        presentation: presentation,
+                        result: result,
+                        isChinese: isChinese
+                    )
                     if let result {
-                        detailBlock(label: result.isError ? state.t(.toolError) : state.t(.toolResult), value: result.output)
+                        if let image = ParsedToolImage.parse(result.output) {
+                            ToolImagePreview(parsed: image)
+                        }
                     }
+                    RawToolInputDisclosure(rawInput: call.inputJSON, isChinese: isChinese)
                 }
                 .padding(.leading, 31)
                 .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .topLeading)))
             }
         }
-        .padding(.vertical, 7)
+        .padding(.vertical, failed ? 4 : 5)
     }
 
     private var title: String {
-        let target = InlineProcessToolRow.target(from: call.inputJSON)
+        let target = ToolInvocationPresentation.target(toolName: call.name, inputJSON: call.inputJSON, limit: 56)
         let suffix = target.map { " \($0)" } ?? ""
         let canonical = AgentToolNameCanonicalizer.canonical(call.name).lowercased()
         switch phase {
@@ -984,61 +1286,202 @@ private struct InlineProcessToolRow: View {
     private func localized(_ zh: String, _ en: String) -> String {
         isChinese ? zh : en
     }
+}
 
-    private func detailBlock(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
+private struct ToolInvocationDetailCard: View {
+    var presentation: ToolInvocationPresentation
+    var result: ToolResult?
+    var isChinese: Bool
+
+    private var failed: Bool { result?.isError == true }
+    private var statusText: String {
+        if result == nil { return isChinese ? "运行中" : "Running" }
+        return failed ? (isChinese ? "失败" : "Failed") : (isChinese ? "成功" : "Succeeded")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(presentation.title)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(CodexProcessStyle.titleStrong)
+
+            if let command = presentation.command {
+                Text(prompt(command))
+                    .font(.system(size: 13, weight: .regular, design: .monospaced))
+                    .foregroundStyle(DesignTokens.text)
+                    .lineSpacing(3)
+                    .lineLimit(10)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(presentation.fields.enumerated()), id: \.offset) { _, field in
+                        ToolInvocationFieldRow(field: field)
+                    }
+                }
+            }
+
+            if let output = result?.output.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
+                Divider().opacity(0.58)
+                Text(output)
+                    .font(CodexProcessStyle.detailMonoFont)
+                    .foregroundStyle(failed ? DesignTokens.danger.opacity(0.86) : CodexProcessStyle.detailStrong)
+                    .lineSpacing(3)
+                    .lineLimit(14)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 5) {
+                Spacer(minLength: 0)
+                Image(systemName: result == nil ? "hourglass" : (failed ? "xmark" : "checkmark"))
+                    .font(.system(size: 11, weight: .medium))
+                Text(statusText)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(failed ? DesignTokens.danger.opacity(0.82) : CodexProcessStyle.detail)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                .fill(DesignTokens.neutral100.opacity(0.70))
+        )
+    }
+
+    private func prompt(_ command: String) -> String {
+        "$ " + command.replacingOccurrences(of: "\n", with: "\n  ")
+    }
+}
+
+private struct ToolInvocationFieldRow: View {
+    var field: ToolInvocationField
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(field.label)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(CodexProcessStyle.detail)
-            Text(value)
+            Text(field.value)
+                .font(CodexProcessStyle.detailMonoFont)
+                .foregroundStyle(field.isPrimary ? DesignTokens.text : CodexProcessStyle.detailStrong)
+                .lineLimit(field.isPrimary ? 6 : 4)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct RawToolInputDisclosure: View {
+    var rawInput: String
+    var isChinese: Bool
+    @State private var isExpanded = false
+
+    var body: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.14)) {
+                isExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9.5, weight: .semibold))
+                Text(isChinese ? "原始工具输入" : "Raw tool input")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(CodexProcessStyle.detail)
+        }
+        .buttonStyle(.plain)
+
+        if isExpanded {
+            Text(rawInput)
                 .font(CodexProcessStyle.detailMonoFont)
                 .foregroundStyle(CodexProcessStyle.detailStrong)
                 .lineLimit(12)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(DesignTokens.neutral50.opacity(0.55), in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+                .transition(.opacity)
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
-        .background(DesignTokens.neutral50.opacity(0.62), in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+    }
+}
+
+private struct ToolInvocationCompactDetail: View {
+    var presentation: ToolInvocationPresentation
+    var output: String?
+    var isError: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let command = presentation.command {
+                Text("$ " + compact(command, limit: 180))
+                    .font(CodexProcessStyle.detailMonoFont)
+                    .foregroundStyle(DesignTokens.text)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            } else if !presentation.fields.isEmpty {
+                ForEach(Array(presentation.fields.prefix(2).enumerated()), id: \.offset) { _, field in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(field.label)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(CodexProcessStyle.detail)
+                            .frame(width: 70, alignment: .leading)
+                        Text(compact(field.value, limit: 180))
+                            .font(CodexProcessStyle.detailMonoFont)
+                            .foregroundStyle(field.isPrimary ? DesignTokens.text : CodexProcessStyle.detailStrong)
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            if let output = output?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
+                Text(compact(output, limit: 180))
+                    .font(CodexProcessStyle.detailMonoFont)
+                    .foregroundStyle(isError ? DesignTokens.danger.opacity(0.86) : CodexProcessStyle.detail)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.leading, 28)
     }
 
-    private static func target(from json: String) -> String? {
-        guard let data = json.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        for key in ["file_path", "path", "pattern", "query", "command", "description"] {
-            guard let raw = object[key] as? String else { continue }
-            let trimmed = raw.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed == "/" || trimmed == "." { continue }
-            if key == "path" || key == "file_path" {
-                let name = URL(fileURLWithPath: trimmed).lastPathComponent
-                let display = name.isEmpty ? trimmed : name
-                if display == "/" || display == "." { continue }
-                return display
-            }
-            return trimmed.count > 56 ? String(trimmed.prefix(55)) + "…" : trimmed
-        }
-        return nil
+    private func compact(_ value: String, limit: Int) -> String {
+        let normalized = value
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > limit else { return normalized }
+        let index = normalized.index(normalized.startIndex, offsetBy: max(0, limit - 1))
+        return String(normalized[..<index]) + "..."
     }
 }
 
 private struct InlineProcessToolGroupRow: View {
     @EnvironmentObject private var state: AppState
     var items: [(ToolCall, ToolResult?)]
-    @State private var expanded = false
 
     private var isRunning: Bool { items.contains { $0.1 == nil } }
     private var hasFailure: Bool { items.contains { $0.1?.isError == true } }
+    private var expansionKey: String {
+        "tool-group:" + items.map { $0.0.id }.joined(separator: ",")
+    }
+    private var expanded: Bool { state.expandedToolRowIDs.contains(expansionKey) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 4) {
             Button {
                 withAnimation(.easeInOut(duration: 0.16)) {
-                    expanded.toggle()
+                    if expanded {
+                        state.expandedToolRowIDs.remove(expansionKey)
+                    } else {
+                        state.expandedToolRowIDs.insert(expansionKey)
+                    }
                 }
             } label: {
-                HStack(spacing: 9) {
+                HStack(spacing: 8) {
                     CodexInlineToolIcon(phase: dominantPhase, state: groupState)
                     Text(summaryText)
                         .font(CodexProcessStyle.rowFont)
@@ -1060,7 +1503,7 @@ private struct InlineProcessToolGroupRow: View {
             .buttonStyle(.plain)
 
             if expanded {
-                VStack(alignment: .leading, spacing: 7) {
+                VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 7) {
@@ -1071,21 +1514,11 @@ private struct InlineProcessToolGroupRow: View {
                                     .foregroundStyle(CodexProcessStyle.detailStrong)
                                     .lineLimit(1)
                             }
-                            if let output = item.1?.output.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
-                                Text(compact(output, limit: 180))
-                                    .font(CodexProcessStyle.detailMonoFont)
-                                    .foregroundStyle(CodexProcessStyle.detail)
-                                    .lineLimit(3)
-                                    .textSelection(.enabled)
-                                    .padding(.leading, 28)
-                            } else if !item.0.inputJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                Text(compact(item.0.inputJSON, limit: 180))
-                                    .font(CodexProcessStyle.detailMonoFont)
-                                    .foregroundStyle(CodexProcessStyle.detail.opacity(0.92))
-                                    .lineLimit(2)
-                                    .textSelection(.enabled)
-                                    .padding(.leading, 28)
-                            }
+                            ToolInvocationCompactDetail(
+                                presentation: ToolInvocationPresentation.parse(toolName: item.0.name, inputJSON: item.0.inputJSON),
+                                output: item.1?.output,
+                                isError: item.1?.isError == true
+                            )
                         }
                     }
                 }
@@ -1093,7 +1526,7 @@ private struct InlineProcessToolGroupRow: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .topLeading)))
             }
         }
-        .padding(.vertical, 7)
+        .padding(.vertical, hasFailure ? 4 : 5)
     }
 
     private var groupState: AgentActivityState {
@@ -1111,10 +1544,10 @@ private struct InlineProcessToolGroupRow: View {
 
     private var summaryText: String {
         let readTargets = Set(items.compactMap { item -> String? in
-            AgentToolPresentationClassifier.isReadTool(item.0.name) ? target(from: item.0.inputJSON) ?? item.0.id : nil
+            AgentToolPresentationClassifier.isReadTool(item.0.name) ? target(for: item.0) ?? item.0.id : nil
         })
         let editTargets = Set(items.compactMap { item -> String? in
-            phase(for: item.0) == .edit ? target(from: item.0.inputJSON) ?? item.0.id : nil
+            phase(for: item.0) == .edit ? target(for: item.0) ?? item.0.id : nil
         })
         let searches = items.filter { phase(for: $0.0) == .search }.count
         let commands = items.filter { phase(for: $0.0) == .command }.count
@@ -1147,7 +1580,7 @@ private struct InlineProcessToolGroupRow: View {
     }
 
     private func lineTitle(for call: ToolCall, result: ToolResult?) -> String {
-        let targetText = target(from: call.inputJSON).map { " \($0)" } ?? ""
+        let targetText = target(for: call).map { " \($0)" } ?? ""
         let running = result == nil
         if AgentToolPresentationClassifier.isReadTool(call.name) { return running ? localized("正在读取\(targetText)", "Reading\(targetText)") : localized("已读取\(targetText)", "Read\(targetText)") }
         switch phase(for: call) {
@@ -1178,24 +1611,8 @@ private struct InlineProcessToolGroupRow: View {
         isChinese ? zh : en
     }
 
-    private func target(from json: String) -> String? {
-        guard let data = json.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        for key in ["file_path", "path", "pattern", "query", "command", "description"] {
-            guard let raw = object[key] as? String else { continue }
-            let cleaned = compact(raw, limit: key == "command" ? 72 : 80)
-            if cleaned.isEmpty || cleaned == "/" || cleaned == "." { continue }
-            if key == "path" || key == "file_path" {
-                let name = URL(fileURLWithPath: cleaned).lastPathComponent
-                let display = name.isEmpty ? cleaned : name
-                if display == "/" || display == "." { continue }
-                return display
-            }
-            return cleaned
-        }
-        return nil
+    private func target(for call: ToolCall) -> String? {
+        ToolInvocationPresentation.target(toolName: call.name, inputJSON: call.inputJSON, limit: 72)
     }
 
     private func compact(_ value: String, limit: Int) -> String {
@@ -1206,6 +1623,66 @@ private struct InlineProcessToolGroupRow: View {
         guard normalized.count > limit else { return normalized }
         let index = normalized.index(normalized.startIndex, offsetBy: max(0, limit - 1))
         return String(normalized[..<index]) + "…"
+    }
+}
+
+private struct ParsedToolImage {
+    var image: NSImage
+    var caption: String?
+
+    static func parse(_ output: String) -> ParsedToolImage? {
+        guard let data = output.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let type = (object["type"] as? String)?.lowercased()
+        guard type == nil || type == "image" || type == "tool_image" else { return nil }
+        let file = object["file"] as? [String: Any]
+        let path = (file?["filePath"] as? String)
+            ?? (file?["path"] as? String)
+            ?? (object["filePath"] as? String)
+            ?? (object["path"] as? String)
+        if let path,
+           let image = NSImage(contentsOfFile: NSString(string: path).expandingTildeInPath) {
+            return ParsedToolImage(image: image, caption: URL(fileURLWithPath: path).lastPathComponent)
+        }
+        let base64 = (file?["base64"] as? String)
+            ?? (file?["data"] as? String)
+            ?? (object["base64"] as? String)
+            ?? (object["data"] as? String)
+        guard let base64,
+              let decoded = Data(base64Encoded: base64),
+              let image = NSImage(data: decoded) else {
+            return nil
+        }
+        return ParsedToolImage(image: image, caption: object["name"] as? String)
+    }
+}
+
+private struct ToolImagePreview: View {
+    var parsed: ParsedToolImage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Image(nsImage: parsed.image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: 360, maxHeight: 220, alignment: .leading)
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                        .stroke(DesignTokens.separator, lineWidth: 1)
+                )
+            if let caption = parsed.caption, !caption.isEmpty {
+                Text(caption)
+                    .font(.system(size: 11))
+                    .foregroundStyle(CodexProcessStyle.detail)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(DesignTokens.neutral50.opacity(0.62), in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
     }
 }
 
@@ -1927,20 +2404,29 @@ private struct ExitPlanModePermissionCard: View {
     private func performSelectedChoice() {
         switch selectedChoice {
         case .execute:
-            state.approvePermission(request.id, updatedInputJSON: updatedPlanInputJSON())
-        case .refine, .cancel:
+            state.approvePermission(request.id, updatedInputJSON: updatedPlanInputJSON(mode: "agent"))
+        case .refine:
+            let fallback = isChinese ? "请继续完善计划，暂时不要退出 Plan 模式。" : "Please keep refining the plan and do not leave Plan mode yet."
+            state.approvePermission(request.id, updatedInputJSON: updatedPlanInputJSON(mode: "plan", fallbackFeedback: fallback))
+        case .cancel:
             state.denyPermission(request.id)
         }
     }
 
-    private func updatedPlanInputJSON() -> String {
+    private func updatedPlanInputJSON(mode: String, fallbackFeedback: String? = nil) -> String {
         let trimmedFeedback = feedback.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedFeedback.isEmpty,
-              let data = request.inputJSON.data(using: .utf8),
-              var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            return request.inputJSON
+        let feedbackValue = trimmedFeedback.isEmpty ? fallbackFeedback : trimmedFeedback
+        var object: [String: Any]
+        if let data = request.inputJSON.data(using: .utf8),
+           let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            object = parsed
+        } else {
+            object = [:]
         }
-        object["userFeedback"] = trimmedFeedback
+        object["mode"] = mode
+        if let feedbackValue, !feedbackValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            object["userFeedback"] = feedbackValue
+        }
         guard JSONSerialization.isValidJSONObject(object),
               let updated = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
               let string = String(data: updated, encoding: .utf8) else {

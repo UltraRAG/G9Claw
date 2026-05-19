@@ -36,6 +36,168 @@ struct AgentRequest: Sendable {
     var permissionHandler: (@MainActor @Sendable (AgentPermissionRequest) async -> AgentPermissionDecision)?
 }
 
+struct AttachmentDiagnostic: Sendable, Equatable {
+    enum Severity: String, Sendable {
+        case info
+        case warning
+        case error
+    }
+
+    var severity: Severity
+    var message: String
+}
+
+enum ResolvedAttachmentBlock: Sendable, Equatable {
+    case text(path: String, text: String)
+    case image(path: String, mimeType: String, base64: String, bytes: Int)
+}
+
+struct NativeAttachmentResolver {
+    static let maxTextBytes = 1_000_000
+    static let maxImageBytes = 8_000_000
+    static let maxTextCharacters = 30_000
+    static let maxPDFPages = 10
+
+    static func resolve(_ attachments: [FileAttachment]) -> (blocks: [ResolvedAttachmentBlock], diagnostics: [AttachmentDiagnostic]) {
+        var blocks: [ResolvedAttachmentBlock] = []
+        var diagnostics: [AttachmentDiagnostic] = []
+
+        for attachment in attachments {
+            let result = resolve(attachment)
+            blocks.append(contentsOf: result.blocks)
+            diagnostics.append(contentsOf: result.diagnostics)
+        }
+
+        return (blocks, diagnostics)
+    }
+
+    static func openAIContentParts(for attachments: [FileAttachment]) -> ([[String: Any]], [AttachmentDiagnostic]) {
+        let resolved = resolve(attachments)
+        var parts: [[String: Any]] = resolved.blocks.map { block in
+            switch block {
+            case .text(let path, let text):
+                return [
+                    "type": "text",
+                    "text": "<attachment path=\"\(path)\">\n\(text)\n</attachment>",
+                ]
+            case .image(_, let mimeType, let base64, _):
+                return [
+                    "type": "image_url",
+                    "image_url": [
+                        "url": "data:\(mimeType);base64,\(base64)",
+                    ],
+                ]
+            }
+        }
+
+        let warnings = resolved.diagnostics.filter { $0.severity != .info }
+        if !warnings.isEmpty {
+            parts.append([
+                "type": "text",
+                "text": "[Attachment diagnostics]\n" + warnings.map { "- \($0.message)" }.joined(separator: "\n"),
+            ])
+        }
+
+        return (parts, resolved.diagnostics)
+    }
+
+    private static func resolve(_ attachment: FileAttachment) -> (blocks: [ResolvedAttachmentBlock], diagnostics: [AttachmentDiagnostic]) {
+        let url = URL(fileURLWithPath: attachment.path)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return ([], [.init(severity: .warning, message: "Attachment not found: \(attachment.path).")])
+        }
+
+        if attachment.isImage {
+            return resolveImage(attachment, url: url)
+        }
+        if attachment.isPDF {
+            return resolvePDF(attachment, url: url)
+        }
+        if attachment.isTextLike {
+            return resolveText(attachment, url: url)
+        }
+
+        let ext = url.pathExtension.isEmpty ? "(none)" : url.pathExtension
+        return ([], [.init(severity: .info, message: "Attachment \(attachment.fileName) has unsupported extension \(ext); skipped.")])
+    }
+
+    private static func resolveImage(_ attachment: FileAttachment, url: URL) -> (blocks: [ResolvedAttachmentBlock], diagnostics: [AttachmentDiagnostic]) {
+        guard
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+            let size = attributes[.size] as? NSNumber
+        else {
+            return ([], [.init(severity: .warning, message: "Unable to read image attachment metadata: \(attachment.fileName).")])
+        }
+        guard size.intValue <= maxImageBytes else {
+            return ([], [.init(severity: .warning, message: "Image \(attachment.fileName) is \(size.intValue) bytes; limit is \(maxImageBytes).")])
+        }
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else {
+            return ([], [.init(severity: .warning, message: "Unable to read image attachment: \(attachment.fileName).")])
+        }
+        let mimeType = attachment.mimeType ?? imageMimeType(for: url) ?? "image/png"
+        return (
+            [.image(path: url.path, mimeType: mimeType, base64: data.base64EncodedString(), bytes: data.count)],
+            [.init(severity: .info, message: "Image attachment forwarded as multimodal input: \(attachment.fileName).")]
+        )
+    }
+
+    private static func resolveText(_ attachment: FileAttachment, url: URL) -> (blocks: [ResolvedAttachmentBlock], diagnostics: [AttachmentDiagnostic]) {
+        guard
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+            let size = attributes[.size] as? NSNumber
+        else {
+            return ([], [.init(severity: .warning, message: "Unable to read text attachment metadata: \(attachment.fileName).")])
+        }
+        guard size.intValue <= maxTextBytes else {
+            return ([], [.init(severity: .warning, message: "Attachment \(attachment.fileName) is \(size.intValue) bytes; limit is \(maxTextBytes).")])
+        }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return ([], [.init(severity: .warning, message: "Attachment \(attachment.fileName) is not valid UTF-8 text.")])
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return ([], [.init(severity: .info, message: "Attachment \(attachment.fileName) is empty; skipped.")])
+        }
+        let truncated = trimmed.count > maxTextCharacters
+        let output = String(trimmed.prefix(maxTextCharacters)) + (truncated ? "\n...[truncated]" : "")
+        let diagnostics: [AttachmentDiagnostic] = truncated
+            ? [.init(severity: .warning, message: "Attachment \(attachment.fileName) was truncated to \(maxTextCharacters) characters.")]
+            : []
+        return ([.text(path: url.path, text: output)], diagnostics)
+    }
+
+    private static func resolvePDF(_ attachment: FileAttachment, url: URL) -> (blocks: [ResolvedAttachmentBlock], diagnostics: [AttachmentDiagnostic]) {
+        guard let document = PDFDocument(url: url) else {
+            return ([], [.init(severity: .warning, message: "Unable to parse PDF attachment: \(attachment.fileName).")])
+        }
+        let selectedPages = Array(0..<min(document.pageCount, maxPDFPages))
+        let text = selectedPages.map { index -> String in
+            let pageText = document.page(at: index)?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "## Page \(index + 1)\n\(pageText?.isEmpty == false ? pageText! : "(no extractable text)")"
+        }.joined(separator: "\n\n")
+        var diagnostics: [AttachmentDiagnostic] = [
+            .init(severity: .info, message: "PDF \(attachment.fileName) resolved as text from \(selectedPages.count) page(s).")
+        ]
+        if document.pageCount > maxPDFPages {
+            diagnostics.append(.init(severity: .warning, message: "PDF \(attachment.fileName) has \(document.pageCount) pages; only first \(maxPDFPages) pages were included."))
+        }
+        return ([.text(path: url.path, text: text)], diagnostics)
+    }
+
+    private static func imageMimeType(for url: URL) -> String? {
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "heic": return "image/heic"
+        case "tiff", "tif": return "image/tiff"
+        case "bmp": return "image/bmp"
+        default: return nil
+        }
+    }
+}
+
 struct AgentToolCall: Sendable, Equatable {
     var id: String
     var name: String
@@ -306,6 +468,8 @@ final class AgentRunContext: @unchecked Sendable {
     var contextWindow: Int
     var nativeConfigValues: [String: String]
     var invokedSkills: [String]
+    var subagentDepth: Int
+    var maxSubagentDepth: Int
     var lastExecutedToolName: String?
     var lastToolResultWasError: Bool
     private var executedToolSignatures: Set<String>
@@ -332,6 +496,8 @@ final class AgentRunContext: @unchecked Sendable {
         contextWindow = request.contextWindow
         nativeConfigValues = request.nativeConfigValues
         invokedSkills = []
+        subagentDepth = 0
+        maxSubagentDepth = max(0, Int(request.nativeConfigValues["runtime.maxSubagentDepth"] ?? "") ?? 1)
         lastExecutedToolName = nil
         lastToolResultWasError = false
         executedToolSignatures = []
@@ -438,6 +604,137 @@ enum ContinuationPolicy {
     static let maxRecoverableProtocolErrors = 3
 }
 
+struct NativeContextCompactionResult {
+    var messages: [[String: Any]]
+    var trigger: String
+    var preTokens: Int
+    var postTokens: Int
+    var status: String
+}
+
+enum NativeContextBudget {
+    private static let perMessageOverhead = 4
+    private static let multimediaTokens = 2_000
+
+    static func snapshot(messages: [[String: Any]], contextWindow: Int) -> TokenBudget {
+        let total = max(contextWindow, 1)
+        let used = max(0, messages.reduce(0) { $0 + estimateMessage($1) })
+        return TokenBudget(used: used, total: total, level: ContextBudgetLevel.level(used: used, total: total))
+    }
+
+    static func compactIfNeeded(messages: [[String: Any]], contextWindow: Int) -> NativeContextCompactionResult? {
+        let before = snapshot(messages: messages, contextWindow: contextWindow)
+        guard (before.level ?? .normal) == .warning || (before.level ?? .normal) == .recovering else {
+            return nil
+        }
+
+        var compacted = microCompactToolResults(messages)
+        var after = snapshot(messages: compacted, contextWindow: contextWindow)
+        var status = "micro"
+        if (after.level ?? .normal) == .warning || (after.level ?? .normal) == .recovering {
+            compacted = snipMiddle(compacted, tailCount: 10)
+            after = snapshot(messages: compacted, contextWindow: contextWindow)
+            status = "snip"
+        }
+        if (after.level ?? .normal) == .warning || (after.level ?? .normal) == .recovering {
+            compacted = snipMiddle(compacted, tailCount: 6)
+            after = snapshot(messages: compacted, contextWindow: contextWindow)
+            status = "full"
+        }
+
+        return NativeContextCompactionResult(
+            messages: compacted,
+            trigger: (before.level ?? .normal) == .recovering ? "blocking_threshold" : "warning_threshold",
+            preTokens: before.used,
+            postTokens: after.used,
+            status: status
+        )
+    }
+
+    static func forceRecover(messages: [[String: Any]], contextWindow: Int) -> NativeContextCompactionResult {
+        let before = snapshot(messages: messages, contextWindow: contextWindow)
+        let compacted = snipMiddle(microCompactToolResults(messages), tailCount: 4)
+        let after = snapshot(messages: compacted, contextWindow: contextWindow)
+        return NativeContextCompactionResult(
+            messages: compacted,
+            trigger: "prompt_too_long",
+            preTokens: before.used,
+            postTokens: after.used,
+            status: "recovering"
+        )
+    }
+
+    private static func microCompactToolResults(_ messages: [[String: Any]]) -> [[String: Any]] {
+        var next = messages
+        guard next.count > 8 else { return next }
+        for index in next.indices.dropLast(6) where (next[index]["role"] as? String) == "tool" {
+            guard let content = next[index]["content"] as? String, content.count > 3_000 else { continue }
+            next[index]["content"] = "\(content.prefix(1_600))\n... (microcompacted, original \(content.count) characters)"
+        }
+        return next
+    }
+
+    private static func snipMiddle(_ messages: [[String: Any]], tailCount: Int) -> [[String: Any]] {
+        guard messages.count > tailCount + 3 else { return messages }
+        let systemMessages = messages.prefix { ($0["role"] as? String) == "system" }
+        let bodyStart = systemMessages.count
+        let body = Array(messages.dropFirst(bodyStart))
+        let tail = validTail(from: body, count: tailCount)
+        let dropped = max(0, body.count - tail.count)
+        let summary = [
+            "role": "user",
+            "content": """
+            [Context compacted]
+            Older conversation turns were summarized locally before continuing.
+            Messages summarized: \(dropped).
+            Continue the current task using the latest visible context and tool results.
+            """,
+        ]
+        return Array(systemMessages) + [summary] + tail
+    }
+
+    private static func validTail(from messages: [[String: Any]], count: Int) -> [[String: Any]] {
+        var tail = Array(messages.suffix(max(1, count)))
+        while tail.first?["role"] as? String == "tool" {
+            tail.removeFirst()
+        }
+        return tail
+    }
+
+    private static func estimateMessage(_ message: [String: Any]) -> Int {
+        perMessageOverhead + estimateValue(message["content"]) + estimateToolCalls(message["tool_calls"])
+    }
+
+    private static func estimateToolCalls(_ value: Any?) -> Int {
+        guard let value else { return 0 }
+        return max(1, serializedLength(value) / 4)
+    }
+
+    private static func estimateValue(_ value: Any?) -> Int {
+        guard let value else { return 0 }
+        if let text = value as? String {
+            return max(1, text.count / 4)
+        }
+        if let parts = value as? [[String: Any]] {
+            return parts.reduce(0) { partial, part in
+                if part["type"] as? String == "image_url" {
+                    return partial + multimediaTokens
+                }
+                return partial + estimateValue(part["text"]) + estimateValue(part["image_url"])
+            }
+        }
+        return max(1, serializedLength(value) / 4)
+    }
+
+    private static func serializedLength(_ value: Any) -> Int {
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value) else {
+            return String(describing: value).count
+        }
+        return data.count
+    }
+}
+
 enum CompletionGate {
     static func canFinish(request: AgentRequest, context: AgentRunContext, assistantContent: String) -> Bool {
         if context.lastToolResultWasError {
@@ -480,6 +777,10 @@ enum AgentEvent: Sendable, Equatable {
     case permissionRequest(AgentPermissionRequest)
     case status(String)
     case tokenBudget(used: Int, total: Int)
+    case contextBudget(used: Int, total: Int, level: ContextBudgetLevel)
+    case compactStarted(trigger: String, preTokens: Int)
+    case compactCompleted(status: String, preTokens: Int, postTokens: Int)
+    case subagentStatus(id: String, status: String, detail: String)
     case streamEnd
     case complete(sessionId: String)
     case aborted(sessionId: String)
@@ -633,17 +934,51 @@ struct NativeAgentRuntime: Sendable {
         let context = AgentRunContext(request: request)
         var messages = openAIInitialMessages(request: request)
         var didForceWorkspaceBootstrap = false
+        var didRecoverContextOverflow = false
 
         for iteration in 1...maxAgentIterations {
             if Task.isCancelled { throw CancellationError() }
             let statusItem = await turnController.recordStatus(iteration == 1 ? "thinking" : "processing")
             continuation.yield(.turnItemStarted(statusItem))
             continuation.yield(.status(iteration == 1 ? "thinking" : "processing"))
-            let turn = try await performOpenAIChatTurnWithRetry(
-                request: request,
-                messages: messages,
-                continuation: continuation
-            )
+            let budget = NativeContextBudget.snapshot(messages: messages, contextWindow: request.contextWindow)
+            continuation.yield(.contextBudget(used: budget.used, total: budget.total, level: budget.level ?? .normal))
+            if let compaction = NativeContextBudget.compactIfNeeded(messages: messages, contextWindow: request.contextWindow) {
+                continuation.yield(.compactStarted(trigger: compaction.trigger, preTokens: compaction.preTokens))
+                let compactItem = await turnController.recordStatus("context compacting", text: compaction.trigger)
+                continuation.yield(.turnItemStarted(compactItem))
+                continuation.yield(.status("context compacting"))
+                messages = compaction.messages
+                continuation.yield(.compactCompleted(status: compaction.status, preTokens: compaction.preTokens, postTokens: compaction.postTokens))
+                continuation.yield(.contextBudget(
+                    used: compaction.postTokens,
+                    total: request.contextWindow,
+                    level: NativeContextBudget.snapshot(messages: messages, contextWindow: request.contextWindow).level ?? .normal
+                ))
+            }
+
+            let turn: ModelTurn
+            do {
+                turn = try await performOpenAIChatTurnWithRetry(
+                    request: request,
+                    messages: messages,
+                    continuation: continuation
+                )
+            } catch {
+                if !didRecoverContextOverflow, isPromptTooLongError(error) {
+                    didRecoverContextOverflow = true
+                    let recovery = NativeContextBudget.forceRecover(messages: messages, contextWindow: request.contextWindow)
+                    continuation.yield(.compactStarted(trigger: recovery.trigger, preTokens: recovery.preTokens))
+                    messages = recovery.messages
+                    continuation.yield(.compactCompleted(status: recovery.status, preTokens: recovery.preTokens, postTokens: recovery.postTokens))
+                    continuation.yield(.contextBudget(used: recovery.postTokens, total: request.contextWindow, level: .recovering))
+                    let recoveryItem = await turnController.recordStatus("context recovering", text: "prompt_too_long")
+                    continuation.yield(.turnItemStarted(recoveryItem))
+                    continuation.yield(.status("context recovering"))
+                    continue
+                }
+                throw error
+            }
             if let assistantItem = await turnController.recordAssistantText(turn.assistantContent) {
                 continuation.yield(.turnItemCompleted(assistantItem))
             }
@@ -703,6 +1038,9 @@ struct NativeAgentRuntime: Sendable {
                 let toolItem = await turnController.recordToolCall(call)
                 continuation.yield(.turnItemStarted(toolItem))
                 continuation.yield(.toolUse(id: call.id, name: call.name, inputJSON: call.inputJSON))
+                if AgentToolNameCanonicalizer.canonical(call.name) == "Task" {
+                    continuation.yield(.subagentStatus(id: call.id, status: "running", detail: call.inputJSON))
+                }
                 let result: AgentToolResult
                 if let recoveryResult = invocation.recoveryResult {
                     result = recoveryResult
@@ -721,14 +1059,18 @@ struct NativeAgentRuntime: Sendable {
                 continuation.yield(.turnItemCompleted(recorded.resultItem))
                 continuation.yield(.toolResult(id: call.id, output: result.output, isError: result.isError))
                 context.recordToolResult(result, call: call)
-                if result.toolName == "SwitchMode" {
+                if result.toolName == "Task" {
+                    continuation.yield(.subagentStatus(id: call.id, status: result.isError ? "failed" : "completed", detail: result.output))
+                }
+                let didApprovePlanExecution = !result.isError && result.toolName == "SwitchMode" && context.runMode == .agent && context.planExited
+                if didApprovePlanExecution {
                     await turnController.markPlanExited()
                     let executeItem = await turnController.recordStatus("executing plan")
                     continuation.yield(.turnItemStarted(executeItem))
                     continuation.yield(.status("executing plan"))
                 }
                 messages.append(openAIToolResultMessage(result))
-                if !result.isError, result.toolName == "SwitchMode" {
+                if didApprovePlanExecution {
                     messages.append([
                         "role": "user",
                         "content": "The plan was approved. Continue executing it now in agent mode. Use concrete file/search/shell tools and do not stop after restating the plan.",
@@ -1243,35 +1585,24 @@ struct NativeAgentRuntime: Sendable {
     }
 
     private static func openAIUserMessage(prompt: String, attachments: [FileAttachment]) -> [String: Any] {
-        let imageParts = attachments.compactMap(imageContentPart)
-        guard !imageParts.isEmpty else {
+        guard !attachments.isEmpty else {
             return ["role": "user", "content": prompt]
         }
-        var content: [[String: Any]] = [
-            [
+
+        let attachmentParts = NativeAttachmentResolver.openAIContentParts(for: attachments).0
+        guard !attachmentParts.isEmpty else {
+            return ["role": "user", "content": prompt]
+        }
+
+        var content: [[String: Any]] = []
+        if !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            content.append([
                 "type": "text",
                 "text": prompt,
-            ],
-        ]
-        content.append(contentsOf: imageParts)
+            ])
+        }
+        content.append(contentsOf: attachmentParts)
         return ["role": "user", "content": content]
-    }
-
-    private static func imageContentPart(_ attachment: FileAttachment) -> [String: Any]? {
-        guard attachment.isImage else { return nil }
-        let url = URL(fileURLWithPath: attachment.path)
-        guard
-            let data = try? Data(contentsOf: url),
-            !data.isEmpty,
-            data.count <= 8_000_000
-        else { return nil }
-        let mimeType = attachment.mimeType ?? "image/png"
-        return [
-            "type": "image_url",
-            "image_url": [
-                "url": "data:\(mimeType);base64,\(data.base64EncodedString())",
-            ],
-        ]
     }
 
     private static func openAIAssistantToolMessage(content: String, toolCalls: [AgentToolCall]) -> [String: Any] {
@@ -1385,11 +1716,25 @@ struct NativeAgentRuntime: Sendable {
         let output = usage["output_tokens"] as? Int ?? usage["completion_tokens"] as? Int ?? 0
         let total = usage["total_tokens"] as? Int ?? input + output
         guard total > 0 else { return nil }
-        return TokenBudget(used: total, total: max(contextWindow, total))
+        let budgetTotal = max(contextWindow, total)
+        return TokenBudget(used: total, total: budgetTotal, level: ContextBudgetLevel.level(used: total, total: budgetTotal))
     }
 
     private static func timeoutInterval(from milliseconds: Int) -> TimeInterval {
         TimeInterval(max(milliseconds, 1_000)) / 1_000.0
+    }
+
+    static func isPromptTooLongError(_ error: Error) -> Bool {
+        guard case ProviderClientError.httpError(let statusCode, let body) = error else {
+            return false
+        }
+        guard statusCode == 400 || statusCode == 413 else { return false }
+        let lower = body.lowercased()
+        return lower.contains("prompt_too_long") ||
+            lower.contains("context length") ||
+            lower.contains("maximum context") ||
+            lower.contains("too many tokens") ||
+            lower.contains("tokens exceed")
     }
 
     static func retryDecision(
@@ -2185,6 +2530,9 @@ enum AgentPermissionPolicy {
         if matchesAny(ruleSet: context.toolSettings.disallowedTools, call: call) {
             return .deny("\(toolName) is blocked by permissions settings.")
         }
+        if context.runMode == .plan, !context.planExited, toolName == "SwitchMode" {
+            return .ask("Plan approval is required before leaving Plan mode.")
+        }
         if context.permissionMode == .bypassPermissions {
             return .allow
         }
@@ -2587,7 +2935,11 @@ enum AgentToolExecutor {
                     context.planExited = false
                     context.runMode = .plan
                 }
-                output = (input["plan"] as? String).nilIfBlank ?? "Mode switched to \(mode)."
+                if mode == "plan", let feedback = (input["userFeedback"] as? String).nilIfBlank {
+                    output = "Stay in Plan mode. User requested revisions:\n\(feedback)"
+                } else {
+                    output = (input["plan"] as? String).nilIfBlank ?? "Mode switched to \(mode)."
+                }
             case "AskQuestion":
                 output = askUserQuestionOutput(inputJSON: call.inputJSON)
             default:
@@ -3008,6 +3360,9 @@ enum AgentToolExecutor {
     }
 
     private static func runTask(inputJSON: String, context: AgentRunContext) async throws -> String {
+        guard context.subagentDepth < context.maxSubagentDepth else {
+            throw ProviderClientError.toolExecution("subagent_depth_exceeded (depth=\(context.subagentDepth), max=\(context.maxSubagentDepth)); nested Task is not allowed.")
+        }
         let input = try inputObject(from: inputJSON)
         let prompt = try requiredString("prompt", input: input)
         let type = ((input["type"] as? String) ?? "generalPurpose").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3366,13 +3721,14 @@ enum AgentToolExecutor {
             for index in 1...n {
                 let result = try await withIsolatedGitWorktree(workspacePath: scopedContext.workspacePath) { worktreePath in
                     let isolatedContext = childContext(from: scopedContext, workspacePath: worktreePath)
+                    let taskContext = subagentContext(from: isolatedContext)
                     return try await NativeAgentRuntime.runSubagent(
                         inputJSON: jsonString([
                             "prompt": "\(prompt)\n\nAttempt \(index) of \(n). Use this isolated git worktree and return the best concise result.",
                             "description": "best-of-n \(index)",
                             "context": "Task isolation: git worktree at \(worktreePath)",
                         ]),
-                        context: isolatedContext
+                        context: taskContext
                     )
                 }
                 results.append(["attempt": index, "worktree": result.worktreePath, "result": result.output])
@@ -3382,13 +3738,14 @@ enum AgentToolExecutor {
             if ((input["isolation"] as? String) ?? "").lowercased() == "worktree" {
                 let result = try await withIsolatedGitWorktree(workspacePath: scopedContext.workspacePath) { worktreePath in
                     let isolatedContext = childContext(from: scopedContext, workspacePath: worktreePath)
+                    let taskContext = subagentContext(from: isolatedContext)
                     return try await NativeAgentRuntime.runSubagent(
                         inputJSON: jsonString([
                             "prompt": prompt,
                             "description": (input["description"] as? String) ?? type,
                             "context": "Task type: \(type)\nTask isolation: git worktree at \(worktreePath)",
                         ]),
-                        context: isolatedContext
+                        context: taskContext
                     )
                 }
                 return jsonString(["type": type, "worktree": result.worktreePath, "result": result.output], pretty: true)
@@ -3399,7 +3756,7 @@ enum AgentToolExecutor {
                     "description": (input["description"] as? String) ?? type,
                     "context": "Task type: \(type)",
                 ]),
-                context: scopedContext
+                context: subagentContext(from: scopedContext)
             )
         default:
             throw ProviderClientError.toolExecution("Unsupported Task type: \(type)")
@@ -3437,6 +3794,15 @@ enum AgentToolExecutor {
         let child = AgentRunContext(request: request)
         child.planExited = context.planExited
         child.todosJSON = context.todosJSON
+        child.subagentDepth = context.subagentDepth
+        child.maxSubagentDepth = context.maxSubagentDepth
+        return child
+    }
+
+    private static func subagentContext(from context: AgentRunContext) -> AgentRunContext {
+        let child = childContext(from: context, workspacePath: context.workspacePath)
+        child.subagentDepth = context.subagentDepth + 1
+        child.maxSubagentDepth = context.maxSubagentDepth
         return child
     }
 

@@ -42,7 +42,7 @@ enum DesignTokens {
     static let smallRadius: CGFloat = 6
     static let largeRadius: CGFloat = 12
     static let userBubbleRadius: CGFloat = 22
-    static let headerHeight: CGFloat = 48
+    static let headerHeight: CGFloat = 44
 
     static let sidebarMinWidth: CGFloat = 200
     static let sidebarDefaultWidth: CGFloat = 248
@@ -53,11 +53,11 @@ enum DesignTokens {
     static let sidebarProjectRowHeight: CGFloat = 32
     static let sidebarFooterHeight: CGFloat = 54
 
-    static let composerMaxWidth: CGFloat = 720
-    static let composerTextMinHeight: CGFloat = 48
-    static let transcriptMaxWidth: CGFloat = 860
-    static let transcriptPaddingH: CGFloat = 24
-    static let transcriptPaddingV: CGFloat = 24
+    static let composerMaxWidth: CGFloat = 688
+    static let composerTextMinHeight: CGFloat = 44
+    static let transcriptMaxWidth: CGFloat = 824
+    static let transcriptPaddingH: CGFloat = 20
+    static let transcriptPaddingV: CGFloat = 20
     static let filesChatDefaultWidth: CGFloat = 460
     static let filesChatMinWidth: CGFloat = 320
     static let filesPaneMinWidth: CGFloat = 280

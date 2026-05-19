@@ -530,7 +530,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(AgentPermissionPolicy.policy(for: call, context: context), .allow)
     }
 
-    func testAllowedInteractiveToolBypassesGenericPermissionPrompt() {
+    func testAllowedInteractiveSwitchModeStillRequiresPlanConfirmation() {
         var permissions = ToolPermissionSettings.defaults
         permissions.allowedTools = ["exit_plan_mode"]
         let context = AgentRunContext(
@@ -542,7 +542,11 @@ final class ParityLogicTests: XCTestCase {
             inputJSON: #"{"mode":"agent","plan":"Edit index.html."}"#
         )
 
-        XCTAssertEqual(AgentPermissionPolicy.policy(for: call, context: context), .allow)
+        if case .ask(let reason) = AgentPermissionPolicy.policy(for: call, context: context) {
+            XCTAssertTrue(reason.lowercased().contains("plan approval"))
+        } else {
+            XCTFail("Allowed tools must not bypass Plan exit confirmation.")
+        }
     }
 
     func testBlockedToolOverridesAllowedAndBypassPermissionMode() {
@@ -1215,6 +1219,20 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(importedSnapshot.overview.totalEntries, 1)
     }
 
+    func testMemoryRecallRanksRelevantRecordsAndKeepsEmptyDiagnostics() {
+        let service = MemoryService()
+        _ = service.upsert(name: "router-cost", summary: "Router cost baseline and saved price are shown in route details.", projectName: "Native")
+        _ = service.upsert(name: "theme-note", summary: "Use compact spacing in the memory page.", projectName: "Native")
+
+        let context = service.recallForTurn(prompt: "How should router saved price display?", projectName: "Native", projectRoot: nil)
+        XCTAssertTrue(context.split(separator: "\n").first?.contains("router-cost") == true)
+        XCTAssertFalse(context.contains("theme-note"))
+
+        let empty = service.recallForTurn(prompt: "completely-unmatched-term", projectName: "Native", projectRoot: nil)
+        XCTAssertTrue(empty.isEmpty)
+        XCTAssertEqual(service.caseTraces(limit: 1).first?.reply, "No memory records matched this turn.")
+    }
+
     @MainActor
     func testMemoryJobsPersistStateAndTraceIDsInSnapshot() async throws {
         let root = repoRootURL()
@@ -1462,6 +1480,155 @@ final class ParityLogicTests: XCTestCase {
         } else {
             XCTFail("Plan mode must deny mutating tools before SwitchMode.")
         }
+    }
+
+    func testPlanSwitchModeRequiresConfirmationEvenWithBypassAndAllowedTool() {
+        var toolSettings = ToolPermissionSettings.defaults
+        toolSettings.allowedTools = ["SwitchMode"]
+        let context = AgentRunContext(request: agentRequest(
+            runMode: .plan,
+            permissionMode: .bypassPermissions,
+            toolSettings: toolSettings
+        ))
+        let call = AgentToolCall(
+            id: "switch-plan",
+            name: "SwitchMode",
+            inputJSON: #"{"mode":"agent","plan":"Do the work."}"#
+        )
+
+        if case .ask(let reason) = NativeToolRouter.permissionPolicy(for: call, context: context) {
+            XCTAssertTrue(reason.lowercased().contains("plan approval"))
+        } else {
+            XCTFail("SwitchMode must still ask in Plan mode.")
+        }
+    }
+
+    func testSwitchModeCanStayInPlanForRevisionFeedback() async {
+        let context = AgentRunContext(request: agentRequest(runMode: .plan))
+        let call = AgentToolCall(
+            id: "switch-refine",
+            name: "SwitchMode",
+            inputJSON: #"{"mode":"plan","userFeedback":"Add rollback steps before executing."}"#
+        )
+
+        let result = await NativeToolRouter.execute(call: call, context: context)
+
+        XCTAssertFalse(result.isError)
+        XCTAssertEqual(context.runMode, .plan)
+        XCTAssertFalse(context.planExited)
+        XCTAssertTrue(result.output.contains("Stay in Plan mode"))
+        XCTAssertTrue(result.output.contains("rollback"))
+    }
+
+    func testNestedTaskIsRejectedAtMaxSubagentDepth() async {
+        let context = AgentRunContext(request: agentRequest(nativeConfigValues: ["runtime.maxSubagentDepth": "1"]))
+        context.subagentDepth = 1
+        let call = AgentToolCall(
+            id: "nested-task",
+            name: "Task",
+            inputJSON: #"{"prompt":"Explore nested work","type":"explore"}"#
+        )
+
+        let result = await NativeToolRouter.execute(call: call, context: context)
+
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.output.contains("subagent_depth_exceeded"))
+    }
+
+    func testNativeAttachmentResolverBuildsMultimodalContentParts() throws {
+        let root = try makeAgentWorkspace("attachments")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let textURL = root.appendingPathComponent("notes.txt")
+        let imageURL = root.appendingPathComponent("pixel.png")
+        let pdfURL = root.appendingPathComponent("sample.pdf")
+        try "Use this text attachment.".write(to: textURL, atomically: true, encoding: .utf8)
+        try writeTinyPNG(to: imageURL)
+        try writeMinimalPDF(to: pdfURL)
+
+        let (parts, diagnostics) = NativeAttachmentResolver.openAIContentParts(for: [
+            FileAttachment(id: UUID(), fileName: "notes.txt", path: textURL.path, mimeType: "text/plain"),
+            FileAttachment(id: UUID(), fileName: "pixel.png", path: imageURL.path, mimeType: "image/png"),
+            FileAttachment(id: UUID(), fileName: "sample.pdf", path: pdfURL.path, mimeType: "application/pdf"),
+        ])
+
+        XCTAssertTrue(parts.contains { ($0["type"] as? String) == "image_url" })
+        XCTAssertTrue(parts.contains { (($0["text"] as? String) ?? "").contains("Use this text attachment.") })
+        XCTAssertTrue(parts.contains { (($0["text"] as? String) ?? "").contains("Page 1") })
+        XCTAssertTrue(diagnostics.contains { $0.message.contains("multimodal") })
+    }
+
+    func testNativeContextBudgetCompactsLongToolResultsAndReportsLevels() {
+        var messages: [[String: Any]] = [
+            ["role": "system", "content": "system"],
+            ["role": "user", "content": "start"],
+            ["role": "tool", "content": String(repeating: "x", count: 24_000)],
+        ]
+        for index in 0..<8 {
+            messages.append(["role": index.isMultiple(of: 2) ? "assistant" : "user", "content": "message \(index)"])
+        }
+
+        let before = NativeContextBudget.snapshot(messages: messages, contextWindow: 3_000)
+        let compaction = NativeContextBudget.compactIfNeeded(messages: messages, contextWindow: 3_000)
+
+        XCTAssertEqual(before.level, .recovering)
+        XCTAssertNotNil(compaction)
+        XCTAssertLessThan(compaction?.postTokens ?? Int.max, compaction?.preTokens ?? 0)
+        XCTAssertTrue(String(describing: compaction?.messages ?? []).contains("microcompacted"))
+    }
+
+    func testToolInvocationPresentationRendersShellCommand() {
+        let presentation = ToolInvocationPresentation.parse(
+            toolName: "bash",
+            inputJSON: #"{"command":"sed -n '1,20p' README.md\nrg -n \"ChatView\" .","description":"Inspect UI"}"#
+        )
+
+        XCTAssertEqual(presentation.toolName, "Shell")
+        XCTAssertEqual(presentation.title, "Shell")
+        XCTAssertEqual(presentation.command, "sed -n '1,20p' README.md\nrg -n \"ChatView\" .")
+        XCTAssertTrue(presentation.parsed)
+        XCTAssertEqual(presentation.primaryValue, presentation.command)
+        let target = ToolInvocationPresentation.target(toolName: "Shell", inputJSON: presentation.rawInput, limit: 80)
+        XCTAssertEqual(target, "sed -n '1,20p' README.md rg -n \"ChatView\" .")
+    }
+
+    func testToolInvocationPresentationFallsBackToRawInputForMalformedJSON() {
+        let presentation = ToolInvocationPresentation.parse(toolName: "Read", inputJSON: "{path: README.md")
+
+        XCTAssertFalse(presentation.parsed)
+        XCTAssertNil(presentation.command)
+        XCTAssertEqual(presentation.fields, [
+            ToolInvocationField(label: "Raw input", value: "{path: README.md", isPrimary: true),
+        ])
+        XCTAssertEqual(presentation.primaryValue, "{path: README.md")
+    }
+
+    func testToolInvocationPresentationExtractsCommonToolFields() {
+        let read = ToolInvocationPresentation.parse(toolName: "Read", inputJSON: #"{"file_path":"/tmp/App.swift","offset":12}"#)
+        let grep = ToolInvocationPresentation.parse(toolName: "Grep", inputJSON: #"{"pattern":"ToolInvocation","path":"apps/macos-native"}"#)
+        let glob = ToolInvocationPresentation.parse(toolName: "Glob", inputJSON: #"{"pattern":"**/*.swift","path":"apps/macos-native"}"#)
+        let task = ToolInvocationPresentation.parse(toolName: "Task", inputJSON: #"{"description":"Inspect tool UI","prompt":"Find process rows","type":"explore"}"#)
+
+        XCTAssertEqual(read.fields.map(\.label), ["Path", "Offset"])
+        XCTAssertEqual(read.primaryValue, "/tmp/App.swift")
+        XCTAssertEqual(grep.fields.map(\.label), ["Pattern", "Path"])
+        XCTAssertEqual(grep.primaryValue, "ToolInvocation")
+        XCTAssertEqual(glob.fields.map(\.label), ["Pattern", "Path"])
+        XCTAssertEqual(glob.primaryValue, "**/*.swift")
+        XCTAssertEqual(task.fields.map(\.label), ["Description", "Prompt", "Type"])
+        XCTAssertEqual(task.primaryValue, "Inspect tool UI")
+    }
+
+    @MainActor
+    func testSelectingProjectDoesNotShowDraftSession() {
+        let state = AppState()
+        let project = state.projects[0]
+        state.startDraftSession(project: project)
+        XCTAssertTrue(state.isDraftSessionVisible)
+
+        state.selectProject(project)
+
+        XCTAssertFalse(state.isDraftSessionVisible)
+        XCTAssertNil(state.selectedSessionID)
     }
 
     func testProcessTraceFiltersByAssistantAnchor() {
@@ -1764,7 +1931,10 @@ final class ParityLogicTests: XCTestCase {
             XCTAssertEqual(layout.visibleTabs, AppTab.primaryTabs)
             XCTAssertTrue(layout.overflowTabs.isEmpty)
             XCTAssertFalse(layout.iconOnly)
+            XCTAssertEqual(layout.estimatedWidth, 508)
         }
+        XCTAssertEqual(MainHeaderToolSwitcherLayout.buttonWidth(for: .chat, iconOnly: false), 82)
+        XCTAssertEqual(MainHeaderToolSwitcherLayout.buttonWidth(for: .chat, iconOnly: true), 36)
     }
 
     func testProcessToolPresentationClassifierUsesExactCanonicalTools() {
@@ -1777,19 +1947,6 @@ final class ParityLogicTests: XCTestCase {
 
         let mixedPhases = ["Task", "Shell"].map(AgentToolPresentationClassifier.phase(forToolName:))
         XCTAssertFalse(mixedPhases.contains(.search))
-    }
-
-    @MainActor
-    func testSettingsWindowPresenterFindsExistingSettingsWindow() {
-        let unrelated = NSWindow()
-        let settings = NSWindow()
-        settings.identifier = SettingsWindowPresenter.identifier
-        defer {
-            unrelated.close()
-            settings.close()
-        }
-
-        XCTAssertTrue(SettingsWindowPresenter.settingsWindow(in: [unrelated, settings]) === settings)
     }
 
     @MainActor
