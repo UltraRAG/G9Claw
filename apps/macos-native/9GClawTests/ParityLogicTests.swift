@@ -1438,6 +1438,25 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(ComposerAttachmentPreviewModel.make(for: code).typeLabel, "SWIFT")
     }
 
+    func testComposerPasteShortcutPolicyMatchesPlainCommandVOnly() {
+        XCTAssertTrue(ComposerPasteShortcutPolicy.isPasteShortcut(
+            charactersIgnoringModifiers: "v",
+            modifierFlags: [.command]
+        ))
+        XCTAssertTrue(ComposerPasteShortcutPolicy.isPasteShortcut(
+            charactersIgnoringModifiers: "V",
+            modifierFlags: [.command]
+        ))
+        XCTAssertFalse(ComposerPasteShortcutPolicy.isPasteShortcut(
+            charactersIgnoringModifiers: "v",
+            modifierFlags: [.command, .shift]
+        ))
+        XCTAssertFalse(ComposerPasteShortcutPolicy.isPasteShortcut(
+            charactersIgnoringModifiers: "c",
+            modifierFlags: [.command]
+        ))
+    }
+
     func testAppLanguageSystemResolvesChineseAndEnglish() {
         XCTAssertEqual(AppLanguage.system.resolved(preferredLanguages: ["zh-Hans-US"]), .chineseSimplified)
         XCTAssertEqual(AppLanguage.system.resolved(preferredLanguages: ["en-US"]), .english)

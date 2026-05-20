@@ -3045,23 +3045,30 @@ private struct ComposerPasteShortcutCatcher: NSViewRepresentable {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 guard let self,
                       self.isEnabled,
-                      Self.isPasteShortcut(event),
-                      !Self.firstResponderIsComposerTextView()
+                      ComposerPasteShortcutPolicy.isPasteShortcut(event)
                 else {
                     return event
                 }
                 return self.handlePasteboard(NSPasteboard.general) ? nil : event
             }
         }
+    }
+}
 
-        private static func isPasteShortcut(_ event: NSEvent) -> Bool {
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            return flags == .command && event.charactersIgnoringModifiers?.lowercased() == "v"
-        }
+enum ComposerPasteShortcutPolicy {
+    static func isPasteShortcut(_ event: NSEvent) -> Bool {
+        isPasteShortcut(
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            modifierFlags: event.modifierFlags
+        )
+    }
 
-        private static func firstResponderIsComposerTextView() -> Bool {
-            NSApp.keyWindow?.firstResponder is SubmitTextView
-        }
+    static func isPasteShortcut(
+        charactersIgnoringModifiers: String?,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> Bool {
+        let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return flags == .command && charactersIgnoringModifiers?.lowercased() == "v"
     }
 }
 
@@ -3240,7 +3247,20 @@ private final class SubmitTextView: NSTextView {
         super.paste(sender)
     }
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if ComposerPasteShortcutPolicy.isPasteShortcut(event),
+           onPaste(NSPasteboard.general) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func keyDown(with event: NSEvent) {
+        if ComposerPasteShortcutPolicy.isPasteShortcut(event),
+           onPaste(NSPasteboard.general) {
+            return
+        }
+
         let normalizedFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let isShiftTab = event.keyCode == 48 &&
             normalizedFlags.contains(.shift) &&
