@@ -1348,6 +1348,23 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(ComposerPasteboardReader.textPayload(from: pasteboard, attachments: attachments), "Please inspect the attached file.")
     }
 
+    func testComposerPasteboardReaderParsesPlainFilePathWithoutTextPayload() throws {
+        let root = repoRootURL()
+            .appendingPathComponent("9gclaw-path-paste-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fileURL = root.appendingPathComponent("notes with spaces.md")
+        try "# Notes".write(to: fileURL, atomically: true, encoding: .utf8)
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("9gclaw-path-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.setString(fileURL.path, forType: .string)
+
+        let attachments = ComposerPasteboardReader.attachments(from: pasteboard) { _ in nil }
+
+        XCTAssertEqual(attachments.map(\.fileName), ["notes with spaces.md"])
+        XCTAssertNil(ComposerPasteboardReader.textPayload(from: pasteboard, attachments: attachments))
+    }
+
     func testComposerPasteboardReaderParsesClipboardImage() throws {
         let image = NSImage(size: NSSize(width: 8, height: 8))
         image.lockFocus()
@@ -1369,6 +1386,56 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(attachments.count, 1)
         XCTAssertEqual(attachments.first?.mimeType, "image/png")
         XCTAssertEqual(attachments.first?.path, savedURL.path)
+    }
+
+    func testComposerPasteboardReaderParsesRawJPEGImageData() throws {
+        let image = NSImage(size: NSSize(width: 8, height: 8))
+        image.lockFocus()
+        NSColor.blue.setFill()
+        NSRect(x: 0, y: 0, width: 8, height: 8).fill()
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let jpeg = bitmap.representation(using: .jpeg, properties: [:]) else {
+            return XCTFail("Expected test image to produce JPEG data.")
+        }
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("9gclaw-jpeg-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.setData(jpeg, forType: NSPasteboard.PasteboardType("public.jpeg"))
+        let savedURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pasted-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: savedURL) }
+
+        let attachments = ComposerPasteboardReader.attachments(from: pasteboard) { _ in
+            try? Data("png".utf8).write(to: savedURL)
+            return savedURL
+        }
+
+        XCTAssertEqual(attachments.count, 1)
+        XCTAssertEqual(attachments.first?.mimeType, "image/png")
+        XCTAssertEqual(attachments.first?.path, savedURL.path)
+    }
+
+    func testComposerAttachmentDeduperKeepsExistingPathAndAllowsNewPastedImages() {
+        let existing = FileAttachment(id: UUID(), fileName: "notes.txt", path: "/tmp/notes.txt", mimeType: "text/plain")
+        let duplicate = FileAttachment(id: UUID(), fileName: "notes copy.txt", path: "/tmp/notes.txt", mimeType: "text/plain")
+        let imageOne = FileAttachment(id: UUID(), fileName: "pasted-image-1.png", path: "/tmp/pasted-image-1.png", mimeType: "image/png")
+        let imageTwo = FileAttachment(id: UUID(), fileName: "pasted-image-2.png", path: "/tmp/pasted-image-2.png", mimeType: "image/png")
+
+        let merged = ComposerAttachmentDeduper.merged([existing], with: [duplicate, imageOne, imageTwo])
+
+        XCTAssertEqual(merged.map(\.path), [existing.path, imageOne.path, imageTwo.path])
+    }
+
+    func testComposerAttachmentPreviewModelUsesImageAndFileTypeIcons() {
+        let image = FileAttachment(id: UUID(), fileName: "shot.png", path: "/tmp/shot.png", mimeType: "image/png")
+        let pdf = FileAttachment(id: UUID(), fileName: "brief.pdf", path: "/tmp/brief.pdf", mimeType: "application/pdf")
+        let code = FileAttachment(id: UUID(), fileName: "app.swift", path: "/tmp/app.swift", mimeType: "text/x-swift")
+
+        XCTAssertEqual(ComposerAttachmentPreviewModel.make(for: image).systemImage, "photo")
+        XCTAssertEqual(ComposerAttachmentPreviewModel.make(for: pdf).systemImage, "doc.richtext")
+        XCTAssertEqual(ComposerAttachmentPreviewModel.make(for: code).systemImage, "chevron.left.forwardslash.chevron.right")
+        XCTAssertEqual(ComposerAttachmentPreviewModel.make(for: code).typeLabel, "SWIFT")
     }
 
     func testAppLanguageSystemResolvesChineseAndEnglish() {

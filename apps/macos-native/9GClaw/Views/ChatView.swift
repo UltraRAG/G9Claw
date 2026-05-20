@@ -451,7 +451,7 @@ private struct ComposerCard: View {
                     canSubmit: canSend,
                     pasteboardAttachments: pastedAttachments,
                     onPasteAttachments: { attachments in
-                        state.pendingAttachments.append(contentsOf: attachments)
+                        addPendingAttachments(attachments)
                         focused = true
                     },
                     onToggleRunMode: {
@@ -494,35 +494,30 @@ private struct ComposerCard: View {
         .background(
             ComposerGlassBackground(isFocused: focused, chromeless: chromeless)
         )
+        .background(
+            ComposerPasteShortcutCatcher(isEnabled: focused) { pasteboard in
+                handleFallbackPaste(pasteboard)
+            }
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            focused = true
+        }
     }
 
     private var attachmentTray: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 ForEach(state.pendingAttachments) { attachment in
-                    HStack(spacing: 6) {
-                        Image(systemName: attachment.isImage ? "photo" : "paperclip")
-                            .font(.system(size: 12))
-                        Text(attachment.fileName)
-                            .font(.system(size: 12, weight: .medium))
-                            .lineLimit(1)
-                        Button {
+                    PendingAttachmentPreview(attachment: attachment) {
+                        withAnimation(.easeOut(duration: 0.16)) {
                             state.pendingAttachments.removeAll { $0.id == attachment.id }
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 10, weight: .bold))
                         }
-                        .buttonStyle(.plain)
                     }
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .padding(.horizontal, 8)
-                    .frame(height: 26)
-                    .background(
-                        RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                            .fill(DesignTokens.neutral100)
-                    )
                 }
             }
+            .padding(.horizontal, 1)
+            .padding(.top, 1)
         }
     }
 
@@ -791,12 +786,41 @@ private struct ComposerCard: View {
         panel.prompt = state.t(.attach)
         guard panel.runModal() == .OK else { return }
         let attachments = panel.urls.map(ComposerPasteboardReader.attachment)
-        state.pendingAttachments.append(contentsOf: attachments)
+        addPendingAttachments(attachments)
         focused = true
     }
 
     private func pastedAttachments(from pasteboard: NSPasteboard) -> [FileAttachment] {
         ComposerPasteboardReader.attachments(from: pasteboard, saveImage: savePastedImage)
+    }
+
+    private func handleFallbackPaste(_ pasteboard: NSPasteboard) -> Bool {
+        let attachments = pastedAttachments(from: pasteboard)
+        guard !attachments.isEmpty else { return false }
+        if let text = ComposerPasteboardReader.textPayload(from: pasteboard, attachments: attachments) {
+            appendPastedText(text)
+        }
+        addPendingAttachments(attachments)
+        focused = true
+        return true
+    }
+
+    private func appendPastedText(_ text: String) {
+        guard !text.isEmpty else { return }
+        if state.composerText.isEmpty {
+            state.composerText = text
+        } else if state.composerText.last?.isWhitespace == true {
+            state.composerText += text
+        } else {
+            state.composerText += "\n" + text
+        }
+    }
+
+    private func addPendingAttachments(_ attachments: [FileAttachment]) {
+        state.pendingAttachments = ComposerAttachmentDeduper.merged(
+            state.pendingAttachments,
+            with: attachments
+        )
     }
 
     private func savePastedImage(_ image: NSImage) -> URL? {
@@ -822,6 +846,16 @@ private struct ComposerCard: View {
 
 enum ComposerPasteboardReader {
     private static let fileNamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+    private static let jpegType = NSPasteboard.PasteboardType("public.jpeg")
+    private static let heicType = NSPasteboard.PasteboardType("public.heic")
+    private static let heifType = NSPasteboard.PasteboardType("public.heif")
+    private static let imageDataTypes: [NSPasteboard.PasteboardType] = [
+        .png,
+        .tiff,
+        jpegType,
+        heicType,
+        heifType,
+    ]
 
     static func attachments(from pasteboard: NSPasteboard, saveImage: (NSImage) -> URL?) -> [FileAttachment] {
         let fileURLs = orderedUniqueFileURLs(from: pasteboard)
@@ -890,6 +924,9 @@ enum ComposerPasteboardReader {
         if let filenames = pasteboard.propertyList(forType: fileNamesType) as? [String] {
             urls.append(contentsOf: filenames.map(URL.init(fileURLWithPath:)))
         }
+        if let plainPathURLs = plainFilePathURLs(from: pasteboard) {
+            urls.append(contentsOf: plainPathURLs)
+        }
         var seen: Set<String> = []
         return urls.compactMap { url in
             let standardized = url.standardizedFileURL
@@ -902,7 +939,7 @@ enum ComposerPasteboardReader {
         if let image = NSImage(pasteboard: pasteboard) {
             return image
         }
-        for type in [NSPasteboard.PasteboardType.png, .tiff] {
+        for type in imageDataTypes {
             if let data = pasteboard.data(forType: type),
                let image = NSImage(data: data) {
                 return image
@@ -911,11 +948,85 @@ enum ComposerPasteboardReader {
         return nil
     }
 
+    private static func plainFilePathURLs(from pasteboard: NSPasteboard) -> [URL]? {
+        guard let value = pasteboard.string(forType: .string) else { return nil }
+        let lines = value
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return nil }
+
+        let manager = FileManager.default
+        var urls: [URL] = []
+        for line in lines {
+            guard !line.contains("://") else { return nil }
+            var isDirectory: ObjCBool = false
+            guard manager.fileExists(atPath: line, isDirectory: &isDirectory) else {
+                return nil
+            }
+            urls.append(URL(fileURLWithPath: line, isDirectory: isDirectory.boolValue))
+        }
+        return urls
+    }
+
     private static func mimeType(for url: URL) -> String? {
         if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
             return "inode/directory"
         }
         return UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+    }
+}
+
+enum ComposerAttachmentDeduper {
+    static func merged(_ existing: [FileAttachment], with incoming: [FileAttachment]) -> [FileAttachment] {
+        var result = existing
+        var seen = Set(existing.map { stablePathKey($0) })
+        for attachment in incoming {
+            guard seen.insert(stablePathKey(attachment)).inserted else { continue }
+            result.append(attachment)
+        }
+        return result
+    }
+
+    private static func stablePathKey(_ attachment: FileAttachment) -> String {
+        URL(fileURLWithPath: attachment.path).standardizedFileURL.path
+    }
+}
+
+struct ComposerAttachmentPreviewModel: Equatable {
+    var isImage: Bool
+    var typeLabel: String
+    var systemImage: String
+    var accentKind: String
+
+    static func make(for attachment: FileAttachment) -> ComposerAttachmentPreviewModel {
+        let ext = URL(fileURLWithPath: attachment.path).pathExtension.uppercased()
+        let typeLabel: String
+        if !ext.isEmpty {
+            typeLabel = ext
+        } else if let suffix = attachment.mimeType?.split(separator: "/").last {
+            typeLabel = String(suffix).uppercased()
+        } else {
+            typeLabel = "FILE"
+        }
+        let lower = typeLabel.lowercased()
+        if attachment.isImage {
+            return .init(isImage: true, typeLabel: typeLabel, systemImage: "photo", accentKind: "image")
+        }
+        switch lower {
+        case "pdf":
+            return .init(isImage: false, typeLabel: typeLabel, systemImage: "doc.richtext", accentKind: "pdf")
+        case "doc", "docx", "rtf":
+            return .init(isImage: false, typeLabel: typeLabel, systemImage: "doc.text", accentKind: "document")
+        case "xls", "xlsx", "csv":
+            return .init(isImage: false, typeLabel: typeLabel, systemImage: "tablecells", accentKind: "spreadsheet")
+        case "ppt", "pptx":
+            return .init(isImage: false, typeLabel: typeLabel, systemImage: "rectangle.on.rectangle", accentKind: "presentation")
+        case "swift", "js", "ts", "tsx", "jsx", "json", "yaml", "yml", "py", "rb", "go", "rs", "html", "css", "xml":
+            return .init(isImage: false, typeLabel: typeLabel, systemImage: "chevron.left.forwardslash.chevron.right", accentKind: "code")
+        default:
+            return .init(isImage: false, typeLabel: typeLabel, systemImage: "doc", accentKind: "file")
+        }
     }
 }
 
@@ -2697,6 +2808,103 @@ private struct CodexInlineToolIcon: View {
     }
 }
 
+private struct PendingAttachmentPreview: View {
+    var attachment: FileAttachment
+    var onRemove: () -> Void
+
+    private var model: ComposerAttachmentPreviewModel {
+        ComposerAttachmentPreviewModel.make(for: attachment)
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if model.isImage, let image = NSImage(contentsOfFile: attachment.path) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 104, height: 104)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(DesignTokens.separator, lineWidth: 1)
+                        )
+                } else {
+                    filePreview
+                }
+            }
+            removeButton
+                .offset(x: 7, y: -7)
+        }
+        .padding(.top, 7)
+        .padding(.trailing, 7)
+    }
+
+    private var filePreview: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(accentColor.opacity(0.14))
+                    .frame(width: 42, height: 42)
+                Image(systemName: model.systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(accentColor)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(attachment.fileName)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(model.typeLabel)
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(width: 192, height: 64)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(DesignTokens.background.opacity(0.9))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(DesignTokens.separator, lineWidth: 1)
+                )
+        )
+    }
+
+    private var removeButton: some View {
+        Button(action: onRemove) {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(DesignTokens.neutral900.opacity(0.92)))
+                .shadow(color: .black.opacity(0.18), radius: 4, x: 0, y: 1)
+        }
+        .buttonStyle(.plain)
+        .help("Remove attachment")
+    }
+
+    private var accentColor: Color {
+        switch model.accentKind {
+        case "pdf":
+            return DesignTokens.danger
+        case "document":
+            return DesignTokens.accent
+        case "spreadsheet":
+            return DesignTokens.success
+        case "presentation":
+            return DesignTokens.warning
+        case "code":
+            return DesignTokens.neutral700
+        default:
+            return DesignTokens.neutral500
+        }
+    }
+}
+
 private struct AttachmentChip: View {
     var attachment: FileAttachment
 
@@ -2791,6 +2999,69 @@ private struct ToolBlock: View {
                         .stroke(DesignTokens.separator, lineWidth: 1)
                 )
         )
+    }
+}
+
+private struct ComposerPasteShortcutCatcher: NSViewRepresentable {
+    var isEnabled: Bool
+    var handlePasteboard: (NSPasteboard) -> Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.handlePasteboard = handlePasteboard
+        context.coordinator.isEnabled = isEnabled
+        context.coordinator.installMonitor()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.handlePasteboard = handlePasteboard
+        context.coordinator.isEnabled = isEnabled
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.removeMonitor()
+    }
+
+    @MainActor
+    final class Coordinator {
+        var isEnabled = false
+        var handlePasteboard: (NSPasteboard) -> Bool = { _ in false }
+        private var monitor: Any?
+
+        func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        func installMonitor() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self,
+                      self.isEnabled,
+                      Self.isPasteShortcut(event),
+                      !Self.firstResponderIsComposerTextView()
+                else {
+                    return event
+                }
+                return self.handlePasteboard(NSPasteboard.general) ? nil : event
+            }
+        }
+
+        private static func isPasteShortcut(_ event: NSEvent) -> Bool {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            return flags == .command && event.charactersIgnoringModifiers?.lowercased() == "v"
+        }
+
+        private static func firstResponderIsComposerTextView() -> Bool {
+            NSApp.keyWindow?.firstResponder is SubmitTextView
+        }
     }
 }
 
