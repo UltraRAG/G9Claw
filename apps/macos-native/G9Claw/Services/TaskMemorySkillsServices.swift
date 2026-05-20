@@ -1,0 +1,1827 @@
+import Foundation
+
+final class TaskService {
+    private(set) var plans: [TaskPlan] = []
+
+    func createPlan(title: String, prompt: String) -> TaskPlan {
+        let plan = TaskPlan(id: UUID(), title: title, prompt: prompt, status: .queued, createdAt: Date())
+        plans.insert(plan, at: 0)
+        return plan
+    }
+
+    func updateStatus(id: UUID, status: TaskStatus) {
+        guard let index = plans.firstIndex(where: { $0.id == id }) else { return }
+        plans[index].status = status
+    }
+}
+
+final class MemoryService {
+    private(set) var records: [MemoryRecord] = []
+    private var caseTraceRecords: [MemoryTraceRecord] = []
+    private var indexTraceRecords: [MemoryTraceRecord] = []
+    private var dreamTraceRecords: [MemoryTraceRecord] = []
+    private var lastDreamSnapshot: MemoryDreamSnapshot?
+    private var lastIndexedAt: Date?
+    private var lastDreamAt: Date?
+    private var settings = MemorySettingsSnapshot.defaults
+    private var jobStates: [MemoryJobKind: MemoryJobState] = Dictionary(
+        uniqueKeysWithValues: MemoryJobKind.allCases.map { ($0, .idle($0)) }
+    )
+
+    func upsert(name: String, summary: String, projectName: String?) -> MemoryRecord {
+        if let index = records.firstIndex(where: { $0.name == name && $0.projectName == projectName }) {
+            records[index].summary = summary
+            records[index].content = summary
+            records[index].updatedAt = Date()
+            return records[index]
+        }
+        let record = MemoryRecord(
+            id: UUID(),
+            name: name,
+            summary: summary,
+            projectName: projectName,
+            updatedAt: Date(),
+            type: .project,
+            relativePath: "\(name).md",
+            deprecated: false,
+            content: summary
+        )
+        records.insert(record, at: 0)
+        return record
+    }
+
+    func loadWorkspaceRecords(projectRoot: String?, projectName: String?) {
+        guard let projectRoot else { return }
+        let memoryRoot = URL(fileURLWithPath: projectRoot)
+            .appendingPathComponent(".g9claw")
+            .appendingPathComponent("memory")
+        let g9clawMemoryRoot = URL(fileURLWithPath: projectRoot)
+            .appendingPathComponent(".g9claw")
+            .appendingPathComponent("memory")
+        let roots = [memoryRoot, g9clawMemoryRoot]
+        var loaded: [MemoryRecord] = []
+        for root in roots {
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: []
+            ) else { continue }
+            for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
+                let content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+                let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                loaded.append(
+                    MemoryRecord(
+                        id: UUID(),
+                        name: url.deletingPathExtension().lastPathComponent,
+                        summary: Self.preview(content),
+                        projectName: projectName,
+                        updatedAt: values?.contentModificationDate ?? Date(),
+                        type: Self.recordType(from: content, fallbackPath: url.path),
+                        relativePath: url.path.replacingOccurrences(of: projectRoot + "/", with: ""),
+                        deprecated: content.lowercased().contains("deprecated: true"),
+                        content: content
+                    )
+                )
+            }
+        }
+        records.removeAll { $0.projectName == projectName }
+        records = merge(loaded, into: records)
+    }
+
+    @discardableResult
+    func indexWorkspace(projectRoot: String?, projectName: String?) throws -> MemoryDashboardSnapshot {
+        guard let projectRoot else {
+            throw NSError(domain: "MemoryService", code: 400, userInfo: [NSLocalizedDescriptionKey: "No workspace selected."])
+        }
+        let root = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
+        let memoryRoot = root
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("memory", isDirectory: true)
+        try FileManager.default.createDirectory(at: memoryRoot, withIntermediateDirectories: true)
+
+        let indexedFiles = Self.indexableFiles(in: root)
+        let fileLines = indexedFiles.prefix(160).map { url -> String in
+            let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
+            let preview = ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+                .split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty && !$0.hasPrefix("#") }
+                .map { String($0) } ?? "No preview"
+            return "- `\(relative)`: \(String(preview.prefix(180)))"
+        }
+        let content = """
+        # Workspace Index
+
+        Generated by native G9Claw.
+
+        - Workspace: \(root.path)
+        - Indexed at: \(ISO8601DateFormatter().string(from: Date()))
+        - Files scanned: \(indexedFiles.count)
+
+        ## Files
+
+        \(fileLines.isEmpty ? "No supported text files found." : fileLines.joined(separator: "\n"))
+        """
+        try content.write(to: memoryRoot.appendingPathComponent("native-workspace-index.md"), atomically: true, encoding: String.Encoding.utf8)
+        loadWorkspaceRecords(projectRoot: root.path, projectName: projectName)
+        lastIndexedAt = Date()
+        let trace = makeTrace(
+                kind: "index",
+                title: "Index Sync",
+                status: "completed",
+                trigger: "manual",
+                context: root.path,
+                reply: "Indexed \(indexedFiles.count) files.",
+                steps: [
+                    ("index_start", "开始索引", "Workspace: \(root.path)"),
+                    ("index_finished", "索引完成", "Files scanned: \(indexedFiles.count)")
+                ]
+            )
+        indexTraceRecords.insert(trace, at: 0)
+        return dashboard(projectName: projectName)
+    }
+
+    func search(_ query: String) -> [MemoryRecord] {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let visible = records.sorted { $0.updatedAt > $1.updatedAt }
+        guard !normalized.isEmpty else { return visible }
+        return visible.filter {
+            $0.name.lowercased().contains(normalized) ||
+            $0.summary.lowercased().contains(normalized) ||
+            $0.relativePath.lowercased().contains(normalized) ||
+            ($0.projectName?.lowercased().contains(normalized) ?? false)
+        }
+    }
+
+    func dashboard(
+        query: String = "",
+        projectName: String? = nil,
+        projectRoot: String? = nil,
+        isGeneral: Bool = false
+    ) -> MemoryDashboardSnapshot {
+        let filtered = search(query).filter { projectName == nil || $0.projectName == projectName || $0.projectName == nil }
+        let active = filtered.filter { !$0.deprecated }
+        let overview = MemoryOverview(
+            totalEntries: active.count,
+            projectEntries: active.filter { $0.type == .project }.count,
+            feedbackEntries: active.filter { $0.type == .feedback }.count,
+            userEntries: active.filter { $0.type == .user }.count,
+            latestMemoryAt: active.map(\.updatedAt).max(),
+            lastIndexedAt: lastIndexedAt,
+            lastDreamAt: lastDreamAt,
+            schedulerEnabled: true
+        )
+        let workspace = workspaceSnapshot(
+            records: filtered,
+            active: active,
+            projectName: projectName,
+            projectRoot: projectRoot,
+            isGeneral: isGeneral
+        )
+        return MemoryDashboardSnapshot(
+            totalEntries: active.count,
+            projectEntries: active.filter { $0.type == .project }.count,
+            feedbackEntries: active.filter { $0.type == .feedback }.count,
+            latestMemoryAt: active.map(\.updatedAt).max(),
+            records: filtered,
+            userSummary: active.prefix(5).map { "- \($0.name): \($0.summary)" }.joined(separator: "\n"),
+            caseTraces: caseTraceRecords.map(\.title),
+            indexTraces: indexTraceRecords.map(\.title),
+            dreamTraces: dreamTraceRecords.map(\.title),
+            overview: overview,
+            settings: settings,
+            workspace: workspace,
+            caseTraceRecords: caseTraceRecords,
+            indexTraceRecords: indexTraceRecords,
+            dreamTraceRecords: dreamTraceRecords,
+            lastDreamSnapshot: lastDreamSnapshot,
+            scheduler: MemorySchedulerSnapshot(enabled: true, status: "running"),
+            jobStates: jobStates
+        )
+    }
+
+    func overview(projectName: String? = nil) -> MemoryOverview {
+        dashboard(projectName: projectName).overview
+    }
+
+    func settingsSnapshot() -> MemorySettingsSnapshot {
+        settings
+    }
+
+    func workspace(
+        query: String = "",
+        projectName: String? = nil,
+        projectRoot: String? = nil,
+        isGeneral: Bool = false
+    ) -> MemoryWorkspaceSnapshot {
+        dashboard(query: query, projectName: projectName, projectRoot: projectRoot, isGeneral: isGeneral).workspace
+    }
+
+    func list(
+        kind: MemoryRecordType? = nil,
+        query: String = "",
+        limit: Int = 100,
+        offset: Int = 0,
+        projectName: String? = nil
+    ) -> [MemoryRecord] {
+        let filtered = search(query)
+            .filter { projectName == nil || $0.projectName == projectName || $0.projectName == nil }
+            .filter { kind == nil || $0.type == kind }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        guard offset < filtered.count else { return [] }
+        return Array(filtered.dropFirst(max(0, offset)).prefix(max(1, limit)))
+    }
+
+    func get(ids: [String], projectName: String? = nil) -> [MemoryRecord] {
+        let wanted = Set(ids)
+        return records.filter { record in
+            (projectName == nil || record.projectName == projectName || record.projectName == nil) &&
+                (wanted.contains(record.id.uuidString) || wanted.contains(record.relativePath) || wanted.contains(record.name))
+        }
+    }
+
+    func userSummary(projectName: String? = nil) -> String {
+        dashboard(projectName: projectName).userSummary
+    }
+
+    func recallForTurn(prompt: String, projectName: String?, projectRoot: String?) -> String {
+        let normalizedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scoped = records
+            .filter { !$0.deprecated }
+            .filter { projectName == nil || $0.projectName == projectName || $0.projectName == nil }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        let terms = Self.recallTerms(from: normalizedPrompt)
+        let selected: [MemoryRecord]
+        if terms.isEmpty {
+            selected = Array(scoped.prefix(5))
+        } else {
+            selected = scoped
+                .map { record in (record, Self.recallScore(record, terms: terms, now: Date())) }
+                .filter { $0.1 > 0 }
+                .sorted {
+                    if $0.1 == $1.1 {
+                        return $0.0.updatedAt > $1.0.updatedAt
+                    }
+                    return $0.1 > $1.1
+                }
+                .prefix(8)
+                .map(\.0)
+        }
+        let context = selected.map { "- \($0.name): \($0.summary)" }.joined(separator: "\n")
+        let reply = context.isEmpty ? "No memory records matched this turn." : context
+        let trace = makeTrace(
+                kind: "recall",
+                title: normalizedPrompt.isEmpty ? "Memory Recall" : "Recall: \(String(normalizedPrompt.prefix(80)))",
+                status: "completed",
+                trigger: "agent_turn",
+                context: projectRoot ?? projectName ?? "general",
+                reply: reply,
+                steps: [
+                    ("recall_start", "开始 Recall", "Prompt: \(String(normalizedPrompt.prefix(240)))"),
+                    ("recall_selected", context.isEmpty ? "无匹配记忆" : "注入记忆", "Records: \(selected.count), scoped: \(scoped.count), terms: \(terms.joined(separator: ","))")
+                ]
+            )
+        caseTraceRecords.insert(trace, at: 0)
+        finishJob(.recall, phase: .completed, message: "Recall 完成", traceID: trace.id)
+        return context
+    }
+
+    func caseTraces(limit: Int = 12) -> [MemoryTraceRecord] {
+        Array(caseTraceRecords.prefix(max(1, limit)))
+    }
+
+    func indexTraces(limit: Int = 30) -> [MemoryTraceRecord] {
+        Array(indexTraceRecords.prefix(max(1, limit)))
+    }
+
+    func dreamTraces(limit: Int = 30) -> [MemoryTraceRecord] {
+        Array(dreamTraceRecords.prefix(max(1, limit)))
+    }
+
+    func clear(projectName: String?, projectRoot: String? = nil) {
+        if let projectRoot {
+            let nativeIndex = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
+                .appendingPathComponent(".g9claw")
+                .appendingPathComponent("memory")
+                .appendingPathComponent("native-workspace-index.md")
+            try? FileManager.default.removeItem(at: nativeIndex)
+        }
+        records.removeAll { projectName == nil || $0.projectName == projectName }
+    }
+
+    func updateSettings(_ next: MemorySettingsSnapshot) {
+        settings = next
+    }
+
+    func editRecord(_ record: MemoryRecord, name: String, summary: String, projectRoot: String?) throws -> MemoryRecord {
+        guard let index = records.firstIndex(where: { $0.id == record.id || $0.relativePath == record.relativePath }) else {
+            throw NSError(domain: "MemoryService", code: 404, userInfo: [NSLocalizedDescriptionKey: "Memory record not found."])
+        }
+        records[index].name = name
+        records[index].summary = summary
+        records[index].content = Self.rewriteHeader(content: records[index].content, name: name, summary: summary)
+        records[index].updatedAt = Date()
+        try writeRecordIfPossible(records[index], projectRoot: projectRoot)
+        return records[index]
+    }
+
+    func setDeprecated(_ record: MemoryRecord, deprecated: Bool, projectRoot: String?) throws {
+        guard let index = records.firstIndex(where: { $0.id == record.id || $0.relativePath == record.relativePath }) else { return }
+        records[index].deprecated = deprecated
+        records[index].updatedAt = Date()
+        records[index].content = Self.setDeprecatedFlag(records[index].content, deprecated: deprecated)
+        try writeRecordIfPossible(records[index], projectRoot: projectRoot)
+    }
+
+    func delete(_ record: MemoryRecord, projectRoot: String?) throws {
+        if let url = recordURL(for: record, projectRoot: projectRoot), FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        records.removeAll { $0.id == record.id || $0.relativePath == record.relativePath }
+    }
+
+    @discardableResult
+    func runDream(projectName: String?, projectRoot: String?) -> MemoryDashboardSnapshot {
+        let scoped = records.filter { projectName == nil || $0.projectName == projectName || $0.projectName == nil }
+        let now = Date()
+        lastDreamAt = now
+        lastDreamSnapshot = MemoryDreamSnapshot(
+            capturedAt: now,
+            rollbackReady: true,
+            summary: "Dream prepared from \(scoped.count) memory records."
+        )
+        let summary = scoped.prefix(12).map { "- \($0.name): \($0.summary)" }.joined(separator: "\n")
+        let trace = makeTrace(
+                kind: "dream",
+                title: "Memory Dream",
+                status: "completed",
+                trigger: "manual",
+                context: projectRoot ?? projectName ?? "general",
+                reply: summary.isEmpty ? "No source records yet." : summary,
+                steps: [
+                    ("dream_start", "开始 Dream", "Records: \(scoped.count)"),
+                    ("dream_finished", "Dream 完成", "Snapshot captured.")
+                ]
+            )
+        dreamTraceRecords.insert(trace, at: 0)
+        if !summary.isEmpty {
+            _ = upsert(name: "memory-dream-\(Int(now.timeIntervalSince1970))", summary: summary, projectName: projectName)
+        }
+        return dashboard(projectName: projectName, projectRoot: projectRoot)
+    }
+
+    @discardableResult
+    @MainActor
+    func runIndexJob(projectRoot: String?, projectName: String?) async throws -> MemoryDashboardSnapshot {
+        beginJob(.index, message: "正在索引当前工作区")
+        do {
+            try await Task.sleep(nanoseconds: 180_000_000)
+            let snapshot = try indexWorkspace(projectRoot: projectRoot, projectName: projectName)
+            finishJob(.index, phase: .completed, message: "索引同步完成", traceID: snapshot.indexTraceRecords.first?.id)
+            return dashboard(projectName: projectName, projectRoot: projectRoot, isGeneral: projectName == nil)
+        } catch {
+            finishJob(.index, phase: .failed, message: error.localizedDescription)
+            throw error
+        }
+    }
+
+    @discardableResult
+    @MainActor
+    func runDreamJob(projectName: String?, projectRoot: String?) async -> MemoryDashboardSnapshot {
+        beginJob(.dream, message: "正在运行 Memory Dream")
+        try? await Task.sleep(nanoseconds: 180_000_000)
+        let snapshot = runDream(projectName: projectName, projectRoot: projectRoot)
+        finishJob(.dream, phase: .completed, message: "Memory Dream 完成", traceID: snapshot.dreamTraceRecords.first?.id)
+        return dashboard(projectName: projectName, projectRoot: projectRoot, isGeneral: projectName == nil)
+    }
+
+    @discardableResult
+    @MainActor
+    func rollbackDreamJob(projectName: String?, projectRoot: String?) async throws -> MemoryDashboardSnapshot {
+        beginJob(.rollback, message: "正在回滚 Dream")
+        do {
+            try await Task.sleep(nanoseconds: 120_000_000)
+            let snapshot = try rollbackLastDream(projectName: projectName, projectRoot: projectRoot)
+            finishJob(.rollback, phase: .completed, message: "Dream 回滚完成", traceID: snapshot.dreamTraceRecords.first?.id)
+            return dashboard(projectName: projectName, projectRoot: projectRoot, isGeneral: projectName == nil)
+        } catch {
+            finishJob(.rollback, phase: .failed, message: error.localizedDescription)
+            throw error
+        }
+    }
+
+    func rollbackLastDream(projectName: String?, projectRoot: String?) throws -> MemoryDashboardSnapshot {
+        guard let lastDreamSnapshot, lastDreamSnapshot.rollbackReady else {
+            throw NSError(domain: "MemoryService", code: 404, userInfo: [NSLocalizedDescriptionKey: "No rollback-ready Dream snapshot is available."])
+        }
+        let trace = makeTrace(
+                kind: "dream",
+                title: "Rollback Last Dream",
+                status: "completed",
+                trigger: "rollback",
+                context: projectRoot ?? projectName ?? "general",
+                reply: lastDreamSnapshot.summary,
+                steps: [
+                    ("rollback_start", "开始回滚", "Snapshot: \(ISO8601DateFormatter().string(from: lastDreamSnapshot.capturedAt))"),
+                    ("rollback_finished", "回滚完成", "Memory state restored to snapshot metadata.")
+                ]
+            )
+        dreamTraceRecords.insert(trace, at: 0)
+        self.lastDreamSnapshot = MemoryDreamSnapshot(
+            capturedAt: lastDreamSnapshot.capturedAt,
+            rollbackReady: false,
+            summary: lastDreamSnapshot.summary
+        )
+        return dashboard(projectName: projectName, projectRoot: projectRoot)
+    }
+
+    func exportBundle(projectName: String?) throws -> Data {
+        let bundle = MemoryExportBundle(
+            exportedAt: Date(),
+            records: records.filter { projectName == nil || $0.projectName == projectName || $0.projectName == nil },
+            settings: settings
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(bundle)
+    }
+
+    func importBundle(_ data: Data, projectName: String?) throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let bundle = try decoder.decode(MemoryExportBundle.self, from: data)
+        for var record in bundle.records {
+            if projectName != nil {
+                record.projectName = projectName
+            }
+            records.removeAll { $0.relativePath == record.relativePath && $0.projectName == record.projectName }
+            records.append(record)
+        }
+        settings = bundle.settings
+        records.sort { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func merge(_ incoming: [MemoryRecord], into current: [MemoryRecord]) -> [MemoryRecord] {
+        var byPath = Dictionary(uniqueKeysWithValues: current.map { ("\($0.projectName ?? ""):\($0.relativePath)", $0) })
+        for record in incoming {
+            byPath["\(record.projectName ?? ""):\(record.relativePath)"] = record
+        }
+        return Array(byPath.values).sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func workspaceSnapshot(
+        records: [MemoryRecord],
+        active: [MemoryRecord],
+        projectName: String?,
+        projectRoot: String?,
+        isGeneral: Bool
+    ) -> MemoryWorkspaceSnapshot {
+        let projectEntries = active.filter { $0.type != .feedback && $0.type != .user }
+        let feedbackEntries = active.filter { $0.type == .feedback }
+        let deprecated = records.filter(\.deprecated)
+        let meta = MemoryProjectMeta(
+            projectId: projectName ?? "general",
+            projectName: projectName ?? "general",
+            description: projectEntries.first?.summary ?? "当前 workspace 的进展、事实和状态记录",
+            status: "in_progress",
+            workspacePath: projectRoot,
+            relativePath: "MEMORY.md",
+            sourceType: isGeneral ? "general_local" : "workspace",
+            readOnly: false,
+            updatedAt: active.map(\.updatedAt).max()
+        )
+        return MemoryWorkspaceSnapshot(
+            workspaceMode: isGeneral ? "general" : "project",
+            projectPath: projectRoot,
+            selectedProjectId: meta.projectId,
+            selectedProject: meta,
+            generalProjects: isGeneral ? [meta] : [],
+            projectMeta: meta,
+            manifestPath: "MEMORY.md",
+            manifestContent: active.map { "- \($0.name): \($0.summary)" }.joined(separator: "\n"),
+            totalFiles: active.count,
+            totalProjects: projectEntries.count,
+            totalFeedback: feedbackEntries.count,
+            projectEntries: projectEntries,
+            feedbackEntries: feedbackEntries,
+            deprecatedProjectEntries: deprecated.filter { $0.type == .project || $0.type == .generalProjectMeta },
+            deprecatedFeedbackEntries: deprecated.filter { $0.type == .feedback }
+        )
+    }
+
+    private struct MemoryExportBundle: Codable {
+        var exportedAt: Date
+        var records: [MemoryRecord]
+        var settings: MemorySettingsSnapshot
+    }
+
+    private static func recallTerms(from prompt: String) -> [String] {
+        let normalized = prompt.lowercased()
+        let latinTerms = normalized
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 3 }
+        let cjkCharacters = normalized.filter { character in
+            character.unicodeScalars.contains { scalar in
+                (0x4E00...0x9FFF).contains(Int(scalar.value))
+            }
+        }
+        var cjkTerms: [String] = []
+        if cjkCharacters.count >= 2 {
+            let chars = Array(cjkCharacters)
+            for index in chars.indices.dropLast() {
+                cjkTerms.append(String([chars[index], chars[index + 1]]))
+            }
+            if cjkCharacters.count <= 12 {
+                cjkTerms.append(String(cjkCharacters))
+            }
+        }
+        var seen: Set<String> = []
+        return (latinTerms + cjkTerms).filter { seen.insert($0).inserted }
+    }
+
+    private static func recallScore(_ record: MemoryRecord, terms: [String], now: Date) -> Double {
+        let name = record.name.lowercased()
+        let summary = record.summary.lowercased()
+        let content = record.content.lowercased()
+        let path = record.relativePath.lowercased()
+        var score = 0.0
+        for term in terms {
+            if name.contains(term) { score += 5 }
+            if summary.contains(term) { score += 3 }
+            if path.contains(term) { score += 2 }
+            if content.contains(term) { score += 1 }
+        }
+        guard score > 0 else { return 0 }
+        let ageDays = max(0, now.timeIntervalSince(record.updatedAt) / 86_400)
+        let recency = max(0, 1.5 - min(ageDays, 30) / 20)
+        return score + recency
+    }
+
+    private func makeTrace(
+        kind: String,
+        title: String,
+        status: String,
+        trigger: String,
+        context: String,
+        reply: String,
+        steps: [(String, String, String)]
+    ) -> MemoryTraceRecord {
+        let now = Date()
+        return MemoryTraceRecord(
+            id: "\(kind)-\(UUID().uuidString)",
+            title: title,
+            status: status,
+            trigger: trigger,
+            createdAt: now,
+            meta: [
+                "trigger": trigger,
+                "status": status,
+                "createdAt": ISO8601DateFormatter().string(from: now)
+            ],
+            context: context,
+            toolEvents: steps.map { "\($0.1): \($0.2)" }.joined(separator: "\n"),
+            reply: reply,
+            steps: steps.map {
+                MemoryTraceStep(
+                    id: $0.0,
+                    title: $0.1,
+                    detail: $0.2,
+                    status: status,
+                    createdAt: now
+                )
+            }
+        )
+    }
+
+    private func beginJob(_ kind: MemoryJobKind, message: String) {
+        var next = jobStates[kind] ?? .idle(kind)
+        next.phase = .running
+        next.message = message
+        next.traceID = nil
+        next.startedAt = Date()
+        next.endedAt = nil
+        jobStates[kind] = next
+    }
+
+    private func finishJob(_ kind: MemoryJobKind, phase: MemoryJobPhase, message: String, traceID: String? = nil) {
+        var next = jobStates[kind] ?? .idle(kind)
+        next.phase = phase
+        next.message = message
+        next.traceID = traceID ?? next.traceID
+        if next.startedAt == nil {
+            next.startedAt = Date()
+        }
+        next.endedAt = Date()
+        jobStates[kind] = next
+    }
+
+    private func recordURL(for record: MemoryRecord, projectRoot: String?) -> URL? {
+        guard let projectRoot, !record.relativePath.isEmpty, !record.relativePath.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: projectRoot).appendingPathComponent(record.relativePath)
+    }
+
+    private func writeRecordIfPossible(_ record: MemoryRecord, projectRoot: String?) throws {
+        guard let url = recordURL(for: record, projectRoot: projectRoot) else { return }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try record.content.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private static func recordType(from content: String, fallbackPath: String) -> MemoryRecordType {
+        let lower = "\(content) \(fallbackPath)".lowercased()
+        if lower.contains("type: project") { return .project }
+        if lower.contains("type: feedback") { return .feedback }
+        if lower.contains("type: user") || lower.contains("/user") { return .user }
+        if lower.contains("general_project_meta") { return .generalProjectMeta }
+        if lower.contains("feedback") { return .feedback }
+        return .project
+    }
+
+    private static func rewriteHeader(content: String, name: String, summary: String) -> String {
+        var lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        replaceOrInsert(key: "name", value: name, in: &lines)
+        replaceOrInsert(key: "description", value: summary, in: &lines)
+        return lines.joined(separator: "\n")
+    }
+
+    private static func setDeprecatedFlag(_ content: String, deprecated: Bool) -> String {
+        var lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        replaceOrInsert(key: "deprecated", value: deprecated ? "true" : "false", in: &lines)
+        return lines.joined(separator: "\n")
+    }
+
+    private static func replaceOrInsert(key: String, value: String, in lines: inout [String]) {
+        if let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("\(key):") }) {
+            lines[index] = "\(key): \(value)"
+            return
+        }
+        if let fenceEnd = lines.dropFirst().firstIndex(of: "---") {
+            lines.insert("\(key): \(value)", at: fenceEnd)
+        } else {
+            lines.insert(contentsOf: ["---", "\(key): \(value)", "---", ""], at: 0)
+        }
+    }
+
+    private static func preview(_ content: String) -> String {
+        content
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty && !$0.hasPrefix("#") }?
+            .prefix(240)
+            .description ?? "Memory record"
+    }
+
+    private static func indexableFiles(in root: URL) -> [URL] {
+        let skipped = Set([".git", "node_modules", "dist", "build", ".g9claw", ".g9claw", ".next", ".turbo"])
+        let allowedExtensions = Set(["md", "txt", "swift", "js", "ts", "tsx", "jsx", "json", "yaml", "yml", "py", "rb", "go", "rs", "html", "css"])
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+            options: [.skipsPackageDescendants]
+        ) else { return [] }
+        var urls: [URL] = []
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            if skipped.contains(name) {
+                enumerator.skipDescendants()
+                continue
+            }
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+            if values?.isDirectory == true { continue }
+            let ext = url.pathExtension.lowercased()
+            guard allowedExtensions.contains(ext) else { continue }
+            if let size = values?.fileSize, size > 512_000 { continue }
+            urls.append(url)
+            if urls.count >= 500 { break }
+        }
+        return urls.sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }
+    }
+}
+
+final class SkillsService: @unchecked Sendable {
+    private(set) var skills: [SkillRecord] = []
+
+    func refresh(projectPath: String?, isGeneral: Bool) {
+        var next: [SkillRecord] = []
+        next.append(contentsOf: listSkills(in: Self.userSkillsRoot(), scope: .user))
+        if let projectPath, !isGeneral {
+            next.append(contentsOf: listSkills(in: Self.projectSkillsRoot(projectPath), scope: .project))
+        }
+        skills = next.sorted {
+            if $0.scope != $1.scope { return $0.scope.rawValue < $1.scope.rawValue }
+            return $0.slug.localizedCaseInsensitiveCompare($1.slug) == .orderedAscending
+        }
+    }
+
+    func read(_ skill: SkillRecord) throws -> String {
+        try String(contentsOfFile: skill.skillFile, encoding: .utf8)
+    }
+
+    func write(_ skill: SkillRecord, content: String) throws -> SkillRecord {
+        try FileManager.default.createDirectory(
+            atPath: skill.skillDir,
+            withIntermediateDirectories: true
+        )
+        try content.write(toFile: skill.skillFile, atomically: true, encoding: .utf8)
+        return readSkillMeta(skillDir: URL(fileURLWithPath: skill.skillDir), scope: skill.scope) ?? skill
+    }
+
+    func create(scope: SkillScope, projectPath: String?, slug: String, name: String, description: String) throws -> SkillRecord {
+        guard Self.isSafeSlug(slug) else {
+            throw NSError(domain: "SkillsService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid slug"])
+        }
+        let root = try root(for: scope, projectPath: projectPath)
+        let dir = root.appendingPathComponent(slug, isDirectory: true)
+        if FileManager.default.fileExists(atPath: dir.path) {
+            throw NSError(domain: "SkillsService", code: 409, userInfo: [NSLocalizedDescriptionKey: "Skill already exists"])
+        }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let finalName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? slug : name
+        let content = """
+        ---
+        name: \(finalName)
+        description: \(description)
+        ---
+
+        # \(finalName)
+
+        Describe what this skill does, when to invoke it, and any prerequisites.
+
+        """
+        try content.write(to: dir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        return readSkillMeta(skillDir: dir, scope: scope)!
+    }
+
+    func delete(_ skill: SkillRecord) throws {
+        try FileManager.default.removeItem(atPath: skill.skillDir)
+        skills.removeAll { $0.id == skill.id }
+    }
+
+    func importFolder(source: URL, scope: SkillScope, projectPath: String?, slug requestedSlug: String?, overwrite: Bool) throws -> SkillRecord {
+        let validation = validate(source: source)
+        guard validation.ok else {
+            throw NSError(
+                domain: "SkillsService",
+                code: 422,
+                userInfo: [NSLocalizedDescriptionKey: validation.hardFails.first?.message ?? "Validation failed"]
+            )
+        }
+        let slug = (requestedSlug?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? requestedSlug!
+            : source.lastPathComponent
+        guard Self.isSafeSlug(slug) else {
+            throw NSError(domain: "SkillsService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid slug"])
+        }
+        let root = try root(for: scope, projectPath: projectPath)
+        let target = root.appendingPathComponent(slug, isDirectory: true)
+        if FileManager.default.fileExists(atPath: target.path) {
+            if overwrite {
+                try FileManager.default.removeItem(at: target)
+            } else {
+                throw NSError(domain: "SkillsService", code: 409, userInfo: [NSLocalizedDescriptionKey: "Skill already exists"])
+            }
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: source, to: target)
+        return readSkillMeta(skillDir: target, scope: scope)!
+    }
+
+    func clawHubSearch(query: String, registry: String? = nil) throws -> [SkillHubSearchResult] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        var args = ["--no-input"]
+        if let registry, !registry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            args.append(contentsOf: ["--registry", registry])
+        }
+        args.append(contentsOf: ["search", trimmed])
+        let result = try runClawHub(args: args, timeout: 30)
+        let output = result.stdout.isEmpty ? result.stderr : result.stdout
+        return parseClawHubSearch(output)
+    }
+
+    func clawHubInstall(
+        slug: String,
+        version: String? = nil,
+        force: Bool = false,
+        scope: SkillScope,
+        projectPath: String?,
+        registry: String? = nil
+    ) throws -> SkillHubInstallResult {
+        guard Self.isSafeSlug(slug) else {
+            throw NSError(domain: "SkillsService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid slug"])
+        }
+        let root: URL
+        let workdir: URL
+        let dir: String
+        switch scope {
+        case .project:
+            guard let projectPath, !projectPath.isEmpty else {
+                throw NSError(domain: "SkillsService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Project scope requires a real project context."])
+            }
+            workdir = URL(fileURLWithPath: projectPath)
+            dir = ".g9claw/skills"
+            root = Self.projectSkillsRoot(projectPath)
+        case .user:
+            workdir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".g9claw", isDirectory: true)
+            dir = "skills"
+            root = Self.userSkillsRoot()
+        }
+
+        var args = ["--no-input", "--workdir", workdir.path, "--dir", dir]
+        if let registry, !registry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            args.append(contentsOf: ["--registry", registry])
+        }
+        args.append(contentsOf: ["install", slug])
+        if let version, !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            args.append(contentsOf: ["--version", version])
+        }
+        if force {
+            args.append("--force")
+        }
+
+        let run = try runClawHub(args: args, timeout: 120, allowNonZero: true)
+        let installPath = root.appendingPathComponent(slug, isDirectory: true)
+        let installed = FileManager.default.fileExists(atPath: installPath.appendingPathComponent("SKILL.md").path)
+        let skill = installed ? readSkillMeta(skillDir: installPath, scope: scope) : nil
+        let output = "\(run.stdout)\n\(run.stderr)"
+        let needsForce = !installed && !force && output.range(of: "Use --force to install suspicious", options: [.caseInsensitive]) != nil
+        return SkillHubInstallResult(
+            ok: installed,
+            slug: slug,
+            scope: scope,
+            installPath: installPath.path,
+            installed: installed,
+            skill: skill,
+            stdout: run.stdout.trimmingCharacters(in: .whitespacesAndNewlines),
+            stderr: run.stderr.trimmingCharacters(in: .whitespacesAndNewlines),
+            exitCode: run.exitCode,
+            needsForce: needsForce
+        )
+    }
+
+    func validate(source: URL) -> SkillValidationResult {
+        var hardFails: [SkillValidationIssue] = []
+        var warnings: [SkillValidationIssue] = []
+        var fileCount = 0
+        var totalBytes = 0
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: source.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return SkillValidationResult(ok: false, hardFails: [.init(code: "source_missing", message: "Source folder does not exist.")], warnings: [], fileCount: 0, totalBytes: 0)
+        }
+        let skillFile = source.appendingPathComponent("SKILL.md")
+        let skillContent = (try? String(contentsOf: skillFile, encoding: .utf8)) ?? ""
+        if skillContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            hardFails.append(.init(code: "no_skill_md", message: "Source folder does not contain SKILL.md."))
+        } else {
+            let fm = Self.frontmatter(from: skillContent)
+            if (fm["name"] ?? "").isEmpty {
+                hardFails.append(.init(code: "frontmatter_missing_name", message: "Frontmatter is missing required field: name."))
+            }
+            let description = fm["description"] ?? ""
+            if description.isEmpty {
+                hardFails.append(.init(code: "frontmatter_missing_description", message: "Frontmatter is missing required field: description."))
+            } else if description.count < 20 {
+                warnings.append(.init(code: "description_short", message: "Description is short."))
+            }
+        }
+        let risky = Set(["sh", "bash", "zsh", "fish", "exe", "bat", "cmd", "dll", "so", "dylib"])
+        if let enumerator = FileManager.default.enumerator(at: source, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) {
+            for case let url as URL in enumerator {
+                let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+                if let size = values?.fileSize {
+                    fileCount += 1
+                    totalBytes += size
+                    if size > 10 * 1024 * 1024 {
+                        hardFails.append(.init(code: "file_too_large", message: "File exceeds 10MB: \(url.lastPathComponent)"))
+                    }
+                }
+                if risky.contains(url.pathExtension.lowercased()) {
+                    warnings.append(.init(code: "risky_extension", message: "Executable-style file: \(url.lastPathComponent)"))
+                }
+            }
+        }
+        if fileCount > 500 {
+            hardFails.append(.init(code: "too_many_files", message: "Bundle has more than 500 files."))
+        }
+        if totalBytes > 50 * 1024 * 1024 {
+            hardFails.append(.init(code: "total_too_large", message: "Bundle total size exceeds 50MB."))
+        }
+        return SkillValidationResult(ok: hardFails.isEmpty, hardFails: hardFails, warnings: warnings, fileCount: fileCount, totalBytes: totalBytes)
+    }
+
+    func setEnabled(_ skill: SkillRecord, enabled: Bool) {
+        guard let index = skills.firstIndex(where: { $0.id == skill.id }) else { return }
+        skills[index].enabled = enabled
+    }
+
+    private func listSkills(in root: URL, scope: SkillScope) -> [SkillRecord] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return entries.compactMap { readSkillMeta(skillDir: $0, scope: scope) }
+    }
+
+    private func readSkillMeta(skillDir: URL, scope: SkillScope) -> SkillRecord? {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: skillDir.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+        guard Self.isSafeSlug(skillDir.lastPathComponent) else { return nil }
+        let skillFile = skillDir.appendingPathComponent("SKILL.md")
+        guard let content = try? String(contentsOf: skillFile, encoding: .utf8) else { return nil }
+        let fm = Self.frontmatter(from: content)
+        let values = try? skillFile.resourceValues(forKeys: [.contentModificationDateKey])
+        return SkillRecord(
+            id: UUID(),
+            slug: skillDir.lastPathComponent,
+            name: fm["name"]?.isEmpty == false ? fm["name"]! : skillDir.lastPathComponent,
+            description: fm["description"] ?? "",
+            version: fm["version"],
+            skillDir: skillDir.path,
+            skillFile: skillFile.path,
+            scope: scope,
+            mtime: values?.contentModificationDate,
+            enabled: true
+        )
+    }
+
+    private func root(for scope: SkillScope, projectPath: String?) throws -> URL {
+        switch scope {
+        case .user:
+            return Self.userSkillsRoot()
+        case .project:
+            guard let projectPath, !projectPath.isEmpty else {
+                throw NSError(domain: "SkillsService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Project scope requires a real project."])
+            }
+            return Self.projectSkillsRoot(projectPath)
+        }
+    }
+
+    static func userSkillsRoot() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+    }
+
+    static func projectSkillsRoot(_ projectPath: String) -> URL {
+        URL(fileURLWithPath: projectPath)
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+    }
+
+    static func isSafeSlug(_ slug: String) -> Bool {
+        let pattern = #"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"#
+        return slug.range(of: pattern, options: .regularExpression) != nil && !slug.contains("..")
+    }
+
+    static func frontmatter(from content: String) -> [String: String] {
+        guard content.hasPrefix("---") else { return [:] }
+        let parts = content.components(separatedBy: "---")
+        guard parts.count >= 3 else { return [:] }
+        var result: [String: String] = [:]
+        for line in parts[1].split(separator: "\n") {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            result[key] = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        }
+        return result
+    }
+
+    private func parseClawHubSearch(_ output: String) -> [SkillHubSearchResult] {
+        let ansiPattern = #"\u{001B}\[[0-9;]*m"#
+        return output
+            .components(separatedBy: .newlines)
+            .compactMap { raw -> SkillHubSearchResult? in
+                let line = raw
+                    .replacingOccurrences(of: ansiPattern, with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !line.isEmpty,
+                      !line.hasPrefix("-"),
+                      !line.lowercased().hasPrefix("searching") else { return nil }
+                if let parsed = parseScoredSearchLine(line) {
+                    return parsed
+                }
+                let pieces = line.components(separatedBy: Regex.whitespaceRuns).filter { !$0.isEmpty }
+                guard let slug = pieces.first, Self.isSafeSlug(slug) else { return nil }
+                return SkillHubSearchResult(slug: slug, name: pieces.dropFirst().joined(separator: " ").nilIfBlank ?? slug, score: nil)
+            }
+    }
+
+    private func parseScoredSearchLine(_ line: String) -> SkillHubSearchResult? {
+        guard let open = line.lastIndex(of: "("),
+              let close = line.lastIndex(of: ")"),
+              open < close else { return nil }
+        let scoreText = line[line.index(after: open)..<close]
+        let beforeScore = line[..<open].trimmingCharacters(in: .whitespacesAndNewlines)
+        let pieces = beforeScore.components(separatedBy: Regex.whitespaceRuns).filter { !$0.isEmpty }
+        guard let slug = pieces.first, Self.isSafeSlug(slug) else { return nil }
+        let name = pieces.dropFirst().joined(separator: " ").nilIfBlank ?? slug
+        return SkillHubSearchResult(slug: slug, name: name, score: Double(scoreText))
+    }
+
+    private func runClawHub(args: [String], timeout: TimeInterval, allowNonZero: Bool = false) throws -> (stdout: String, stderr: String, exitCode: Int32) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["clawhub"] + args
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = [
+            environment["PATH"],
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin"
+        ].compactMap { $0 }.joined(separator: ":")
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            throw NSError(
+                domain: "SkillsService",
+                code: 503,
+                userInfo: [NSLocalizedDescriptionKey: "clawhub CLI not found in PATH. Install with `npm install -g clawhub`."]
+            )
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+            throw NSError(domain: "SkillsService", code: 408, userInfo: [NSLocalizedDescriptionKey: "clawhub timed out."])
+        }
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        if process.terminationStatus != 0, !allowNonZero {
+            throw NSError(
+                domain: "SkillsService",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: stderr.nilIfBlank ?? stdout.nilIfBlank ?? "clawhub failed."]
+            )
+        }
+        return (stdout, stderr, process.terminationStatus)
+    }
+}
+
+private enum Regex {
+    static let whitespaceRuns = try! NSRegularExpression(pattern: #"\s{2,}"#)
+}
+
+private extension String {
+    func components(separatedBy regex: NSRegularExpression) -> [String] {
+        let range = NSRange(startIndex..<endIndex, in: self)
+        var last = startIndex
+        var parts: [String] = []
+        for match in regex.matches(in: self, range: range) {
+            guard let swiftRange = Range(match.range, in: self) else { continue }
+            parts.append(String(self[last..<swiftRange.lowerBound]))
+            last = swiftRange.upperBound
+        }
+        parts.append(String(self[last..<endIndex]))
+        return parts
+    }
+
+    var nilIfBlank: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+final class RoutingService {
+    private var tokenRecords: [String: RoutingDashboardSession] = [:]
+    private let recordsURL: URL?
+
+    init() {
+        if let paths = try? AppPaths.current() {
+            let root = paths.applicationSupport.appendingPathComponent("Routing", isDirectory: true)
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            recordsURL = root.appendingPathComponent("routing-records.json")
+        } else {
+            recordsURL = nil
+        }
+        load()
+    }
+
+    static func classifyTier(prompt: String, runMode: ChatRunMode) -> String {
+        if runMode == .plan { return "REASONING" }
+        let normalized = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let words = normalized.split { $0.isWhitespace || $0.isNewline }
+        if words.count < 20,
+           !containsAny(normalized, ["修改", "优化", "实现", "生成", "创建", "网页", "网站", "代码", "edit", "fix", "build", "implement", "website", "code"]) {
+            return "SIMPLE"
+        }
+        if containsAny(normalized, ["架构", "重构", "全量", "复杂", "深入", "推理", "research", "architecture", "refactor", "reasoning"]) {
+            return "REASONING"
+        }
+        if containsAny(normalized, ["修改", "优化", "实现", "生成", "创建", "网页", "网站", "多文件", "edit", "fix", "build", "implement", "website", "multi-file"]) {
+            return "COMPLEX"
+        }
+        return "MEDIUM"
+    }
+
+    private static func containsAny(_ value: String, _ needles: [String]) -> Bool {
+        needles.contains { value.contains($0) }
+    }
+
+    func recordRequest(
+        sessionID: String,
+        title: String,
+        projectName: String,
+        model: String,
+        route: String,
+        tier: String,
+        query: String? = nil
+    ) {
+        let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : model
+        let now = Date()
+        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
+        record.title = title
+        record.projectName = projectName
+        record.lastActiveAt = now
+        let tierKey = tier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "COMPLEX" : tier
+        let routeKey = route.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : route
+        let requestBucket = RoutingBucket(count: 1, requestCount: 1)
+        record.total = mergeRequest(bucket: record.total, with: requestBucket)
+        record.byTier[tierKey] = mergeRequest(bucket: record.byTier[tierKey], with: requestBucket)
+        record.byModel[normalizedModel] = mergeRequest(bucket: record.byModel[normalizedModel], with: requestBucket)
+        record.byRole["main"] = mergeRequest(bucket: record.byRole["main"], with: requestBucket)
+        record.byScenario[routeKey] = mergeRequest(bucket: record.byScenario[routeKey], with: requestBucket)
+        let entry = RoutingRequestLogEntry(
+            ts: now,
+            role: "main",
+            tier: tierKey,
+            model: normalizedModel,
+            query: sanitizedQuery(query ?? title),
+            scenario: routeKey,
+            route: routeKey
+        )
+        record.requestEntries.append(entry)
+        record.requestEntries = Array(record.requestEntries.suffix(120))
+        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) \(routeKey) -> \(normalizedModel) routed as \(tierKey)")
+        record.requestLog = Array(record.requestLog.suffix(100))
+        tokenRecords[sessionID] = record
+        persist()
+    }
+
+    func recordTokens(
+        sessionID: String,
+        title: String,
+        projectName: String,
+        model: String,
+        tier: String,
+        totalTokens: Int,
+        contextWindow: Int
+    ) {
+        let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : model
+        let cost = estimatedCost(model: normalizedModel, tokens: totalTokens)
+        let baselineCost = baselineCost(tokens: totalTokens)
+        let savedCost = max(0, baselineCost - cost)
+        let now = Date()
+        let bucket = RoutingBucket(
+            inputTokens: totalTokens,
+            totalTokens: totalTokens,
+            estimatedCost: cost,
+            baselineCost: baselineCost,
+            savedCost: savedCost
+        )
+        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
+        record.title = title
+        record.projectName = projectName
+        record.lastActiveAt = now
+        record.totalTokens = max(record.totalTokens, totalTokens)
+        record.estimatedCost = max(record.estimatedCost, cost)
+        record.savedCost = max(record.savedCost, savedCost)
+        let tierKey = tier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "COMPLEX" : tier
+        let scenarioKey = latestScenario(in: record) ?? "usage"
+        record.total = mergeUsage(bucket: record.total, with: bucket)
+        record.byTier[tierKey] = mergeUsage(bucket: record.byTier[tierKey], with: bucket)
+        record.byModel[normalizedModel] = mergeUsage(bucket: record.byModel[normalizedModel], with: bucket)
+        record.byRole["main"] = mergeUsage(bucket: record.byRole["main"], with: bucket)
+        record.byScenario[scenarioKey] = mergeUsage(bucket: record.byScenario[scenarioKey], with: bucket)
+        if let index = record.requestEntries.lastIndex(where: { $0.role == "main" && ($0.tier ?? tierKey) == tierKey }) {
+            record.requestEntries[index].tokens = max(record.requestEntries[index].tokens, totalTokens)
+            record.requestEntries[index].cost = max(record.requestEntries[index].cost, cost)
+            record.requestEntries[index].baselineCost = max(record.requestEntries[index].baselineCost ?? 0, baselineCost)
+            record.requestEntries[index].savedCost = max(record.requestEntries[index].savedCost ?? 0, savedCost)
+            record.requestEntries[index].model = normalizedModel
+        } else {
+            record.requestEntries.append(RoutingRequestLogEntry(
+                ts: now,
+                role: "main",
+                tier: tierKey,
+                model: normalizedModel,
+                tokens: totalTokens,
+                cost: cost,
+                baselineCost: baselineCost,
+                savedCost: savedCost,
+                scenario: scenarioKey
+            ))
+        }
+        record.requestEntries = Array(record.requestEntries.suffix(120))
+        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) \(normalizedModel) usage · \(tierKey) · \(totalTokens)/\(contextWindow) tokens")
+        record.requestLog = Array(record.requestLog.suffix(100))
+        tokenRecords[sessionID] = record
+        persist()
+    }
+
+    func recordSkillInvocation(
+        sessionID: String,
+        title: String,
+        projectName: String,
+        skill: String
+    ) {
+        let now = Date()
+        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
+        record.title = title
+        record.projectName = projectName
+        record.lastActiveAt = now
+        let normalized = skill.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : skill
+        let requestBucket = RoutingBucket(count: 1, requestCount: 1)
+        record.total = mergeRequest(bucket: record.total, with: requestBucket)
+        record.byModel["skill:\(normalized)"] = merge(
+            bucket: record.byModel["skill:\(normalized)"],
+            with: requestBucket
+        )
+        record.byScenario["skill"] = mergeRequest(bucket: record.byScenario["skill"], with: requestBucket)
+        record.byRole["main"] = mergeRequest(bucket: record.byRole["main"], with: requestBucket)
+        record.requestEntries.append(RoutingRequestLogEntry(
+            ts: now,
+            role: "main",
+            model: "skill:\(normalized)",
+            query: "Skill invoked",
+            scenario: "skill",
+            skill: normalized
+        ))
+        record.requestEntries = Array(record.requestEntries.suffix(120))
+        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) skill invoked · \(normalized)")
+        record.requestLog = Array(record.requestLog.suffix(100))
+        tokenRecords[sessionID] = record
+        persist()
+    }
+
+    func recordSubagentInvocation(
+        sessionID: String,
+        title: String,
+        projectName: String,
+        model: String,
+        tier: String,
+        inputJSON: String
+    ) {
+        let now = Date()
+        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
+        record.title = title
+        record.projectName = projectName
+        record.lastActiveAt = now
+        let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : model
+        let tierKey = tier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "COMPLEX" : tier
+        let requestBucket = RoutingBucket(count: 1, requestCount: 1)
+        record.total = mergeRequest(bucket: record.total, with: requestBucket)
+        record.byTier[tierKey] = mergeRequest(bucket: record.byTier[tierKey], with: requestBucket)
+        record.byModel[normalizedModel] = mergeRequest(bucket: record.byModel[normalizedModel], with: requestBucket)
+        record.byScenario["subagent"] = mergeRequest(bucket: record.byScenario["subagent"], with: requestBucket)
+        record.byRole["sub"] = mergeRequest(bucket: record.byRole["sub"], with: requestBucket)
+        let query = Self.subagentQuery(from: inputJSON)
+        record.requestEntries.append(RoutingRequestLogEntry(
+            ts: now,
+            role: "sub",
+            tier: tierKey,
+            model: normalizedModel,
+            query: query,
+            scenario: "subagent",
+            route: "background"
+        ))
+        record.requestEntries = Array(record.requestEntries.suffix(120))
+        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) subagent -> \(normalizedModel) routed as \(tierKey)")
+        record.requestLog = Array(record.requestLog.suffix(100))
+        tokenRecords[sessionID] = record
+        persist()
+    }
+
+    func dashboard(projects: [WorkspaceProject], projectFilter: String?) -> RoutingDashboardSnapshot {
+        let filtered = projectFilter == nil ? projects : projects.filter { $0.name == projectFilter }
+        let sessions = filtered.flatMap { project in
+            project.allSessions.map { session in
+                if var recorded = tokenRecords[session.id] {
+                    recorded.title = session.displayTitle
+                    recorded.projectName = project.displayName
+                    recorded.lastActiveAt = max(recorded.lastActiveAt, session.activityDate)
+                    return recorded
+                }
+                return RoutingDashboardSession(
+                    id: session.id,
+                    title: session.displayTitle,
+                    projectName: project.displayName,
+                    lastActiveAt: session.activityDate,
+                    totalTokens: 0,
+                    estimatedCost: 0,
+                    savedCost: 0,
+                    byTier: [:],
+                    byModel: [:],
+                    requestLog: []
+                )
+            }
+        }
+        let knownIDs = Set(sessions.map(\.id))
+        let orphanRecords = tokenRecords.values.filter { record in
+            !knownIDs.contains(record.id) && (projectFilter == nil || record.projectName == projectFilter)
+        }
+        let allSessions = (sessions + orphanRecords).sorted { $0.lastActiveAt > $1.lastActiveAt }
+        return RoutingDashboardSnapshot(
+            totalProjects: filtered.count,
+            totalSessions: allSessions.count,
+            routedSessions: allSessions.filter { !$0.byModel.isEmpty || !$0.byTier.isEmpty }.count,
+            totalTokens: allSessions.reduce(0) { $0 + $1.totalTokens },
+            estimatedCost: allSessions.reduce(0) { $0 + $1.estimatedCost },
+            savedCost: allSessions.reduce(0) { $0 + $1.savedCost },
+            recentSessions: Array(allSessions.prefix(40))
+        )
+    }
+
+    private func estimatedCost(model: String, tokens: Int) -> Double {
+        let perMillion: Double
+        if model.contains("qwen3.6-27b") {
+            perMillion = 0.4
+        } else if model.contains("qwen3.6-35b") {
+            perMillion = 0.2
+        } else {
+            perMillion = 0.8
+        }
+        return (Double(tokens) / 1_000_000) * perMillion
+    }
+
+    private func baselineCost(tokens: Int) -> Double {
+        (Double(tokens) / 1_000_000) * 0.8
+    }
+
+    private func merge(bucket existing: RoutingBucket?, with incoming: RoutingBucket) -> RoutingBucket {
+        mergeRequest(bucket: existing, with: incoming)
+    }
+
+    private func mergeRequest(bucket existing: RoutingBucket?, with incoming: RoutingBucket) -> RoutingBucket {
+        let current = existing ?? RoutingBucket()
+        return RoutingBucket(
+            count: current.count + incoming.count,
+            inputTokens: max(current.inputTokens, incoming.inputTokens),
+            outputTokens: max(current.outputTokens, incoming.outputTokens),
+            cacheReadTokens: max(current.cacheReadTokens, incoming.cacheReadTokens),
+            totalTokens: max(current.totalTokens, incoming.totalTokens),
+            requestCount: current.requestCount + max(incoming.requestCount, incoming.count),
+            estimatedCost: max(current.estimatedCost, incoming.estimatedCost),
+            baselineCost: max(current.baselineCost, incoming.baselineCost),
+            savedCost: max(current.savedCost, incoming.savedCost)
+        )
+    }
+
+    private func mergeUsage(bucket existing: RoutingBucket?, with incoming: RoutingBucket) -> RoutingBucket {
+        let current = existing ?? RoutingBucket()
+        return RoutingBucket(
+            count: current.count,
+            inputTokens: max(current.inputTokens, incoming.inputTokens),
+            outputTokens: max(current.outputTokens, incoming.outputTokens),
+            cacheReadTokens: max(current.cacheReadTokens, incoming.cacheReadTokens),
+            totalTokens: max(current.totalTokens, incoming.totalTokens),
+            requestCount: current.requestCount,
+            estimatedCost: max(current.estimatedCost, incoming.estimatedCost),
+            baselineCost: max(current.baselineCost, incoming.baselineCost),
+            savedCost: max(current.savedCost, incoming.savedCost)
+        )
+    }
+
+    private func makeSession(id: String, title: String, projectName: String, at date: Date) -> RoutingDashboardSession {
+        RoutingDashboardSession(
+            id: id,
+            title: title,
+            projectName: projectName,
+            lastActiveAt: date,
+            totalTokens: 0,
+            estimatedCost: 0,
+            savedCost: 0,
+            byTier: [:],
+            byModel: [:],
+            requestLog: []
+        )
+    }
+
+    private func latestScenario(in record: RoutingDashboardSession) -> String? {
+        record.requestEntries.last(where: { $0.scenario?.isEmpty == false })?.scenario
+    }
+
+    private func sanitizedQuery(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 180 else { return trimmed }
+        return String(trimmed.prefix(180)) + "…"
+    }
+
+    private static func subagentQuery(from inputJSON: String) -> String {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return "Subagent"
+        }
+        let preferred = [
+            object["description"] as? String,
+            object["prompt"] as? String,
+            object["context"] as? String,
+        ]
+        let value = preferred.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty } ?? "Subagent"
+        guard value.count > 180 else { return value }
+        return String(value.prefix(180)) + "…"
+    }
+
+    private func load() {
+        guard let recordsURL,
+              let data = try? Data(contentsOf: recordsURL) else { return }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        if let decoded = try? decoder.decode([String: RoutingDashboardSession].self, from: data) {
+            tokenRecords = decoded.mapValues { migrateLegacyEntries($0) }
+        }
+    }
+
+    private func persist() {
+        guard let recordsURL else { return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(tokenRecords) else { return }
+        try? data.write(to: recordsURL, options: .atomic)
+    }
+
+    private func migrateLegacyEntries(_ record: RoutingDashboardSession) -> RoutingDashboardSession {
+        guard record.requestEntries.isEmpty, !record.requestLog.isEmpty else { return record }
+        var migrated = record
+        var entries: [RoutingRequestLogEntry] = []
+        for line in record.requestLog {
+            let body = String(line.dropFirst(min(line.count, 9))).trimmingCharacters(in: .whitespaces)
+            if body.contains(" routed as ") {
+                let parts = body.components(separatedBy: " routed as ")
+                let routeAndModel = parts.first ?? body
+                let tier = parts.dropFirst().first?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let routeParts = routeAndModel.components(separatedBy: " -> ")
+                let route = routeParts.first?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let model = routeParts.dropFirst().first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+                entries.append(RoutingRequestLogEntry(
+                    ts: record.lastActiveAt,
+                    role: "main",
+                    tier: tier?.isEmpty == false ? tier : nil,
+                    model: model,
+                    query: sanitizedQuery(record.title),
+                    scenario: route?.isEmpty == false ? route : nil,
+                    route: route?.isEmpty == false ? route : nil
+                ))
+            } else if body.contains(" usage · ") {
+                let parts = body.components(separatedBy: " · ")
+                let model = parts.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+                let tier = parts.dropFirst().first?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let tokenText = parts.dropFirst(2).first ?? ""
+                let tokens = Int(tokenText.components(separatedBy: "/").first?.filter(\.isNumber) ?? "") ?? 0
+                let cost = estimatedCost(model: model, tokens: tokens)
+                let baseline = baselineCost(tokens: tokens)
+                if let index = entries.indices.last {
+                    entries[index].model = model
+                    entries[index].tier = entries[index].tier ?? tier
+                    entries[index].tokens = max(entries[index].tokens, tokens)
+                    entries[index].cost = max(entries[index].cost, cost)
+                    entries[index].baselineCost = max(entries[index].baselineCost ?? 0, baseline)
+                    entries[index].savedCost = max(entries[index].savedCost ?? 0, max(0, baseline - cost))
+                } else {
+                    entries.append(RoutingRequestLogEntry(
+                        ts: record.lastActiveAt,
+                        role: "main",
+                        tier: tier,
+                        model: model,
+                        tokens: tokens,
+                        cost: cost,
+                        baselineCost: baseline,
+                        savedCost: max(0, baseline - cost),
+                        scenario: "usage"
+                    ))
+                }
+            } else if body.contains("skill invoked ·") {
+                let skill = body.components(separatedBy: "skill invoked ·").dropFirst().first?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+                entries.append(RoutingRequestLogEntry(
+                    ts: record.lastActiveAt,
+                    role: "main",
+                    model: "skill:\(skill)",
+                    query: "Skill invoked",
+                    scenario: "skill",
+                    skill: skill
+                ))
+            }
+        }
+        migrated.requestEntries = entries
+        return migrated
+    }
+}
+
+private extension DateFormatter {
+    static let routingTime: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+}
+
+final class AlwaysOnService {
+    func plans(projectRoot: String) -> [AlwaysOnPlan] {
+        let indexURL = URL(fileURLWithPath: projectRoot)
+            .appendingPathComponent(".g9claw")
+            .appendingPathComponent("always-on")
+            .appendingPathComponent("discovery-plans.json")
+        guard
+            let data = try? Data(contentsOf: indexURL),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let rawPlans = json["plans"] as? [[String: Any]]
+        else { return [] }
+        return rawPlans.compactMap { raw in
+            let id = string(raw["id"], fallback: UUID().uuidString)
+            let relativePlanPath = string(raw["planFilePath"], fallback: ".g9claw/always-on/plans/\(id).md")
+            let content = (try? String(contentsOfFile: URL(fileURLWithPath: projectRoot).appendingPathComponent(relativePlanPath).path, encoding: .utf8)) ?? ""
+            return AlwaysOnPlan(
+                id: id,
+                title: string(raw["title"], fallback: "Untitled discovery plan"),
+                summary: string(raw["summary"]),
+                rationale: string(raw["rationale"]),
+                content: content,
+                status: AlwaysOnStatus(rawValue: string(raw["status"], fallback: "ready")) ?? .unknown,
+                approvalMode: string(raw["approvalMode"], fallback: "manual"),
+                planFilePath: relativePlanPath,
+                createdAt: date(raw["createdAt"]) ?? Date(),
+                updatedAt: date(raw["updatedAt"]) ?? Date(),
+                executionSessionId: optionalString(raw["executionSessionId"]),
+                executionStatus: AlwaysOnStatus(rawValue: string(raw["executionStatus"]))
+            )
+        }
+        .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    func runHistory(projectRoot: String) -> [AlwaysOnRunHistory] {
+        let historyURL = URL(fileURLWithPath: projectRoot)
+            .appendingPathComponent(".g9claw")
+            .appendingPathComponent("always-on")
+            .appendingPathComponent("run-history.jsonl")
+        guard let raw = try? String(contentsOf: historyURL, encoding: .utf8) else { return [] }
+        return raw.split(separator: "\n").compactMap { line in
+            guard
+                let data = String(line).data(using: .utf8),
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
+            let runId = string(json["runId"], fallback: string(json["id"], fallback: UUID().uuidString))
+            let logURL = URL(fileURLWithPath: projectRoot)
+                .appendingPathComponent(".g9claw")
+                .appendingPathComponent("always-on")
+                .appendingPathComponent("runs")
+                .appendingPathComponent("\(runId).log")
+            return AlwaysOnRunHistory(
+                id: runId,
+                title: string(json["title"], fallback: string(json["sourceId"], fallback: "Run")),
+                kind: string(json["kind"], fallback: "plan"),
+                status: AlwaysOnStatus(rawValue: string(json["status"], fallback: "unknown")) ?? .unknown,
+                startedAt: date(json["startedAt"]) ?? Date(),
+                sourceId: string(json["sourceId"]),
+                outputLog: (try? String(contentsOf: logURL, encoding: .utf8)) ?? string(json["outputLog"]),
+                sessionId: optionalString(json["sessionId"])
+            )
+        }
+        .sorted { $0.startedAt > $1.startedAt }
+    }
+
+    func cronJobs(projectRoot: String) -> [AlwaysOnCronJob] {
+        let possible = [
+            URL(fileURLWithPath: projectRoot).appendingPathComponent(".g9claw").appendingPathComponent("cron-jobs.json"),
+            URL(fileURLWithPath: projectRoot).appendingPathComponent(".g9claw").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"),
+        ]
+        guard
+            let url = possible.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+            let data = try? Data(contentsOf: url),
+            let json = try? JSONSerialization.jsonObject(with: data)
+        else { return [] }
+        let rawJobs: [[String: Any]]
+        if let list = json as? [[String: Any]] {
+            rawJobs = list
+        } else if let dict = json as? [String: Any], let jobs = dict["jobs"] as? [[String: Any]] {
+            rawJobs = jobs
+        } else {
+            rawJobs = []
+        }
+        return rawJobs.map { raw in
+            AlwaysOnCronJob(
+                id: string(raw["id"], fallback: string(raw["taskId"], fallback: UUID().uuidString)),
+                prompt: string(raw["prompt"]),
+                cron: string(raw["cron"]),
+                status: AlwaysOnStatus(rawValue: string(raw["status"], fallback: "unknown")) ?? .unknown,
+                recurring: bool(raw["recurring"], fallback: true),
+                durable: bool(raw["durable"], fallback: true),
+                createdAt: date(raw["createdAt"]),
+                lastFiredAt: date(raw["lastFiredAt"]),
+                latestSessionId: optionalString((raw["latestRun"] as? [String: Any])?["sessionId"])
+            )
+        }
+    }
+
+    func archive(plan: AlwaysOnPlan, projectRoot: String) throws {
+        try updatePlanStatus(planID: plan.id, projectRoot: projectRoot, status: "superseded")
+    }
+
+    func markPlanRunning(plan: AlwaysOnPlan, projectRoot: String) throws {
+        try updatePlanStatus(planID: plan.id, projectRoot: projectRoot, status: "running")
+    }
+
+    @discardableResult
+    func startPlanRun(plan: AlwaysOnPlan, projectRoot: String, sessionId: String?) throws -> AlwaysOnRunHistory {
+        try updatePlanStatus(planID: plan.id, projectRoot: projectRoot, status: "running")
+        let run = AlwaysOnRunHistory(
+            id: "run-\(UUID().uuidString)",
+            title: plan.title,
+            kind: "plan",
+            status: .running,
+            startedAt: Date(),
+            sourceId: plan.id,
+            outputLog: "Started native Always-On plan run for \(plan.title).",
+            sessionId: sessionId
+        )
+        try appendRunHistory(run, projectRoot: projectRoot)
+        try writeRunLog(run, projectRoot: projectRoot)
+        return run
+    }
+
+    @discardableResult
+    func createDiscoveryPlan(projectRoot: String, title: String, prompt: String) throws -> AlwaysOnPlan {
+        let root = alwaysOnRoot(projectRoot)
+        let plansRoot = root.appendingPathComponent("plans", isDirectory: true)
+        try FileManager.default.createDirectory(at: plansRoot, withIntermediateDirectories: true)
+        let id = "plan-\(UUID().uuidString)"
+        let relativePlanPath = ".g9claw/always-on/plans/\(id).md"
+        let now = Date()
+        let content = """
+        # \(title)
+
+        Status: draft
+        Created: \(ISO8601DateFormatter().string(from: now))
+
+        ## Discovery Prompt
+
+        \(prompt)
+
+        ## Notes
+
+        Native G9Claw created this draft plan. Review it, then run it from Always-On.
+        """
+        try content.write(to: plansRoot.appendingPathComponent("\(id).md"), atomically: true, encoding: .utf8)
+
+        let plan = AlwaysOnPlan(
+            id: id,
+            title: title,
+            summary: prompt,
+            rationale: "Created from native Always-On discovery.",
+            content: content,
+            status: .draft,
+            approvalMode: "manual",
+            planFilePath: relativePlanPath,
+            createdAt: now,
+            updatedAt: now,
+            executionSessionId: nil,
+            executionStatus: nil
+        )
+        try upsertPlanIndex(plan, projectRoot: projectRoot)
+        return plan
+    }
+
+    private func updatePlanStatus(planID: String, projectRoot: String, status: String) throws {
+        let indexURL = URL(fileURLWithPath: projectRoot)
+            .appendingPathComponent(".g9claw")
+            .appendingPathComponent("always-on")
+            .appendingPathComponent("discovery-plans.json")
+        guard
+            let data = try? Data(contentsOf: indexURL),
+            var json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            var rawPlans = json["plans"] as? [[String: Any]]
+        else { return }
+        for index in rawPlans.indices where string(rawPlans[index]["id"]) == planID {
+            rawPlans[index]["status"] = status
+            rawPlans[index]["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+        }
+        json["plans"] = rawPlans
+        let out = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
+        try out.write(to: indexURL)
+    }
+
+    private func upsertPlanIndex(_ plan: AlwaysOnPlan, projectRoot: String) throws {
+        let root = alwaysOnRoot(projectRoot)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let indexURL = root.appendingPathComponent("discovery-plans.json")
+        var json: [String: Any] = [:]
+        if let data = try? Data(contentsOf: indexURL),
+           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            json = existing
+        }
+        var rawPlans = json["plans"] as? [[String: Any]] ?? []
+        rawPlans.removeAll { string($0["id"]) == plan.id }
+        rawPlans.insert([
+            "id": plan.id,
+            "title": plan.title,
+            "summary": plan.summary,
+            "rationale": plan.rationale,
+            "status": plan.status.rawValue,
+            "approvalMode": plan.approvalMode,
+            "planFilePath": plan.planFilePath,
+            "createdAt": ISO8601DateFormatter().string(from: plan.createdAt),
+            "updatedAt": ISO8601DateFormatter().string(from: plan.updatedAt),
+        ], at: 0)
+        json["plans"] = rawPlans
+        let out = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
+        try out.write(to: indexURL, options: .atomic)
+    }
+
+    private func appendRunHistory(_ run: AlwaysOnRunHistory, projectRoot: String) throws {
+        let root = alwaysOnRoot(projectRoot)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("run-history.jsonl")
+        let object: [String: Any] = [
+            "runId": run.id,
+            "title": run.title,
+            "kind": run.kind,
+            "status": run.status.rawValue,
+            "startedAt": ISO8601DateFormatter().string(from: run.startedAt),
+            "sourceId": run.sourceId,
+            "outputLog": run.outputLog,
+            "sessionId": run.sessionId ?? "",
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        var line = String(data: data, encoding: .utf8) ?? "{}"
+        line += "\n"
+        if FileManager.default.fileExists(atPath: url.path),
+           let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(line.utf8))
+        } else {
+            try line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func writeRunLog(_ run: AlwaysOnRunHistory, projectRoot: String) throws {
+        let runsRoot = alwaysOnRoot(projectRoot).appendingPathComponent("runs", isDirectory: true)
+        try FileManager.default.createDirectory(at: runsRoot, withIntermediateDirectories: true)
+        try run.outputLog.write(to: runsRoot.appendingPathComponent("\(run.id).log"), atomically: true, encoding: .utf8)
+    }
+
+    private func alwaysOnRoot(_ projectRoot: String) -> URL {
+        URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("always-on", isDirectory: true)
+    }
+
+    private func string(_ value: Any?, fallback: String = "") -> String {
+        if let string = value as? String, !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return string
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        return fallback
+    }
+
+    private func optionalString(_ value: Any?) -> String? {
+        let value = string(value)
+        return value.isEmpty ? nil : value
+    }
+
+    private func bool(_ value: Any?, fallback: Bool) -> Bool {
+        if let value = value as? Bool { return value }
+        if let value = value as? NSNumber { return value.boolValue }
+        return fallback
+    }
+
+    private func date(_ value: Any?) -> Date? {
+        if let value = value as? Date { return value }
+        if let string = value as? String {
+            if let iso = ISO8601DateFormatter().date(from: string) {
+                return iso
+            }
+            return DateFormatter.localizedStringDateFormatter.date(from: string)
+        }
+        if let number = value as? NSNumber {
+            return Date(timeIntervalSince1970: number.doubleValue / 1000)
+        }
+        return nil
+    }
+}
+
+private extension DateFormatter {
+    static let localizedStringDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX"
+        return formatter
+    }()
+}

@@ -1,11 +1,11 @@
-# 9GClaw Native macOS
+# G9Claw Native macOS
 
-This is the active desktop implementation target for 9GClaw. It is a native
+This is the active desktop implementation target for G9Claw. It is a native
 macOS app written in Swift, SwiftUI, and AppKit.
 
 ## Goals
 
-- Match the existing 9GClaw V2 layout and product behavior.
+- Match the existing G9Claw V2 layout and product behavior.
 - Use native macOS controls where they improve fidelity and platform feel.
 - Remove Electron, Tauri, React desktop hosting, Node server hosting, Bun
   runtime hosting, and localhost HTTP/WebSocket listeners from the desktop app.
@@ -27,8 +27,8 @@ The app targets macOS 15.0+.
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcodebuild -project apps/macos-native/9GClaw.xcodeproj \
-  -scheme 9GClaw \
+  xcodebuild -project apps/macos-native/G9Claw.xcodeproj \
+  -scheme G9Claw \
   -configuration Debug \
   CODE_SIGNING_ALLOWED=NO \
   build
