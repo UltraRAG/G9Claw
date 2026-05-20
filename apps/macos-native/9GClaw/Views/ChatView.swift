@@ -20,7 +20,7 @@ struct ChatView: View {
                     ScrollViewReader { proxy in
                         GeometryReader { geometry in
                             ScrollView {
-                                LazyVStack(alignment: .leading, spacing: 18) {
+                                VStack(alignment: .leading, spacing: 18) {
                                     ForEach(state.currentMessages) { message in
                                         if message.id == tracedAssistantID {
                                             ProcessRunHeader(activities: runHeaderActivities)
@@ -56,6 +56,9 @@ struct ChatView: View {
                                 .padding(.vertical, DesignTokens.transcriptPaddingV)
                                 .frame(maxWidth: DesignTokens.transcriptMaxWidth)
                                 .frame(maxWidth: .infinity)
+                                .transaction { transaction in
+                                    transaction.animation = nil
+                                }
                             }
                             .coordinateSpace(name: ChatScrollTarget.coordinateSpace)
                             .scrollIndicators(.automatic)
@@ -287,7 +290,6 @@ private struct ComposerFooter: View {
                     .environmentObject(state)
                     .padding(.horizontal, 24)
                     .padding(.bottom, 4)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
             if !state.pendingPermissions.isEmpty {
                 Group {
@@ -305,7 +307,6 @@ private struct ComposerFooter: View {
                 }
                 .frame(maxWidth: DesignTokens.composerMaxWidth)
                 .padding(.bottom, 8)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             ComposerCard(chromeless: false)
@@ -327,6 +328,9 @@ private struct ComposerFooter: View {
             )
             .allowsHitTesting(false)
         )
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 
     private var runningActivity: AgentActivity? {
@@ -382,7 +386,6 @@ private struct ComposerRunningStatusRow: View {
         .frame(maxWidth: DesignTokens.composerMaxWidth)
         .padding(.horizontal, 4)
         .frame(height: 22)
-        .animation(.easeOut(duration: 0.16), value: activity.id)
     }
 }
 
