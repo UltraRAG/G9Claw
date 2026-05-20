@@ -292,6 +292,10 @@ struct WorkspaceFile: Identifiable, Hashable {
         fileExtension == "html" || fileExtension == "htm"
     }
 
+    var isPDF: Bool {
+        fileExtension == "pdf"
+    }
+
     var isImage: Bool {
         ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"].contains(fileExtension)
     }

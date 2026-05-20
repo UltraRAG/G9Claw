@@ -35,6 +35,7 @@ final class AppState: ObservableObject {
     @Published var streamRenderRevision = 0
     @Published var isDraftSessionVisible = false
     @Published var expandedToolRowIDs: Set<String> = []
+    @Published var tokenBudgetBySession: [String: TokenBudget] = [:]
 
     let keychain = KeychainStore()
     let settingsStore = AppSettingsStore()
@@ -1307,6 +1308,8 @@ final class AppState: ObservableObject {
             queueAssistantDelta(text, assistantID: assistantID)
         case .toolUse(let id, let name, let inputJSON):
             flushPendingAssistantDelta(assistantID: assistantID)
+            let isInteractiveControl = PlanWorkflowPresentation.isInteractiveControl(name)
+            let interactiveDetailMessages = interactiveControlDetailMessages(for: name, inputJSON: inputJSON)
             if name == "Skill", let targetSessionID {
                 routingService.recordSkillInvocation(
                     sessionID: targetSessionID,
@@ -1326,12 +1329,12 @@ final class AppState: ObservableObject {
             }
             upsertActivity(
                 id: id,
-                title: t(.runningToolFormat, name),
-                detail: inputJSON,
+                title: interactiveControlTitle(for: name) ?? t(.runningToolFormat, name),
+                detail: isInteractiveControl ? "" : inputJSON,
                 phase: activityPhase(for: name),
                 state: .running,
                 toolName: name,
-                detailMessages: [inputJSON],
+                detailMessages: isInteractiveControl ? interactiveDetailMessages : [inputJSON],
                 expandedDefault: false,
                 anchorBlockID: assistantID.uuidString,
                 sessionID: targetSessionID
@@ -1342,15 +1345,16 @@ final class AppState: ObservableObject {
             updateActivity(id: id, state: isError ? .failed : .completed, detail: output, sessionID: targetSessionID)
             appendAssistantBlock(.toolResult(ToolResult(toolCallId: id, output: output, isError: isError)), assistantID: assistantID, sessionID: targetSessionID)
         case .permissionRequest(let request):
+            let isInteractiveControl = PlanWorkflowPresentation.isInteractiveControl(request.toolName)
             upsertActivity(
                 id: "permission-\(request.id.uuidString)",
-                title: request.reason,
-                detail: request.inputJSON,
+                title: interactiveControlTitle(for: request.toolName) ?? request.reason,
+                detail: isInteractiveControl ? "" : request.inputJSON,
                 phase: activityPhase(for: request.toolName),
                 state: .running,
                 toolName: request.toolName,
-                detailMessages: [request.inputJSON],
-                expandedDefault: request.kind == .askUserQuestion,
+                detailMessages: isInteractiveControl ? [] : [request.inputJSON],
+                expandedDefault: AgentActivityPresentationPolicy.expandsPermissionByDefault(request.kind),
                 anchorBlockID: assistantID.uuidString,
                 sessionID: targetSessionID
             )
@@ -1564,8 +1568,9 @@ final class AppState: ObservableObject {
 
     private func updateTokenBudget(_ budget: TokenBudget, assistantID: UUID, sessionID explicitSessionID: String? = nil) {
         let sessionID = explicitSessionID ?? assistantSessionByID[assistantID] ?? selectedSessionID
-        guard let sessionID,
-              var messages = messagesBySession[sessionID],
+        guard let sessionID else { return }
+        tokenBudgetBySession[sessionID] = budget
+        guard var messages = messagesBySession[sessionID],
               let index = messages.firstIndex(where: { $0.id == assistantID }) else { return }
         messages[index].tokenBudget = budget
         messagesBySession[sessionID] = messages
@@ -1673,11 +1678,15 @@ final class AppState: ObservableObject {
               let index = activities.firstIndex(where: { $0.id == id }) else { return }
         activities[index].state = state
         activities[index].detail = detail
-        if !detail.isEmpty {
-            activities[index].detailMessages.append(detail)
+        if let title = completedInteractiveControlTitle(for: activities[index]) {
+            activities[index].title = title
         }
         if state != .running {
             activities[index].endedAt = Date()
+            hideCompletedInteractivePermissionActivities(
+                toolName: activities[index].toolName,
+                activities: &activities
+            )
         }
         activities[index].updatedAt = Date()
         activitiesBySession[sessionID] = activities
@@ -1849,7 +1858,22 @@ final class AppState: ObservableObject {
         case "streaming": return t(.receivingResponse)
         case "thinking", "processing": return t(.working)
         case "continuing": return settings.language.resolved() == .chineseSimplified ? "正在继续" : "Continuing"
+        case "needs continuation": return settings.language.resolved() == .chineseSimplified ? "需要继续" : "Needs continuation"
         case "executing plan": return settings.language.resolved() == .chineseSimplified ? "正在执行计划" : "Executing plan"
+        case PlanWorkflowPresentation.generatingQuestionStatus:
+            return settings.language.resolved() == .chineseSimplified ? "正在生成问题" : "Generating questions"
+        case PlanWorkflowPresentation.collectingContextStatus:
+            return settings.language.resolved() == .chineseSimplified ? "正在收集上下文" : "Collecting context"
+        case PlanWorkflowPresentation.generatingPlanStatus:
+            return settings.language.resolved() == .chineseSimplified ? "正在生成计划" : "Generating plan"
+        case PlanWorkflowPresentation.waitingForAnswerStatus:
+            return settings.language.resolved() == .chineseSimplified ? "等待你的回答" : "Waiting for your answer"
+        case PlanWorkflowPresentation.waitingForConfirmationStatus:
+            return settings.language.resolved() == .chineseSimplified ? "等待计划确认" : "Waiting for plan confirmation"
+        case PlanWorkflowPresentation.recoveringStatus:
+            return settings.language.resolved() == .chineseSimplified ? "正在恢复计划流程" : "Recovering planning flow"
+        case PlanWorkflowPresentation.recoveryNeededStatus:
+            return settings.language.resolved() == .chineseSimplified ? "计划需要继续完善" : "Planning needs more input"
         case "waiting for permission": return "Permission required"
         case let value where value.hasPrefix("running "):
             let tool = String(value.dropFirst("running ".count))
@@ -1867,10 +1891,82 @@ final class AppState: ObservableObject {
         case "streaming": return t(.streamingAssistantOutput)
         case "thinking", "processing": return t(.agentStatusUpdate)
         case "continuing": return settings.language.resolved() == .chineseSimplified ? "模型还没有完成任务，正在推进下一步。" : "The model has not completed the task yet, continuing the next step."
+        case "needs continuation": return settings.language.resolved() == .chineseSimplified ? "自动续跑已暂停。你可以输入“继续”或补充更具体的要求。" : "Automatic continuation paused. Type continue or add more specific instructions to resume."
         case "executing plan": return settings.language.resolved() == .chineseSimplified ? "计划已确认，正在切换到执行。" : "The plan was approved; switching to implementation."
+        case PlanWorkflowPresentation.generatingQuestionStatus:
+            return settings.language.resolved() == .chineseSimplified ? "正在准备需要你选择的问题。" : "Preparing the questions for your input."
+        case PlanWorkflowPresentation.collectingContextStatus:
+            return settings.language.resolved() == .chineseSimplified ? "正在只读查看项目上下文。" : "Reading project context without making changes."
+        case PlanWorkflowPresentation.generatingPlanStatus:
+            return settings.language.resolved() == .chineseSimplified ? "正在整理可确认的执行计划。" : "Preparing the plan for confirmation."
+        case PlanWorkflowPresentation.waitingForAnswerStatus:
+            return settings.language.resolved() == .chineseSimplified ? "请在问题卡片中选择或填写答案。" : "Answer the question card to continue planning."
+        case PlanWorkflowPresentation.waitingForConfirmationStatus:
+            return settings.language.resolved() == .chineseSimplified ? "请确认执行计划，或补充要求继续完善。" : "Confirm the plan or add feedback to keep planning."
+        case PlanWorkflowPresentation.recoveringStatus:
+            return settings.language.resolved() == .chineseSimplified ? "模型返回了普通文本，正在转成可交互的计划步骤。" : "The model returned prose; converting it into an interactive planning step."
+        case PlanWorkflowPresentation.recoveryNeededStatus:
+            return settings.language.resolved() == .chineseSimplified ? "请补充要求，或重新发送后继续生成计划。" : "Add feedback or send again to continue planning."
         case "waiting for permission": return "Approve or deny the requested tool action."
         default: return t(.agentStatusUpdate)
         }
+    }
+
+    private func interactiveControlTitle(for toolName: String) -> String? {
+        switch AgentToolNameCanonicalizer.canonical(toolName) {
+        case "AskQuestion":
+            return settings.language.resolved() == .chineseSimplified ? "等待你的回答" : "Waiting for your answer"
+        case "SwitchMode":
+            return settings.language.resolved() == .chineseSimplified ? "等待计划确认" : "Waiting for plan confirmation"
+        default:
+            return nil
+        }
+    }
+
+    private func interactiveControlDetailMessages(for toolName: String, inputJSON: String) -> [String] {
+        guard AgentToolNameCanonicalizer.canonical(toolName) == "AskQuestion",
+              let payload = AgentInteractivePayload.askUserQuestion(from: inputJSON) else {
+            return []
+        }
+        return ["questions_count=\(payload.questions.count)"]
+    }
+
+    private func completedInteractiveControlTitle(for activity: AgentActivity) -> String? {
+        guard activity.state == .completed,
+              AgentToolNameCanonicalizer.canonical(activity.toolName ?? "") == "AskQuestion" else {
+            return nil
+        }
+        let count = questionCount(from: activity.detailMessages) ?? 1
+        if settings.language.resolved() == .chineseSimplified {
+            return "已询问 \(count) 个问题"
+        }
+        return "Asked \(count) \(count == 1 ? "question" : "questions")"
+    }
+
+    private func hideCompletedInteractivePermissionActivities(toolName: String?, activities: inout [AgentActivity]) {
+        guard PlanWorkflowPresentation.isInteractiveControl(toolName) else { return }
+        let canonical = AgentToolNameCanonicalizer.canonical(toolName ?? "")
+        for index in activities.indices {
+            guard activities[index].id.hasPrefix("permission-"),
+                  AgentToolNameCanonicalizer.canonical(activities[index].toolName ?? "") == canonical else { continue }
+            activities[index].state = .completed
+            activities[index].title = ""
+            activities[index].detail = ""
+            activities[index].toolName = nil
+            activities[index].detailMessages = []
+            activities[index].endedAt = Date()
+            activities[index].updatedAt = Date()
+        }
+    }
+
+    private func questionCount(from values: [String]) -> Int? {
+        for value in values {
+            if value.hasPrefix("questions_count="),
+               let count = Int(value.dropFirst("questions_count=".count)) {
+                return count
+            }
+        }
+        return nil
     }
 
     private func activityPhase(for toolName: String) -> AgentActivityPhase {
@@ -1888,7 +1984,8 @@ final class AppState: ObservableObject {
             normalized == "streaming" ||
             normalized == "thinking" ||
             normalized == "processing" ||
-            normalized == "waiting for permission" {
+            normalized == "waiting for permission" ||
+            normalized.hasPrefix("plan ") {
             return "status-\(assistantID.uuidString)-\(normalized.replacingOccurrences(of: " ", with: "-"))"
         }
         if normalized.hasPrefix("reconnecting") || normalized.contains("重试") || normalized.contains("retry") {

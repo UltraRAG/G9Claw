@@ -314,8 +314,27 @@ extension AgentActivity {
         return processTraceActivities(activities.filter { $0.anchorBlockID == anchorBlockID })
     }
 
+    static func runHeaderActivities(_ activities: [AgentActivity], anchoredTo anchorBlockID: String?) -> [AgentActivity] {
+        let scoped = anchorBlockID.map { anchor in
+            activities.filter { $0.anchorBlockID == anchor }
+        } ?? activities
+        return scoped
+            .filter { activity in
+                !activity.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    !activity.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    activity.toolName != nil
+            }
+            .sorted { $0.createdAt < $1.createdAt }
+    }
+
     static func hasRenderableProcessTrace(_ activities: [AgentActivity]) -> Bool {
         !processTraceActivities(activities).isEmpty
+    }
+}
+
+enum AgentActivityPresentationPolicy {
+    static func expandsPermissionByDefault(_ kind: PermissionRequestKind) -> Bool {
+        false
     }
 }
 
@@ -325,6 +344,7 @@ enum AgentActivityPhase: String, Codable {
     case search
     case command
     case edit
+    case todo
     case subagent
     case thinking
 }
@@ -340,6 +360,9 @@ enum AgentToolPresentationClassifier {
         }
         if editTools.contains(canonical) {
             return .edit
+        }
+        if todoTools.contains(canonical) {
+            return .todo
         }
         if subagentTools.contains(canonical) {
             return .subagent
@@ -372,6 +395,11 @@ enum AgentToolPresentationClassifier {
         "strreplace",
         "delete",
         "editnotebook",
+    ]
+
+    private static let todoTools: Set<String> = [
+        "todoread",
+        "todowrite",
     ]
 
     private static let subagentTools: Set<String> = [
@@ -412,6 +440,7 @@ enum PermissionRequestKind: String, Hashable, Codable, Sendable {
     case tool
     case askUserQuestion
     case exitPlanMode
+    case destructivePlanApproval
 }
 
 struct AgentQuestionOption: Identifiable, Hashable, Codable, Sendable {
@@ -448,12 +477,12 @@ struct AgentInteractivePayload: Hashable, Codable, Sendable {
               !legacyQuestion.isEmpty else {
             return nil
         }
-        let options = normalizedOptions(from: object["options"])
+        let options = repairedOptions(normalizedOptions(from: object["options"]), question: legacyQuestion)
         return AgentInteractivePayload(
             questions: [
                 AgentQuestion(
                     header: (object["header"] as? String)?.nilIfBlank,
-                    question: legacyQuestion,
+                    question: cleanedQuestion(legacyQuestion),
                     options: options,
                     multiSelect: object["multiSelect"] as? Bool ?? false
                 )
@@ -481,31 +510,62 @@ struct AgentInteractivePayload: Hashable, Codable, Sendable {
               !question.isEmpty else {
             return nil
         }
+        let cleaned = cleanedQuestion(question)
         return AgentQuestion(
             header: (object["header"] as? String)?.nilIfBlank,
-            question: question,
-            options: normalizedOptions(from: object["options"]),
+            question: cleaned,
+            options: repairedOptions(normalizedOptions(from: object["options"]), question: cleaned),
             multiSelect: object["multiSelect"] as? Bool ?? false
         )
     }
 
     private static func normalizedOptions(from rawValue: Any?) -> [AgentQuestionOption] {
         if let strings = rawValue as? [String] {
-            return strings
+            return repairedOptionList(strings
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
-                .map { AgentQuestionOption(label: $0, description: nil) }
+                .map { AgentQuestionOption(label: cleanedOption($0), description: nil) })
         }
         if let objects = rawValue as? [[String: Any]] {
-            return objects.compactMap { option in
+            return repairedOptionList(objects.compactMap { option in
                 guard let label = (option["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !label.isEmpty else {
                     return nil
                 }
-                return AgentQuestionOption(label: label, description: (option["description"] as? String)?.nilIfBlank)
-            }
+                return AgentQuestionOption(label: cleanedOption(label), description: (option["description"] as? String)?.nilIfBlank)
+            })
         }
         return []
+    }
+
+    private static func repairedOptions(_ options: [AgentQuestionOption], question: String) -> [AgentQuestionOption] {
+        let deduped = repairedOptionList(options)
+        return deduped
+    }
+
+    private static func repairedOptionList(_ options: [AgentQuestionOption]) -> [AgentQuestionOption] {
+        var seen = Set<String>()
+        var result: [AgentQuestionOption] = []
+        for option in options {
+            let label = cleanedOption(option.label)
+            let key = label.lowercased()
+            guard !label.isEmpty, seen.insert(key).inserted else { continue }
+            result.append(AgentQuestionOption(label: label, description: option.description))
+        }
+        return result
+    }
+
+    private static func cleanedQuestion(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: #"[*_`#]+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"^\s*(?:\d+[\.\)、)]|[-•])\s*"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func cleanedOption(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: #"[*_`#]+"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "。.?？:：")))
     }
 }
 
@@ -648,8 +708,8 @@ struct CodeEditorPreferences: Hashable, Codable {
 
     static let defaults = CodeEditorPreferences(
         wordWrap: true,
-        showMinimap: false,
-        lineNumbers: false,
+        showMinimap: true,
+        lineNumbers: true,
         fontSize: 13
     )
 }

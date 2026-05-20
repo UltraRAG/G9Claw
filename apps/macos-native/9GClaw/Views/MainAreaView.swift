@@ -7,11 +7,16 @@ struct MainAreaView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if let error = state.errorBanner {
-                errorBanner(error)
-            }
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .overlay(alignment: .top) {
+            if let error = state.errorBanner {
+                errorBanner(error)
+                    .padding(.top, DesignTokens.headerHeight)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(10)
+            }
         }
         .background {
             MainGlassBackground()

@@ -629,12 +629,25 @@ struct CollapsedSidebarRail: View {
     }
 }
 
+struct ProjectCreationWizardMetrics {
+    static let maxWidth: CGFloat = 612
+    static let formMaxWidth: CGFloat = 520
+    static let headerHeight: CGFloat = 58
+    static let contentMinHeight: CGFloat = 268
+    static let contentPadding: CGFloat = 24
+    static let footerHeight: CGFloat = 54
+    static let fieldHeight: CGFloat = 36
+    static let browseButtonWidth: CGFloat = 44
+    static let typeCardMinHeight: CGFloat = 104
+}
+
 struct ProjectCreationWizardView: View {
     @EnvironmentObject private var state: AppState
     var onClose: () -> Void
 
     @State private var step = 0
     @State private var workspaceType: WorkspaceCreationType = .existing
+    @State private var hoveredWorkspaceType: WorkspaceCreationType?
     @State private var displayName = ""
     @State private var workspacePath = ""
     @State private var githubURL = ""
@@ -651,12 +664,12 @@ struct ProjectCreationWizardView: View {
                 progress
                 Divider().background(DesignTokens.separator)
                 content
-                    .frame(minHeight: 324)
-                    .padding(28)
+                    .frame(minHeight: ProjectCreationWizardMetrics.contentMinHeight, alignment: .top)
+                    .padding(ProjectCreationWizardMetrics.contentPadding)
                 Divider().background(DesignTokens.separator)
                 footer
             }
-            .frame(maxWidth: 720)
+            .frame(maxWidth: ProjectCreationWizardMetrics.maxWidth)
             .background(DesignTokens.modalSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -674,17 +687,17 @@ struct ProjectCreationWizardView: View {
 
     private var wizardHeader: some View {
         HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(DesignTokens.accent.opacity(0.12))
-                .frame(width: 40, height: 40)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(DesignTokens.accent.opacity(0.10))
+                .frame(width: 32, height: 32)
                 .overlay {
                     Image(systemName: "folder.badge.plus")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(DesignTokens.accent)
                 }
             VStack(alignment: .leading, spacing: 2) {
                 Text(state.t(.createProject))
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                 Text(state.t(.createProjectSubtitle))
                     .font(.system(size: 12))
                     .foregroundStyle(DesignTokens.tertiaryText)
@@ -698,26 +711,64 @@ struct ProjectCreationWizardView: View {
             .buttonStyle(WebIconButtonStyle())
         }
         .padding(.horizontal, 24)
-        .frame(height: 72)
+        .frame(height: ProjectCreationWizardMetrics.headerHeight)
     }
 
     private var progress: some View {
-        HStack(spacing: 8) {
-            ForEach(0..<3, id: \.self) { index in
-                Capsule()
-                    .fill(index <= step ? DesignTokens.accent : DesignTokens.neutral200)
-                    .frame(height: 5)
+        HStack(spacing: 0) {
+            ForEach(Array(stepItems.enumerated()), id: \.offset) { index, label in
+                HStack(spacing: 7) {
+                    stepBadge(index)
+                    Text(label)
+                        .font(.system(size: 11.5, weight: index == step ? .medium : .regular))
+                        .foregroundStyle(index <= step ? DesignTokens.text : DesignTokens.tertiaryText)
+                        .lineLimit(1)
+                }
+                if index < stepItems.count - 1 {
+                    Capsule()
+                        .fill(index < step ? DesignTokens.accent.opacity(0.42) : DesignTokens.neutral200.opacity(0.88))
+                        .frame(width: 56, height: 1.5)
+                        .padding(.horizontal, 12)
+                }
             }
         }
         .padding(.horizontal, 24)
-        .padding(.bottom, 14)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var stepItems: [String] {
+        [state.t(.type), state.t(.configureWorkspace), state.t(.review)]
+    }
+
+    @ViewBuilder
+    private func stepBadge(_ index: Int) -> some View {
+        let completed = index < step
+        ZStack {
+            Circle()
+                .fill(index <= step ? DesignTokens.accent.opacity(completed ? 0.88 : 1) : DesignTokens.neutral100.opacity(0.78))
+                .frame(width: 20, height: 20)
+                .overlay(
+                    Circle()
+                        .stroke(index <= step ? DesignTokens.accent.opacity(0.72) : DesignTokens.separator, lineWidth: 1)
+                )
+            if completed {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.white)
+            } else {
+                Text("\(index + 1)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(index <= step ? Color.white : DesignTokens.tertiaryText)
+            }
+        }
     }
 
     @ViewBuilder
     private var content: some View {
         switch step {
         case 0:
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 Text(state.t(.chooseWorkspaceType))
                     .font(.system(size: 15, weight: .semibold))
                 HStack(spacing: 12) {
@@ -725,107 +776,210 @@ struct ProjectCreationWizardView: View {
                     typeCard(.new, title: state.t(.createNew), detail: state.t(.createNewDetail), icon: "plus.square")
                 }
             }
+            .frame(maxWidth: ProjectCreationWizardMetrics.formMaxWidth, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         case 1:
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 Text(state.t(.configureWorkspace))
                     .font(.system(size: 15, weight: .semibold))
-                SettingsTextField(state.t(.displayName), text: $displayName)
-                HStack(alignment: .bottom, spacing: 8) {
-                    SettingsTextField(state.t(.workspacePath), text: $workspacePath)
-                    Button(state.t(.browse)) { browseFolder() }
-                        .buttonStyle(WebToolbarButtonStyle())
+                wizardTextField(state.t(.displayName), text: $displayName)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(state.t(.workspacePath))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                    HStack(spacing: 8) {
+                        WizardPlainTextField(
+                            placeholder: state.t(.workspacePath),
+                            text: $workspacePath,
+                            monospaced: true
+                        )
+                        .layoutPriority(1)
+                        Button { browseFolder() } label: {
+                            Image(systemName: "folder")
+                                .font(.system(size: 13, weight: .medium))
+                                .frame(width: ProjectCreationWizardMetrics.browseButtonWidth, height: ProjectCreationWizardMetrics.fieldHeight)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .background(
+                            RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                                .fill(DesignTokens.controlSurface)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                                .stroke(DesignTokens.separator.opacity(0.78), lineWidth: 1)
+                        )
+                        .help(state.t(.browse))
+                    }
                 }
                 if workspaceType == .new {
-                    SettingsTextField(state.t(.githubURLOptional), text: $githubURL)
+                    wizardTextField(state.t(.githubURLOptional), text: $githubURL, monospaced: true)
                     Text(state.t(.gitURLHelp))
                         .font(.system(size: 12))
                         .foregroundStyle(DesignTokens.tertiaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .frame(maxWidth: ProjectCreationWizardMetrics.formMaxWidth, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         default:
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 14) {
                 Text(state.t(.review))
                     .font(.system(size: 15, weight: .semibold))
-                SettingsCardBlock(divided: true) {
+                VStack(spacing: 0) {
                     reviewRow(state.t(.type), workspaceType == .existing ? state.t(.openExisting) : state.t(.createNew))
+                    Divider().padding(.leading, 112)
                     reviewRow(state.t(.displayName), finalDisplayName)
+                    Divider().padding(.leading, 112)
                     reviewRow(state.t(.workspacePath), expandedPath)
                     if workspaceType == .new && !githubURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Divider().padding(.leading, 112)
                         reviewRow("Git", githubURL)
                     }
                 }
+                .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                        .stroke(DesignTokens.separator.opacity(0.82), lineWidth: 1)
+                )
                 if isCreating {
                     HStack(spacing: 8) {
                         ProgressView()
-                            .scaleEffect(0.72)
+                            .scaleEffect(0.68)
                         Text(state.t(.creatingProject))
                             .font(.system(size: 12))
                             .foregroundStyle(DesignTokens.tertiaryText)
                     }
+                    .padding(.top, 2)
                 }
             }
+            .frame(maxWidth: ProjectCreationWizardMetrics.formMaxWidth, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private func wizardTextField(_ title: String, text: Binding<String>, monospaced: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(DesignTokens.tertiaryText)
+            WizardPlainTextField(placeholder: title, text: text, monospaced: monospaced)
         }
     }
 
     private var footer: some View {
         HStack {
-            Button(state.t(.back)) {
-                step = max(0, step - 1)
+            if step == 0 {
+                Button(state.t(.cancel), action: onClose)
+                    .buttonStyle(WebToolbarButtonStyle())
+                    .disabled(isCreating)
+            } else {
+                Button {
+                    step = max(0, step - 1)
+                } label: {
+                    Text(state.t(.back))
+                }
+                .buttonStyle(WebToolbarButtonStyle())
+                .disabled(isCreating)
             }
-            .buttonStyle(WebToolbarButtonStyle())
-            .disabled(step == 0 || isCreating)
 
             Spacer()
 
-            Button(state.t(.cancel), action: onClose)
-                .buttonStyle(WebToolbarButtonStyle())
-                .disabled(isCreating)
+            if step > 0 {
+                Button(state.t(.cancel), action: onClose)
+                    .buttonStyle(WebToolbarButtonStyle())
+                    .disabled(isCreating)
+            }
 
-            Button(step == 2 ? state.t(.createProject) : state.t(.continueAction)) {
+            Button {
                 if step < 2 {
                     step += 1
                 } else {
                     createProject()
                 }
+            } label: {
+                Text(step == 2 ? state.t(.createProject) : state.t(.continueAction))
             }
             .buttonStyle(WebToolbarButtonStyle(isProminent: true))
             .disabled(!canContinue || isCreating)
         }
         .padding(.horizontal, 20)
-        .frame(height: 58)
+        .frame(height: ProjectCreationWizardMetrics.footerHeight)
     }
 
     private func typeCard(_ type: WorkspaceCreationType, title: String, detail: String, icon: String) -> some View {
-        Button {
+        let selected = workspaceType == type
+        let hovering = hoveredWorkspaceType == type
+        return Button {
             workspaceType = type
         } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(workspaceType == type ? DesignTokens.accent : DesignTokens.tertiaryText)
-                Text(title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(DesignTokens.text)
-                Text(detail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top, spacing: 12) {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(selected ? DesignTokens.accent.opacity(0.12) : DesignTokens.neutral100.opacity(0.85))
+                    .frame(width: 34, height: 34)
+                    .overlay {
+                        Image(systemName: icon)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(selected ? DesignTokens.accent : DesignTokens.tertiaryText)
+                    }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(DesignTokens.text)
+                    Text(detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(DesignTokens.accent)
+                }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: ProjectCreationWizardMetrics.typeCardMinHeight, alignment: .topLeading)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(workspaceType == type ? DesignTokens.accent.opacity(0.08) : DesignTokens.contentSurface)
+                RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                    .fill(selected ? DesignTokens.accent.opacity(0.055) : (hovering ? DesignTokens.neutral100.opacity(0.68) : DesignTokens.contentSurface))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(workspaceType == type ? DesignTokens.accent : DesignTokens.separator, lineWidth: 1)
+                RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                    .stroke(selected ? DesignTokens.accent.opacity(0.88) : DesignTokens.separator.opacity(hovering ? 0.95 : 0.74), lineWidth: selected ? 1.2 : 1)
             )
         }
         .buttonStyle(.plain)
+        .onHover { inside in
+            hoveredWorkspaceType = inside ? type : nil
+        }
+    }
+
+    private struct WizardPlainTextField: View {
+        var placeholder: String
+        @Binding var text: String
+        var monospaced = false
+        @FocusState private var isFocused: Bool
+
+        var body: some View {
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13, design: monospaced ? .monospaced : .default))
+                .foregroundStyle(DesignTokens.text)
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .padding(.horizontal, 11)
+                .frame(height: ProjectCreationWizardMetrics.fieldHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                        .fill(DesignTokens.controlSurfaceActive.opacity(0.72))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                        .stroke(isFocused ? DesignTokens.accent.opacity(0.55) : DesignTokens.separator.opacity(0.78), lineWidth: 1)
+                )
+                .focused($isFocused)
+        }
     }
 
     private func reviewRow(_ label: String, _ value: String) -> some View {
@@ -838,10 +992,11 @@ struct ProjectCreationWizardView: View {
                 .font(.system(size: 12, design: label == state.t(.workspacePath) ? .monospaced : .default))
                 .foregroundStyle(DesignTokens.text)
                 .textSelection(.enabled)
+                .lineLimit(3)
             Spacer()
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 9)
     }
 
     private var canContinue: Bool {

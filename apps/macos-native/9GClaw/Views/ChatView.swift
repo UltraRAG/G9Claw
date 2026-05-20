@@ -23,13 +23,13 @@ struct ChatView: View {
                                 LazyVStack(alignment: .leading, spacing: 18) {
                                     ForEach(state.currentMessages) { message in
                                         if message.id == tracedAssistantID {
-                                            ProcessRunHeader(activities: traceActivities)
+                                            ProcessRunHeader(activities: runHeaderActivities)
                                                 .environmentObject(state)
                                                 .id("process-run-header")
                                         }
                                         MessageRow(message: message)
                                             .id(message.id)
-                                        if message.id == tracedAssistantID, !tracedAssistantHasToolBlocks {
+                                        if message.id == tracedAssistantID, shouldShowInlineLiveStatus {
                                             ProcessLiveStatusRow(activities: traceActivities)
                                                 .environmentObject(state)
                                                 .id("process-live-status")
@@ -59,6 +59,11 @@ struct ChatView: View {
                             }
                             .coordinateSpace(name: ChatScrollTarget.coordinateSpace)
                             .scrollIndicators(.automatic)
+                            .background(
+                                ChatScrollIntentObserver { deltaY in
+                                    scrollPinning.recordUserScroll(deltaY: deltaY)
+                                }
+                            )
                             .onPreferenceChange(ChatBottomOffsetPreferenceKey.self) { bottom in
                                 scrollPinning.update(bottomY: bottom, viewportHeight: geometry.size.height)
                             }
@@ -84,7 +89,7 @@ struct ChatView: View {
     }
 
     private var tracedAssistantID: UUID? {
-        guard !traceActivities.isEmpty else { return nil }
+        guard !runHeaderActivities.isEmpty || !traceActivities.isEmpty else { return nil }
         return latestAssistantID
     }
 
@@ -98,14 +103,26 @@ struct ChatView: View {
             return false
         }
         return message.blocks.contains { block in
-            if case .toolCall = block { return true }
+            if case .toolCall(let call) = block {
+                return AgentToolNameCanonicalizer.canonical(call.name) != "SwitchMode"
+            }
             if case .toolResult = block { return true }
             return false
         }
     }
 
+    private var shouldShowInlineLiveStatus: Bool {
+        if !tracedAssistantHasToolBlocks { return true }
+        guard state.isCurrentSessionStreaming, state.pendingPermissions.isEmpty else { return false }
+        return traceActivities.contains { $0.state == .running }
+    }
+
     private var traceActivities: [AgentActivity] {
         AgentActivity.processTraceActivities(state.currentActivities, anchoredTo: latestAssistantID?.uuidString)
+    }
+
+    private var runHeaderActivities: [AgentActivity] {
+        AgentActivity.runHeaderActivities(state.currentActivities, anchoredTo: latestAssistantID?.uuidString)
     }
 
     private var isPinnedToBottom: Bool {
@@ -113,9 +130,9 @@ struct ChatView: View {
     }
 
     private func followBottomIfPinned(_ proxy: ScrollViewProxy) {
-        guard scrollPinning.shouldFollowOutput else { return }
+        guard scrollPinning.canAutoFollowOutput() else { return }
         scrollPinning.recordProgrammaticScroll()
-        withAnimation(.easeOut(duration: 0.16)) {
+        withTransaction(Transaction(animation: nil)) {
             proxy.scrollTo(ChatScrollTarget.bottom, anchor: .bottom)
         }
     }
@@ -156,30 +173,106 @@ struct ChatScrollPinningState: Equatable {
     static let attachThreshold: CGFloat = 24
     static let detachThreshold: CGFloat = 72
     static let programmaticGraceInterval: TimeInterval = 0.35
+    static let userScrollGraceInterval: TimeInterval = 1.25
+    static let autoFollowThrottleInterval: TimeInterval = 0.07
 
     var isPinnedToBottom = true
+    var isUserDetached = false
     var lastProgrammaticScrollAt: Date?
+    var lastUserScrollAt: Date?
+    var lastAutoFollowAt: Date?
 
     var shouldFollowOutput: Bool {
-        isPinnedToBottom
+        isPinnedToBottom && !isUserDetached
+    }
+
+    func canAutoFollowOutput(now: Date = Date()) -> Bool {
+        guard shouldFollowOutput else { return false }
+        if let lastUserScrollAt,
+           now.timeIntervalSince(lastUserScrollAt) < Self.userScrollGraceInterval,
+           isUserDetached {
+            return false
+        }
+        guard let lastAutoFollowAt else { return true }
+        return now.timeIntervalSince(lastAutoFollowAt) >= Self.autoFollowThrottleInterval
     }
 
     mutating func recordProgrammaticScroll(now: Date = Date()) {
         isPinnedToBottom = true
+        isUserDetached = false
+        lastUserScrollAt = nil
         lastProgrammaticScrollAt = now
+        lastAutoFollowAt = now
+    }
+
+    mutating func recordUserScroll(deltaY: CGFloat, now: Date = Date()) {
+        guard abs(deltaY) > 0.1 else { return }
+        lastUserScrollAt = now
+        isUserDetached = true
+        isPinnedToBottom = false
     }
 
     mutating func update(bottomY: CGFloat, viewportHeight: CGFloat, now: Date = Date()) {
         let gap = max(0, bottomY - viewportHeight)
+        if gap <= Self.attachThreshold {
+            isPinnedToBottom = true
+            isUserDetached = false
+            return
+        }
         if let lastProgrammaticScrollAt,
            now.timeIntervalSince(lastProgrammaticScrollAt) < Self.programmaticGraceInterval,
            gap <= Self.detachThreshold {
             return
         }
-        if gap <= Self.attachThreshold {
-            isPinnedToBottom = true
-        } else if gap >= Self.detachThreshold {
+        let recentlyUserScrolled = lastUserScrollAt.map { now.timeIntervalSince($0) < Self.userScrollGraceInterval } ?? false
+        if gap >= Self.detachThreshold, isUserDetached || recentlyUserScrolled {
             isPinnedToBottom = false
+            isUserDetached = true
+        }
+    }
+}
+
+private struct ChatScrollIntentObserver: NSViewRepresentable {
+    var onScroll: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ScrollIntentNSView {
+        let view = ScrollIntentNSView()
+        view.onScroll = onScroll
+        return view
+    }
+
+    func updateNSView(_ nsView: ScrollIntentNSView, context: Context) {
+        nsView.onScroll = onScroll
+    }
+
+    final class ScrollIntentNSView: NSView {
+        var onScroll: (CGFloat) -> Void = { _ in }
+        private nonisolated(unsafe) var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            installMonitor()
+        }
+
+        private func installMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel]) { [weak self] event in
+                guard let self, event.window === self.window else { return event }
+                let point = self.convert(event.locationInWindow, from: nil)
+                guard self.bounds.contains(point) else { return event }
+                self.onScroll(event.scrollingDeltaY)
+                return event
+            }
+        }
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
         }
     }
 }
@@ -248,12 +341,19 @@ private struct ComposerRunningStatusRow: View {
     @EnvironmentObject private var state: AppState
     var activity: AgentActivity
 
-    private var text: String {
-        let title = activity.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if title.isEmpty {
-            return state.settings.language.resolved() == .chineseSimplified ? "正在思考" : "Thinking"
+    private var isChinese: Bool {
+        switch state.settings.language {
+        case .chineseSimplified:
+            return true
+        case .english:
+            return false
+        case .system:
+            return Locale.preferredLanguages.first?.hasPrefix("zh") == true
         }
-        return title
+    }
+
+    private var summary: ProcessTraceSummary {
+        ProcessTraceSummary.make(activities: [activity], isChinese: isChinese)
     }
 
     var body: some View {
@@ -262,16 +362,16 @@ private struct ComposerRunningStatusRow: View {
                 .controlSize(.small)
                 .scaleEffect(0.52)
                 .tint(CodexProcessStyle.iconMuted)
-            if activity.phase == .thinking || activity.phase == .status {
-                ShimmeringProcessText(text: text, font: .system(size: 12.5, weight: .medium))
+            if summary.shouldShimmer || activity.state == .running {
+                ShimmeringProcessText(text: summary.text, font: .system(size: 12.5, weight: .medium))
                     .lineLimit(1)
             } else {
-                Text(text)
+                Text(summary.text)
                     .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(CodexProcessStyle.detail)
                     .lineLimit(1)
             }
-            if !activity.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if activity.toolName == nil, !activity.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(activity.detail)
                     .font(.system(size: 11.5))
                     .foregroundStyle(CodexProcessStyle.detail.opacity(0.68))
@@ -539,6 +639,22 @@ private struct ComposerCard: View {
                     .foregroundStyle(DesignTokens.tertiaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 if latestTokenBudget != nil {
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule(style: .continuous)
+                                .fill(DesignTokens.neutral100)
+                            Capsule(style: .continuous)
+                                .fill(contextTone.opacity(0.72))
+                                .frame(width: proxy.size.width * CGFloat(min(Double(contextPercent ?? 0) / 100.0, 1.0)))
+                        }
+                    }
+                    .frame(height: 5)
+                    if let contextRecentStageText {
+                        Text(contextRecentStageText)
+                            .font(.system(size: 12))
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Text(state.settings.language.resolved() == .chineseSimplified ? "接近配置上限时会自动触发上下文压缩。" : "Context compaction starts automatically near the configured limit.")
                         .font(.system(size: 12))
                         .foregroundStyle(DesignTokens.tertiaryText)
@@ -554,7 +670,11 @@ private struct ComposerCard: View {
     }
 
     private var latestTokenBudget: TokenBudget? {
-        state.currentMessages.reversed().compactMap(\.tokenBudget).first
+        if let sessionID = state.selectedSessionID,
+           let budget = state.tokenBudgetBySession[sessionID] {
+            return budget
+        }
+        return state.currentMessages.reversed().compactMap(\.tokenBudget).first
     }
 
     private var contextPercent: Int? {
@@ -598,6 +718,20 @@ private struct ComposerCard: View {
         case .recovering:
             return isChinese ? "恢复中" : "Recovering"
         }
+    }
+
+    private var contextRecentStageText: String? {
+        let compactActivity = state.currentActivities.last { activity in
+            let text = "\(activity.title) \(activity.detail)".lowercased()
+            return text.contains("compact") || text.contains("压缩") || text.contains("recover")
+        }
+        guard let compactActivity else { return nil }
+        let detail = compactActivity.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isChinese = state.settings.language.resolved() == .chineseSimplified
+        if detail.isEmpty {
+            return isChinese ? "最近压缩阶段：\(compactActivity.title)" : "Recent compaction stage: \(compactActivity.title)"
+        }
+        return isChinese ? "最近压缩阶段：\(detail)" : "Recent compaction stage: \(detail)"
     }
 
     private var contextTone: Color {
@@ -871,11 +1005,13 @@ private struct MessageRow: View {
         })
         var consumedResultIDs = Set<String>()
         var toolGroup: [(ToolCall, ToolResult?)] = []
+        var sawSuccessfulDeletion = false
+        var previousTodoSnapshot: TodoListSnapshot?
 
         func flushToolGroup() {
             guard !toolGroup.isEmpty else { return }
             if toolGroup.count == 1, let first = toolGroup.first {
-                segments.append(.tool(first.0, first.1))
+                segments.append(.tool(first.0, first.1, nil))
             } else {
                 segments.append(.toolGroup(toolGroup))
             }
@@ -900,7 +1036,35 @@ private struct MessageRow: View {
                 if result != nil {
                     consumedResultIDs.insert(call.id)
                 }
+                let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+                if canonicalName == "SwitchMode" || canonicalName == "AskQuestion" {
+                    continue
+                }
+                if DeletionVerificationClassifier.shouldSuppressTranscriptPair(
+                    call: call,
+                    result: result,
+                    sawSuccessfulDeletion: sawSuccessfulDeletion
+                ) {
+                    continue
+                }
+                if ProcessToolGroupingPolicy.isBoundaryProcessTool(canonicalName) {
+                    flushToolGroup()
+                    let todoPresentation = ToolDetailPresentation.todoList(
+                        toolName: canonicalName,
+                        inputJSON: call.inputJSON,
+                        resultOutput: result?.output,
+                        previous: previousTodoSnapshot
+                    )
+                    segments.append(.tool(call, result, todoPresentation?.diff))
+                    if let snapshot = todoPresentation?.snapshot {
+                        previousTodoSnapshot = snapshot
+                    }
+                    continue
+                }
                 toolGroup.append((call, result))
+                if DeletionVerificationClassifier.isSuccessfulDeletion(call: call, result: result) {
+                    sawSuccessfulDeletion = true
+                }
             case .toolResult(let result):
                 if !pairedToolCallIDs.contains(result.toolCallId), !consumedResultIDs.contains(result.toolCallId) {
                     flushToolGroup()
@@ -969,8 +1133,8 @@ private struct MessageRow: View {
             NativeMarkdownView(text: text, fontSize: assistantFontSize, lineSpacing: 5)
         case .attachment(let attachment):
             AttachmentChip(attachment: attachment)
-        case .tool(let call, let result):
-            InlineProcessToolRow(call: call, result: result)
+        case .tool(let call, let result, let todoDiff):
+            InlineProcessToolRow(call: call, result: result, todoDiff: todoDiff)
                 .environmentObject(state)
         case .toolGroup(let items):
             InlineProcessToolGroupRow(items: items)
@@ -1001,9 +1165,16 @@ private struct MessageRow: View {
 private enum AssistantBlockSegment {
     case text(String)
     case attachment(FileAttachment)
-    case tool(ToolCall, ToolResult?)
+    case tool(ToolCall, ToolResult?, TodoListDiff?)
     case toolGroup([(ToolCall, ToolResult?)])
     case orphanToolResult(ToolResult)
+}
+
+enum ProcessToolGroupingPolicy {
+    static func isBoundaryProcessTool(_ toolName: String) -> Bool {
+        let canonicalName = AgentToolNameCanonicalizer.canonical(toolName)
+        return canonicalName == "TodoWrite" || canonicalName == "TodoRead" || canonicalName == "Task"
+    }
 }
 
 private enum CodexProcessStyle {
@@ -1127,6 +1298,26 @@ struct ToolInvocationPresentation: Equatable {
                 (["skill"], "Skill", true),
                 (["args"], "Args", false),
             ])
+        case "TodoRead":
+            return ToolInvocationPresentation(
+                toolName: toolName,
+                title: "Todo List",
+                command: nil,
+                fields: [ToolInvocationField(label: "Action", value: "Read todo list", isPrimary: true)],
+                rawInput: rawInput,
+                parsed: true
+            )
+        case "TodoWrite":
+            let summary = TodoListPresentation.parse(toolName: toolName, inputJSON: rawInput, resultOutput: nil)?
+                .summary(isChinese: false) ?? "Update todo list"
+            return ToolInvocationPresentation(
+                toolName: toolName,
+                title: "Todo List",
+                command: nil,
+                fields: [ToolInvocationField(label: "Summary", value: summary, isPrimary: true)],
+                rawInput: rawInput,
+                parsed: true
+            )
         case "WebSearch":
             return fieldPresentation(toolName, rawInput, object, [
                 (["query", "q"], "Query", true),
@@ -1208,6 +1399,205 @@ struct ToolInvocationPresentation: Equatable {
     }
 }
 
+enum TodoPresentationStatus: String, Equatable {
+    case completed
+    case inProgress
+    case pending
+
+    static func normalized(_ rawStatus: String) -> TodoPresentationStatus {
+        let value = rawStatus
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+        switch value {
+        case "completed", "complete", "done", "finished", "success":
+            return .completed
+        case "in_progress", "inprogress", "progress", "active", "current", "running":
+            return .inProgress
+        default:
+            return .pending
+        }
+    }
+
+    var sortRank: Int {
+        switch self {
+        case .inProgress: return 0
+        case .pending: return 1
+        case .completed: return 2
+        }
+    }
+}
+
+struct TodoListItemPresentation: Identifiable, Equatable {
+    var id: String
+    var explicitID: String?
+    var content: String
+    var status: TodoPresentationStatus
+    var sourceIndex: Int
+
+    var stableKey: String {
+        let normalizedContent = content
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if let explicitID, !explicitID.isEmpty {
+            return explicitID
+        }
+        if !normalizedContent.isEmpty {
+            return "content:\(normalizedContent)"
+        }
+        return "index:\(sourceIndex)"
+    }
+}
+
+struct TodoListSnapshot: Equatable {
+    var items: [TodoListItemPresentation]
+
+    var completedCount: Int { items.filter { $0.status == .completed }.count }
+    var inProgressCount: Int { items.filter { $0.status == .inProgress }.count }
+    var pendingCount: Int { items.filter { $0.status == .pending }.count }
+    var totalCount: Int { items.count }
+}
+
+struct TodoListDiff: Equatable {
+    var changedItemKeys: Set<String>
+    var completedItemKeys: Set<String>
+
+    static let empty = TodoListDiff(changedItemKeys: [], completedItemKeys: [])
+
+    static func make(previous: TodoListSnapshot?, current: TodoListSnapshot) -> TodoListDiff {
+        guard let previous else { return .empty }
+        let oldByKey = previous.items.reduce(into: [String: TodoListItemPresentation]()) { output, item in
+            output[item.stableKey] = item
+        }
+        var changed = Set<String>()
+        var completed = Set<String>()
+        for item in current.items {
+            let old = oldByKey[item.stableKey]
+            if old == nil || old?.status != item.status || old?.content != item.content {
+                changed.insert(item.stableKey)
+            }
+            if old?.status != .completed, item.status == .completed {
+                completed.insert(item.stableKey)
+            }
+        }
+        return TodoListDiff(changedItemKeys: changed, completedItemKeys: completed)
+    }
+}
+
+struct TodoListPresentation: Equatable {
+    var snapshot: TodoListSnapshot
+    var diff: TodoListDiff
+
+    static func parse(
+        toolName: String,
+        inputJSON: String,
+        resultOutput: String?,
+        previous: TodoListSnapshot? = nil
+    ) -> TodoListPresentation? {
+        let canonical = AgentToolNameCanonicalizer.canonical(toolName)
+        let resultSource = resultOutput?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = canonical == "TodoRead" ? ((resultSource?.isEmpty == false ? resultSource : nil) ?? inputJSON) : inputJSON
+        guard let snapshot = snapshot(from: source) else { return nil }
+        return TodoListPresentation(snapshot: snapshot, diff: TodoListDiff.make(previous: previous, current: snapshot))
+    }
+
+    func summary(isChinese: Bool) -> String {
+        if isChinese {
+            return "\(snapshot.completedCount) 完成 · \(snapshot.inProgressCount) 进行中 · \(snapshot.pendingCount) 待办"
+        }
+        return "\(snapshot.completedCount) done · \(snapshot.inProgressCount) in progress · \(snapshot.pendingCount) pending"
+    }
+
+    private static func snapshot(from source: String) -> TodoListSnapshot? {
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let data = trimmed.data(using: .utf8),
+           let value = try? JSONSerialization.jsonObject(with: data) {
+            if let items = todoItems(from: value), !items.isEmpty {
+                return TodoListSnapshot(items: items)
+            }
+        }
+        let markdownItems = todoItemsFromMarkdown(trimmed)
+        return markdownItems.isEmpty ? nil : TodoListSnapshot(items: markdownItems)
+    }
+
+    private static func todoItems(from value: Any) -> [TodoListItemPresentation]? {
+        if let object = value as? [String: Any] {
+            if let todos = object["todos"] {
+                return todoItems(from: todos)
+            }
+            if let markdown = object["markdown"] as? String {
+                return todoItemsFromMarkdown(markdown)
+            }
+            if let todo = todoItem(from: object, fallbackIndex: 0) {
+                return [todo]
+            }
+        }
+        guard let array = value as? [Any] else { return nil }
+        return array.enumerated().compactMap { index, item in
+            guard let object = item as? [String: Any] else { return nil }
+            return todoItem(from: object, fallbackIndex: index)
+        }
+    }
+
+    private static func todoItem(from object: [String: Any], fallbackIndex: Int) -> TodoListItemPresentation? {
+        let content = stringValue(object["content"])
+            ?? stringValue(object["title"])
+            ?? stringValue(object["subject"])
+            ?? stringValue(object["task"])
+        guard let content = content?.trimmingCharacters(in: .whitespacesAndNewlines), !content.isEmpty else {
+            return nil
+        }
+        let explicitID = stringValue(object["id"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawID = explicitID?.isEmpty == false ? explicitID! : "todo-\(fallbackIndex + 1)"
+        let rawStatus = stringValue(object["status"]) ?? (object["done"] as? Bool == true ? "completed" : "pending")
+        return TodoListItemPresentation(
+            id: rawID,
+            explicitID: explicitID?.isEmpty == false ? explicitID : nil,
+            content: content,
+            status: TodoPresentationStatus.normalized(rawStatus),
+            sourceIndex: fallbackIndex
+        )
+    }
+
+    private static func todoItemsFromMarkdown(_ markdown: String) -> [TodoListItemPresentation] {
+        let lines = markdown.components(separatedBy: .newlines)
+        var assignedInProgress = false
+        return lines.enumerated().compactMap { index, line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("- [") || trimmed.hasPrefix("* [") else { return nil }
+            let checked = trimmed.hasPrefix("- [x]") || trimmed.hasPrefix("- [X]") || trimmed.hasPrefix("* [x]") || trimmed.hasPrefix("* [X]")
+            guard let close = trimmed.firstIndex(of: "]") else { return nil }
+            let contentStart = trimmed.index(after: close)
+            let content = trimmed[contentStart...]
+                .trimmingCharacters(in: CharacterSet(charactersIn: " -\t"))
+            guard !content.isEmpty else { return nil }
+            let status: TodoPresentationStatus
+            if checked {
+                status = .completed
+            } else if !assignedInProgress {
+                status = .inProgress
+                assignedInProgress = true
+            } else {
+                status = .pending
+            }
+            return TodoListItemPresentation(
+                id: "todo-\(index + 1)",
+                explicitID: nil,
+                content: content,
+                status: status,
+                sourceIndex: index
+            )
+        }
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        if let value = value as? String { return value }
+        if let value = value as? NSNumber { return value.stringValue }
+        return nil
+    }
+}
+
 struct ProcessTraceSummary: Equatable {
     var text: String
     var shouldShimmer: Bool
@@ -1240,9 +1630,31 @@ struct ProcessTraceSummary: Equatable {
     private static func runningText(for activity: AgentActivity, isChinese: Bool) -> String {
         let targetText = target(for: activity).map { " \($0)" } ?? ""
         let toolName = activity.toolName ?? ""
+        let canonical = AgentToolNameCanonicalizer.canonical(toolName).lowercased()
         let phase = AgentToolPresentationClassifier.phase(forToolName: toolName)
-        if AgentToolPresentationClassifier.isReadTool(toolName) {
+        if canonical == "askquestion" {
+            return isChinese ? "等待你的回答" : "Waiting for your answer"
+        }
+        if canonical == "switchmode" {
+            return isChinese ? "等待计划确认" : "Waiting for plan confirmation"
+        }
+        if canonical == "read" {
             return isChinese ? "正在读取\(targetText)" : "Reading\(targetText)"
+        }
+        if canonical == "write" {
+            return isChinese ? "正在写入\(targetText)" : "Writing\(targetText)"
+        }
+        if canonical == "strreplace" || canonical == "editnotebook" {
+            return isChinese ? "正在编辑\(targetText)" : "Editing\(targetText)"
+        }
+        if canonical == "delete" {
+            return isChinese ? "正在删除\(targetText)" : "Deleting\(targetText)"
+        }
+        if canonical == "todowrite" {
+            return isChinese ? "正在更新 Todo List" : "Updating Todo List"
+        }
+        if canonical == "todoread" {
+            return isChinese ? "正在读取 Todo List" : "Reading Todo List"
         }
         switch phase {
         case .search:
@@ -1251,8 +1663,21 @@ struct ProcessTraceSummary: Equatable {
             return isChinese ? "正在执行\(targetText)" : "Running\(targetText)"
         case .edit:
             return isChinese ? "正在编辑\(targetText)" : "Editing\(targetText)"
+        case .todo:
+            return isChinese ? "正在更新 Todo List" : "Updating Todo List"
         case .subagent:
             return isChinese ? "正在运行任务\(targetText)" : "Running task\(targetText)"
+        case .thinking:
+            return isChinese ? "正在思考" : "Thinking"
+        case .status:
+            let fallback = activity.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if fallback.lowercased().contains("connecting") {
+                return isChinese ? "正在连接模型" : "Connecting to model"
+            }
+            if fallback.lowercased().contains("continuing") || fallback.contains("继续") {
+                return isChinese ? "正在继续处理" : "Continuing"
+            }
+            return fallback.isEmpty ? (isChinese ? "正在思考" : "Thinking") : fallback
         default:
             let fallback = activity.title.trimmingCharacters(in: .whitespacesAndNewlines)
             return fallback.isEmpty ? (isChinese ? "正在处理" : "Processing") : fallback
@@ -1266,10 +1691,14 @@ struct ProcessTraceSummary: Equatable {
         let edits = uniqueTargets(in: activities) { AgentToolPresentationClassifier.phase(forToolName: $0.toolName ?? "") == .edit }.count
         let searches = activities.filter { AgentToolPresentationClassifier.phase(forToolName: $0.toolName ?? "") == .search }.count
         let commands = activities.filter { AgentToolPresentationClassifier.phase(forToolName: $0.toolName ?? "") == .command }.count
+        let todos = activities.filter { AgentToolPresentationClassifier.phase(forToolName: $0.toolName ?? "") == .todo }.count
+        let questions = questionCount(in: activities)
         let otherTools = activities.filter { $0.toolName != nil }.count
 
         var parts: [String] = []
         if isChinese {
+            if questions > 0 { parts.append("已询问 \(questions) 个问题") }
+            if todos > 0 { parts.append("已更新 Todo List") }
             if reads > 0 { parts.append("已探索 \(reads) 个文件") }
             if searches > 0 { parts.append("\(searches) 次搜索") }
             if edits > 0 { parts.append("已编辑 \(edits) 个文件") }
@@ -1278,12 +1707,33 @@ struct ProcessTraceSummary: Equatable {
             return parts.isEmpty ? "正在处理" : parts.joined(separator: " ")
         }
 
+        if questions > 0 { parts.append("asked \(questions) \(questions == 1 ? "question" : "questions")") }
+        if todos > 0 { parts.append("updated Todo List") }
         if reads > 0 { parts.append("explored \(reads) \(reads == 1 ? "file" : "files")") }
         if searches > 0 { parts.append("\(searches) \(searches == 1 ? "search" : "searches")") }
         if edits > 0 { parts.append("edited \(edits) \(edits == 1 ? "file" : "files")") }
         if commands > 0 { parts.append("ran \(commands) \(commands == 1 ? "command" : "commands")") }
         if parts.isEmpty, otherTools > 0 { parts.append("used \(otherTools) \(otherTools == 1 ? "tool" : "tools")") }
         return parts.isEmpty ? "Processing" : parts.joined(separator: ", ")
+    }
+
+    private static func questionCount(in activities: [AgentActivity]) -> Int {
+        activities.reduce(into: 0) { total, activity in
+            guard AgentToolNameCanonicalizer.canonical(activity.toolName ?? "") == "AskQuestion",
+                  !activity.id.hasPrefix("permission-"),
+                  activity.state == .completed else { return }
+            total += questionCount(from: activity.detailMessages) ?? 1
+        }
+    }
+
+    private static func questionCount(from values: [String]) -> Int? {
+        for value in values {
+            if value.hasPrefix("questions_count="),
+               let count = Int(value.dropFirst("questions_count=".count)) {
+                return count
+            }
+        }
+        return nil
     }
 
     private static func uniqueTargets(in activities: [AgentActivity], where predicate: (AgentActivity) -> Bool) -> Set<String> {
@@ -1323,13 +1773,31 @@ private struct InlineProcessToolRow: View {
     @EnvironmentObject private var state: AppState
     var call: ToolCall
     var result: ToolResult?
+    var todoDiff: TodoListDiff? = nil
 
     private var failed: Bool { result?.isError == true }
     private var running: Bool { result == nil }
+    private var policyBlocked: Bool {
+        result?.output.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("Plan mode skipped") == true
+    }
     private var expansionKey: String { "tool:\(call.id)" }
     private var expanded: Bool { state.expandedToolRowIDs.contains(expansionKey) }
     private var presentation: ToolInvocationPresentation {
         ToolInvocationPresentation.parse(toolName: call.name, inputJSON: call.inputJSON)
+    }
+    private var todoPresentation: TodoListPresentation? {
+        guard var presentation = ToolDetailPresentation.todoList(
+            toolName: call.name,
+            inputJSON: call.inputJSON,
+            resultOutput: result?.output
+        ) else { return nil }
+        if let todoDiff {
+            presentation.diff = todoDiff
+        }
+        return presentation
+    }
+    private var taskPresentation: TaskInvocationPresentation? {
+        TaskInvocationPresentation.parse(inputJSON: call.inputJSON)
     }
 
     var body: some View {
@@ -1360,10 +1828,10 @@ private struct InlineProcessToolRow: View {
                             .scaleEffect(0.50)
                             .tint(CodexProcessStyle.iconMuted)
                     }
-                    Spacer(minLength: 6)
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(CodexProcessStyle.detail)
+                    Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
             }
@@ -1371,11 +1839,25 @@ private struct InlineProcessToolRow: View {
 
             if expanded {
                 VStack(alignment: .leading, spacing: 6) {
-                    ToolInvocationDetailCard(
-                        presentation: presentation,
-                        result: result,
-                        isChinese: isChinese
-                    )
+                    if let todoPresentation {
+                        TodoListDetailCard(
+                            presentation: todoPresentation,
+                            result: result,
+                            isChinese: isChinese
+                        )
+                    } else if let taskPresentation, AgentToolNameCanonicalizer.canonical(call.name) == "Task" {
+                        SubagentTaskDetailCard(
+                            presentation: taskPresentation,
+                            result: result,
+                            isChinese: isChinese
+                        )
+                    } else {
+                        ToolInvocationDetailCard(
+                            presentation: presentation,
+                            result: result,
+                            isChinese: isChinese
+                        )
+                    }
                     if let result {
                         if let image = ParsedToolImage.parse(result.output) {
                             ToolImagePreview(parsed: image)
@@ -1394,15 +1876,34 @@ private struct InlineProcessToolRow: View {
         let target = ToolInvocationPresentation.target(toolName: call.name, inputJSON: call.inputJSON, limit: 56)
         let suffix = target.map { " \($0)" } ?? ""
         let canonical = AgentToolNameCanonicalizer.canonical(call.name).lowercased()
+        if canonical == "todowrite" {
+            let summary = todoPresentation.map { " · \($0.summary(isChinese: isChinese))" } ?? ""
+            return running ? localized("正在更新 Todo List", "Updating Todo List") : localized("已更新 Todo List\(summary)", "Updated Todo List\(summary)")
+        }
+        if canonical == "todoread" {
+            let summary = todoPresentation.map { " · \($0.summary(isChinese: isChinese))" } ?? ""
+            return running ? localized("正在读取 Todo List", "Reading Todo List") : localized("已读取 Todo List\(summary)", "Read Todo List\(summary)")
+        }
+        if canonical == "task", let taskPresentation {
+            return taskPresentation.rowTitle(isChinese: isChinese, running: running, failed: failed)
+        }
         switch phase {
         case .search:
             return running ? localized("正在搜索\(suffix)", "Searching\(suffix)") : localized("已搜索\(suffix)", "Searched\(suffix)")
         case .command:
+            if policyBlocked {
+                return localized("计划模式已跳过命令\(suffix)", "Skipped command in Plan mode\(suffix)")
+            }
             return running ? localized("正在运行命令\(suffix)", "Running command\(suffix)") : localized("已运行命令\(suffix)", "Ran command\(suffix)")
         case .edit:
+            if policyBlocked {
+                return localized("计划模式已跳过编辑\(suffix)", "Skipped edit in Plan mode\(suffix)")
+            }
             return running ? localized("正在编辑\(suffix)", "Editing\(suffix)") : localized("已编辑\(suffix)", "Edited\(suffix)")
         case .subagent:
             return running ? localized("正在运行任务\(suffix)", "Running task\(suffix)") : localized("已运行任务\(suffix)", "Ran task\(suffix)")
+        case .todo:
+            return running ? localized("正在更新 Todo List", "Updating Todo List") : localized("已更新 Todo List", "Updated Todo List")
         default:
             break
         }
@@ -1410,7 +1911,10 @@ private struct InlineProcessToolRow: View {
             return running ? localized("正在读取\(suffix)", "Reading\(suffix)") : localized("已读取\(suffix)", "Read\(suffix)")
         }
         if canonical == "askquestion" {
-            return running ? localized("等待你的回答", "Waiting for your answer") : localized("已回答问题", "Answered question")
+            let count = AgentInteractivePayload.askUserQuestion(from: call.inputJSON)?.questions.count ?? 1
+            return running
+                ? localized("等待你的回答", "Waiting for your answer")
+                : localized("已询问 \(count) 个问题", "Asked \(count) \(count == 1 ? "question" : "questions")")
         }
         if failed {
             return localized("\(call.name) 失败", "\(call.name) failed")
@@ -1440,14 +1944,63 @@ private struct InlineProcessToolRow: View {
     }
 }
 
+enum ToolDetailPresentation {
+    static func todoList(toolName: String, inputJSON: String, resultOutput: String?, previous: TodoListSnapshot? = nil) -> TodoListPresentation? {
+        let canonical = AgentToolNameCanonicalizer.canonical(toolName)
+        if canonical == "TodoWrite" {
+            // TodoWrite's result is an acknowledgement for the model. The UI must render
+            // the snapshot from the tool input only, otherwise unrelated history can look
+            // like it belongs to this todo update.
+            return TodoListPresentation.parse(
+                toolName: canonical,
+                inputJSON: inputJSON,
+                resultOutput: nil,
+                previous: previous
+            )
+        }
+        return TodoListPresentation.parse(
+            toolName: canonical,
+            inputJSON: inputJSON,
+            resultOutput: resultOutput,
+            previous: previous
+        )
+    }
+}
+
+enum ToolOutputPreviewLimiter {
+    static func preview(_ value: String, maxChars: Int = 2_400, maxLines: Int = 80) -> String {
+        let lines = value.components(separatedBy: .newlines)
+        var truncated = false
+        var limited = lines
+        if lines.count > maxLines {
+            limited = Array(lines.prefix(maxLines))
+            truncated = true
+        }
+        var output = limited.joined(separator: "\n")
+        if output.count > maxChars {
+            let index = output.index(output.startIndex, offsetBy: max(0, maxChars))
+            output = String(output[..<index])
+            truncated = true
+        }
+        if truncated {
+            output += "\n... output truncated for display ..."
+        }
+        return output
+    }
+}
+
 private struct ToolInvocationDetailCard: View {
     var presentation: ToolInvocationPresentation
     var result: ToolResult?
     var isChinese: Bool
 
     private var failed: Bool { result?.isError == true }
+    private var policyBlocked: Bool {
+        result?.output.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("Plan mode skipped") == true
+    }
     private var statusText: String {
         if result == nil { return isChinese ? "运行中" : "Running" }
+        if policyBlocked { return isChinese ? "已跳过" : "Skipped" }
         return failed ? (isChinese ? "失败" : "Failed") : (isChinese ? "成功" : "Succeeded")
     }
 
@@ -1475,13 +2028,118 @@ private struct ToolInvocationDetailCard: View {
 
             if let output = result?.output.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
                 Divider().opacity(0.58)
-                Text(output)
+                Text(ToolOutputPreviewLimiter.preview(output))
                     .font(CodexProcessStyle.detailMonoFont)
                     .foregroundStyle(failed ? DesignTokens.danger.opacity(0.86) : CodexProcessStyle.detailStrong)
                     .lineSpacing(3)
-                    .lineLimit(14)
+                    .lineLimit(24)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 5) {
+                Spacer(minLength: 0)
+                Image(systemName: result == nil ? "hourglass" : (failed ? "xmark" : (policyBlocked ? "minus" : "checkmark")))
+                    .font(.system(size: 11, weight: .medium))
+                Text(statusText)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(failed ? DesignTokens.danger.opacity(0.82) : CodexProcessStyle.detail)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                .fill(DesignTokens.neutral100.opacity(0.70))
+        )
+    }
+
+    private func prompt(_ command: String) -> String {
+        "$ " + command.replacingOccurrences(of: "\n", with: "\n  ")
+    }
+}
+
+struct TaskInvocationPresentation: Equatable {
+    var type: String
+    var description: String
+    var prompt: String
+    var cwd: String?
+    var isolation: String?
+
+    static func parse(inputJSON: String) -> TaskInvocationPresentation? {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let type = stringValue(object["type"])
+            ?? stringValue(object["subagent_type"])
+            ?? "Agent"
+        let description = stringValue(object["description"])
+            ?? stringValue(object["task"])
+            ?? type
+        return TaskInvocationPresentation(
+            type: type,
+            description: description,
+            prompt: stringValue(object["prompt"]) ?? "",
+            cwd: stringValue(object["cwd"]),
+            isolation: stringValue(object["isolation"])
+        )
+    }
+
+    func rowTitle(isChinese: Bool, running: Bool, failed: Bool) -> String {
+        let base = isChinese ? "子 Agent / \(type): \(description)" : "Subagent / \(type): \(description)"
+        if failed {
+            return isChinese ? "\(base) 失败" : "\(base) failed"
+        }
+        if running {
+            return isChinese ? "正在运行 \(base)" : "Running \(base)"
+        }
+        return isChinese ? "已完成 \(base)" : "Completed \(base)"
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        guard let value else { return nil }
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let number = value as? NSNumber { return number.stringValue }
+        return nil
+    }
+}
+
+private struct TodoListDetailCard: View {
+    var presentation: TodoListPresentation
+    var result: ToolResult?
+    var isChinese: Bool
+
+    private var failed: Bool { result?.isError == true }
+    private var statusText: String {
+        if result == nil { return isChinese ? "运行中" : "Running" }
+        return failed ? (isChinese ? "失败" : "Failed") : (isChinese ? "已更新" : "Updated")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Text(isChinese ? "Todo List" : "Todo List")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(CodexProcessStyle.titleStrong)
+                Text(presentation.summary(isChinese: isChinese))
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(CodexProcessStyle.detail)
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(presentation.snapshot.items, id: \.stableKey) { item in
+                    TodoListItemRow(
+                        item: item,
+                        changed: presentation.diff.changedItemKeys.contains(item.stableKey),
+                        justCompleted: presentation.diff.completedItemKeys.contains(item.stableKey),
+                        isChinese: isChinese
+                    )
+                }
             }
 
             HStack(spacing: 5) {
@@ -1500,9 +2158,122 @@ private struct ToolInvocationDetailCard: View {
                 .fill(DesignTokens.neutral100.opacity(0.70))
         )
     }
+}
 
-    private func prompt(_ command: String) -> String {
-        "$ " + command.replacingOccurrences(of: "\n", with: "\n  ")
+private struct TodoListItemRow: View {
+    var item: TodoListItemPresentation
+    var changed: Bool
+    var justCompleted: Bool
+    var isChinese: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: iconName)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(iconColor)
+                .frame(width: 15)
+            Text(item.content)
+                .font(.system(size: 12.5, weight: item.status == .inProgress ? .semibold : .regular))
+                .foregroundStyle(textColor)
+                .strikethrough(item.status == .completed, color: CodexProcessStyle.detail)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            if changed {
+                Text(justCompleted ? (isChinese ? "完成" : "done") : (isChinese ? "更新" : "updated"))
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(justCompleted ? DesignTokens.success.opacity(0.84) : DesignTokens.accent.opacity(0.82))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill((justCompleted ? DesignTokens.success : DesignTokens.accent).opacity(0.10))
+                    )
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var iconName: String {
+        switch item.status {
+        case .completed: return "checkmark.circle.fill"
+        case .inProgress: return "clock.fill"
+        case .pending: return "circle"
+        }
+    }
+
+    private var iconColor: Color {
+        switch item.status {
+        case .completed: return DesignTokens.success.opacity(0.82)
+        case .inProgress: return DesignTokens.accent.opacity(0.82)
+        case .pending: return CodexProcessStyle.iconMuted
+        }
+    }
+
+    private var textColor: Color {
+        switch item.status {
+        case .completed: return CodexProcessStyle.detail
+        case .inProgress: return DesignTokens.text
+        case .pending: return CodexProcessStyle.detailStrong
+        }
+    }
+}
+
+private struct SubagentTaskDetailCard: View {
+    var presentation: TaskInvocationPresentation
+    var result: ToolResult?
+    var isChinese: Bool
+
+    private var failed: Bool { result?.isError == true }
+    private var output: String {
+        result?.output.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(isChinese ? "子 Agent / \(presentation.type)" : "Subagent / \(presentation.type)")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(CodexProcessStyle.titleStrong)
+                Text(presentation.description)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(CodexProcessStyle.detailStrong)
+            }
+
+            if !presentation.prompt.isEmpty {
+                ToolInvocationFieldRow(field: ToolInvocationField(label: isChinese ? "任务" : "Prompt", value: presentation.prompt, isPrimary: true))
+            }
+            if let cwd = presentation.cwd {
+                ToolInvocationFieldRow(field: ToolInvocationField(label: "Cwd", value: cwd))
+            }
+            if let isolation = presentation.isolation {
+                ToolInvocationFieldRow(field: ToolInvocationField(label: isChinese ? "隔离" : "Isolation", value: isolation))
+            }
+            if !output.isEmpty {
+                Divider().opacity(0.58)
+                Text(output)
+                    .font(CodexProcessStyle.detailMonoFont)
+                    .foregroundStyle(failed ? DesignTokens.danger.opacity(0.86) : CodexProcessStyle.detailStrong)
+                    .lineSpacing(3)
+                    .lineLimit(12)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 5) {
+                Spacer(minLength: 0)
+                Image(systemName: result == nil ? "hourglass" : (failed ? "xmark" : "checkmark"))
+                    .font(.system(size: 11, weight: .medium))
+                Text(result == nil ? (isChinese ? "运行中" : "Running") : (failed ? (isChinese ? "失败" : "Failed") : (isChinese ? "完成" : "Completed")))
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(failed ? DesignTokens.danger.opacity(0.82) : CodexProcessStyle.detail)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                .fill(DesignTokens.neutral100.opacity(0.70))
+        )
     }
 }
 
@@ -1693,6 +2464,7 @@ private struct InlineProcessToolGroupRow: View {
     }
 
     private var dominantPhase: AgentActivityPhase {
+        if items.contains(where: { phase(for: $0.0) == .todo }) { return .todo }
         if items.contains(where: { phase(for: $0.0) == .edit }) { return .edit }
         if items.contains(where: { phase(for: $0.0) == .search }) { return .search }
         if items.contains(where: { phase(for: $0.0) == .command }) { return .command }
@@ -1711,10 +2483,12 @@ private struct InlineProcessToolGroupRow: View {
         })
         let searches = items.filter { phase(for: $0.0) == .search }.count
         let commands = items.filter { phase(for: $0.0) == .command }.count
-        let otherTools = items.count - readTargets.count - editTargets.count - searches - commands
+        let todos = items.filter { phase(for: $0.0) == .todo }.count
+        let otherTools = items.count - readTargets.count - editTargets.count - searches - commands - todos
 
         var parts: [String] = []
         if isChinese {
+            if todos > 0 { parts.append("已更新 Todo List") }
             if !readTargets.isEmpty { parts.append("已探索 \(readTargets.count) 个文件") }
             if searches > 0 { parts.append("\(searches) 次搜索") }
             if !editTargets.isEmpty { parts.append("已编辑 \(editTargets.count) 个文件") }
@@ -1723,6 +2497,7 @@ private struct InlineProcessToolGroupRow: View {
             return parts.isEmpty ? "正在处理" : parts.joined(separator: " ")
         }
 
+        if todos > 0 { parts.append("updated Todo List") }
         if !readTargets.isEmpty { parts.append("explored \(readTargets.count) \(readTargets.count == 1 ? "file" : "files")") }
         if searches > 0 { parts.append("\(searches) \(searches == 1 ? "search" : "searches")") }
         if !editTargets.isEmpty { parts.append("edited \(editTargets.count) \(editTargets.count == 1 ? "file" : "files")") }
@@ -1750,6 +2525,8 @@ private struct InlineProcessToolGroupRow: View {
             return running ? localized("正在编辑\(targetText)", "Editing\(targetText)") : localized("已编辑\(targetText)", "Edited\(targetText)")
         case .command:
             return running ? localized("正在运行命令\(targetText)", "Running command\(targetText)") : localized("已运行命令\(targetText)", "Ran command\(targetText)")
+        case .todo:
+            return running ? localized("正在更新 Todo List", "Updating Todo List") : localized("已更新 Todo List", "Updated Todo List")
         case .subagent:
             return running ? localized("正在运行任务\(targetText)", "Running task\(targetText)") : localized("已运行任务\(targetText)", "Ran task\(targetText)")
         default:
@@ -1888,6 +2665,7 @@ private struct CodexInlineToolIcon: View {
             case .edit: return "pencil"
             case .search: return "magnifyingglass"
             case .command: return "terminal"
+            case .todo: return "checklist"
             case .thinking: return "sparkles"
             case .subagent: return "person.2"
             case .status, .tool: return "apple.terminal"
@@ -1897,6 +2675,7 @@ private struct CodexInlineToolIcon: View {
             case .edit: return "pencil"
             case .search: return "magnifyingglass"
             case .command: return "terminal"
+            case .todo: return "checklist"
             case .thinking: return "sparkles"
             case .subagent: return "person.2"
             case .status, .tool: return "apple.terminal"
@@ -2231,6 +3010,9 @@ private struct PermissionBanner: View {
                 } else if request.kind == .exitPlanMode {
                     ExitPlanModePermissionCard(request: request)
                         .environmentObject(state)
+                } else if request.kind == .destructivePlanApproval {
+                    DestructivePlanPermissionCard(request: request)
+                        .environmentObject(state)
                 } else {
                     GenericPermissionCard(request: request)
                         .environmentObject(state)
@@ -2413,18 +3195,28 @@ private enum PlanConfirmationChoice: String, CaseIterable, Identifiable {
     }
 }
 
+enum PlanConfirmationCardMetrics {
+    static let planMinHeight: CGFloat = 220
+    static let planMaxHeight: CGFloat = 460
+    static let actionLayout = "execute-feedback-footer"
+    static let actionRowHeight: CGFloat = 38
+    static let footerButtonCount = 2
+    static let emptyPlanFallbackZH = "计划仍在同步，请稍候。"
+    static let emptyPlanFallbackEN = "The plan is still syncing. Please wait."
+}
+
 private struct ExitPlanModePermissionCard: View {
     @EnvironmentObject private var state: AppState
     var request: PermissionRequest
     @State private var feedback = ""
-    @State private var selectedChoice: PlanConfirmationChoice = .execute
 
     private var isChinese: Bool {
         state.settings.language.resolved() == .chineseSimplified
     }
 
     private var planMarkdown: String {
-        ExitPlanModePlanExtractor.extract(from: request.inputJSON, isChinese: isChinese)
+        ExitPlanModePlanExtractor.extractOptional(from: request.inputJSON)
+            ?? (isChinese ? PlanConfirmationCardMetrics.emptyPlanFallbackZH : PlanConfirmationCardMetrics.emptyPlanFallbackEN)
     }
 
     var body: some View {
@@ -2453,30 +3245,64 @@ private struct ExitPlanModePermissionCard: View {
             .padding(12)
             .background(DesignTokens.accent.opacity(0.055))
 
-            ScrollView {
-                NativeMarkdownView(text: planMarkdown, fontSize: 13, lineSpacing: 5)
-                    .padding(12)
+            VStack(alignment: .leading, spacing: 8) {
+                ScrollView {
+                    NativeMarkdownView(text: planMarkdown, fontSize: 13, lineSpacing: 5)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: PlanConfirmationCardMetrics.planMinHeight, maxHeight: PlanConfirmationCardMetrics.planMaxHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                        .fill(DesignTokens.accent.opacity(0.06))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                                .stroke(DesignTokens.accent.opacity(0.16), lineWidth: 1)
+                        )
+                )
+                .overlay(alignment: .topLeading) {
+                    Text(isChinese ? "计划" : "Plan")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DesignTokens.accent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(DesignTokens.background.opacity(0.82), in: Capsule())
+                        .padding(8)
+                }
             }
-            .frame(maxHeight: 180)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
 
             VStack(alignment: .leading, spacing: 8) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(isChinese ? "选择下一步" : "Choose next step")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(DesignTokens.tertiaryText)
-
+                Button {
+                    approveExecution()
+                } label: {
                     HStack(spacing: 8) {
-                        ForEach(PlanConfirmationChoice.allCases) { choice in
-                            planChoiceButton(choice)
-                        }
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(isChinese ? "是，直接执行计划" : "Yes, execute the plan")
+                            .font(.system(size: 12.5, weight: .semibold))
+                        Spacer(minLength: 0)
                     }
+                    .frame(maxWidth: .infinity, minHeight: PlanConfirmationCardMetrics.actionRowHeight, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .foregroundStyle(DesignTokens.accent)
+                    .background(
+                        RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                            .fill(DesignTokens.accent.opacity(0.09))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                                    .stroke(DesignTokens.accent.opacity(0.22), lineWidth: 1)
+                            )
+                    )
                 }
+                .buttonStyle(.plain)
 
-                TextEditor(text: $feedback)
-                    .font(.system(size: 12))
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 44, maxHeight: 64)
-                    .padding(8)
+                TextField(isChinese ? "否，补充要求" : "No, add requirements", text: $feedback)
+                    .font(.system(size: 12, weight: .semibold))
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 10)
+                    .frame(height: PlanConfirmationCardMetrics.actionRowHeight)
                     .background(
                         RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                             .fill(DesignTokens.background)
@@ -2485,33 +3311,26 @@ private struct ExitPlanModePermissionCard: View {
                                     .stroke(DesignTokens.separator, lineWidth: 1)
                             )
                     )
-                    .overlay(alignment: .topLeading) {
-                        if feedback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text(isChinese ? "补充要求或修改点（可选）" : "Optional feedback or changes")
-                                .font(.system(size: 12))
-                                .foregroundStyle(DesignTokens.tertiaryText.opacity(0.72))
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 14)
-                        }
+                    .onSubmit {
+                        submitFeedbackIfPossible()
                     }
 
                 HStack(spacing: 8) {
-                    Spacer()
+                    Button {
+                        state.denyPermission(request.id)
+                    } label: {
+                        Label(isChinese ? "取消计划" : "Cancel plan", systemImage: "xmark.circle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(PlanFooterButtonStyle(tint: DesignTokens.secondaryText))
 
                     Button {
-                        performSelectedChoice()
+                        approveExecution()
                     } label: {
-                        Label(selectedChoice.title(isChinese: isChinese), systemImage: selectedChoice.systemImage)
+                        Label(isChinese ? "执行计划" : "Execute plan", systemImage: "checkmark.circle.fill")
+                            .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(
-                        RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                            .fill(DesignTokens.accent)
-                    )
+                    .buttonStyle(PlanFooterButtonStyle(tint: DesignTokens.accent))
                 }
             }
             .padding(12)
@@ -2526,56 +3345,20 @@ private struct ExitPlanModePermissionCard: View {
         .shadow(color: .black.opacity(0.05), radius: 10, y: 4)
     }
 
-    private func planChoiceButton(_ choice: PlanConfirmationChoice) -> some View {
-        let isSelected = selectedChoice == choice
-        return Button {
-            withAnimation(.snappy(duration: 0.18)) {
-                selectedChoice = choice
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: choice.systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(choice.title(isChinese: isChinese))
-                        .font(.system(size: 12, weight: .semibold))
-                    Text(choice.subtitle(isChinese: isChinese))
-                        .font(.system(size: 10.5))
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .foregroundStyle(isSelected ? DesignTokens.accent : DesignTokens.secondaryText)
-            .background(
-                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                    .fill(isSelected ? DesignTokens.accent.opacity(0.10) : DesignTokens.background)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                            .stroke(isSelected ? DesignTokens.accent.opacity(0.38) : DesignTokens.separator, lineWidth: 1)
-                    )
-            )
-        }
-        .buttonStyle(.plain)
+    private func approveExecution() {
+        state.approvePermission(request.id, updatedInputJSON: updatedPlanInputJSON(mode: "agent", includeFeedback: false))
     }
 
-    private func performSelectedChoice() {
-        switch selectedChoice {
-        case .execute:
-            state.approvePermission(request.id, updatedInputJSON: updatedPlanInputJSON(mode: "agent"))
-        case .refine:
-            let fallback = isChinese ? "请继续完善计划，暂时不要退出 Plan 模式。" : "Please keep refining the plan and do not leave Plan mode yet."
-            state.approvePermission(request.id, updatedInputJSON: updatedPlanInputJSON(mode: "plan", fallbackFeedback: fallback))
-        case .cancel:
-            state.denyPermission(request.id)
+    private func submitFeedbackIfPossible() {
+        let trimmed = feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
         }
+        state.approvePermission(request.id, updatedInputJSON: updatedPlanInputJSON(mode: "plan", includeFeedback: true))
     }
 
-    private func updatedPlanInputJSON(mode: String, fallbackFeedback: String? = nil) -> String {
+    private func updatedPlanInputJSON(mode: String, includeFeedback: Bool) -> String {
         let trimmedFeedback = feedback.trimmingCharacters(in: .whitespacesAndNewlines)
-        let feedbackValue = trimmedFeedback.isEmpty ? fallbackFeedback : trimmedFeedback
         var object: [String: Any]
         if let data = request.inputJSON.data(using: .utf8),
            let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
@@ -2584,8 +3367,10 @@ private struct ExitPlanModePermissionCard: View {
             object = [:]
         }
         object["mode"] = mode
-        if let feedbackValue, !feedbackValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            object["userFeedback"] = feedbackValue
+        if includeFeedback, !trimmedFeedback.isEmpty {
+            object["userFeedback"] = trimmedFeedback
+        } else {
+            object.removeValue(forKey: "userFeedback")
         }
         guard JSONSerialization.isValidJSONObject(object),
               let updated = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
@@ -2593,6 +3378,27 @@ private struct ExitPlanModePermissionCard: View {
             return request.inputJSON
         }
         return string
+    }
+}
+
+private struct PlanFooterButtonStyle: ButtonStyle {
+    var tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(
+                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                    .fill(tint.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                            .stroke(tint.opacity(0.20), lineWidth: 1)
+                    )
+            )
+            .opacity(configuration.isPressed ? 0.72 : 1)
     }
 }
 
@@ -2604,6 +3410,7 @@ private struct AskUserQuestionPanel: View {
     @State private var currentIndex = 0
     @State private var selections: [String: Set<String>] = [:]
     @State private var otherAnswers: [String: String] = [:]
+    @State private var otherActiveQuestions: Set<String> = []
     @State private var appeared = false
     @State private var pulse = false
 
@@ -2680,15 +3487,13 @@ private struct AskUserQuestionPanel: View {
                     ForEach(Array(question.options.enumerated()), id: \.element.id) { index, option in
                         optionButton(option: option, index: index)
                     }
-                    otherInput
+                    otherOption
+                    if otherActiveQuestions.contains(question.question) || question.options.isEmpty {
+                        otherInput
+                    }
                 }
 
                 HStack(spacing: 8) {
-                    Button(isChinese ? "跳过" : "Skip") {
-                        submit(skip: true)
-                    }
-                    .buttonStyle(.borderless)
-
                     Spacer()
 
                     if currentIndex > 0 {
@@ -2700,7 +3505,7 @@ private struct AskUserQuestionPanel: View {
                     }
                     Button(currentIndex == payload.questions.count - 1 ? (isChinese ? "提交" : "Submit") : (isChinese ? "下一步" : "Next")) {
                         if currentIndex == payload.questions.count - 1 {
-                            submit(skip: false)
+                            submit()
                         } else {
                             withAnimation(.easeOut(duration: 0.16)) {
                                 currentIndex += 1
@@ -2780,7 +3585,7 @@ private struct AskUserQuestionPanel: View {
 
     private var otherInput: some View {
         HStack(spacing: 10) {
-            Text(isChinese ? "其他" : "Other")
+            Text(isChinese ? "补充" : "Custom")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(DesignTokens.tertiaryText)
                 .frame(width: 44, alignment: .leading)
@@ -2797,6 +3602,41 @@ private struct AskUserQuestionPanel: View {
                         .stroke(DesignTokens.separator, lineWidth: 1)
                 )
         )
+    }
+
+    private var otherOption: some View {
+        let selected = otherActiveQuestions.contains(question.question) || question.options.isEmpty
+        return Button {
+            toggleOther(for: question)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(selected ? DesignTokens.accent : DesignTokens.tertiaryText)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isChinese ? "其他" : "Other")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(DesignTokens.text)
+                    Text(isChinese ? "选择后填写自定义答案" : "Select to type a custom answer")
+                        .font(.system(size: 12))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                }
+                Spacer()
+            }
+            .padding(10)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                    .fill(selected ? DesignTokens.accent.opacity(0.08) : DesignTokens.neutral50)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                            .stroke(selected ? DesignTokens.accent.opacity(0.55) : DesignTokens.separator, lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(question.options.isEmpty)
     }
 
     private func otherBinding(for question: AgentQuestion) -> Binding<String> {
@@ -2816,20 +3656,39 @@ private struct AskUserQuestionPanel: View {
             }
         } else {
             values = values.contains(option) ? [] : [option]
+            if !values.isEmpty {
+                otherActiveQuestions.remove(question.question)
+            }
         }
         selections[question.question] = values
     }
 
-    private func hasAnswer(for question: AgentQuestion) -> Bool {
-        !(selections[question.question] ?? []).isEmpty ||
-            !(otherAnswers[question.question]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    private func toggleOther(for question: AgentQuestion) {
+        if question.options.isEmpty {
+            otherActiveQuestions.insert(question.question)
+            return
+        }
+        if otherActiveQuestions.contains(question.question) {
+            otherActiveQuestions.remove(question.question)
+        } else {
+            if !question.multiSelect {
+                selections[question.question] = []
+            }
+            otherActiveQuestions.insert(question.question)
+        }
     }
 
-    private func submit(skip: Bool) {
-        let answers = skip ? [:] : payload.questions.reduce(into: [String: String]()) { result, question in
+    private func hasAnswer(for question: AgentQuestion) -> Bool {
+        !(selections[question.question] ?? []).isEmpty ||
+            ((otherActiveQuestions.contains(question.question) || question.options.isEmpty) &&
+             !(otherAnswers[question.question]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true))
+    }
+
+    private func submit() {
+        let answers = payload.questions.reduce(into: [String: String]()) { result, question in
             var values = Array(selections[question.question] ?? []).sorted()
             let other = otherAnswers[question.question]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !other.isEmpty {
+            if (otherActiveQuestions.contains(question.question) || question.options.isEmpty), !other.isEmpty {
                 values.append(other)
             }
             if !values.isEmpty {
@@ -2838,6 +3697,124 @@ private struct AskUserQuestionPanel: View {
         }
         let updated = AgentInteractivePayload.updatedInputJSON(originalInputJSON: request.inputJSON, answers: answers)
         state.approvePermission(request.id, updatedInputJSON: updated)
+    }
+}
+
+private struct DestructivePlanPermissionCard: View {
+    @EnvironmentObject private var state: AppState
+    var request: PermissionRequest
+
+    private var isChinese: Bool {
+        state.settings.language.resolved() == .chineseSimplified
+    }
+
+    private var object: [String: Any] {
+        JSONPayloadExtractor.object(from: request.inputJSON) ?? [:]
+    }
+
+    private var planMarkdown: String {
+        ExitPlanModePlanExtractor.extract(from: request.inputJSON, isChinese: isChinese)
+    }
+
+    private var target: String {
+        nonBlank(object["target"] as? String) ?? (isChinese ? "目标路径" : "target path")
+    }
+
+    private var toolName: String {
+        nonBlank(object["destructiveTool"] as? String) ?? request.toolName
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 11) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(DesignTokens.danger.opacity(0.12))
+                        .frame(width: 32, height: 32)
+                    Image(systemName: "trash")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(DesignTokens.danger)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(isChinese ? "确认删除计划" : "Confirm deletion plan")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(DesignTokens.text)
+                    Text("\(toolName) · \(target)")
+                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 12)
+
+                Button {
+                    state.denyPermission(request.id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(DesignTokens.tertiaryText)
+            }
+            .padding(12)
+            .background(DesignTokens.danger.opacity(0.055))
+
+            NativeMarkdownView(text: planMarkdown, fontSize: 13, lineSpacing: 5)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+
+            HStack(spacing: 8) {
+                Button(isChinese ? "取消" : "Cancel") {
+                    state.denyPermission(request.id)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                        .fill(DesignTokens.background)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                                .stroke(DesignTokens.separator, lineWidth: 1)
+                        )
+                )
+
+                Spacer()
+
+                Button {
+                    state.approvePermission(request.id)
+                } label: {
+                    Label(isChinese ? "执行计划" : "Execute plan", systemImage: "checkmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                        .fill(DesignTokens.danger)
+                )
+            }
+            .padding(12)
+            .background(DesignTokens.background.opacity(0.74))
+        }
+        .frame(maxWidth: DesignTokens.composerMaxWidth, alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(DesignTokens.danger.opacity(0.24), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.045), radius: 8, y: 3)
+    }
+
+    private func nonBlank(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -2852,7 +3829,7 @@ private enum ExitPlanModePlanExtractor {
             let trimmed = inputJSON.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         }
-        for key in ["plan", "planContent", "content", "markdown", "text", "body"] {
+        for key in ["assistantPlanMarkdown", "plan", "planContent", "content", "markdown", "text", "body"] {
             if let value = object[key] as? String,
                !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return value
@@ -3371,6 +4348,177 @@ private struct ProcessRunHeader: View {
     }
 }
 
+struct ProcessTracePresentation: Equatable {
+    var shouldRender: Bool
+    var summaryText: String
+    var shouldShimmer: Bool
+    var iconName: String
+    var detailRows: [CodexTraceDetailRow]
+    var compacting: Bool
+
+    var canExpand: Bool {
+        !detailRows.isEmpty
+    }
+
+    static func make(activities: [AgentActivity], isChinese: Bool) -> ProcessTracePresentation {
+        let visible = activities
+            .filter { activity in
+                !activity.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    !activity.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    activity.toolName != nil
+            }
+            .sorted { $0.createdAt < $1.createdAt }
+        let summary = ProcessTraceSummary.make(activities: visible, isChinese: isChinese)
+        let current = visible.last(where: { $0.state == .running })
+        let compacting = visible.contains {
+            let haystack = "\($0.title) \($0.detail) \($0.toolName ?? "")".lowercased()
+            return haystack.contains("compact") || haystack.contains("压缩")
+        }
+        return ProcessTracePresentation(
+            shouldRender: current != nil || compacting,
+            summaryText: summary.text,
+            shouldShimmer: summary.shouldShimmer,
+            iconName: iconName(for: current, fallbackActivities: visible),
+            detailRows: current.map { currentDetailRows(for: $0, isChinese: isChinese) } ?? [],
+            compacting: compacting
+        )
+    }
+
+    private static func currentDetailRows(for activity: AgentActivity, isChinese: Bool) -> [CodexTraceDetailRow] {
+        guard activity.state == .running else { return [] }
+        if isInteractiveControlActivity(activity) { return [] }
+        let phase = presentationPhase(for: activity)
+        if phase == .todo { return [] }
+
+        let title = detailTitle(for: activity, isChinese: isChinese)
+        let detail = compactDetail(for: activity)
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        if detail.isEmpty {
+            return [CodexTraceDetailRow(title: title, detail: "", isRunning: true)]
+        }
+        return [CodexTraceDetailRow(title: title, detail: detail, isRunning: true)]
+    }
+
+    private static func iconName(for current: AgentActivity?, fallbackActivities: [AgentActivity]) -> String {
+        if fallbackActivities.contains(where: { $0.state == .failed }) { return "exclamationmark.triangle" }
+        if let current {
+            switch presentationPhase(for: current) {
+            case .todo: return "checklist"
+            case .command: return "terminal"
+            case .search: return "magnifyingglass"
+            case .subagent: return "person.2"
+            default: break
+            }
+        }
+        if fallbackActivities.contains(where: { presentationPhase(for: $0) == .todo }) { return "checklist" }
+        if fallbackActivities.contains(where: { presentationPhase(for: $0) == .command }) { return "terminal" }
+        if fallbackActivities.contains(where: { presentationPhase(for: $0) == .search }) { return "magnifyingglass" }
+        return "apple.terminal"
+    }
+
+    private static func detailTitle(for activity: AgentActivity, isChinese: Bool) -> String {
+        let target = target(for: activity)
+        let toolName = activity.toolName ?? ""
+        let phase = presentationPhase(for: activity)
+        if phase == .search {
+            if isRootWorkspaceGlob(activity) {
+                return isChinese ? "正在探索工作区" : "Exploring workspace"
+            }
+            return target.map { isChinese ? "正在搜索 \($0)" : "Searching \($0)" } ?? (isChinese ? "正在搜索" : "Searching")
+        }
+        if AgentToolPresentationClassifier.isReadTool(toolName) {
+            return target.map { isChinese ? "正在读取 \($0)" : "Reading \($0)" } ?? (isChinese ? "正在读取文件" : "Reading file")
+        }
+        if phase == .edit {
+            return target.map { isChinese ? "正在编辑 \($0)" : "Editing \($0)" } ?? (isChinese ? "正在编辑文件" : "Editing file")
+        }
+        if phase == .command {
+            return target.map { isChinese ? "正在执行命令 \($0)" : "Running \($0)" } ?? (isChinese ? "正在执行命令" : "Running command")
+        }
+        if phase == .subagent {
+            return target.map { isChinese ? "正在运行任务 \($0)" : "Running task \($0)" } ?? (isChinese ? "正在运行任务" : "Running task")
+        }
+        let fallback = activity.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? (isChinese ? "正在处理" : "Processing") : fallback
+    }
+
+    private static func compactDetail(for activity: AgentActivity) -> String {
+        let candidates = [activity.detail] + activity.detailMessages
+        for value in candidates {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if trimmed.hasPrefix("{"), trimmed.hasSuffix("}") {
+                if let target = target(for: activity) {
+                    return target
+                }
+                continue
+            }
+            if isLowValueStatus(trimmed) {
+                continue
+            }
+            return compactPreview(trimmed, limit: 130)
+        }
+        return ""
+    }
+
+    private static func target(for activity: AgentActivity) -> String? {
+        guard let toolName = activity.toolName else { return nil }
+        for source in [activity.detail] + activity.detailMessages {
+            if let target = ToolInvocationPresentation.target(toolName: toolName, inputJSON: source, limit: 72) {
+                return target
+            }
+        }
+        return nil
+    }
+
+    private static func presentationPhase(for activity: AgentActivity) -> AgentActivityPhase {
+        guard let toolName = activity.toolName, !toolName.isEmpty else {
+            return activity.phase
+        }
+        return AgentToolPresentationClassifier.phase(forToolName: toolName)
+    }
+
+    private static func isInteractiveControlActivity(_ activity: AgentActivity) -> Bool {
+        guard let toolName = activity.toolName else { return false }
+        let canonical = AgentToolNameCanonicalizer.canonical(toolName)
+        return canonical == "AskQuestion" || canonical == "SwitchMode"
+    }
+
+    private static func isRootWorkspaceGlob(_ activity: AgentActivity) -> Bool {
+        guard AgentToolNameCanonicalizer.canonical(activity.toolName ?? "") == "Glob" else { return false }
+        return ([activity.detail] + activity.detailMessages).contains { RootGlobExecutionPolicy.isRootWorkspaceGlob(inputJSON: $0) }
+    }
+
+    private static func isLowValueStatus(_ value: String) -> Bool {
+        let haystack = value.lowercased()
+        let markers = [
+            "connecting",
+            "streaming",
+            "processing",
+            "thinking",
+            "agent state",
+            "正在连接",
+            "正在打开远端模型流",
+            "正在接收响应",
+            "正在流式输出助手回复",
+            "处理中",
+            "正在思考",
+            "智能体状态更新",
+        ]
+        return markers.contains { haystack.contains($0) }
+    }
+
+    private static func compactPreview(_ value: String, limit: Int) -> String {
+        let compact = value
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard compact.count > limit else { return compact }
+        let index = compact.index(compact.startIndex, offsetBy: max(0, limit - 1))
+        return String(compact[..<index]) + "…"
+    }
+}
+
 private struct ProcessLiveStatusRow: View {
     @EnvironmentObject private var state: AppState
     var activities: [AgentActivity]
@@ -3403,6 +4551,10 @@ private struct ProcessLiveStatusRow: View {
         ProcessTraceSummary.make(activities: visibleActivities, isChinese: isChinese)
     }
 
+    private var presentation: ProcessTracePresentation {
+        ProcessTracePresentation.make(activities: visibleActivities, isChinese: isChinese)
+    }
+
     private var summaryText: String {
         let reads = uniqueTargets { activity in
             activity.toolName.map(AgentToolPresentationClassifier.isReadTool) == true
@@ -3431,22 +4583,11 @@ private struct ProcessLiveStatusRow: View {
     }
 
     private var shouldRender: Bool {
-        guard !visibleActivities.isEmpty else { return false }
-        if hasRunningActivity { return true }
-        let reads = uniqueTargets { activity in
-            activity.toolName.map(AgentToolPresentationClassifier.isReadTool) == true
-        }.count
-        let edits = uniqueTargets { presentationPhase(for: $0) == .edit }.count
-        let commands = visibleActivities.filter { presentationPhase(for: $0) == .command }.count
-        let meaningfulTools = visibleActivities.filter { activity in
-            guard activity.toolName != nil else { return false }
-            return presentationPhase(for: activity) != .search
-        }.count
-        return reads > 0 || edits > 0 || commands > 0 || meaningfulTools > 0 || compacting
+        presentation.shouldRender
     }
 
     private var detailRows: [CodexTraceDetailRow] {
-        visibleActivities.flatMap { detailRows(for: $0) }
+        presentation.detailRows
     }
 
     private var compacting: Bool {
@@ -3472,13 +4613,13 @@ private struct ProcessLiveStatusRow: View {
                 }
             } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: traceIcon)
+                    Image(systemName: presentation.iconName)
                         .font(.system(size: 15, weight: .regular))
                         .symbolRenderingMode(.hierarchical)
-                    if traceSummary.shouldShimmer {
-                        ShimmeringProcessText(text: traceSummary.text, font: CodexProcessStyle.rowFont)
+                    if presentation.shouldShimmer {
+                        ShimmeringProcessText(text: presentation.summaryText, font: CodexProcessStyle.rowFont)
                     } else {
-                        Text(traceSummary.text)
+                        Text(presentation.summaryText)
                             .font(CodexProcessStyle.rowFont)
                     }
                     if hasRunningActivity {
@@ -3487,17 +4628,19 @@ private struct ProcessLiveStatusRow: View {
                             .scaleEffect(0.48)
                             .tint(CodexProcessStyle.iconMuted)
                     }
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 11, weight: .medium))
+                    if presentation.canExpand {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 11, weight: .medium))
+                    }
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(CodexProcessStyle.title)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(detailRows.isEmpty)
+            .disabled(!presentation.canExpand)
 
-            if expanded {
+            if expanded, presentation.canExpand {
                 VStack(alignment: .leading, spacing: 7) {
                     ForEach(detailRows) { row in
                         VStack(alignment: .leading, spacing: 3) {
@@ -3525,7 +4668,7 @@ private struct ProcessLiveStatusRow: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.985, anchor: .topLeading)))
             }
 
-            if compacting {
+            if presentation.compacting {
                 HStack(spacing: 16) {
                     Rectangle().fill(DesignTokens.separator).frame(height: 1)
                     Text(isChinese ? "正在自动压缩上下文" : "Automatically compacting context")
@@ -3537,15 +4680,12 @@ private struct ProcessLiveStatusRow: View {
             }
         }
         .frame(maxWidth: DesignTokens.transcriptMaxWidth, alignment: .leading)
-        .animation(.easeOut(duration: 0.18), value: visibleActivities.map { "\($0.id):\($0.state.rawValue)" })
-        .onAppear {
-            expanded = visibleActivities.contains(where: \.expandedDefault)
-        }
         }
     }
 
     private var traceIcon: String {
         if visibleActivities.contains(where: { $0.state == .failed }) { return "exclamationmark.triangle" }
+        if visibleActivities.contains(where: { presentationPhase(for: $0) == .todo }) { return "checklist" }
         if visibleActivities.contains(where: { presentationPhase(for: $0) == .command }) { return "terminal" }
         if visibleActivities.contains(where: { presentationPhase(for: $0) == .search }) { return "magnifyingglass" }
         return "apple.terminal"
@@ -3554,7 +4694,7 @@ private struct ProcessLiveStatusRow: View {
     private func detailRows(for activity: AgentActivity) -> [CodexTraceDetailRow] {
         let base = detailTitle(for: activity)
         var rows = [CodexTraceDetailRow(title: base, detail: compactDetail(for: activity), isRunning: activity.state == .running)]
-        for detail in activity.detailMessages where detail.trimmingCharacters(in: .whitespacesAndNewlines) != activity.detail.trimmingCharacters(in: .whitespacesAndNewlines) {
+        for detail in activity.detailMessages.prefix(3) where detail.trimmingCharacters(in: .whitespacesAndNewlines) != activity.detail.trimmingCharacters(in: .whitespacesAndNewlines) {
             let compact = compactPreview(detail)
             if !compact.isEmpty {
                 rows.append(CodexTraceDetailRow(title: compact, detail: "", isRunning: activity.state == .running))
@@ -3563,12 +4703,53 @@ private struct ProcessLiveStatusRow: View {
         return rows
     }
 
+    private func shouldShowDetailRows(for activity: AgentActivity) -> Bool {
+        if isInteractiveControlActivity(activity) { return false }
+        if activity.toolName != nil { return true }
+        let haystack = "\(activity.title) \(activity.detail)"
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !haystack.isEmpty else { return false }
+        if haystack.contains("compact") || haystack.contains("压缩") || haystack.contains("recovering") || haystack.contains("恢复") {
+            return true
+        }
+        let lowValueMarkers = [
+            "connecting",
+            "streaming",
+            "processing",
+            "thinking",
+            "receiving response",
+            "agent state",
+            "context normal",
+            "context attention",
+            "正在连接",
+            "正在打开远端模型流",
+            "正在接收响应",
+            "正在流式输出助手回复",
+            "处理中",
+            "正在思考",
+            "智能体状态更新",
+            "上下文正常",
+            "上下文关注",
+        ]
+        return !lowValueMarkers.contains { haystack.contains($0) }
+    }
+
+    private func isInteractiveControlActivity(_ activity: AgentActivity) -> Bool {
+        guard let toolName = activity.toolName else { return false }
+        let canonical = AgentToolNameCanonicalizer.canonical(toolName)
+        return canonical == "AskQuestion" || canonical == "SwitchMode"
+    }
+
     private func detailTitle(for activity: AgentActivity) -> String {
         let target = target(for: activity)
         let toolName = activity.toolName ?? ""
         let canonical = AgentToolNameCanonicalizer.canonical(toolName).lowercased()
         let phase = presentationPhase(for: activity)
         if phase == .search {
+            if isRootWorkspaceGlob(activity) {
+                return isChinese ? "已探索工作区" : "Explored workspace"
+            }
             return target.map { "Searched for \($0)" } ?? (isChinese ? "已搜索" : "Searched")
         }
         if AgentToolPresentationClassifier.isReadTool(toolName) {
@@ -3583,11 +4764,18 @@ private struct ProcessLiveStatusRow: View {
         if phase == .subagent {
             return target.map { (activity.state == .running ? (isChinese ? "正在运行任务 \($0)" : "Running task \($0)") : (isChinese ? "已运行任务 \($0)" : "Ran task \($0)")) } ?? (isChinese ? "已运行任务" : "Ran task")
         }
+        if phase == .todo {
+            return activity.state == .running ? (isChinese ? "正在更新 Todo List" : "Updating Todo List") : (isChinese ? "已更新 Todo List" : "Updated Todo List")
+        }
         if canonical == "skill" {
             return target.map { (activity.state == .running ? (isChinese ? "正在加载技能 \($0)" : "Loading skill \($0)") : (isChinese ? "已加载技能 \($0)" : "Loaded skill \($0)")) } ?? (isChinese ? "已加载技能" : "Loaded skill")
         }
         if canonical == "askquestion" {
-            return activity.state == .completed ? (isChinese ? "已回答问题" : "Answered question") : (isChinese ? "等待你的回答" : "Waiting for your answer")
+            let count = questionCount(from: activity.detailMessages) ?? 1
+            if activity.state == .completed {
+                return isChinese ? "已询问 \(count) 个问题" : "Asked \(count) \(count == 1 ? "question" : "questions")"
+            }
+            return isChinese ? "等待你的回答" : "Waiting for your answer"
         }
         if canonical == "switchmode" {
             return activity.state == .completed ? (isChinese ? "已切换模式" : "Switched mode") : (isChinese ? "正在切换模式" : "Switching mode")
@@ -3604,6 +4792,16 @@ private struct ProcessLiveStatusRow: View {
             return target(for: activity) ?? ""
         }
         return detail
+    }
+
+    private func questionCount(from values: [String]) -> Int? {
+        for value in values {
+            if value.hasPrefix("questions_count="),
+               let count = Int(value.dropFirst("questions_count=".count)) {
+                return count
+            }
+        }
+        return nil
     }
 
     private func uniqueTargets(where predicate: (AgentActivity) -> Bool) -> Set<String> {
@@ -3640,6 +4838,11 @@ private struct ProcessLiveStatusRow: View {
             }
         }
         return nil
+    }
+
+    private func isRootWorkspaceGlob(_ activity: AgentActivity) -> Bool {
+        guard AgentToolNameCanonicalizer.canonical(activity.toolName ?? "") == "Glob" else { return false }
+        return ([activity.detail] + activity.detailMessages).contains { RootGlobExecutionPolicy.isRootWorkspaceGlob(inputJSON: $0) }
     }
 
     private func parsedRAGSummary(from values: [String]) -> String? {
@@ -3710,11 +4913,18 @@ private struct ProcessLiveStatusRow: View {
     }
 }
 
-private struct CodexTraceDetailRow: Identifiable {
-    let id = UUID()
+struct CodexTraceDetailRow: Identifiable, Equatable {
+    let id: String
     var title: String
     var detail: String
     var isRunning: Bool
+
+    init(id: String = UUID().uuidString, title: String, detail: String, isRunning: Bool) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+        self.isRunning = isRunning
+    }
 }
 
 private struct ProcessTraceStepRow: View {
@@ -4365,6 +5575,8 @@ private struct ProcessStepIcon: View {
             return "sparkles"
         case .tool:
             return "hammer"
+        case .todo:
+            return "checklist"
         case .search:
             return "magnifyingglass"
         case .command:

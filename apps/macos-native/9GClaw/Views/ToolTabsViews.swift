@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -6,39 +7,37 @@ struct FilesView: View {
     @EnvironmentObject private var state: AppState
     @State private var files: [WorkspaceFile] = []
     @State private var expandedDirectories: Set<String> = []
-    @State private var chatWidth = DesignTokens.filesChatDefaultWidth
-    @State private var editorWidth: CGFloat = 600
+    @State private var browserWidth = FileWorkspaceLayoutMetrics.browserDefaultWidth
     @State private var editorFile: WorkspaceFile?
     @State private var editorOriginalContent = ""
     @State private var editorExpanded = false
+    @State private var searchText = ""
+    @State private var inlineEdit: FileInlineEdit?
 
     var body: some View {
         GeometryReader { proxy in
-            let layout = splitLayout(for: proxy.size.width)
+            let browserMax = min(FileWorkspaceLayoutMetrics.browserMaxWidth, proxy.size.width * 0.52)
+            let clampedBrowserWidth = min(max(browserWidth, FileWorkspaceLayoutMetrics.browserMinWidth), browserMax)
             HStack(spacing: 0) {
-                ChatView()
-                    .environmentObject(state)
-                    .frame(width: layout.chat)
-                    .clipped()
-
-                SplitDivider(
-                    width: $chatWidth,
-                    minWidth: DesignTokens.filesChatMinWidth,
-                    maxWidth: layout.maxChat
-                )
-
                 filePane
-                    .frame(width: editorExpanded ? 0 : layout.tree)
+                    .frame(width: editorExpanded ? 0 : clampedBrowserWidth)
                     .opacity(editorExpanded ? 0 : 1)
                     .clipped()
 
+                if !editorExpanded {
+                    SplitDivider(
+                        width: $browserWidth,
+                        minWidth: FileWorkspaceLayoutMetrics.browserMinWidth,
+                        maxWidth: browserMax
+                    )
+                }
+
                 if let editorFile {
-                    SplitDivider(width: $editorWidth, minWidth: 320, maxWidth: layout.maxEditor, reverse: true)
                     FileEditorPane(
                         file: editorFile,
                         content: $state.selectedFileContent,
                         originalContent: editorOriginalContent,
-                        width: editorExpanded ? nil : layout.editor,
+                        width: nil,
                         isExpanded: editorExpanded,
                         onClose: {
                             self.editorFile = nil
@@ -56,8 +55,11 @@ struct FilesView: View {
                         }
                     )
                     .environmentObject(state)
-                    .frame(width: editorExpanded ? max(320, proxy.size.width - layout.chat - 24) : layout.editor)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
+                } else {
+                    fileEmptyEditor
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .leading)
@@ -67,122 +69,157 @@ struct FilesView: View {
         .task(id: state.selectedProjectID) { loadFiles() }
     }
 
-    private func splitLayout(for availableWidth: CGFloat) -> (chat: CGFloat, tree: CGFloat, editor: CGFloat, maxChat: CGFloat, maxEditor: CGFloat) {
-        let layout = FilesSplitLayoutCalculator.calculate(
-            availableWidth: availableWidth,
-            requestedChatWidth: chatWidth,
-            requestedEditorWidth: editorWidth,
-            hasEditor: editorFile != nil,
-            editorExpanded: editorExpanded
-        )
-        return (layout.chat, layout.tree, layout.editor, layout.maxChat, layout.maxEditor)
-    }
-
     private var filePane: some View {
         VStack(spacing: 0) {
-            toolbar
+            fileHeader
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    if files.isEmpty {
+                LazyVStack(alignment: .leading, spacing: FileWorkspaceLayoutMetrics.treeSpacing) {
+                    if filteredFiles.isEmpty, inlineEdit == nil {
                         ToolEmptyState(
-                            title: "No files found",
-                            detail: "Refresh after selecting a workspace with readable files.",
+                            title: searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No files found" : "No matching files",
+                            detail: state.selectedWorkspaceContext == nil ? "Pick a workspace to browse files." : "Refresh after changing the workspace.",
                             systemImage: "doc.text.magnifyingglass"
                         )
-                        .padding(.top, 48)
+                        .padding(.top, 56)
                     } else {
-                        ForEach(files) { file in
+                        if let inlineEdit, inlineEdit.parentPath == nil {
+                            FileInlineEditRow(edit: inlineEdit, onCommit: commitInlineEdit, onCancel: cancelInlineEdit)
+                        }
+                        ForEach(filteredFiles) { file in
                             FileTreeRow(
                                 file: file,
                                 isSelected: state.selectedFile == file,
+                                isEditing: inlineEdit?.targetPath == file.path,
+                                editText: inlineEdit?.targetPath == file.path ? inlineEdit?.text : nil,
                                 onOpen: { open(file) },
-                                onToggle: { toggle(file) },
                                 onPreviewHTML: { openHTML(file) },
+                                onDownload: { downloadFile(file) },
+                                onCopyPath: { copyPath(file) },
+                                onNewFile: { beginCreate(in: file, isDirectory: false) },
+                                onNewFolder: { beginCreate(in: file, isDirectory: true) },
                                 onDelete: { delete(file) },
-                                onRename: { rename(file) }
+                                onRename: { beginRename(file) },
+                                onCommitEdit: commitInlineEdit,
+                                onCancelEdit: cancelInlineEdit
                             )
+                            if let inlineEdit, inlineEdit.parentPath == file.path {
+                                FileInlineEditRow(edit: inlineEdit, onCommit: commitInlineEdit, onCancel: cancelInlineEdit)
+                            }
                         }
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
             }
         }
         .background(DesignTokens.background)
     }
 
-    private var toolbar: some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 0)
-            ViewThatFits(in: .horizontal) {
-                fileToolbarFull
-                fileToolbarOverflow
+    private var fileHeader: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(state.t(.files))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(DesignTokens.text)
+                    Text(state.selectedWorkspaceContext?.rootPath ?? state.t(.noProjectSelected))
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                fileToolbarButton("doc.badge.plus", help: state.t(.newFile)) { beginCreateAtSelection(isDirectory: false) }
+                fileToolbarButton("folder.badge.plus", help: state.t(.newFolder)) { beginCreateAtSelection(isDirectory: true) }
+                fileToolbarButton("square.and.arrow.up", help: state.t(.uploadFiles)) { upload(allowDirectories: false) }
+                fileToolbarButton("arrow.clockwise", help: state.t(.refresh)) { loadFiles() }
+            }
+
+            HStack(spacing: 7) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                    TextField("Search files", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                    if !searchText.isEmpty {
+                        Button { searchText = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(DesignTokens.separator.opacity(0.72), lineWidth: 1)
+                )
+
+                Menu {
+                    Button(state.t(.newFile)) { beginCreateAtSelection(isDirectory: false) }
+                    Button(state.t(.newFolder)) { beginCreateAtSelection(isDirectory: true) }
+                    Divider()
+                    Button(state.t(.uploadFiles)) { upload(allowDirectories: false) }
+                    Button(state.t(.uploadFolder)) { upload(allowDirectories: true) }
+                    Button(state.t(.download)) { downloadZip() }
+                    Divider()
+                    Button("Collapse all") {
+                        expandedDirectories.removeAll()
+                        loadFiles()
+                    }
+                    Button("Close") { state.activeTab = .chat }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 28, height: 28)
+                }
+                .menuStyle(.borderlessButton)
+                .buttonStyle(WebToolbarButtonStyle())
             }
         }
         .padding(.horizontal, 14)
-        .frame(height: 40)
+        .padding(.vertical, 10)
         .overlay(alignment: .bottom) {
             Rectangle().fill(DesignTokens.separator).frame(height: 1)
         }
     }
 
-    private var fileToolbarFull: some View {
-        HStack(spacing: 6) {
-            createUploadMenu
-            Button { downloadZip() } label: { Image(systemName: "square.and.arrow.down") }
-                .buttonStyle(WebToolbarButtonStyle())
-                .help(state.t(.download))
-            Button { loadFiles() } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(WebToolbarButtonStyle())
-                .help(state.t(.refresh))
-            Button {
-                expandedDirectories.removeAll()
-                loadFiles()
-            } label: { Image(systemName: "rectangle.compress.vertical") }
-                .buttonStyle(WebToolbarButtonStyle())
-                .help("Collapse all")
-            Button { state.activeTab = .chat } label: { Image(systemName: "xmark") }
-                .buttonStyle(WebToolbarButtonStyle())
+    private func fileToolbarButton(_ systemImage: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12.5, weight: .medium))
+                .frame(width: 28, height: 28)
         }
-    }
-
-    private var fileToolbarOverflow: some View {
-        HStack(spacing: 6) {
-            createUploadMenu
-            Menu {
-                Button(state.t(.download)) { downloadZip() }
-                Button(state.t(.refresh)) { loadFiles() }
-                Button("Collapse all") {
-                    expandedDirectories.removeAll()
-                    loadFiles()
-                }
-                Divider()
-                Button("Close") { state.activeTab = .chat }
-            } label: {
-                Image(systemName: "ellipsis")
-            }
-            .menuStyle(.borderlessButton)
-            .buttonStyle(WebToolbarButtonStyle())
-        }
-    }
-
-    private var createUploadMenu: some View {
-        Menu {
-            Button(state.t(.newFile)) { create(isDirectory: false) }
-            Button(state.t(.newFolder)) { create(isDirectory: true) }
-            Divider()
-            Button(state.t(.uploadFiles)) { upload(allowDirectories: false) }
-            Button(state.t(.uploadFolder)) { upload(allowDirectories: true) }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "plus")
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-            }
-        }
-        .menuStyle(.borderlessButton)
         .buttonStyle(WebToolbarButtonStyle())
-        .help(state.t(.newFile))
+        .help(help)
+    }
+
+    private var fileEmptyEditor: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 24, weight: .regular))
+                .foregroundStyle(DesignTokens.tertiaryText)
+            Text("Select a file to edit")
+                .font(.system(size: 14, weight: .semibold))
+            Text("Browse the project tree, then open a source file, image, or Markdown preview.")
+                .font(.system(size: 12))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 300)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(DesignTokens.contentSurface.opacity(0.30))
+    }
+
+    private var filteredFiles: [WorkspaceFile] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return files }
+        return files.filter { file in
+            file.name.lowercased().contains(query) || file.relativePath.lowercased().contains(query)
+        }
     }
 
     private func loadFiles() {
@@ -240,44 +277,86 @@ struct FilesView: View {
         NSWorkspace.shared.open(URL(fileURLWithPath: file.path))
     }
 
-    private func create(isDirectory: Bool) {
-        guard let context = state.selectedWorkspaceContext else { return }
-        let alert = NSAlert()
-        alert.messageText = isDirectory ? state.t(.newFolder) : state.t(.newFile)
-        alert.informativeText = state.t(.enterName)
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = isDirectory ? state.t(.newFolder) : "untitled.txt"
-        alert.accessoryView = field
-        alert.addButton(withTitle: state.t(.create))
-        alert.addButton(withTitle: state.t(.cancel))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            let parent = state.selectedFile?.isDirectory == true ? state.selectedFile!.path : context.rootPath
-            let path = try state.workspaceService.createFile(parentPath: parent, name: field.stringValue, isDirectory: isDirectory)
-            if isDirectory {
-                expandedDirectories.insert(path)
+    private func beginCreateAtSelection(isDirectory: Bool) {
+        if let selected = state.selectedFile, selected.isDirectory {
+            beginCreate(in: selected, isDirectory: isDirectory)
+        } else if let selected = state.selectedFile {
+            let parentPath = URL(fileURLWithPath: selected.path).deletingLastPathComponent().path
+            if let parent = files.first(where: { $0.path == parentPath }) {
+                beginCreate(in: parent, isDirectory: isDirectory)
+            } else {
+                beginCreate(parentPath: nil, depth: 0, isDirectory: isDirectory)
             }
-            loadFiles()
+        } else {
+            beginCreate(parentPath: nil, depth: 0, isDirectory: isDirectory)
+        }
+    }
+
+    private func beginCreate(in file: WorkspaceFile, isDirectory: Bool) {
+        guard file.isDirectory else { return }
+        expandedDirectories.insert(file.path)
+        loadFiles()
+        beginCreate(parentPath: file.path, depth: file.depth + 1, isDirectory: isDirectory)
+    }
+
+    private func beginCreate(parentPath: String?, depth: Int, isDirectory: Bool) {
+        inlineEdit = FileInlineEdit(
+            kind: isDirectory ? .createFolder : .createFile,
+            targetPath: nil,
+            parentPath: parentPath,
+            depth: depth,
+            text: isDirectory ? "untitled" : "untitled.txt"
+        )
+    }
+
+    private func beginRename(_ file: WorkspaceFile) {
+        inlineEdit = FileInlineEdit(kind: .rename, targetPath: file.path, parentPath: nil, depth: file.depth, text: file.name)
+    }
+
+    private func commitInlineEdit(_ rawValue: String) {
+        guard let edit = inlineEdit else { return }
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else {
+            cancelInlineEdit()
+            return
+        }
+        do {
+            switch edit.kind {
+            case .rename:
+                guard let targetPath = edit.targetPath else { return }
+                let newPath = try state.workspaceService.rename(path: targetPath, newName: value)
+                inlineEdit = nil
+                loadFiles()
+                if editorFile?.path == targetPath {
+                    if let updated = files.first(where: { $0.path == newPath }) {
+                        open(updated)
+                    } else {
+                        editorFile = nil
+                        state.selectedFile = nil
+                        state.selectedFileContent = ""
+                        editorOriginalContent = ""
+                    }
+                }
+            case .createFile, .createFolder:
+                guard let context = state.selectedWorkspaceContext else { return }
+                let parent = edit.parentPath ?? context.rootPath
+                let path = try state.workspaceService.createFile(parentPath: parent, name: value, isDirectory: edit.kind == .createFolder)
+                inlineEdit = nil
+                if edit.kind == .createFolder {
+                    expandedDirectories.insert(path)
+                }
+                loadFiles()
+                if edit.kind == .createFile, let created = files.first(where: { $0.path == path }) {
+                    open(created)
+                }
+            }
         } catch {
             state.errorBanner = error.localizedDescription
         }
     }
 
-    private func rename(_ file: WorkspaceFile) {
-        let alert = NSAlert()
-        alert.messageText = state.t(.rename)
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = file.name
-        alert.accessoryView = field
-        alert.addButton(withTitle: state.t(.rename))
-        alert.addButton(withTitle: state.t(.cancel))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            _ = try state.workspaceService.rename(path: file.path, newName: field.stringValue)
-            loadFiles()
-        } catch {
-            state.errorBanner = error.localizedDescription
-        }
+    private func cancelInlineEdit() {
+        inlineEdit = nil
     }
 
     private func delete(_ file: WorkspaceFile) {
@@ -293,8 +372,32 @@ struct FilesView: View {
             if state.selectedFile == file {
                 editorFile = nil
                 state.selectedFile = nil
+                state.selectedFileContent = ""
+                editorOriginalContent = ""
             }
             loadFiles()
+        } catch {
+            state.errorBanner = error.localizedDescription
+        }
+    }
+
+    private func copyPath(_ file: WorkspaceFile) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(file.path, forType: .string)
+        state.statusLine = "Copied \(file.name)"
+    }
+
+    private func downloadFile(_ file: WorkspaceFile) {
+        guard !file.isDirectory else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = file.name
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: file.path), to: url)
+            state.statusLine = "\(state.t(.download)) \(url.lastPathComponent)"
         } catch {
             state.errorBanner = error.localizedDescription
         }
@@ -326,6 +429,60 @@ struct FilesView: View {
             state.statusLine = "\(state.t(.download)) \(url.lastPathComponent)"
         } catch {
             state.errorBanner = error.localizedDescription
+        }
+    }
+}
+
+enum FileWorkspaceLayoutMetrics {
+    static let browserDefaultWidth: CGFloat = 330
+    static let browserMinWidth: CGFloat = 260
+    static let browserMaxWidth: CGFloat = 430
+    static let treeRowHeight: CGFloat = 28
+    static let treeSpacing: CGFloat = 2
+    static let inlineFieldHeight: CGFloat = 24
+}
+
+enum FilePreviewActionPolicy {
+    static func treePreviewIcon(for file: WorkspaceFile) -> String? {
+        file.isHTML ? "globe" : nil
+    }
+
+    static func editorShowsHTMLPreview(for file: WorkspaceFile) -> Bool {
+        false
+    }
+
+    static func editorPreviewToggleIcon(for file: WorkspaceFile, isPreviewing: Bool) -> String? {
+        if file.isMarkdown {
+            return isPreviewing ? "pencil" : "doc.richtext"
+        }
+        return nil
+    }
+
+    static func usesNativePDFPreview(for file: WorkspaceFile) -> Bool {
+        file.isPDF
+    }
+}
+
+private enum FileInlineEditKind: Equatable {
+    case rename
+    case createFile
+    case createFolder
+}
+
+private struct FileInlineEdit: Equatable, Identifiable {
+    let id = UUID()
+    var kind: FileInlineEditKind
+    var targetPath: String?
+    var parentPath: String?
+    var depth: Int
+    var text: String
+
+    var iconName: String {
+        switch kind {
+        case .createFolder:
+            return "folder"
+        case .rename, .createFile:
+            return "doc.text"
         }
     }
 }
@@ -2387,13 +2544,14 @@ private struct FileEditorPane: View {
     var onRevert: () -> Void
     var onSave: () -> Void
     @State private var markdownPreview = false
+    @State private var saveFlash = false
 
     private var isBinaryFile: Bool {
         isProbablyBinary(file.path)
     }
 
     private var canEditText: Bool {
-        !file.isImage && !isBinaryFile
+        !file.isImage && !file.isPDF && !isBinaryFile
     }
 
     private var isDirty: Bool {
@@ -2403,24 +2561,10 @@ private struct FileEditorPane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: file.isImage ? "photo" : "doc.text")
+                Image(systemName: headerIconName)
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(file.name)
-                            .font(.system(size: 13, weight: .semibold))
-                        if file.isHTML {
-                            Button {
-                                openHTMLPreview()
-                            } label: {
-                                Image(systemName: "eye")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .frame(width: 22, height: 22)
-                            }
-                            .buttonStyle(InlineIconButtonStyle(tint: DesignTokens.accent))
-                            .help(state.t(.openHTML))
-                            .accessibilityLabel(state.t(.openHTML))
-                        }
-                    }
+                    Text(file.name)
+                        .font(.system(size: 13, weight: .semibold))
                     Text(file.relativePath)
                         .font(.system(size: 10.5, design: .monospaced))
                         .lineLimit(1)
@@ -2438,35 +2582,33 @@ private struct FileEditorPane: View {
                                 .padding(.vertical, 2)
                                 .background(DesignTokens.warning.opacity(0.10), in: Capsule())
                         }
-                        if file.isMarkdown {
-                            Button(markdownPreview ? "Edit" : "Preview") { markdownPreview.toggle() }
-                                .buttonStyle(WebToolbarButtonStyle())
-                        }
-                        if file.isHTML {
-                            Button {
-                                openHTMLPreview()
-                            } label: {
-                                Image(systemName: "eye")
+                        if let previewIcon = FilePreviewActionPolicy.editorPreviewToggleIcon(for: file, isPreviewing: markdownPreview) {
+                            Button { markdownPreview.toggle() } label: {
+                                Image(systemName: previewIcon)
                             }
-                            .buttonStyle(WebToolbarButtonStyle())
-                            .help(state.t(.openHTML))
-                            .accessibilityLabel(state.t(.openHTML))
+                                .buttonStyle(EditorHeaderIconButtonStyle())
+                                .help(markdownPreview ? "Edit Markdown" : "Preview Markdown")
                         }
                         Button { download() } label: { Image(systemName: "square.and.arrow.down") }
-                            .buttonStyle(WebToolbarButtonStyle())
+                            .buttonStyle(EditorHeaderIconButtonStyle())
                             .help(state.t(.download))
-                        Button { onRevert() } label: { Image(systemName: "arrow.uturn.backward") }
-                            .buttonStyle(WebToolbarButtonStyle())
-                            .disabled(!isDirty || !canEditText)
-                            .help(state.t(.revert))
-                        Button(state.t(.save)) { onSave() }
-                            .buttonStyle(WebToolbarButtonStyle(isProminent: true))
-                            .disabled(!isDirty || !canEditText)
-                            .keyboardShortcut("s", modifiers: .command)
+                        if canEditText {
+                            Button { onRevert() } label: { Image(systemName: "arrow.uturn.backward") }
+                                .buttonStyle(EditorHeaderIconButtonStyle())
+                                .disabled(!isDirty)
+                                .help(state.t(.revert))
+                            Button { performSave() } label: {
+                                Image(systemName: saveFlash ? "checkmark" : "tray.and.arrow.down")
+                            }
+                                .buttonStyle(EditorHeaderIconButtonStyle(isActive: isDirty || saveFlash, tint: isDirty || saveFlash ? DesignTokens.accent : DesignTokens.secondaryText))
+                                .disabled(!isDirty)
+                                .keyboardShortcut("s", modifiers: .command)
+                                .help(state.t(.save))
+                        }
                         Button { onToggleExpand() } label: { Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") }
-                            .buttonStyle(WebToolbarButtonStyle())
-                        Button { onClose() } label: { Image(systemName: "xmark") }
-                            .buttonStyle(WebToolbarButtonStyle())
+                            .buttonStyle(EditorHeaderIconButtonStyle())
+                        Button { attemptClose() } label: { Image(systemName: "xmark") }
+                            .buttonStyle(EditorHeaderIconButtonStyle())
                     }
                     .frame(minWidth: 0, alignment: .trailing)
                 }
@@ -2482,6 +2624,8 @@ private struct FileEditorPane: View {
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(24)
+            } else if FilePreviewActionPolicy.usesNativePDFPreview(for: file) {
+                PDFDocumentPreview(url: URL(fileURLWithPath: file.path))
             } else if file.isMarkdown && markdownPreview {
                 ScrollView {
                     MarkdownPreview(text: content)
@@ -2491,13 +2635,15 @@ private struct FileEditorPane: View {
             } else if isBinaryFile {
                 ToolEmptyState(title: "Binary File", detail: "\(file.name) cannot be displayed in the text editor.", systemImage: "doc.zipper")
             } else {
-                FileContentTextEditor(
+                CodeEditorWithChrome(
                     text: $content,
                     fontSize: CGFloat(state.settings.codeEditor.fontSize),
                     wordWrap: state.settings.codeEditor.wordWrap,
+                    lineNumbers: state.settings.codeEditor.lineNumbers,
+                    showMinimap: state.settings.codeEditor.showMinimap,
                     onSave: {
                         if isDirty {
-                            onSave()
+                            performSave()
                         }
                     }
                 )
@@ -2507,6 +2653,14 @@ private struct FileEditorPane: View {
         .frame(width: width)
         .frame(maxWidth: isExpanded ? .infinity : nil, maxHeight: .infinity)
         .background(DesignTokens.background)
+    }
+
+    private var headerIconName: String {
+        if file.isImage { return "photo" }
+        if file.isPDF { return "doc.richtext" }
+        if file.isMarkdown { return "doc.richtext" }
+        if file.isHTML { return "chevron.left.forwardslash.chevron.right" }
+        return "doc.text"
     }
 
     private func openHTMLPreview() {
@@ -2528,9 +2682,54 @@ private struct FileEditorPane: View {
         }
     }
 
+    private func performSave() {
+        guard isDirty else { return }
+        onSave()
+        saveFlash = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            saveFlash = false
+        }
+    }
+
+    private func attemptClose() {
+        guard isDirty else {
+            onClose()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Close without saving \(file.name)?"
+        alert.informativeText = "Unsaved changes will be lost."
+        alert.addButton(withTitle: "Close")
+        alert.addButton(withTitle: state.t(.cancel))
+        alert.alertStyle = .warning
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        onClose()
+    }
+
     private func isProbablyBinary(_ path: String) -> Bool {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe]) else { return false }
         return data.prefix(1024).contains(0)
+    }
+}
+
+private struct PDFDocumentPreview: NSViewRepresentable {
+    var url: URL
+
+    func makeNSView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateNSView(_ nsView: PDFView, context: Context) {
+        if nsView.document?.documentURL != url {
+            nsView.document = PDFDocument(url: url)
+        }
+        nsView.autoScales = true
     }
 }
 
@@ -2538,64 +2737,186 @@ private struct FileTreeRow: View {
     @EnvironmentObject private var state: AppState
     var file: WorkspaceFile
     var isSelected: Bool
+    var isEditing: Bool
+    var editText: String?
     var onOpen: () -> Void
-    var onToggle: () -> Void
     var onPreviewHTML: () -> Void
+    var onDownload: () -> Void
+    var onCopyPath: () -> Void
+    var onNewFile: () -> Void
+    var onNewFolder: () -> Void
     var onDelete: () -> Void
     var onRename: () -> Void
+    var onCommitEdit: (String) -> Void
+    var onCancelEdit: () -> Void
+    @State private var draftName = ""
 
     var body: some View {
-        HStack(spacing: 4) {
-            Button(action: onOpen) {
-                HStack(spacing: 6) {
-                    Spacer().frame(width: CGFloat(file.depth * 18))
-                    if file.isDirectory {
-                        Image(systemName: "chevron.right")
-                            .rotationEffect(.degrees(file.isExpanded ? 90 : 0))
-                            .font(.system(size: 10, weight: .semibold))
-                            .frame(width: 12)
-                    } else {
-                        Spacer().frame(width: 12)
-                    }
-                    Image(systemName: iconName)
-                        .font(.system(size: 13))
-                        .foregroundStyle(file.isDirectory ? DesignTokens.warning : DesignTokens.tertiaryText)
-                        .frame(width: 15)
-                    Text(file.name)
-                        .font(.system(size: 12.5))
-                        .lineLimit(1)
-                    Spacer()
-                }
-                .padding(.horizontal, 6)
-                .frame(height: 28)
-                .foregroundStyle(DesignTokens.text)
-                .background(isSelected ? DesignTokens.selectedRowFill() : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
-            }
-            .buttonStyle(.plain)
-
-            if file.isHTML {
-                Button(action: onPreviewHTML) {
-                    Image(systemName: "eye")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(InlineIconButtonStyle(tint: DesignTokens.accent))
-                .help(state.t(.openHTML))
-                .accessibilityLabel(state.t(.openHTML))
+        Group {
+            if isEditing {
+                editRow
+            } else {
+                rowButton
             }
         }
         .contextMenu {
+            if file.isDirectory {
+                Button(state.t(.newFile), action: onNewFile)
+                Button(state.t(.newFolder), action: onNewFolder)
+                Divider()
+            }
+            if !file.isDirectory {
+                Button(state.t(.download), action: onDownload)
+                if file.isHTML {
+                    Button(state.t(.openHTML), action: onPreviewHTML)
+                }
+            }
+            Button("Copy Path", action: onCopyPath)
             Button(state.t(.rename), action: onRename)
+            Divider()
             Button(state.t(.delete), role: .destructive, action: onDelete)
+        }
+        .onAppear {
+            if draftName.isEmpty {
+                draftName = editText ?? file.name
+            }
+        }
+        .onChange(of: editText) { _, value in
+            draftName = value ?? file.name
+        }
+    }
+
+    private var rowButton: some View {
+        HStack(spacing: 6) {
+            indentation
+            disclosure
+            fileIcon
+            Text(file.name)
+                .font(.system(size: 12.5, weight: isSelected ? .medium : .regular))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            rowActions
+        }
+        .padding(.horizontal, 6)
+        .frame(height: FileWorkspaceLayoutMetrics.treeRowHeight)
+        .foregroundStyle(DesignTokens.text)
+        .background(
+            isSelected ? DesignTokens.selectedRowFill() : Color.clear,
+            in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+        .onTapGesture(perform: onOpen)
+    }
+
+    private var editRow: some View {
+        HStack(spacing: 6) {
+            indentation
+            Spacer().frame(width: 12)
+            fileIcon
+            TextField(file.name, text: $draftName)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5))
+                .padding(.horizontal, 6)
+                .frame(height: FileWorkspaceLayoutMetrics.inlineFieldHeight)
+                .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(DesignTokens.accent.opacity(0.65), lineWidth: 1)
+                )
+                .onSubmit { onCommitEdit(draftName) }
+                .onExitCommand(perform: onCancelEdit)
+        }
+        .padding(.horizontal, 6)
+        .frame(height: FileWorkspaceLayoutMetrics.treeRowHeight)
+        .onAppear { draftName = editText ?? file.name }
+    }
+
+    private var indentation: some View {
+        Spacer().frame(width: CGFloat(file.depth * 18))
+    }
+
+    @ViewBuilder
+    private var disclosure: some View {
+        if file.isDirectory {
+            Image(systemName: "chevron.right")
+                .rotationEffect(.degrees(file.isExpanded ? 90 : 0))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(DesignTokens.tertiaryText)
+                .frame(width: 12)
+        } else {
+            Spacer().frame(width: 12)
+        }
+    }
+
+    private var fileIcon: some View {
+        Image(systemName: iconName)
+            .font(.system(size: 13))
+            .foregroundStyle(file.isDirectory ? DesignTokens.warning : iconColor)
+            .frame(width: 15)
+    }
+
+    @ViewBuilder
+    private var rowActions: some View {
+        if let icon = FilePreviewActionPolicy.treePreviewIcon(for: file) {
+            Button(action: onPreviewHTML) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(InlineIconButtonStyle(tint: DesignTokens.accent))
+            .help(state.t(.openHTML))
+            .accessibilityLabel(state.t(.openHTML))
         }
     }
 
     private var iconName: String {
         if file.isDirectory { return "folder" }
         if file.isMarkdown { return "doc.richtext" }
-        if file.isHTML { return "globe" }
+        if file.isHTML { return "chevron.left.forwardslash.chevron.right" }
+        if file.isPDF { return "doc.richtext" }
         if file.isImage { return "photo" }
         return "doc.text"
+    }
+
+    private var iconColor: Color {
+        if file.isMarkdown { return DesignTokens.accent }
+        if file.isHTML { return DesignTokens.tertiaryText }
+        if file.isPDF { return DesignTokens.danger.opacity(0.82) }
+        if file.isImage { return DesignTokens.warning }
+        return DesignTokens.tertiaryText
+    }
+}
+
+private struct FileInlineEditRow: View {
+    var edit: FileInlineEdit
+    var onCommit: (String) -> Void
+    var onCancel: () -> Void
+    @State private var value = ""
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Spacer().frame(width: CGFloat(edit.depth * 18))
+            Spacer().frame(width: 12)
+            Image(systemName: edit.iconName)
+                .font(.system(size: 13))
+                .foregroundStyle(edit.kind == .createFolder ? DesignTokens.warning : DesignTokens.tertiaryText)
+                .frame(width: 15)
+            TextField(edit.text, text: $value)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5))
+                .padding(.horizontal, 6)
+                .frame(height: FileWorkspaceLayoutMetrics.inlineFieldHeight)
+                .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(DesignTokens.accent.opacity(0.65), lineWidth: 1)
+                )
+                .onSubmit { onCommit(value) }
+                .onExitCommand(perform: onCancel)
+        }
+        .padding(.horizontal, 6)
+        .frame(height: FileWorkspaceLayoutMetrics.treeRowHeight)
+        .onAppear { value = edit.text }
     }
 }
 
@@ -2617,10 +2938,216 @@ private struct InlineIconButtonStyle: ButtonStyle {
     }
 }
 
+struct CodeLineNumberMetrics {
+    static func lineCount(in text: String) -> Int {
+        max(1, text.components(separatedBy: .newlines).count)
+    }
+
+    static func rulerWidth(lineCount: Int, digitWidth: CGFloat = 7) -> CGFloat {
+        let digits = max(2, String(max(1, lineCount)).count)
+        return CGFloat(digits) * digitWidth + 22
+    }
+
+    static func lineStarts(in text: String) -> [Int] {
+        let nsText = text as NSString
+        guard nsText.length > 0 else { return [0] }
+
+        var starts = [0]
+        var searchRange = NSRange(location: 0, length: nsText.length)
+        while searchRange.length > 0 {
+            let newlineRange = nsText.range(of: "\n", options: [], range: searchRange)
+            if newlineRange.location == NSNotFound { break }
+            let nextStart = newlineRange.location + newlineRange.length
+            starts.append(nextStart)
+            let nextLocation = nextStart
+            searchRange = NSRange(location: nextLocation, length: nsText.length - nextLocation)
+        }
+        return starts
+    }
+
+    static func lineNumber(forCharacterIndex characterIndex: Int, lineStarts: [Int]) -> Int {
+        guard !lineStarts.isEmpty else { return 1 }
+        let target = max(0, characterIndex)
+        var lower = 0
+        var upper = lineStarts.count
+        while lower < upper {
+            let mid = (lower + upper) / 2
+            if lineStarts[mid] <= target {
+                lower = mid + 1
+            } else {
+                upper = mid
+            }
+        }
+        return max(1, lower)
+    }
+}
+
+struct CodeMinimapLine: Equatable {
+    var indentLevel: Int
+    var widthFraction: Double
+    var intensity: Double
+    var isBlank: Bool
+}
+
+struct CodeMinimapModel: Equatable {
+    static let width: CGFloat = 54
+
+    let totalLines: Int
+    let lines: [CodeMinimapLine]
+    let viewportStartFraction: Double
+    let viewportHeightFraction: Double
+    let sampleStride: Int
+
+    init(text: String, visibleLineRange: Range<Int>? = nil, maxLines: Int = 1_200) {
+        let rawLines = text.components(separatedBy: .newlines)
+        totalLines = max(1, rawLines.count)
+        sampleStride = max(1, Int(ceil(Double(totalLines) / Double(max(1, maxLines)))))
+
+        var sampled: [CodeMinimapLine] = []
+        var index = 0
+        while index < rawLines.count {
+            let upper = min(rawLines.count, index + sampleStride)
+            let representative = rawLines[index..<upper].max { lhs, rhs in
+                lhs.trimmingCharacters(in: .whitespacesAndNewlines).count <
+                    rhs.trimmingCharacters(in: .whitespacesAndNewlines).count
+            } ?? ""
+            sampled.append(Self.line(from: representative))
+            index += sampleStride
+        }
+        lines = sampled.isEmpty ? [Self.line(from: "")] : sampled
+
+        let fallbackUpper = min(totalLines + 1, 32)
+        let range = visibleLineRange ?? (1..<max(2, fallbackUpper))
+        let lower = max(1, min(totalLines, range.lowerBound))
+        let upper = max(lower + 1, min(totalLines + 1, range.upperBound))
+        viewportStartFraction = min(1, max(0, Double(lower - 1) / Double(max(1, totalLines))))
+        viewportHeightFraction = min(1, max(0.035, Double(upper - lower) / Double(max(1, totalLines))))
+    }
+
+    private static func line(from rawLine: String) -> CodeMinimapLine {
+        let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        let indent = rawLine.prefix { character in
+            character == " " || character == "\t"
+        }.reduce(0) { partial, character in
+            partial + (character == "\t" ? 4 : 1)
+        }
+        let width = trimmed.isEmpty ? 0.18 : min(1, max(0.22, Double(trimmed.count) / 96))
+        let intensity = trimmed.isEmpty ? 0.10 : min(0.72, 0.24 + Double(trimmed.count) / 140)
+        return CodeMinimapLine(
+            indentLevel: min(24, indent),
+            widthFraction: width,
+            intensity: intensity,
+            isBlank: trimmed.isEmpty
+        )
+    }
+}
+
+enum CodeEditorScrollStabilityMetrics {
+    static let visibleRangePublishInterval: TimeInterval = 0.08
+    static let preservesScrollOriginOnUpdate = true
+    static let minimapAllowsHitTesting = false
+}
+
+private struct CodeEditorWithChrome: View {
+    @Binding var text: String
+    var fontSize: CGFloat
+    var wordWrap: Bool
+    var lineNumbers: Bool
+    var showMinimap: Bool
+    var onSave: () -> Void
+
+    @State private var visibleLineRange: Range<Int>?
+
+    var body: some View {
+        HStack(spacing: 0) {
+            FileContentTextEditor(
+                text: $text,
+                fontSize: fontSize,
+                wordWrap: wordWrap,
+                lineNumbers: lineNumbers,
+                onVisibleLineRangeChange: { range in
+                    guard visibleLineRange != range else { return }
+                    var transaction = Transaction()
+                    transaction.animation = nil
+                    withTransaction(transaction) {
+                        visibleLineRange = range
+                    }
+                },
+                onSave: onSave
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if showMinimap {
+                CodeMinimapView(model: CodeMinimapModel(text: text, visibleLineRange: visibleLineRange))
+                    .frame(width: CodeMinimapModel.width)
+                    .transition(.opacity)
+                    .allowsHitTesting(CodeEditorScrollStabilityMetrics.minimapAllowsHitTesting)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct CodeMinimapView: View {
+    var model: CodeMinimapModel
+
+    var body: some View {
+        Canvas { context, size in
+            let count = max(1, model.lines.count)
+            let rowHeight = max(1, size.height / CGFloat(count))
+
+            for (index, line) in model.lines.enumerated() {
+                let y = CGFloat(index) * size.height / CGFloat(count)
+                let x = min(size.width - 12, 6 + CGFloat(line.indentLevel) * 0.65)
+                let availableWidth = max(5, size.width - x - 7)
+                let width = max(4, availableWidth * CGFloat(line.widthFraction))
+                let height = max(1, rowHeight * (line.isBlank ? 0.20 : 0.42))
+                let rect = CGRect(
+                    x: x,
+                    y: y + (rowHeight - height) / 2,
+                    width: width,
+                    height: height
+                )
+                context.fill(
+                    Path(roundedRect: rect, cornerRadius: 0.8),
+                    with: .color(DesignTokens.tertiaryText.opacity(line.intensity))
+                )
+            }
+
+            let viewportY = CGFloat(model.viewportStartFraction) * size.height
+            let viewportHeight = max(18, CGFloat(model.viewportHeightFraction) * size.height)
+            let viewportRect = CGRect(
+                x: 4,
+                y: min(size.height - viewportHeight, viewportY),
+                width: max(0, size.width - 8),
+                height: viewportHeight
+            )
+            context.fill(
+                Path(roundedRect: viewportRect, cornerRadius: 4),
+                with: .color(DesignTokens.accent.opacity(0.12))
+            )
+            context.stroke(
+                Path(roundedRect: viewportRect, cornerRadius: 4),
+                with: .color(DesignTokens.accent.opacity(0.28)),
+                lineWidth: 1
+            )
+        }
+        .background(DesignTokens.neutral50.opacity(0.62))
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(DesignTokens.separator.opacity(0.86))
+                .frame(width: 1)
+        }
+        .accessibilityLabel("Code minimap")
+    }
+}
+
 private struct FileContentTextEditor: NSViewRepresentable {
     @Binding var text: String
     var fontSize: CGFloat
     var wordWrap: Bool
+    var lineNumbers: Bool
+    var onVisibleLineRangeChange: (Range<Int>) -> Void
     var onSave: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -2657,19 +3184,53 @@ private struct FileContentTextEditor: NSViewRepresentable {
 
         scrollView.documentView = textView
         context.coordinator.textView = textView
+        context.coordinator.attach(scrollView: scrollView, textView: textView)
+        configureLineNumbers(lineNumbers, in: scrollView, textView: textView, coordinator: context.coordinator)
+        context.coordinator.lastFontSize = fontSize
+        context.coordinator.lastWordWrap = wordWrap
+        context.coordinator.lastLineNumbers = lineNumbers
+        context.coordinator.lastContentWidth = scrollView.contentSize.width
+        context.coordinator.refreshLineIndex()
+        context.coordinator.publishVisibleLineRange()
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = context.coordinator.textView else { return }
+        let previousOrigin = scrollView.contentView.bounds.origin
+        var shouldPublishVisibleRange = false
         if textView.string != text {
             textView.string = text
+            context.coordinator.refreshLineIndex()
+            shouldPublishVisibleRange = true
         }
-        textView.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        if context.coordinator.lastFontSize != fontSize {
+            textView.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            context.coordinator.lastFontSize = fontSize
+            shouldPublishVisibleRange = true
+        }
         textView.onSave = { context.coordinator.save() }
-        scrollView.hasHorizontalScroller = !wordWrap
-        applyWrap(wordWrap, to: textView, in: scrollView)
+        let contentWidth = scrollView.contentSize.width
+        if context.coordinator.lastWordWrap != wordWrap ||
+            abs(context.coordinator.lastContentWidth - contentWidth) > 0.5 {
+            scrollView.hasHorizontalScroller = !wordWrap
+            applyWrap(wordWrap, to: textView, in: scrollView)
+            context.coordinator.lastWordWrap = wordWrap
+            context.coordinator.lastContentWidth = contentWidth
+            shouldPublishVisibleRange = true
+        }
+        if context.coordinator.lastLineNumbers != lineNumbers {
+            configureLineNumbers(lineNumbers, in: scrollView, textView: textView, coordinator: context.coordinator)
+            context.coordinator.lastLineNumbers = lineNumbers
+            shouldPublishVisibleRange = true
+        }
+        if CodeEditorScrollStabilityMetrics.preservesScrollOriginOnUpdate {
+            context.coordinator.restoreVisibleOrigin(previousOrigin)
+        }
+        if shouldPublishVisibleRange {
+            context.coordinator.publishVisibleLineRange()
+        }
     }
 
     private func applyWrap(_ enabled: Bool, to textView: NSTextView, in scrollView: NSScrollView) {
@@ -2688,23 +3249,262 @@ private struct FileContentTextEditor: NSViewRepresentable {
         textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
     }
 
+    private func configureLineNumbers(
+        _ visible: Bool,
+        in scrollView: NSScrollView,
+        textView: FileTextView,
+        coordinator: Coordinator
+    ) {
+        if visible {
+            let ruler = coordinator.lineNumberRuler ?? CodeLineNumberRulerView(scrollView: scrollView, textView: textView)
+            coordinator.lineNumberRuler = ruler
+            scrollView.verticalRulerView = ruler
+            scrollView.hasVerticalRuler = true
+            scrollView.rulersVisible = true
+            ruler.textView = textView
+            ruler.refresh(lineStarts: coordinator.lineStarts)
+        } else {
+            scrollView.verticalRulerView = nil
+            scrollView.hasVerticalRuler = false
+            scrollView.rulersVisible = false
+            coordinator.lineNumberRuler = nil
+        }
+    }
+
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: FileContentTextEditor
         weak var textView: FileTextView?
+        weak var scrollView: NSScrollView?
+        weak var observedContentView: NSClipView?
+        var lineStarts: [Int] = [0]
+        var lastVisibleLineRange: Range<Int>?
+        var lineNumberRuler: CodeLineNumberRulerView?
+        var lastVisibleLineRangePublishedAt: Date = .distantPast
+        var pendingVisibleLineRange: Range<Int>?
+        var pendingPublishScheduled = false
+        var lastFontSize: CGFloat = 0
+        var lastWordWrap = false
+        var lastLineNumbers = false
+        var lastContentWidth: CGFloat = 0
 
         init(_ parent: FileContentTextEditor) {
             self.parent = parent
         }
 
+        deinit {
+            if let observedContentView {
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: NSView.boundsDidChangeNotification,
+                    object: observedContentView
+                )
+            }
+        }
+
+        @MainActor
+        func attach(scrollView: NSScrollView, textView: FileTextView) {
+            self.scrollView = scrollView
+            self.textView = textView
+            if observedContentView !== scrollView.contentView {
+                if let observedContentView {
+                    NotificationCenter.default.removeObserver(
+                        self,
+                        name: NSView.boundsDidChangeNotification,
+                        object: observedContentView
+                    )
+                }
+                observedContentView = scrollView.contentView
+                scrollView.contentView.postsBoundsChangedNotifications = true
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(boundsDidChange(_:)),
+                    name: NSView.boundsDidChangeNotification,
+                    object: scrollView.contentView
+                )
+            }
+        }
+
+        @MainActor
+        func refreshLineIndex() {
+            let currentText = textView?.string ?? parent.text
+            lineStarts = CodeLineNumberMetrics.lineStarts(in: currentText)
+            lineNumberRuler?.refresh(lineStarts: lineStarts)
+        }
+
+        @MainActor
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
+            refreshLineIndex()
+            publishVisibleLineRange()
         }
 
         @MainActor
         func save() {
             parent.onSave()
         }
+
+        @objc @MainActor private func boundsDidChange(_ notification: Notification) {
+            lineNumberRuler?.needsDisplay = true
+            publishVisibleLineRange()
+        }
+
+        @MainActor
+        func publishVisibleLineRange() {
+            guard let textView, let scrollView else {
+                publish(1..<2)
+                return
+            }
+            guard let layoutManager = textView.layoutManager, let textContainer = textView.textContainer else {
+                publish(1..<2)
+                return
+            }
+
+            layoutManager.ensureLayout(for: textContainer)
+            if layoutManager.numberOfGlyphs == 0 {
+                publish(1..<2)
+                return
+            }
+
+            let visibleRect = scrollView.contentView.bounds
+            let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
+            if glyphRange.location == NSNotFound || glyphRange.length == 0 {
+                publish(1..<2)
+                return
+            }
+
+            let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            let startLine = CodeLineNumberMetrics.lineNumber(forCharacterIndex: charRange.location, lineStarts: lineStarts)
+            let endCharacterIndex = max(charRange.location, NSMaxRange(charRange) - 1)
+            let endLine = CodeLineNumberMetrics.lineNumber(forCharacterIndex: endCharacterIndex, lineStarts: lineStarts)
+            publish(startLine..<max(startLine + 1, endLine + 1))
+        }
+
+        @MainActor
+        private func publish(_ range: Range<Int>) {
+            guard lastVisibleLineRange != range else { return }
+            let now = Date()
+            let elapsed = now.timeIntervalSince(lastVisibleLineRangePublishedAt)
+            guard elapsed >= CodeEditorScrollStabilityMetrics.visibleRangePublishInterval else {
+                pendingVisibleLineRange = range
+                schedulePendingPublish(after: CodeEditorScrollStabilityMetrics.visibleRangePublishInterval - elapsed)
+                return
+            }
+            publishNow(range, now: now)
+        }
+
+        @MainActor
+        private func publishNow(_ range: Range<Int>, now: Date = Date()) {
+            guard lastVisibleLineRange != range else { return }
+            lastVisibleLineRange = range
+            lastVisibleLineRangePublishedAt = now
+            parent.onVisibleLineRangeChange(range)
+        }
+
+        @MainActor
+        private func schedulePendingPublish(after delay: TimeInterval) {
+            guard !pendingPublishScheduled else { return }
+            pendingPublishScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0.01, delay)) { [weak self] in
+                guard let self else { return }
+                Task { @MainActor in
+                    self.pendingPublishScheduled = false
+                    guard let range = self.pendingVisibleLineRange else { return }
+                    self.pendingVisibleLineRange = nil
+                    self.publishNow(range)
+                }
+            }
+        }
+
+        @MainActor
+        func restoreVisibleOrigin(_ origin: NSPoint) {
+            guard let scrollView else { return }
+            let documentHeight = scrollView.documentView?.bounds.height ?? 0
+            let maxY = max(0, documentHeight - scrollView.contentView.bounds.height)
+            let clamped = NSPoint(
+                x: max(0, origin.x),
+                y: min(max(0, origin.y), maxY)
+            )
+            guard abs(scrollView.contentView.bounds.origin.x - clamped.x) > 0.5 ||
+                abs(scrollView.contentView.bounds.origin.y - clamped.y) > 0.5 else { return }
+            scrollView.contentView.scroll(to: clamped)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+    }
+}
+
+private final class CodeLineNumberRulerView: NSRulerView {
+    weak var textView: NSTextView?
+    private var lineStarts: [Int] = [0]
+
+    init(scrollView: NSScrollView, textView: NSTextView) {
+        self.textView = textView
+        super.init(scrollView: scrollView, orientation: .verticalRuler)
+        clientView = textView
+        ruleThickness = CodeLineNumberMetrics.rulerWidth(lineCount: 1)
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func refresh(lineStarts: [Int]) {
+        self.lineStarts = lineStarts.isEmpty ? [0] : lineStarts
+        ruleThickness = CodeLineNumberMetrics.rulerWidth(lineCount: self.lineStarts.count)
+        needsDisplay = true
+    }
+
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+        guard let textView, let scrollView = scrollView else { return }
+        guard let layoutManager = textView.layoutManager, let textContainer = textView.textContainer else { return }
+
+        NSColor.clear.setFill()
+        NSBezierPath(rect: bounds).fill()
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let visibleRect = scrollView.contentView.bounds
+        layoutManager.ensureLayout(for: textContainer)
+
+        if layoutManager.numberOfGlyphs == 0 {
+            draw(lineNumber: 1, y: textView.textContainerInset.height - visibleRect.minY, attributes: attributes)
+            return
+        }
+
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
+        if glyphRange.location == NSNotFound { return }
+
+        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        let startLine = CodeLineNumberMetrics.lineNumber(forCharacterIndex: charRange.location, lineStarts: lineStarts)
+        let endCharacterIndex = max(charRange.location, NSMaxRange(charRange) - 1)
+        let endLine = min(
+            lineStarts.count,
+            CodeLineNumberMetrics.lineNumber(forCharacterIndex: endCharacterIndex, lineStarts: lineStarts) + 1
+        )
+        guard startLine <= endLine else { return }
+
+        for line in startLine...endLine {
+            let lineStart = lineStarts[max(0, line - 1)]
+            let glyphIndex: Int
+            if lineStart < (textView.string as NSString).length {
+                glyphIndex = layoutManager.glyphIndexForCharacter(at: lineStart)
+            } else {
+                glyphIndex = max(0, layoutManager.numberOfGlyphs - 1)
+            }
+            let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            let y = lineRect.minY + textView.textContainerOrigin.y - visibleRect.minY
+            draw(lineNumber: line, y: y, attributes: attributes)
+        }
+    }
+
+    private func draw(lineNumber: Int, y: CGFloat, attributes: [NSAttributedString.Key: Any]) {
+        let label = "\(lineNumber)" as NSString
+        let size = label.size(withAttributes: attributes)
+        let x = max(4, bounds.width - size.width - 8)
+        let drawPoint = NSPoint(x: x, y: y + 1)
+        label.draw(at: drawPoint, withAttributes: attributes)
     }
 }
 
@@ -3220,6 +4020,33 @@ struct WebToolbarButtonStyle: ButtonStyle {
                 }
             )
             .opacity(configuration.isPressed ? 0.76 : 1)
+    }
+}
+
+enum EditorHeaderToolbarMetrics {
+    static let iconButtonSize: CGFloat = 28
+    static let iconFontSize: CGFloat = 13.5
+    static let usesProminentSaveButton = false
+}
+
+private struct EditorHeaderIconButtonStyle: ButtonStyle {
+    var isActive = false
+    var tint: Color = DesignTokens.secondaryText
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: EditorHeaderToolbarMetrics.iconFontSize, weight: .medium))
+            .foregroundStyle(isActive ? tint : DesignTokens.secondaryText)
+            .frame(width: EditorHeaderToolbarMetrics.iconButtonSize, height: EditorHeaderToolbarMetrics.iconButtonSize)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isActive ? tint.opacity(0.10) : DesignTokens.neutral100.opacity(0.62))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(isActive ? tint.opacity(0.22) : DesignTokens.separator.opacity(0.62), lineWidth: 1)
+                    )
+            )
+            .opacity(configuration.isPressed ? 0.70 : 1)
     }
 }
 

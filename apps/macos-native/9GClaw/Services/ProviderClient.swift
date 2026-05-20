@@ -219,6 +219,711 @@ struct AgentToolCall: Sendable, Equatable {
     }
 }
 
+enum InteractivePlanContentDeferrer {
+    struct Result: Equatable {
+        var toolCalls: [AgentToolCall]
+        var visibleIntro: String?
+        var planMarkdown: String?
+        var hiddenCompanionText: String?
+        var suppressVisibleAssistantText: Bool
+    }
+
+    static func prepare(assistantContent: String, toolCalls: [AgentToolCall]) -> Result {
+        prepare(assistantContent: assistantContent, toolCalls: toolCalls, runMode: .agent)
+    }
+
+    static func prepare(
+        assistantContent: String,
+        toolCalls: [AgentToolCall],
+        runMode: ChatRunMode
+    ) -> Result {
+        let suppress = shouldSuppressVisibleAssistantContent(
+            assistantContent: assistantContent,
+            toolCalls: toolCalls,
+            runMode: runMode
+        )
+        guard suppress else {
+            return Result(
+                toolCalls: toolCalls,
+                visibleIntro: nil,
+                planMarkdown: nil,
+                hiddenCompanionText: nil,
+                suppressVisibleAssistantText: false
+            )
+        }
+
+        let split = splitInteractiveContent(assistantContent, toolCalls: toolCalls, runMode: runMode)
+        let updatedCalls = toolCalls.map { call in
+            attachDeferredPlanContentIfNeeded(split.planMarkdown, to: call)
+        }
+        return Result(
+            toolCalls: updatedCalls,
+            visibleIntro: split.visibleIntro,
+            planMarkdown: split.planMarkdown,
+            hiddenCompanionText: split.hiddenCompanionText,
+            suppressVisibleAssistantText: true
+        )
+    }
+
+    static func shouldSuppressVisibleAssistantContent(
+        assistantContent: String,
+        toolCalls: [AgentToolCall],
+        runMode: ChatRunMode = .agent
+    ) -> Bool {
+        let trimmed = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if runMode == .plan {
+            if toolCalls.isEmpty { return true }
+            if toolCalls.contains(where: isInteractivePlanTool) { return true }
+            return looksLikeInteractiveProtocolText(trimmed) || looksLikePotentialPlanText(trimmed)
+        }
+        return toolCalls.contains(where: isInteractivePlanTool)
+    }
+
+    static func shouldHoldStreamingContent(
+        _ sample: String,
+        runMode: ChatRunMode,
+        hasToolCallAccumulator: Bool
+    ) -> Bool {
+        let trimmed = sample.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if looksLikeInteractiveProtocolText(trimmed) { return true }
+        if looksLikePotentialPlanText(trimmed) { return true }
+        if runMode == .plan {
+            return !hasToolCallAccumulator
+        }
+        if hasToolCallAccumulator {
+            return false
+        }
+        return false
+    }
+
+    static func looksLikePotentialPlanText(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let lower = trimmed.lowercased()
+        if lower.contains("switchmode") || lower.contains("执行计划") || lower.contains("实施计划") {
+            return true
+        }
+        if lower.contains("计划") && (lower.contains("步骤") || lower.contains("确认") || lower.contains("执行")) {
+            return true
+        }
+        if lower.contains("plan") && (lower.contains("execute") || lower.contains("implementation") || lower.contains("step")) {
+            return true
+        }
+        if trimmed.hasPrefix("#") && (lower.contains("计划") || lower.contains("plan")) {
+            return true
+        }
+        if trimmed.range(of: #"(?m)^\s*\d+\.\s+.+"#, options: .regularExpression) != nil,
+           lower.contains("执行") || lower.contains("implement") || lower.contains("optimize") {
+            return true
+        }
+        return false
+    }
+
+    private static func isInteractivePlanTool(_ call: AgentToolCall) -> Bool {
+        switch AgentToolNameCanonicalizer.canonical(call.name) {
+        case "AskQuestion", "SwitchMode":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func looksLikeInteractiveProtocolText(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        if trimmed.hasPrefix("{") &&
+            (lower.contains(#""tool""#) || lower.contains(#""name""#) || lower.contains("switchmode") || lower.contains("askquestion")) {
+            return true
+        }
+        if trimmed.hasPrefix("<") &&
+            (lower.contains("call") || lower.contains("tool") || lower.contains("switchmode") || lower.contains("askquestion")) {
+            return true
+        }
+        return false
+    }
+
+    private static func splitInteractiveContent(
+        _ assistantContent: String,
+        toolCalls: [AgentToolCall],
+        runMode: ChatRunMode
+    ) -> (visibleIntro: String?, planMarkdown: String?, hiddenCompanionText: String?) {
+        let trimmed = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return (nil, nil, nil) }
+
+        let hasSwitchMode = toolCalls.contains {
+            AgentToolNameCanonicalizer.canonical($0.name) == "SwitchMode"
+        }
+        let hasAskQuestion = toolCalls.contains {
+            AgentToolNameCanonicalizer.canonical($0.name) == "AskQuestion"
+        }
+        if runMode == .plan, hasAskQuestion {
+            return (nil, nil, trimmed)
+        }
+        if runMode == .plan, toolCalls.isEmpty {
+            return (nil, nil, trimmed)
+        }
+        guard hasSwitchMode else {
+            let intro = shortIntro(from: trimmed)
+            return (intro, nil, trimmed == intro ? nil : trimmed)
+        }
+
+        if let range = planStartRange(in: trimmed) {
+            let intro = String(trimmed[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+            let plan = String(trimmed[range.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+            return (runMode == .plan ? nil : intro.map(shortIntro(from:)), plan, trimmed)
+        }
+
+        if looksLikePotentialPlanText(trimmed), trimmed.count > 220 {
+            return (nil, trimmed, trimmed)
+        }
+
+        return (shortIntro(from: trimmed), nil, trimmed)
+    }
+
+    private static func planStartRange(in text: String) -> Range<String.Index>? {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var offset = text.startIndex
+        for lineSubsequence in lines {
+            let line = String(lineSubsequence)
+            let lower = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let isPlanHeading = lower.hasPrefix("#") &&
+                (lower.contains("计划") || lower.contains("plan") || lower.contains("方案"))
+            let isPlanList = lower.range(of: #"^\d+\.\s+.+"#, options: .regularExpression) != nil &&
+                (text.lowercased().contains("计划") || text.lowercased().contains("plan"))
+            if isPlanHeading || isPlanList {
+                return offset..<offset
+            }
+            offset = text.index(offset, offsetBy: lineSubsequence.count)
+            if offset < text.endIndex {
+                offset = text.index(after: offset)
+            }
+        }
+        return nil
+    }
+
+    private static func shortIntro(from text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 260 else { return trimmed }
+        let paragraph = trimmed
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? trimmed
+        if paragraph.count <= 260 { return paragraph }
+        let index = paragraph.index(paragraph.startIndex, offsetBy: 240)
+        return String(paragraph[..<index]).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
+    private static func attachDeferredPlanContentIfNeeded(_ planMarkdown: String?, to call: AgentToolCall) -> AgentToolCall {
+        guard AgentToolNameCanonicalizer.canonical(call.name) == "SwitchMode" else {
+            return call
+        }
+
+        var object = jsonObject(from: call.inputJSON) ?? [:]
+        let existingPlan = (object["plan"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let planMarkdown = planMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines), !planMarkdown.isEmpty {
+            if existingPlan.isEmpty || planMarkdown.count > existingPlan.count + 80 {
+                object["plan"] = planMarkdown
+            }
+            object["assistantPlanMarkdown"] = planMarkdown
+        }
+        if object["mode"] == nil {
+            object["mode"] = "agent"
+        }
+        return AgentToolCall(id: call.id, name: call.name, inputJSON: jsonString(object, pretty: true))
+    }
+
+    private static func jsonObject(from inputJSON: String) -> [String: Any]? {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object
+    }
+}
+
+enum PlanModeIntroSynthesizer {
+    static func intro(for toolCalls: [AgentToolCall], runMode: ChatRunMode) -> String? {
+        guard runMode == .plan, !toolCalls.isEmpty else { return nil }
+        let canonicalNames = toolCalls.map { AgentToolNameCanonicalizer.canonical($0.name) }
+        guard toolCalls.allSatisfy(isPlanExplorationCall) else { return nil }
+        if canonicalNames.contains(where: AgentToolPresentationClassifier.isReadTool) {
+            return "我先查看相关文件和项目结构，用来完善计划。"
+        }
+        if canonicalNames.contains(where: { AgentToolPresentationClassifier.phase(forToolName: $0) == .search }) {
+            return "我先搜索现有代码线索，用来完善计划。"
+        }
+        if canonicalNames.contains(where: { AgentToolPresentationClassifier.phase(forToolName: $0) == .command }) {
+            return "我先运行只读命令确认上下文，用来完善计划。"
+        }
+        if canonicalNames.contains("TodoRead") || canonicalNames.contains("TodoWrite") {
+            return "我先整理任务上下文，用来完善计划。"
+        }
+        return "我先收集必要上下文，用来完善计划。"
+    }
+
+    private static func isPlanExplorationCall(_ call: AgentToolCall) -> Bool {
+        let toolName = AgentToolNameCanonicalizer.canonical(call.name)
+        if toolName == "Shell" {
+            return AgentRunContext.isReadOnlyShell(call.inputJSON)
+        }
+        if toolName == "Task" {
+            return AgentRunContext.isReadOnlyTask(call.inputJSON)
+        }
+        return AgentPermissionPolicy.planModeSafeTools.contains(toolName) &&
+            toolName != "AskQuestion" &&
+            toolName != "SwitchMode"
+    }
+}
+
+enum PlanTurnRecoveryClassifier {
+    enum Recovery: Equatable {
+        case askQuestion(AgentToolCall)
+        case switchMode(AgentToolCall)
+        case intro(String)
+    }
+
+    static func recovery(for assistantContent: String, context: AgentRunContext) -> Recovery? {
+        guard context.runMode == .plan, !context.planExited else { return nil }
+        let trimmed = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !looksLikeRawProtocol(trimmed) else { return nil }
+        if !context.planQuestionAnswered {
+            if looksLikeQuestionTurn(trimmed) || looksLikeFinalPlan(trimmed) {
+                return .askQuestion(askQuestionCall(from: trimmed))
+            }
+            return .intro(shortIntro(from: trimmed))
+        }
+        if looksLikeFinalPlan(trimmed) {
+            return .switchMode(switchModeCall(from: trimmed))
+        }
+        return .intro(shortIntro(from: trimmed))
+    }
+
+    static func fallbackSwitchModeCall(from text: String, userPrompt: String) -> AgentToolCall {
+        let plan = fallbackPlanMarkdown(from: text, userPrompt: userPrompt)
+        return switchModeCall(from: plan)
+    }
+
+    static func fallbackAskQuestionCall(from text: String) -> AgentToolCall {
+        askQuestionCall(from: text)
+    }
+
+    private static func looksLikeRawProtocol(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        if lower.hasPrefix("<call") || lower.hasPrefix("<invoke") || lower.hasPrefix("<tool") || lower.hasPrefix("<response") {
+            return true
+        }
+        if text.hasPrefix("{"),
+           lower.contains(#""name""#) || lower.contains(#""tool""#) || lower.contains("askquestion") || lower.contains("switchmode") {
+            return true
+        }
+        return false
+    }
+
+    private static func askQuestionCall(from text: String) -> AgentToolCall {
+        let questions = choiceQuestions(from: text)
+        let payload: [String: Any] = [
+            "questions": questions,
+            "recoveredFromPlainText": true,
+        ]
+        return AgentToolCall(
+            id: "plan-recovery-ask-\(UUID().uuidString)",
+            name: "AskQuestion",
+            inputJSON: jsonString(payload, pretty: true)
+        )
+    }
+
+    private static func switchModeCall(from text: String) -> AgentToolCall {
+        let plan = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payload: [String: Any] = [
+            "mode": "agent",
+            "plan": plan,
+            "assistantPlanMarkdown": plan,
+            "recoveredFromPlainText": true,
+        ]
+        return AgentToolCall(
+            id: "plan-recovery-switch-\(UUID().uuidString)",
+            name: "SwitchMode",
+            inputJSON: jsonString(payload, pretty: true)
+        )
+    }
+
+    private static func looksLikeQuestionTurn(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        if lower.contains("askquestion") || lower.contains("switchmode") { return false }
+        let markers = ["?", "？", "请告诉", "请选择", "需要确认", "几个问题", "补充", "偏好", "what", "which", "choose", "question"]
+        if markers.contains(where: { lower.contains($0.lowercased()) }) { return true }
+        return text.range(of: #"(?m)^\s*\d+[\.\)、)]\s*[^。\n]*[?？]"#, options: .regularExpression) != nil
+    }
+
+    private static func looksLikeFinalPlan(_ text: String) -> Bool {
+        if InteractivePlanContentDeferrer.looksLikePotentialPlanText(text) { return true }
+        let lower = text.lowercased()
+        let hasPlanWord = lower.contains("计划") || lower.contains("方案") || lower.contains("实施") || lower.contains("plan")
+        let numberedSteps = regexMatchCount(#"(?m)^\s*\d+[\.\)、)]\s+.+"#, in: text)
+        return hasPlanWord && numberedSteps >= 2
+    }
+
+    private static func regexMatchCount(_ pattern: String, in text: String) -> Int {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return 0 }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.numberOfMatches(in: text, range: range)
+    }
+
+    private static func extractedQuestions(from text: String) -> [[String: Any]] {
+        let lines = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        var result: [[String: Any]] = []
+        var index = 0
+        while index < lines.count, result.count < 4 {
+            let line = lines[index]
+            guard let question = normalizedQuestionLine(line) else {
+                index += 1
+                continue
+            }
+            var optionLabels = inlineOptions(from: line)
+            var scan = index + 1
+            while scan < lines.count {
+                let candidate = lines[scan]
+                if normalizedQuestionLine(candidate) != nil { break }
+                if let option = normalizedOptionLine(candidate) {
+                    optionLabels.append(option)
+                }
+                scan += 1
+            }
+            let options = optionDictionaries(optionLabels, fallback: fallbackOptions(for: question, sourceText: text))
+            result.append([
+                "header": "计划问题",
+                "question": question,
+                "options": options,
+                "multiSelect": shouldAllowMultiple(question: question),
+            ])
+            index = max(scan, index + 1)
+        }
+        if result.isEmpty, looksLikeQuestionTurn(text) {
+            result.append([
+                "header": "计划问题",
+                "question": fallbackQuestion(from: text),
+                "options": optionDictionaries([], fallback: fallbackOptions(for: fallbackQuestion(from: text), sourceText: text)),
+                "multiSelect": false,
+            ])
+        }
+        return result
+    }
+
+    private static func choiceQuestions(from text: String) -> [[String: Any]] {
+        if looksLikeCalendarTask(text) {
+            let extracted = extractedQuestions(from: text)
+            if extracted.count >= 2 {
+                return extracted
+            }
+            return calendarChoiceQuestions()
+        }
+        var questions = extractedQuestions(from: text)
+        if questions.isEmpty {
+            let question = fallbackQuestion(from: text)
+            questions = [[
+                "header": "计划问题",
+                "question": cleanQuestionText(question),
+                "options": optionDictionaries([], fallback: fallbackOptions(for: question, sourceText: text)),
+                "multiSelect": false,
+            ]]
+        }
+        return questions.prefix(4).map { question in
+            var repaired = question
+            let questionText = (question["question"] as? String) ?? fallbackQuestion(from: text)
+            let labels = optionLabels(in: question)
+            repaired["question"] = cleanQuestionText(questionText)
+            repaired["options"] = optionDictionaries(labels, fallback: fallbackOptions(for: questionText, sourceText: text))
+            repaired["multiSelect"] = question["multiSelect"] as? Bool ?? shouldAllowMultiple(question: questionText)
+            return repaired
+        }
+    }
+
+    private static func calendarChoiceQuestions() -> [[String: Any]] {
+        [
+            [
+                "header": "功能侧重",
+                "question": "日历的功能侧重是什么？",
+                "options": optionDictionaries([
+                    "基础月历",
+                    "日程管理",
+                    "提醒与倒计时",
+                    "节假日/农历展示",
+                ], fallback: []),
+                "multiSelect": true,
+            ],
+            [
+                "header": "视觉风格",
+                "question": "页面视觉风格偏好是什么？",
+                "options": optionDictionaries([
+                    "简洁现代",
+                    "温暖生活感",
+                    "高端玻璃质感",
+                    "活泼多彩",
+                ], fallback: []),
+                "multiSelect": false,
+            ],
+            [
+                "header": "数据方式",
+                "question": "日程数据要如何处理？",
+                "options": optionDictionaries([
+                    "演示静态数据",
+                    "localStorage 本地保存",
+                    "支持导入导出",
+                    "暂不需要日程数据",
+                ], fallback: []),
+                "multiSelect": false,
+            ],
+            [
+                "header": "技术偏好",
+                "question": "技术实现偏好是什么？",
+                "options": optionDictionaries([
+                    "原生 HTML/CSS/JS",
+                    "沿用项目现有技术",
+                    "优先响应式移动端",
+                    "由 9GClaw 判断",
+                ], fallback: []),
+                "multiSelect": false,
+            ],
+        ]
+    }
+
+    private static func looksLikeCalendarTask(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("日历") || lower.contains("calendar")
+    }
+
+    private static func optionLabels(in question: [String: Any]) -> [String] {
+        if let options = question["options"] as? [[String: String]] {
+            return options.compactMap { $0["label"] }
+        }
+        if let options = question["options"] as? [[String: Any]] {
+            return options.compactMap { $0["label"] as? String }
+        }
+        if let options = question["options"] as? [String] {
+            return options
+        }
+        return []
+    }
+
+    private static func normalizedQuestionLine(_ line: String) -> String? {
+        guard !line.isEmpty else { return nil }
+        let cleaned = cleanQuestionText(line.replacingOccurrences(
+            of: #"^\s*(?:\d+[\.\)、)]|[-*•])\s*"#,
+            with: "",
+            options: .regularExpression
+        ))
+        guard !cleaned.isEmpty else { return nil }
+        let lower = cleaned.lowercased()
+        if !cleaned.contains("?"),
+           !cleaned.contains("？"),
+           (lower.contains("我来") || lower.contains("以便") || lower.contains("为了")) {
+            return nil
+        }
+        if cleaned.contains("?") || cleaned.contains("？") ||
+            lower.contains("是什么") ||
+            lower.contains("偏好") ||
+            lower.contains("需要哪些") ||
+            lower.contains("请选择") ||
+            lower.contains("请告诉") {
+            return cleaned
+        }
+        return nil
+    }
+
+    private static func normalizedOptionLine(_ line: String) -> String? {
+        let cleaned = cleanOptionText(line.replacingOccurrences(
+            of: #"^\s*(?:[-*•]|\d+[\.\)、)])\s*"#,
+            with: "",
+            options: .regularExpression
+        ))
+        guard !cleaned.isEmpty, cleaned.count <= 80 else { return nil }
+        if normalizedQuestionLine(cleaned) != nil { return nil }
+        return cleaned
+    }
+
+    private static func fallbackQuestion(from text: String) -> String {
+        let lines = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if let firstQuestion = lines.first(where: { $0.contains("?") || $0.contains("？") }) {
+            return normalizedQuestionLine(firstQuestion) ?? cleanQuestionText(firstQuestion)
+        }
+        if looksLikeCalendarTask(text) {
+            return "日历的功能侧重是什么？"
+        }
+        return "请补充完成计划所需的关键信息。"
+    }
+
+    private static func inlineOptions(from line: String) -> [String] {
+        let separators = ["例如：", "比如：", "可选：", "例如:", "比如:", "可选:", "options:", "such as"]
+        guard let marker = separators.first(where: { line.lowercased().contains($0.lowercased()) }),
+              let range = line.range(of: marker, options: [.caseInsensitive]) else {
+            return []
+        }
+        let tail = String(line[range.upperBound...])
+        return tail
+            .replacingOccurrences(of: "或者", with: "、")
+            .replacingOccurrences(of: "还是", with: "、")
+            .components(separatedBy: CharacterSet(charactersIn: "、,，/；;"))
+            .map(cleanOptionText)
+            .filter { !$0.isEmpty }
+    }
+
+    private static func fallbackOptions(for question: String, sourceText: String) -> [String] {
+        let lower = (question + " " + sourceText).lowercased()
+        if lower.contains("功能") || lower.contains("模块") || lower.contains("需求") || lower.contains("feature") {
+            return ["基础功能", "功能完整", "视觉展示优先", "由 9GClaw 判断"]
+        }
+        if lower.contains("风格") || lower.contains("视觉") || lower.contains("style") || lower.contains("design") {
+            return ["简洁现代", "高端质感", "活泼多彩", "系统原生"]
+        }
+        if lower.contains("数据") || lower.contains("保存") || lower.contains("storage") {
+            return ["静态演示数据", "本地保存", "支持导入导出", "暂不需要"]
+        }
+        if lower.contains("技术") || lower.contains("框架") || lower.contains("html") || lower.contains("framework") {
+            return ["原生 HTML/CSS/JS", "沿用现有技术", "轻量框架", "由 9GClaw 判断"]
+        }
+        if looksLikeCalendarTask(lower) {
+            return ["基础月历", "日程管理", "视觉效果优先", "由 9GClaw 判断"]
+        }
+        return ["推荐方案", "简洁方案", "功能完整方案", "先继续分析"]
+    }
+
+    private static func optionDictionaries(_ labels: [String], fallback: [String]) -> [[String: String]] {
+        let cleanedLabels = deduped(labels.map(cleanOptionText)).filter { !$0.isEmpty }
+        let source = cleanedLabels.isEmpty ? fallback : cleanedLabels
+        let finalLabels = deduped(source.map(cleanOptionText))
+            .filter { !$0.isEmpty }
+        return finalLabels.map { ["label": $0] }
+    }
+
+    private static func shouldAllowMultiple(question: String) -> Bool {
+        let lower = question.lowercased()
+        return lower.contains("多选") ||
+            lower.contains("哪些") ||
+            lower.contains("模块") ||
+            lower.contains("功能") ||
+            lower.contains("multiple")
+    }
+
+    private static func cleanQuestionText(_ text: String) -> String {
+        var cleaned = text
+            .replacingOccurrences(of: #"[*_`#]+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"^\s*(?:\d+[\.\)、)]|[-•])\s*"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        cleaned = cleaned.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return cleaned
+    }
+
+    private static func cleanOptionText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: #"[*_`#]+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"^\s*(?:例如|比如|可选)\s*[:：]\s*"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "。.?？:：")))
+    }
+
+    private static func deduped(_ labels: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for label in labels {
+            let key = label.lowercased()
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            result.append(label)
+        }
+        return result
+    }
+
+    private static func fallbackPlanMarkdown(from text: String, userPrompt: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if looksLikeFinalPlan(trimmed) {
+            return trimmed
+        }
+        let prompt = NativeAgentRuntime.primaryUserPrompt(from: userPrompt)
+        let target = prompt.isEmpty ? "用户请求" : prompt
+        return """
+        ## 执行计划
+
+        1. 梳理当前工作区和相关文件，确认实现入口。
+        2. 根据已回答的问题完成设计和功能实现：\(target)。
+        3. 保存必要文件，并进行一次只读检查或本地预览验证。
+        4. 汇总完成内容、修改文件和验证结果。
+        """
+    }
+
+    private static func shortIntro(from text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 180 else { return trimmed }
+        let paragraph = trimmed
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? trimmed
+        if paragraph.count <= 180 { return paragraph }
+        let index = paragraph.index(paragraph.startIndex, offsetBy: 160)
+        return String(paragraph[..<index]).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+}
+
+enum PlanWorkflowPresentation {
+    static let generatingQuestionStatus = "plan generating question"
+    static let collectingContextStatus = "plan collecting context"
+    static let generatingPlanStatus = "plan generating plan"
+    static let waitingForAnswerStatus = "plan waiting answer"
+    static let waitingForConfirmationStatus = "plan waiting confirmation"
+    static let recoveringStatus = "plan recovering workflow"
+    static let recoveryNeededStatus = "plan recovery needed"
+
+    static func generationStatus(for toolCalls: [AgentToolCall], runMode: ChatRunMode) -> String? {
+        guard runMode == .plan, !toolCalls.isEmpty else { return nil }
+        let names = toolCalls.map { AgentToolNameCanonicalizer.canonical($0.name) }
+        if names.contains("AskQuestion") {
+            return generatingQuestionStatus
+        }
+        if names.contains("SwitchMode") {
+            return generatingPlanStatus
+        }
+        if toolCalls.allSatisfy(isPlanExplorationCall) {
+            return collectingContextStatus
+        }
+        return nil
+    }
+
+    static func waitingStatus(for toolName: String, runMode: ChatRunMode) -> String? {
+        guard runMode == .plan else { return nil }
+        switch AgentToolNameCanonicalizer.canonical(toolName) {
+        case "AskQuestion":
+            return waitingForAnswerStatus
+        case "SwitchMode":
+            return waitingForConfirmationStatus
+        default:
+            return nil
+        }
+    }
+
+    static func isInteractiveControl(_ toolName: String?) -> Bool {
+        guard let toolName else { return false }
+        let canonical = AgentToolNameCanonicalizer.canonical(toolName)
+        return canonical == "AskQuestion" || canonical == "SwitchMode"
+    }
+
+    private static func isPlanExplorationCall(_ call: AgentToolCall) -> Bool {
+        let toolName = AgentToolNameCanonicalizer.canonical(call.name)
+        if toolName == "Shell" {
+            return AgentRunContext.isReadOnlyShell(call.inputJSON)
+        }
+        if toolName == "Task" {
+            return AgentRunContext.isReadOnlyTask(call.inputJSON)
+        }
+        return AgentPermissionPolicy.planModeSafeTools.contains(toolName) &&
+            toolName != "AskQuestion" &&
+            toolName != "SwitchMode"
+    }
+}
+
 enum AgentToolNameCanonicalizer {
     static func canonical(_ rawName: String) -> String {
         let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -513,6 +1218,16 @@ struct AgentToolResult: Sendable, Equatable {
     var toolName: String
     var output: String
     var isError: Bool
+    var isPolicyBlock: Bool = false
+}
+
+enum PlanWorkflowStage: String, Sendable {
+    case needsQuestion
+    case waitingForAnswer
+    case answeredGeneratingPlan
+    case waitingForConfirmation
+    case executing
+    case refining
 }
 
 final class AgentRunContext: @unchecked Sendable {
@@ -531,6 +1246,10 @@ final class AgentRunContext: @unchecked Sendable {
     var verificationAfterMutationCount: Int
     var failedToolCount: Int
     var recoverableProtocolErrorCount: Int
+    var planPlainTextRecoveryCount: Int
+    var planWorkflowStage: PlanWorkflowStage
+    var planQuestionRecoveryCount: Int
+    var planGenerationRecoveryCount: Int
     var providerConfig: ProviderConfig
     var apiKey: String
     var timeoutMs: Int
@@ -542,6 +1261,15 @@ final class AgentRunContext: @unchecked Sendable {
     var maxSubagentDepth: Int
     var lastExecutedToolName: String?
     var lastToolResultWasError: Bool
+    var planExecutionApproved: Bool
+    var hasSuccessfulDeletion: Bool
+    var lastToolResultWasBenignDeletionVerification: Bool
+    var todoRequiresInitialization: Bool
+    var todoRequiresRefresh: Bool
+    var rootGlobCacheOutput: String?
+    var rootGlobCacheEntryCount: Int
+    var partialStreamRecoveryCount: Int
+    var workspaceMutationEpoch: Int
     private var executedToolSignatures: Set<String>
 
     init(request: AgentRequest) {
@@ -560,6 +1288,10 @@ final class AgentRunContext: @unchecked Sendable {
         verificationAfterMutationCount = 0
         failedToolCount = 0
         recoverableProtocolErrorCount = 0
+        planPlainTextRecoveryCount = 0
+        planWorkflowStage = request.runMode == .plan ? .needsQuestion : .executing
+        planQuestionRecoveryCount = 0
+        planGenerationRecoveryCount = 0
         providerConfig = request.providerConfig
         apiKey = request.apiKey
         timeoutMs = request.timeoutMs
@@ -571,6 +1303,15 @@ final class AgentRunContext: @unchecked Sendable {
         maxSubagentDepth = max(0, Int(request.nativeConfigValues["runtime.maxSubagentDepth"] ?? "") ?? 1)
         lastExecutedToolName = nil
         lastToolResultWasError = false
+        planExecutionApproved = false
+        hasSuccessfulDeletion = false
+        lastToolResultWasBenignDeletionVerification = false
+        todoRequiresInitialization = false
+        todoRequiresRefresh = false
+        rootGlobCacheOutput = nil
+        rootGlobCacheEntryCount = 0
+        partialStreamRecoveryCount = 0
+        workspaceMutationEpoch = 0
         executedToolSignatures = []
     }
 
@@ -589,16 +1330,70 @@ final class AgentRunContext: @unchecked Sendable {
         }
     }
 
+    var hasIncompleteTodos: Bool {
+        Self.hasIncompleteTodos(in: todosJSON)
+    }
+
     func markToolCallIfNeeded(_ call: AgentToolCall) -> Bool {
-        executedToolSignatures.insert(call.signature).inserted
+        executedToolSignatures.insert(deduplicationKey(for: call)).inserted
+    }
+
+    func deduplicatedInvocation(_ invocation: ToolArgumentNormalizer.NormalizedInvocation) -> ToolArgumentNormalizer.NormalizedInvocation? {
+        let call = invocation.call
+        let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+        if canonicalName == "TodoWrite" {
+            if let incoming = Self.todoSnapshotSignature(in: call.inputJSON),
+               let current = Self.todoSnapshotSignature(in: todosJSON),
+               incoming == current {
+                return ToolArgumentNormalizer.NormalizedInvocation(
+                    call: call,
+                    recoveryResult: duplicateToolResult(
+                        call: call,
+                        detail: "Todo list is already up to date. Continue with the next unfinished item or inspect current files before updating TodoWrite again."
+                    )
+                )
+            }
+            return invocation
+        }
+
+        if markToolCallIfNeeded(call) {
+            return invocation
+        }
+
+        if Self.isDuplicateSoftBlockTool(call) {
+            return ToolArgumentNormalizer.NormalizedInvocation(
+                call: call,
+                recoveryResult: duplicateToolResult(
+                    call: call,
+                    detail: "Duplicate tool request skipped; inspect current file or continue with the next distinct step."
+                )
+            )
+        }
+        return nil
     }
 
     func recordToolResult(_ result: AgentToolResult, call: AgentToolCall) {
         toolExecutionCount += 1
         lastExecutedToolName = result.toolName
-        lastToolResultWasError = result.isError
+        if result.isPolicyBlock {
+            lastToolResultWasBenignDeletionVerification = false
+            lastToolResultWasError = false
+            return
+        }
+        let benignDeletionVerification = DeletionVerificationClassifier.isBenign(
+            result: result,
+            call: call,
+            hasSuccessfulDeletion: hasSuccessfulDeletion
+        )
+        lastToolResultWasBenignDeletionVerification = benignDeletionVerification
+        lastToolResultWasError = result.isError && !benignDeletionVerification
         if !result.isError {
             successfulToolExecutionCount += 1
+            continuationNudgeCount = 0
+            recoverableProtocolErrorCount = 0
+            if DestructiveToolClassifier.isDestructive(call: call) {
+                hasSuccessfulDeletion = true
+            }
         } else {
             failedToolCount += 1
             if result.output.contains(ToolArgumentNormalizer.invalidJSONRecoveryMessage) {
@@ -607,11 +1402,31 @@ final class AgentRunContext: @unchecked Sendable {
         }
         if result.toolName == "AskQuestion", !result.isError {
             planQuestionAnswered = true
+            planWorkflowStage = .answeredGeneratingPlan
+        }
+        if result.toolName == "SwitchMode", !result.isError {
+            if runMode == .plan {
+                planWorkflowStage = .refining
+            } else if planExited {
+                planWorkflowStage = .executing
+                if planExecutionApproved {
+                    todoRequiresInitialization = true
+                    todoRequiresRefresh = false
+                }
+            } else {
+                planWorkflowStage = .waitingForConfirmation
+            }
+        }
+        if result.toolName == "TodoWrite", !result.isError {
+            todoRequiresInitialization = false
+            todoRequiresRefresh = false
+        } else if PlanTodoExecutionGate.requiresTodoRefresh(after: call, result: result) {
+            todoRequiresRefresh = true
         }
         switch result.toolName {
         case "Read", "Glob", "Grep", "SemanticSearch", "ReadLints", "TodoRead", "Skill", "TodoWrite", "AskQuestion", "Await":
             exploratoryToolCount += 1
-            if !result.isError, mutatingToolCount > 0 {
+            if (!result.isError || benignDeletionVerification), mutatingToolCount > 0 {
                 verificationAfterMutationCount += 1
             }
         case "Write", "StrReplace", "Delete", "EditNotebook", "Shell", "Task":
@@ -629,10 +1444,98 @@ final class AgentRunContext: @unchecked Sendable {
                 }
             } else {
                 mutatingToolCount += 1
+                workspaceMutationEpoch += 1
             }
         default:
             break
         }
+    }
+
+    private func deduplicationKey(for call: AgentToolCall) -> String {
+        let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+        let base = "\(canonicalName):\(call.inputJSON)"
+        if Self.isEpochScopedTool(call) {
+            return "\(workspaceMutationEpoch):\(base)"
+        }
+        return base
+    }
+
+    private static func isEpochScopedTool(_ call: AgentToolCall) -> Bool {
+        let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+        switch canonicalName {
+        case "Read", "Grep", "Glob", "ReadLints", "SemanticSearch", "TodoRead", "Skill", "Await":
+            return true
+        case "Shell":
+            return isReadOnlyShell(call.inputJSON)
+        case "Task":
+            return isReadOnlyTask(call.inputJSON)
+        default:
+            return false
+        }
+    }
+
+    private static func isDuplicateSoftBlockTool(_ call: AgentToolCall) -> Bool {
+        let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+        switch canonicalName {
+        case "Write", "StrReplace", "Delete", "EditNotebook":
+            return true
+        case "Shell":
+            return !isReadOnlyShell(call.inputJSON)
+        case "Task":
+            return !isReadOnlyTask(call.inputJSON)
+        default:
+            return false
+        }
+    }
+
+    private func duplicateToolResult(call: AgentToolCall, detail: String) -> AgentToolResult {
+        AgentToolResult(
+            callId: call.id,
+            toolName: AgentToolNameCanonicalizer.canonical(call.name),
+            output: detail,
+            isError: false,
+            isPolicyBlock: true
+        )
+    }
+
+    private static func todoSnapshotSignature(in inputJSON: String) -> String? {
+        guard let data = inputJSON.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: data) else {
+            return nil
+        }
+        if let object = value as? [String: Any], let todos = object["todos"] {
+            return jsonString(todos)
+        }
+        if let array = value as? [Any] {
+            return jsonString(array)
+        }
+        return nil
+    }
+
+    static func hasIncompleteTodos(in todosJSON: String) -> Bool {
+        guard let data = todosJSON.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: data) else {
+            return false
+        }
+        return containsIncompleteTodo(value)
+    }
+
+    private static func containsIncompleteTodo(_ value: Any) -> Bool {
+        if let object = value as? [String: Any] {
+            if let todos = object["todos"] {
+                return containsIncompleteTodo(todos)
+            }
+            if object["content"] != nil || object["title"] != nil || object["task"] != nil {
+                let rawStatus = (object["status"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    ?? (object["done"] as? Bool == true ? "completed" : "pending")
+                return rawStatus != "completed" && rawStatus != "done"
+            }
+            return object.values.contains { containsIncompleteTodo($0) }
+        }
+        if let array = value as? [Any] {
+            return array.contains { containsIncompleteTodo($0) }
+        }
+        return false
     }
 
     static func isReadOnlyShell(_ inputJSON: String) -> Bool {
@@ -649,7 +1552,26 @@ final class AgentRunContext: @unchecked Sendable {
         if writeMarkers.contains(where: { trimmed.contains($0) }) {
             return false
         }
-        let readPrefixes = ["ls", "find", "grep", "rg", "cat", "pwd", "wc", "head", "tail", "stat", "git status", "git diff", "git log"]
+        let readPrefixes = [
+            "date",
+            "pwd",
+            "ls",
+            "find",
+            "grep",
+            "rg",
+            "cat",
+            "wc",
+            "head",
+            "tail",
+            "stat",
+            "file",
+            "du",
+            "git status",
+            "git diff",
+            "git log",
+            "git show",
+            "git ls-files",
+        ]
         return readPrefixes.contains { trimmed == $0 || trimmed.hasPrefix($0 + " ") }
     }
 
@@ -665,6 +1587,253 @@ final class AgentRunContext: @unchecked Sendable {
     }
 }
 
+enum PlanTodoExecutionGate {
+    static func blockingResult(for call: AgentToolCall, context: AgentRunContext) -> AgentToolResult? {
+        guard context.planExecutionApproved else { return nil }
+        let toolName = AgentToolNameCanonicalizer.canonical(call.name)
+        guard toolName != "TodoWrite", !isReadOnlyTool(call) else { return nil }
+        if context.todoRequiresInitialization {
+            return requiredTodoResult(
+                call: call,
+                reason: "Initialize the execution todo list with TodoWrite before the first workspace-changing tool after plan approval."
+            )
+        }
+        if context.todoRequiresRefresh {
+            return requiredTodoResult(
+                call: call,
+                reason: "Update the todo list with TodoWrite before the next workspace-changing tool so progress remains visible."
+            )
+        }
+        return nil
+    }
+
+    static func requiresTodoRefresh(after call: AgentToolCall, result: AgentToolResult) -> Bool {
+        guard !result.isError, !result.isPolicyBlock else { return false }
+        let toolName = AgentToolNameCanonicalizer.canonical(call.name)
+        guard toolName != "TodoWrite" else { return false }
+        return !isReadOnlyTool(call)
+    }
+
+    static func isReadOnlyTool(_ call: AgentToolCall) -> Bool {
+        switch AgentToolNameCanonicalizer.canonical(call.name) {
+        case "Read", "Glob", "Grep", "SemanticSearch", "ReadLints", "TodoRead", "AskQuestion", "SwitchMode", "Await", "Skill":
+            return true
+        case "Shell":
+            return AgentRunContext.isReadOnlyShell(call.inputJSON)
+        case "Task":
+            return AgentRunContext.isReadOnlyTask(call.inputJSON)
+        default:
+            return false
+        }
+    }
+
+    private static func requiredTodoResult(call: AgentToolCall, reason: String) -> AgentToolResult {
+        AgentToolResult(
+            callId: call.id,
+            toolName: AgentToolNameCanonicalizer.canonical(call.name),
+            output: "\(reason) The requested \(AgentToolNameCanonicalizer.canonical(call.name)) tool was not executed yet; call TodoWrite next, then retry this tool.",
+            isError: false,
+            isPolicyBlock: true
+        )
+    }
+}
+
+enum RootGlobExecutionPolicy {
+    static func isRootWorkspaceGlob(inputJSON: String) -> Bool {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        let pattern = ((object["pattern"] as? String) ?? (object["glob"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = ((object["path"] as? String) ?? ".")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return pattern == "**/*" && (path.isEmpty || path == "." || path == "./")
+    }
+
+    static func cachedResultIfAvailable(call: AgentToolCall, context: AgentRunContext) -> AgentToolResult? {
+        guard AgentToolNameCanonicalizer.canonical(call.name) == "Glob",
+              isRootWorkspaceGlob(inputJSON: call.inputJSON),
+              let cached = context.rootGlobCacheOutput,
+              !cached.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return AgentToolResult(
+            callId: call.id,
+            toolName: "Glob",
+            output: cachedSummary(from: cached, entryCount: context.rootGlobCacheEntryCount),
+            isError: false
+        )
+    }
+
+    static func recordIfRootGlob(call: AgentToolCall, output: String, context: AgentRunContext) -> String {
+        guard AgentToolNameCanonicalizer.canonical(call.name) == "Glob",
+              isRootWorkspaceGlob(inputJSON: call.inputJSON) else {
+            return output
+        }
+        context.rootGlobCacheOutput = output
+        context.rootGlobCacheEntryCount = entryCount(output)
+        return compactBootstrapOutput(output)
+    }
+
+    private static func cachedSummary(from output: String, entryCount: Int) -> String {
+        let count = entryCount > 0 ? entryCount : self.entryCount(output)
+        return """
+        Cached workspace discovery from earlier Glob **/* (\(count) entries). Use targeted Read/Grep/Glob for known paths instead of repeating full workspace discovery.
+        \(compactBootstrapOutput(output))
+        """
+    }
+
+    private static func compactBootstrapOutput(_ output: String) -> String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = trimmed.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard lines.count > 160 || trimmed.count > 12_000 else { return trimmed }
+        let preview = lines.prefix(140).joined(separator: "\n")
+        return "\(preview)\n... workspace discovery truncated for display; \(lines.count) total entries ..."
+    }
+
+    private static func entryCount(_ output: String) -> Int {
+        output.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+    }
+}
+
+enum DestructiveToolClassifier {
+    static func isDestructive(call: AgentToolCall) -> Bool {
+        let toolName = AgentToolNameCanonicalizer.canonical(call.name)
+        if toolName == "Delete" { return true }
+        guard toolName == "Shell", let command = stringValue("command", in: call.inputJSON) else {
+            return false
+        }
+        return isDestructiveShellCommand(command)
+    }
+
+    static func targetDescription(call: AgentToolCall) -> String {
+        let toolName = AgentToolNameCanonicalizer.canonical(call.name)
+        if toolName == "Delete" {
+            return stringValue("path", in: call.inputJSON) ?? "selected path"
+        }
+        if toolName == "Shell", let command = stringValue("command", in: call.inputJSON) {
+            return compact(command, limit: 120)
+        }
+        return toolName
+    }
+
+    static func planJSON(call: AgentToolCall, isChinese: Bool = true) -> String {
+        let toolName = AgentToolNameCanonicalizer.canonical(call.name)
+        let target = targetDescription(call: call)
+        let title = isChinese ? "删除计划确认" : "Destructive change approval"
+        let impact = isChinese
+            ? "即将执行会删除文件或目录的操作：\(toolName)。目标：\(target)。"
+            : "The agent is about to run a deletion-capable \(toolName) operation. Target: \(target)."
+        let verify = isChinese
+            ? "执行后将通过文件读取或搜索结果确认目标已经不存在。"
+            : "After execution, the agent should verify that the target no longer exists."
+        return jsonString([
+            "title": title,
+            "mode": "agent",
+            "plan": "\(impact)\n\n\(verify)",
+            "destructiveTool": toolName,
+            "target": target,
+        ], pretty: true)
+    }
+
+    private static func isDestructiveShellCommand(_ command: String) -> Bool {
+        command
+            .lowercased()
+            .components(separatedBy: CharacterSet(charactersIn: "\n;&|"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .contains { segment in
+                let normalized = segment.hasPrefix("sudo ") ? String(segment.dropFirst(5)) : segment
+                return normalized.hasPrefix("rm ") ||
+                    normalized.hasPrefix("rmdir ") ||
+                    normalized.hasPrefix("trash ") ||
+                    (normalized.hasPrefix("find ") && normalized.contains(" -delete"))
+            }
+    }
+
+    private static func stringValue(_ key: String, in inputJSON: String) -> String? {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return (object[key] as? String)?.nilIfBlank
+    }
+
+    private static func compact(_ value: String, limit: Int) -> String {
+        let normalized = value
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > limit else { return normalized }
+        let index = normalized.index(normalized.startIndex, offsetBy: max(0, limit - 1))
+        return String(normalized[..<index]) + "…"
+    }
+}
+
+enum DeletionVerificationClassifier {
+    static func isBenign(result: AgentToolResult, call: AgentToolCall, hasSuccessfulDeletion: Bool) -> Bool {
+        guard hasSuccessfulDeletion,
+              result.isError,
+              isVerificationTool(call.name),
+              isMissingPathOutput(result.output) else {
+            return false
+        }
+        return true
+    }
+
+    static func shouldSuppressTranscriptPair(call: ToolCall, result: ToolResult?, sawSuccessfulDeletion: Bool) -> Bool {
+        guard sawSuccessfulDeletion,
+              let result,
+              result.isError,
+              isRootWildcardGlob(call),
+              isMissingPathOutput(result.output) else {
+            return false
+        }
+        return true
+    }
+
+    static func isSuccessfulDeletion(call: ToolCall, result: ToolResult?) -> Bool {
+        guard result?.isError == false else { return false }
+        return DestructiveToolClassifier.isDestructive(
+            call: AgentToolCall(id: call.id, name: call.name, inputJSON: call.inputJSON)
+        )
+    }
+
+    private static func isVerificationTool(_ toolName: String) -> Bool {
+        switch AgentToolNameCanonicalizer.canonical(toolName) {
+        case "Glob", "Read", "Grep":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isRootWildcardGlob(_ call: ToolCall) -> Bool {
+        guard AgentToolNameCanonicalizer.canonical(call.name) == "Glob",
+              let data = call.inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        let pattern = ((object["pattern"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = ((object["path"] as? String) ?? ".")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return pattern == "**/*" && (path.isEmpty || path == "." || path == "./")
+    }
+
+    private static func isMissingPathOutput(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        return lower.contains("path does not exist") ||
+            lower.contains("no such file") ||
+            lower.contains("directory not found") ||
+            lower.contains("file not found") ||
+            lower.contains("couldn’t be opened") ||
+            lower.contains("couldn't be opened") ||
+            lower.contains("目录不存在") ||
+            lower.contains("不存在")
+    }
+}
+
 enum AgentLoopState: Sendable, Equatable {
     case thinking
     case runningTool(String)
@@ -676,6 +1845,67 @@ enum AgentLoopState: Sendable, Equatable {
 enum ContinuationPolicy {
     static let maxNudges = 5
     static let maxRecoverableProtocolErrors = 3
+}
+
+enum AgentLoopWatchdogDecision: Equatable {
+    case continueWithNudge(String)
+    case pauseNeedsUser(String)
+}
+
+struct AgentLoopWatchdog: Equatable {
+    static let maxDuplicateOnlyTurns = 4
+    static let maxRepeatedErrorResults = 3
+
+    private var duplicateOnlyTurns = 0
+    private var lastErrorSignature: String?
+    private var repeatedErrorResults = 0
+
+    mutating func recordProgress() {
+        duplicateOnlyTurns = 0
+    }
+
+    mutating func recordDuplicateOnlyTurn() -> AgentLoopWatchdogDecision {
+        duplicateOnlyTurns += 1
+        if duplicateOnlyTurns >= Self.maxDuplicateOnlyTurns {
+            return .pauseNeedsUser("Agent repeated the same tool request without making progress. Please continue with a more specific instruction or adjust the request.")
+        }
+        return .continueWithNudge("""
+        The previous tool request was a duplicate and was skipped. Do not repeat the exact same tool call.
+        Inspect the current file state if needed, update TodoWrite for real progress changes, or continue with the next distinct implementation or verification step.
+        """)
+    }
+
+    mutating func recordToolResult(_ result: AgentToolResult) -> String? {
+        guard !result.isPolicyBlock else {
+            lastErrorSignature = nil
+            repeatedErrorResults = 0
+            return nil
+        }
+        guard result.isError else {
+            lastErrorSignature = nil
+            repeatedErrorResults = 0
+            return nil
+        }
+        let signature = "\(result.toolName):\(compact(result.output, limit: 240))"
+        if signature == lastErrorSignature {
+            repeatedErrorResults += 1
+        } else {
+            lastErrorSignature = signature
+            repeatedErrorResults = 1
+        }
+        guard repeatedErrorResults >= Self.maxRepeatedErrorResults else { return nil }
+        return "Agent encountered the same tool error repeatedly and paused to avoid an unproductive loop: \(compact(result.output, limit: 180))"
+    }
+
+    private func compact(_ value: String, limit: Int) -> String {
+        let normalized = value
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > limit else { return normalized }
+        let index = normalized.index(normalized.startIndex, offsetBy: max(0, limit - 1))
+        return String(normalized[..<index]) + "…"
+    }
 }
 
 struct NativeContextCompactionResult {
@@ -741,11 +1971,12 @@ enum NativeContextBudget {
     private static func microCompactToolResults(_ messages: [[String: Any]]) -> [[String: Any]] {
         var next = messages
         guard next.count > 8 else { return next }
-        for index in next.indices.dropLast(6) where (next[index]["role"] as? String) == "tool" {
+        let recentToolIndices = Set(next.indices.filter { (next[$0]["role"] as? String) == "tool" }.suffix(4))
+        for index in next.indices.dropLast(6) where (next[index]["role"] as? String) == "tool" && !recentToolIndices.contains(index) {
             guard let content = next[index]["content"] as? String, content.count > 3_000 else { continue }
             next[index]["content"] = "\(content.prefix(1_600))\n... (microcompacted, original \(content.count) characters)"
         }
-        return next
+        return preserveToolPairIntegrity(next)
     }
 
     private static func snipMiddle(_ messages: [[String: Any]], tailCount: Int) -> [[String: Any]] {
@@ -772,7 +2003,58 @@ enum NativeContextBudget {
         while tail.first?["role"] as? String == "tool" {
             tail.removeFirst()
         }
-        return tail
+        return preserveToolPairIntegrity(tail)
+    }
+
+    static func preserveToolPairIntegrity(_ messages: [[String: Any]]) -> [[String: Any]] {
+        let assistantCallIDs = Set(messages.flatMap(toolCallIDs(in:)))
+        let toolResultIDs = Set(messages.compactMap(toolResultID(in:)))
+        let pairedIDs = assistantCallIDs.intersection(toolResultIDs)
+        return messages.compactMap { message in
+            let role = message["role"] as? String
+            if role == "tool" {
+                guard let id = toolResultID(in: message), pairedIDs.contains(id) else { return nil }
+                return message
+            }
+            if role == "assistant", let calls = message["tool_calls"] as? [[String: Any]] {
+                var next = message
+                let filteredCalls = calls.filter { call in
+                    guard let id = call["id"] as? String else { return false }
+                    return pairedIDs.contains(id)
+                }
+                if filteredCalls.isEmpty {
+                    next.removeValue(forKey: "tool_calls")
+                    if contentIsEmpty(next["content"]) {
+                        return nil
+                    }
+                } else {
+                    next["tool_calls"] = filteredCalls
+                }
+                return next
+            }
+            return message
+        }
+    }
+
+    private static func toolCallIDs(in message: [String: Any]) -> [String] {
+        guard (message["role"] as? String) == "assistant",
+              let calls = message["tool_calls"] as? [[String: Any]] else {
+            return []
+        }
+        return calls.compactMap { $0["id"] as? String }
+    }
+
+    private static func toolResultID(in message: [String: Any]) -> String? {
+        guard (message["role"] as? String) == "tool" else { return nil }
+        return message["tool_call_id"] as? String
+    }
+
+    private static func contentIsEmpty(_ value: Any?) -> Bool {
+        if value == nil || value is NSNull { return true }
+        if let string = value as? String {
+            return string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return false
     }
 
     private static func estimateMessage(_ message: [String: Any]) -> Int {
@@ -810,31 +2092,60 @@ enum NativeContextBudget {
 }
 
 enum CompletionGate {
+    enum Decision: Equatable {
+        case complete
+        case continueWithNudge(String)
+        case pauseNeedsUser(String)
+        case realError(String)
+    }
+
     static func canFinish(request: AgentRequest, context: AgentRunContext, assistantContent: String) -> Bool {
+        decision(request: request, context: context, assistantContent: assistantContent) == .complete
+    }
+
+    static func decision(request: AgentRequest, context: AgentRunContext, assistantContent: String) -> Decision {
         if context.lastToolResultWasError {
-            return false
+            return .realError("The last tool call failed and the agent could not recover automatically.")
         }
         if context.runMode == .plan, !context.planExited {
-            return false
+            return .pauseNeedsUser(NativeAgentRuntime.planModeProtocolRecoveryMessage)
         }
         guard NativeAgentRuntime.isWorkspaceMutationRequest(request.prompt) else {
-            return true
+            return .complete
         }
         if context.mutatingToolCount == 0 {
-            return false
+            return continuationOrPause(request: request, context: context, assistantContent: assistantContent)
         }
         if NativeAgentRuntime.requiresPostMutationVerification(request.prompt),
            context.verificationAfterMutationCount == 0 {
-            return false
+            return continuationOrPause(request: request, context: context, assistantContent: assistantContent)
+        }
+        if context.hasIncompleteTodos {
+            return continuationOrPause(request: request, context: context, assistantContent: assistantContent)
         }
         let content = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if content.isEmpty || content == "bash" || content == "json" {
-            return false
+            return continuationOrPause(request: request, context: context, assistantContent: assistantContent)
         }
         if NativeAgentRuntime.looksLikeOngoingWorkspaceWork(content) {
-            return false
+            return continuationOrPause(request: request, context: context, assistantContent: assistantContent)
         }
-        return true
+        return .complete
+    }
+
+    private static func continuationOrPause(
+        request: AgentRequest,
+        context: AgentRunContext,
+        assistantContent: String
+    ) -> Decision {
+        if let nudge = NativeAgentRuntime.continuationNudge(
+            request: request,
+            context: context,
+            assistantContent: assistantContent
+        ) {
+            return .continueWithNudge(nudge)
+        }
+        return .pauseNeedsUser("The task appears to still be in progress, but automatic continuation paused to avoid an unproductive loop. You can type 继续 or add more specific instructions to resume.")
     }
 }
 
@@ -933,8 +2244,8 @@ struct ProviderRetryDecision: Sendable, Equatable {
 }
 
 struct NativeAgentRuntime: Sendable {
-    private static let maxAgentIterations = 24
     private static let threadManager = NativeThreadManager()
+    static let planModeProtocolRecoveryMessage = "Plan mode could not reach a user question or plan confirmation. AskQuestion or SwitchMode mode=\"agent\" is required before the turn can finish."
 
     func stream(request: AgentRequest) -> AsyncThrowingStream<AgentEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -1009,8 +2320,11 @@ struct NativeAgentRuntime: Sendable {
         var messages = openAIInitialMessages(request: request)
         var didForceWorkspaceBootstrap = false
         var didRecoverContextOverflow = false
+        var loopWatchdog = AgentLoopWatchdog()
+        var iteration = 0
 
-        for iteration in 1...maxAgentIterations {
+        while !Task.isCancelled {
+            iteration += 1
             if Task.isCancelled { throw CancellationError() }
             let statusItem = await turnController.recordStatus(iteration == 1 ? "thinking" : "processing")
             continuation.yield(.turnItemStarted(statusItem))
@@ -1036,9 +2350,25 @@ struct NativeAgentRuntime: Sendable {
                 turn = try await performOpenAIChatTurnWithRetry(
                     request: request,
                     messages: messages,
-                    continuation: continuation
+                    continuation: continuation,
+                    runMode: context.runMode
                 )
             } catch {
+                if case ProviderClientError.streamInterruptedAfterPartialOutput(let message) = error,
+                   context.partialStreamRecoveryCount < 2 {
+                    context.partialStreamRecoveryCount += 1
+                    messages.append([
+                        "role": "user",
+                        "content": """
+                        The provider response stream disconnected after partial visible output: \(message)
+                        Continue the same task from the latest completed tool result. Do not repeat already completed tool calls unless needed for verification.
+                        """,
+                    ])
+                    let recoveryItem = await turnController.recordStatus("waiting for model response", text: "partial_stream_timeout_recovery")
+                    continuation.yield(.turnItemStarted(recoveryItem))
+                    continuation.yield(.status("waiting for model response"))
+                    continue
+                }
                 if !didRecoverContextOverflow, isPromptTooLongError(error) {
                     didRecoverContextOverflow = true
                     let recovery = NativeContextBudget.forceRecover(messages: messages, contextWindow: request.contextWindow)
@@ -1053,19 +2383,116 @@ struct NativeAgentRuntime: Sendable {
                 }
                 throw error
             }
-            if let assistantItem = await turnController.recordAssistantText(turn.assistantContent) {
-                continuation.yield(.turnItemCompleted(assistantItem))
-            }
-
+            context.partialStreamRecoveryCount = 0
             var rawToolCalls = turn.toolCalls
             if rawToolCalls.isEmpty {
                 rawToolCalls = fallbackToolCalls(in: turn.assistantContent)
             }
             rawToolCalls = rawToolCalls.map(canonicalToolCall)
-            var toolInvocations = ToolArgumentNormalizer
-                .normalize(rawToolCalls)
-                .filter { context.markToolCallIfNeeded($0.call) }
+            var planPlainTextIntroOverride: String?
+            if rawToolCalls.isEmpty,
+               context.runMode == .plan,
+               !context.planExited,
+               let recovery = PlanTurnRecoveryClassifier.recovery(for: turn.assistantContent, context: context) {
+                switch recovery {
+                case .askQuestion(let call):
+                    context.planPlainTextRecoveryCount += 1
+                    context.planQuestionRecoveryCount += 1
+                    context.planWorkflowStage = .waitingForAnswer
+                    rawToolCalls = [call]
+                    let recoveryItem = await turnController.recordStatus(PlanWorkflowPresentation.recoveringStatus)
+                    continuation.yield(.turnItemStarted(recoveryItem))
+                    continuation.yield(.status(PlanWorkflowPresentation.recoveringStatus))
+                case .switchMode(let call):
+                    context.planPlainTextRecoveryCount += 1
+                    context.planGenerationRecoveryCount += 1
+                    context.planWorkflowStage = .waitingForConfirmation
+                    rawToolCalls = [call]
+                    let recoveryItem = await turnController.recordStatus(PlanWorkflowPresentation.recoveringStatus)
+                    continuation.yield(.turnItemStarted(recoveryItem))
+                    continuation.yield(.status(PlanWorkflowPresentation.recoveringStatus))
+                case .intro(let intro):
+                    if context.planQuestionAnswered, context.planGenerationRecoveryCount > 0 {
+                        context.planPlainTextRecoveryCount += 1
+                        context.planGenerationRecoveryCount += 1
+                        context.planWorkflowStage = .waitingForConfirmation
+                        rawToolCalls = [PlanTurnRecoveryClassifier.fallbackSwitchModeCall(
+                            from: turn.assistantContent,
+                            userPrompt: request.prompt
+                        )]
+                        let recoveryItem = await turnController.recordStatus(PlanWorkflowPresentation.recoveringStatus)
+                        continuation.yield(.turnItemStarted(recoveryItem))
+                        continuation.yield(.status(PlanWorkflowPresentation.recoveringStatus))
+                    } else if !context.planQuestionAnswered, context.planQuestionRecoveryCount > 0 {
+                        context.planPlainTextRecoveryCount += 1
+                        context.planQuestionRecoveryCount += 1
+                        context.planWorkflowStage = .waitingForAnswer
+                        rawToolCalls = [PlanTurnRecoveryClassifier.fallbackAskQuestionCall(from: turn.assistantContent + "\n" + request.prompt)]
+                        let recoveryItem = await turnController.recordStatus(PlanWorkflowPresentation.recoveringStatus)
+                        continuation.yield(.turnItemStarted(recoveryItem))
+                        continuation.yield(.status(PlanWorkflowPresentation.recoveringStatus))
+                    } else {
+                        context.planPlainTextRecoveryCount += 1
+                        if context.planQuestionAnswered {
+                            context.planGenerationRecoveryCount += 1
+                            context.planWorkflowStage = .answeredGeneratingPlan
+                        } else {
+                            context.planQuestionRecoveryCount += 1
+                            context.planWorkflowStage = .needsQuestion
+                        }
+                        planPlainTextIntroOverride = intro
+                    }
+                }
+            }
+            let interactiveContent = InteractivePlanContentDeferrer.prepare(
+                assistantContent: turn.assistantContent,
+                toolCalls: rawToolCalls,
+                runMode: context.runMode
+            )
+            rawToolCalls = interactiveContent.toolCalls
+            if let planStatus = PlanWorkflowPresentation.generationStatus(for: rawToolCalls, runMode: context.runMode) {
+                let planStatusItem = await turnController.recordStatus(planStatus)
+                continuation.yield(.turnItemStarted(planStatusItem))
+                continuation.yield(.status(planStatus))
+            }
+            let visibleAssistantText = visibleAssistantTextForTurn(
+                assistantContent: turn.assistantContent,
+                toolCalls: rawToolCalls,
+                interactiveContent: interactiveContent,
+                runMode: context.runMode
+            )
+            let assistantTextForDisplay = planPlainTextIntroOverride ?? visibleAssistantText
+            if let planPlainTextIntroOverride {
+                continuation.yield(.contentDelta(planPlainTextIntroOverride))
+            }
+            if let assistantItem = await turnController.recordAssistantText(assistantTextForDisplay) {
+                continuation.yield(.turnItemCompleted(assistantItem))
+            }
+            let normalizedInvocations = ToolArgumentNormalizer.normalize(rawToolCalls)
+            var toolInvocations = normalizedInvocations.compactMap { context.deduplicatedInvocation($0) }
+            if !normalizedInvocations.isEmpty, toolInvocations.isEmpty {
+                switch loopWatchdog.recordDuplicateOnlyTurn() {
+                case .continueWithNudge(let nudge):
+                    appendAssistantContentIfNeeded(turn.assistantContent, to: &messages)
+                    messages.append([
+                        "role": "user",
+                        "content": nudge,
+                    ])
+                    let nudgeItem = await turnController.recordStatus("continuing")
+                    continuation.yield(.turnItemStarted(nudgeItem))
+                    continuation.yield(.status("continuing"))
+                    continue
+                case .pauseNeedsUser:
+                    let pauseItem = await turnController.recordStatus("needs continuation")
+                    continuation.yield(.turnItemStarted(pauseItem))
+                    continuation.yield(.status("needs continuation"))
+                    return
+                }
+            } else if !toolInvocations.isEmpty {
+                loopWatchdog.recordProgress()
+            }
             if toolInvocations.isEmpty,
+               context.runMode != .plan,
                !didForceWorkspaceBootstrap,
                shouldForceWorkspaceBootstrap(request: request, context: context, assistantContent: turn.assistantContent) {
                 didForceWorkspaceBootstrap = true
@@ -1092,12 +2519,56 @@ struct NativeAgentRuntime: Sendable {
                     continuation.yield(.status("continuing"))
                     continue
                 }
-                if !CompletionGate.canFinish(request: request, context: context, assistantContent: turn.assistantContent) {
-                    throw ProviderClientError.transport(
-                        "Agent stopped before completing the requested workspace change. No pending tool call was returned after \(context.toolExecutionCount) tool step(s)."
-                    )
+                if context.runMode == .plan, !context.planExited {
+                    let recoveryCall = context.planQuestionAnswered
+                        ? PlanTurnRecoveryClassifier.fallbackSwitchModeCall(from: turn.assistantContent, userPrompt: request.prompt)
+                        : PlanTurnRecoveryClassifier.fallbackAskQuestionCall(from: turn.assistantContent.isEmpty ? request.prompt : turn.assistantContent)
+                    let invocation = ToolArgumentNormalizer.normalize(recoveryCall)
+                    if context.markToolCallIfNeeded(invocation.call) {
+                        context.planPlainTextRecoveryCount += 1
+                        if context.planQuestionAnswered {
+                            context.planGenerationRecoveryCount += 1
+                            context.planWorkflowStage = .waitingForConfirmation
+                        } else {
+                            context.planQuestionRecoveryCount += 1
+                            context.planWorkflowStage = .waitingForAnswer
+                        }
+                        let recoveryItem = await turnController.recordStatus(PlanWorkflowPresentation.recoveringStatus)
+                        continuation.yield(.turnItemStarted(recoveryItem))
+                        continuation.yield(.status(PlanWorkflowPresentation.recoveringStatus))
+                        toolInvocations = [invocation]
+                    } else {
+                        let recoveryItem = await turnController.recordStatus(PlanWorkflowPresentation.recoveryNeededStatus)
+                        continuation.yield(.turnItemStarted(recoveryItem))
+                        continuation.yield(.status(PlanWorkflowPresentation.recoveryNeededStatus))
+                        return
+                    }
                 }
-                return
+            }
+
+            if toolInvocations.isEmpty {
+                switch CompletionGate.decision(request: request, context: context, assistantContent: turn.assistantContent) {
+                case .complete:
+                    return
+                case .continueWithNudge(let nudge):
+                    appendAssistantContentIfNeeded(turn.assistantContent, to: &messages)
+                    messages.append([
+                        "role": "user",
+                        "content": nudge,
+                    ])
+                    context.continuationNudgeCount += 1
+                    let nudgeItem = await turnController.recordStatus("continuing")
+                    continuation.yield(.turnItemStarted(nudgeItem))
+                    continuation.yield(.status("continuing"))
+                    continue
+                case .pauseNeedsUser:
+                    let pauseItem = await turnController.recordStatus("needs continuation")
+                    continuation.yield(.turnItemStarted(pauseItem))
+                    continuation.yield(.status("needs continuation"))
+                    return
+                case .realError(let message):
+                    throw ProviderClientError.transport(message)
+                }
             }
             let assistantToolContent = isHiddenToolProtocol(turn.assistantContent) ? "" : turn.assistantContent
             let toolCalls = toolInvocations.map(\.call)
@@ -1133,6 +2604,9 @@ struct NativeAgentRuntime: Sendable {
                 continuation.yield(.turnItemCompleted(recorded.resultItem))
                 continuation.yield(.toolResult(id: call.id, output: result.output, isError: result.isError))
                 context.recordToolResult(result, call: call)
+                if let watchdogMessage = loopWatchdog.recordToolResult(result) {
+                    throw ProviderClientError.transport(watchdogMessage)
+                }
                 if result.toolName == "Task" {
                     continuation.yield(.subagentStatus(id: call.id, status: result.isError ? "failed" : "completed", detail: result.output))
                 }
@@ -1147,20 +2621,44 @@ struct NativeAgentRuntime: Sendable {
                 if didApprovePlanExecution {
                     messages.append([
                         "role": "user",
-                        "content": "The plan was approved. Continue executing it now in agent mode. Use concrete file/search/shell tools and do not stop after restating the plan.",
+                        "content": "The plan was approved. Continue executing it now in agent mode. Before the first workspace-changing tool, call TodoWrite with the concrete execution checklist. After each write/edit/delete/non-read-only tool, refresh TodoWrite before the next workspace-changing tool. Use concrete file/search/shell tools and do not stop after restating the plan.",
                     ])
                     context.continuationNudgeCount += 1
                 }
             }
         }
 
-        throw ProviderClientError.transport("Agent loop reached the maximum iteration limit.")
+        throw CancellationError()
+    }
+
+    private static func visibleAssistantTextForTurn(
+        assistantContent: String,
+        toolCalls: [AgentToolCall],
+        interactiveContent: InteractivePlanContentDeferrer.Result,
+        runMode: ChatRunMode
+    ) -> String {
+        if runMode == .plan {
+            if interactiveContent.suppressVisibleAssistantText {
+                return interactiveContent.visibleIntro ?? ""
+            }
+            guard !toolCalls.isEmpty else { return "" }
+            let canonicalNames = toolCalls.map { AgentToolNameCanonicalizer.canonical($0.name) }
+            if canonicalNames.contains("AskQuestion") || canonicalNames.contains("SwitchMode") {
+                return ""
+            }
+            return assistantContent.nilIfBlank ?? PlanModeIntroSynthesizer.intro(for: toolCalls, runMode: runMode) ?? ""
+        }
+        if interactiveContent.suppressVisibleAssistantText {
+            return interactiveContent.visibleIntro ?? ""
+        }
+        return assistantContent.nilIfBlank ?? ""
     }
 
     private static func performOpenAIChatTurnWithRetry(
         request: AgentRequest,
         messages: [[String: Any]],
         continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation,
+        runMode: ChatRunMode,
         policy: ProviderRetryPolicy = .codexDefault
     ) async throws -> ModelTurn {
         var failedAttempts = 0
@@ -1169,7 +2667,8 @@ struct NativeAgentRuntime: Sendable {
                 return try await performOpenAIChatTurn(
                     request: request,
                     messages: messages,
-                    continuation: continuation
+                    continuation: continuation,
+                    runMode: runMode
                 )
             } catch is CancellationError {
                 throw CancellationError()
@@ -1195,12 +2694,13 @@ struct NativeAgentRuntime: Sendable {
     private static func performOpenAIChatTurn(
         request: AgentRequest,
         messages: [[String: Any]],
-        continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
+        continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation,
+        runMode: ChatRunMode
     ) async throws -> ModelTurn {
         let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: "chat/completions")
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
-        urlRequest.timeoutInterval = timeoutInterval(from: request.timeoutMs)
+        urlRequest.timeoutInterval = modelStreamTimeoutInterval(from: request.timeoutMs)
         try applyHeaders(to: &urlRequest, request: request)
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": request.providerConfig.model,
@@ -1245,6 +2745,16 @@ struct NativeAgentRuntime: Sendable {
                       let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     continue
                 }
+                if let choices = object["choices"] as? [[String: Any]],
+                   let delta = choices.first?["delta"] as? [String: Any],
+                   let rawCalls = delta["tool_calls"] as? [[String: Any]] {
+                    for rawCall in rawCalls {
+                        let index = rawCall["index"] as? Int ?? 0
+                        var accumulator = accumulators[index] ?? OpenAIToolCallAccumulator(index: index)
+                        accumulator.apply(delta: rawCall)
+                        accumulators[index] = accumulator
+                    }
+                }
                 for event in openAIChatEvents(from: object, contextWindow: request.contextWindow) {
                     if case .contentDelta(let delta) = event {
                         content += delta
@@ -1254,7 +2764,13 @@ struct NativeAgentRuntime: Sendable {
                         } else {
                             heldContent += delta
                             let sample = heldContent.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !sample.isEmpty, !looksLikeProtocolPrefix(sample) {
+                            if !sample.isEmpty,
+                               !looksLikeProtocolPrefix(sample),
+                               !InteractivePlanContentDeferrer.shouldHoldStreamingContent(
+                                   sample,
+                                   runMode: runMode,
+                                   hasToolCallAccumulator: !accumulators.isEmpty
+                               ) {
                                 shouldStreamContent = true
                                 continuation.yield(.contentDelta(heldContent))
                                 didYieldVisibleContent = true
@@ -1263,16 +2779,6 @@ struct NativeAgentRuntime: Sendable {
                         }
                     } else {
                         continuation.yield(event)
-                    }
-                }
-                if let choices = object["choices"] as? [[String: Any]],
-                   let delta = choices.first?["delta"] as? [String: Any],
-                   let rawCalls = delta["tool_calls"] as? [[String: Any]] {
-                    for rawCall in rawCalls {
-                        let index = rawCall["index"] as? Int ?? 0
-                        var accumulator = accumulators[index] ?? OpenAIToolCallAccumulator(index: index)
-                        accumulator.apply(delta: rawCall)
-                        accumulators[index] = accumulator
                     }
                 }
             }
@@ -1286,11 +2792,24 @@ struct NativeAgentRuntime: Sendable {
             throw mapped
         }
 
-        if !heldContent.isEmpty, !isHiddenToolProtocol(content) {
-            continuation.yield(.contentDelta(heldContent))
+        let calls = accumulators.keys.sorted().compactMap { accumulators[$0]?.toolCall }
+        let interactiveContent = InteractivePlanContentDeferrer.prepare(
+            assistantContent: content,
+            toolCalls: calls,
+            runMode: runMode
+        )
+        if !didYieldVisibleContent, !heldContent.isEmpty, !isHiddenToolProtocol(content) {
+            let visibleContent = visibleAssistantTextForTurn(
+                assistantContent: content,
+                toolCalls: calls,
+                interactiveContent: interactiveContent,
+                runMode: runMode
+            )
+            if !visibleContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                continuation.yield(.contentDelta(visibleContent))
+            }
         }
 
-        let calls = accumulators.keys.sorted().compactMap { accumulators[$0]?.toolCall }
         return ModelTurn(assistantContent: content, toolCalls: calls)
     }
 
@@ -1337,7 +2856,7 @@ struct NativeAgentRuntime: Sendable {
         let endpoint = try endpointURL(baseURL: context.providerConfig.baseURL, suffix: "chat/completions")
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
-        urlRequest.timeoutInterval = timeoutInterval(from: context.timeoutMs)
+        urlRequest.timeoutInterval = modelStreamTimeoutInterval(from: context.timeoutMs)
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let apiKey = context.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
@@ -1470,7 +2989,12 @@ struct NativeAgentRuntime: Sendable {
 
     private static func nativeAgentSystemPrompt(request: AgentRequest) -> String {
         let modeText = request.runMode == .plan
-            ? "You are in plan mode. Read/search/todo/question tools are allowed. Ask the user at least one blocking question with AskQuestion before requesting execution. Do not edit files or run mutating shell commands until SwitchMode is called with mode=\"agent\" and a concrete plan, and the user approves it."
+            ? """
+            You are in plan mode. The user does not want implementation yet.
+            Only read/search/todo/question tools are allowed before approval. Do not edit files or run mutating shell commands until SwitchMode is called with mode="agent" and a concrete plan, and the user approves it.
+            A plan-mode turn must end only by calling AskQuestion to gather user input or SwitchMode mode="agent" with the final plan. Do not ask questions, request approval, or present the final plan as ordinary prose.
+            Ask the user at least one blocking question with AskQuestion before requesting execution. AskQuestion must use the questions array shape. Include concrete options when useful, with no fixed minimum or maximum; do not include an "Other" option because the UI adds it automatically.
+            """
             : "You are in agent mode. Use tools to inspect and modify the workspace."
         return """
         You are 9GClaw, a native macOS coding agent with a Claude Code style workflow.
@@ -1480,6 +3004,7 @@ struct NativeAgentRuntime: Sendable {
         Use the provided tools for all file reads, file writes, edits, searches, todos, and shell commands.
         Never claim that you created, edited, deleted, or inspected a file unless the corresponding tool result confirms it.
         Prefer small, verifiable steps: inspect files, make precise edits, run focused checks, then summarize.
+        Prefer targeted Read/Grep/Glob once paths are known. Use root Glob **/* only for the first workspace discovery; do not repeat full-workspace glob after you already have a file list.
         Prefer the canonical tool names: Read, Write, StrReplace, Delete, EditNotebook, Grep, Glob, SemanticSearch, Shell, Await, ReadLints, Skill, TodoWrite, AskQuestion, SwitchMode, and Task.
         For shell commands, use Shell only when needed and keep commands scoped to the workspace. Use run_in_background plus Await for long-running commands.
         For current public information, weather, or web evidence, call Skill with skill="9gclaw-rag:glm-web-search" or skill="9gclaw-rag:rag-research". Do not call separate weather, web search, or web fetch tools directly.
@@ -1495,7 +3020,9 @@ struct NativeAgentRuntime: Sendable {
         let content = assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let workspaceVerbs = [
             "网页", "网站", "项目", "文件", "代码", "实现", "生成", "修改", "优化", "修复", "完善",
+            "删除", "移除", "清空",
             "create", "build", "edit", "modify", "fix", "optimize", "implement", "file", "website", "page", "code",
+            "delete", "remove",
         ]
         guard workspaceVerbs.contains(where: { prompt.contains($0) }) else { return false }
         if content.contains("```") || content == "bash" || content == "json" {
@@ -1513,11 +3040,11 @@ struct NativeAgentRuntime: Sendable {
         if request.runMode == .plan, !context.planExited {
             if !context.planQuestionAnswered {
                 return """
-                Continue the planning turn. Ask the user at least one blocking question with AskQuestion before requesting execution. Do not call SwitchMode mode="agent" until the user answers.
+                Continue the planning turn. Ask the user blocking questions with AskQuestion before requesting execution. Include concrete options when useful, with no fixed minimum or maximum; the UI will add Other automatically. Do not call SwitchMode mode="agent" until the user answers.
                 """
             }
             return """
-            Continue the planning turn. If the plan is concrete enough to execute, call SwitchMode with mode="agent" and the plan so the user can approve implementation. Do not stop after prose only.
+            Continue the planning turn with the user's answers. You may use read-only exploration tools if needed. If the plan is concrete enough to execute, call SwitchMode with mode="agent" and a complete plan so the user can approve implementation. Do not stop after ordinary prose only.
             """
         }
         guard isWorkspaceMutationRequest(prompt) else { return nil }
@@ -1543,6 +3070,12 @@ struct NativeAgentRuntime: Sendable {
             return """
             Continue the workspace task. You have changed files, but have not verified or read back the result yet.
             Run a focused read/search/check command, then continue with any remaining edits before giving the final summary.
+            """
+        }
+        if context.hasIncompleteTodos {
+            return """
+            Continue the workspace task. The todo list still has unfinished items.
+            Complete the current todo item, update TodoWrite when progress changes, and do not give the final summary until every required todo is completed or explicitly canceled.
             """
         }
         if context.mutatingToolCount > 0, looksLikeOngoingWorkspaceWork(content) {
@@ -1574,8 +3107,8 @@ struct NativeAgentRuntime: Sendable {
     static func requiresPostMutationVerification(_ prompt: String) -> Bool {
         let prompt = primaryUserPrompt(from: prompt).lowercased()
         let verificationVerbs = [
-            "优化", "修复", "完善", "调整", "重构", "检查", "验证", "继续",
-            "optimize", "fix", "improve", "refactor", "verify", "check", "continue",
+            "优化", "修复", "完善", "调整", "重构", "检查", "验证", "继续", "删除", "移除", "清空",
+            "optimize", "fix", "improve", "refactor", "verify", "check", "continue", "delete", "remove",
         ]
         return verificationVerbs.contains { prompt.contains($0) }
     }
@@ -1583,8 +3116,8 @@ struct NativeAgentRuntime: Sendable {
     static func isWorkspaceMutationRequest(_ prompt: String) -> Bool {
         let prompt = primaryUserPrompt(from: prompt).lowercased()
         let mutationVerbs = [
-            "创建", "新建", "生成", "做一个", "帮我做", "修改", "优化", "修复", "完善", "实现", "重写", "调整", "编辑", "保存",
-            "create", "build", "generate", "make", "write", "edit", "modify", "fix", "optimize", "implement", "rewrite", "update", "improve", "save",
+            "创建", "新建", "生成", "做一个", "帮我做", "修改", "优化", "修复", "完善", "实现", "重写", "调整", "编辑", "保存", "删除", "移除", "清空",
+            "create", "build", "generate", "make", "write", "edit", "modify", "fix", "optimize", "implement", "rewrite", "update", "improve", "save", "delete", "remove",
         ]
         return mutationVerbs.contains { prompt.contains($0) }
     }
@@ -1716,14 +3249,28 @@ struct NativeAgentRuntime: Sendable {
         request: AgentRequest,
         continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     ) async -> AgentToolResult {
-        let requestKind = permissionKind(for: call.name)
+        if let todoBlock = PlanTodoExecutionGate.blockingResult(for: call, context: context) {
+            return todoBlock
+        }
+        let requestKind = permissionKind(for: call)
         let interactivePayload = requestKind == .askUserQuestion
             ? AgentInteractivePayload.askUserQuestion(from: call.inputJSON)
             : nil
+        let permissionInputJSON = requestKind == .destructivePlanApproval
+            ? DestructiveToolClassifier.planJSON(call: call)
+            : call.inputJSON
         let policy = NativeToolRouter.permissionPolicy(for: call, context: context)
         switch policy {
         case .allow:
             break
+        case .block(let reason):
+            return AgentToolResult(
+                callId: call.id,
+                toolName: call.name,
+                output: reason,
+                isError: false,
+                isPolicyBlock: true
+            )
         case .deny(let reason):
             return AgentToolResult(callId: call.id, toolName: call.name, output: reason, isError: true)
         case .ask(let reason):
@@ -1731,14 +3278,14 @@ struct NativeAgentRuntime: Sendable {
                 id: UUID(),
                 sessionId: context.sessionId,
                 toolName: call.name,
-                inputJSON: call.inputJSON,
+                inputJSON: permissionInputJSON,
                 reason: reason,
                 scope: .session,
                 kind: requestKind,
                 interactivePayload: interactivePayload
             )
             continuation.yield(.permissionRequest(permission))
-            continuation.yield(.status("waiting for permission"))
+            continuation.yield(.status(PlanWorkflowPresentation.waitingStatus(for: call.name, runMode: context.runMode) ?? "waiting for permission"))
             let decision = await request.permissionHandler?(permission) ?? .deny
             switch decision {
             case .allow(_, let updatedInputJSON):
@@ -1767,13 +3314,16 @@ struct NativeAgentRuntime: Sendable {
         return await NativeToolRouter.execute(call: call, context: context)
     }
 
-    private static func permissionKind(for toolName: String) -> PermissionRequestKind {
-        switch AgentToolNameCanonicalizer.canonical(toolName) {
+    private static func permissionKind(for call: AgentToolCall) -> PermissionRequestKind {
+        switch AgentToolNameCanonicalizer.canonical(call.name) {
         case "AskQuestion":
             return .askUserQuestion
         case "SwitchMode":
             return .exitPlanMode
         default:
+            if DestructiveToolClassifier.isDestructive(call: call) {
+                return .destructivePlanApproval
+            }
             return .tool
         }
     }
@@ -1802,6 +3352,10 @@ struct NativeAgentRuntime: Sendable {
 
     private static func timeoutInterval(from milliseconds: Int) -> TimeInterval {
         TimeInterval(max(milliseconds, 1_000)) / 1_000.0
+    }
+
+    private static func modelStreamTimeoutInterval(from milliseconds: Int) -> TimeInterval {
+        TimeInterval(max(milliseconds, 300_000)) / 1_000.0
     }
 
     static func isPromptTooLongError(_ error: Error) -> Bool {
@@ -2453,10 +4007,11 @@ enum AgentToolRegistry {
             ),
             functionTool(
                 "AskQuestion",
-                "Ask the user one or more short blocking questions. Prefer the questions array shape.",
+                "Ask the user one or more short blocking questions. In Plan mode, use this for clarification; never ask plan approval here. Use the questions array shape. Options are optional and may contain any number of entries.",
                 [
                     "questions": [
                         "type": "array",
+                        "minItems": 1,
                         "items": [
                             "type": "object",
                             "properties": [
@@ -2563,6 +4118,7 @@ enum AgentPermissionPolicy {
     enum Result: Equatable {
         case allow
         case ask(String)
+        case block(String)
         case deny(String)
     }
 
@@ -2586,16 +4142,34 @@ enum AgentPermissionPolicy {
     static func policy(for call: AgentToolCall, context: AgentRunContext) -> Result {
         let toolName = normalizedToolName(call.name)
         if context.runMode == .plan, !context.planExited, !isPlanModeSafe(toolName: toolName, call: call) {
-            return .deny("\(toolName) is not allowed in plan mode. Call SwitchMode with mode=\"agent\" and a plan before mutating the workspace.")
+            return .block(planModePolicyBlockMessage(for: toolName))
         }
         if matchesAny(ruleSet: context.toolSettings.disallowedTools, call: call) {
             return .deny("\(toolName) is blocked by permissions settings.")
         }
+        if context.runMode == .plan,
+           !context.planExited,
+           toolName == "Shell",
+           AgentRunContext.isReadOnlyShell(call.inputJSON) {
+            return .allow
+        }
         if toolName == "SwitchMode", switchModeTarget(call.inputJSON) == "agent" {
-            if context.runMode == .plan, !context.planExited, !context.planQuestionAnswered {
-                return .deny("AskQuestion is required before leaving Plan mode.")
+            if context.runMode == .plan,
+               !context.planExited,
+               !context.planQuestionAnswered,
+               !isRecoveredPlainTextPlan(call.inputJSON) {
+                return .block("Plan mode requires AskQuestion before leaving Plan mode. Ask the user a blocking question first, then generate the final plan.")
             }
             return .ask("Plan approval is required before leaving Plan mode.")
+        }
+        if DestructiveToolClassifier.isDestructive(call: call) {
+            if context.planExecutionApproved {
+                return .allow
+            }
+            return .ask("Destructive action plan approval is required before deleting workspace files.")
+        }
+        if interactiveTools.contains(toolName) {
+            return .ask("9GClaw wants to ask a question.")
         }
         if context.permissionMode == .bypassPermissions {
             return .allow
@@ -2603,10 +4177,17 @@ enum AgentPermissionPolicy {
         if matchesAny(ruleSet: context.toolSettings.allowedTools, call: call) {
             return .allow
         }
-        if toolRequiresPrompt(toolName: toolName, call: call) || interactiveTools.contains(toolName) {
+        if toolRequiresPrompt(toolName: toolName, call: call) {
             return .ask("9GClaw wants to run \(toolName).")
         }
         return .allow
+    }
+
+    private static func planModePolicyBlockMessage(for toolName: String) -> String {
+        if toolName == "Shell" {
+            return "Plan mode skipped this write-capable shell command. Use read-only commands while planning, then call SwitchMode with mode=\"agent\" and a concrete plan before mutating the workspace."
+        }
+        return "Plan mode skipped this workspace-changing \(toolName) tool. Continue planning with read/search tools, then call SwitchMode with mode=\"agent\" and a concrete plan before mutating the workspace."
     }
 
     private static func switchModeTarget(_ inputJSON: String) -> String {
@@ -2617,6 +4198,14 @@ enum AgentPermissionPolicy {
         return ((object["mode"] as? String) ?? "agent")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+    }
+
+    private static func isRecoveredPlainTextPlan(_ inputJSON: String) -> Bool {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return object["recoveredFromPlainText"] as? Bool == true
     }
 
     private static func normalizedToolName(_ value: String) -> String {
@@ -2966,6 +4555,9 @@ enum AgentToolExecutor {
         }
         let executionCall = invocation.call
         let toolName = AgentToolNameCanonicalizer.canonical(executionCall.name)
+        if let cachedGlob = RootGlobExecutionPolicy.cachedResultIfAvailable(call: executionCall, context: context) {
+            return cachedGlob
+        }
         do {
             let output: String
             switch toolName {
@@ -2982,7 +4574,11 @@ enum AgentToolExecutor {
             case "Grep":
                 output = try grep(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "Glob":
-                output = try glob(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
+                output = RootGlobExecutionPolicy.recordIfRootGlob(
+                    call: executionCall,
+                    output: try glob(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath),
+                    context: context
+                )
             case "SemanticSearch":
                 output = try semanticSearch(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "Shell":
@@ -3009,9 +4605,11 @@ enum AgentToolExecutor {
                 if mode == "agent" {
                     context.planExited = true
                     context.runMode = .agent
+                    context.planExecutionApproved = true
                 } else if mode == "plan" {
                     context.planExited = false
                     context.runMode = .plan
+                    context.planExecutionApproved = false
                 }
                 if mode == "plan", let feedback = (input["userFeedback"] as? String).nilIfBlank {
                     output = "Stay in Plan mode. User requested revisions:\n\(feedback)"
@@ -3019,6 +4617,9 @@ enum AgentToolExecutor {
                     output = (input["plan"] as? String).nilIfBlank ?? "Mode switched to \(mode)."
                 }
             case "AskQuestion":
+                guard hasNonEmptyAnswers(executionCall.inputJSON) else {
+                    throw ProviderClientError.toolExecution("AskQuestion requires a user answer before continuing.")
+                }
                 output = askUserQuestionOutput(inputJSON: executionCall.inputJSON)
             default:
                 throw ProviderClientError.toolExecution("Unsupported tool: \(toolName)")
@@ -3030,7 +4631,15 @@ enum AgentToolExecutor {
     }
 
     static func askUserQuestionResult(call: AgentToolCall, updatedInputJSON: String) -> AgentToolResult {
-        AgentToolResult(
+        guard hasNonEmptyAnswers(updatedInputJSON) else {
+            return AgentToolResult(
+                callId: call.id,
+                toolName: AgentToolNameCanonicalizer.canonical(call.name),
+                output: "AskQuestion requires a user answer before continuing.",
+                isError: true
+            )
+        }
+        return AgentToolResult(
             callId: call.id,
             toolName: AgentToolNameCanonicalizer.canonical(call.name),
             output: limitOutput(askUserQuestionOutput(inputJSON: updatedInputJSON)),
@@ -3042,18 +4651,43 @@ enum AgentToolExecutor {
         guard let data = inputJSON.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let answers = object["answers"] as? [String: Any] else {
-            return #"{"answers":{}}"#
+            return "User has not answered any questions yet."
         }
-        let normalized = answers.reduce(into: [String: String]()) { result, pair in
-            if let value = pair.value as? String {
-                result[pair.key] = value
-            } else if let values = pair.value as? [String] {
-                result[pair.key] = values.joined(separator: ", ")
+        let entries = answers.keys.sorted().compactMap { key -> String? in
+            guard let value = answers[key] else { return nil }
+            let display: String
+            if let string = value as? String {
+                display = string
+            } else if let values = value as? [String] {
+                display = values.joined(separator: ", ")
             } else {
-                result[pair.key] = String(describing: pair.value)
+                display = String(describing: value)
             }
+            let trimmed = display.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return "\"\(key)\"=\"\(trimmed)\""
         }
-        return jsonString(["answers": normalized], pretty: true)
+        guard !entries.isEmpty else {
+            return "User has not answered any questions yet."
+        }
+        return "User has answered your questions: \(entries.joined(separator: ", ")). You can now continue with the user's answers in mind. If you are in Plan mode, continue with read-only planning if needed, then call SwitchMode with mode=\"agent\" and a concrete plan. Do not stop after ordinary prose only."
+    }
+
+    private static func hasNonEmptyAnswers(_ inputJSON: String) -> Bool {
+        guard let data = inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let answers = object["answers"] as? [String: Any] else {
+            return false
+        }
+        return answers.values.contains { value in
+            if let string = value as? String {
+                return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            if let values = value as? [String] {
+                return values.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            }
+            return true
+        }
     }
 
     static func inputObject(from json: String) throws -> [String: Any] {
@@ -3872,7 +5506,12 @@ enum AgentToolExecutor {
         let child = AgentRunContext(request: request)
         child.planExited = context.planExited
         child.planQuestionAnswered = context.planQuestionAnswered
+        child.planWorkflowStage = context.planWorkflowStage
+        child.planQuestionRecoveryCount = context.planQuestionRecoveryCount
+        child.planGenerationRecoveryCount = context.planGenerationRecoveryCount
+        child.planExecutionApproved = context.planExecutionApproved
         child.todosJSON = context.todosJSON
+        child.workspaceMutationEpoch = context.workspaceMutationEpoch
         child.subagentDepth = context.subagentDepth
         child.maxSubagentDepth = context.maxSubagentDepth
         return child
@@ -3948,7 +5587,7 @@ enum AgentToolExecutor {
             throw ProviderClientError.toolExecution("TodoWrite requires todos.")
         }
         context.todosJSON = jsonString(todos, pretty: true)
-        return "Updated todo list."
+        return "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable."
     }
 
     static func requiredString(_ key: String, input: [String: Any]) throws -> String {
