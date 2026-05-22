@@ -1,0 +1,364 @@
+namespace G9Claw.Windows.Core;
+
+public enum AgentTurnStatus
+{
+    InProgress,
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+public enum AgentTurnItemKind
+{
+    UserMessage,
+    AgentMessage,
+    Status,
+    ToolCall,
+    ToolResult,
+    Command,
+    Search,
+    FileChange,
+    Question,
+    Plan,
+}
+
+public enum AgentTurnItemStatus
+{
+    InProgress,
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+public sealed record CommandExecutionPayload(
+    string Command,
+    string Cwd,
+    string Stdout,
+    string Stderr,
+    int? ExitCode);
+
+public sealed record FileChangePayload(
+    string Path,
+    string Operation,
+    string? Diff);
+
+public sealed record ToolInvocationPayload(
+    string CallId,
+    string ToolName,
+    string InputJson,
+    string? Output,
+    bool IsError);
+
+public sealed record AgentTurnItem(
+    string Id,
+    int Sequence,
+    AgentTurnItemKind Kind,
+    AgentTurnItemStatus Status,
+    string Title,
+    string Text,
+    string? ToolName,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompletedAt,
+    CommandExecutionPayload? CommandExecution,
+    FileChangePayload? FileChange,
+    ToolInvocationPayload? ToolInvocation);
+
+public sealed record AgentTurn(
+    string Id,
+    string SessionId,
+    Guid RunToken,
+    string WorkspacePath,
+    AgentTurnStatus Status,
+    ChatRunMode Mode,
+    DateTimeOffset StartedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompletedAt,
+    List<AgentTurnItem> Items);
+
+public sealed record AgentTurnStoreSnapshot(
+    string SessionId,
+    string? ActiveTurnId,
+    List<AgentTurn> Turns);
+
+public sealed record AgentRequest(
+    string SessionId,
+    string ProjectPath,
+    string Prompt,
+    List<FileAttachment> Attachments,
+    ProviderConfig ProviderConfig,
+    string ApiKey,
+    List<ChatMessage> PriorMessages,
+    int TimeoutMs,
+    int ContextWindow,
+    ComposerPermissionMode PermissionMode,
+    ChatRunMode RunMode,
+    ToolPermissionSettings ToolSettings,
+    string RouterRoute,
+    Dictionary<string, string> NativeConfigValues)
+{
+    public List<AgentToolExchange> ToolExchanges { get; init; } = [];
+}
+
+public sealed record AgentToolExchange(
+    AgentToolCall Call,
+    AgentToolResult Result);
+
+public sealed class NativeThreadManager
+{
+    private readonly Dictionary<string, NativeSession> _sessions = [];
+
+    public NativeSession SessionFor(AgentRequest request)
+    {
+        if (_sessions.TryGetValue(request.SessionId, out var existing))
+        {
+            existing.UpdateWorkspacePath(request.ProjectPath);
+            return existing;
+        }
+
+        var session = new NativeSession(request.SessionId, request.ProjectPath);
+        _sessions[request.SessionId] = session;
+        return session;
+    }
+
+    public void Interrupt(string sessionId)
+    {
+        if (_sessions.TryGetValue(sessionId, out var session))
+        {
+            session.InterruptActiveTurn("Interrupted by user.");
+        }
+    }
+
+    public void Shutdown()
+    {
+        foreach (var session in _sessions.Values)
+        {
+            session.InterruptActiveTurn("Shutting down.");
+        }
+
+        _sessions.Clear();
+    }
+}
+
+public sealed class NativeSession
+{
+    private readonly Dictionary<string, AgentTurn> _turns = [];
+    private string _workspacePath;
+    private NativeTurnController? _activeTurn;
+
+    public string SessionId { get; }
+
+    public NativeSession(string sessionId, string workspacePath)
+    {
+        SessionId = sessionId;
+        _workspacePath = workspacePath;
+    }
+
+    public void UpdateWorkspacePath(string path) => _workspacePath = path;
+
+    public NativeTurnController StartTurn(AgentRequest request)
+    {
+        _activeTurn?.Interrupt("Superseded by a new turn.");
+        _activeTurn = new NativeTurnController(SessionId, request.ProjectPath, request.RunMode);
+        var snapshot = _activeTurn.Snapshot();
+        _turns[snapshot.Id] = snapshot;
+        return _activeTurn;
+    }
+
+    public AgentTurnStoreSnapshot Snapshot()
+    {
+        if (_activeTurn is not null)
+        {
+            var activeSnapshot = _activeTurn.Snapshot();
+            _turns[activeSnapshot.Id] = activeSnapshot;
+            if (activeSnapshot.Status != AgentTurnStatus.InProgress)
+            {
+                _activeTurn = null;
+            }
+        }
+
+        return new AgentTurnStoreSnapshot(
+            SessionId,
+            _activeTurn?.TurnId,
+            _turns.Values.OrderBy(turn => turn.StartedAt).ToList());
+    }
+
+    public void InterruptActiveTurn(string reason)
+    {
+        _activeTurn?.Interrupt(reason);
+        Snapshot();
+    }
+}
+
+public sealed class NativeTurnController
+{
+    private readonly List<AgentTurnItem> _items = [];
+    private readonly Dictionary<string, string> _itemIdByToolCallId = [];
+    private int _nextSequence;
+
+    public string TurnId { get; }
+    public Guid RunToken { get; } = Guid.NewGuid();
+    public string SessionId { get; }
+    public string WorkspacePath { get; }
+    public ChatRunMode Mode { get; private set; }
+    public AgentTurnStatus Status { get; private set; } = AgentTurnStatus.InProgress;
+    public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UpdatedAt { get; private set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? CompletedAt { get; private set; }
+
+    public NativeTurnController(string sessionId, string workspacePath, ChatRunMode mode)
+    {
+        TurnId = $"turn-{Guid.NewGuid():D}";
+        SessionId = sessionId;
+        WorkspacePath = workspacePath;
+        Mode = mode;
+    }
+
+    public AgentTurn Snapshot() => new(
+        TurnId,
+        SessionId,
+        RunToken,
+        WorkspacePath,
+        Status,
+        Mode,
+        StartedAt,
+        UpdatedAt,
+        CompletedAt,
+        _items.ToList());
+
+    public bool Accepts(Guid runToken) => runToken == RunToken && Status == AgentTurnStatus.InProgress;
+
+    public AgentTurnItem RecordUserMessage(string text) =>
+        MakeItem(AgentTurnItemKind.UserMessage, AgentTurnItemStatus.Completed, "User", text);
+
+    public AgentTurnItem RecordStatus(string title, string text = "") =>
+        MakeItem(AgentTurnItemKind.Status, AgentTurnItemStatus.InProgress, title, text);
+
+    public AgentTurnItem? RecordAssistantText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        return MakeItem(AgentTurnItemKind.AgentMessage, AgentTurnItemStatus.Completed, "", text);
+    }
+
+    public AgentTurnItem RecordToolCall(AgentToolCall call)
+    {
+        var item = MakeItem(
+            AgentTurnItemKind.ToolCall,
+            AgentTurnItemStatus.InProgress,
+            call.Name,
+            "",
+            call.Name,
+            toolInvocation: new ToolInvocationPayload(call.Id, call.Name, call.InputJson, null, false));
+        _itemIdByToolCallId[call.Id] = item.Id;
+        return item;
+    }
+
+    public (AgentTurnItem? CallItem, AgentTurnItem ResultItem) RecordToolResult(AgentToolResult result)
+    {
+        AgentTurnItem? updatedCall = null;
+        if (_itemIdByToolCallId.TryGetValue(result.CallId, out var itemId))
+        {
+            var index = _items.FindIndex(item => item.Id == itemId);
+            if (index >= 0)
+            {
+                var original = _items[index];
+                updatedCall = original with
+                {
+                    Status = result.IsError ? AgentTurnItemStatus.Failed : AgentTurnItemStatus.Completed,
+                    Text = result.Output,
+                    UpdatedAt = DateTimeOffset.UtcNow,
+                    CompletedAt = DateTimeOffset.UtcNow,
+                    ToolInvocation = original.ToolInvocation is null
+                        ? null
+                        : original.ToolInvocation with { Output = result.Output, IsError = result.IsError },
+                };
+                _items[index] = updatedCall;
+            }
+        }
+
+        var resultItem = MakeItem(
+            AgentTurnItemKind.ToolResult,
+            result.IsError ? AgentTurnItemStatus.Failed : AgentTurnItemStatus.Completed,
+            result.IsError ? $"{result.ToolName} failed" : $"{result.ToolName} result",
+            result.Output,
+            result.ToolName,
+            toolInvocation: new ToolInvocationPayload(result.CallId, result.ToolName, "", result.Output, result.IsError));
+
+        return (updatedCall, resultItem);
+    }
+
+    public void MarkPlanExited()
+    {
+        Mode = ChatRunMode.Agent;
+        UpdatedAt = DateTimeOffset.UtcNow;
+    }
+
+    public void Finish()
+    {
+        if (Status != AgentTurnStatus.InProgress) return;
+        CompleteOpenItems(AgentTurnItemStatus.Completed);
+        Status = AgentTurnStatus.Completed;
+        CompletedAt = UpdatedAt = DateTimeOffset.UtcNow;
+    }
+
+    public void Fail(string reason)
+    {
+        CompleteOpenItems(AgentTurnItemStatus.Failed);
+        MakeItem(AgentTurnItemKind.Status, AgentTurnItemStatus.Failed, "Error", reason);
+        Status = AgentTurnStatus.Failed;
+        CompletedAt = UpdatedAt = DateTimeOffset.UtcNow;
+    }
+
+    public void Interrupt(string reason)
+    {
+        CompleteOpenItems(AgentTurnItemStatus.Interrupted);
+        MakeItem(AgentTurnItemKind.Status, AgentTurnItemStatus.Interrupted, "Interrupted", reason);
+        Status = AgentTurnStatus.Interrupted;
+        CompletedAt = UpdatedAt = DateTimeOffset.UtcNow;
+    }
+
+    private AgentTurnItem MakeItem(
+        AgentTurnItemKind kind,
+        AgentTurnItemStatus status,
+        string title,
+        string text,
+        string? toolName = null,
+        CommandExecutionPayload? commandExecution = null,
+        FileChangePayload? fileChange = null,
+        ToolInvocationPayload? toolInvocation = null)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var item = new AgentTurnItem(
+            $"item-{Guid.NewGuid():D}",
+            ++_nextSequence,
+            kind,
+            status,
+            title,
+            text,
+            toolName,
+            now,
+            now,
+            status == AgentTurnItemStatus.InProgress ? null : now,
+            commandExecution,
+            fileChange,
+            toolInvocation);
+        _items.Add(item);
+        UpdatedAt = now;
+        return item;
+    }
+
+    private void CompleteOpenItems(AgentTurnItemStatus status)
+    {
+        var now = DateTimeOffset.UtcNow;
+        for (var i = 0; i < _items.Count; i++)
+        {
+            if (_items[i].Status != AgentTurnItemStatus.InProgress) continue;
+            _items[i] = _items[i] with
+            {
+                Status = status,
+                UpdatedAt = now,
+                CompletedAt = now,
+            };
+        }
+    }
+}
