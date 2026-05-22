@@ -79,6 +79,7 @@
         <Setter Property="BorderBrush" Value="{ThemeResource V2BorderBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource V2SecondaryForegroundBrush}" />
         <Setter Property="FontSize" Value="12" />
+        <Setter Property="UseSystemFocusVisuals" Value="False" />
     </Style>
 
     <Style x:Key="V2PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource V2ToolbarButtonStyle}">

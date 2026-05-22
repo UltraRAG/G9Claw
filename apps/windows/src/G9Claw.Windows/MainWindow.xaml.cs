@@ -8,6 +8,7 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -27,6 +28,8 @@ public sealed partial class MainWindow : Window
     private const double MinimumWindowHeight = V2LayoutMetrics.MinimumWindowHeight;
     private const uint WindowSubclassId = 9;
     private const uint WmGetMinMaxInfo = 0x0024;
+    private const uint WmNcHitTest = 0x0084;
+    private static readonly IntPtr HtCaption = new(2);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativePoint
@@ -43,6 +46,15 @@ public sealed partial class MainWindow : Window
         public NativePoint MaxPosition;
         public NativePoint MinTrackSize;
         public NativePoint MaxTrackSize;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
     }
 
     private delegate IntPtr WindowSubclassProc(
@@ -64,6 +76,9 @@ public sealed partial class MainWindow : Window
 
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
 
     private readonly AppSettingsStore _settingsStore;
     private readonly HashSet<string> _expandedProjectNames = new(StringComparer.OrdinalIgnoreCase);
@@ -242,8 +257,69 @@ public sealed partial class MainWindow : Window
             minMax.MinTrackSize.Y = (int)Math.Ceiling(MinimumWindowHeight * scale);
             Marshal.StructureToPtr(minMax, lParam, false);
         }
+        else if (message == WmNcHitTest && IsPointInCustomDragRegion(lParam))
+        {
+            return HtCaption;
+        }
 
         return DefSubclassProc(hWnd, message, wParam, lParam);
+    }
+
+    private bool IsPointInCustomDragRegion(IntPtr lParam)
+    {
+        if (_hwnd == IntPtr.Zero ||
+            RootGrid.XamlRoot is null ||
+            SettingsOverlayRoot.Visibility == Visibility.Visible ||
+            !GetWindowRect(_hwnd, out var windowRect))
+        {
+            return false;
+        }
+
+        var scale = Math.Max(0.1, RootGrid.XamlRoot.RasterizationScale);
+        var screenX = SignedLowWord(lParam);
+        var screenY = SignedHighWord(lParam);
+        var point = new global::Windows.Foundation.Point(
+            (screenX - windowRect.Left) / scale,
+            (screenY - windowRect.Top) / scale);
+
+        if (IsInElement(point, HeaderRoot))
+        {
+            return !IsInElement(point, OpenSidebarButton) &&
+                   !IsInElement(point, ToolTabsScroll);
+        }
+
+        if (IsInElement(point, AppTitleBar))
+        {
+            return !IsInElement(point, LogoButton) &&
+                   !IsInElement(point, CollapseSidebarButton);
+        }
+
+        return false;
+    }
+
+    private static short SignedLowWord(IntPtr value) => unchecked((short)((long)value & 0xffff));
+
+    private static short SignedHighWord(IntPtr value) => unchecked((short)(((long)value >> 16) & 0xffff));
+
+    private bool IsInElement(global::Windows.Foundation.Point rootPoint, FrameworkElement element)
+    {
+        if (element.Visibility != Visibility.Visible || element.ActualWidth <= 0 || element.ActualHeight <= 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            var origin = element.TransformToVisual(RootGrid).TransformPoint(new global::Windows.Foundation.Point(0, 0));
+            return rootPoint.X >= origin.X &&
+                   rootPoint.X <= origin.X + element.ActualWidth &&
+                   rootPoint.Y >= origin.Y &&
+                   rootPoint.Y <= origin.Y + element.ActualHeight;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void ApplyHeaderMetrics()
@@ -833,6 +909,7 @@ public sealed partial class MainWindow : Window
                 Background = isActive ? Brush("V2HoverBrush") : Transparent,
                 BorderBrush = Transparent,
                 Foreground = isActive ? Brush("V2ForegroundBrush") : Brush("V2MutedForegroundBrush"),
+                UseSystemFocusVisuals = false,
                 Tag = tab.Tab,
                 Content = new StackPanel
                 {
@@ -1726,15 +1803,7 @@ public sealed partial class MainWindow : Window
             {
                 case ChatBlockKind.Text when !string.IsNullOrWhiteSpace(block.Text):
                     FlushToolGroup();
-                    panel.Children.Add(new TextBlock
-                    {
-                        Text = block.Text,
-                        TextWrapping = TextWrapping.Wrap,
-                        FontSize = 14,
-                        LineHeight = 22,
-                        Foreground = Brush("V2ForegroundBrush"),
-                        IsTextSelectionEnabled = true,
-                    });
+                    panel.Children.Add(MarkdownContent(block.Text));
                     break;
                 case ChatBlockKind.Attachment when block.Attachment is { } attachment:
                     FlushToolGroup();
@@ -1823,6 +1892,247 @@ public sealed partial class MainWindow : Window
         };
     }
 
+    private FrameworkElement MarkdownContent(string markdown)
+    {
+        var blocks = MarkdownPresentation.Parse(markdown);
+        if (blocks.Count == 0)
+        {
+            return new TextBlock
+            {
+                Text = markdown,
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 14,
+                LineHeight = 22,
+                Foreground = Brush("V2ForegroundBrush"),
+                IsTextSelectionEnabled = true,
+            };
+        }
+
+        var panel = new StackPanel { Spacing = 8 };
+        foreach (var block in blocks)
+        {
+            panel.Children.Add(MarkdownBlockElement(block));
+        }
+
+        return panel;
+    }
+
+    private FrameworkElement MarkdownBlockElement(MarkdownBlockPresentation block)
+    {
+        return block.Kind switch
+        {
+            MarkdownBlockKind.Heading => MarkdownTextBlock(
+                block.Inlines,
+                block.HeadingLevel <= 2 ? 16 : 14,
+                Microsoft.UI.Text.FontWeights.SemiBold),
+            MarkdownBlockKind.CodeBlock => MarkdownCodeBlock(block.Code ?? "", block.Language),
+            MarkdownBlockKind.List => MarkdownList(block),
+            MarkdownBlockKind.Quote => MarkdownQuote(block),
+            MarkdownBlockKind.Table when block.Table is not null => MarkdownTable(block.Table),
+            _ => MarkdownTextBlock(block.Inlines, 14, Microsoft.UI.Text.FontWeights.Normal),
+        };
+    }
+
+    private RichTextBlock MarkdownTextBlock(
+        IReadOnlyList<MarkdownInlinePresentation> inlines,
+        double fontSize,
+        global::Windows.UI.Text.FontWeight weight)
+    {
+        var rich = new RichTextBlock
+        {
+            FontSize = fontSize,
+            FontWeight = weight,
+            Foreground = Brush("V2ForegroundBrush"),
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = fontSize + 8,
+        };
+        var paragraph = new Microsoft.UI.Xaml.Documents.Paragraph();
+        AddMarkdownInlines(paragraph.Inlines, inlines);
+        rich.Blocks.Add(paragraph);
+        return rich;
+    }
+
+    private void AddMarkdownInlines(InlineCollection target, IReadOnlyList<MarkdownInlinePresentation> inlines)
+    {
+        foreach (var inline in inlines)
+        {
+            if (inline.Kind == MarkdownInlineKind.LineBreak)
+            {
+                target.Add(new LineBreak());
+                continue;
+            }
+
+            var run = new Run { Text = inline.Text };
+            switch (inline.Kind)
+            {
+                case MarkdownInlineKind.Strong:
+                    run.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+                    break;
+                case MarkdownInlineKind.Emphasis:
+                    run.FontStyle = global::Windows.UI.Text.FontStyle.Italic;
+                    break;
+                case MarkdownInlineKind.Code:
+                    run.FontFamily = new FontFamily("Consolas");
+                    run.Foreground = Brush("V2SecondaryForegroundBrush");
+                    break;
+                case MarkdownInlineKind.Link:
+                    run.Foreground = Brush("V2BlueBrush");
+                    break;
+            }
+
+            target.Add(run);
+        }
+    }
+
+    private FrameworkElement MarkdownCodeBlock(string code, string? language)
+    {
+        var grid = new Grid
+        {
+            ColumnSpacing = 8,
+        };
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        if (!string.IsNullOrWhiteSpace(language))
+        {
+            var label = new TextBlock
+            {
+                Text = language,
+                FontSize = 11,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                Margin = new Thickness(0, 0, 0, 6),
+            };
+            grid.Children.Add(label);
+        }
+
+        var copy = CopyTextButton(code, T("chat.copy.code"), 24, 12);
+        Grid.SetColumn(copy, 1);
+        grid.Children.Add(copy);
+
+        var text = new TextBlock
+        {
+            Text = code.TrimEnd(),
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
+            Foreground = Brush("V2ForegroundBrush"),
+            TextWrapping = TextWrapping.NoWrap,
+            IsTextSelectionEnabled = true,
+        };
+        var scroll = new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = text,
+        };
+        Grid.SetRow(scroll, 1);
+        Grid.SetColumnSpan(scroll, 2);
+        grid.Children.Add(scroll);
+
+        return new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = Brush("V2MutedBrush"),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(10, 8, 10, 8),
+            Child = grid,
+        };
+    }
+
+    private FrameworkElement MarkdownList(MarkdownBlockPresentation block)
+    {
+        var panel = new StackPanel { Spacing = 5 };
+        var items = block.ListItems ?? [];
+        for (var i = 0; i < items.Count; i++)
+        {
+            var row = new Grid { ColumnSpacing = 8 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(22) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.Children.Add(new TextBlock
+            {
+                Text = block.Ordered ? $"{i + 1}." : "\u2022",
+                FontSize = 14,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                HorizontalAlignment = HorizontalAlignment.Right,
+            });
+            var content = MarkdownTextBlock(items[i], 14, Microsoft.UI.Text.FontWeights.Normal);
+            Grid.SetColumn(content, 1);
+            row.Children.Add(content);
+            panel.Children.Add(row);
+        }
+
+        return panel;
+    }
+
+    private FrameworkElement MarkdownQuote(MarkdownBlockPresentation block)
+    {
+        var grid = new Grid { ColumnSpacing = 10 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(3) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.Children.Add(new Border
+        {
+            Background = Brush("V2BorderBrush"),
+            CornerRadius = new CornerRadius(2),
+        });
+        var text = MarkdownTextBlock(block.Inlines, 13, Microsoft.UI.Text.FontWeights.Normal);
+        text.Foreground = Brush("V2SecondaryForegroundBrush");
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+        return grid;
+    }
+
+    private FrameworkElement MarkdownTable(MarkdownTablePresentation table)
+    {
+        var rows = table.Rows;
+        var columnCount = rows.Count == 0 ? 0 : rows.Max(row => row.Count);
+        if (columnCount == 0)
+        {
+            return new Border { Height = 0 };
+        }
+
+        var grid = new Grid();
+        for (var c = 0; c < columnCount; c++)
+        {
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        }
+
+        for (var r = 0; r < rows.Count; r++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            for (var c = 0; c < rows[r].Count; c++)
+            {
+                var cell = new Border
+                {
+                    BorderBrush = Brush("V2BorderBrush"),
+                    BorderThickness = new Thickness(0, 0, 1, 1),
+                    Padding = new Thickness(8, 6, 8, 6),
+                    Background = table.HasHeader && r == 0 ? Brush("V2MutedBrush") : Transparent,
+                    Child = MarkdownTextBlock([rows[r][c]], 12, table.HasHeader && r == 0
+                        ? Microsoft.UI.Text.FontWeights.SemiBold
+                        : Microsoft.UI.Text.FontWeights.Normal),
+                };
+                Grid.SetRow(cell, r);
+                Grid.SetColumn(cell, c);
+                grid.Children.Add(cell);
+            }
+        }
+
+        return new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = new Border
+            {
+                BorderBrush = Brush("V2BorderBrush"),
+                BorderThickness = new Thickness(1, 1, 0, 0),
+                CornerRadius = new CornerRadius(8),
+                Child = grid,
+            },
+        };
+    }
+
     private FrameworkElement ProviderErrorCard(ProviderErrorInfo error)
     {
         var key = $"provider-error:{error.RequestId}";
@@ -1879,6 +2189,7 @@ public sealed partial class MainWindow : Window
             CornerRadius = new CornerRadius(7),
             Background = Brush("V2MutedBrush"),
             BorderBrush = Transparent,
+            UseSystemFocusVisuals = false,
             Content = Icon("Copy", iconSize, Brush("V2MutedForegroundBrush")),
             VerticalAlignment = VerticalAlignment.Top,
             IsEnabled = !string.IsNullOrWhiteSpace(text),
@@ -1901,71 +2212,166 @@ public sealed partial class MainWindow : Window
     {
         var key = $"tool:{call.Id}";
         var expanded = _expandedToolRowIds.Contains(key);
-        var isRunning = result is null;
-        var isError = result?.IsError == true;
-        var tone = isError ? Brush("V2RedBrush") : isRunning ? Brush("V2AmberBrush") : Brush("V2GreenBrush");
-        var panel = new StackPanel { Spacing = 8 };
-        var header = ToolHeader(
-            key,
-            call.Name,
-            isRunning ? T("chat.tool.running") : isError ? T("chat.tool.error") : T("chat.tool.done"),
-            tone,
-            expanded);
-        panel.Children.Add(header);
-
+        var presentation = ToolInvocationPresenter.Present(call, result, IsChineseUi());
+        FrameworkElement? detail = null;
         if (expanded)
         {
-            panel.Children.Add(ToolDetailBox(T("chat.tool.input"), call.InputJson));
+            var detailPanel = new StackPanel { Spacing = 8 };
+            detailPanel.Children.Add(ToolDetailBox(T("chat.tool.input"), call.InputJson));
             if (result is not null)
             {
-                panel.Children.Add(ToolDetailBox(T("chat.tool.result"), result.Output));
+                detailPanel.Children.Add(ToolDetailBox(T("chat.tool.result"), result.Output));
             }
+
+            detail = detailPanel;
         }
 
-        return ToolShell(panel, tone);
+        return ToolInlineRow(key, presentation, expanded, detail);
     }
 
     private FrameworkElement ToolGroupRow(IReadOnlyList<(AgentToolCall Call, AgentToolResult? Result)> items)
     {
         var key = $"tool-group:{string.Join(",", items.Select(item => item.Call.Id))}";
         var expanded = _expandedToolRowIds.Contains(key);
-        var failed = items.Any(item => item.Result?.IsError == true);
-        var running = items.Any(item => item.Result is null);
-        var tone = failed ? Brush("V2RedBrush") : running ? Brush("V2AmberBrush") : Brush("V2GreenBrush");
-        var panel = new StackPanel { Spacing = 8 };
-        panel.Children.Add(ToolHeader(
-            key,
-            Tf("chat.tool.group", items.Count),
-            running ? T("chat.tool.running") : failed ? T("chat.tool.error") : T("chat.tool.done"),
-            tone,
-            expanded));
-
+        var presentation = ToolInvocationPresenter.PresentGroup(items, IsChineseUi());
+        FrameworkElement? detail = null;
         if (expanded)
         {
+            var detailPanel = new StackPanel { Spacing = 8 };
             foreach (var item in items)
             {
-                panel.Children.Add(ToolDetailBox(item.Call.Name, item.Result?.Output ?? item.Call.InputJson));
+                var itemPresentation = ToolInvocationPresenter.Present(item.Call, item.Result, IsChineseUi());
+                detailPanel.Children.Add(ToolDetailBox(itemPresentation.Summary, item.Result?.Output ?? item.Call.InputJson));
             }
+
+            detail = detailPanel;
         }
 
-        return ToolShell(panel, tone);
+        return ToolInlineRow(key, presentation, expanded, detail);
     }
 
-    private FrameworkElement ToolResultRow(AgentToolResult result) => ToolShell(new StackPanel
+    private FrameworkElement ToolResultRow(AgentToolResult result)
     {
-        Spacing = 8,
-        Children =
+        var call = new AgentToolCall(result.CallId, result.ToolName, result.ToolName);
+        return ToolInlineRow(
+            $"tool-result:{result.CallId}",
+            ToolInvocationPresenter.Present(call, result, IsChineseUi()),
+            false,
+            null);
+    }
+
+    private FrameworkElement ToolInlineRow(
+        string key,
+        ToolInvocationPresentation presentation,
+        bool expanded,
+        FrameworkElement? detail)
+    {
+        var tone = presentation.State switch
         {
-            new TextBlock
+            ToolInvocationState.Failed => Brush("V2RedBrush"),
+            ToolInvocationState.Running => Brush("V2MutedForegroundBrush"),
+            _ => Brush("V2MutedForegroundBrush"),
+        };
+        var stack = new StackPanel { Spacing = 4, Margin = new Thickness(0, 1, 0, 1) };
+        var button = new Button
+        {
+            MinWidth = 0,
+            MinHeight = 0,
+            Height = 26,
+            Padding = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Background = Transparent,
+            BorderBrush = Transparent,
+            UseSystemFocusVisuals = false,
+            Content = new Grid
             {
-                Text = result.IsError ? T("chat.tool.error") : T("chat.tool.result"),
-                FontSize = 12,
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = result.IsError ? Brush("V2RedBrush") : Brush("V2GreenBrush"),
+                ColumnSpacing = 6,
+                ColumnDefinitions =
+                {
+                    new ColumnDefinition { Width = new GridLength(16) },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                },
+                Children =
+                {
+                    ToolStateGlyph(presentation),
+                    new TextBlock
+                    {
+                        Text = presentation.Summary,
+                        FontSize = 12,
+                        Foreground = tone,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        TextTrimming = TextTrimming.CharacterEllipsis,
+                        MaxWidth = 560,
+                    },
+                    Icon(expanded ? "ChevronUp" : "ChevronDown", 12, Brush("V2MutedForegroundBrush")),
+                },
             },
-            ToolDetailBox(result.ToolName, result.Output),
-        },
-    }, result.IsError ? Brush("V2RedBrush") : Brush("V2GreenBrush"));
+        };
+        if (button.Content is Grid grid)
+        {
+            Grid.SetColumn((FrameworkElement)grid.Children[1], 1);
+            Grid.SetColumn((FrameworkElement)grid.Children[2], 2);
+        }
+
+        button.Click += (_, _) =>
+        {
+            if (!_expandedToolRowIds.Add(key))
+            {
+                _expandedToolRowIds.Remove(key);
+            }
+
+            RenderContent();
+        };
+        stack.Children.Add(button);
+        if (expanded && detail is not null)
+        {
+            stack.Children.Add(new Border
+            {
+                Margin = new Thickness(22, 2, 0, 4),
+                BorderBrush = Brush("V2BorderBrush"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Background = Brush("V2MutedBrush"),
+                Padding = new Thickness(10, 8, 10, 8),
+                Child = detail,
+            });
+        }
+
+        return stack;
+    }
+
+    private FrameworkElement ToolStateGlyph(ToolInvocationPresentation presentation)
+    {
+        if (presentation.State == ToolInvocationState.Running)
+        {
+            return new ProgressRing
+            {
+                IsActive = true,
+                Width = 12,
+                Height = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+        }
+
+        var icon = presentation.State == ToolInvocationState.Failed
+            ? "XCircle"
+            : presentation.Phase switch
+            {
+                ToolInvocationPhase.Command => "Terminal",
+                ToolInvocationPhase.Read => "File",
+                ToolInvocationPhase.Edit => "Edit",
+                ToolInvocationPhase.Search => "Search",
+                ToolInvocationPhase.Todo => "ListChecks",
+                ToolInvocationPhase.Task => "Command",
+                _ => "Hammer",
+            };
+        var foreground = presentation.State == ToolInvocationState.Failed
+            ? Brush("V2RedBrush")
+            : Brush("V2MutedForegroundBrush");
+        return Icon(icon, 13, foreground);
+    }
 
     private FrameworkElement ToolHeader(string key, string title, string status, Brush tone, bool expanded)
     {
@@ -2066,10 +2472,7 @@ public sealed partial class MainWindow : Window
 
     private static bool IsBoundaryTool(string toolName)
     {
-        var canonical = AgentToolNameCanonicalizer.Canonical(toolName);
-        return string.Equals(canonical, "TodoWrite", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(canonical, "TodoRead", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(canonical, "Task", StringComparison.OrdinalIgnoreCase);
+        return ToolInvocationPresenter.IsBoundary(toolName);
     }
 
     private FrameworkElement TurnTrace(AgentTurn turn)
@@ -5903,6 +6306,9 @@ public sealed partial class MainWindow : Window
     private string T(string key) => _strings.T(key);
 
     private string Tf(string key, params object[] values) => string.Format(T(key), values);
+
+    private bool IsChineseUi() =>
+        string.Equals(NativeI18nLanguageResolver.Resolve(State.Settings.Language), "zh-CN", StringComparison.OrdinalIgnoreCase);
 
     private static SolidColorBrush Transparent => new(Colors.Transparent);
 

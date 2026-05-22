@@ -1186,6 +1186,77 @@ router:
     }
 
     [Fact]
+    public void ToolInvocationPresenterBuildsInlineProcessSummaries()
+    {
+        var runningShell = ToolInvocationPresenter.Present(
+            new AgentToolCall("call-1", "Shell", """{"command":"dir"}"""),
+            null,
+            chinese: true);
+        var completedRead = ToolInvocationPresenter.Present(
+            new AgentToolCall("call-2", "Read", """{"file_path":"README.md"}"""),
+            new AgentToolResult("call-2", "Read", "content", false),
+            chinese: false);
+        var failedSearch = ToolInvocationPresenter.Present(
+            new AgentToolCall("call-3", "Grep", """{"pattern":"TODO"}"""),
+            new AgentToolResult("call-3", "Grep", "boom", true),
+            chinese: false);
+
+        Assert.Equal(ToolInvocationPhase.Command, runningShell.Phase);
+        Assert.Equal(ToolInvocationState.Running, runningShell.State);
+        Assert.Equal("\u6b63\u5728\u8fd0\u884c: dir", runningShell.Summary);
+        Assert.Equal("Read: README.md", completedRead.Summary);
+        Assert.Equal("Search failed: TODO", failedSearch.Summary);
+    }
+
+    [Fact]
+    public void ToolInvocationPresenterAggregatesAdjacentToolsAndKeepsBoundaries()
+    {
+        var group = ToolInvocationPresenter.PresentGroup(
+            [
+                (new AgentToolCall("read", "Read", """{"file_path":"a.txt"}"""), new AgentToolResult("read", "Read", "a", false)),
+                (new AgentToolCall("grep", "Grep", """{"pattern":"TODO"}"""), new AgentToolResult("grep", "Grep", "b", false)),
+            ],
+            chinese: false);
+
+        Assert.Equal("read 1 files, searched 1 times", group.Summary);
+        Assert.True(ToolInvocationPresenter.IsBoundary("Task"));
+        Assert.True(ToolInvocationPresenter.IsBoundary("AskQuestion"));
+        Assert.False(ToolInvocationPresenter.IsBoundary("Read"));
+    }
+
+    [Fact]
+    public void MarkdownPresentationParsesCommonAssistantMarkdown()
+    {
+        var blocks = MarkdownPresentation.Parse("""
+            **Folders:**
+
+            - Desktop
+            - Downloads
+
+            ```text
+            hello
+            ```
+
+            | A | B |
+            | - | - |
+            | 1 | 2 |
+            """);
+
+        Assert.Contains(blocks, block =>
+            block.Kind == MarkdownBlockKind.Paragraph &&
+            block.Inlines.Any(inline => inline.Kind == MarkdownInlineKind.Strong && inline.Text.Contains("Folders")));
+        Assert.Contains(blocks, block =>
+            block.Kind == MarkdownBlockKind.List &&
+            block.ListItems is { Count: 2 });
+        Assert.Contains(blocks, block =>
+            block.Kind == MarkdownBlockKind.CodeBlock &&
+            block.Code?.Contains("hello", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(blocks, block =>
+            block.Kind == MarkdownBlockKind.Table &&
+            block.Table?.Rows.Count == 2);
+    }
+
+    [Fact]
     public void LucideIconCatalogCoversRequiredWebV2Icons()
     {
         var required = new[]
