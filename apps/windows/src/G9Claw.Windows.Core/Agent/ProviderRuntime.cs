@@ -369,7 +369,14 @@ public sealed class OpenAIChatToolCallAccumulator
     }
 }
 
-public sealed class ProviderClient
+public interface IProviderClient
+{
+    IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+        AgentRequest request,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed class ProviderClient : IProviderClient
 {
     private readonly HttpClient _httpClient;
 

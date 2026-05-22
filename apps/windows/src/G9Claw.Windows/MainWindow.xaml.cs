@@ -29,6 +29,8 @@ public sealed partial class MainWindow : Window
     private const uint WindowSubclassId = 9;
     private const uint WmGetMinMaxInfo = 0x0024;
     private const uint WmNcHitTest = 0x0084;
+    private const int GcsCompStr = 0x0008;
+    private const double ChatBottomStickThreshold = 48;
     private static readonly IntPtr HtCaption = new(2);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -80,6 +82,15 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
 
+    [DllImport("imm32.dll")]
+    private static extern IntPtr ImmGetContext(IntPtr hWnd);
+
+    [DllImport("imm32.dll")]
+    private static extern bool ImmReleaseContext(IntPtr hWnd, IntPtr hIMC);
+
+    [DllImport("imm32.dll", CharSet = CharSet.Unicode)]
+    private static extern int ImmGetCompositionStringW(IntPtr hIMC, int dwIndex, IntPtr lpBuf, int dwBufLen);
+
     private readonly AppSettingsStore _settingsStore;
     private readonly HashSet<string> _expandedProjectNames = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _collapsedSessionProjectNames = new(StringComparer.OrdinalIgnoreCase);
@@ -126,6 +137,10 @@ public sealed partial class MainWindow : Window
     private bool _ignoreNextEnterKeyUp;
     private bool _headerMetricsPending;
     private bool _chatRenderPending;
+    private ScrollViewer? _chatScrollViewer;
+    private bool _chatStickToBottom = true;
+    private double _chatScrollOffset;
+    private bool _suppressChatScrollTracking;
     private string? _lastContextStage;
     private int _contextCompactCount;
     private readonly HashSet<string> _expandedToolRowIds = new(StringComparer.OrdinalIgnoreCase);
@@ -497,6 +512,49 @@ public sealed partial class MainWindow : Window
                 RenderContent();
             });
         }, TaskScheduler.Default);
+    }
+
+    private void CaptureChatScrollState()
+    {
+        if (State.ActiveTab != AppTab.Chat || _chatScrollViewer is null || _suppressChatScrollTracking)
+        {
+            return;
+        }
+
+        UpdateChatScrollState(_chatScrollViewer);
+    }
+
+    private void UpdateChatScrollState(ScrollViewer scroll)
+    {
+        if (_suppressChatScrollTracking) return;
+        var snapshot = ChatScrollPresenter.Capture(
+            scroll.VerticalOffset,
+            scroll.ExtentHeight,
+            scroll.ViewportHeight,
+            ChatBottomStickThreshold);
+        _chatStickToBottom = snapshot.StickToBottom;
+        if (!_chatStickToBottom)
+        {
+            _chatScrollOffset = snapshot.Offset;
+        }
+    }
+
+    private void RestoreChatScrollState(ScrollViewer scroll)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            var target = ChatScrollPresenter.TargetOffset(
+                new ChatScrollSnapshot(_chatStickToBottom, _chatScrollOffset),
+                scroll.ExtentHeight,
+                scroll.ViewportHeight);
+            _suppressChatScrollTracking = true;
+            scroll.ChangeView(null, target, null, disableAnimation: true);
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _suppressChatScrollTracking = false;
+                UpdateChatScrollState(scroll);
+            });
+        });
     }
 
     private void RenderSidebar()
@@ -946,13 +1004,14 @@ public sealed partial class MainWindow : Window
 
     private void RenderContent()
     {
+        CaptureChatScrollState();
         if (!AppTabCatalog.IsPrimary(State.ActiveTab) && State.ActiveTab != AppTab.Preview)
         {
             State.ActiveTab = AppTab.Chat;
         }
 
         ContentHost.Children.Clear();
-        ContentHost.Children.Add(State.ActiveTab switch
+        var content = State.ActiveTab switch
         {
             AppTab.Chat => ChatPage(),
             AppTab.Files => FilesPage(),
@@ -961,7 +1020,13 @@ public sealed partial class MainWindow : Window
             AppTab.Memory => MemoryPage(),
             AppTab.AlwaysOn => AlwaysOnPage(),
             _ => ToolPlaceholder(T("tabs.preview"), T("preview.detail"), "eye"),
-        });
+        };
+        if (State.ActiveTab != AppTab.Chat)
+        {
+            _chatScrollViewer = null;
+        }
+
+        ContentHost.Children.Add(content);
     }
 
     private FrameworkElement ChatPage()
@@ -995,6 +1060,7 @@ public sealed partial class MainWindow : Window
         StackPanel? welcomePanel = null;
         if (!hasMessages)
         {
+            _chatScrollViewer = null;
             var detail = !IsAgentModelConfigured()
                 ? T("chat.empty.configureProvider")
                 : "";
@@ -1017,6 +1083,9 @@ public sealed partial class MainWindow : Window
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             };
+            _chatScrollViewer = scroll;
+            scroll.ViewChanged += (_, _) => UpdateChatScrollState(scroll);
+            scroll.Loaded += (_, _) => RestoreChatScrollState(scroll);
             var messages = new StackPanel
             {
                 MaxWidth = V2LayoutMetrics.ChatColumnMaxWidth,
@@ -1142,14 +1211,15 @@ public sealed partial class MainWindow : Window
     private async void OnComposerKeyDown(object sender, KeyRoutedEventArgs args)
     {
         var shiftDown = IsShiftDown();
-        if (args.Key == global::Windows.System.VirtualKey.Tab && shiftDown)
+        var action = ComposerKeyPolicy.Decide(ComposerKeyFromVirtualKey(args.Key), shiftDown, IsImeComposing());
+        if (action == ComposerKeyAction.ToggleRunMode)
         {
             args.Handled = true;
             ToggleComposerRunMode(refocusComposer: true);
             return;
         }
 
-        if (args.Key == global::Windows.System.VirtualKey.Enter && !shiftDown)
+        if (action == ComposerKeyAction.Send)
         {
             args.Handled = true;
             _ignoreNextEnterKeyUp = true;
@@ -1158,7 +1228,7 @@ public sealed partial class MainWindow : Window
                 await SendComposerAsync();
             }
         }
-        else if (args.Key == global::Windows.System.VirtualKey.Enter && shiftDown)
+        else if (action == ComposerKeyAction.InsertNewLine)
         {
             args.Handled = true;
             _ignoreNextEnterKeyUp = true;
@@ -1177,13 +1247,36 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (!IsShiftDown())
+        await Task.CompletedTask;
+    }
+
+    private static ComposerKey ComposerKeyFromVirtualKey(global::Windows.System.VirtualKey key) => key switch
+    {
+        global::Windows.System.VirtualKey.Enter => ComposerKey.Enter,
+        global::Windows.System.VirtualKey.Tab => ComposerKey.Tab,
+        _ => ComposerKey.Other,
+    };
+
+    private bool IsImeComposing()
+    {
+        if (_hwnd == IntPtr.Zero)
         {
-            args.Handled = true;
-            if (ComposerCanSubmit())
-            {
-                await SendComposerAsync();
-            }
+            return false;
+        }
+
+        var context = ImmGetContext(_hwnd);
+        if (context == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            return ImmGetCompositionStringW(context, GcsCompStr, IntPtr.Zero, 0) > 0;
+        }
+        finally
+        {
+            ImmReleaseContext(_hwnd, context);
         }
     }
 
@@ -2137,22 +2230,7 @@ public sealed partial class MainWindow : Window
     {
         var key = $"provider-error:{error.RequestId}";
         var expanded = _expandedToolRowIds.Contains(key);
-        var panel = new StackPanel { Spacing = 8 };
-        panel.Children.Add(ToolHeader(
-            key,
-            string.IsNullOrWhiteSpace(error.FallbackToModelEntry) ? T("chat.providerError.title") : T("chat.providerError.fallbackTitle"),
-            string.IsNullOrWhiteSpace(error.FallbackToModelEntry) ? T("chat.providerError.failed") : T("chat.providerError.retrying"),
-            Brush("V2RedBrush"),
-            expanded));
-        panel.Children.Add(new TextBlock
-        {
-            Text = error.Summary,
-            TextWrapping = TextWrapping.Wrap,
-            FontSize = 12,
-            Foreground = Brush("V2SecondaryForegroundBrush"),
-            IsTextSelectionEnabled = true,
-        });
-
+        FrameworkElement? detailElement = null;
         if (expanded)
         {
             var detail = new StringBuilder()
@@ -2171,10 +2249,20 @@ public sealed partial class MainWindow : Window
 
             detail.AppendLine()
                 .AppendLine(error.Body);
-            panel.Children.Add(ToolDetailBox(T("chat.providerError.details"), detail.ToString().TrimEnd()));
+            detailElement = ToolDetailBox(T("chat.providerError.details"), detail.ToString().TrimEnd());
         }
 
-        return ToolShell(panel, Brush("V2RedBrush"));
+        var title = string.IsNullOrWhiteSpace(error.FallbackToModelEntry)
+            ? T("chat.providerError.title")
+            : T("chat.providerError.fallbackTitle");
+        var presentation = new ToolInvocationPresentation(
+            ToolInvocationPhase.Tool,
+            ToolInvocationState.Failed,
+            $"{title}: {error.Summary}",
+            error.Body,
+            error.Body,
+            true);
+        return ToolInlineRow(key, presentation, expanded, detailElement);
     }
 
     private Button CopyTextButton(string text, string tooltip, double size = 24, double iconSize = 13)
@@ -2277,8 +2365,8 @@ public sealed partial class MainWindow : Window
         {
             MinWidth = 0,
             MinHeight = 0,
-            Height = 26,
-            Padding = new Thickness(0),
+            Height = 30,
+            Padding = new Thickness(0, 2, 0, 2),
             HorizontalAlignment = HorizontalAlignment.Left,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             Background = Transparent,
@@ -2286,10 +2374,10 @@ public sealed partial class MainWindow : Window
             UseSystemFocusVisuals = false,
             Content = new Grid
             {
-                ColumnSpacing = 6,
+                ColumnSpacing = 8,
                 ColumnDefinitions =
                 {
-                    new ColumnDefinition { Width = new GridLength(16) },
+                    new ColumnDefinition { Width = new GridLength(18) },
                     new ColumnDefinition { Width = GridLength.Auto },
                     new ColumnDefinition { Width = GridLength.Auto },
                 },
@@ -2299,13 +2387,13 @@ public sealed partial class MainWindow : Window
                     new TextBlock
                     {
                         Text = presentation.Summary,
-                        FontSize = 12,
+                        FontSize = 13,
                         Foreground = tone,
                         VerticalAlignment = VerticalAlignment.Center,
                         TextTrimming = TextTrimming.CharacterEllipsis,
                         MaxWidth = 560,
                     },
-                    Icon(expanded ? "ChevronUp" : "ChevronDown", 12, Brush("V2MutedForegroundBrush")),
+                    Icon(expanded ? "ChevronDown" : "ChevronRight", 12, Brush("V2MutedForegroundBrush")),
                 },
             },
         };
@@ -2370,7 +2458,7 @@ public sealed partial class MainWindow : Window
         var foreground = presentation.State == ToolInvocationState.Failed
             ? Brush("V2RedBrush")
             : Brush("V2MutedForegroundBrush");
-        return Icon(icon, 13, foreground);
+        return Icon(icon, 15, foreground);
     }
 
     private FrameworkElement ToolHeader(string key, string title, string status, Brush tone, bool expanded)
@@ -4015,16 +4103,17 @@ public sealed partial class MainWindow : Window
         State.PendingAttachments.Clear();
         ClearVisibleComposerText();
         _agentRunCts?.Cancel();
-        _agentRunCts = new CancellationTokenSource();
+        var runCts = new CancellationTokenSource();
+        _agentRunCts = runCts;
         _isAgentSubmitting = true;
         _isAgentRunning = false;
         _processingSessionIds.Add(session.Id);
         State.MarkSessionState(session.Id, SessionState.Processing);
-        State.EnsureStreamingAssistantMessage(session.Id);
+        var assistantMessageId = State.BeginStreamingAssistantMessage(session.Id, forceNew: true);
         RenderAll();
 
         var request = CreateAgentRequest(session, prompt, attachments, resolvedModel, apiKey!, priorMessages);
-        _ = RunNativeAgentAsync(request, _agentRunCts.Token);
+        _ = RunNativeAgentAsync(request, assistantMessageId, runCts, runCts.Token);
     }
 
     private void OnStopAgentClick(object sender, RoutedEventArgs e)
@@ -4099,7 +4188,11 @@ public sealed partial class MainWindow : Window
         return NativeConfigService.ScalarMap(yaml);
     }
 
-    private async Task RunNativeAgentAsync(AgentRequest request, CancellationToken cancellationToken)
+    private async Task RunNativeAgentAsync(
+        AgentRequest request,
+        Guid assistantMessageId,
+        CancellationTokenSource runCts,
+        CancellationToken cancellationToken)
     {
         TokenBudget? lastBudget = null;
         var currentRequest = request;
@@ -4124,13 +4217,13 @@ public sealed partial class MainWindow : Window
                     switch (agentEvent.Kind)
                     {
                         case AgentEventKind.ContentDelta when agentEvent.Text is { } text:
-                            State.AppendStreamingAssistantText(currentRequest.SessionId, text, lastBudget);
+                            State.AppendStreamingAssistantText(currentRequest.SessionId, assistantMessageId, text, lastBudget);
                             ScheduleChatRender();
                             break;
                         case AgentEventKind.TokenBudget when agentEvent.TokenBudget is { } budget:
                             lastBudget = budget;
                             State.TokenBudgetBySession[currentRequest.SessionId] = budget;
-                            State.EnsureStreamingAssistantMessage(currentRequest.SessionId, budget);
+                            State.AppendStreamingAssistantText(currentRequest.SessionId, assistantMessageId, "", budget);
                             ScheduleChatRender();
                             break;
                         case AgentEventKind.Status when agentEvent.Text is { } status:
@@ -4145,18 +4238,18 @@ public sealed partial class MainWindow : Window
                             }
                             break;
                         case AgentEventKind.ToolUse when agentEvent.ToolCall is { } toolCall:
-                            State.AppendStreamingAssistantToolCall(currentRequest.SessionId, toolCall);
+                            State.AppendStreamingAssistantToolCall(currentRequest.SessionId, assistantMessageId, toolCall);
                             ScheduleChatRender();
                             break;
                         case AgentEventKind.ToolResult when agentEvent.ToolResult is { } result:
-                            State.AppendStreamingAssistantToolResult(currentRequest.SessionId, result);
+                            State.AppendStreamingAssistantToolResult(currentRequest.SessionId, assistantMessageId, result);
                             ScheduleChatRender();
                             break;
                         case AgentEventKind.TurnStarted or AgentEventKind.TurnCompleted when agentEvent.Turn is { } turn:
                             State.TurnsBySession[currentRequest.SessionId] = [turn];
                             if (agentEvent.Kind == AgentEventKind.TurnStarted)
                             {
-                                State.EnsureStreamingAssistantMessage(currentRequest.SessionId, lastBudget);
+                                State.AppendStreamingAssistantText(currentRequest.SessionId, assistantMessageId, "", lastBudget);
                             }
                             break;
                         case AgentEventKind.Error when agentEvent.Text is { } error:
@@ -4167,18 +4260,20 @@ public sealed partial class MainWindow : Window
                                 fallbackRequest = fallbackResult.Request;
                                 State.AppendStreamingAssistantProviderError(
                                     currentRequest.SessionId,
+                                    assistantMessageId,
                                     BuildProviderErrorInfo(currentRequest, error, fallbackResult.Candidate));
                             }
                             else
                             {
                                 State.AppendStreamingAssistantProviderError(
                                     currentRequest.SessionId,
+                                    assistantMessageId,
                                     BuildProviderErrorInfo(currentRequest, error, null));
                             }
                             ScheduleChatRender();
                             break;
                         case AgentEventKind.Abort when agentEvent.Text is { } reason:
-                            State.AppendStreamingAssistantText(currentRequest.SessionId, reason, lastBudget);
+                            State.AppendStreamingAssistantText(currentRequest.SessionId, assistantMessageId, reason, lastBudget);
                             ScheduleChatRender();
                             break;
                     }
@@ -4190,11 +4285,11 @@ public sealed partial class MainWindow : Window
                 }
 
                 currentRequest = fallbackRequest;
-                State.EnsureStreamingAssistantMessage(currentRequest.SessionId, lastBudget);
+                State.AppendStreamingAssistantText(currentRequest.SessionId, assistantMessageId, "", lastBudget);
                 ScheduleChatRender();
             }
 
-            State.FinishStreamingAssistantMessage(currentRequest.SessionId);
+            State.FinishStreamingAssistantMessage(currentRequest.SessionId, assistantMessageId);
             if (lastBudget is not null)
             {
                 State.RoutingUsage.Add(RoutingUsageEstimator.FromBudget(currentRequest, State.SelectedProject, lastBudget));
@@ -4202,13 +4297,22 @@ public sealed partial class MainWindow : Window
         }
         finally
         {
-            _isAgentSubmitting = false;
-            _isAgentRunning = false;
-            _processingSessionIds.Remove(request.SessionId);
-            State.MarkSessionState(request.SessionId, SessionState.Idle);
-            _agentRunCts?.Dispose();
-            _agentRunCts = null;
-            RenderAll();
+            State.FinishStreamingAssistantMessage(request.SessionId, assistantMessageId);
+            var isCurrentRun = ReferenceEquals(_agentRunCts, runCts);
+            if (isCurrentRun)
+            {
+                _isAgentSubmitting = false;
+                _isAgentRunning = false;
+                _processingSessionIds.Remove(request.SessionId);
+                State.MarkSessionState(request.SessionId, SessionState.Idle);
+            }
+
+            runCts.Dispose();
+            if (isCurrentRun)
+            {
+                _agentRunCts = null;
+                RenderAll();
+            }
         }
     }
 

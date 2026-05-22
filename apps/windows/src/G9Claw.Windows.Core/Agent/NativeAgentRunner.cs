@@ -9,14 +9,14 @@ public sealed record NativeAgentRunOptions(
 
 public sealed class NativeAgentRunner
 {
-    private readonly ProviderClient _providerClient;
+    private readonly IProviderClient _providerClient;
     private readonly AgentToolExecutor _toolExecutor;
     private readonly PermissionService _permissionService;
     private readonly NativeThreadManager _threadManager;
     private readonly NativeRunStore _runStore;
 
     public NativeAgentRunner(
-        ProviderClient? providerClient = null,
+        IProviderClient? providerClient = null,
         AgentToolExecutor? toolExecutor = null,
         PermissionService? permissionService = null,
         NativeThreadManager? threadManager = null,
@@ -77,10 +77,10 @@ public sealed class NativeAgentRunner
 
         try
         {
-            const int maxToolRounds = 6;
             var toolExchanges = new List<AgentToolExchange>();
             var currentRequest = request;
-            for (var round = 0; round < maxToolRounds; round++)
+            var round = 0;
+            while (true)
             {
                 await writer.WriteAsync(
                     AgentEvent.Status(request.SessionId, round == 0 ? "Connecting to provider..." : "Continuing with tool results..."),
@@ -117,13 +117,8 @@ public sealed class NativeAgentRunner
                 }
 
                 toolExchanges.AddRange(roundExchanges);
-                if (round == maxToolRounds - 1)
-                {
-                    await writer.WriteAsync(AgentEvent.Error(request.SessionId, "Stopped after the maximum number of tool-result continuation rounds."), cancellationToken);
-                    break;
-                }
-
                 currentRequest = request with { ToolExchanges = toolExchanges.ToList() };
+                round++;
             }
 
             if (toolExchanges.Count == 0)

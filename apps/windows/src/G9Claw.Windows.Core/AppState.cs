@@ -316,7 +316,7 @@ public sealed class AppState : INotifyPropertyChanged
         }
     }
 
-    public void EnsureStreamingAssistantMessage(string sessionId, TokenBudget? budget = null)
+    public Guid EnsureStreamingAssistantMessage(string sessionId, TokenBudget? budget = null)
     {
         if (!MessagesBySession.TryGetValue(sessionId, out var messages))
         {
@@ -324,12 +324,13 @@ public sealed class AppState : INotifyPropertyChanged
             MessagesBySession[sessionId] = messages;
         }
 
-        if (messages.Any(message => message.Role == ChatRole.Assistant && message.IsStreaming))
+        var existing = messages.LastOrDefault(message => message.Role == ChatRole.Assistant && message.IsStreaming);
+        if (existing is not null)
         {
-            return;
+            return existing.Id;
         }
 
-        messages.Add(new ChatMessage(
+        var message = new ChatMessage(
             Guid.NewGuid(),
             sessionId,
             SessionProvider.G9Claw,
@@ -337,7 +338,47 @@ public sealed class AppState : INotifyPropertyChanged
             [ChatBlock.FromText("")],
             DateTimeOffset.UtcNow,
             true,
-            budget));
+            budget);
+        messages.Add(message);
+        return message.Id;
+    }
+
+    public Guid BeginStreamingAssistantMessage(string sessionId, TokenBudget? budget = null, bool forceNew = true)
+    {
+        if (!MessagesBySession.TryGetValue(sessionId, out var messages))
+        {
+            messages = [];
+            MessagesBySession[sessionId] = messages;
+        }
+
+        if (!forceNew)
+        {
+            var existing = messages.LastOrDefault(message => message.Role == ChatRole.Assistant && message.IsStreaming);
+            if (existing is not null)
+            {
+                return existing.Id;
+            }
+        }
+
+        for (var i = 0; i < messages.Count; i++)
+        {
+            if (messages[i].Role == ChatRole.Assistant && messages[i].IsStreaming)
+            {
+                messages[i] = messages[i] with { IsStreaming = false };
+            }
+        }
+
+        var message = new ChatMessage(
+            Guid.NewGuid(),
+            sessionId,
+            SessionProvider.G9Claw,
+            ChatRole.Assistant,
+            [ChatBlock.FromText("")],
+            DateTimeOffset.UtcNow,
+            true,
+            budget);
+        messages.Add(message);
+        return message.Id;
     }
 
     public void AppendStreamingAssistantText(string sessionId, string text, TokenBudget? budget)
@@ -349,6 +390,27 @@ public sealed class AppState : INotifyPropertyChanged
         }
 
         var (messages, index) = StreamingAssistantSlot(sessionId, budget);
+        AppendStreamingAssistantText(messages, index, text, budget);
+    }
+
+    public void AppendStreamingAssistantText(string sessionId, Guid assistantMessageId, string text, TokenBudget? budget)
+    {
+        if (!TryStreamingAssistantSlot(sessionId, assistantMessageId, out var messages, out var index))
+        {
+            return;
+        }
+
+        if (string.IsNullOrEmpty(text))
+        {
+            messages[index] = messages[index] with { TokenBudget = budget };
+            return;
+        }
+
+        AppendStreamingAssistantText(messages, index, text, budget);
+    }
+
+    private static void AppendStreamingAssistantText(List<ChatMessage> messages, int index, string text, TokenBudget? budget)
+    {
         var message = messages[index];
         var blocks = message.Blocks.ToList();
         var lastIndex = blocks.Count - 1;
@@ -367,6 +429,21 @@ public sealed class AppState : INotifyPropertyChanged
     public void AppendStreamingAssistantToolCall(string sessionId, AgentToolCall call)
     {
         var (messages, index) = StreamingAssistantSlot(sessionId, null);
+        AppendStreamingAssistantToolCall(messages, index, call);
+    }
+
+    public void AppendStreamingAssistantToolCall(string sessionId, Guid assistantMessageId, AgentToolCall call)
+    {
+        if (!TryStreamingAssistantSlot(sessionId, assistantMessageId, out var messages, out var index))
+        {
+            return;
+        }
+
+        AppendStreamingAssistantToolCall(messages, index, call);
+    }
+
+    private static void AppendStreamingAssistantToolCall(List<ChatMessage> messages, int index, AgentToolCall call)
+    {
         var message = messages[index];
         var blocks = message.Blocks.ToList();
         blocks.Add(new ChatBlock(ChatBlockKind.ToolCall, ToolCall: call));
@@ -376,6 +453,21 @@ public sealed class AppState : INotifyPropertyChanged
     public void AppendStreamingAssistantToolResult(string sessionId, AgentToolResult result)
     {
         var (messages, index) = StreamingAssistantSlot(sessionId, null);
+        AppendStreamingAssistantToolResult(messages, index, result);
+    }
+
+    public void AppendStreamingAssistantToolResult(string sessionId, Guid assistantMessageId, AgentToolResult result)
+    {
+        if (!TryStreamingAssistantSlot(sessionId, assistantMessageId, out var messages, out var index))
+        {
+            return;
+        }
+
+        AppendStreamingAssistantToolResult(messages, index, result);
+    }
+
+    private static void AppendStreamingAssistantToolResult(List<ChatMessage> messages, int index, AgentToolResult result)
+    {
         var message = messages[index];
         var blocks = message.Blocks.ToList();
         blocks.Add(new ChatBlock(ChatBlockKind.ToolResult, ToolResult: result));
@@ -385,6 +477,21 @@ public sealed class AppState : INotifyPropertyChanged
     public void AppendStreamingAssistantProviderError(string sessionId, ProviderErrorInfo error)
     {
         var (messages, index) = StreamingAssistantSlot(sessionId, null);
+        AppendStreamingAssistantProviderError(messages, index, error);
+    }
+
+    public void AppendStreamingAssistantProviderError(string sessionId, Guid assistantMessageId, ProviderErrorInfo error)
+    {
+        if (!TryStreamingAssistantSlot(sessionId, assistantMessageId, out var messages, out var index))
+        {
+            return;
+        }
+
+        AppendStreamingAssistantProviderError(messages, index, error);
+    }
+
+    private static void AppendStreamingAssistantProviderError(List<ChatMessage> messages, int index, ProviderErrorInfo error)
+    {
         var message = messages[index];
         var blocks = message.Blocks.ToList();
         var duplicateIndex = blocks.FindIndex(block =>
@@ -413,6 +520,14 @@ public sealed class AppState : INotifyPropertyChanged
         messages[index] = messages[index] with { IsStreaming = false };
     }
 
+    public void FinishStreamingAssistantMessage(string sessionId, Guid assistantMessageId)
+    {
+        if (!MessagesBySession.TryGetValue(sessionId, out var messages)) return;
+        var index = messages.FindIndex(message => message.Id == assistantMessageId && message.Role == ChatRole.Assistant);
+        if (index < 0) return;
+        messages[index] = messages[index] with { IsStreaming = false };
+    }
+
     private (List<ChatMessage> Messages, int Index) StreamingAssistantSlot(string sessionId, TokenBudget? budget)
     {
         if (!MessagesBySession.TryGetValue(sessionId, out var messages))
@@ -437,6 +552,21 @@ public sealed class AppState : INotifyPropertyChanged
             true,
             budget));
         return (messages, messages.Count - 1);
+    }
+
+    private bool TryStreamingAssistantSlot(string sessionId, Guid assistantMessageId, out List<ChatMessage> messages, out int index)
+    {
+        if (!MessagesBySession.TryGetValue(sessionId, out messages!))
+        {
+            index = -1;
+            return false;
+        }
+
+        index = messages.FindIndex(message =>
+            message.Id == assistantMessageId &&
+            message.Role == ChatRole.Assistant &&
+            message.IsStreaming);
+        return index >= 0;
     }
 
     private static bool ReplaceSessionState(List<ProjectSession> sessions, string sessionId, SessionState state)

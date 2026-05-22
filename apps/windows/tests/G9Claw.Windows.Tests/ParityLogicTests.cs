@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Runtime.CompilerServices;
 using G9Claw.Windows.Core;
 using Xunit;
 
@@ -1070,6 +1071,30 @@ router:
     }
 
     [Fact]
+    public void AppStateBeginsNewAssistantMessageForEachTurnAndIgnoresLateEvents()
+    {
+        var state = AppState.CreateDefault();
+        var project = state.Projects.First();
+        state.SelectProject(project);
+        state.CreateSessionForSelectedProject("test");
+        var sessionId = state.SelectedSessionId!;
+
+        var first = state.BeginStreamingAssistantMessage(sessionId, forceNew: true);
+        state.AppendStreamingAssistantText(sessionId, first, "first", null);
+        var second = state.BeginStreamingAssistantMessage(sessionId, forceNew: true);
+        state.AppendStreamingAssistantText(sessionId, first, " late", null);
+        state.AppendStreamingAssistantText(sessionId, second, "second", null);
+        state.FinishStreamingAssistantMessage(sessionId, second);
+
+        var assistantMessages = state.CurrentMessages.Where(message => message.Role == ChatRole.Assistant).ToList();
+        Assert.Equal(2, assistantMessages.Count);
+        Assert.Equal("first", assistantMessages[0].PlainText);
+        Assert.Equal("second", assistantMessages[1].PlainText);
+        Assert.False(assistantMessages[0].IsStreaming);
+        Assert.False(assistantMessages[1].IsStreaming);
+    }
+
+    [Fact]
     public void AppStateStoresProviderErrorsAsStructuredBlocksAndDedupesByRequest()
     {
         var state = AppState.CreateDefault();
@@ -1110,6 +1135,42 @@ router:
         Assert.Equal("Router fallback", error.ProviderError!.Summary);
         Assert.Equal("default", error.ProviderError.FallbackToModelEntry);
         Assert.Empty(message.PlainText);
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerContinuesPastSixToolRounds()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new MultiRoundToolProvider(rounds: 8);
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "keep using tools",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        Assert.Equal(9, provider.RequestCount);
+        Assert.Equal(8, events.Count(item => item.Kind == AgentEventKind.ToolResult));
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done");
+        Assert.DoesNotContain(events, item =>
+            item.Kind == AgentEventKind.Error &&
+            (item.Text?.Contains("maximum number", StringComparison.OrdinalIgnoreCase) ?? false));
     }
 
     [Fact]
@@ -1183,6 +1244,27 @@ router:
         Assert.Equal(840, V2LayoutMetrics.DefaultWindowHeight);
         Assert.Equal(980, V2LayoutMetrics.MinimumWindowWidth);
         Assert.Equal(640, V2LayoutMetrics.MinimumWindowHeight);
+    }
+
+    [Fact]
+    public void ComposerKeyPolicyHandlesSendNewlineModeToggleAndIme()
+    {
+        Assert.Equal(ComposerKeyAction.Send, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, isImeComposing: false));
+        Assert.Equal(ComposerKeyAction.InsertNewLine, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: true, isImeComposing: false));
+        Assert.Equal(ComposerKeyAction.ToggleRunMode, ComposerKeyPolicy.Decide(ComposerKey.Tab, shiftDown: true, isImeComposing: false));
+        Assert.Equal(ComposerKeyAction.None, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, isImeComposing: true));
+    }
+
+    [Fact]
+    public void ChatScrollPresenterSticksOnlyWhenUserIsNearBottom()
+    {
+        var bottom = ChatScrollPresenter.Capture(verticalOffset: 950, extentHeight: 1500, viewportHeight: 520, bottomThreshold: 48);
+        var history = ChatScrollPresenter.Capture(verticalOffset: 400, extentHeight: 1500, viewportHeight: 520, bottomThreshold: 48);
+
+        Assert.True(bottom.StickToBottom);
+        Assert.Equal(1180, ChatScrollPresenter.TargetOffset(bottom, extentHeight: 1700, viewportHeight: 520));
+        Assert.False(history.StickToBottom);
+        Assert.Equal(400, ChatScrollPresenter.TargetOffset(history, extentHeight: 1700, viewportHeight: 520));
     }
 
     [Fact]
@@ -1486,6 +1568,31 @@ gateway:
         date,
         date,
         state);
+
+    private sealed class MultiRoundToolProvider(int rounds) : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.ToolExchanges.Count < rounds)
+            {
+                yield return new ProviderStreamEvent(
+                    ProviderStreamEventKind.ToolCall,
+                    ToolCall: new AgentToolCall($"call-{request.ToolExchanges.Count + 1}", "ReadLints", "{}"));
+            }
+            else
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done");
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+        }
+    }
 
     private sealed class TempWorkspace : IDisposable
     {
