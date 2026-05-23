@@ -675,6 +675,8 @@ struct MemoryView: View {
                         .disabled(snapshot.lastDreamSnapshot?.rollbackReady != true)
 
                     Menu {
+                        Button(memory("Memory Settings", "记忆设置")) { openMemorySettings() }
+                        Divider()
                         Button(memory("Export Current Project Memory", "导出当前项目记忆")) { exportMemory(allProjects: false) }
                         Button(memory("Export All Memory", "导出全部记忆")) { exportMemory(allProjects: true) }
                         Divider()
@@ -952,6 +954,68 @@ struct MemoryView: View {
         state.bumpToolRefresh()
     }
 
+    private func openMemorySettings() {
+        let current = state.memoryService.settingsSnapshot()
+        let alert = NSAlert()
+        alert.messageText = memory("Memory Settings", "记忆设置")
+        alert.informativeText = memory(
+            "Set automatic Memory Index and Dream intervals in minutes. Use 0 to disable automatic tasks.",
+            "设置自动 Memory Index 和 Dream 的间隔（分钟）。0 表示关闭自动任务。"
+        )
+        alert.addButton(withTitle: state.t(.save))
+        alert.addButton(withTitle: state.t(.cancel))
+
+        let indexField = NSTextField(string: "\(current.autoIndexIntervalMinutes)")
+        let dreamField = NSTextField(string: "\(current.autoDreamIntervalMinutes)")
+        indexField.alignment = .right
+        dreamField.alignment = .right
+
+        let grid = NSGridView(views: [
+            [
+                NSTextField(labelWithString: memory("Auto Index Interval", "自动索引间隔")),
+                indexField,
+                NSTextField(labelWithString: memory("Minutes", "分钟")),
+            ],
+            [
+                NSTextField(labelWithString: memory("Auto Dream Interval", "自动 Dream 间隔")),
+                dreamField,
+                NSTextField(labelWithString: memory("Minutes", "分钟")),
+            ],
+        ])
+        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 0).width = 190
+        grid.column(at: 1).width = 88
+        grid.column(at: 2).width = 54
+        grid.columnSpacing = 8
+        grid.rowSpacing = 8
+        grid.frame = NSRect(x: 0, y: 0, width: 360, height: 54)
+        alert.accessoryView = grid
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let nextIndex = NativeMemoryDashboardSettingsFields.normalizedInterval(
+            indexField.stringValue,
+            fallback: current.autoIndexIntervalMinutes
+        )
+        let nextDream = NativeMemoryDashboardSettingsFields.normalizedInterval(
+            dreamField.stringValue,
+            fallback: current.autoDreamIntervalMinutes
+        )
+        state.g9ClawConfigText = YAMLScalarEditor.set(
+            path: NativeMemoryDashboardSettingsFields.autoIndexPath,
+            value: "\(nextIndex)",
+            in: state.g9ClawConfigText
+        )
+        state.g9ClawConfigText = YAMLScalarEditor.set(
+            path: NativeMemoryDashboardSettingsFields.autoDreamPath,
+            value: "\(nextDream)",
+            in: state.g9ClawConfigText
+        )
+        state.saveSettings()
+        state.statusLine = memory("Memory settings saved", "记忆设置已保存")
+        state.bumpToolRefresh()
+    }
+
     private func exportMemory(allProjects: Bool) {
         do {
             let data = try state.memoryService.exportBundle(
@@ -1070,6 +1134,21 @@ private enum MemoryTraceSubTab {
     case recall
     case index
     case dream
+}
+
+enum NativeMemoryDashboardSettingsFields {
+    static let autoIndexPath = "memory.autoIndexIntervalMinutes"
+    static let autoDreamPath = "memory.autoDreamIntervalMinutes"
+    static let visiblePaths = [
+        autoIndexPath,
+        autoDreamPath,
+    ]
+
+    static func normalizedInterval(_ raw: String, fallback: Int) -> Int {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Double(trimmed), value.isFinite else { return fallback }
+        return min(10_080, max(0, Int(value)))
+    }
 }
 
 enum NativeMemoryViewLayout {

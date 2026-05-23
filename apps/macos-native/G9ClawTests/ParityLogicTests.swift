@@ -2547,6 +2547,20 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(defaults.heartbeatBatchSize, 30)
     }
 
+    func testNativeMemoryDashboardSettingsMatchWebMemoryDrawer() {
+        XCTAssertEqual(NativeMemoryDashboardSettingsFields.visiblePaths, [
+            "memory.autoIndexIntervalMinutes",
+            "memory.autoDreamIntervalMinutes",
+        ])
+
+        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("45", fallback: 30), 45)
+        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("0", fallback: 30), 0)
+        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("-5", fallback: 30), 0)
+        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("20000", fallback: 30), 10_080)
+        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("bad", fallback: 30), 30)
+        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("42.8", fallback: 30), 42)
+    }
+
     func testMemoryDashboardSchedulerReflectsMemoryEnabledConfig() {
         let service = MemoryService()
         service.updateSettings(MemorySettingsSnapshot(enabled: false))
