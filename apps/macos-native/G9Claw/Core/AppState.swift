@@ -2093,7 +2093,7 @@ enum G9ClawConfigDefaults {
           contextWindow: 160000
           apiTimeoutMs: 120000
           httpsProxy: ""
-          databasePath: \(homePath)/.cloudcli/auth.db
+          databasePath: \(homePath)/.g9claw/auth.db
           workspacesRoot: \(homePath)
         models:
           providers:
