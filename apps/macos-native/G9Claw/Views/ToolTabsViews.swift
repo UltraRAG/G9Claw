@@ -960,7 +960,7 @@ struct MemoryView: View {
             )
             let panel = NSSavePanel()
             panel.allowedContentTypes = [.json]
-            panel.nameFieldStringValue = allProjects ? "edgeclaw-memory-all-projects.json" : "edgeclaw-memory-current-project.json"
+            panel.nameFieldStringValue = allProjects ? "g9claw-memory-all-projects.json" : "g9claw-memory-current-project.json"
             guard panel.runModal() == .OK, let url = panel.url else { return }
             try data.write(to: url, options: .atomic)
             state.statusLine = allProjects ? "All-project memory exported" : "Current project memory exported"

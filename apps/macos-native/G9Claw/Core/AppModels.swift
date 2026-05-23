@@ -982,7 +982,7 @@ struct ToolPermissionSettings: Hashable, Codable {
 }
 
 enum PermissionsExportDefaults {
-    static let source = "edgeclaw"
+    static let source = "g9claw"
 
     static func filename(date: Date = Date()) -> String {
         let formatter = DateFormatter()
@@ -990,7 +990,7 @@ enum PermissionsExportDefaults {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyy-MM-dd"
-        return "edgeclaw-permissions-\(formatter.string(from: date)).json"
+        return "g9claw-permissions-\(formatter.string(from: date)).json"
     }
 }
 

@@ -101,30 +101,30 @@ final class ParityLogicTests: XCTestCase {
         )
     }
 
-    func testNativeConfigPathMatchesWebEdgeClawConfigLocationAndOverride() {
+    func testNativeConfigPathUsesG9ClawConfigLocationAndOverride() {
         let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
 
         XCTAssertEqual(
-            EdgeClawConfigPath.configURL(environment: [:], home: home).path,
-            "/Users/tester/.edgeclaw/config.yaml"
-        )
-        XCTAssertEqual(
-            EdgeClawConfigPath.configURL(environment: ["EDGECLAW_CONFIG_PATH": "~/edgeclaw-dev.yaml"], home: home).path,
-            "/Users/tester/edgeclaw-dev.yaml"
-        )
-        XCTAssertEqual(
-            EdgeClawConfigPath.legacyConfigURL(home: home).path,
+            G9ClawConfigPath.configURL(environment: [:], home: home).path,
             "/Users/tester/.g9claw/config.yaml"
+        )
+        XCTAssertEqual(
+            G9ClawConfigPath.configURL(environment: ["G9CLAW_CONFIG_PATH": "~/g9claw-dev.yaml"], home: home).path,
+            "/Users/tester/g9claw-dev.yaml"
+        )
+        XCTAssertEqual(
+            G9ClawConfigPath.legacyConfigURL(home: home).path,
+            "/Users/tester/.edgeclaw/config.yaml"
         )
     }
 
-    func testNativeDefaultConfigUsesWebEdgeClawProviderAndDisabledRouterRagDefaults() {
-        let yaml = EdgeClawConfigDefaults.configText(homePath: "/Users/tester", userName: "tester")
+    func testNativeDefaultConfigUsesG9ClawProviderAndDisabledRouterRagDefaults() {
+        let yaml = G9ClawConfigDefaults.configText(homePath: "/Users/tester", userName: "tester")
         let values = NativeConfigService.scalarMap(from: yaml)
 
-        XCTAssertEqual(values["models.entries.default.provider"], "edgeclaw")
-        XCTAssertEqual(values["models.providers.edgeclaw.type"], "openai-chat")
-        XCTAssertEqual(values["models.providers.g9claw.type"], nil)
+        XCTAssertEqual(values["models.entries.default.provider"], "g9claw")
+        XCTAssertEqual(values["models.providers.g9claw.type"], "openai-chat")
+        XCTAssertEqual(values["models.providers.edgeclaw.type"], nil)
         XCTAssertEqual(values["memory.model"], "inherit")
         XCTAssertEqual(values["memory.autoIndexIntervalMinutes"], "30")
         XCTAssertEqual(values["memory.autoDreamIntervalMinutes"], "60")
@@ -132,8 +132,8 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(values["rag.glmWebSearch.baseUrl"], "")
         XCTAssertEqual(values["router.enabled"], "false")
         XCTAssertEqual(values["router.tokenSaver.enabled"], "false")
-        XCTAssertEqual(values["gateway.home"], "/Users/tester/.edgeclaw/gateway")
-        XCTAssertEqual(values["gateway.runtimePaths.generalCwd"], "~/Claude/general")
+        XCTAssertEqual(values["gateway.home"], "/Users/tester/.g9claw/gateway")
+        XCTAssertEqual(values["gateway.runtimePaths.generalCwd"], "~/G9Claw/general")
 
         let channelNames = Set(values.keys.compactMap { key -> String? in
             guard key.hasPrefix("gateway.channels.") else { return nil }
@@ -168,32 +168,32 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(values["gateway.channels.telegram.webhookPort"], "null")
         XCTAssertEqual(values["gateway.channels.wecom.websocketUrl"], "wss://openws.work.weixin.qq.com")
         XCTAssertEqual(values["gateway.channels.api_server.port"], "8642")
-        XCTAssertEqual(values["gateway.channels.api_server.modelName"], "claude-gateway")
+        XCTAssertEqual(values["gateway.channels.api_server.modelName"], "g9claw-gateway")
         XCTAssertEqual(values["gateway.channels.webhook.secret"], "")
     }
 
-    func testNativeConfigServiceUsesEdgeClawAsDefaultProviderID() {
+    func testNativeConfigServiceUsesG9ClawAsDefaultProviderID() {
         let yaml = """
         models:
           providers:
-            edgeclaw:
+            g9claw:
               type: openai-chat
-              baseUrl: http://edgeclaw.local/v1
-              apiKey: edge-secret
+              baseUrl: http://g9claw.local/v1
+              apiKey: test-secret
           entries:
             default:
-              provider: edgeclaw
-              name: edge-model
+              provider: g9claw
+              name: test-model
         """
 
         let values = NativeConfigService.scalarMap(from: yaml)
         let snapshot = NativeConfigService.snapshot(from: yaml)
 
-        XCTAssertEqual(NativeConfigService.providerID(entryID: "missing", values: values), "edgeclaw")
-        XCTAssertEqual(snapshot?.providerConfig.baseURL, "http://edgeclaw.local/v1")
-        XCTAssertEqual(snapshot?.providerConfig.model, "edge-model")
+        XCTAssertEqual(NativeConfigService.providerID(entryID: "missing", values: values), "g9claw")
+        XCTAssertEqual(snapshot?.providerConfig.baseURL, "http://g9claw.local/v1")
+        XCTAssertEqual(snapshot?.providerConfig.model, "test-model")
         XCTAssertEqual(snapshot?.providerConfig.secretAccount, ProviderConfig.empty.secretAccount)
-        XCTAssertEqual(snapshot?.apiKey, "edge-secret")
+        XCTAssertEqual(snapshot?.apiKey, "test-secret")
     }
 
     func testNativeConfigScalarMapMigratesLegacyAlwaysOnTriggerLikeWeb() {
@@ -260,7 +260,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testNativeConfigViewModePersistenceMatchesWebLocalStorageKey() {
-        XCTAssertEqual(NativeConfigViewMode.storageKey, "edgeclaw:configView")
+        XCTAssertEqual(NativeConfigViewMode.storageKey, "g9claw:configView")
         XCTAssertEqual(NativeConfigViewMode.fromStoredRaw("form"), .form)
         XCTAssertEqual(NativeConfigViewMode.fromStoredRaw("raw"), .raw)
         XCTAssertEqual(NativeConfigViewMode.fromStoredRaw("invalid"), .form)
@@ -307,10 +307,10 @@ final class ParityLogicTests: XCTestCase {
         models:
           entries:
             default:
-              provider: edgeclaw
+              provider: g9claw
               name: main-model
             router_small:
-              provider: edgeclaw
+              provider: g9claw
               name: small-model
         """
         let values = NativeConfigService.scalarMap(from: yaml)
@@ -342,16 +342,16 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(NativeModelsConfigFormFields.newProviderScalars.keys.contains("transformer"))
         XCTAssertFalse(NativeModelsConfigFormFields.newProviderScalars.keys.contains("headers"))
 
-        XCTAssertEqual(NativeModelsConfigFormFields.providerOptions(providerIDs: ["edgeclaw", "local"]), [
+        XCTAssertEqual(NativeModelsConfigFormFields.providerOptions(providerIDs: ["g9claw", "local"]), [
             "",
-            "edgeclaw",
+            "g9claw",
             "local",
         ])
-        XCTAssertEqual(NativeModelsConfigFormFields.newEntryScalars(firstProvider: "edgeclaw"), [
-            "provider": "edgeclaw",
+        XCTAssertEqual(NativeModelsConfigFormFields.newEntryScalars(firstProvider: "g9claw"), [
+            "provider": "g9claw",
             "name": "",
         ])
-        XCTAssertFalse(NativeModelsConfigFormFields.newEntryScalars(firstProvider: "edgeclaw").keys.contains("contextWindow"))
+        XCTAssertFalse(NativeModelsConfigFormFields.newEntryScalars(firstProvider: "g9claw").keys.contains("contextWindow"))
     }
 
     func testNativeRuntimeConfigFormFieldsMatchWebSettingsTab() {
@@ -441,7 +441,7 @@ final class ParityLogicTests: XCTestCase {
         )
         XCTAssertEqual(
             english.text(.ragDetail),
-            "When on, 9GClaw exports EDGECLAW_RAG_* env vars so RAG skills can call these APIs."
+            "When on, 9GClaw exports G9CLAW_RAG_* env vars so RAG skills can call these APIs."
         )
         XCTAssertEqual(
             english.text(.disableBuiltInWebToolsDetail),
@@ -550,20 +550,20 @@ final class ParityLogicTests: XCTestCase {
     func testPermissionsExportDefaultsMatchWebNaming() throws {
         let date = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-05-23T23:55:00Z"))
 
-        XCTAssertEqual(PermissionsExportDefaults.source, "edgeclaw")
+        XCTAssertEqual(PermissionsExportDefaults.source, "g9claw")
         XCTAssertEqual(
             PermissionsExportDefaults.filename(date: date),
-            "edgeclaw-permissions-2026-05-23.json"
+            "g9claw-permissions-2026-05-23.json"
         )
     }
 
     @MainActor
-    func testPermissionsExportUsesWebEdgeClawPayloadShape() throws {
+    func testPermissionsExportUsesG9ClawPayloadShape() throws {
         let state = AppState()
         state.settings.permissions.allowedTools = ["Bash(git log:*)", "MultiEdit"]
         state.settings.permissions.disallowedTools = ["Bash(rm:*)", "WebSearch"]
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("edgeclaw-permissions-\(UUID().uuidString).json")
+            .appendingPathComponent("g9claw-permissions-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
 
         try state.exportPermissions(to: url)
@@ -571,7 +571,7 @@ final class ParityLogicTests: XCTestCase {
         let data = try Data(contentsOf: url)
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(payload["version"] as? Int, 1)
-        XCTAssertEqual(payload["source"] as? String, "edgeclaw")
+        XCTAssertEqual(payload["source"] as? String, "g9claw")
         XCTAssertNotNil(payload["exportedAt"] as? String)
         XCTAssertEqual(payload["allowedTools"] as? [String], ["Bash(git log:*)", "MultiEdit"])
         XCTAssertEqual(payload["disallowedTools"] as? [String], ["Bash(rm:*)", "WebSearch"])
@@ -590,7 +590,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(state.settings.permissions.disallowedTools, ["Write", "Read"])
 
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("edgeclaw-permissions-import-\(UUID().uuidString).json")
+            .appendingPathComponent("g9claw-permissions-import-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
         let payload: [String: Any] = [
             "allowedTools": ["Bash(git log:*)", "WebSearch"],
@@ -856,19 +856,19 @@ final class ParityLogicTests: XCTestCase {
           contextWindow: 131072
         models:
           providers:
-            edgeclaw:
+            g9claw:
               type: openai-chat
               baseUrl: http://main.local/v1
           entries:
             default:
-              provider: edgeclaw
+              provider: g9claw
               name: default-model
             main_large:
-              provider: edgeclaw
+              provider: g9claw
               name: main-model
               contextWindow: 262144
             router_small:
-              provider: edgeclaw
+              provider: g9claw
               name: router-model
               contextWindow: 64000
         agents:
@@ -899,15 +899,15 @@ final class ParityLogicTests: XCTestCase {
           contextWindow: 131072
         models:
           providers:
-            edgeclaw:
+            g9claw:
               type: openai-chat
               baseUrl: http://main.local/v1
           entries:
             default:
-              provider: edgeclaw
+              provider: g9claw
               name: default-model
             main_large:
-              provider: edgeclaw
+              provider: g9claw
               name: main-model
         agents:
           main:
@@ -2709,18 +2709,18 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(snapshot.overview.totalEntries, 1)
     }
 
-    func testMemoryServiceLoadsEdgeClawWorkspaceAndGlobalMemoryShape() throws {
+    func testMemoryServiceLoadsG9ClawWorkspaceAndGlobalMemoryShape() throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-edge-memory-\(UUID().uuidString)", isDirectory: true)
-        let edgeRoot = root.appendingPathComponent("edgeclaw-memory", isDirectory: true)
-        let workspaceHash = MemoryService.edgeClawWorkspaceHash(for: root.standardizedFileURL.path)
-        let workspaceMemoryRoot = edgeRoot
+            .appendingPathComponent("g9claw-memory-load-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("g9claw-memory", isDirectory: true)
+        let workspaceHash = MemoryService.g9clawWorkspaceHash(for: root.standardizedFileURL.path)
+        let workspaceMemoryRoot = memoryRoot
             .appendingPathComponent("workspaces", isDirectory: true)
             .appendingPathComponent(workspaceHash, isDirectory: true)
             .appendingPathComponent("memory", isDirectory: true)
         let projectMemoryRoot = workspaceMemoryRoot.appendingPathComponent("Project", isDirectory: true)
         let feedbackMemoryRoot = workspaceMemoryRoot.appendingPathComponent("Feedback", isDirectory: true)
-        let globalMemoryRoot = edgeRoot
+        let globalMemoryRoot = memoryRoot
             .appendingPathComponent("global", isDirectory: true)
             .appendingPathComponent("UserIdentity", isDirectory: true)
         try FileManager.default.createDirectory(at: projectMemoryRoot, withIntermediateDirectories: true)
@@ -2774,7 +2774,7 @@ final class ParityLogicTests: XCTestCase {
         try """
         ---
         project_name: Web Memory Project
-        description: Project metadata from edgeclaw-memory-core.
+        description: Project metadata from g9claw memory.
         status: active
         updated_at: 2026-05-23T11:00:00Z
         ---
@@ -2783,7 +2783,7 @@ final class ParityLogicTests: XCTestCase {
         active
         """.write(to: workspaceMemoryRoot.appendingPathComponent("project.meta.md"), atomically: true, encoding: .utf8)
 
-        let service = MemoryService(edgeClawRoot: edgeRoot)
+        let service = MemoryService(memoryRoot: memoryRoot)
         service.loadWorkspaceRecords(projectRoot: root.path, projectName: "Native")
         let snapshot = service.dashboard(projectName: "Native", projectRoot: root.path)
 
@@ -2805,14 +2805,14 @@ final class ParityLogicTests: XCTestCase {
         let root = repoRootURL()
             .appendingPathComponent("g9claw-memory-export-\(UUID().uuidString)", isDirectory: true)
         let projectRoot = root.appendingPathComponent("project", isDirectory: true)
-        let edgeRoot = root.appendingPathComponent("edgeclaw-memory", isDirectory: true)
-        let workspaceHash = MemoryService.edgeClawWorkspaceHash(for: projectRoot.standardizedFileURL.path)
-        let workspaceMemoryRoot = edgeRoot
+        let memoryRoot = root.appendingPathComponent("g9claw-memory", isDirectory: true)
+        let workspaceHash = MemoryService.g9clawWorkspaceHash(for: projectRoot.standardizedFileURL.path)
+        let workspaceMemoryRoot = memoryRoot
             .appendingPathComponent("workspaces", isDirectory: true)
             .appendingPathComponent(workspaceHash, isDirectory: true)
             .appendingPathComponent("memory", isDirectory: true)
         let projectMemoryRoot = workspaceMemoryRoot.appendingPathComponent("Project", isDirectory: true)
-        let globalMemoryRoot = edgeRoot
+        let globalMemoryRoot = memoryRoot
             .appendingPathComponent("global", isDirectory: true)
             .appendingPathComponent("UserIdentity", isDirectory: true)
         try FileManager.default.createDirectory(at: projectMemoryRoot, withIntermediateDirectories: true)
@@ -2849,7 +2849,7 @@ final class ParityLogicTests: XCTestCase {
         Global memory should not be included in current-project exports.
         """.write(to: globalMemoryRoot.appendingPathComponent("user-profile.md"), atomically: true, encoding: .utf8)
 
-        let service = MemoryService(edgeClawRoot: edgeRoot)
+        let service = MemoryService(memoryRoot: memoryRoot)
         service.loadWorkspaceRecords(projectRoot: projectRoot.path, projectName: "Native")
         let data = try service.exportBundle(projectName: "Native", projectRoot: projectRoot.path)
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -2864,15 +2864,15 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue((files.first?["content"] as? String)?.contains("Saved price baseline") == true)
     }
 
-    func testMemoryImportCurrentProjectWritesEdgeClawWorkspaceFiles() throws {
+    func testMemoryImportCurrentProjectWritesG9ClawWorkspaceFiles() throws {
         let root = repoRootURL()
             .appendingPathComponent("g9claw-memory-import-\(UUID().uuidString)", isDirectory: true)
         let projectRoot = root.appendingPathComponent("project", isDirectory: true)
-        let edgeRoot = root.appendingPathComponent("edgeclaw-memory", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("g9claw-memory", isDirectory: true)
         try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspaceHash = MemoryService.edgeClawWorkspaceHash(for: projectRoot.standardizedFileURL.path)
-        let workspaceMemoryRoot = edgeRoot
+        let workspaceHash = MemoryService.g9clawWorkspaceHash(for: projectRoot.standardizedFileURL.path)
+        let workspaceMemoryRoot = memoryRoot
             .appendingPathComponent("workspaces", isDirectory: true)
             .appendingPathComponent(workspaceHash, isDirectory: true)
             .appendingPathComponent("memory", isDirectory: true)
@@ -2886,7 +2886,7 @@ final class ParityLogicTests: XCTestCase {
         updated_at: 2026-05-23T10:00:00Z
         ---
 
-        The native app should materialize this file under the EdgeClaw workspace memory root.
+        The native app should materialize this file under the G9Claw workspace memory root.
         """
         let bundle: [String: Any] = [
             "formatVersion": "clawxmemory-memory-snapshot.v4",
@@ -2900,7 +2900,7 @@ final class ParityLogicTests: XCTestCase {
             ]
         ]
         let data = try JSONSerialization.data(withJSONObject: bundle, options: [.sortedKeys])
-        let service = MemoryService(edgeClawRoot: edgeRoot)
+        let service = MemoryService(memoryRoot: memoryRoot)
 
         try service.importBundle(data, projectName: "Native", projectRoot: projectRoot.path)
         let written = workspaceMemoryRoot.appendingPathComponent("Project/imported-memory.md")
@@ -2929,7 +2929,7 @@ final class ParityLogicTests: XCTestCase {
             ]
         ]
         let data = try JSONSerialization.data(withJSONObject: bundle, options: [.sortedKeys])
-        let service = MemoryService(edgeClawRoot: root.appendingPathComponent("edgeclaw-memory", isDirectory: true))
+        let service = MemoryService(memoryRoot: root.appendingPathComponent("g9claw-memory", isDirectory: true))
 
         XCTAssertThrowsError(try service.importBundle(data, projectName: "Native", projectRoot: projectRoot.path)) { error in
             XCTAssertTrue(error.localizedDescription.contains("Invalid files[0].relativePath"))
@@ -3120,17 +3120,19 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(history.first?.id, run.id)
         XCTAssertEqual(history.first?.sessionId, "session-run")
         XCTAssertTrue(history.first?.outputLog.contains("Started native Always-On plan run") == true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(".g9claw/always-on", isDirectory: true).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".claude", isDirectory: true).path))
     }
 
-    func testAlwaysOnServiceReadsWebClaudeAlwaysOnAndCronTaskFiles() throws {
+    func testAlwaysOnServiceReadsWebG9ClawAlwaysOnAndCronTaskFiles() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-alwayson-claude-\(UUID().uuidString)", isDirectory: true)
-        let alwaysOnRoot = root.appendingPathComponent(".claude/always-on", isDirectory: true)
+            .appendingPathComponent("g9claw-alwayson-g9claw-\(UUID().uuidString)", isDirectory: true)
+        let alwaysOnRoot = root.appendingPathComponent(".g9claw/always-on", isDirectory: true)
         let plansRoot = alwaysOnRoot.appendingPathComponent("plans", isDirectory: true)
         let runsRoot = alwaysOnRoot.appendingPathComponent("runs", isDirectory: true)
         try FileManager.default.createDirectory(at: plansRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: runsRoot, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".claude", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".g9claw", isDirectory: true), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         try "# Web Plan\n\nUse the web Always-On root.".write(
@@ -3144,11 +3146,11 @@ final class ParityLogicTests: XCTestCase {
             {
               "id": "plan-web",
               "title": "Web root plan",
-              "summary": "Plan stored in .claude.",
+              "summary": "Plan stored in .g9claw.",
               "rationale": "Matches the web UI storage path.",
               "status": "ready",
               "approvalMode": "manual",
-              "planFilePath": ".claude/always-on/plans/plan-web.md",
+              "planFilePath": ".g9claw/always-on/plans/plan-web.md",
               "createdAt": "2026-05-23T10:00:00Z",
               "updatedAt": "2026-05-23T10:05:00Z"
             }
@@ -3173,7 +3175,7 @@ final class ParityLogicTests: XCTestCase {
             }
           ]
         }
-        """.write(to: root.appendingPathComponent(".claude/scheduled_tasks.json"), atomically: true, encoding: .utf8)
+        """.write(to: root.appendingPathComponent(".g9claw/scheduled_tasks.json"), atomically: true, encoding: .utf8)
         try """
         {
           "tasks": [
@@ -3187,14 +3189,14 @@ final class ParityLogicTests: XCTestCase {
             }
           ]
         }
-        """.write(to: root.appendingPathComponent(".claude/session_scheduled_tasks.json"), atomically: true, encoding: .utf8)
+        """.write(to: root.appendingPathComponent(".g9claw/session_scheduled_tasks.json"), atomically: true, encoding: .utf8)
 
         let service = AlwaysOnService()
         let plans = service.plans(projectRoot: root.path)
         let history = service.runHistory(projectRoot: root.path)
         let jobsByID = Dictionary(uniqueKeysWithValues: service.cronJobs(projectRoot: root.path).map { ($0.id, $0) })
 
-        XCTAssertEqual(plans.first?.planFilePath, ".claude/always-on/plans/plan-web.md")
+        XCTAssertEqual(plans.first?.planFilePath, ".g9claw/always-on/plans/plan-web.md")
         XCTAssertEqual(plans.first?.content, "# Web Plan\n\nUse the web Always-On root.")
         XCTAssertEqual(history.first?.outputLog, "web log content")
         XCTAssertEqual(jobsByID["cron-durable"]?.durable, true)
@@ -3208,7 +3210,7 @@ final class ParityLogicTests: XCTestCase {
     func testAlwaysOnServiceStartsAndDeletesWebCronJobs() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("g9claw-alwayson-cron-actions-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".claude", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".g9claw", isDirectory: true), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try """
         {
@@ -3229,7 +3231,7 @@ final class ParityLogicTests: XCTestCase {
             }
           ]
         }
-        """.write(to: root.appendingPathComponent(".claude/scheduled_tasks.json"), atomically: true, encoding: .utf8)
+        """.write(to: root.appendingPathComponent(".g9claw/scheduled_tasks.json"), atomically: true, encoding: .utf8)
 
         let service = AlwaysOnService()
         let job = try XCTUnwrap(service.cronJobs(projectRoot: root.path).first { $0.id == "cron-run-now" })
@@ -3249,7 +3251,7 @@ final class ParityLogicTests: XCTestCase {
     func testAlwaysOnServiceFoldsRunHistoryEventsAndPreservesMetadata() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("g9claw-alwayson-run-history-fold-\(UUID().uuidString)", isDirectory: true)
-        let alwaysOnRoot = root.appendingPathComponent(".claude/always-on", isDirectory: true)
+        let alwaysOnRoot = root.appendingPathComponent(".g9claw/always-on", isDirectory: true)
         try FileManager.default.createDirectory(at: alwaysOnRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -3258,7 +3260,7 @@ final class ParityLogicTests: XCTestCase {
             {"runId":"run-1","kind":"plan","sourceId":"plan-alpha","title":"Plan Alpha","status":"queued","timestamp":"2026-04-20T10:00:00.000Z","metadata":{"source":"manual"}}
             """,
             """
-            {"runId":"run-1","kind":"plan","sourceId":"plan-alpha","title":"Plan Alpha","status":"completed","timestamp":"2026-04-20T10:05:00.000Z","finishedAt":"2026-04-20T10:05:00.000Z","sessionId":"session-1","output":"Done.","metadata":{"planFilePath":".claude/always-on/plans/plan-alpha.md"}}
+            {"runId":"run-1","kind":"plan","sourceId":"plan-alpha","title":"Plan Alpha","status":"completed","timestamp":"2026-04-20T10:05:00.000Z","finishedAt":"2026-04-20T10:05:00.000Z","sessionId":"session-1","output":"Done.","metadata":{"planFilePath":".g9claw/always-on/plans/plan-alpha.md"}}
             """,
             "not json",
         ].joined(separator: "\n") + "\n"
@@ -3274,7 +3276,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(history.first?.sessionId, "session-1")
         XCTAssertEqual(detail.outputLog, "Done.")
         XCTAssertEqual(detail.metadata["source"], "manual")
-        XCTAssertEqual(detail.metadata["planFilePath"], ".claude/always-on/plans/plan-alpha.md")
+        XCTAssertEqual(detail.metadata["planFilePath"], ".g9claw/always-on/plans/plan-alpha.md")
         XCTAssertEqual(detail.metadata["logSource"], "history")
         XCTAssertEqual(detail.metadata["finishedAt"], "2026-04-20T10:05:00Z")
     }
@@ -3282,7 +3284,7 @@ final class ParityLogicTests: XCTestCase {
     func testAlwaysOnServiceDerivesBackgroundSessionAndFiltersUnknownHistoryLikeWeb() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("g9claw-alwayson-run-history-session-\(UUID().uuidString)", isDirectory: true)
-        let alwaysOnRoot = root.appendingPathComponent(".claude/always-on", isDirectory: true)
+        let alwaysOnRoot = root.appendingPathComponent(".g9claw/always-on", isDirectory: true)
         try FileManager.default.createDirectory(at: alwaysOnRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -3317,7 +3319,7 @@ final class ParityLogicTests: XCTestCase {
     func testAlwaysOnRunHistoryDetailPrefersDedicatedLogAndPollsOnlyQueuedOrRunning() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("g9claw-alwayson-run-history-log-\(UUID().uuidString)", isDirectory: true)
-        let alwaysOnRoot = root.appendingPathComponent(".claude/always-on", isDirectory: true)
+        let alwaysOnRoot = root.appendingPathComponent(".g9claw/always-on", isDirectory: true)
         let runsRoot = alwaysOnRoot.appendingPathComponent("runs", isDirectory: true)
         try FileManager.default.createDirectory(at: runsRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -3364,7 +3366,7 @@ final class ParityLogicTests: XCTestCase {
                 content: "",
                 status: status,
                 approvalMode: "manual",
-                planFilePath: ".claude/always-on/plans/\(id).md",
+                planFilePath: ".g9claw/always-on/plans/\(id).md",
                 createdAt: base.addingTimeInterval(-1_000),
                 updatedAt: base.addingTimeInterval(updatedOffset),
                 executionSessionId: executionSessionId,
@@ -3404,7 +3406,7 @@ final class ParityLogicTests: XCTestCase {
                         summary: id,
                         lastActivity: base.addingTimeInterval($0),
                         taskId: id,
-                        outputFile: ".claude/always-on/runs/run-\(id).log",
+                        outputFile: ".g9claw/always-on/runs/run-\(id).log",
                         parentSessionId: nil,
                         relativeTranscriptPath: nil,
                         transcriptKey: nil
@@ -3470,7 +3472,7 @@ final class ParityLogicTests: XCTestCase {
             content: "",
             status: .ready,
             approvalMode: "manual",
-            planFilePath: ".claude/always-on/plans/plan-a.md",
+            planFilePath: ".g9claw/always-on/plans/plan-a.md",
             createdAt: createdAt,
             updatedAt: triggeredAt,
             executionSessionId: nil,
@@ -3498,7 +3500,7 @@ final class ParityLogicTests: XCTestCase {
                 summary: "done",
                 lastActivity: completedAt,
                 taskId: "task-a",
-                outputFile: ".claude/always-on/runs/run-a.log",
+                outputFile: ".g9claw/always-on/runs/run-a.log",
                 parentSessionId: "origin-a",
                 relativeTranscriptPath: "origin-a/subagents/agent-a.jsonl",
                 transcriptKey: "agent-a.jsonl"
@@ -3628,7 +3630,7 @@ final class ParityLogicTests: XCTestCase {
             content: "# Plan",
             status: .ready,
             approvalMode: "manual",
-            planFilePath: " .claude/always-on/plans/plan-a.md ",
+            planFilePath: " .g9claw/always-on/plans/plan-a.md ",
             contextRefs: [
                 "workingDirectory": ["/repo"],
                 "memory": ["Router parity note"],
@@ -3648,7 +3650,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(NativeAlwaysOnPlanDetailPresentation.sectionTitle(.contextRefs, language: .chineseSimplified), "上下文引用")
         XCTAssertEqual(
             NativeAlwaysOnPlanDetailPresentation.fileLocation(projectRoot: "/Users/tester/repo/", planFilePath: plan.planFilePath),
-            "/Users/tester/repo/.claude/always-on/plans/plan-a.md"
+            "/Users/tester/repo/.g9claw/always-on/plans/plan-a.md"
         )
         XCTAssertEqual(
             NativeAlwaysOnPlanDetailPresentation.fileLocation(projectRoot: "/repo", planFilePath: "/tmp/plan.md"),
@@ -3831,7 +3833,7 @@ final class ParityLogicTests: XCTestCase {
         let parentSessionId = "parent-session-readonly"
         let transcriptFileName = "agent-cron-readonly.jsonl"
         let transcriptPath = home
-            .appendingPathComponent(".claude/projects/\(projectName)/\(parentSessionId)/subagents", isDirectory: true)
+            .appendingPathComponent(".g9claw/projects/\(projectName)/\(parentSessionId)/subagents", isDirectory: true)
             .appendingPathComponent(transcriptFileName)
         try FileManager.default.createDirectory(at: transcriptPath.deletingLastPathComponent(), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -3861,7 +3863,7 @@ final class ParityLogicTests: XCTestCase {
             transcriptKey: transcriptFileName,
             taskId: "cron-task",
             taskStatus: "completed",
-            outputFile: ".claude/always-on/runs/run-a.log"
+            outputFile: ".g9claw/always-on/runs/run-a.log"
         )
 
         let session = try XCTUnwrap(AlwaysOnBackgroundTranscriptLoader.makeSession(target: target, existing: nil, now: Date(timeIntervalSince1970: 0)))
@@ -3873,7 +3875,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(session.transcriptKey, transcriptFileName)
         XCTAssertEqual(session.taskId, "cron-task")
         XCTAssertEqual(session.taskStatus, "completed")
-        XCTAssertEqual(session.outputFile, ".claude/always-on/runs/run-a.log")
+        XCTAssertEqual(session.outputFile, ".g9claw/always-on/runs/run-a.log")
         XCTAssertEqual(session.isReadOnly, true)
         XCTAssertTrue(session.isBackgroundTaskSession)
 
@@ -4152,8 +4154,8 @@ final class ParityLogicTests: XCTestCase {
         let now = ISO8601DateFormatter().date(from: "2026-05-23T10:00:00Z")!
         let service = AlwaysOnService()
         let context = service.discoveryContext(
-            projectName: "edgeclaw-opc",
-            displayName: "Edgeclaw OPC",
+            projectName: "g9claw-opc",
+            displayName: "G9Claw OPC",
             projectRoot: root.path,
             plans: [
                 AlwaysOnPlan(
@@ -4164,7 +4166,7 @@ final class ParityLogicTests: XCTestCase {
                     content: "",
                     status: .ready,
                     approvalMode: "manual",
-                    planFilePath: ".claude/always-on/plans/plan-a.md",
+                    planFilePath: ".g9claw/always-on/plans/plan-a.md",
                     createdAt: now.addingTimeInterval(-120),
                     updatedAt: now.addingTimeInterval(-60),
                     executionSessionId: nil,
@@ -4194,7 +4196,7 @@ final class ParityLogicTests: XCTestCase {
                         summary: "Finished scan",
                         lastActivity: now.addingTimeInterval(-240),
                         taskId: "cron-a",
-                        outputFile: ".claude/always-on/runs/run-a.log",
+                        outputFile: ".g9claw/always-on/runs/run-a.log",
                         parentSessionId: "parent-a",
                         relativeTranscriptPath: "parent-a/subagents/agent-cron-a.jsonl",
                         transcriptKey: "agent-cron-a.jsonl"
@@ -4218,7 +4220,7 @@ final class ParityLogicTests: XCTestCase {
                     id: UUID(),
                     name: "Router",
                     summary: "Router parity details.",
-                    projectName: "edgeclaw-opc",
+                    projectName: "g9claw-opc",
                     updatedAt: now.addingTimeInterval(-30),
                     type: .project,
                     relativePath: "Project/router.md",
@@ -4229,15 +4231,15 @@ final class ParityLogicTests: XCTestCase {
             now: now
         )
         let english = service.discoveryPrompt(
-            projectName: "edgeclaw-opc",
-            displayName: "Edgeclaw OPC",
+            projectName: "g9claw-opc",
+            displayName: "G9Claw OPC",
             projectRoot: root.path,
             context: context,
             language: "en"
         )
         let chinese = service.discoveryPrompt(
-            projectName: "edgeclaw-opc",
-            displayName: "Edgeclaw OPC",
+            projectName: "g9claw-opc",
+            displayName: "G9Claw OPC",
             projectRoot: root.path,
             context: context,
             language: "zh-CN"
@@ -4251,8 +4253,8 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(context.cronJobs.first?.latestRunSummary, "Finished scan")
         XCTAssertEqual(context.recentChats.first?.id, "chat-1")
 
-        XCTAssertTrue(english.contains("Always-On discovery planning for project \"Edgeclaw OPC\"."))
-        XCTAssertTrue(english.contains("Use the project store at `~/.claude/projects/edgeclaw-opc`"))
+        XCTAssertTrue(english.contains("Always-On discovery planning for project \"G9Claw OPC\"."))
+        XCTAssertTrue(english.contains("Use the project store at `~/.g9claw/projects/g9claw-opc`"))
         XCTAssertTrue(english.contains("Every saved plan must include these markdown sections exactly:"))
         XCTAssertTrue(english.contains("Do not call `CronCreate`"))
         XCTAssertTrue(english.contains("\"recentChats\""))
@@ -5693,21 +5695,19 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(context.invokedSkills.contains("g9claw-rag:glm-web-search"))
 
         let environment = SkillRuntimeService.environment(configValues: request.nativeConfigValues)
-        XCTAssertEqual(environment["EDGECLAW_RAG_ENABLED"], "1")
-        XCTAssertEqual(environment["EDGECLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS"], "1")
-        XCTAssertEqual(environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"], "https://local.example.com")
-        XCTAssertEqual(environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_API_KEY"], "local-secret")
-        XCTAssertEqual(environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME"], "retriever-v1")
-        XCTAssertEqual(environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL"], "milvus://milvus.example.com:19530")
-        XCTAssertEqual(environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI"], "milvus://milvus.example.com:19530")
-        XCTAssertEqual(environment["EDGECLAW_RAG_LOCAL_KNOWLEDGE_TOP_K"], "8")
-        XCTAssertEqual(environment["EDGECLAW_RAG_GLM_WEB_SEARCH_BASE_URL"], "https://api.z.ai/api/paas/v4/web_search")
-        XCTAssertEqual(environment["EDGECLAW_RAG_GLM_WEB_SEARCH_API_KEY"], "test-rag-key")
-        XCTAssertEqual(environment["EDGECLAW_RAG_GLM_WEB_SEARCH_TOP_K"], "8")
         XCTAssertEqual(environment["G9CLAW_RAG_ENABLED"], "1")
+        XCTAssertEqual(environment["G9CLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS"], "1")
+        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"], "https://local.example.com")
+        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_API_KEY"], "local-secret")
+        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME"], "retriever-v1")
+        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL"], "milvus://milvus.example.com:19530")
+        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI"], "milvus://milvus.example.com:19530")
+        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_TOP_K"], "8")
+        XCTAssertEqual(environment["G9CLAW_RAG_GLM_WEB_SEARCH_BASE_URL"], "https://api.z.ai/api/paas/v4/web_search")
         XCTAssertEqual(environment["G9CLAW_RAG_GLM_WEB_SEARCH_API_KEY"], "test-rag-key")
+        XCTAssertEqual(environment["G9CLAW_RAG_GLM_WEB_SEARCH_TOP_K"], "8")
         XCTAssertNotNil(environment["G9CLAW_PLUGIN_ROOT"])
-        XCTAssertNotNil(environment["EDGECLAW_PLUGIN_ROOT"])
+        XCTAssertNil(environment["EDGECLAW_PLUGIN_ROOT"])
         XCTAssertNil(environment["CLAU" + "DE_PLUGIN_ROOT"])
     }
 

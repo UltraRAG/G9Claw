@@ -1021,7 +1021,7 @@ final class AppState: ObservableObject {
     }
 
     private func loadG9ClawConfigText() {
-        g9ClawConfigText = (try? String(contentsOf: Self.edgeClawConfigURL(), encoding: .utf8))
+        g9ClawConfigText = (try? String(contentsOf: Self.g9ClawConfigURL(), encoding: .utf8))
             ?? (try? String(contentsOf: Self.legacyG9ClawConfigURL(), encoding: .utf8))
             ?? Self.defaultG9ClawConfigText()
     }
@@ -1031,26 +1031,26 @@ final class AppState: ObservableObject {
     }
 
     private func saveG9ClawConfigTextIfChanged() throws {
-        let url = Self.edgeClawConfigURL()
+        let url = Self.g9ClawConfigURL()
         let old = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         guard g9ClawConfigText != old else { return }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try g9ClawConfigText.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    static func edgeClawConfigURL(
+    static func g9ClawConfigURL(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
-        EdgeClawConfigPath.configURL(environment: environment, home: home)
+        G9ClawConfigPath.configURL(environment: environment, home: home)
     }
 
     static func legacyG9ClawConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        EdgeClawConfigPath.legacyConfigURL(home: home)
+        G9ClawConfigPath.legacyConfigURL(home: home)
     }
 
     private func bootstrapLocalDebugConfigIfNeeded() throws {
-        let url = Self.edgeClawConfigURL()
+        let url = Self.g9ClawConfigURL()
         guard !FileManager.default.fileExists(atPath: url.path) else { return }
         if FileManager.default.fileExists(atPath: Self.legacyG9ClawConfigURL().path),
            let legacyText = try? String(contentsOf: Self.legacyG9ClawConfigURL(), encoding: .utf8) {
@@ -1156,7 +1156,7 @@ final class AppState: ObservableObject {
     }
 
     private static func defaultG9ClawConfigText() -> String {
-        EdgeClawConfigDefaults.configText(
+        G9ClawConfigDefaults.configText(
             homePath: FileManager.default.homeDirectoryForCurrentUser.path,
             userName: NSUserName()
         )
@@ -2054,12 +2054,13 @@ struct NativeConfigSnapshot: Equatable {
     var rawValues: [String: String]
 }
 
-enum EdgeClawConfigPath {
+enum G9ClawConfigPath {
     static func configURL(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
-        if let override = environment["EDGECLAW_CONFIG_PATH"]?.nilIfBlank {
+        if let override = environment["G9CLAW_CONFIG_PATH"]?.nilIfBlank
+            ?? environment["EDGECLAW_CONFIG_PATH"]?.nilIfBlank {
             if override == "~" {
                 return home
             }
@@ -2069,18 +2070,18 @@ enum EdgeClawConfigPath {
             return URL(fileURLWithPath: override)
         }
         return home
-            .appendingPathComponent(".edgeclaw", isDirectory: true)
+            .appendingPathComponent(".g9claw", isDirectory: true)
             .appendingPathComponent("config.yaml")
     }
 
     static func legacyConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
         home
-            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent(".edgeclaw", isDirectory: true)
             .appendingPathComponent("config.yaml")
     }
 }
 
-enum EdgeClawConfigDefaults {
+enum G9ClawConfigDefaults {
     static func configText(homePath: String, userName: String) -> String {
         """
         version: 1
@@ -2096,7 +2097,7 @@ enum EdgeClawConfigDefaults {
           workspacesRoot: \(homePath)
         models:
           providers:
-            edgeclaw:
+            g9claw:
               type: openai-chat
               baseUrl: ""
               apiKey: ""
@@ -2104,7 +2105,7 @@ enum EdgeClawConfigDefaults {
               headers: {}
           entries:
             default:
-              provider: edgeclaw
+              provider: g9claw
               name: ""
               contextWindow: 160000
         agents:
@@ -2201,7 +2202,7 @@ enum EdgeClawConfigDefaults {
               - COMPLEX
               - REASONING
             mainAgentModel: default
-            skillPath: ~/.claude/prompts/auto-orchestrate.md
+            skillPath: ~/.g9claw/prompts/auto-orchestrate.md
             blockedTools: []
             allowedTools:
               - Agent
@@ -2220,7 +2221,7 @@ enum EdgeClawConfigDefaults {
           customRouterPath: ""
         gateway:
           enabled: false
-          home: \(homePath)/.edgeclaw/gateway
+          home: \(homePath)/.g9claw/gateway
           allowAllUsers: false
           allowedUsers: []
           groupSessionsPerUser: true
@@ -2419,7 +2420,7 @@ enum EdgeClawConfigDefaults {
               port: 8642
               host: ""
               corsOrigins: ""
-              modelName: claude-gateway
+              modelName: g9claw-gateway
             webhook:
               enabled: false
               port: 8643
@@ -2435,18 +2436,18 @@ enum EdgeClawConfigDefaults {
               allowAllUsers: false
               replyToMode: first
           runtimePaths:
-            sessionMetadata: ~/.claude/projects/.gateway/sessions.json
-            userBindings: ~/.claude/projects/.gateway/user-projects.json
-            generalCwd: ~/Claude/general
-            generalJsonl: ~/.claude/projects/-Users-\(userName)-Claude-general/*.jsonl
-            boundProjectJsonl: ~/.claude/projects/<encoded-project>/*.jsonl
+            sessionMetadata: ~/.g9claw/projects/.gateway/sessions.json
+            userBindings: ~/.g9claw/projects/.gateway/user-projects.json
+            generalCwd: ~/G9Claw/general
+            generalJsonl: ~/.g9claw/projects/-Users-\(userName)-G9Claw-general/*.jsonl
+            boundProjectJsonl: ~/.g9claw/projects/<encoded-project>/*.jsonl
         """
     }
 }
 
 enum NativeConfigService {
     static func loadDefaultConfig(
-        url: URL = EdgeClawConfigPath.configURL()
+        url: URL = G9ClawConfigPath.configURL()
     ) -> NativeConfigSnapshot? {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         return snapshot(from: text)
@@ -2575,13 +2576,13 @@ enum NativeConfigService {
             apiType: apiType,
             baseURL: baseURL,
             model: model,
-            secretAccount: (providerID == "edgeclaw" || providerID == "g9claw") ? ProviderConfig.empty.secretAccount : "g9claw-provider-\(providerID)-api-key",
+            secretAccount: (providerID == "g9claw" || providerID == "edgeclaw") ? ProviderConfig.empty.secretAccount : "g9claw-provider-\(providerID)-api-key",
             headers: headers
         )
     }
 
     static func providerID(entryID: String, values: [String: String]) -> String {
-        values["models.entries.\(entryID).provider"]?.nilIfBlank ?? "edgeclaw"
+        values["models.entries.\(entryID).provider"]?.nilIfBlank ?? "g9claw"
     }
 
     static func resolvedAPIKey(
@@ -2958,24 +2959,28 @@ enum AlwaysOnBackgroundTranscriptLoader {
         let relative = relativeTranscriptPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !projectName.isEmpty, !parent.isEmpty, !relative.isEmpty else { return nil }
 
-        let projectDir = home
-            .appendingPathComponent(".claude", isDirectory: true)
-            .appendingPathComponent("projects", isDirectory: true)
-            .appendingPathComponent(projectName, isDirectory: true)
-            .standardizedFileURL
-        let allowedDir = projectDir
-            .appendingPathComponent(parent, isDirectory: true)
-            .appendingPathComponent("subagents", isDirectory: true)
-            .standardizedFileURL
-        let requestedPath = (projectDir.path as NSString).appendingPathComponent(relative)
-        let requested = URL(fileURLWithPath: requestedPath).standardizedFileURL
-
-        guard requested.path.hasPrefix(allowedDir.path + "/"),
-              isCronTranscriptFilename(requested.lastPathComponent),
-              fileManager.fileExists(atPath: requested.path) else {
-            return nil
+        let projectDirs = [".g9claw", ".claude"].map { directory in
+            home
+                .appendingPathComponent(directory, isDirectory: true)
+                .appendingPathComponent("projects", isDirectory: true)
+                .appendingPathComponent(projectName, isDirectory: true)
+                .standardizedFileURL
         }
-        return requested
+        for projectDir in projectDirs {
+            let allowedDir = projectDir
+                .appendingPathComponent(parent, isDirectory: true)
+                .appendingPathComponent("subagents", isDirectory: true)
+                .standardizedFileURL
+            let requestedPath = (projectDir.path as NSString).appendingPathComponent(relative)
+            let requested = URL(fileURLWithPath: requestedPath).standardizedFileURL
+
+            if requested.path.hasPrefix(allowedDir.path + "/"),
+               isCronTranscriptFilename(requested.lastPathComponent),
+               fileManager.fileExists(atPath: requested.path) {
+                return requested
+            }
+        }
+        return nil
     }
 
     static func backgroundSessionID(parentSessionId: String, transcriptFilename: String) -> String {
@@ -3026,7 +3031,7 @@ enum AlwaysOnBackgroundTranscriptLoader {
         case "tool_result":
             return [chatMessage(session: session, role: .tool, blocks: [toolResultBlock(raw)], createdAt: createdAt)]
         case "error":
-            let text = textContent(raw["error"]).nilIfBlank ?? textContent(raw["message"]).nilIfBlank ?? "Unknown Claude error"
+            let text = textContent(raw["error"]).nilIfBlank ?? textContent(raw["message"]).nilIfBlank ?? "Unknown provider error"
             return [chatMessage(session: session, role: .system, blocks: [.text(text)], createdAt: createdAt)]
         default:
             return []
@@ -3205,7 +3210,7 @@ enum AlwaysOnBackgroundTranscriptLoader {
 
 enum LegacyConfigLoader {
     static func loadDefaultConfig(
-        url: URL = EdgeClawConfigPath.configURL()
+        url: URL = G9ClawConfigPath.configURL()
     ) -> LegacyConfigSnapshot? {
         guard let native = NativeConfigService.loadDefaultConfig(url: url) else { return nil }
         return legacySnapshot(from: native)

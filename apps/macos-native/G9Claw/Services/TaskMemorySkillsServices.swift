@@ -18,7 +18,7 @@ final class TaskService {
 
 final class MemoryService {
     private(set) var records: [MemoryRecord] = []
-    private let edgeClawRoot: URL
+    private let memoryRoot: URL
     private var recordFileURLs: [String: URL] = [:]
     private var caseTraceRecords: [MemoryTraceRecord] = []
     private var indexTraceRecords: [MemoryTraceRecord] = []
@@ -32,11 +32,11 @@ final class MemoryService {
     )
 
     init(
-        edgeClawRoot: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".edgeclaw", isDirectory: true)
+        memoryRoot: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".g9claw", isDirectory: true)
             .appendingPathComponent("memory", isDirectory: true)
     ) {
-        self.edgeClawRoot = edgeClawRoot
+        self.memoryRoot = memoryRoot
     }
 
     func upsert(name: String, summary: String, projectName: String?) -> MemoryRecord {
@@ -65,12 +65,12 @@ final class MemoryService {
         guard let projectRoot else { return }
         let projectURL = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
         let legacyMemoryRoot = legacyWorkspaceMemoryRoot(for: projectURL.path)
-        let edgeWorkspaceMemoryRoot = edgeWorkspaceMemoryRoot(for: projectURL.path)
-        let edgeGlobalMemoryRoot = edgeGlobalMemoryRoot()
+        let nativeWorkspaceMemoryRoot = nativeWorkspaceMemoryRoot(for: projectURL.path)
+        let globalMemoryRoot = globalMemoryRoot()
         let roots = uniqueMemoryRoots([
             (root: legacyMemoryRoot, relativeRoot: projectURL, projectName: projectName, exposedPrefix: ""),
-            (root: edgeWorkspaceMemoryRoot, relativeRoot: edgeWorkspaceMemoryRoot, projectName: projectName, exposedPrefix: ""),
-            (root: edgeGlobalMemoryRoot, relativeRoot: edgeGlobalMemoryRoot, projectName: nil, exposedPrefix: "global/")
+            (root: nativeWorkspaceMemoryRoot, relativeRoot: nativeWorkspaceMemoryRoot, projectName: projectName, exposedPrefix: ""),
+            (root: globalMemoryRoot, relativeRoot: globalMemoryRoot, projectName: nil, exposedPrefix: "global/")
         ])
         var loaded: [MemoryRecord] = []
         for root in roots {
@@ -114,7 +114,7 @@ final class MemoryService {
         records = merge(loaded, into: records)
     }
 
-    static func edgeClawWorkspaceHash(for projectRoot: String) -> String {
+    static func g9clawWorkspaceHash(for projectRoot: String) -> String {
         let digest = Insecure.SHA1.hash(data: Data(projectRoot.utf8))
         return digest.map { String(format: "%02x", $0) }.joined().prefix(10).description
     }
@@ -144,7 +144,7 @@ final class MemoryService {
             throw NSError(domain: "MemoryService", code: 400, userInfo: [NSLocalizedDescriptionKey: "No workspace selected."])
         }
         let root = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
-        let memoryRoot = edgeWorkspaceMemoryRoot(for: root.path)
+        let memoryRoot = nativeWorkspaceMemoryRoot(for: root.path)
         try FileManager.default.createDirectory(at: memoryRoot, withIntermediateDirectories: true)
 
         let indexedFiles = Self.indexableFiles(in: root)
@@ -353,11 +353,11 @@ final class MemoryService {
 
     func clear(projectName: String?, projectRoot: String? = nil) {
         if let projectRoot {
-            try? FileManager.default.removeItem(at: edgeWorkspaceMemoryRoot(for: projectRoot))
+            try? FileManager.default.removeItem(at: nativeWorkspaceMemoryRoot(for: projectRoot))
             try? FileManager.default.removeItem(at: legacyWorkspaceMemoryRoot(for: projectRoot))
         } else if projectName == nil {
-            try? FileManager.default.removeItem(at: edgeClawRoot.appendingPathComponent("workspaces", isDirectory: true))
-            try? FileManager.default.removeItem(at: edgeGlobalMemoryRoot())
+            try? FileManager.default.removeItem(at: memoryRoot.appendingPathComponent("workspaces", isDirectory: true))
+            try? FileManager.default.removeItem(at: globalMemoryRoot())
         }
         records.removeAll { projectName == nil || $0.projectName == projectName }
         if projectName == nil {
@@ -641,8 +641,8 @@ final class MemoryService {
     private func currentProjectSnapshotFiles(projectName: String, projectRoot: String?) throws -> [MemorySnapshotFile] {
         if let projectRoot {
             let legacy = try snapshotFiles(in: legacyWorkspaceMemoryRoot(for: projectRoot))
-            let edge = try snapshotFiles(in: edgeWorkspaceMemoryRoot(for: projectRoot))
-            let files = mergeSnapshotFiles(legacy + edge)
+            let native = try snapshotFiles(in: nativeWorkspaceMemoryRoot(for: projectRoot))
+            let files = mergeSnapshotFiles(legacy + native)
             if !files.isEmpty {
                 return try files
                     .filter { !Self.isDerivedMemoryFile($0.relativePath) && !$0.relativePath.hasPrefix("global/") }
@@ -668,7 +668,7 @@ final class MemoryService {
     }
 
     private func globalSnapshotFiles() throws -> [MemorySnapshotFile] {
-        let files = try snapshotFiles(in: edgeGlobalMemoryRoot())
+        let files = try snapshotFiles(in: globalMemoryRoot())
         if !files.isEmpty {
             return files
         }
@@ -707,7 +707,7 @@ final class MemoryService {
         }
         let workspaceFiles = normalizedFiles.filter { !$0.relativePath.hasPrefix("global/") }
         if let projectRoot {
-            let memoryRoot = edgeWorkspaceMemoryRoot(for: projectRoot)
+            let memoryRoot = nativeWorkspaceMemoryRoot(for: projectRoot)
             try replaceSnapshotFiles(root: memoryRoot, files: workspaceFiles)
             try repairManifest(at: memoryRoot)
             loadWorkspaceRecords(projectRoot: projectRoot, projectName: projectName)
@@ -732,7 +732,7 @@ final class MemoryService {
         let globalFiles = try bundle.globalFiles.enumerated().map { index, file in
             try normalizedSnapshotFile(file, index: index)
         }
-        try replaceSnapshotFiles(root: edgeGlobalMemoryRoot(), files: globalFiles)
+        try replaceSnapshotFiles(root: globalMemoryRoot(), files: globalFiles)
         var importedRecords = globalFiles.map { record(from: $0, projectName: nil, exposedPrefix: "global/") }
         for project in bundle.projects {
             let projectName = project.projectName?.nilIfBlank ?? URL(fileURLWithPath: project.projectPath).lastPathComponent
@@ -747,11 +747,11 @@ final class MemoryService {
         dreamTraceRecords = bundle.recentDreamTraces ?? []
     }
 
-    private func edgeWorkspaceMemoryRoot(for projectRoot: String) -> URL {
+    private func nativeWorkspaceMemoryRoot(for projectRoot: String) -> URL {
         let projectURL = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
-        return edgeClawRoot
+        return memoryRoot
             .appendingPathComponent("workspaces", isDirectory: true)
-            .appendingPathComponent(Self.edgeClawWorkspaceHash(for: projectURL.path), isDirectory: true)
+            .appendingPathComponent(Self.g9clawWorkspaceHash(for: projectURL.path), isDirectory: true)
             .appendingPathComponent("memory", isDirectory: true)
     }
 
@@ -761,8 +761,8 @@ final class MemoryService {
             .appendingPathComponent("memory", isDirectory: true)
     }
 
-    private func edgeGlobalMemoryRoot() -> URL {
-        edgeClawRoot.appendingPathComponent("global", isDirectory: true)
+    private func globalMemoryRoot() -> URL {
+        memoryRoot.appendingPathComponent("global", isDirectory: true)
     }
 
     private func snapshotFiles(in root: URL) throws -> [MemorySnapshotFile] {
@@ -877,7 +877,7 @@ final class MemoryService {
     private func manifestContent(projectRoot: String?, records: [MemoryRecord]) -> String {
         if let projectRoot {
             let candidates = [
-                edgeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("MEMORY.md"),
+                nativeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("MEMORY.md"),
                 legacyWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("MEMORY.md")
             ]
             for url in candidates {
@@ -892,7 +892,7 @@ final class MemoryService {
     private func projectMetaFromFile(projectRoot: String?, fallbackProjectName: String?, isGeneral: Bool) -> MemoryProjectMeta? {
         guard let projectRoot else { return nil }
         let candidates = [
-            edgeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("project.meta.md"),
+            nativeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("project.meta.md"),
             legacyWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("project.meta.md")
         ]
         for url in candidates {
@@ -1086,10 +1086,10 @@ final class MemoryService {
             let relativePath = normalized.hasPrefix("global/")
                 ? String(normalized.dropFirst("global/".count))
                 : normalized
-            return edgeGlobalMemoryRoot().appendingPathComponent(relativePath)
+            return globalMemoryRoot().appendingPathComponent(relativePath)
         }
         guard let projectRoot else { return nil }
-        return edgeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent(normalized)
+        return nativeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent(normalized)
     }
 
     private func recordStorageKey(_ record: MemoryRecord) -> String {
@@ -1243,7 +1243,7 @@ final class MemoryService {
     }
 
     private static func indexableFiles(in root: URL) -> [URL] {
-        let skipped = Set([".git", "node_modules", "dist", "build", ".g9claw", ".g9claw", ".next", ".turbo"])
+        let skipped = Set([".git", "node_modules", "dist", "build", ".g9claw", ".claude", ".next", ".turbo"])
         let allowedExtensions = Set(["md", "txt", "swift", "js", "ts", "tsx", "jsx", "json", "yaml", "yml", "py", "rb", "go", "rs", "html", "css"])
         guard let enumerator = FileManager.default.enumerator(
             at: root,
@@ -2162,7 +2162,7 @@ final class AlwaysOnService {
         else { return [] }
         return rawPlans.compactMap { raw in
             let id = string(raw["id"], fallback: UUID().uuidString)
-            let relativePlanPath = string(raw["planFilePath"], fallback: ".claude/always-on/plans/\(id).md")
+            let relativePlanPath = string(raw["planFilePath"], fallback: ".g9claw/always-on/plans/\(id).md")
             let content = (try? String(contentsOfFile: URL(fileURLWithPath: projectRoot).appendingPathComponent(relativePlanPath).path, encoding: .utf8)) ?? ""
             return AlwaysOnPlan(
                 id: id,
@@ -2265,7 +2265,7 @@ final class AlwaysOnService {
     ) -> String {
         let normalizedLanguage = language == "zh-CN" ? "zh-CN" : "en"
         let contextJSON = discoveryContextJSON(context)
-        let projectStorePath = claudeProjectStorePath(projectName: projectName, projectRoot: projectRoot)
+        let projectStorePath = g9clawProjectStorePath(projectName: projectName, projectRoot: projectRoot)
         if normalizedLanguage == "zh-CN" {
             return [
                 "Always-On 主动发现规划，项目为“\(displayName)”。",
@@ -2662,7 +2662,7 @@ final class AlwaysOnService {
                     "summary": run.title,
                     "lastActivity": now,
                     "taskId": job.id,
-                    "outputFile": ".claude/always-on/runs/\(run.id).log",
+                    "outputFile": ".g9claw/always-on/runs/\(run.id).log",
                     "parentSessionId": run.parentSessionId ?? "",
                     "relativeTranscriptPath": run.relativeTranscriptPath ?? "",
                     "transcriptKey": job.transcriptKey ?? "",
@@ -2789,7 +2789,7 @@ final class AlwaysOnService {
         let plansRoot = root.appendingPathComponent("plans", isDirectory: true)
         try FileManager.default.createDirectory(at: plansRoot, withIntermediateDirectories: true)
         let id = "plan-\(UUID().uuidString)"
-        let relativePlanPath = ".claude/always-on/plans/\(id).md"
+        let relativePlanPath = ".g9claw/always-on/plans/\(id).md"
         let now = Date()
         let content = """
         # \(title)
@@ -2915,13 +2915,13 @@ final class AlwaysOnService {
 
     private func alwaysOnRoot(_ projectRoot: String) -> URL {
         URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
-            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent(".g9claw", isDirectory: true)
             .appendingPathComponent("always-on", isDirectory: true)
     }
 
     private func legacyAlwaysOnRoot(_ projectRoot: String) -> URL {
         URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
-            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent(".claude", isDirectory: true)
             .appendingPathComponent("always-on", isDirectory: true)
     }
 
@@ -2952,11 +2952,13 @@ final class AlwaysOnService {
     private func cronJobSourceURLs(_ projectRoot: String) -> [(url: URL, durableDefault: Bool?)] {
         let root = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
         return [
+            (root.appendingPathComponent(".g9claw").appendingPathComponent("scheduled_tasks.json"), true),
+            (root.appendingPathComponent(".g9claw").appendingPathComponent("session_scheduled_tasks.json"), false),
+            (root.appendingPathComponent(".g9claw").appendingPathComponent("cron-jobs.json"), nil),
+            (root.appendingPathComponent(".g9claw").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
             (root.appendingPathComponent(".claude").appendingPathComponent("scheduled_tasks.json"), true),
             (root.appendingPathComponent(".claude").appendingPathComponent("session_scheduled_tasks.json"), false),
             (root.appendingPathComponent(".claude").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
-            (root.appendingPathComponent(".g9claw").appendingPathComponent("cron-jobs.json"), nil),
-            (root.appendingPathComponent(".g9claw").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
         ]
     }
 
@@ -3014,15 +3016,15 @@ final class AlwaysOnService {
         return text
     }
 
-    private func claudeProjectStorePath(projectName: String, projectRoot: String) -> String {
+    private func g9clawProjectStorePath(projectName: String, projectRoot: String) -> String {
         let root = projectRoot.trimmingCharacters(in: .whitespacesAndNewlines)
         if let home = firstMatch(pattern: #"^(\/Users\/[^\/]+|\/home\/[^\/]+)"#, in: root) {
-            return "\(home)/.claude/projects/\(projectName)"
+            return "\(home)/.g9claw/projects/\(projectName)"
         }
         if let windowsHome = firstMatch(pattern: #"^([A-Za-z]:\\Users\\[^\\]+)"#, in: root) {
-            return "\(windowsHome)\\.claude\\projects\\\(projectName)"
+            return "\(windowsHome)\\.g9claw\\projects\\\(projectName)"
         }
-        return "~/.claude/projects/\(projectName)"
+        return "~/.g9claw/projects/\(projectName)"
     }
 
     private func firstMatch(pattern: String, in value: String) -> String? {
@@ -3167,7 +3169,7 @@ final class AlwaysOnService {
             summary: run.title,
             lastActivity: run.startedAt,
             taskId: run.sourceId,
-            outputFile: ".claude/always-on/runs/\(run.id).log",
+            outputFile: ".g9claw/always-on/runs/\(run.id).log",
             parentSessionId: run.parentSessionId,
             relativeTranscriptPath: run.relativeTranscriptPath,
             transcriptKey: run.transcriptKey

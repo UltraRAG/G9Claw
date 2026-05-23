@@ -987,14 +987,14 @@ private struct SettingsContentView: View {
     }
 
     private func configFileURL() -> URL {
-        EdgeClawConfigPath.configURL()
+        G9ClawConfigPath.configURL()
     }
 
     private func reloadConfigFromDisk() {
         do {
             let url = FileManager.default.fileExists(atPath: configFileURL().path)
                 ? configFileURL()
-                : EdgeClawConfigPath.legacyConfigURL()
+                : G9ClawConfigPath.legacyConfigURL()
             let text = try String(contentsOf: url, encoding: .utf8)
             if isConfigDirty {
                 configExternalNotice = state.t(.configReloadedNotice)
@@ -1074,7 +1074,7 @@ private struct SettingsContentView: View {
 
     private func defaultProviderID() -> String {
         let provider = configValue("models.entries.default.provider").trimmingCharacters(in: .whitespacesAndNewlines)
-        return provider.isEmpty ? "edgeclaw" : provider
+        return provider.isEmpty ? "g9claw" : provider
     }
 
     private func isDefaultProvider(_ provider: String) -> Bool {
@@ -1328,7 +1328,7 @@ enum NativeConfigViewMode: String, CaseIterable, Identifiable {
     case form
     case raw
 
-    static let storageKey = "edgeclaw:configView"
+    static let storageKey = "g9claw:configView"
 
     static func fromStoredRaw(_ rawValue: String) -> NativeConfigViewMode {
         NativeConfigViewMode(rawValue: rawValue) ?? .form

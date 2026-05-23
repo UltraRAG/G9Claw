@@ -2200,7 +2200,7 @@ enum ProviderClientError: Error, LocalizedError {
         switch self {
         case .missingBaseURL: "Provider base URL is not configured."
         case .missingModel: "Provider model is not configured."
-        case .missingAPIKey: "Provider API key is not configured. Add it in Settings or ~/.edgeclaw/config.yaml."
+        case .missingAPIKey: "Provider API key is not configured. Add it in Settings or ~/.g9claw/config.yaml."
         case .invalidURL(let value): "Provider base URL is invalid: \(value)"
         case .httpError(let statusCode, let body):
             if body.isEmpty {
@@ -4387,7 +4387,6 @@ enum SkillRuntimeService {
         environment.removeValue(forKey: "CLAU" + "DE_PLUGIN_ROOT")
         if let pluginRoot = ragPluginRoot() {
             environment["G9CLAW_PLUGIN_ROOT"] = pluginRoot.path
-            environment["EDGECLAW_PLUGIN_ROOT"] = pluginRoot.path
         }
         let ragValues: [String: String] = [
             "RAG_ENABLED": boolEnvironmentValue(configValues["rag.enabled"], defaultValue: false),
@@ -4407,7 +4406,6 @@ enum SkillRuntimeService {
             "RAG_GLM_WEB_SEARCH_TOP_K": configValues["rag.glmWebSearch.defaultTopK"]?.nilIfBlank ?? "8",
         ]
         for (key, value) in ragValues {
-            environment["EDGECLAW_\(key)"] = value
             environment["G9CLAW_\(key)"] = value
         }
         let prefix = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
