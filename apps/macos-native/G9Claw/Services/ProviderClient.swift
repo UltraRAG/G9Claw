@@ -2837,10 +2837,8 @@ struct NativeAgentRuntime: Sendable {
         var events: [AgentEvent] = []
         if let choices = object["choices"] as? [[String: Any]],
            let delta = choices.first?["delta"] as? [String: Any] {
-            for key in ["reasoning_content", "reasoning", "thinking"] {
-                if let reasoning = delta[key] as? String, !reasoning.isEmpty {
-                    events.append(.reasoningDelta(reasoning))
-                }
+            for reasoning in reasoningDeltas(from: delta) {
+                events.append(.reasoningDelta(reasoning))
             }
             if let content = delta["content"] as? String, !content.isEmpty {
                 events.append(.contentDelta(content))
@@ -2851,6 +2849,30 @@ struct NativeAgentRuntime: Sendable {
             events.append(.tokenBudget(used: budget.used, total: budget.total))
         }
         return events
+    }
+
+    private static func reasoningDeltas(from delta: [String: Any]) -> [String] {
+        var values: [String] = []
+        for key in ["reasoning_content", "reasoning", "thinking", "redacted_thinking", "reasoning_summary"] {
+            appendReasoningText(delta[key], to: &values)
+        }
+        return values
+    }
+
+    private static func appendReasoningText(_ value: Any?, to values: inout [String]) {
+        if let text = value as? String {
+            appendReasoningText(text, to: &values)
+            return
+        }
+        guard let object = value as? [String: Any] else { return }
+        for key in ["content", "thinking", "text", "reasoning", "summary"] {
+            appendReasoningText(object[key], to: &values)
+        }
+    }
+
+    private static func appendReasoningText(_ text: String?, to values: inout [String]) {
+        guard let text, !text.isEmpty else { return }
+        values.append(text)
     }
 
     static func runSubagent(inputJSON: String, context: AgentRunContext) async throws -> String {

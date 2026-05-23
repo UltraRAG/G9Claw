@@ -956,6 +956,41 @@ final class ParityLogicTests: XCTestCase {
         ])
     }
 
+    func testNativeAgentRuntimeNormalizesCCRThinkingObjectDeltas() {
+        let thinkingObject: [String: Any] = [
+            "choices": [
+                [
+                    "delta": [
+                        "thinking": [
+                            "content": "response summary",
+                        ],
+                    ],
+                ],
+            ],
+        ]
+        let signatureOnlyObject: [String: Any] = [
+            "choices": [
+                [
+                    "delta": [
+                        "thinking": [
+                            "signature": "reasoning-part-id",
+                        ],
+                        "content": "final answer",
+                    ],
+                ],
+            ],
+        ]
+
+        XCTAssertEqual(
+            NativeAgentRuntime.openAIChatEvents(from: thinkingObject, contextWindow: 160_000),
+            [.reasoningDelta("response summary")]
+        )
+        XCTAssertEqual(
+            NativeAgentRuntime.openAIChatEvents(from: signatureOnlyObject, contextWindow: 160_000),
+            [.contentDelta("final answer")]
+        )
+    }
+
     func testChatBlockVisibilityPolicyMatchesWebShowThinkingPreference() {
         XCTAssertTrue(ChatBlockVisibilityPolicy.isVisible(.reasoning("thinking"), showThinking: true))
         XCTAssertFalse(ChatBlockVisibilityPolicy.isVisible(.reasoning("thinking"), showThinking: false))
