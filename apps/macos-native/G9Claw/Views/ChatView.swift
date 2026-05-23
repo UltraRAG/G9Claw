@@ -1206,6 +1206,12 @@ private struct MessageRow: View {
                 let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !cleaned.isEmpty, !isPureMarkdownSeparator(cleaned) else { continue }
                 segments.append(.text(text))
+            case .reasoning(let text):
+                flushToolGroup()
+                let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !cleaned.isEmpty,
+                      ChatBlockVisibilityPolicy.isVisible(block, showThinking: state.uiPreferences.showThinking) else { continue }
+                segments.append(.reasoning(text))
             case .attachment(let attachment):
                 flushToolGroup()
                 segments.append(.attachment(attachment))
@@ -1293,6 +1299,11 @@ private struct MessageRow: View {
             } else {
                 NativeMarkdownView(text: text, fontSize: assistantFontSize, lineSpacing: 5)
             }
+        case .reasoning(let text):
+            if ChatBlockVisibilityPolicy.isVisible(block, showThinking: state.uiPreferences.showThinking) {
+                ReasoningDisclosure(text: text, compact: compact)
+                    .environmentObject(state)
+            }
         case .toolCall(let call):
             ToolBlock(title: call.name, detail: call.inputJSON, systemImage: "hammer", tint: DesignTokens.warning)
         case .toolResult(let result):
@@ -1312,6 +1323,9 @@ private struct MessageRow: View {
         switch segment {
         case .text(let text):
             NativeMarkdownView(text: text, fontSize: assistantFontSize, lineSpacing: 5)
+        case .reasoning(let text):
+            ReasoningDisclosure(text: text, compact: false)
+                .environmentObject(state)
         case .attachment(let attachment):
             AttachmentChip(attachment: attachment)
         case .tool(let call, let result, let todoDiff):
@@ -1337,6 +1351,8 @@ private struct MessageRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .attachment(let attachment):
             AttachmentChip(attachment: attachment)
+        case .reasoning:
+            EmptyView()
         case .toolCall, .toolResult:
             blockView(block, compact: true)
         }
@@ -1345,10 +1361,47 @@ private struct MessageRow: View {
 
 private enum AssistantBlockSegment {
     case text(String)
+    case reasoning(String)
     case attachment(FileAttachment)
     case tool(ToolCall, ToolResult?, TodoListDiff?)
     case toolGroup([(ToolCall, ToolResult?)])
     case orphanToolResult(ToolResult)
+}
+
+private struct ReasoningDisclosure: View {
+    @EnvironmentObject private var state: AppState
+    @State private var expanded = false
+    var text: String
+    var compact: Bool
+
+    private var trimmedText: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        if !trimmedText.isEmpty {
+            DisclosureGroup(isExpanded: $expanded) {
+                NativeMarkdownView(
+                    text: trimmedText,
+                    fontSize: compact ? 12 : 13,
+                    lineSpacing: 4
+                )
+                .padding(.top, 7)
+                .padding(.leading, 2)
+            } label: {
+                Label(state.t(.thinking), systemImage: "sparkles")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(CodexProcessStyle.title)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(DesignTokens.neutral50.opacity(0.78), in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                    .stroke(DesignTokens.separator.opacity(0.8), lineWidth: 1)
+            )
+        }
+    }
 }
 
 enum ProcessToolGroupingPolicy {

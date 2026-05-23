@@ -934,7 +934,10 @@ final class ParityLogicTests: XCTestCase {
         let object: [String: Any] = [
             "choices": [
                 [
-                    "delta": ["content": "hello"],
+                    "delta": [
+                        "reasoning_content": "thinking through it",
+                        "content": "hello",
+                    ],
                 ],
             ],
             "usage": [
@@ -947,9 +950,17 @@ final class ParityLogicTests: XCTestCase {
         let events = NativeAgentRuntime.openAIChatEvents(from: object, contextWindow: 160_000)
 
         XCTAssertEqual(events, [
+            .reasoningDelta("thinking through it"),
             .contentDelta("hello"),
             .tokenBudget(used: 7, total: 160_000),
         ])
+    }
+
+    func testChatBlockVisibilityPolicyMatchesWebShowThinkingPreference() {
+        XCTAssertTrue(ChatBlockVisibilityPolicy.isVisible(.reasoning("thinking"), showThinking: true))
+        XCTAssertFalse(ChatBlockVisibilityPolicy.isVisible(.reasoning("thinking"), showThinking: false))
+        XCTAssertTrue(ChatBlockVisibilityPolicy.isVisible(.text("answer"), showThinking: false))
+        XCTAssertTrue(ChatBlockVisibilityPolicy.isVisible(.toolResult(ToolResult(toolCallId: "tool", output: "ok", isError: false)), showThinking: false))
     }
 
     func testProviderRetryPolicyMatchesCodexTransientDefaults() {
@@ -3795,7 +3806,7 @@ final class ParityLogicTests: XCTestCase {
         {"uuid":"cron-system-error","timestamp":"2026-04-19T10:00:01.000Z","type":"system","subtype":"api_error","cause":{"code":"ConnectionRefused","path":"http://ccr.local/v1/messages?beta=true"}}
         {"uuid":"cron-synthetic-error","timestamp":"2026-04-19T10:00:02.000Z","type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"API Error: Unable to connect to API (ConnectionRefused)"}]}}
         {"uuid":"cron-synthetic-empty","timestamp":"2026-04-19T10:00:03.000Z","type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]}}
-        {"uuid":"cron-assistant","timestamp":"2026-04-19T10:00:04.000Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."},{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}},{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}
+        {"uuid":"cron-assistant","timestamp":"2026-04-19T10:00:04.000Z","type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Checking the schedule."},{"type":"text","text":"Done."},{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}},{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}
         """.write(to: transcriptPath, atomically: true, encoding: .utf8)
 
         let sessionId = AlwaysOnBackgroundTranscriptLoader.backgroundSessionID(
@@ -3855,6 +3866,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(messages[2].role, .assistant)
         XCTAssertTrue(messages[2].plainText.contains("API Error"))
         XCTAssertEqual(messages[3].role, .assistant)
+        XCTAssertTrue(messages[3].blocks.contains { if case .reasoning(let text) = $0 { return text == "Checking the schedule." }; return false })
         XCTAssertTrue(messages[3].plainText.contains("Done."))
         XCTAssertTrue(messages[3].blocks.contains { if case .toolCall(let call) = $0 { return call.name == "Read" && call.inputJSON.contains("README.md") }; return false })
         XCTAssertTrue(messages[3].blocks.contains { if case .toolResult(let result) = $0 { return result.toolCallId == "tool-1" && result.output == "ok" }; return false })

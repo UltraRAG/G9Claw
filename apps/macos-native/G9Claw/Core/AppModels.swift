@@ -386,9 +386,21 @@ enum ChatRole: String, Codable {
 
 enum ChatBlock: Hashable, Codable {
     case text(String)
+    case reasoning(String)
     case toolCall(ToolCall)
     case toolResult(ToolResult)
     case attachment(FileAttachment)
+}
+
+enum ChatBlockVisibilityPolicy {
+    static func isVisible(_ block: ChatBlock, showThinking: Bool) -> Bool {
+        switch block {
+        case .reasoning:
+            return showThinking
+        case .text, .toolCall, .toolResult, .attachment:
+            return true
+        }
+    }
 }
 
 struct ChatMessage: Identifiable, Hashable, Codable {

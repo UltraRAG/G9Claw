@@ -1279,6 +1279,9 @@ final class AppState: ObservableObject {
             statusLine = t(.sessionStartedFormat, sessionId)
         case .contentDelta(let text):
             queueAssistantDelta(text, assistantID: assistantID)
+        case .reasoningDelta(let text):
+            flushPendingAssistantDelta(assistantID: assistantID)
+            appendAssistantReasoningDelta(text, assistantID: assistantID, sessionID: targetSessionID)
         case .toolUse(let id, let name, let inputJSON):
             flushPendingAssistantDelta(assistantID: assistantID)
             let isInteractiveControl = PlanWorkflowPresentation.isInteractiveControl(name)
@@ -1515,6 +1518,24 @@ final class AppState: ObservableObject {
             message.blocks[lastIndex] = .text(existing + text)
         } else {
             message.blocks.append(.text(text))
+        }
+        messages[index] = message
+        messagesBySession[sessionID] = messages
+        streamRenderRevision += 1
+    }
+
+    private func appendAssistantReasoningDelta(_ text: String, assistantID: UUID, sessionID explicitSessionID: String? = nil) {
+        guard !text.isEmpty else { return }
+        let sessionID = explicitSessionID ?? assistantSessionByID[assistantID] ?? selectedSessionID
+        guard let sessionID,
+              var messages = messagesBySession[sessionID],
+              let index = messages.firstIndex(where: { $0.id == assistantID }) else { return }
+        var message = messages[index]
+        if let lastIndex = message.blocks.indices.last,
+           case .reasoning(let existing) = message.blocks[lastIndex] {
+            message.blocks[lastIndex] = .reasoning(existing + text)
+        } else {
+            message.blocks.append(.reasoning(text))
         }
         messages[index] = message
         messagesBySession[sessionID] = messages
@@ -2995,6 +3016,11 @@ enum AlwaysOnBackgroundTranscriptLoader {
         switch raw["type"] as? String {
         case "system" where raw["subtype"] as? String == "api_error":
             return [chatMessage(session: session, role: .system, blocks: [.text(formatAPIError(raw))], createdAt: createdAt)]
+        case "thinking", "redacted_thinking", "reasoning":
+            let text = textContent(raw["thinking"] ?? raw["text"] ?? raw["content"])
+            return text.nilIfBlank.map {
+                [chatMessage(session: session, role: .assistant, blocks: [.reasoning($0)], createdAt: createdAt)]
+            } ?? []
         case "tool_use":
             return [chatMessage(session: session, role: .assistant, blocks: [toolCallBlock(raw)], createdAt: createdAt)]
         case "tool_result":
@@ -3019,6 +3045,9 @@ enum AlwaysOnBackgroundTranscriptLoader {
                     return [toolCallBlock(object)]
                 case "tool_result":
                     return [toolResultBlock(object)]
+                case "thinking", "redacted_thinking", "reasoning":
+                    let text = textContent(object["thinking"] ?? object["text"] ?? object["content"])
+                    return text.nilIfBlank.map { [.reasoning($0)] } ?? []
                 case "text", nil:
                     let text = textContent(object)
                     return text.nilIfBlank.map { [.text($0)] } ?? []

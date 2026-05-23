@@ -2157,6 +2157,7 @@ enum AgentEvent: Sendable, Equatable {
     case turnCompleted(AgentTurn)
     case sessionCreated(sessionId: String)
     case contentDelta(String)
+    case reasoningDelta(String)
     case toolUse(id: String, name: String, inputJSON: String)
     case toolResult(id: String, output: String, isError: Bool)
     case permissionRequest(AgentPermissionRequest)
@@ -2835,10 +2836,15 @@ struct NativeAgentRuntime: Sendable {
     static func openAIChatEvents(from object: [String: Any], contextWindow: Int) -> [AgentEvent] {
         var events: [AgentEvent] = []
         if let choices = object["choices"] as? [[String: Any]],
-           let delta = choices.first?["delta"] as? [String: Any],
-           let content = delta["content"] as? String,
-           !content.isEmpty {
-            events.append(.contentDelta(content))
+           let delta = choices.first?["delta"] as? [String: Any] {
+            for key in ["reasoning_content", "reasoning", "thinking"] {
+                if let reasoning = delta[key] as? String, !reasoning.isEmpty {
+                    events.append(.reasoningDelta(reasoning))
+                }
+            }
+            if let content = delta["content"] as? String, !content.isEmpty {
+                events.append(.contentDelta(content))
+            }
         }
         if let usage = object["usage"] as? [String: Any],
            let budget = tokenBudget(from: usage, contextWindow: contextWindow) {

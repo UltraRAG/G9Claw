@@ -161,6 +161,7 @@ enum L10nKey: String, CaseIterable {
     case source
     case status
     case streamingAssistantOutput
+    case thinking
     case stopGeneration
     case stopped
     case tasks
@@ -572,6 +573,7 @@ struct LocalizationService {
         .source: "Source",
         .status: "Status",
         .streamingAssistantOutput: "Streaming assistant output",
+        .thinking: "Thinking",
         .stopGeneration: "Stop generation",
         .stopped: "Stopped",
         .tasks: "Tasks",
@@ -952,6 +954,7 @@ struct LocalizationService {
         .source: "来源",
         .status: "状态",
         .streamingAssistantOutput: "正在流式输出助手回复",
+        .thinking: "思考中",
         .stopGeneration: "停止生成",
         .stopped: "已停止",
         .tasks: "任务",
