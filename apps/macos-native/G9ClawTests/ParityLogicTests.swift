@@ -3842,6 +3842,8 @@ final class ParityLogicTests: XCTestCase {
         {"uuid":"cron-synthetic-error","timestamp":"2026-04-19T10:00:02.000Z","type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"API Error: Unable to connect to API (ConnectionRefused)"}]}}
         {"uuid":"cron-synthetic-empty","timestamp":"2026-04-19T10:00:03.000Z","type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]}}
         {"uuid":"cron-assistant","timestamp":"2026-04-19T10:00:04.000Z","type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Checking the schedule."},{"type":"text","text":"Done."},{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}},{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}
+        {"uuid":"cron-normalized-tool","timestamp":"2026-04-19T10:00:05.000Z","type":"tool_use","toolId":"tool-2","toolName":"Shell","toolInput":{"command":"pwd"}}
+        {"uuid":"cron-normalized-result","timestamp":"2026-04-19T10:00:06.000Z","type":"tool_result","toolCallId":"tool-2","output":"workspace"}
         """.write(to: transcriptPath, atomically: true, encoding: .utf8)
 
         let sessionId = AlwaysOnBackgroundTranscriptLoader.backgroundSessionID(
@@ -3893,7 +3895,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(AlwaysOnBackgroundTranscriptLoader.isCronTranscriptFilename("agent-task.jsonl"))
 
         let messages = AlwaysOnBackgroundTranscriptLoader.messages(for: session, projectName: projectName, home: home)
-        XCTAssertEqual(messages.count, 4)
+        XCTAssertEqual(messages.count, 6)
         XCTAssertEqual(messages[0].role, .user)
         XCTAssertEqual(messages[0].plainText, "提醒用户：该站起来活动一下了！")
         XCTAssertEqual(messages[1].role, .system)
@@ -3905,6 +3907,8 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(messages[3].plainText.contains("Done."))
         XCTAssertTrue(messages[3].blocks.contains { if case .toolCall(let call) = $0 { return call.name == "Read" && call.inputJSON.contains("README.md") }; return false })
         XCTAssertTrue(messages[3].blocks.contains { if case .toolResult(let result) = $0 { return result.toolCallId == "tool-1" && result.output == "ok" }; return false })
+        XCTAssertTrue(messages[4].blocks.contains { if case .toolCall(let call) = $0 { return call.id == "tool-2" && call.name == "Shell" && call.inputJSON.contains("pwd") }; return false })
+        XCTAssertTrue(messages[5].blocks.contains { if case .toolResult(let result) = $0 { return result.toolCallId == "tool-2" && result.output == "workspace" }; return false })
     }
 
     @MainActor

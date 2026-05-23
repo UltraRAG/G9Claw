@@ -3063,7 +3063,7 @@ enum AlwaysOnBackgroundTranscriptLoader {
 
     private static func toolCallBlock(_ raw: [String: Any]) -> ChatBlock {
         .toolCall(ToolCall(
-            id: string(raw["id"]) ?? string(raw["tool_use_id"]) ?? UUID().uuidString,
+            id: string(raw["id"]) ?? string(raw["tool_use_id"]) ?? string(raw["toolId"]) ?? string(raw["toolCallId"]) ?? UUID().uuidString,
             name: string(raw["name"]) ?? string(raw["toolName"]) ?? "UnknownTool",
             inputJSON: jsonString(raw["input"] ?? raw["toolInput"]) ?? "{}",
             status: .completed
@@ -3072,7 +3072,7 @@ enum AlwaysOnBackgroundTranscriptLoader {
 
     private static func toolResultBlock(_ raw: [String: Any]) -> ChatBlock {
         .toolResult(ToolResult(
-            toolCallId: string(raw["tool_use_id"]) ?? string(raw["toolId"]) ?? "",
+            toolCallId: string(raw["tool_use_id"]) ?? string(raw["toolId"]) ?? string(raw["toolCallId"]) ?? "",
             output: textContent(raw["content"] ?? raw["output"]),
             isError: bool(raw["is_error"]) == true || bool(raw["isError"]) == true
         ))
