@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 final class TaskService {
@@ -17,6 +18,8 @@ final class TaskService {
 
 final class MemoryService {
     private(set) var records: [MemoryRecord] = []
+    private let edgeClawRoot: URL
+    private var recordFileURLs: [String: URL] = [:]
     private var caseTraceRecords: [MemoryTraceRecord] = []
     private var indexTraceRecords: [MemoryTraceRecord] = []
     private var dreamTraceRecords: [MemoryTraceRecord] = []
@@ -27,6 +30,14 @@ final class MemoryService {
     private var jobStates: [MemoryJobKind: MemoryJobState] = Dictionary(
         uniqueKeysWithValues: MemoryJobKind.allCases.map { ($0, .idle($0)) }
     )
+
+    init(
+        edgeClawRoot: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".edgeclaw", isDirectory: true)
+            .appendingPathComponent("memory", isDirectory: true)
+    ) {
+        self.edgeClawRoot = edgeClawRoot
+    }
 
     func upsert(name: String, summary: String, projectName: String?) -> MemoryRecord {
         if let index = records.firstIndex(where: { $0.name == name && $0.projectName == projectName }) {
@@ -52,40 +63,79 @@ final class MemoryService {
 
     func loadWorkspaceRecords(projectRoot: String?, projectName: String?) {
         guard let projectRoot else { return }
-        let memoryRoot = URL(fileURLWithPath: projectRoot)
-            .appendingPathComponent(".g9claw")
-            .appendingPathComponent("memory")
-        let g9clawMemoryRoot = URL(fileURLWithPath: projectRoot)
-            .appendingPathComponent(".g9claw")
-            .appendingPathComponent("memory")
-        let roots = [memoryRoot, g9clawMemoryRoot]
+        let projectURL = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
+        let legacyMemoryRoot = legacyWorkspaceMemoryRoot(for: projectURL.path)
+        let edgeWorkspaceMemoryRoot = edgeWorkspaceMemoryRoot(for: projectURL.path)
+        let edgeGlobalMemoryRoot = edgeGlobalMemoryRoot()
+        let roots = uniqueMemoryRoots([
+            (root: legacyMemoryRoot, relativeRoot: projectURL, projectName: projectName, exposedPrefix: ""),
+            (root: edgeWorkspaceMemoryRoot, relativeRoot: edgeWorkspaceMemoryRoot, projectName: projectName, exposedPrefix: ""),
+            (root: edgeGlobalMemoryRoot, relativeRoot: edgeGlobalMemoryRoot, projectName: nil, exposedPrefix: "global/")
+        ])
         var loaded: [MemoryRecord] = []
         for root in roots {
             guard let enumerator = FileManager.default.enumerator(
-                at: root,
+                at: root.root,
                 includingPropertiesForKeys: [.contentModificationDateKey],
                 options: []
             ) else { continue }
             for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
+                if Self.isDerivedMemoryFile(url.lastPathComponent) {
+                    continue
+                }
                 let content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
                 let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-                loaded.append(
-                    MemoryRecord(
-                        id: UUID(),
-                        name: url.deletingPathExtension().lastPathComponent,
-                        summary: Self.preview(content),
-                        projectName: projectName,
-                        updatedAt: values?.contentModificationDate ?? Date(),
-                        type: Self.recordType(from: content, fallbackPath: url.path),
-                        relativePath: url.path.replacingOccurrences(of: projectRoot + "/", with: ""),
-                        deprecated: content.lowercased().contains("deprecated: true"),
-                        content: content
-                    )
+                let parsed = Self.memoryFile(from: content)
+                let fallbackRelativePath = url.path.replacingOccurrences(of: projectURL.path + "/", with: "")
+                let relativePath = exposedRelativePath(for: url, relativeRoot: root.relativeRoot, fallback: fallbackRelativePath, prefix: root.exposedPrefix)
+                var record = MemoryRecord(
+                    id: UUID(),
+                    name: parsed?.name.nilIfBlank ?? url.deletingPathExtension().lastPathComponent,
+                    summary: parsed?.description.nilIfBlank ?? Self.preview(content),
+                    projectName: parsed?.scope == "global" ? nil : root.projectName,
+                    updatedAt: parsed?.updatedAt ?? values?.contentModificationDate ?? Date(),
+                    type: parsed?.type ?? Self.recordType(from: content, fallbackPath: url.path),
+                    relativePath: relativePath,
+                    deprecated: parsed?.deprecated ?? Self.deprecated(from: content),
+                    content: content,
+                    scope: parsed?.scope ?? (root.projectName == nil ? "global" : "project"),
+                    projectId: parsed?.projectId,
+                    sourceSessionKey: parsed?.sourceSessionKey,
+                    capturedAt: parsed?.capturedAt
                 )
+                if record.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    record.summary = Self.preview(content)
+                }
+                loaded.append(record)
+                recordFileURLs[recordStorageKey(record)] = url
             }
         }
-        records.removeAll { $0.projectName == projectName }
+        records.removeAll { $0.projectName == projectName || $0.relativePath.hasPrefix("global/") }
         records = merge(loaded, into: records)
+    }
+
+    static func edgeClawWorkspaceHash(for projectRoot: String) -> String {
+        let digest = Insecure.SHA1.hash(data: Data(projectRoot.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined().prefix(10).description
+    }
+
+    private func uniqueMemoryRoots(_ roots: [(root: URL, relativeRoot: URL, projectName: String?, exposedPrefix: String)]) -> [(root: URL, relativeRoot: URL, projectName: String?, exposedPrefix: String)] {
+        var seen: Set<String> = []
+        return roots.filter { entry in
+            seen.insert(entry.root.standardizedFileURL.path).inserted
+        }
+    }
+
+    private func exposedRelativePath(for url: URL, relativeRoot: URL, fallback: String, prefix: String) -> String {
+        let rootPath = relativeRoot.standardizedFileURL.path
+        let filePath = url.standardizedFileURL.path
+        let relative = filePath.hasPrefix(rootPath + "/")
+            ? String(filePath.dropFirst(rootPath.count + 1))
+            : fallback
+        if prefix.isEmpty || relative.hasPrefix(prefix) {
+            return relative
+        }
+        return prefix + relative
     }
 
     @discardableResult
@@ -94,9 +144,7 @@ final class MemoryService {
             throw NSError(domain: "MemoryService", code: 400, userInfo: [NSLocalizedDescriptionKey: "No workspace selected."])
         }
         let root = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
-        let memoryRoot = root
-            .appendingPathComponent(".g9claw", isDirectory: true)
-            .appendingPathComponent("memory", isDirectory: true)
+        let memoryRoot = edgeWorkspaceMemoryRoot(for: root.path)
         try FileManager.default.createDirectory(at: memoryRoot, withIntermediateDirectories: true)
 
         let indexedFiles = Self.indexableFiles(in: root)
@@ -149,6 +197,9 @@ final class MemoryService {
             $0.name.lowercased().contains(normalized) ||
             $0.summary.lowercased().contains(normalized) ||
             $0.relativePath.lowercased().contains(normalized) ||
+            $0.content.lowercased().contains(normalized) ||
+            ($0.sourceSessionKey?.lowercased().contains(normalized) ?? false) ||
+            ($0.projectId?.lowercased().contains(normalized) ?? false) ||
             ($0.projectName?.lowercased().contains(normalized) ?? false)
         }
     }
@@ -169,7 +220,7 @@ final class MemoryService {
             latestMemoryAt: active.map(\.updatedAt).max(),
             lastIndexedAt: lastIndexedAt,
             lastDreamAt: lastDreamAt,
-            schedulerEnabled: true
+            schedulerEnabled: settings.enabled
         )
         let workspace = workspaceSnapshot(
             records: filtered,
@@ -195,7 +246,7 @@ final class MemoryService {
             indexTraceRecords: indexTraceRecords,
             dreamTraceRecords: dreamTraceRecords,
             lastDreamSnapshot: lastDreamSnapshot,
-            scheduler: MemorySchedulerSnapshot(enabled: true, status: "running"),
+            scheduler: MemorySchedulerSnapshot(enabled: settings.enabled, status: settings.enabled ? "running" : "disabled"),
             jobStates: jobStates
         )
     }
@@ -222,11 +273,13 @@ final class MemoryService {
         query: String = "",
         limit: Int = 100,
         offset: Int = 0,
-        projectName: String? = nil
+        projectName: String? = nil,
+        includeDeprecated: Bool = false
     ) -> [MemoryRecord] {
         let filtered = search(query)
             .filter { projectName == nil || $0.projectName == projectName || $0.projectName == nil }
             .filter { kind == nil || $0.type == kind }
+            .filter { includeDeprecated || !$0.deprecated }
             .sorted { $0.updatedAt > $1.updatedAt }
         guard offset < filtered.count else { return [] }
         return Array(filtered.dropFirst(max(0, offset)).prefix(max(1, limit)))
@@ -300,17 +353,32 @@ final class MemoryService {
 
     func clear(projectName: String?, projectRoot: String? = nil) {
         if let projectRoot {
-            let nativeIndex = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
-                .appendingPathComponent(".g9claw")
-                .appendingPathComponent("memory")
-                .appendingPathComponent("native-workspace-index.md")
-            try? FileManager.default.removeItem(at: nativeIndex)
+            try? FileManager.default.removeItem(at: edgeWorkspaceMemoryRoot(for: projectRoot))
+            try? FileManager.default.removeItem(at: legacyWorkspaceMemoryRoot(for: projectRoot))
+        } else if projectName == nil {
+            try? FileManager.default.removeItem(at: edgeClawRoot.appendingPathComponent("workspaces", isDirectory: true))
+            try? FileManager.default.removeItem(at: edgeGlobalMemoryRoot())
         }
         records.removeAll { projectName == nil || $0.projectName == projectName }
+        if projectName == nil {
+            recordFileURLs.removeAll()
+        } else {
+            recordFileURLs = recordFileURLs.filter { !$0.key.hasPrefix("\(projectName ?? ""):") }
+        }
     }
 
     func updateSettings(_ next: MemorySettingsSnapshot) {
-        settings = next
+        settings = MemorySettingsSnapshot(
+            enabled: next.enabled,
+            model: next.model,
+            reasoningMode: next.reasoningMode,
+            autoIndexIntervalMinutes: next.autoIndexIntervalMinutes,
+            autoDreamIntervalMinutes: next.autoDreamIntervalMinutes,
+            captureStrategy: next.captureStrategy,
+            includeAssistant: next.includeAssistant,
+            maxMessageChars: next.maxMessageChars,
+            heartbeatBatchSize: next.heartbeatBatchSize
+        )
     }
 
     func editRecord(_ record: MemoryRecord, name: String, summary: String, projectRoot: String?) throws -> MemoryRecord {
@@ -435,31 +503,44 @@ final class MemoryService {
         return dashboard(projectName: projectName, projectRoot: projectRoot)
     }
 
-    func exportBundle(projectName: String?) throws -> Data {
-        let bundle = MemoryExportBundle(
-            exportedAt: Date(),
-            records: records.filter { projectName == nil || $0.projectName == projectName || $0.projectName == nil },
-            settings: settings
-        )
+    func exportBundle(projectName: String?, projectRoot: String? = nil) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let projectName {
+            let bundle = try currentProjectExportBundle(projectName: projectName, projectRoot: projectRoot)
+            return try encoder.encode(bundle)
+        }
+        let bundle = try allProjectsExportBundle(projectRoot: projectRoot)
         return try encoder.encode(bundle)
     }
 
-    func importBundle(_ data: Data, projectName: String?) throws {
+    func importBundle(_ data: Data, projectName: String?, projectRoot: String? = nil) throws {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let bundle = try decoder.decode(MemoryExportBundle.self, from: data)
-        for var record in bundle.records {
-            if projectName != nil {
-                record.projectName = projectName
+        let envelope = try? decoder.decode(MemoryExportEnvelope.self, from: data)
+        switch envelope?.formatVersion {
+        case Self.memoryExportFormatVersion:
+            let bundle = try decoder.decode(CurrentProjectMemoryExportBundle.self, from: data)
+            try importCurrentProjectBundle(bundle, projectName: projectName, projectRoot: projectRoot)
+        case Self.allProjectsMemoryExportFormatVersion:
+            guard projectName == nil else {
+                throw NSError(domain: "MemoryService", code: 400, userInfo: [NSLocalizedDescriptionKey: "All-project memory bundles cannot be imported into a single project."])
             }
-            records.removeAll { $0.relativePath == record.relativePath && $0.projectName == record.projectName }
-            records.append(record)
+            let bundle = try decoder.decode(AllProjectsMemoryExportBundle.self, from: data)
+            try importAllProjectsBundle(bundle)
+        default:
+            let bundle = try decoder.decode(LegacyMemoryExportBundle.self, from: data)
+            for var record in bundle.records {
+                if projectName != nil {
+                    record.projectName = projectName
+                }
+                records.removeAll { $0.relativePath == record.relativePath && $0.projectName == record.projectName }
+                records.append(record)
+            }
+            settings = bundle.settings
+            records.sort { $0.updatedAt > $1.updatedAt }
         }
-        settings = bundle.settings
-        records.sort { $0.updatedAt > $1.updatedAt }
     }
 
     private func merge(_ incoming: [MemoryRecord], into current: [MemoryRecord]) -> [MemoryRecord] {
@@ -477,10 +558,12 @@ final class MemoryService {
         projectRoot: String?,
         isGeneral: Bool
     ) -> MemoryWorkspaceSnapshot {
-        let projectEntries = active.filter { $0.type != .feedback && $0.type != .user }
-        let feedbackEntries = active.filter { $0.type == .feedback }
-        let deprecated = records.filter(\.deprecated)
-        let meta = MemoryProjectMeta(
+        let workspaceRecords = records.filter { $0.type != .user }
+        let workspaceActive = active.filter { $0.type != .user }
+        let projectEntries = workspaceActive.filter { $0.type != .feedback }
+        let feedbackEntries = workspaceActive.filter { $0.type == .feedback }
+        let deprecated = workspaceRecords.filter(\.deprecated)
+        let fallbackMeta = MemoryProjectMeta(
             projectId: projectName ?? "general",
             projectName: projectName ?? "general",
             description: projectEntries.first?.summary ?? "当前 workspace 的进展、事实和状态记录",
@@ -491,6 +574,7 @@ final class MemoryService {
             readOnly: false,
             updatedAt: active.map(\.updatedAt).max()
         )
+        let meta = projectMetaFromFile(projectRoot: projectRoot, fallbackProjectName: projectName, isGeneral: isGeneral) ?? fallbackMeta
         return MemoryWorkspaceSnapshot(
             workspaceMode: isGeneral ? "general" : "project",
             projectPath: projectRoot,
@@ -499,8 +583,8 @@ final class MemoryService {
             generalProjects: isGeneral ? [meta] : [],
             projectMeta: meta,
             manifestPath: "MEMORY.md",
-            manifestContent: active.map { "- \($0.name): \($0.summary)" }.joined(separator: "\n"),
-            totalFiles: active.count,
+            manifestContent: manifestContent(projectRoot: projectRoot, records: workspaceActive),
+            totalFiles: workspaceActive.count,
             totalProjects: projectEntries.count,
             totalFeedback: feedbackEntries.count,
             projectEntries: projectEntries,
@@ -510,7 +594,379 @@ final class MemoryService {
         )
     }
 
-    private struct MemoryExportBundle: Codable {
+    private static let memoryExportFormatVersion = "clawxmemory-memory-snapshot.v4"
+    private static let allProjectsMemoryExportFormatVersion = "clawxmemory-memory-snapshot.all-projects.v1"
+
+    private func currentProjectExportBundle(projectName: String, projectRoot: String?) throws -> CurrentProjectMemoryExportBundle {
+        let files = try currentProjectSnapshotFiles(projectName: projectName, projectRoot: projectRoot)
+        return CurrentProjectMemoryExportBundle(
+            formatVersion: Self.memoryExportFormatVersion,
+            scope: "current_project",
+            exportedAt: Date(),
+            lastIndexedAt: lastIndexedAt,
+            lastDreamAt: lastDreamAt,
+            recentCaseTraces: caseTraceRecords.isEmpty ? nil : caseTraceRecords,
+            recentIndexTraces: indexTraceRecords.isEmpty ? nil : indexTraceRecords,
+            recentDreamTraces: dreamTraceRecords.isEmpty ? nil : dreamTraceRecords,
+            files: files
+        )
+    }
+
+    private func allProjectsExportBundle(projectRoot: String?) throws -> AllProjectsMemoryExportBundle {
+        let globalFiles = try globalSnapshotFiles()
+        let projectNames = records.compactMap(\.projectName).reduce(into: Set<String>()) { names, name in
+            names.insert(name)
+        }
+        let projects = try projectNames.sorted().map { name in
+            AllProjectsMemoryProjectBundle(
+                projectPath: projectRoot ?? name,
+                projectName: name,
+                bundle: try currentProjectExportBundle(projectName: name, projectRoot: nil)
+            )
+        }
+        return AllProjectsMemoryExportBundle(
+            formatVersion: Self.allProjectsMemoryExportFormatVersion,
+            scope: "all_projects",
+            exportedAt: Date(),
+            lastIndexedAt: lastIndexedAt,
+            lastDreamAt: lastDreamAt,
+            recentCaseTraces: caseTraceRecords.isEmpty ? nil : caseTraceRecords,
+            recentIndexTraces: indexTraceRecords.isEmpty ? nil : indexTraceRecords,
+            recentDreamTraces: dreamTraceRecords.isEmpty ? nil : dreamTraceRecords,
+            globalFiles: globalFiles,
+            projects: projects
+        )
+    }
+
+    private func currentProjectSnapshotFiles(projectName: String, projectRoot: String?) throws -> [MemorySnapshotFile] {
+        if let projectRoot {
+            let legacy = try snapshotFiles(in: legacyWorkspaceMemoryRoot(for: projectRoot))
+            let edge = try snapshotFiles(in: edgeWorkspaceMemoryRoot(for: projectRoot))
+            let files = mergeSnapshotFiles(legacy + edge)
+            if !files.isEmpty {
+                return try files
+                    .filter { !Self.isDerivedMemoryFile($0.relativePath) && !$0.relativePath.hasPrefix("global/") }
+                    .map { try normalizedSnapshotFile($0, index: 0) }
+            }
+        }
+
+        let files = records
+            .filter { $0.projectName == projectName }
+            .compactMap { record -> MemorySnapshotFile? in
+                let relativePath = record.relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !relativePath.isEmpty, !Self.isDerivedMemoryFile(relativePath), !relativePath.hasPrefix("global/") else {
+                    return nil
+                }
+                let content = recordFileURLs[recordStorageKey(record)]
+                    .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+                    ?? record.content
+                return MemorySnapshotFile(relativePath: relativePath, content: content)
+            }
+        return try mergeSnapshotFiles(files).enumerated().map { index, file in
+            try normalizedSnapshotFile(file, index: index)
+        }
+    }
+
+    private func globalSnapshotFiles() throws -> [MemorySnapshotFile] {
+        let files = try snapshotFiles(in: edgeGlobalMemoryRoot())
+        if !files.isEmpty {
+            return files
+        }
+        let recordFiles = records
+            .filter { $0.projectName == nil || $0.scope == "global" || $0.relativePath.hasPrefix("global/") }
+            .compactMap { record -> MemorySnapshotFile? in
+                let relativePath = record.relativePath.hasPrefix("global/")
+                    ? String(record.relativePath.dropFirst("global/".count))
+                    : record.relativePath
+                guard !relativePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return nil
+                }
+                let content = recordFileURLs[recordStorageKey(record)]
+                    .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+                    ?? record.content
+                return MemorySnapshotFile(relativePath: relativePath, content: content)
+            }
+        return try mergeSnapshotFiles(recordFiles).enumerated().map { index, file in
+            try normalizedSnapshotFile(file, index: index)
+        }
+    }
+
+    private func importCurrentProjectBundle(
+        _ bundle: CurrentProjectMemoryExportBundle,
+        projectName: String?,
+        projectRoot: String?
+    ) throws {
+        guard bundle.scope == nil || bundle.scope == "current_project" else {
+            throw NSError(domain: "MemoryService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Unsupported memory bundle scope. Expected current_project."])
+        }
+        let normalizedFiles = try bundle.files.enumerated().map { index, file in
+            try normalizedSnapshotFile(file, index: index)
+        }
+        if normalizedFiles.contains(where: { Self.hasLegacyMultiProjectPath($0.relativePath) }) {
+            throw NSError(domain: "MemoryService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Legacy multi-project memory bundles are not supported in current-project memory mode."])
+        }
+        let workspaceFiles = normalizedFiles.filter { !$0.relativePath.hasPrefix("global/") }
+        if let projectRoot {
+            let memoryRoot = edgeWorkspaceMemoryRoot(for: projectRoot)
+            try replaceSnapshotFiles(root: memoryRoot, files: workspaceFiles)
+            try repairManifest(at: memoryRoot)
+            loadWorkspaceRecords(projectRoot: projectRoot, projectName: projectName)
+        } else {
+            records.removeAll { projectName == nil || $0.projectName == projectName }
+            let importedRecords = workspaceFiles.map { record(from: $0, projectName: projectName, exposedPrefix: "") }
+            records = merge(importedRecords, into: records)
+        }
+        lastIndexedAt = bundle.lastIndexedAt
+        lastDreamAt = bundle.lastDreamAt
+        caseTraceRecords = bundle.recentCaseTraces ?? []
+        indexTraceRecords = bundle.recentIndexTraces ?? []
+        dreamTraceRecords = bundle.recentDreamTraces ?? []
+        lastDreamSnapshot = nil
+    }
+
+    private func importAllProjectsBundle(_ bundle: AllProjectsMemoryExportBundle) throws {
+        guard bundle.scope == "all_projects" else {
+            throw NSError(domain: "MemoryService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Unsupported memory bundle scope. Expected all_projects."])
+        }
+        clear(projectName: nil, projectRoot: nil)
+        let globalFiles = try bundle.globalFiles.enumerated().map { index, file in
+            try normalizedSnapshotFile(file, index: index)
+        }
+        try replaceSnapshotFiles(root: edgeGlobalMemoryRoot(), files: globalFiles)
+        var importedRecords = globalFiles.map { record(from: $0, projectName: nil, exposedPrefix: "global/") }
+        for project in bundle.projects {
+            let projectName = project.projectName?.nilIfBlank ?? URL(fileURLWithPath: project.projectPath).lastPathComponent
+            try importCurrentProjectBundle(project.bundle, projectName: projectName, projectRoot: project.projectPath)
+            importedRecords.append(contentsOf: records.filter { $0.projectName == projectName })
+        }
+        records = merge(importedRecords, into: records)
+        lastIndexedAt = bundle.lastIndexedAt
+        lastDreamAt = bundle.lastDreamAt
+        caseTraceRecords = bundle.recentCaseTraces ?? []
+        indexTraceRecords = bundle.recentIndexTraces ?? []
+        dreamTraceRecords = bundle.recentDreamTraces ?? []
+    }
+
+    private func edgeWorkspaceMemoryRoot(for projectRoot: String) -> URL {
+        let projectURL = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
+        return edgeClawRoot
+            .appendingPathComponent("workspaces", isDirectory: true)
+            .appendingPathComponent(Self.edgeClawWorkspaceHash(for: projectURL.path), isDirectory: true)
+            .appendingPathComponent("memory", isDirectory: true)
+    }
+
+    private func legacyWorkspaceMemoryRoot(for projectRoot: String) -> URL {
+        URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("memory", isDirectory: true)
+    }
+
+    private func edgeGlobalMemoryRoot() -> URL {
+        edgeClawRoot.appendingPathComponent("global", isDirectory: true)
+    }
+
+    private func snapshotFiles(in root: URL) throws -> [MemorySnapshotFile] {
+        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: []
+        ) else { return [] }
+        var files: [MemorySnapshotFile] = []
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
+            guard values?.isRegularFile == true else { continue }
+            let relativePath = url.path.hasPrefix(root.path + "/")
+                ? String(url.path.dropFirst(root.path.count + 1))
+                : url.lastPathComponent
+            let normalizedPath = relativePath.replacingOccurrences(of: "\\", with: "/")
+            let content = try String(contentsOf: url, encoding: .utf8)
+            files.append(MemorySnapshotFile(relativePath: normalizedPath, content: content))
+        }
+        return files.sorted { $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending }
+    }
+
+    private func mergeSnapshotFiles(_ files: [MemorySnapshotFile]) -> [MemorySnapshotFile] {
+        var byPath: [String: MemorySnapshotFile] = [:]
+        for file in files {
+            byPath[file.relativePath] = file
+        }
+        return byPath.values.sorted { $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending }
+    }
+
+    private func replaceSnapshotFiles(root: URL, files: [MemorySnapshotFile]) throws {
+        try? FileManager.default.removeItem(at: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for (index, file) in files.enumerated() {
+            let normalized = try normalizedSnapshotFile(file, index: index)
+            let target = root.appendingPathComponent(normalized.relativePath)
+            guard isPath(target, inside: root) else {
+                throw NSError(domain: "MemoryService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid files[\(index)].relativePath"])
+            }
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try normalized.content.write(to: target, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func repairManifest(at root: URL) throws {
+        let files = try snapshotFiles(in: root)
+            .filter { !Self.isDerivedMemoryFile($0.relativePath) }
+        let projectEntries = files.filter { file in
+            (Self.memoryFile(from: file.content)?.type ?? Self.recordType(from: file.content, fallbackPath: file.relativePath)) == .project
+        }
+        let feedbackEntries = files.filter { file in
+            (Self.memoryFile(from: file.content)?.type ?? Self.recordType(from: file.content, fallbackPath: file.relativePath)) == .feedback
+        }
+        let lines = [
+            "# Memory",
+            "",
+            "## Project Memory",
+            projectEntries.isEmpty ? "No project memory yet." : projectEntries.map { "- [\($0.relativePath)](\($0.relativePath))" }.joined(separator: "\n"),
+            "",
+            "## Feedback Memory",
+            feedbackEntries.isEmpty ? "No feedback memory yet." : feedbackEntries.map { "- [\($0.relativePath)](\($0.relativePath))" }.joined(separator: "\n")
+        ]
+        try lines.joined(separator: "\n").appending("\n").write(
+            to: root.appendingPathComponent("MEMORY.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private func normalizedSnapshotFile(_ file: MemorySnapshotFile, index: Int) throws -> MemorySnapshotFile {
+        let raw = file.relativePath.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\\", with: "/")
+        if raw.isEmpty || raw.hasPrefix("/") || raw.range(of: #"^[A-Za-z]:"#, options: .regularExpression) != nil {
+            throw NSError(domain: "MemoryService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid files[\(index)].relativePath"])
+        }
+        let segments = raw.split(separator: "/").map(String.init).filter { !$0.isEmpty }
+        guard !segments.isEmpty, segments.allSatisfy({ $0 != "." && $0 != ".." }) else {
+            throw NSError(domain: "MemoryService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid files[\(index)].relativePath"])
+        }
+        return MemorySnapshotFile(relativePath: segments.joined(separator: "/"), content: file.content)
+    }
+
+    private func isPath(_ target: URL, inside root: URL) -> Bool {
+        let rootPath = root.standardizedFileURL.path
+        let targetPath = target.standardizedFileURL.path
+        return targetPath == rootPath || targetPath.hasPrefix(rootPath + "/")
+    }
+
+    private func record(from file: MemorySnapshotFile, projectName: String?, exposedPrefix: String) -> MemoryRecord {
+        let parsed = Self.memoryFile(from: file.content)
+        let relativePath = exposedPrefix.isEmpty || file.relativePath.hasPrefix(exposedPrefix)
+            ? file.relativePath
+            : exposedPrefix + file.relativePath
+        let isGlobal = parsed?.scope == "global" || relativePath.hasPrefix("global/")
+        return MemoryRecord(
+            id: UUID(),
+            name: parsed?.name.nilIfBlank ?? URL(fileURLWithPath: file.relativePath).deletingPathExtension().lastPathComponent,
+            summary: parsed?.description.nilIfBlank ?? Self.preview(file.content),
+            projectName: isGlobal ? nil : projectName,
+            updatedAt: parsed?.updatedAt ?? Date(),
+            type: parsed?.type ?? Self.recordType(from: file.content, fallbackPath: file.relativePath),
+            relativePath: relativePath,
+            deprecated: parsed?.deprecated ?? Self.deprecated(from: file.content),
+            content: file.content,
+            scope: parsed?.scope ?? (isGlobal ? "global" : "project"),
+            projectId: parsed?.projectId,
+            sourceSessionKey: parsed?.sourceSessionKey,
+            capturedAt: parsed?.capturedAt
+        )
+    }
+
+    private func manifestContent(projectRoot: String?, records: [MemoryRecord]) -> String {
+        if let projectRoot {
+            let candidates = [
+                edgeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("MEMORY.md"),
+                legacyWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("MEMORY.md")
+            ]
+            for url in candidates {
+                if let content = try? String(contentsOf: url, encoding: .utf8), !content.isEmpty {
+                    return content
+                }
+            }
+        }
+        return records.map { "- \($0.name): \($0.summary)" }.joined(separator: "\n")
+    }
+
+    private func projectMetaFromFile(projectRoot: String?, fallbackProjectName: String?, isGeneral: Bool) -> MemoryProjectMeta? {
+        guard let projectRoot else { return nil }
+        let candidates = [
+            edgeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("project.meta.md"),
+            legacyWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("project.meta.md")
+        ]
+        for url in candidates {
+            guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let values = Self.frontmatterValues(from: Self.frontmatterHeader(content) ?? "")
+            let projectName = values["project_name"]?.nilIfBlank ?? values["name"]?.nilIfBlank ?? fallbackProjectName
+            guard let projectName else { continue }
+            let updatedAt = Self.date(values["updated_at"])
+            return MemoryProjectMeta(
+                projectId: values["project_id"]?.nilIfBlank ?? "current_project",
+                projectName: projectName,
+                description: values["description"]?.nilIfBlank ?? projectName,
+                status: values["status"]?.nilIfBlank ?? "in_progress",
+                workspacePath: projectRoot,
+                relativePath: "project.meta.md",
+                sourceType: isGeneral ? "general_local" : "workspace",
+                readOnly: false,
+                updatedAt: updatedAt
+            )
+        }
+        return nil
+    }
+
+    private static func isDerivedMemoryFile(_ relativePath: String) -> Bool {
+        let name = URL(fileURLWithPath: relativePath).lastPathComponent
+        return name == "MEMORY.md" || name == "project.meta.md"
+    }
+
+    private static func hasLegacyMultiProjectPath(_ relativePath: String) -> Bool {
+        relativePath.hasPrefix("projects/") || relativePath.contains("/project.meta.md")
+    }
+
+    private struct MemoryExportEnvelope: Codable {
+        var formatVersion: String?
+        var scope: String?
+    }
+
+    private struct MemorySnapshotFile: Codable, Hashable {
+        var relativePath: String
+        var content: String
+    }
+
+    private struct CurrentProjectMemoryExportBundle: Codable {
+        var formatVersion: String
+        var scope: String?
+        var exportedAt: Date
+        var lastIndexedAt: Date?
+        var lastDreamAt: Date?
+        var recentCaseTraces: [MemoryTraceRecord]?
+        var recentIndexTraces: [MemoryTraceRecord]?
+        var recentDreamTraces: [MemoryTraceRecord]?
+        var files: [MemorySnapshotFile]
+    }
+
+    private struct AllProjectsMemoryProjectBundle: Codable {
+        var projectPath: String
+        var projectName: String?
+        var bundle: CurrentProjectMemoryExportBundle
+    }
+
+    private struct AllProjectsMemoryExportBundle: Codable {
+        var formatVersion: String
+        var scope: String
+        var exportedAt: Date
+        var lastIndexedAt: Date?
+        var lastDreamAt: Date?
+        var recentCaseTraces: [MemoryTraceRecord]?
+        var recentIndexTraces: [MemoryTraceRecord]?
+        var recentDreamTraces: [MemoryTraceRecord]?
+        var globalFiles: [MemorySnapshotFile]
+        var projects: [AllProjectsMemoryProjectBundle]
+    }
+
+    private struct LegacyMemoryExportBundle: Codable {
         var exportedAt: Date
         var records: [MemoryRecord]
         var settings: MemorySettingsSnapshot
@@ -618,8 +1074,26 @@ final class MemoryService {
     }
 
     private func recordURL(for record: MemoryRecord, projectRoot: String?) -> URL? {
-        guard let projectRoot, !record.relativePath.isEmpty, !record.relativePath.hasPrefix("/") else { return nil }
-        return URL(fileURLWithPath: projectRoot).appendingPathComponent(record.relativePath)
+        if let url = recordFileURLs[recordStorageKey(record)] {
+            return url
+        }
+        guard !record.relativePath.isEmpty,
+              let normalized = try? normalizedSnapshotFile(
+                MemorySnapshotFile(relativePath: record.relativePath, content: record.content),
+                index: 0
+              ).relativePath else { return nil }
+        if normalized.hasPrefix("global/") || record.scope == "global" {
+            let relativePath = normalized.hasPrefix("global/")
+                ? String(normalized.dropFirst("global/".count))
+                : normalized
+            return edgeGlobalMemoryRoot().appendingPathComponent(relativePath)
+        }
+        guard let projectRoot else { return nil }
+        return edgeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent(normalized)
+    }
+
+    private func recordStorageKey(_ record: MemoryRecord) -> String {
+        "\(record.projectName ?? ""):\(record.relativePath)"
     }
 
     private func writeRecordIfPossible(_ record: MemoryRecord, projectRoot: String?) throws {
@@ -636,6 +1110,81 @@ final class MemoryService {
         if lower.contains("general_project_meta") { return .generalProjectMeta }
         if lower.contains("feedback") { return .feedback }
         return .project
+    }
+
+    private struct ParsedMemoryFile {
+        var name: String
+        var description: String
+        var type: MemoryRecordType
+        var scope: String
+        var projectId: String?
+        var updatedAt: Date?
+        var capturedAt: Date?
+        var sourceSessionKey: String?
+        var deprecated: Bool?
+    }
+
+    private static func memoryFile(from content: String) -> ParsedMemoryFile? {
+        guard content.hasPrefix("---\n"),
+              let endRange = content.range(of: "\n---\n", range: content.index(content.startIndex, offsetBy: 4)..<content.endIndex) else {
+            return nil
+        }
+        let header = String(content[content.index(content.startIndex, offsetBy: 4)..<endRange.lowerBound])
+        let values = frontmatterValues(from: header)
+        guard let type = memoryRecordType(values["type"]),
+              let scope = values["scope"], scope == "global" || scope == "project" else {
+            return nil
+        }
+        return ParsedMemoryFile(
+            name: values["name"] ?? "",
+            description: values["description"] ?? "",
+            type: type,
+            scope: scope,
+            projectId: values["project_id"],
+            updatedAt: date(values["updated_at"]),
+            capturedAt: date(values["captured_at"]),
+            sourceSessionKey: values["source_session_key"],
+            deprecated: bool(values["deprecated"])
+        )
+    }
+
+    private static func frontmatterValues(from header: String) -> [String: String] {
+        var values: [String: String] = [:]
+        for line in header.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false) {
+            guard let separator = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty {
+                values[key] = value
+            }
+        }
+        return values
+    }
+
+    private static func memoryRecordType(_ raw: String?) -> MemoryRecordType? {
+        switch raw {
+        case "project": return .project
+        case "feedback": return .feedback
+        case "user": return .user
+        case "general_project_meta": return .generalProjectMeta
+        default: return nil
+        }
+    }
+
+    private static func bool(_ raw: String?) -> Bool? {
+        switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true": return true
+        case "false": return false
+        default: return nil
+        }
+    }
+
+    private static func date(_ raw: String?) -> Date? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        if let iso = ISO8601DateFormatter().date(from: raw) {
+            return iso
+        }
+        return DateFormatter.localizedStringDateFormatter.date(from: raw)
     }
 
     private static func rewriteHeader(content: String, name: String, summary: String) -> String {
@@ -664,12 +1213,33 @@ final class MemoryService {
     }
 
     private static func preview(_ content: String) -> String {
-        content
+        stripFrontmatter(content)
             .split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty && !$0.hasPrefix("#") }?
+            .first { !$0.isEmpty && !$0.hasPrefix("#") && !$0.contains(":") }?
             .prefix(240)
             .description ?? "Memory record"
+    }
+
+    private static func deprecated(from content: String) -> Bool {
+        bool(frontmatterValues(from: frontmatterHeader(content) ?? "")["deprecated"])
+            ?? content.lowercased().contains("deprecated: true")
+    }
+
+    private static func stripFrontmatter(_ content: String) -> String {
+        guard content.hasPrefix("---\n"),
+              let endRange = content.range(of: "\n---\n", range: content.index(content.startIndex, offsetBy: 4)..<content.endIndex) else {
+            return content
+        }
+        return String(content[endRange.upperBound...]).trimmingCharacters(in: .newlines)
+    }
+
+    private static func frontmatterHeader(_ content: String) -> String? {
+        guard content.hasPrefix("---\n"),
+              let endRange = content.range(of: "\n---\n", range: content.index(content.startIndex, offsetBy: 4)..<content.endIndex) else {
+            return nil
+        }
+        return String(content[content.index(content.startIndex, offsetBy: 4)..<endRange.lowerBound])
     }
 
     private static func indexableFiles(in root: URL) -> [URL] {
@@ -1532,11 +2102,59 @@ private extension DateFormatter {
 }
 
 final class AlwaysOnService {
+    private let defaultRunLogTailBytes = 60_000
+    private let maxRunLogTailBytes = 512_000
+    private let outputLogMaxCharacters = 60_000
+    private let discoveryContextLookbackDays = 7
+    private let discoveryContextMaxItems = 20
+
+    private struct CronJobStore {
+        var url: URL
+        var collectionKey: String?
+        var durableDefault: Bool?
+        var rootObject: Any
+        var rawJobs: [[String: Any]]
+    }
+
+    private struct RunHistoryEvent {
+        var runId: String
+        var kind: String
+        var sourceId: String
+        var title: String
+        var status: AlwaysOnStatus
+        var timestamp: Date
+        var startedAt: Date?
+        var finishedAt: Date?
+        var sessionId: String?
+        var parentSessionId: String?
+        var relativeTranscriptPath: String?
+        var transcriptKey: String?
+        var output: String?
+        var error: String?
+        var metadata: [String: String]
+    }
+
+    private struct RunHistoryRecord {
+        var runId: String
+        var kind: String
+        var sourceId: String
+        var title: String
+        var status: AlwaysOnStatus
+        var createdAt: Date
+        var updatedAt: Date
+        var startedAt: Date
+        var finishedAt: Date?
+        var sessionId: String?
+        var parentSessionId: String?
+        var relativeTranscriptPath: String?
+        var transcriptKey: String?
+        var metadata: [String: String]
+        var outputLog: String
+        var error: String?
+    }
+
     func plans(projectRoot: String) -> [AlwaysOnPlan] {
-        let indexURL = URL(fileURLWithPath: projectRoot)
-            .appendingPathComponent(".g9claw")
-            .appendingPathComponent("always-on")
-            .appendingPathComponent("discovery-plans.json")
+        guard let indexURL = existingAlwaysOnFile(projectRoot, "discovery-plans.json") else { return [] }
         guard
             let data = try? Data(contentsOf: indexURL),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1544,7 +2162,7 @@ final class AlwaysOnService {
         else { return [] }
         return rawPlans.compactMap { raw in
             let id = string(raw["id"], fallback: UUID().uuidString)
-            let relativePlanPath = string(raw["planFilePath"], fallback: ".g9claw/always-on/plans/\(id).md")
+            let relativePlanPath = string(raw["planFilePath"], fallback: ".claude/always-on/plans/\(id).md")
             let content = (try? String(contentsOfFile: URL(fileURLWithPath: projectRoot).appendingPathComponent(relativePlanPath).path, encoding: .utf8)) ?? ""
             return AlwaysOnPlan(
                 id: id,
@@ -1555,6 +2173,7 @@ final class AlwaysOnService {
                 status: AlwaysOnStatus(rawValue: string(raw["status"], fallback: "ready")) ?? .unknown,
                 approvalMode: string(raw["approvalMode"], fallback: "manual"),
                 planFilePath: relativePlanPath,
+                contextRefs: stringArrayMap(raw["contextRefs"]),
                 createdAt: date(raw["createdAt"]) ?? Date(),
                 updatedAt: date(raw["updatedAt"]) ?? Date(),
                 executionSessionId: optionalString(raw["executionSessionId"]),
@@ -1564,68 +2183,576 @@ final class AlwaysOnService {
         .sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    func runHistory(projectRoot: String) -> [AlwaysOnRunHistory] {
-        let historyURL = URL(fileURLWithPath: projectRoot)
-            .appendingPathComponent(".g9claw")
-            .appendingPathComponent("always-on")
-            .appendingPathComponent("run-history.jsonl")
-        guard let raw = try? String(contentsOf: historyURL, encoding: .utf8) else { return [] }
-        return raw.split(separator: "\n").compactMap { line in
-            guard
-                let data = String(line).data(using: .utf8),
-                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return nil }
-            let runId = string(json["runId"], fallback: string(json["id"], fallback: UUID().uuidString))
-            let logURL = URL(fileURLWithPath: projectRoot)
-                .appendingPathComponent(".g9claw")
-                .appendingPathComponent("always-on")
-                .appendingPathComponent("runs")
-                .appendingPathComponent("\(runId).log")
-            return AlwaysOnRunHistory(
-                id: runId,
-                title: string(json["title"], fallback: string(json["sourceId"], fallback: "Run")),
-                kind: string(json["kind"], fallback: "plan"),
-                status: AlwaysOnStatus(rawValue: string(json["status"], fallback: "unknown")) ?? .unknown,
-                startedAt: date(json["startedAt"]) ?? Date(),
-                sourceId: string(json["sourceId"]),
-                outputLog: (try? String(contentsOf: logURL, encoding: .utf8)) ?? string(json["outputLog"]),
-                sessionId: optionalString(json["sessionId"])
-            )
+    func discoveryContext(
+        projectName: String,
+        displayName: String,
+        projectRoot: String,
+        plans: [AlwaysOnPlan],
+        cronJobs: [AlwaysOnCronJob],
+        sessions: [ProjectSession],
+        memoryRecords: [MemoryRecord] = [],
+        now: Date = Date()
+    ) -> AlwaysOnDiscoveryContext {
+        let cutoff = now.addingTimeInterval(TimeInterval(-discoveryContextLookbackDays * 24 * 60 * 60))
+        let recentSessions = sessions
+            .filter { $0.activityDate >= cutoff }
+            .sorted { $0.activityDate > $1.activityDate }
+            .prefix(discoveryContextMaxItems)
+
+        return AlwaysOnDiscoveryContext(
+            generatedAt: isoString(now),
+            lookbackDays: discoveryContextLookbackDays,
+            workspace: AlwaysOnDiscoveryContext.Workspace(
+                projectName: projectName,
+                projectRoot: projectRoot,
+                signals: workspaceSignals(projectRoot: projectRoot)
+            ),
+            memory: memoryRecords
+                .sorted { $0.updatedAt > $1.updatedAt }
+                .prefix(discoveryContextMaxItems)
+                .map {
+                    AlwaysOnDiscoveryContext.MemoryItem(
+                        path: $0.relativePath,
+                        modifiedAt: isoString($0.updatedAt),
+                        summary: $0.summary
+                    )
+                },
+            existingPlans: plans
+                .filter { $0.status != .superseded }
+                .sorted { $0.updatedAt > $1.updatedAt }
+                .prefix(discoveryContextMaxItems)
+                .map {
+                    AlwaysOnDiscoveryContext.PlanItem(
+                        id: $0.id,
+                        title: $0.title,
+                        status: $0.status.rawValue,
+                        approvalMode: $0.approvalMode,
+                        updatedAt: isoString($0.updatedAt),
+                        summary: $0.summary
+                    )
+                },
+            cronJobs: cronJobs
+                .prefix(discoveryContextMaxItems)
+                .map {
+                    AlwaysOnDiscoveryContext.CronItem(
+                        id: $0.id,
+                        status: $0.status.rawValue,
+                        cron: $0.cron,
+                        recurring: $0.recurring,
+                        manualOnly: $0.manualOnly,
+                        prompt: $0.prompt,
+                        latestRunSummary: $0.latestRun?.summary
+                    )
+                },
+            recentChats: recentSessions.map {
+                AlwaysOnDiscoveryContext.ChatItem(
+                    id: $0.id,
+                    summary: $0.summary.isEmpty ? $0.displayTitle : $0.summary,
+                    lastActivity: isoString($0.activityDate),
+                    lastUserMessage: nil,
+                    lastAssistantMessage: nil
+                )
+            }
+        )
+    }
+
+    func discoveryPrompt(
+        projectName: String,
+        displayName: String,
+        projectRoot: String,
+        context: AlwaysOnDiscoveryContext,
+        language: String?
+    ) -> String {
+        let normalizedLanguage = language == "zh-CN" ? "zh-CN" : "en"
+        let contextJSON = discoveryContextJSON(context)
+        let projectStorePath = claudeProjectStorePath(projectName: projectName, projectRoot: projectRoot)
+        if normalizedLanguage == "zh-CN" {
+            return [
+                "Always-On 主动发现规划，项目为“\(displayName)”。",
+                "",
+                "你的任务只限于发现和规划。",
+                "检查提供的上下文，判断是否存在值得后续跟进的任务，并最多保存 3 个结构化 discovery plans。",
+                "",
+                "要求：",
+                "1. 检查当前工作区 `\(projectRoot)`。",
+                "2. 如有需要，将项目存储目录 `\(projectStorePath)` 作为辅助上下文。",
+                "3. 阅读下方结构化 discovery context，不要自行虚构上下文窗口。",
+                "4. 如果没有值得跟进的工作，说明原因并停止，不要保存任何计划。",
+                "5. 如果存在值得跟进的工作，使用 `AlwaysOnDiscoveryPlan` 最多保存 3 个计划。",
+                "6. 每个保存的计划必须严格包含这些 Markdown 小节：",
+                "   - `## Context`",
+                "   - `## Signals Reviewed`",
+                "   - `## Proposed Work`",
+                "   - `## Execution Steps`",
+                "   - `## Verification`",
+                "   - `## Approval And Execution`",
+                "7. 除非工作明显安全且适合自动执行，否则使用 `approvalMode: \"manual\"`。",
+                "8. 不要调用 `CronCreate`，不要现在执行这些工作，也不要启动后台任务。",
+                "9. 语言：如果结构化上下文或计划 `contextRefs.recentChats` 中包含近期聊天记录，推断这些近期聊天记录的主要语言。最终回复以及每个保存的计划 Markdown 正文都优先使用该语言。如果它与 Web UI 语言不同，以近期聊天语言为准。如果无法判断近期聊天语言，则使用当前提示词语言。",
+                "10. 在最终回复中，总结你检查了什么，以及创建或更新了哪些 discovery plan ID。",
+                "",
+                "结构化 discovery context：",
+                "```json",
+                contextJSON,
+                "```",
+            ].joined(separator: "\n")
         }
-        .sorted { $0.startedAt > $1.startedAt }
+
+        return [
+            "Always-On discovery planning for project \"\(displayName)\".",
+            "",
+            "Your job is discovery only.",
+            "Inspect the provided context, decide whether there are worthwhile follow-up tasks, and persist up to 3 structured discovery plans.",
+            "",
+            "Requirements:",
+            "1. Inspect the current workspace at `\(projectRoot)`.",
+            "2. Use the project store at `\(projectStorePath)` as supporting context if needed.",
+            "3. Read the structured discovery context below instead of inventing your own context window.",
+            "4. If there is no worthwhile follow-up work, explain why and stop without saving any plans.",
+            "5. If there is worthwhile work, use `AlwaysOnDiscoveryPlan` to persist up to 3 plans.",
+            "6. Every saved plan must include these markdown sections exactly:",
+            "   - `## Context`",
+            "   - `## Signals Reviewed`",
+            "   - `## Proposed Work`",
+            "   - `## Execution Steps`",
+            "   - `## Verification`",
+            "   - `## Approval And Execution`",
+            "7. Use `approvalMode: \"manual\"` unless the work is clearly safe and suitable for auto-execution.",
+            "8. Do not call `CronCreate`, do not execute the work now, and do not start background tasks.",
+            "9. Language: if the structured context or plan `contextRefs.recentChats` includes recent chat records, infer the primary language of those recent chats. Use that language for your final reply and for every saved plan markdown body. If it differs from the Web UI language, recent chats win. If no recent chat language is discernible, use this prompt language.",
+            "10. In your final reply, summarize what you reviewed and which discovery plan IDs were created or updated.",
+            "",
+            "Structured discovery context:",
+            "```json",
+            contextJSON,
+            "```",
+        ].joined(separator: "\n")
+    }
+
+    func runHistory(projectRoot: String) -> [AlwaysOnRunHistory] {
+        runHistoryRecords(projectRoot: projectRoot, includeUnknown: false)
+    }
+
+    func runHistoryDetail(projectRoot: String, runID: String) -> AlwaysOnRunHistory? {
+        runHistoryRecords(projectRoot: projectRoot, includeUnknown: true).first { $0.id == runID }
+    }
+
+    private func runHistoryRecords(projectRoot: String, includeUnknown: Bool) -> [AlwaysOnRunHistory] {
+        readRunHistoryRecords(projectRoot: projectRoot)
+            .filter { includeUnknown || $0.status != .unknown }
+            .map { history in
+                let session = recoveredSessionInfo(for: history)
+                let log = runLog(projectRoot: projectRoot, runID: history.runId)
+                let outputLog = !log.content.isEmpty
+                    ? log.content
+                    : [history.outputLog, history.error.map { "Error: \($0)" }].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
+                var metadata = history.metadata
+                metadata["runId"] = history.runId
+                metadata["sourceId"] = history.sourceId
+                metadata["status"] = history.status.rawValue
+                metadata["startedAt"] = isoString(history.startedAt)
+                if let finishedAt = history.finishedAt {
+                    metadata["finishedAt"] = isoString(finishedAt)
+                }
+                if let sessionId = session.sessionId {
+                    metadata["sessionId"] = sessionId
+                }
+                if let parentSessionId = session.parentSessionId {
+                    metadata["parentSessionId"] = parentSessionId
+                }
+                if let relativeTranscriptPath = session.relativeTranscriptPath {
+                    metadata["relativeTranscriptPath"] = relativeTranscriptPath
+                }
+                if let transcriptKey = session.transcriptKey {
+                    metadata["transcriptKey"] = transcriptKey
+                }
+                metadata["logSource"] = log.source.rawValue
+                metadata["logSize"] = String(log.size)
+                metadata["logTruncated"] = String(log.truncated)
+                if let updatedAt = log.updatedAt {
+                    metadata["logUpdatedAt"] = isoString(updatedAt)
+                }
+                return AlwaysOnRunHistory(
+                    id: history.runId,
+                    title: history.title,
+                    kind: history.kind,
+                    status: history.status,
+                    startedAt: history.startedAt,
+                    sourceId: history.sourceId,
+                    outputLog: outputLog,
+                    sessionId: session.sessionId,
+                    parentSessionId: session.parentSessionId,
+                    relativeTranscriptPath: session.relativeTranscriptPath,
+                    finishedAt: history.finishedAt,
+                    error: history.error,
+                    metadata: metadata,
+                    transcriptKey: session.transcriptKey ?? history.transcriptKey
+                )
+            }
+            .sorted {
+                let left = $0.startedAt
+                let right = $1.startedAt
+                return left > right
+            }
+    }
+
+    private func readRunHistoryRecords(projectRoot: String) -> [RunHistoryRecord] {
+        let rawLines = alwaysOnRoots(projectRoot)
+            .map { $0.appendingPathComponent("run-history.jsonl") }
+            .compactMap { try? String(contentsOf: $0, encoding: .utf8) }
+            .flatMap { $0.split(separator: "\n", omittingEmptySubsequences: true) }
+        guard !rawLines.isEmpty else { return [] }
+
+        var recordsByID: [String: RunHistoryRecord] = [:]
+        for line in rawLines {
+            guard let event = runHistoryEvent(from: String(line)) else { continue }
+            if var existing = recordsByID[event.runId] {
+                mergeRunHistoryEvent(event, into: &existing)
+                recordsByID[event.runId] = existing
+            } else {
+                recordsByID[event.runId] = runHistoryRecord(from: event)
+            }
+        }
+
+        return recordsByID.values.sorted {
+            let left = max($0.startedAt, $0.updatedAt)
+            let right = max($1.startedAt, $1.updatedAt)
+            return left > right
+        }
+    }
+
+    private func runHistoryEvent(from line: String) -> RunHistoryEvent? {
+        guard
+            let data = line.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        let runId = string(json["runId"], fallback: string(json["id"]))
+        let kind = string(json["kind"])
+        let sourceId = string(json["sourceId"])
+        let statusRaw = string(json["status"])
+        guard !runId.isEmpty, kind == "plan" || kind == "cron", !sourceId.isEmpty,
+              let status = AlwaysOnStatus(rawValue: statusRaw) else {
+            return nil
+        }
+        let timestamp = date(json["timestamp"]) ?? Date()
+        let metadata = metadataStrings(json["metadata"])
+        let session = json["session"] as? [String: Any]
+        let output = optionalString(json["output"]) ?? optionalString(json["outputLog"])
+        return RunHistoryEvent(
+            runId: runId,
+            kind: kind,
+            sourceId: sourceId,
+            title: string(json["title"], fallback: sourceId),
+            status: status,
+            timestamp: timestamp,
+            startedAt: date(json["startedAt"]),
+            finishedAt: date(json["finishedAt"]),
+            sessionId: optionalString(json["sessionId"]) ?? optionalString(session?["sessionId"]),
+            parentSessionId: optionalString(json["parentSessionId"]) ?? optionalString(session?["parentSessionId"]),
+            relativeTranscriptPath: optionalString(json["relativeTranscriptPath"]) ?? optionalString(session?["relativeTranscriptPath"]),
+            transcriptKey: optionalString(json["transcriptKey"]) ?? metadata["transcriptKey"],
+            output: output,
+            error: optionalString(json["error"]),
+            metadata: metadata
+        )
+    }
+
+    private func runHistoryRecord(from event: RunHistoryEvent) -> RunHistoryRecord {
+        var record = RunHistoryRecord(
+            runId: event.runId,
+            kind: event.kind,
+            sourceId: event.sourceId,
+            title: event.title,
+            status: event.status,
+            createdAt: event.timestamp,
+            updatedAt: event.timestamp,
+            startedAt: event.startedAt ?? event.timestamp,
+            finishedAt: event.finishedAt,
+            sessionId: event.sessionId,
+            parentSessionId: event.parentSessionId,
+            relativeTranscriptPath: event.relativeTranscriptPath,
+            transcriptKey: event.transcriptKey,
+            metadata: [:],
+            outputLog: "",
+            error: nil
+        )
+        mergeRunHistoryEvent(event, into: &record)
+        return record
+    }
+
+    private func mergeRunHistoryEvent(_ event: RunHistoryEvent, into record: inout RunHistoryRecord) {
+        record.title = event.title.isEmpty ? record.title : event.title
+        record.status = event.status
+        record.updatedAt = event.timestamp
+        record.startedAt = event.startedAt ?? record.startedAt
+        record.finishedAt = event.finishedAt ?? record.finishedAt
+        record.sessionId = event.sessionId ?? record.sessionId
+        record.parentSessionId = event.parentSessionId ?? record.parentSessionId
+        record.relativeTranscriptPath = event.relativeTranscriptPath ?? record.relativeTranscriptPath
+        record.transcriptKey = event.transcriptKey ?? record.transcriptKey
+        record.metadata.merge(event.metadata) { _, next in next }
+
+        let eventOutput = [event.output, event.error.map { "Error: \($0)" }]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+        if !eventOutput.isEmpty {
+            record.outputLog = trimmedOutputLog([record.outputLog, eventOutput].filter { !$0.isEmpty }.joined(separator: "\n\n"))
+        }
+        if let error = event.error {
+            record.error = error
+        }
+    }
+
+    private func trimmedOutputLog(_ value: String) -> String {
+        guard value.count > outputLogMaxCharacters else { return value }
+        let start = value.index(value.endIndex, offsetBy: -outputLogMaxCharacters)
+        return String(value[start...])
+    }
+
+    private func recoveredSessionInfo(for record: RunHistoryRecord) -> (sessionId: String?, parentSessionId: String?, relativeTranscriptPath: String?, transcriptKey: String?) {
+        let parentSessionId = record.parentSessionId ?? record.metadata["originSessionId"]
+        let transcriptKey = record.transcriptKey ?? record.metadata["transcriptKey"]
+        let relativeTranscriptPath = normalizedRelativeTranscriptPath(
+            record.relativeTranscriptPath,
+            parentSessionId: parentSessionId,
+            transcriptKey: transcriptKey
+        )
+        let sessionId = record.sessionId ?? backgroundSessionID(parentSessionId: parentSessionId, relativeTranscriptPath: relativeTranscriptPath)
+        return (sessionId, parentSessionId, relativeTranscriptPath, transcriptKey)
+    }
+
+    private func normalizedRelativeTranscriptPath(_ value: String?, parentSessionId: String?, transcriptKey: String?) -> String? {
+        if let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+            guard let parentSessionId else { return value }
+            let directory = (value as NSString).deletingLastPathComponent
+            guard let filename = normalizedTranscriptFilename((value as NSString).lastPathComponent) else {
+                return value
+            }
+            let resolvedDirectory = directory.isEmpty || directory == "." ? parentSessionId : directory
+            return "\(resolvedDirectory)/\(filename)"
+        }
+        guard let parentSessionId,
+              let transcriptKey,
+              let filename = normalizedTranscriptFilename(transcriptKey)
+        else { return nil }
+        return "\(parentSessionId)/subagents/\(filename)"
+    }
+
+    private func normalizedTranscriptFilename(_ value: String?) -> String? {
+        let rawName = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawName.isEmpty else { return nil }
+        var stem = ((rawName as NSString).lastPathComponent as NSString).deletingPathExtension
+        if stem.isEmpty { return nil }
+        if !stem.hasPrefix("agent-") {
+            stem = "agent-\(stem)"
+        }
+        return "\(stem).jsonl"
+    }
+
+    private func backgroundSessionID(parentSessionId: String?, relativeTranscriptPath: String?) -> String? {
+        guard let parent = safeSessionIDComponent(parentSessionId),
+              let transcriptPath = relativeTranscriptPath,
+              let transcript = safeSessionIDComponent(((transcriptPath as NSString).lastPathComponent as NSString).deletingPathExtension)
+        else { return nil }
+        return "background-\(parent)-\(transcript)"
+    }
+
+    private func safeSessionIDComponent(_ value: String?) -> String? {
+        let raw = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        var result = ""
+        for scalar in raw.unicodeScalars {
+            if allowed.contains(scalar) {
+                result.unicodeScalars.append(scalar)
+            } else {
+                result.append("-")
+            }
+        }
+        return result.isEmpty ? nil : result
     }
 
     func cronJobs(projectRoot: String) -> [AlwaysOnCronJob] {
-        let possible = [
-            URL(fileURLWithPath: projectRoot).appendingPathComponent(".g9claw").appendingPathComponent("cron-jobs.json"),
-            URL(fileURLWithPath: projectRoot).appendingPathComponent(".g9claw").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"),
-        ]
-        guard
-            let url = possible.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
-            let data = try? Data(contentsOf: url),
-            let json = try? JSONSerialization.jsonObject(with: data)
-        else { return [] }
-        let rawJobs: [[String: Any]]
-        if let list = json as? [[String: Any]] {
-            rawJobs = list
-        } else if let dict = json as? [String: Any], let jobs = dict["jobs"] as? [[String: Any]] {
-            rawJobs = jobs
-        } else {
-            rawJobs = []
+        let stores = cronJobStores(projectRoot)
+        guard !stores.isEmpty else { return [] }
+        let history = runHistory(projectRoot: projectRoot)
+        return stores.flatMap { store in
+            store.rawJobs.map { raw in
+                var enriched = raw
+                if enriched["durable"] == nil, let durableDefault = store.durableDefault {
+                    enriched["durable"] = durableDefault
+                }
+                return cronJob(from: enriched, history: history)
+            }
         }
-        return rawJobs.map { raw in
-            AlwaysOnCronJob(
-                id: string(raw["id"], fallback: string(raw["taskId"], fallback: UUID().uuidString)),
-                prompt: string(raw["prompt"]),
-                cron: string(raw["cron"]),
-                status: AlwaysOnStatus(rawValue: string(raw["status"], fallback: "unknown")) ?? .unknown,
-                recurring: bool(raw["recurring"], fallback: true),
-                durable: bool(raw["durable"], fallback: true),
-                createdAt: date(raw["createdAt"]),
-                lastFiredAt: date(raw["lastFiredAt"]),
-                latestSessionId: optionalString((raw["latestRun"] as? [String: Any])?["sessionId"])
+    }
+
+    private func cronJob(from raw: [String: Any], history: [AlwaysOnRunHistory]) -> AlwaysOnCronJob {
+        let id = string(raw["id"], fallback: string(raw["taskId"], fallback: UUID().uuidString))
+        let historyRun = history.first { $0.kind == "cron" && $0.sourceId == id }
+        let latestRun = latestRun(raw["latestRun"] as? [String: Any]) ?? latestRun(from: historyRun)
+        let explicitStatus = AlwaysOnStatus(rawValue: string(raw["status"]))
+        let status = explicitStatus
+            ?? ((latestRun?.status == .running || latestRun?.status == .queued) ? latestRun?.status : nil)
+            ?? .scheduled
+        return AlwaysOnCronJob(
+            id: id,
+            prompt: string(raw["prompt"]),
+            cron: string(raw["cron"]),
+            status: status,
+            recurring: bool(raw["recurring"], fallback: true),
+            durable: bool(raw["durable"], fallback: true),
+            createdAt: date(raw["createdAt"]),
+            lastFiredAt: date(raw["lastFiredAt"]),
+            latestSessionId: latestRun?.sessionId,
+            permanent: bool(raw["permanent"], fallback: false),
+            manualOnly: bool(raw["manualOnly"], fallback: false),
+            originSessionId: optionalString(raw["originSessionId"]),
+            transcriptKey: optionalString(raw["transcriptKey"]),
+            latestRun: latestRun
+        )
+    }
+
+    @discardableResult
+    func deleteCronJob(jobID: String, projectRoot: String) throws -> Bool {
+        var deleted = false
+        for var store in cronJobStores(projectRoot) {
+            let originalCount = store.rawJobs.count
+            store.rawJobs.removeAll { cronJobMatches($0, jobID: jobID) }
+            guard store.rawJobs.count != originalCount else { continue }
+            try writeCronJobStore(store)
+            deleted = true
+        }
+        return deleted
+    }
+
+    @discardableResult
+    func startCronRun(job: AlwaysOnCronJob, projectRoot: String, sessionId: String?) throws -> AlwaysOnRunHistory {
+        let run = AlwaysOnRunHistory(
+            id: "run-\(UUID().uuidString)",
+            title: cronRunTitle(job),
+            kind: "cron",
+            status: .running,
+            startedAt: Date(),
+            sourceId: job.id,
+            outputLog: "Started native Always-On cron run for \(cronRunTitle(job)).",
+            sessionId: sessionId,
+            parentSessionId: nil,
+            relativeTranscriptPath: nil
+        )
+        try appendRunHistory(run, projectRoot: projectRoot)
+        try writeRunLog(run, projectRoot: projectRoot)
+        try updateCronJobLatestRun(job: job, run: run, projectRoot: projectRoot)
+        return run
+    }
+
+    private func updateCronJobLatestRun(job: AlwaysOnCronJob, run: AlwaysOnRunHistory, projectRoot: String) throws {
+        let now = ISO8601DateFormatter().string(from: run.startedAt)
+        for var store in cronJobStores(projectRoot) {
+            var changed = false
+            for index in store.rawJobs.indices where cronJobMatches(store.rawJobs[index], jobID: job.id) {
+                store.rawJobs[index]["status"] = AlwaysOnStatus.running.rawValue
+                store.rawJobs[index]["lastFiredAt"] = Int(run.startedAt.timeIntervalSince1970 * 1000)
+                store.rawJobs[index]["latestRun"] = [
+                    "status": AlwaysOnStatus.running.rawValue,
+                    "runId": run.id,
+                    "startedAt": now,
+                    "sessionId": run.sessionId ?? "",
+                    "summary": run.title,
+                    "lastActivity": now,
+                    "taskId": job.id,
+                    "outputFile": ".claude/always-on/runs/\(run.id).log",
+                    "parentSessionId": run.parentSessionId ?? "",
+                    "relativeTranscriptPath": run.relativeTranscriptPath ?? "",
+                    "transcriptKey": job.transcriptKey ?? "",
+                ]
+                changed = true
+            }
+            if changed {
+                try writeCronJobStore(store)
+            }
+        }
+    }
+
+    private func cronJobMatches(_ raw: [String: Any], jobID: String) -> Bool {
+        string(raw["id"]) == jobID || string(raw["taskId"]) == jobID
+    }
+
+    private func cronRunTitle(_ job: AlwaysOnCronJob) -> String {
+        let firstLine = job.prompt.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
+        let title = firstLine.replacingOccurrences(of: #"^#\s+"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? job.cron : title
+    }
+
+    func runLog(projectRoot: String, runID: String, tailBytes: Int = 60_000) -> AlwaysOnRunLog {
+        let requestedRunID = runID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeRunID = normalizeRunID(runID)
+        guard !safeRunID.isEmpty else {
+            return AlwaysOnRunLog(
+                runId: requestedRunID,
+                content: "",
+                truncated: false,
+                updatedAt: nil,
+                size: 0,
+                source: .history
             )
         }
+
+        guard let logURL = alwaysOnRunsRoots(projectRoot)
+            .map({ $0.appendingPathComponent("\(safeRunID).log") })
+            .first(where: { FileManager.default.fileExists(atPath: $0.path) })
+        else {
+            return AlwaysOnRunLog(
+                runId: requestedRunID,
+                content: "",
+                truncated: false,
+                updatedAt: nil,
+                size: 0,
+                source: .history
+            )
+        }
+        guard
+            let attributes = try? FileManager.default.attributesOfItem(atPath: logURL.path),
+            let size = (attributes[.size] as? NSNumber)?.intValue
+        else {
+            return AlwaysOnRunLog(
+                runId: requestedRunID,
+                content: "",
+                truncated: false,
+                updatedAt: nil,
+                size: 0,
+                source: .history
+            )
+        }
+
+        let safeTailBytes = normalizedTailBytes(tailBytes)
+        let start = max(0, size - safeTailBytes)
+        let content: String
+        if size == 0 {
+            content = ""
+        } else if let handle = try? FileHandle(forReadingFrom: logURL) {
+            defer { try? handle.close() }
+            do {
+                try handle.seek(toOffset: UInt64(start))
+                let data = try handle.readToEnd() ?? Data()
+                content = String(data: data, encoding: .utf8) ?? ""
+            } catch {
+                content = ""
+            }
+        } else {
+            content = ""
+        }
+
+        return AlwaysOnRunLog(
+            runId: requestedRunID,
+            content: content,
+            truncated: start > 0,
+            updatedAt: attributes[.modificationDate] as? Date,
+            size: size,
+            source: content.isEmpty ? .history : .logFile
+        )
     }
 
     func archive(plan: AlwaysOnPlan, projectRoot: String) throws {
@@ -1647,7 +2774,9 @@ final class AlwaysOnService {
             startedAt: Date(),
             sourceId: plan.id,
             outputLog: "Started native Always-On plan run for \(plan.title).",
-            sessionId: sessionId
+            sessionId: sessionId,
+            parentSessionId: nil,
+            relativeTranscriptPath: nil
         )
         try appendRunHistory(run, projectRoot: projectRoot)
         try writeRunLog(run, projectRoot: projectRoot)
@@ -1660,7 +2789,7 @@ final class AlwaysOnService {
         let plansRoot = root.appendingPathComponent("plans", isDirectory: true)
         try FileManager.default.createDirectory(at: plansRoot, withIntermediateDirectories: true)
         let id = "plan-\(UUID().uuidString)"
-        let relativePlanPath = ".g9claw/always-on/plans/\(id).md"
+        let relativePlanPath = ".claude/always-on/plans/\(id).md"
         let now = Date()
         let content = """
         # \(title)
@@ -1697,10 +2826,8 @@ final class AlwaysOnService {
     }
 
     private func updatePlanStatus(planID: String, projectRoot: String, status: String) throws {
-        let indexURL = URL(fileURLWithPath: projectRoot)
-            .appendingPathComponent(".g9claw")
-            .appendingPathComponent("always-on")
-            .appendingPathComponent("discovery-plans.json")
+        let indexURL = existingAlwaysOnFile(projectRoot, "discovery-plans.json")
+            ?? alwaysOnRoot(projectRoot).appendingPathComponent("discovery-plans.json")
         guard
             let data = try? Data(contentsOf: indexURL),
             var json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1726,7 +2853,7 @@ final class AlwaysOnService {
         }
         var rawPlans = json["plans"] as? [[String: Any]] ?? []
         rawPlans.removeAll { string($0["id"]) == plan.id }
-        rawPlans.insert([
+        var rawPlan: [String: Any] = [
             "id": plan.id,
             "title": plan.title,
             "summary": plan.summary,
@@ -1736,7 +2863,11 @@ final class AlwaysOnService {
             "planFilePath": plan.planFilePath,
             "createdAt": ISO8601DateFormatter().string(from: plan.createdAt),
             "updatedAt": ISO8601DateFormatter().string(from: plan.updatedAt),
-        ], at: 0)
+        ]
+        if let contextRefs = plan.contextRefs, !contextRefs.isEmpty {
+            rawPlan["contextRefs"] = contextRefs
+        }
+        rawPlans.insert(rawPlan, at: 0)
         json["plans"] = rawPlans
         let out = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
         try out.write(to: indexURL, options: .atomic)
@@ -1746,7 +2877,7 @@ final class AlwaysOnService {
         let root = alwaysOnRoot(projectRoot)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let url = root.appendingPathComponent("run-history.jsonl")
-        let object: [String: Any] = [
+        var object: [String: Any] = [
             "runId": run.id,
             "title": run.title,
             "kind": run.kind,
@@ -1756,6 +2887,13 @@ final class AlwaysOnService {
             "outputLog": run.outputLog,
             "sessionId": run.sessionId ?? "",
         ]
+        if run.sessionId != nil || run.parentSessionId != nil || run.relativeTranscriptPath != nil {
+            object["session"] = [
+                "sessionId": run.sessionId ?? "",
+                "parentSessionId": run.parentSessionId ?? "",
+                "relativeTranscriptPath": run.relativeTranscriptPath ?? "",
+            ]
+        }
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         var line = String(data: data, encoding: .utf8) ?? "{}"
         line += "\n"
@@ -1770,15 +2908,187 @@ final class AlwaysOnService {
     }
 
     private func writeRunLog(_ run: AlwaysOnRunHistory, projectRoot: String) throws {
-        let runsRoot = alwaysOnRoot(projectRoot).appendingPathComponent("runs", isDirectory: true)
+        let runsRoot = alwaysOnRunsRoot(projectRoot)
         try FileManager.default.createDirectory(at: runsRoot, withIntermediateDirectories: true)
         try run.outputLog.write(to: runsRoot.appendingPathComponent("\(run.id).log"), atomically: true, encoding: .utf8)
     }
 
     private func alwaysOnRoot(_ projectRoot: String) -> URL {
         URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("always-on", isDirectory: true)
+    }
+
+    private func legacyAlwaysOnRoot(_ projectRoot: String) -> URL {
+        URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
             .appendingPathComponent(".g9claw", isDirectory: true)
             .appendingPathComponent("always-on", isDirectory: true)
+    }
+
+    private func alwaysOnRoots(_ projectRoot: String) -> [URL] {
+        [alwaysOnRoot(projectRoot), legacyAlwaysOnRoot(projectRoot)]
+    }
+
+    private func existingAlwaysOnFile(_ projectRoot: String, _ fileName: String) -> URL? {
+        alwaysOnRoots(projectRoot)
+            .map { $0.appendingPathComponent(fileName) }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private func alwaysOnRunsRoot(_ projectRoot: String) -> URL {
+        alwaysOnRoot(projectRoot).appendingPathComponent("runs", isDirectory: true)
+    }
+
+    private func alwaysOnRunsRoots(_ projectRoot: String) -> [URL] {
+        alwaysOnRoots(projectRoot).map { $0.appendingPathComponent("runs", isDirectory: true) }
+    }
+
+    private func cronJobStores(_ projectRoot: String) -> [CronJobStore] {
+        cronJobSourceURLs(projectRoot).compactMap { source in
+            readCronJobStore(url: source.url, durableDefault: source.durableDefault)
+        }
+    }
+
+    private func cronJobSourceURLs(_ projectRoot: String) -> [(url: URL, durableDefault: Bool?)] {
+        let root = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
+        return [
+            (root.appendingPathComponent(".claude").appendingPathComponent("scheduled_tasks.json"), true),
+            (root.appendingPathComponent(".claude").appendingPathComponent("session_scheduled_tasks.json"), false),
+            (root.appendingPathComponent(".claude").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
+            (root.appendingPathComponent(".g9claw").appendingPathComponent("cron-jobs.json"), nil),
+            (root.appendingPathComponent(".g9claw").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
+        ]
+    }
+
+    private func readCronJobStore(url: URL, durableDefault: Bool?) -> CronJobStore? {
+        guard
+            FileManager.default.fileExists(atPath: url.path),
+            let data = try? Data(contentsOf: url),
+            let json = try? JSONSerialization.jsonObject(with: data)
+        else { return nil }
+
+        if let list = json as? [[String: Any]] {
+            return CronJobStore(url: url, collectionKey: nil, durableDefault: durableDefault, rootObject: json, rawJobs: list)
+        }
+        if let dict = json as? [String: Any] {
+            if let jobs = dict["jobs"] as? [[String: Any]] {
+                return CronJobStore(url: url, collectionKey: "jobs", durableDefault: durableDefault, rootObject: json, rawJobs: jobs)
+            }
+            if let tasks = dict["tasks"] as? [[String: Any]] {
+                return CronJobStore(url: url, collectionKey: "tasks", durableDefault: durableDefault, rootObject: json, rawJobs: tasks)
+            }
+        }
+        return nil
+    }
+
+    private func writeCronJobStore(_ store: CronJobStore) throws {
+        try FileManager.default.createDirectory(at: store.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let object: Any
+        if let collectionKey = store.collectionKey {
+            var dict = store.rootObject as? [String: Any] ?? [:]
+            dict[collectionKey] = store.rawJobs
+            object = dict
+        } else {
+            object = store.rawJobs
+        }
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: store.url, options: .atomic)
+    }
+
+    private func workspaceSignals(projectRoot: String) -> [String] {
+        let root = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
+        let names = ["package.json", "README.md", "TODO-MacApp.md", ".git"]
+        return names.compactMap { name in
+            let url = root.appendingPathComponent(name)
+            return FileManager.default.fileExists(atPath: url.path) ? "\(name) present" : nil
+        }
+    }
+
+    private func discoveryContextJSON(_ context: AlwaysOnDiscoveryContext) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        guard
+            let data = try? encoder.encode(context),
+            let text = String(data: data, encoding: .utf8)
+        else { return "{}" }
+        return text
+    }
+
+    private func claudeProjectStorePath(projectName: String, projectRoot: String) -> String {
+        let root = projectRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let home = firstMatch(pattern: #"^(\/Users\/[^\/]+|\/home\/[^\/]+)"#, in: root) {
+            return "\(home)/.claude/projects/\(projectName)"
+        }
+        if let windowsHome = firstMatch(pattern: #"^([A-Za-z]:\\Users\\[^\\]+)"#, in: root) {
+            return "\(windowsHome)\\.claude\\projects\\\(projectName)"
+        }
+        return "~/.claude/projects/\(projectName)"
+    }
+
+    private func firstMatch(pattern: String, in value: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard
+            let match = regex.firstMatch(in: value, range: range),
+            match.numberOfRanges > 1,
+            let matchRange = Range(match.range(at: 1), in: value)
+        else { return nil }
+        return String(value[matchRange])
+    }
+
+    private func normalizeRunID(_ runID: String) -> String {
+        let trimmed = runID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
+        var result = ""
+        for scalar in trimmed.unicodeScalars {
+            if allowed.contains(scalar) {
+                result.unicodeScalars.append(scalar)
+            } else {
+                result.append("-")
+            }
+        }
+        return result
+    }
+
+    private func normalizedTailBytes(_ value: Int) -> Int {
+        if value <= 0 {
+            return defaultRunLogTailBytes
+        }
+        return min(value, maxRunLogTailBytes)
+    }
+
+    private func isoString(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    private func metadataStrings(_ value: Any?) -> [String: String] {
+        guard let dictionary = value as? [String: Any] else { return [:] }
+        var result: [String: String] = [:]
+        for (key, value) in dictionary {
+            if let string = value as? String {
+                let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    result[key] = trimmed
+                }
+            } else if let bool = value as? Bool {
+                result[key] = String(bool)
+            } else if let number = value as? NSNumber {
+                result[key] = number.stringValue
+            } else if value is NSNull {
+                continue
+            } else if JSONSerialization.isValidJSONObject(value),
+                      let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+                      let text = String(data: data, encoding: .utf8),
+                      !text.isEmpty {
+                result[key] = text
+            } else {
+                let text = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    result[key] = text
+                }
+            }
+        }
+        return result
     }
 
     private func string(_ value: Any?, fallback: String = "") -> String {
@@ -1794,6 +3104,20 @@ final class AlwaysOnService {
     private func optionalString(_ value: Any?) -> String? {
         let value = string(value)
         return value.isEmpty ? nil : value
+    }
+
+    private func stringArrayMap(_ value: Any?) -> [String: [String]]? {
+        guard let object = value as? [String: Any] else { return nil }
+        var result: [String: [String]] = [:]
+        for (key, rawValues) in object {
+            let values = (rawValues as? [Any] ?? [])
+                .map { string($0) }
+                .filter { !$0.isEmpty }
+            if !values.isEmpty {
+                result[key] = values
+            }
+        }
+        return result.isEmpty ? nil : result
     }
 
     private func bool(_ value: Any?, fallback: Bool) -> Bool {
@@ -1814,6 +3138,40 @@ final class AlwaysOnService {
             return Date(timeIntervalSince1970: number.doubleValue / 1000)
         }
         return nil
+    }
+
+    private func latestRun(_ raw: [String: Any]?) -> AlwaysOnCronLatestRun? {
+        guard let raw else { return nil }
+        return AlwaysOnCronLatestRun(
+            status: AlwaysOnStatus(rawValue: string(raw["status"])),
+            runId: optionalString(raw["runId"]),
+            startedAt: date(raw["startedAt"]),
+            sessionId: optionalString(raw["sessionId"]),
+            summary: optionalString(raw["summary"]),
+            lastActivity: date(raw["lastActivity"]),
+            taskId: optionalString(raw["taskId"]),
+            outputFile: optionalString(raw["outputFile"]),
+            parentSessionId: optionalString(raw["parentSessionId"]),
+            relativeTranscriptPath: optionalString(raw["relativeTranscriptPath"]),
+            transcriptKey: optionalString(raw["transcriptKey"])
+        )
+    }
+
+    private func latestRun(from run: AlwaysOnRunHistory?) -> AlwaysOnCronLatestRun? {
+        guard let run else { return nil }
+        return AlwaysOnCronLatestRun(
+            status: run.status,
+            runId: run.id,
+            startedAt: run.startedAt,
+            sessionId: run.sessionId,
+            summary: run.title,
+            lastActivity: run.startedAt,
+            taskId: run.sourceId,
+            outputFile: ".claude/always-on/runs/\(run.id).log",
+            parentSessionId: run.parentSessionId,
+            relativeTranscriptPath: run.relativeTranscriptPath,
+            transcriptKey: run.transcriptKey
+        )
     }
 }
 

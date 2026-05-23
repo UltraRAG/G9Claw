@@ -13,7 +13,9 @@ struct ChatView: View {
 
     private var conversationBody: some View {
         Group {
-            if state.currentMessages.isEmpty {
+            if state.currentMessages.isEmpty, isReadOnlyBackgroundSession {
+                readOnlyBackgroundEmpty
+            } else if state.currentMessages.isEmpty {
                 emptyLanding
             } else {
                 VStack(spacing: 0) {
@@ -83,8 +85,13 @@ struct ChatView: View {
                         }
                     }
 
-                    ComposerFooter()
-                        .environmentObject(state)
+                    if isReadOnlyBackgroundSession {
+                        ReadOnlyBackgroundFooter()
+                            .environmentObject(state)
+                    } else {
+                        ComposerFooter()
+                            .environmentObject(state)
+                    }
                 }
             }
         }
@@ -132,8 +139,12 @@ struct ChatView: View {
         scrollPinning.isPinnedToBottom
     }
 
+    private var isReadOnlyBackgroundSession: Bool {
+        state.selectedSession?.isReadOnly == true || state.selectedSession?.isBackgroundTaskSession == true
+    }
+
     private func followBottomIfPinned(_ proxy: ScrollViewProxy) {
-        guard scrollPinning.canAutoFollowOutput() else { return }
+        guard scrollPinning.canAutoFollowOutput(autoScrollToBottom: state.uiPreferences.autoScrollToBottom) else { return }
         scrollPinning.recordProgrammaticScroll()
         withTransaction(Transaction(animation: nil)) {
             proxy.scrollTo(ChatScrollTarget.bottom, anchor: .bottom)
@@ -152,6 +163,25 @@ struct ChatView: View {
             ComposerCard(chromeless: false)
                 .environmentObject(state)
                 .frame(maxWidth: DesignTokens.composerMaxWidth)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var readOnlyBackgroundEmpty: some View {
+        VStack(spacing: 8) {
+            Spacer(minLength: 0)
+            Text(state.t(.readOnlyBackgroundTitle))
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(DesignTokens.text)
+                .multilineTextAlignment(.center)
+            Text(state.t(.readOnlyBackgroundDescription))
+                .font(.system(size: 13))
+                .lineSpacing(3)
+                .foregroundStyle(DesignTokens.secondaryText)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 520)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
@@ -198,6 +228,11 @@ struct ChatScrollPinningState: Equatable {
         }
         guard let lastAutoFollowAt else { return true }
         return now.timeIntervalSince(lastAutoFollowAt) >= Self.autoFollowThrottleInterval
+    }
+
+    func canAutoFollowOutput(autoScrollToBottom: Bool, now: Date = Date()) -> Bool {
+        guard autoScrollToBottom else { return false }
+        return canAutoFollowOutput(now: now)
     }
 
     mutating func recordProgrammaticScroll(now: Date = Date()) {
@@ -341,6 +376,36 @@ private struct ComposerFooter: View {
     }
 }
 
+private struct ReadOnlyBackgroundFooter: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock")
+                .font(.system(size: 12, weight: .medium))
+            Text(state.t(.readOnlyBackgroundFooter))
+                .font(.system(size: 12.5, weight: .medium))
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(DesignTokens.secondaryText)
+        .padding(.horizontal, 14)
+        .frame(maxWidth: DesignTokens.composerMaxWidth)
+        .frame(height: 40)
+        .background(
+            RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                .fill(DesignTokens.neutral50.opacity(0.74))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                        .stroke(DesignTokens.separator.opacity(0.72), lineWidth: 1)
+                )
+        )
+        .padding(.horizontal, 24)
+        .padding(.top, 6)
+        .padding(.bottom, 16)
+        .frame(maxWidth: .infinity)
+    }
+}
+
 private struct ComposerRunningStatusRow: View {
     @EnvironmentObject private var state: AppState
     var activity: AgentActivity
@@ -452,6 +517,7 @@ private struct ComposerCard: View {
                     isFocused: $focused,
                     hasMarkedText: $isComposingMarkedText,
                     canSubmit: canSend,
+                    sendByCtrlEnter: state.uiPreferences.sendByCtrlEnter,
                     pasteboardAttachments: pastedAttachments,
                     onPasteAttachments: { attachments in
                         addPendingAttachments(attachments)
@@ -550,7 +616,7 @@ private struct ComposerCard: View {
         return Menu {
             ForEach(ComposerPermissionMode.allCases) { mode in
                 Button {
-                    state.composerPermissionMode = mode
+                    state.setComposerPermissionMode(mode)
                 } label: {
                     Label(state.permissionModeLabel(mode), systemImage: mode.systemImage)
                 }
@@ -1397,10 +1463,7 @@ struct ToolInvocationPresentation: Equatable {
                 (["replace_all"], "Replace all", false),
             ])
         case "Write":
-            return fieldPresentation(toolName, rawInput, object, [
-                (["file_path", "path"], "Path", true),
-                (["content"], "Content", false),
-            ])
+            return writePresentation(toolName: toolName, rawInput: rawInput, object: object)
         case "Task":
             return fieldPresentation(toolName, rawInput, object, [
                 (["description"], "Description", true),
@@ -1472,6 +1535,21 @@ struct ToolInvocationPresentation: Equatable {
             output.append(ToolInvocationField(label: spec.1, value: value, isPrimary: spec.2 && !output.contains(where: \.isPrimary)))
         }
         return ToolInvocationPresentation(toolName: toolName, title: toolName, command: nil, fields: output, rawInput: rawInput, parsed: true)
+    }
+
+    private static func writePresentation(toolName: String, rawInput: String, object: [String: Any]) -> ToolInvocationPresentation {
+        var fields: [ToolInvocationField] = []
+        if let path = stringValue(for: ["file_path", "path"], in: object) {
+            fields.append(ToolInvocationField(label: "Path", value: path, isPrimary: true))
+        }
+        if let content = stringValue(for: ["content"], in: object) {
+            fields.append(ToolInvocationField(
+                label: "Content",
+                value: AgentToolInputPreview.writeContentSummary(content, previewLimit: 520),
+                isPrimary: fields.isEmpty
+            ))
+        }
+        return ToolInvocationPresentation(toolName: toolName, title: toolName, command: nil, fields: fields, rawInput: rawInput, parsed: true)
     }
 
     private static func fields(_ specs: [(String, String, Bool)], in object: [String: Any]) -> [ToolInvocationField] {
@@ -1896,7 +1974,7 @@ private struct InlineProcessToolRow: View {
         result?.output.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("Plan mode skipped") == true
     }
     private var expansionKey: String { "tool:\(call.id)" }
-    private var expanded: Bool { state.expandedToolRowIDs.contains(expansionKey) }
+    private var expanded: Bool { state.isToolRowExpanded(expansionKey) }
     private var presentation: ToolInvocationPresentation {
         ToolInvocationPresentation.parse(toolName: call.name, inputJSON: call.inputJSON)
     }
@@ -1919,11 +1997,7 @@ private struct InlineProcessToolRow: View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
                 withAnimation(.easeInOut(duration: 0.16)) {
-                    if expanded {
-                        state.expandedToolRowIDs.remove(expansionKey)
-                    } else {
-                        state.expandedToolRowIDs.insert(expansionKey)
-                    }
+                    state.toggleToolRowExpanded(expansionKey)
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -1978,7 +2052,9 @@ private struct InlineProcessToolRow: View {
                             ToolImagePreview(parsed: image)
                         }
                     }
-                    RawToolInputDisclosure(rawInput: call.inputJSON, isChinese: isChinese)
+                    if state.uiPreferences.showRawParameters {
+                        RawToolInputDisclosure(rawInput: call.inputJSON, isChinese: isChinese)
+                    }
                 }
                 .padding(.leading, 31)
                 .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .topLeading)))
@@ -2433,7 +2509,7 @@ private struct RawToolInputDisclosure: View {
         .buttonStyle(.plain)
 
         if isExpanded {
-            Text(rawInput)
+            Text(ToolOutputPreviewLimiter.preview(rawInput, maxChars: 6_000, maxLines: 120))
                 .font(CodexProcessStyle.detailMonoFont)
                 .foregroundStyle(CodexProcessStyle.detailStrong)
                 .lineLimit(12)
@@ -2451,6 +2527,9 @@ private struct ToolInvocationCompactDetail: View {
     var presentation: ToolInvocationPresentation
     var output: String?
     var isError: Bool
+    var rawInput: String? = nil
+    var showsRawInput = false
+    var isChinese = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -2482,6 +2561,10 @@ private struct ToolInvocationCompactDetail: View {
                     .lineLimit(3)
                     .textSelection(.enabled)
             }
+            if showsRawInput, let rawInput {
+                RawToolInputDisclosure(rawInput: rawInput, isChinese: isChinese)
+                    .padding(.top, 2)
+            }
         }
         .padding(.leading, 28)
     }
@@ -2506,17 +2589,13 @@ private struct InlineProcessToolGroupRow: View {
     private var expansionKey: String {
         "tool-group:" + items.map { $0.0.id }.joined(separator: ",")
     }
-    private var expanded: Bool { state.expandedToolRowIDs.contains(expansionKey) }
+    private var expanded: Bool { state.isToolRowExpanded(expansionKey) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
                 withAnimation(.easeInOut(duration: 0.16)) {
-                    if expanded {
-                        state.expandedToolRowIDs.remove(expansionKey)
-                    } else {
-                        state.expandedToolRowIDs.insert(expansionKey)
-                    }
+                    state.toggleToolRowExpanded(expansionKey)
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -2560,7 +2639,10 @@ private struct InlineProcessToolGroupRow: View {
                             ToolInvocationCompactDetail(
                                 presentation: ToolInvocationPresentation.parse(toolName: item.0.name, inputJSON: item.0.inputJSON),
                                 output: item.1?.output,
-                                isError: item.1?.isError == true
+                                isError: item.1?.isError == true,
+                                rawInput: item.0.inputJSON,
+                                showsRawInput: state.uiPreferences.showRawParameters,
+                                isChinese: isChinese
                             )
                         }
                     }
@@ -3076,11 +3158,32 @@ enum ComposerPasteShortcutPolicy {
     }
 }
 
+enum ComposerSubmitShortcutPolicy {
+    static func isReturnKey(_ keyCode: UInt16) -> Bool {
+        keyCode == 36 || keyCode == 76
+    }
+
+    static func shouldSubmit(
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags,
+        sendByCtrlEnter: Bool
+    ) -> Bool {
+        guard isReturnKey(keyCode) else { return false }
+        let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard !flags.contains(.shift) else { return false }
+        if flags.contains(.control) || flags.contains(.command) {
+            return true
+        }
+        return !sendByCtrlEnter
+    }
+}
+
 private struct ComposerTextEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
     @Binding var hasMarkedText: Bool
     var canSubmit: Bool
+    var sendByCtrlEnter: Bool
     var pasteboardAttachments: (NSPasteboard) -> [FileAttachment]
     var onPasteAttachments: ([FileAttachment]) -> Void
     var onToggleRunMode: () -> Void
@@ -3117,6 +3220,7 @@ private struct ComposerTextEditor: NSViewRepresentable {
         textView.string = text
         textView.shouldSubmit = { context.coordinator.canSubmit }
         textView.hasActiveMarkedText = { context.coordinator.hasMarkedText }
+        textView.sendByCtrlEnter = sendByCtrlEnter
         textView.onPaste = { pasteboard in
             context.coordinator.handlePaste(pasteboard)
         }
@@ -3146,6 +3250,7 @@ private struct ComposerTextEditor: NSViewRepresentable {
         }
         textView.shouldSubmit = { context.coordinator.canSubmit }
         textView.hasActiveMarkedText = { context.coordinator.hasMarkedText }
+        textView.sendByCtrlEnter = sendByCtrlEnter
         textView.onPaste = { pasteboard in
             context.coordinator.handlePaste(pasteboard)
         }
@@ -3240,6 +3345,7 @@ private struct ComposerTextEditor: NSViewRepresentable {
 private final class SubmitTextView: NSTextView {
     var shouldSubmit: () -> Bool = { false }
     var hasActiveMarkedText: () -> Bool = { false }
+    var sendByCtrlEnter = false
     var onPaste: (NSPasteboard) -> Bool = { _ in false }
     var onSubmit: () -> Void = {}
     var onToggleRunMode: () -> Void = {}
@@ -3280,12 +3386,17 @@ private final class SubmitTextView: NSTextView {
             return
         }
 
-        let isReturn = event.keyCode == 36 || event.keyCode == 76
-        if isReturn, !event.modifierFlags.contains(.shift) {
+        if ComposerSubmitShortcutPolicy.isReturnKey(event.keyCode) {
             if hasMarkedText() || hasActiveMarkedText() {
                 super.keyDown(with: event)
-            } else if shouldSubmit() {
+            } else if ComposerSubmitShortcutPolicy.shouldSubmit(
+                keyCode: event.keyCode,
+                modifierFlags: event.modifierFlags,
+                sendByCtrlEnter: sendByCtrlEnter
+            ), shouldSubmit() {
                 onSubmit()
+            } else {
+                super.keyDown(with: event)
             }
             return
         }
@@ -4695,19 +4806,22 @@ struct ProcessTracePresentation: Equatable {
     }
 
     private static func iconName(for current: AgentActivity?, fallbackActivities: [AgentActivity]) -> String {
-        if fallbackActivities.contains(where: { $0.state == .failed }) { return "exclamationmark.triangle" }
         if let current {
             switch presentationPhase(for: current) {
+            case .status, .thinking: return "sparkles"
+            case .tool: return "hammer"
             case .todo: return "checklist"
             case .command: return "terminal"
             case .search: return "magnifyingglass"
+            case .edit: return "pencil"
             case .subagent: return "person.2"
-            default: break
             }
         }
+        if fallbackActivities.contains(where: { $0.state == .failed }) { return "exclamationmark.triangle" }
         if fallbackActivities.contains(where: { presentationPhase(for: $0) == .todo }) { return "checklist" }
         if fallbackActivities.contains(where: { presentationPhase(for: $0) == .command }) { return "terminal" }
         if fallbackActivities.contains(where: { presentationPhase(for: $0) == .search }) { return "magnifyingglass" }
+        if fallbackActivities.contains(where: { presentationPhase(for: $0) == .edit }) { return "pencil" }
         return "apple.terminal"
     }
 
@@ -4979,10 +5093,22 @@ private struct ProcessLiveStatusRow: View {
     }
 
     private var traceIcon: String {
+        if let running = visibleActivities.last(where: { $0.state == .running }) {
+            switch presentationPhase(for: running) {
+            case .status, .thinking: return "sparkles"
+            case .tool: return "hammer"
+            case .todo: return "checklist"
+            case .command: return "terminal"
+            case .search: return "magnifyingglass"
+            case .edit: return "pencil"
+            case .subagent: return "person.2"
+            }
+        }
         if visibleActivities.contains(where: { $0.state == .failed }) { return "exclamationmark.triangle" }
         if visibleActivities.contains(where: { presentationPhase(for: $0) == .todo }) { return "checklist" }
         if visibleActivities.contains(where: { presentationPhase(for: $0) == .command }) { return "terminal" }
         if visibleActivities.contains(where: { presentationPhase(for: $0) == .search }) { return "magnifyingglass" }
+        if visibleActivities.contains(where: { presentationPhase(for: $0) == .edit }) { return "pencil" }
         return "apple.terminal"
     }
 

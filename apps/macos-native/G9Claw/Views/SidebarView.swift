@@ -66,7 +66,7 @@ struct SidebarView: View {
 
             Button {
                 withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-                    state.isSidebarVisible = false
+                    state.setSidebarVisible(false)
                 }
             } label: {
                 Image(systemName: "sidebar.left")
@@ -602,7 +602,7 @@ struct CollapsedSidebarRail: View {
                 Spacer()
                 Button {
                     withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-                        state.isSidebarVisible = true
+                        state.setSidebarVisible(true)
                     }
                 } label: {
                     Image(systemName: "sidebar.left")

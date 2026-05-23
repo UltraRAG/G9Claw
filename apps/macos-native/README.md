@@ -34,6 +34,25 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   build
 ```
 
+## Local Sharing Build
+
+Use the local packaging script when handing the app to another Mac:
+
+```bash
+apps/macos-native/Scripts/package-local.sh
+```
+
+The script creates `apps/macos-native/build/dist/G9Claw-mac-local.zip`, ad-hoc
+signs the app without using the Keychain, and includes an `INSTALL.txt` in the
+unzipped folder. For a passwordless install, unzip it and put `G9Claw.app` in
+`~/Applications` instead of the system `/Applications` folder. Copying into
+system `/Applications` may require an administrator password on the recipient's
+Mac.
+
+Public distribution still needs Developer ID signing and notarization. The local
+zip is intended for trusted internal sharing and may still show a Gatekeeper
+warning on a new Mac.
+
 ## Parity Workflow
 
 `Docs/PARITY_MATRIX.md` is the source of truth for matching the existing

@@ -2199,7 +2199,7 @@ enum ProviderClientError: Error, LocalizedError {
         switch self {
         case .missingBaseURL: "Provider base URL is not configured."
         case .missingModel: "Provider model is not configured."
-        case .missingAPIKey: "Provider API key is not configured. Add it in Settings or ~/.g9claw/config.yaml."
+        case .missingAPIKey: "Provider API key is not configured. Add it in Settings or ~/.edgeclaw/config.yaml."
         case .invalidURL(let value): "Provider base URL is invalid: \(value)"
         case .httpError(let statusCode, let body):
             if body.isEmpty {
@@ -2852,18 +2852,35 @@ struct NativeAgentRuntime: Sendable {
         let prompt = try AgentToolExecutor.requiredString("prompt", input: input)
         let description = (input["description"] as? String).nilIfBlank ?? "Subagent"
         let extraContext = (input["context"] as? String).nilIfBlank ?? ""
+        let routeTier = RoutingService.classifyTier(prompt: prompt, runMode: context.runMode)
+        let routeSignals = NativeRouterRuntime.requestSignals(
+            prompt: prompt,
+            priorMessages: [],
+            attachments: [],
+            isBackgroundRequest: true,
+            tools: []
+        )
+        let route = NativeRouterRuntime.resolvedProviderRoute(
+            forTier: routeTier,
+            values: context.nativeConfigValues,
+            fallbackProviderConfig: context.providerConfig,
+            fallbackAPIKey: context.apiKey,
+            fallbackContextWindow: context.contextWindow,
+            signals: routeSignals
+        )
+        let providerConfig = route.providerConfig
 
-        let endpoint = try endpointURL(baseURL: context.providerConfig.baseURL, suffix: "chat/completions")
+        let endpoint = try endpointURL(baseURL: providerConfig.baseURL, suffix: "chat/completions")
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
         urlRequest.timeoutInterval = modelStreamTimeoutInterval(from: context.timeoutMs)
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let apiKey = context.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = route.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
             throw ProviderClientError.missingAPIKey
         }
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        for (key, value) in context.providerConfig.headers {
+        for (key, value) in providerConfig.headers {
             urlRequest.setValue(value, forHTTPHeaderField: key)
         }
 
@@ -2877,7 +2894,7 @@ struct NativeAgentRuntime: Sendable {
         \(prompt)
         """
         let body: [String: Any] = [
-            "model": context.providerConfig.model,
+            "model": providerConfig.model,
             "messages": [
                 [
                     "role": "system",
@@ -4242,7 +4259,11 @@ enum AgentPermissionPolicy {
         let command = input["command"] as? String ?? ""
         if inner == "*" { return true }
         if inner.hasSuffix("*") {
-            return command.hasPrefix(String(inner.dropLast()))
+            var prefix = String(inner.dropLast())
+            if prefix.hasSuffix(":") {
+                prefix.removeLast()
+            }
+            return command.hasPrefix(prefix)
         }
         return command == inner
     }
@@ -4338,22 +4359,57 @@ enum SkillRuntimeService {
         environment.removeValue(forKey: "CLAU" + "DE_PLUGIN_ROOT")
         if let pluginRoot = ragPluginRoot() {
             environment["G9CLAW_PLUGIN_ROOT"] = pluginRoot.path
+            environment["EDGECLAW_PLUGIN_ROOT"] = pluginRoot.path
         }
-        environment["G9CLAW_RAG_ENABLED"] = configValues["rag.enabled"] ?? "false"
-        environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"] = configValues["rag.localKnowledge.baseUrl"]
-        environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_API_KEY"] = configValues["rag.localKnowledge.apiKey"]
-        environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME"] = configValues["rag.localKnowledge.modelName"]
-        environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL"] = configValues["rag.localKnowledge.databaseUrl"]
-        environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_TOP_K"] = configValues["rag.localKnowledge.defaultTopK"]
-        environment["G9CLAW_RAG_GLM_WEB_SEARCH_BASE_URL"] = configValues["rag.glmWebSearch.baseUrl"]
-        environment["G9CLAW_RAG_GLM_WEB_SEARCH_API_KEY"] = configValues["rag.glmWebSearch.apiKey"]
-        environment["G9CLAW_RAG_GLM_WEB_SEARCH_TOP_K"] = configValues["rag.glmWebSearch.defaultTopK"]
+        let ragValues: [String: String] = [
+            "RAG_ENABLED": boolEnvironmentValue(configValues["rag.enabled"], defaultValue: false),
+            "RAG_DISABLE_BUILTIN_WEB_TOOLS": boolEnvironmentValue(configValues["rag.disableBuiltInWebTools"], defaultValue: true),
+            "RAG_LOCAL_KNOWLEDGE_BASE_URL": stripTrailingSlash(configValues["rag.localKnowledge.baseUrl"]),
+            "RAG_LOCAL_KNOWLEDGE_API_KEY": configValues["rag.localKnowledge.apiKey"] ?? "",
+            "RAG_LOCAL_KNOWLEDGE_MODEL_NAME": configValues["rag.localKnowledge.modelName"] ?? "",
+            "RAG_LOCAL_KNOWLEDGE_DATABASE_URL": configValues["rag.localKnowledge.databaseUrl"]?.nilIfBlank
+                ?? configValues["rag.localKnowledge.milvusUri"]?.nilIfBlank
+                ?? "",
+            "RAG_LOCAL_KNOWLEDGE_MILVUS_URI": configValues["rag.localKnowledge.databaseUrl"]?.nilIfBlank
+                ?? configValues["rag.localKnowledge.milvusUri"]?.nilIfBlank
+                ?? "",
+            "RAG_LOCAL_KNOWLEDGE_TOP_K": configValues["rag.localKnowledge.defaultTopK"]?.nilIfBlank ?? "8",
+            "RAG_GLM_WEB_SEARCH_BASE_URL": stripTrailingSlash(configValues["rag.glmWebSearch.baseUrl"]),
+            "RAG_GLM_WEB_SEARCH_API_KEY": configValues["rag.glmWebSearch.apiKey"] ?? "",
+            "RAG_GLM_WEB_SEARCH_TOP_K": configValues["rag.glmWebSearch.defaultTopK"]?.nilIfBlank ?? "8",
+        ]
+        for (key, value) in ragValues {
+            environment["EDGECLAW_\(key)"] = value
+            environment["G9CLAW_\(key)"] = value
+        }
         let prefix = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         environment["PATH"] = [prefix, environment["PATH"]].compactMap { $0 }.joined(separator: ":")
         return environment.compactMapValues { value in
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : value
         }
+    }
+
+    private static func boolEnvironmentValue(_ rawValue: String?, defaultValue: Bool) -> String {
+        guard let rawValue = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines), !rawValue.isEmpty else {
+            return defaultValue ? "1" : "0"
+        }
+        switch rawValue.lowercased() {
+        case "true", "1", "yes", "on":
+            return "1"
+        case "false", "0", "no", "off":
+            return "0"
+        default:
+            return defaultValue ? "1" : "0"
+        }
+    }
+
+    private static func stripTrailingSlash(_ rawValue: String?) -> String {
+        guard var value = rawValue?.nilIfBlank else { return "" }
+        while value.count > 1, value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
     }
 
     private static func searchableSkillRoots(workspacePath: String) -> [URL] {

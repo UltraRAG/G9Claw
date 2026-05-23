@@ -32,6 +32,15 @@ enum L10nKey: String, CaseIterable {
     case connecting
     case clear
     case codeEditor
+    case toolDisplay
+    case viewOptions
+    case inputSettings
+    case autoExpandTools
+    case showRawParameters
+    case showThinking
+    case autoScrollToBottom
+    case sendByCtrlEnter
+    case sendByCtrlEnterDetail
     case wordWrap
     case wordWrapDetail
     case showMinimap
@@ -50,9 +59,15 @@ enum L10nKey: String, CaseIterable {
     case create
     case createNew
     case createNewDetail
+    case created
+    case createdFrom
     case createProject
     case createProjectSubtitle
     case creatingProject
+    case cronExpression
+    case currentStatus
+    case darkMode
+    case darkModeDetail
     case dashboard
     case delete
     case deny
@@ -80,6 +95,7 @@ enum L10nKey: String, CaseIterable {
     case languageSystem
     case live
     case memory
+    case metadata
     case mentionFile
     case newAction
     case newFile
@@ -112,6 +128,7 @@ enum L10nKey: String, CaseIterable {
     case processFailed
     case projectAdded
     case projectSorting
+    case projectSortingDetail
     case projects
     case pull
     case push
@@ -122,31 +139,41 @@ enum L10nKey: String, CaseIterable {
     case rename
     case review
     case reviewAttachedFiles
+    case readOnlyBackgroundDescription
+    case readOnlyBackgroundFooter
+    case readOnlyBackgroundTitle
     case routing
     case run
     case runningToolFormat
     case saved
     case save
+    case schedule
     case send
     case settings
     case settingsSaved
     case shell
+    case sessionID
     case sessionStartedFormat
     case showLess
     case showMoreFormat
     case showSidebar
     case skills
+    case source
     case status
     case streamingAssistantOutput
     case stopGeneration
     case stopped
     case tasks
+    case transcriptKey
+    case triggerType
+    case truncated
     case toolError
     case toolResult
     case toolsFormat
     case type
     case uploadFiles
     case uploadFolder
+    case view
     case welcomePrompt
     case working
     case nativeInitialized
@@ -162,6 +189,7 @@ enum L10nKey: String, CaseIterable {
     case allowAllUsers
     case allowAllUsersDetail
     case alwaysOnProjectOnly
+    case alwaysOnScope
     case apiKey
     case archive
     case backgroundDiscoveryAgent
@@ -196,8 +224,11 @@ enum L10nKey: String, CaseIterable {
     case includeAssistant
     case includeAssistantDetail
     case keychainHelp
+    case lastFiredAt
+    case lastUpdated
     case linesFormat
     case mainAgent
+    case inheritMain
     case memoryDisabled
     case memoryServiceEnabled
     case missing
@@ -209,22 +240,35 @@ enum L10nKey: String, CaseIterable {
     case noEntriesConfigured
     case noOutputLog
     case noPlanContent
+    case noPrompt
     case noProjectSelected
     case noProvidersConfigured
     case noRoutingActivity
     case noSkillsYet
     case nativeSettingsApplied
     case oneShot
+    case originSessionID
+    case outputLog
+    case pickModelEntry
     case pickProject
     case plansCronJobs
     case present
     case processEnv
+    case prompt
+    case proxy
+    case proxyConfigParsed
+    case proxyDisabled
     case provider
     case providers
     case providersDetail
     case quickAdd
     case rag
     case ragDetail
+    case ragSectionDetail
+    case ragLocalKnowledgeTitle
+    case ragLocalKnowledgeDetail
+    case ragGlmWebSearchTitle
+    case ragGlmWebSearchDetail
     case rawYAML
     case recentRoutes
     case recurring
@@ -295,6 +339,7 @@ enum L10nKey: String, CaseIterable {
     case routerDashboardNative
     case routerDetail
     case routerDisabled
+    case routerCCR
     case routerLog
     case routerLogDetail
     case runHistory
@@ -377,15 +422,15 @@ struct LocalizationService {
         .allow: "Allow",
         .allowedTools: "Allowed tools",
         .allowedToolsDetail: "Tools that auto-run without prompting.",
-        .allowedToolPlaceholder: #"e.g. "Shell(git log:*)" or "Write""#,
-        .alwaysOn: "Always-on",
+        .allowedToolPlaceholder: #"e.g. "Bash(git log:*)" or "Write""#,
+        .alwaysOn: "Always-On",
         .appearance: "Appearance",
         .askPlaceholder: "Ask G9Claw",
         .attach: "Attach",
         .attachHelp: "Attach photos or files",
         .back: "Back",
         .blockedTools: "Blocked tools",
-        .blockedToolPlaceholder: #"e.g. "Shell(rm:*)""#,
+        .blockedToolPlaceholder: #"e.g. "Bash(rm:*)""#,
         .browse: "Browse",
         .cancel: "Cancel",
         .chatRunModeAgent: "Agent",
@@ -398,14 +443,23 @@ struct LocalizationService {
         .connecting: "Connecting",
         .clear: "Clear",
         .codeEditor: "Code Editor",
+        .toolDisplay: "Tool Display",
+        .viewOptions: "View Options",
+        .inputSettings: "Input Settings",
+        .autoExpandTools: "Auto-expand tools",
+        .showRawParameters: "Show raw parameters",
+        .showThinking: "Show thinking",
+        .autoScrollToBottom: "Auto-scroll to bottom",
+        .sendByCtrlEnter: "Send by Ctrl+Enter",
+        .sendByCtrlEnterDetail: "When enabled, pressing Ctrl+Enter will send the message instead of just Enter. This is useful for IME users to avoid accidental sends.",
         .wordWrap: "Word Wrap",
-        .wordWrapDetail: "Wrap long lines in the native editor.",
+        .wordWrapDetail: "Enable word wrapping by default in the editor",
         .showMinimap: "Show Minimap",
-        .showMinimapDetail: "Reserve space for a lightweight minimap column.",
-        .lineNumbers: "Line Numbers",
-        .lineNumbersDetail: "Show line numbers in editable text files.",
+        .showMinimapDetail: "Display a minimap for easier navigation in diff view",
+        .lineNumbers: "Show Line Numbers",
+        .lineNumbersDetail: "Display line numbers in the editor",
         .fontSize: "Font Size",
-        .fontSizeDetail: "Code editor font size.",
+        .fontSizeDetail: "Applies to the code editor only (px). Chat and sidebar keep the system default.",
         .commandHelp: "Run a command",
         .complete: "Complete",
         .config: "Config",
@@ -416,16 +470,22 @@ struct LocalizationService {
         .create: "Create",
         .createNew: "Create New",
         .createNewDetail: "Create a new folder, optionally from Git.",
+        .created: "Created",
+        .createdFrom: "Created From",
         .createProject: "Create Project",
         .createProjectSubtitle: "Add an existing workspace or create a new folder.",
         .creatingProject: "Creating project...",
+        .cronExpression: "Cron expression",
+        .currentStatus: "Current status",
+        .darkMode: "Dark Mode",
+        .darkModeDetail: "Toggle between light and dark themes",
         .dashboard: "Routing",
         .delete: "Delete",
         .deny: "Deny",
         .diff: "Diff",
         .dismiss: "Dismiss",
         .displayLanguage: "Display Language",
-        .displayLanguageDetail: "Choose the language used by the interface.",
+        .displayLanguageDetail: "Choose your preferred language for the interface",
         .displayName: "Display Name",
         .done: "Done",
         .download: "Download",
@@ -446,6 +506,7 @@ struct LocalizationService {
         .languageSystem: "System",
         .live: "Live",
         .memory: "Memory",
+        .metadata: "Metadata",
         .mentionFile: "Mention a file",
         .newAction: "New",
         .newFile: "New File",
@@ -478,6 +539,7 @@ struct LocalizationService {
         .processFailed: "Process failed",
         .projectAdded: "Project added",
         .projectSorting: "Project Sorting",
+        .projectSortingDetail: "How projects are ordered in the sidebar",
         .projects: "Projects",
         .pull: "Pull",
         .push: "Push",
@@ -488,31 +550,41 @@ struct LocalizationService {
         .rename: "Rename",
         .review: "Review",
         .reviewAttachedFiles: "Review the attached files.",
+        .readOnlyBackgroundDescription: "This read-only background task transcript only contains records the chat view cannot display.",
+        .readOnlyBackgroundFooter: "Read-only background task transcript",
+        .readOnlyBackgroundTitle: "No displayable messages in this task transcript",
         .routing: "Routing",
         .run: "Run",
         .runningToolFormat: "Running %@",
         .saved: "Saved",
         .save: "Save",
+        .schedule: "Schedule",
         .send: "Send",
         .settings: "Settings",
         .settingsSaved: "Settings saved",
         .shell: "Shell",
+        .sessionID: "Session ID",
         .sessionStartedFormat: "Session %@ started",
         .showLess: "Show less",
         .showMoreFormat: "Show more (%d)",
         .showSidebar: "Show sidebar",
         .skills: "Skills",
+        .source: "Source",
         .status: "Status",
         .streamingAssistantOutput: "Streaming assistant output",
         .stopGeneration: "Stop generation",
         .stopped: "Stopped",
         .tasks: "Tasks",
+        .transcriptKey: "Transcript key",
+        .triggerType: "Trigger type",
+        .truncated: "truncated",
         .toolError: "Tool error",
         .toolResult: "Tool result",
         .toolsFormat: "%d tools",
         .type: "Type",
         .uploadFiles: "Upload Files...",
         .uploadFolder: "Upload Folder...",
+        .view: "View",
         .welcomePrompt: "What would you like to work on today?",
         .working: "Working",
         .nativeInitialized: "Native macOS app initialized",
@@ -527,8 +599,9 @@ struct LocalizationService {
         .addProvider: "Add Provider",
         .allowAllUsers: "Allow All Users",
         .allowAllUsersDetail: "Allow any remote user to interact with the gateway.",
-        .alwaysOnProjectOnly: "Always-On is available for project workspaces.",
-        .apiKey: "API Key",
+        .alwaysOnProjectOnly: "Pick a project to view Always-On.",
+        .alwaysOnScope: "Scope",
+        .apiKey: "API key",
         .archive: "Archive",
         .backgroundDiscoveryAgent: "Background discovery agent for this project.",
         .cannotBeUndone: "This cannot be undone.",
@@ -538,11 +611,11 @@ struct LocalizationService {
         .configInvalid: "Config has validation errors",
         .configPreview: "Config preview",
         .configReloadedNotice: "Config was reloaded from disk. Unsaved native edits were discarded.",
-        .configSummaryHelp: "This file is the same portable config used by the main project. Raw YAML and form edits both persist to ~/.g9claw/config.yaml.",
+        .configSummaryHelp: "This file is the same portable config used by the main project. Raw YAML and form edits both persist to ~/.edgeclaw/config.yaml.",
         .configValid: "Config is valid",
         .cost: "Cost",
-        .disableBuiltInWebTools: "Disable Built-in Web Tools",
-        .disableBuiltInWebToolsDetail: "Route search through configured RAG services.",
+        .disableBuiltInWebTools: "Disable built-in web tools",
+        .disableBuiltInWebToolsDetail: "When RAG is enabled, hide WebFetch/WebSearch from model-visible tools so web search goes through 9GClaw RAG skills.",
         .discover: "Discover",
         .discoveryTrigger: "Discovery Trigger",
         .discoveryTriggerDetail: "Run the discovery trigger in the background.",
@@ -562,8 +635,11 @@ struct LocalizationService {
         .includeAssistant: "Include Assistant",
         .includeAssistantDetail: "Include assistant messages in captured memory context.",
         .keychainHelp: "Stored in YAML so the config can be copied, pasted, and shared exactly like the main project config. Keychain is only a local fallback when YAML is blank.",
+        .lastFiredAt: "Last fired",
+        .lastUpdated: "Last updated",
         .linesFormat: "%d lines",
         .mainAgent: "Main Agent",
+        .inheritMain: "Inherit main",
         .memoryDisabled: "memory.enabled is false.",
         .memoryServiceEnabled: "Memory service enabled.",
         .missing: "missing",
@@ -575,22 +651,35 @@ struct LocalizationService {
         .noEntriesConfigured: "No model entries configured.",
         .noOutputLog: "No output log was captured for this run.",
         .noPlanContent: "No plan markdown content.",
+        .noPrompt: "No prompt.",
         .noProjectSelected: "No project selected",
         .noProvidersConfigured: "No providers configured.",
         .noRoutingActivity: "No routing activity yet. Start a conversation to see stats here.",
         .noSkillsYet: "No skills yet. Click New to install or create one.",
         .nativeSettingsApplied: "Native settings are applied in process.",
         .oneShot: "one-shot",
+        .originSessionID: "Origin session",
+        .outputLog: "Output Log",
+        .pickModelEntry: "Select model entry",
         .pickProject: "Pick a project",
         .plansCronJobs: "Plans & Cron Jobs",
         .present: "present",
         .processEnv: "processEnv",
+        .prompt: "Prompt",
+        .proxy: "Proxy",
+        .proxyConfigParsed: "Proxy config parsed.",
+        .proxyDisabled: "runtime.proxyPort is empty.",
         .provider: "Provider",
         .providers: "Providers",
         .providersDetail: "Provider definitions used by model entries.",
         .quickAdd: "Quick add:",
         .rag: "RAG",
-        .ragDetail: "Enable retrieval-augmented context.",
+        .ragDetail: "When on, 9GClaw exports EDGECLAW_RAG_* env vars so RAG skills can call these APIs.",
+        .ragSectionDetail: "Local retriever and GLM web search APIs used by the bundled 9GClaw RAG skills.",
+        .ragLocalKnowledgeTitle: "Local knowledge / Retriever",
+        .ragLocalKnowledgeDetail: "Private or curated knowledge base retrieval endpoint, including Milvus-backed services.",
+        .ragGlmWebSearchTitle: "Z.AI / GLM Web Search",
+        .ragGlmWebSearchDetail: "Public web search endpoint used for current information and URL-backed citations.",
         .rawYAML: "Raw YAML",
         .recentRoutes: "Recent routes",
         .recurring: "recurring",
@@ -624,13 +713,13 @@ struct LocalizationService {
         .captureStrategy: "Capture Strategy",
         .maxMessageChars: "Max Message Chars",
         .heartbeatBatchSize: "Heartbeat Batch Size",
-        .localKnowledgeBaseURL: "Local Knowledge Base URL",
-        .embeddingModel: "Embedding Model",
-        .databaseURL: "Database URL",
+        .localKnowledgeBaseURL: "Embedding / Model URL",
+        .embeddingModel: "Model name",
+        .databaseURL: "Search URL",
         .defaultTopK: "Default Top K",
-        .glmWebSearchBaseURL: "GLM Web Search Base URL",
+        .glmWebSearchBaseURL: "Endpoint URL",
         .glmWebSearchAPIKey: "GLM Web Search API Key",
-        .glmDefaultTopK: "GLM Default Top K",
+        .glmDefaultTopK: "Default top K",
         .port: "Port",
         .defaultRouteModel: "Default Route Model",
         .backgroundRouteModel: "Background Route Model",
@@ -661,6 +750,7 @@ struct LocalizationService {
         .routerDashboardNative: "Router dashboard uses native records.",
         .routerDetail: "Enable model routing and token statistics.",
         .routerDisabled: "router.enabled is false.",
+        .routerCCR: "Router (CCR)",
         .routerLog: "Log",
         .routerLogDetail: "Write router request logs for debugging.",
         .runHistory: "Run History",
@@ -712,15 +802,15 @@ struct LocalizationService {
         .allow: "允许",
         .allowedTools: "允许的工具",
         .allowedToolsDetail: "无需确认即可自动运行的工具。",
-        .allowedToolPlaceholder: #"例如 "Shell(git log:*)" 或 "Write""#,
-        .alwaysOn: "常驻",
+        .allowedToolPlaceholder: #"例如 "Bash(git log:*)" 或 "Write""#,
+        .alwaysOn: "常驻代理",
         .appearance: "外观",
         .askPlaceholder: "询问 G9Claw",
         .attach: "添加附件",
         .attachHelp: "添加图片或文件",
         .back: "返回",
         .blockedTools: "禁用工具",
-        .blockedToolPlaceholder: #"例如 "Shell(rm:*)""#,
+        .blockedToolPlaceholder: #"例如 "Bash(rm:*)""#,
         .browse: "浏览",
         .cancel: "取消",
         .chatRunModeAgent: "智能体",
@@ -733,14 +823,23 @@ struct LocalizationService {
         .connecting: "正在连接",
         .clear: "清空",
         .codeEditor: "代码编辑器",
+        .toolDisplay: "工具显示",
+        .viewOptions: "视图选项",
+        .inputSettings: "输入设置",
+        .autoExpandTools: "自动展开工具",
+        .showRawParameters: "显示原始参数",
+        .showThinking: "显示思考过程",
+        .autoScrollToBottom: "自动滚动到底部",
+        .sendByCtrlEnter: "使用 Ctrl+Enter 发送",
+        .sendByCtrlEnterDetail: "启用后，按 Ctrl+Enter 发送消息，而不是仅按 Enter。这对于使用输入法的用户可以避免意外发送。",
         .wordWrap: "自动换行",
-        .wordWrapDetail: "在原生编辑器中自动折行较长内容。",
+        .wordWrapDetail: "在编辑器中默认启用自动换行",
         .showMinimap: "显示缩略图",
-        .showMinimapDetail: "为轻量代码缩略图预留一列空间。",
+        .showMinimapDetail: "在差异视图中显示缩略图以便于导航",
         .lineNumbers: "显示行号",
-        .lineNumbersDetail: "在可编辑文本文件中显示行号。",
+        .lineNumbersDetail: "在编辑器中显示行号",
         .fontSize: "字体大小",
-        .fontSizeDetail: "代码编辑器字体大小。",
+        .fontSizeDetail: "仅作用于代码编辑器视图（px）。聊天和侧边栏沿用系统默认字号。",
         .commandHelp: "运行命令",
         .complete: "完成",
         .config: "配置",
@@ -751,16 +850,22 @@ struct LocalizationService {
         .create: "创建",
         .createNew: "新建",
         .createNewDetail: "创建新文件夹，可选从 Git 初始化。",
+        .created: "创建时间",
+        .createdFrom: "创建来源",
         .createProject: "创建项目",
         .createProjectSubtitle: "添加已有工作区或创建新文件夹。",
         .creatingProject: "正在创建项目...",
+        .cronExpression: "Cron 表达式",
+        .currentStatus: "当前状态",
+        .darkMode: "深色模式",
+        .darkModeDetail: "切换浅色和深色主题",
         .dashboard: "路由",
         .delete: "删除",
         .deny: "拒绝",
         .diff: "差异",
         .dismiss: "关闭",
         .displayLanguage: "显示语言",
-        .displayLanguageDetail: "选择界面使用的语言。",
+        .displayLanguageDetail: "选择您偏好的界面语言",
         .displayName: "显示名称",
         .done: "完成",
         .download: "下载",
@@ -781,6 +886,7 @@ struct LocalizationService {
         .languageSystem: "跟随系统",
         .live: "运行中",
         .memory: "记忆",
+        .metadata: "Metadata",
         .mentionFile: "提及文件",
         .newAction: "新建",
         .newFile: "新建文件",
@@ -813,6 +919,7 @@ struct LocalizationService {
         .processFailed: "进程失败",
         .projectAdded: "项目已添加",
         .projectSorting: "项目排序",
+        .projectSortingDetail: "项目在侧边栏中的排列方式",
         .projects: "项目",
         .pull: "拉取",
         .push: "推送",
@@ -823,31 +930,41 @@ struct LocalizationService {
         .rename: "重命名",
         .review: "确认",
         .reviewAttachedFiles: "检查附件文件。",
+        .readOnlyBackgroundDescription: "这个只读后台任务 transcript 只包含聊天视图无法显示的记录。",
+        .readOnlyBackgroundFooter: "只读后台任务 transcript",
+        .readOnlyBackgroundTitle: "此任务 transcript 中没有可显示消息",
         .routing: "路由",
         .run: "运行",
         .runningToolFormat: "正在运行 %@",
         .saved: "已保存",
         .save: "保存",
+        .schedule: "调度配置",
         .send: "发送",
         .settings: "设置",
         .settingsSaved: "设置已保存",
         .shell: "Shell",
+        .sessionID: "Session ID",
         .sessionStartedFormat: "会话 %@ 已开始",
         .showLess: "收起",
         .showMoreFormat: "显示更多（%d）",
         .showSidebar: "显示侧边栏",
         .skills: "技能",
+        .source: "来源",
         .status: "状态",
         .streamingAssistantOutput: "正在流式输出助手回复",
         .stopGeneration: "停止生成",
         .stopped: "已停止",
         .tasks: "任务",
+        .transcriptKey: "Transcript key",
+        .triggerType: "触发类型",
+        .truncated: "已截断",
         .toolError: "工具错误",
         .toolResult: "工具结果",
         .toolsFormat: "%d 个工具",
         .type: "类型",
         .uploadFiles: "上传文件...",
         .uploadFolder: "上传文件夹...",
+        .view: "查看",
         .welcomePrompt: "今天想处理什么？",
         .working: "处理中",
         .nativeInitialized: "原生 macOS 应用已初始化",
@@ -862,10 +979,11 @@ struct LocalizationService {
         .addProvider: "添加 Provider",
         .allowAllUsers: "允许所有用户",
         .allowAllUsersDetail: "允许任意远程用户访问网关。",
-        .alwaysOnProjectOnly: "Always-On 仅适用于项目工作区。",
-        .apiKey: "API Key",
+        .alwaysOnProjectOnly: "选择一个项目以查看 Always-On。",
+        .alwaysOnScope: "持久性范围",
+        .apiKey: "API key",
         .archive: "归档",
-        .backgroundDiscoveryAgent: "此项目的后台发现智能体。",
+        .backgroundDiscoveryAgent: "为该项目持续运行的后台发现代理。",
         .cannotBeUndone: "此操作无法撤销。",
         .charactersFormat: "%d 个字符",
         .command: "命令",
@@ -873,12 +991,12 @@ struct LocalizationService {
         .configInvalid: "配置存在校验错误",
         .configPreview: "配置预览",
         .configReloadedNotice: "配置已从磁盘重新加载，未保存的原生编辑已丢弃。",
-        .configSummaryHelp: "这里就是主项目同款可移植配置文件；Raw YAML 和表单修改都会持久化到 ~/.g9claw/config.yaml。",
+        .configSummaryHelp: "这里就是主项目同款可移植配置文件；Raw YAML 和表单修改都会持久化到 ~/.edgeclaw/config.yaml。",
         .configValid: "配置有效",
         .cost: "成本",
         .disableBuiltInWebTools: "禁用内置 Web 工具",
-        .disableBuiltInWebToolsDetail: "通过已配置的 RAG 服务路由搜索。",
-        .discover: "发现",
+        .disableBuiltInWebToolsDetail: "启用 RAG 后，从模型可见工具中隐藏 WebFetch/WebSearch，让网络搜索走 9GClaw RAG 技能。",
+        .discover: "扫描",
         .discoveryTrigger: "发现触发器",
         .discoveryTriggerDetail: "在后台运行发现触发器。",
         .dragToResize: "拖动调整大小",
@@ -897,35 +1015,51 @@ struct LocalizationService {
         .includeAssistant: "包含助手消息",
         .includeAssistantDetail: "在捕获记忆上下文时包含助手消息。",
         .keychainHelp: "API Key 会写入 YAML，配置可直接复制、粘贴、分享；Keychain 只在 YAML 为空时作为本机兜底。",
+        .lastFiredAt: "上次触发",
+        .lastUpdated: "最后更新",
         .linesFormat: "%d 行",
         .mainAgent: "主智能体",
+        .inheritMain: "继承主智能体",
         .memoryDisabled: "memory.enabled 为 false。",
         .memoryServiceEnabled: "记忆服务已启用。",
         .missing: "缺失",
         .modelRoutingSummary: "模型路由、token saver、请求日志和成本汇总。",
-        .noActivePlans: "暂无活跃计划或 Cron 任务；完成的运行在运行历史中查看。",
+        .noActivePlans: "没有活跃的计划或定时任务。已完成的运行可在运行历史中查看。",
         .noAlwaysOnRuns: "尚未记录 Always-On 运行。",
         .noAllowedToolsConfigured: "尚未配置允许工具。",
         .noBlockedToolsConfigured: "尚未配置禁用工具。",
         .noEntriesConfigured: "尚未配置模型条目。",
         .noOutputLog: "本次运行没有捕获输出日志。",
         .noPlanContent: "没有计划 Markdown 内容。",
+        .noPrompt: "无提示词。",
         .noProjectSelected: "未选择项目",
         .noProvidersConfigured: "尚未配置 Provider。",
         .noRoutingActivity: "暂无路由活动。开始对话后这里会显示统计。",
         .noSkillsYet: "暂无技能。点击新建来安装或创建技能。",
         .nativeSettingsApplied: "原生设置已应用到当前进程。",
         .oneShot: "单次",
+        .originSessionID: "来源会话",
+        .outputLog: "输出日志",
+        .pickModelEntry: "选择模型条目",
         .pickProject: "选择一个项目",
-        .plansCronJobs: "计划与 Cron 任务",
+        .plansCronJobs: "计划与定时任务",
         .present: "存在",
         .processEnv: "进程环境",
+        .prompt: "提示词",
+        .proxy: "代理",
+        .proxyConfigParsed: "代理配置已解析。",
+        .proxyDisabled: "runtime.proxyPort 为空。",
         .provider: "Provider",
         .providers: "Providers",
         .providersDetail: "模型条目使用的 Provider 定义。",
         .quickAdd: "快速添加：",
         .rag: "RAG",
-        .ragDetail: "启用检索增强上下文。",
+        .ragDetail: "启用后，9GClaw 会导出 EDGECLAW_RAG_* 环境变量，供 RAG 技能调用这些 API。",
+        .ragSectionDetail: "内置 9GClaw RAG 技能使用的本地检索器和 GLM Web Search API。",
+        .ragLocalKnowledgeTitle: "本地知识库 / Retriever",
+        .ragLocalKnowledgeDetail: "私有或精选知识库检索接口，包括基于 Milvus 的服务。",
+        .ragGlmWebSearchTitle: "Z.AI / GLM Web Search",
+        .ragGlmWebSearchDetail: "用于实时信息和带 URL 引用的公开 Web Search 接口。",
         .rawYAML: "Raw YAML",
         .recentRoutes: "最近路由",
         .recurring: "重复",
@@ -959,13 +1093,13 @@ struct LocalizationService {
         .captureStrategy: "捕获策略",
         .maxMessageChars: "最大消息字符数",
         .heartbeatBatchSize: "心跳批量大小",
-        .localKnowledgeBaseURL: "本地知识库 URL",
-        .embeddingModel: "Embedding 模型",
-        .databaseURL: "数据库 URL",
+        .localKnowledgeBaseURL: "Embedding / Model URL",
+        .embeddingModel: "模型名称",
+        .databaseURL: "Search URL",
         .defaultTopK: "默认 Top K",
-        .glmWebSearchBaseURL: "GLM Web 搜索 Base URL",
+        .glmWebSearchBaseURL: "Endpoint URL",
         .glmWebSearchAPIKey: "GLM Web 搜索 API Key",
-        .glmDefaultTopK: "GLM 默认 Top K",
+        .glmDefaultTopK: "默认 top K",
         .port: "端口",
         .defaultRouteModel: "默认路由模型",
         .backgroundRouteModel: "后台路由模型",
@@ -996,6 +1130,7 @@ struct LocalizationService {
         .routerDashboardNative: "路由看板使用原生记录。",
         .routerDetail: "启用模型路由和 token 统计。",
         .routerDisabled: "router.enabled 为 false。",
+        .routerCCR: "路由（CCR）",
         .routerLog: "日志",
         .routerLogDetail: "写入路由请求日志用于调试。",
         .runHistory: "运行历史",

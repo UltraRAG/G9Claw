@@ -12,13 +12,19 @@ struct SettingsView: View {
 
 private struct SettingsContentView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.colorScheme) private var colorScheme
     @State private var activeTab: SettingsMainTab = .appearance
     @State private var configSection: G9ClawConfigSection = .runtime
-    @State private var configView: NativeConfigViewMode = .form
+    @AppStorage(NativeConfigViewMode.storageKey) private var configViewRaw = NativeConfigViewMode.form.rawValue
     @State private var savedConfigText = ""
     @State private var configMessage: String?
     @State private var configError: String?
     @State private var configExternalNotice: String?
+
+    private var configView: NativeConfigViewMode {
+        get { NativeConfigViewMode.fromStoredRaw(configViewRaw) }
+        nonmutating set { configViewRaw = newValue.rawValue }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -163,18 +169,16 @@ private struct SettingsContentView: View {
 
     private var appearanceContent: some View {
         VStack(alignment: .leading, spacing: 22) {
-            SettingsSectionBlock(title: state.t(.appearance)) {
-                SettingsCardBlock(divided: true) {
-                    SettingsRowBlock(title: state.t(.appearance), detail: "") {
-                        Picker("", selection: $state.settings.colorScheme) {
-                            ForEach(AppColorScheme.allCases) { scheme in
-                                Text(colorSchemeLabel(scheme)).tag(scheme)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 160)
+            SettingsSectionBlock(title: state.t(.darkMode)) {
+                SettingsCardBlock {
+                    SettingsRowBlock(title: state.t(.darkMode), detail: state.t(.darkModeDetail)) {
+                        WebSettingsToggle(isOn: darkModeBinding)
                     }
+                }
+            }
+
+            SettingsSectionBlock(title: state.t(.appearance)) {
+                SettingsCardBlock {
                     SettingsRowBlock(title: state.t(.displayLanguage), detail: state.t(.displayLanguageDetail)) {
                         Picker("", selection: $state.settings.language) {
                             ForEach(AppLanguage.allCases) { language in
@@ -188,9 +192,39 @@ private struct SettingsContentView: View {
                 }
             }
 
+            SettingsSectionBlock(title: state.t(.toolDisplay)) {
+                SettingsCardBlock(divided: true) {
+                    SettingsRowBlock(title: state.t(.autoExpandTools), detail: "") {
+                        WebSettingsToggle(isOn: uiPreferenceBinding(\.autoExpandTools))
+                    }
+                    SettingsRowBlock(title: state.t(.showRawParameters), detail: "") {
+                        WebSettingsToggle(isOn: uiPreferenceBinding(\.showRawParameters))
+                    }
+                    SettingsRowBlock(title: state.t(.showThinking), detail: "") {
+                        WebSettingsToggle(isOn: uiPreferenceBinding(\.showThinking))
+                    }
+                }
+            }
+
+            SettingsSectionBlock(title: state.t(.viewOptions)) {
+                SettingsCardBlock {
+                    SettingsRowBlock(title: state.t(.autoScrollToBottom), detail: "") {
+                        WebSettingsToggle(isOn: uiPreferenceBinding(\.autoScrollToBottom))
+                    }
+                }
+            }
+
+            SettingsSectionBlock(title: state.t(.inputSettings)) {
+                SettingsCardBlock {
+                    SettingsRowBlock(title: state.t(.sendByCtrlEnter), detail: state.t(.sendByCtrlEnterDetail)) {
+                        WebSettingsToggle(isOn: uiPreferenceBinding(\.sendByCtrlEnter))
+                    }
+                }
+            }
+
             SettingsSectionBlock(title: state.t(.projectSorting)) {
                 SettingsCardBlock {
-                    SettingsRowBlock(title: state.t(.projectSorting), detail: "") {
+                    SettingsRowBlock(title: state.t(.projectSorting), detail: state.t(.projectSortingDetail)) {
                         Picker("", selection: $state.settings.projectSortOrder) {
                             Text(state.t(.alphabetical)).tag(ProjectSortOrder.name)
                             Text(state.t(.recentActivity)).tag(ProjectSortOrder.date)
@@ -221,7 +255,7 @@ private struct SettingsContentView: View {
                     }
                     SettingsRowBlock(title: state.t(.fontSize), detail: state.t(.fontSizeDetail)) {
                         Picker("", selection: $state.settings.codeEditor.fontSize) {
-                            ForEach([10, 11, 12, 13, 14, 15, 16, 18, 20], id: \.self) { size in
+                            ForEach(NativeAppearanceSettingsLayout.fontSizeOptions, id: \.self) { size in
                                 Text("\(size)px").tag(size)
                             }
                         }
@@ -233,6 +267,31 @@ private struct SettingsContentView: View {
             }
         }
         .controlSize(.regular)
+    }
+
+    private var darkModeBinding: Binding<Bool> {
+        Binding(
+            get: {
+                switch state.settings.colorScheme {
+                case .dark:
+                    return true
+                case .light:
+                    return false
+                case .system:
+                    return colorScheme == .dark
+                }
+            },
+            set: { enabled in
+                state.settings.colorScheme = enabled ? .dark : .light
+            }
+        )
+    }
+
+    private func uiPreferenceBinding(_ keyPath: WritableKeyPath<NativeUIPreferences, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { state.uiPreferences[keyPath: keyPath] },
+            set: { state.setUIPreference(keyPath, $0) }
+        )
     }
 
     private func colorSchemeLabel(_ scheme: AppColorScheme) -> String {
@@ -296,10 +355,10 @@ private struct SettingsContentView: View {
             SettingsSectionBlock(title: state.t(.patternExamples)) {
                 SettingsCardBlock {
                     VStack(alignment: .leading, spacing: 8) {
-                        CodeExample("Shell(git log:*)", state.t(.allowAllGitLogCommands))
-                        CodeExample("Shell(git diff:*)", state.t(.allowAllGitDiffCommands))
+                        CodeExample("Bash(git log:*)", state.t(.allowAllGitLogCommands))
+                        CodeExample("Bash(git diff:*)", state.t(.allowAllGitDiffCommands))
                         CodeExample("Write", state.t(.allowAllWrites))
-                        CodeExample("Shell(rm:*)", state.t(.blockAllRmCommands))
+                        CodeExample("Bash(rm:*)", state.t(.blockAllRmCommands))
                     }
                     .padding(14)
                 }
@@ -328,10 +387,13 @@ private struct SettingsContentView: View {
             }
 
             if configView == .form {
-                VStack(alignment: .leading, spacing: 16) {
-                    configSectionPicker
-                    configSectionContent
-                    configValidationSummary
+                HStack(alignment: .top, spacing: NativeConfigFormLayout.sectionNavigationGap) {
+                    configSectionSidebar
+                    VStack(alignment: .leading, spacing: 16) {
+                        configSectionContent
+                        configValidationSummary
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             } else {
                 rawYamlPanel
@@ -340,21 +402,6 @@ private struct SettingsContentView: View {
 
             reloadSummaryCard
             configSaveBar
-        }
-    }
-
-    private var configSectionPicker: some View {
-        SettingsCardBlock {
-            SettingsRowBlock(title: state.t(.config), detail: "") {
-                Picker("", selection: $configSection) {
-                    ForEach(G9ClawConfigSection.formSections) { section in
-                        Text(configSectionLabel(section)).tag(section)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .frame(width: 180)
-            }
         }
     }
 
@@ -431,7 +478,7 @@ private struct SettingsContentView: View {
 
     private var configSectionSidebar: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(G9ClawConfigSection.formSections) { section in
+            ForEach(NativeConfigFormLayout.sectionOrder) { section in
                 Button {
                     configSection = section
                 } label: {
@@ -446,7 +493,7 @@ private struct SettingsContentView: View {
                 .buttonStyle(.plain)
             }
         }
-        .frame(width: 180)
+        .frame(width: NativeConfigFormLayout.sectionNavigationWidth)
         .padding(6)
         .background(DesignTokens.neutral50.opacity(0.7), in: RoundedRectangle(cornerRadius: DesignTokens.radius))
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
@@ -500,10 +547,13 @@ private struct SettingsContentView: View {
         SettingsSectionBlock(title: state.t(.reload), detail: state.t(.reloadDetail)) {
             SettingsCardBlock {
                 VStack(alignment: .leading, spacing: 8) {
-                    ReloadSummaryRow(name: state.t(.processEnv), isReloaded: true, detail: state.t(.nativeSettingsApplied))
-                    ReloadSummaryRow(name: state.t(.memory), isReloaded: configBool("memory.enabled"), detail: configBool("memory.enabled") ? state.t(.memoryServiceEnabled) : state.t(.memoryDisabled))
-                    ReloadSummaryRow(name: state.t(.routing), isReloaded: configBool("router.enabled"), detail: configBool("router.enabled") ? state.t(.routerDashboardNative) : state.t(.routerDisabled))
-                    ReloadSummaryRow(name: state.t(.gateway), isReloaded: configBool("gateway.enabled"), detail: configBool("gateway.enabled") ? state.t(.gatewayConfigParsed) : state.t(.gatewayDisabled))
+                    ForEach(NativeConfigReloadSummary.subsystems) { subsystem in
+                        ReloadSummaryRow(
+                            name: state.t(subsystem.label),
+                            isReloaded: reloadSummaryIsReloaded(subsystem),
+                            detail: reloadSummaryDetail(subsystem)
+                        )
+                    }
                 }
                 .padding(14)
             }
@@ -539,27 +589,14 @@ private struct SettingsContentView: View {
             SettingsSectionBlock(title: state.t(.runtime), detail: state.t(.runtimeDetail)) {
                 SettingsCardBlock(divided: true) {
                     ConfigGrid {
-                        SettingsTextField(state.t(.host), text: configBinding("runtime.host"))
-                        SettingsTextField(state.t(.serverPort), text: configBinding("runtime.serverPort"))
-                        SettingsTextField(state.t(.vitePort), text: configBinding("runtime.vitePort"))
-                        SettingsTextField(state.t(.proxyPort), text: configBinding("runtime.proxyPort"))
-                        SettingsTextField(state.t(.contextWindow), text: configBinding("runtime.contextWindow"))
-                        SettingsTextField(state.t(.apiTimeoutMs), text: configBinding("runtime.apiTimeoutMs"))
-                        SettingsTextField(state.t(.httpsProxy), text: configBinding("runtime.httpsProxy"))
-                        SettingsTextField(state.t(.databasePath), text: configBinding("runtime.databasePath"))
+                        ForEach(NativeRuntimeConfigFormFields.textFields) { field in
+                            SettingsTextField(state.t(field.label), text: configBinding(field.path))
+                        }
                         SettingsTextField(state.t(.workspacesRoot), text: Binding(
                             get: { state.settings.workspacesRoot },
                             set: { value in
                                 state.settings.workspacesRoot = value
-                                setConfigValue("runtime.workspacesRoot", value)
-                            }
-                        ))
-                        SettingsTextField(state.t(.generalWorkspace), text: Binding(
-                            get: { state.settings.generalWorkspacePath },
-                            set: { value in
-                                let normalized = AppState.normalizedGeneralWorkspacePath(value)
-                                state.settings.generalWorkspacePath = normalized
-                                setConfigValue("gateway.runtimePaths.generalCwd", normalized)
+                                setConfigValue(NativeRuntimeConfigFormFields.workspacesRootPath, value)
                             }
                         ))
                     }
@@ -571,10 +608,30 @@ private struct SettingsContentView: View {
         case .agents:
             VStack(alignment: .leading, spacing: 18) {
                 SettingsSectionBlock(title: state.t(.mainAgent)) {
-                    SettingsCardBlock { ConfigGrid { SettingsTextField(state.t(.model), text: configBinding("agents.main.model")) }.padding(14) }
+                    SettingsCardBlock {
+                        ConfigGrid {
+                            SettingsPickerField(
+                                state.t(.model),
+                                selection: configBinding("agents.main.model"),
+                                options: configModelOptions(includeEmpty: true),
+                                emptyLabel: state.t(.pickModelEntry)
+                            )
+                        }
+                        .padding(14)
+                    }
                 }
                 SettingsSectionBlock(title: state.t(.subagents)) {
-                    SettingsCardBlock { ConfigGrid { SettingsTextField(state.t(.defaultConfig), text: configBinding("agents.subagents.default")) }.padding(14) }
+                    SettingsCardBlock {
+                        ConfigGrid {
+                            SettingsPickerField(
+                                state.t(.defaultConfig),
+                                selection: configBinding("agents.subagents.default"),
+                                options: configModelOptions(includeInherit: true),
+                                emptyLabel: state.t(.inheritMain)
+                            )
+                        }
+                        .padding(14)
+                    }
                 }
             }
         case .alwaysOn:
@@ -582,17 +639,32 @@ private struct SettingsContentView: View {
                 SettingsSectionBlock(title: state.t(.discoveryTrigger)) {
                     SettingsCardBlock(divided: true) {
                         SettingsRowBlock(title: state.t(.enabled), detail: state.t(.discoveryTriggerDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("alwaysOn.discovery.trigger.enabled"))
+                            WebSettingsToggle(isOn: configBoolBinding(NativeAlwaysOnConfigFormFields.enabledPath))
                         }
                         ConfigGrid {
-                            SettingsTextField(state.t(.tickIntervalMinutes), text: configBinding("alwaysOn.discovery.trigger.tickIntervalMinutes"))
-                            SettingsTextField(state.t(.cooldownMinutes), text: configBinding("alwaysOn.discovery.trigger.cooldownMinutes"))
-                            SettingsTextField(state.t(.dailyBudget), text: configBinding("alwaysOn.discovery.trigger.dailyBudget"))
-                            SettingsTextField(state.t(.heartbeatStaleSeconds), text: configBinding("alwaysOn.discovery.trigger.heartbeatStaleSeconds"))
-                            SettingsTextField(state.t(.recentUserMsgMinutes), text: configBinding("alwaysOn.discovery.trigger.recentUserMsgMinutes"))
-                            SettingsTextField(state.t(.preferClient), text: configBinding("alwaysOn.discovery.trigger.preferClient"))
+                            ForEach(NativeAlwaysOnConfigFormFields.textFields) { field in
+                                SettingsTextField(state.t(field.label), text: configBinding(field.path))
+                            }
                         }
                         .padding(14)
+                    }
+                }
+                SettingsSectionBlock(title: state.t(.projects)) {
+                    SettingsCardBlock(divided: true) {
+                        if alwaysOnProjectRows.isEmpty {
+                            Text(state.t(.noProjectsFound))
+                                .font(.system(size: 13))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                                .padding(16)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            ForEach(alwaysOnProjectRows) { project in
+                                let root = AlwaysOnProjectConfig.projectRoot(state.effectiveWorkspacePath(for: project))
+                                SettingsRowBlock(title: project.displayName, detail: root) {
+                                    WebSettingsToggle(isOn: alwaysOnProjectEnabledBinding(root: root))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -601,83 +673,54 @@ private struct SettingsContentView: View {
                 SettingsSectionBlock(title: state.t(.memory)) {
                     SettingsCardBlock(divided: true) {
                         SettingsRowBlock(title: state.t(.enabled), detail: state.t(.memoryDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("memory.enabled"))
+                            WebSettingsToggle(isOn: configBoolBinding(NativeMemoryConfigFormFields.enabledPath))
                         }
-                        SettingsRowBlock(title: state.t(.includeAssistant), detail: state.t(.includeAssistantDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("memory.includeAssistant"))
+                        if configBool(NativeMemoryConfigFormFields.enabledPath) {
+                            ConfigGrid {
+                                SettingsPickerField(
+                                    state.t(.model),
+                                    selection: configBinding(NativeMemoryConfigFormFields.modelPath),
+                                    options: configModelOptions(includeInherit: true),
+                                    emptyLabel: state.t(.inheritMain)
+                                )
+                            }
+                            .padding(14)
                         }
-                        ConfigGrid {
-                            SettingsTextField(state.t(.model), text: configBinding("memory.model"))
-                            SettingsTextField(state.t(.reasoningMode), text: configBinding("memory.reasoningMode"))
-                            SettingsTextField(state.t(.autoIndexIntervalMinutes), text: configBinding("memory.autoIndexIntervalMinutes"))
-                            SettingsTextField(state.t(.autoDreamIntervalMinutes), text: configBinding("memory.autoDreamIntervalMinutes"))
-                            SettingsTextField(state.t(.captureStrategy), text: configBinding("memory.captureStrategy"))
-                            SettingsTextField(state.t(.maxMessageChars), text: configBinding("memory.maxMessageChars"))
-                            SettingsTextField(state.t(.heartbeatBatchSize), text: configBinding("memory.heartbeatBatchSize"))
-                        }
-                        .padding(14)
                     }
                 }
             }
         case .rag:
             VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: state.t(.rag)) {
-                    SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.ragDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("rag.enabled"))
+                SettingsSectionBlock(title: state.t(.rag), detail: state.t(.ragSectionDetail)) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        SettingsCardBlock {
+                            SettingsRowBlock(title: state.t(.enabled), detail: state.t(.ragDetail)) {
+                                WebSettingsToggle(isOn: configBoolBinding(NativeRagConfigFormFields.enabledPath))
+                            }
                         }
-                        SettingsRowBlock(title: state.t(.disableBuiltInWebTools), detail: state.t(.disableBuiltInWebToolsDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("rag.disableBuiltInWebTools"))
+                        SettingsCardBlock {
+                            SettingsRowBlock(title: state.t(.disableBuiltInWebTools), detail: state.t(.disableBuiltInWebToolsDetail)) {
+                                WebSettingsToggle(
+                                    isOn: configBoolBinding(
+                                        NativeRagConfigFormFields.disableBuiltInWebToolsPath,
+                                        defaultValue: NativeRagConfigFormFields.disableBuiltInWebToolsDefault
+                                    )
+                                )
+                            }
                         }
-                        ConfigGrid {
-                            SettingsTextField(state.t(.localKnowledgeBaseURL), text: configBinding("rag.localKnowledge.baseUrl"))
-                            SettingsTextField(state.t(.embeddingModel), text: configBinding("rag.localKnowledge.modelName"))
-                            SettingsTextField(state.t(.databaseURL), text: configBinding("rag.localKnowledge.databaseUrl"))
-                            SettingsTextField(state.t(.defaultTopK), text: configBinding("rag.localKnowledge.defaultTopK"))
-                            SettingsTextField(state.t(.glmWebSearchBaseURL), text: configBinding("rag.glmWebSearch.baseUrl"))
-                            SettingsTextField(state.t(.glmWebSearchAPIKey), text: configBinding("rag.glmWebSearch.apiKey"))
-                            SettingsTextField(state.t(.glmDefaultTopK), text: configBinding("rag.glmWebSearch.defaultTopK"))
+                        ForEach(NativeRagConfigFormFields.endpointCards) { endpoint in
+                            ragEndpointCard(endpoint)
                         }
-                        .padding(14)
                     }
                 }
             }
         case .router:
             VStack(alignment: .leading, spacing: 18) {
                 SettingsSectionBlock(title: state.t(.routing)) {
-                    SettingsCardBlock(divided: true) {
+                    SettingsCardBlock {
                         SettingsRowBlock(title: state.t(.enabled), detail: state.t(.routerDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("router.enabled"))
+                            WebSettingsToggle(isOn: configBoolBinding(NativeRouterConfigFormFields.enabledPath))
                         }
-                        SettingsRowBlock(title: state.t(.routerLog), detail: state.t(.routerLogDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("router.log"))
-                        }
-                        ConfigGrid {
-                            SettingsTextField(state.t(.host), text: configBinding("router.host"))
-                            SettingsTextField(state.t(.port), text: configBinding("router.port"))
-                            SettingsTextField(state.t(.apiTimeoutMs), text: configBinding("router.apiTimeoutMs"))
-                            SettingsTextField(state.t(.defaultRouteModel), text: configBinding("router.routes.default.model"))
-                            SettingsTextField(state.t(.backgroundRouteModel), text: configBinding("router.routes.background.model"))
-                            SettingsTextField(state.t(.thinkRouteModel), text: configBinding("router.routes.think.model"))
-                            SettingsTextField(state.t(.longContextRouteModel), text: configBinding("router.routes.longContext.model"))
-                            SettingsTextField(state.t(.webSearchRouteModel), text: configBinding("router.routes.webSearch.model"))
-                            SettingsTextField(state.t(.longContextThreshold), text: configBinding("router.routes.longContextThreshold"))
-                        }
-                        .padding(14)
-                    }
-                }
-                SettingsSectionBlock(title: state.t(.tokenSaver)) {
-                    SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.tokenSaverDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("router.tokenSaver.enabled"))
-                        }
-                        ConfigGrid {
-                            SettingsTextField(state.t(.judgeModel), text: configBinding("router.tokenSaver.judgeModel"))
-                            SettingsTextField(state.t(.defaultTier), text: configBinding("router.tokenSaver.defaultTier"))
-                            SettingsTextField(state.t(.subagentPolicy), text: configBinding("router.tokenSaver.subagentPolicy"))
-                            SettingsTextField(state.t(.savingsBaselineModel), text: configBinding("router.tokenStats.savingsBaselineModel"))
-                        }
-                        .padding(14)
                     }
                 }
             }
@@ -686,27 +729,14 @@ private struct SettingsContentView: View {
                 SettingsSectionBlock(title: state.t(.gateway)) {
                     SettingsCardBlock(divided: true) {
                         SettingsRowBlock(title: state.t(.enabled), detail: state.t(.gatewayDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("gateway.enabled"))
+                            WebSettingsToggle(isOn: configBoolBinding(NativeGatewayConfigFormFields.enabledPath))
                         }
-                        SettingsRowBlock(title: state.t(.allowAllUsers), detail: state.t(.allowAllUsersDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("gateway.allowAllUsers"))
+                        if configBool(NativeGatewayConfigFormFields.enabledPath) {
+                            ConfigGrid {
+                                SettingsTextField(state.t(.home), text: configBinding(NativeGatewayConfigFormFields.homePath))
+                            }
+                            .padding(14)
                         }
-                        SettingsRowBlock(title: state.t(.groupSessionsPerUser), detail: state.t(.groupSessionsPerUserDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("gateway.groupSessionsPerUser"))
-                        }
-                        SettingsRowBlock(title: state.t(.threadSessionsPerUser), detail: state.t(.threadSessionsPerUserDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("gateway.threadSessionsPerUser"))
-                        }
-                        ConfigGrid {
-                            SettingsTextField(state.t(.home), text: configBinding("gateway.home"))
-                            SettingsTextField(state.t(.unauthorizedDMBehavior), text: configBinding("gateway.unauthorizedDmBehavior"))
-                            SettingsTextField(state.t(.sessionMetadata), text: configBinding("gateway.runtimePaths.sessionMetadata"))
-                            SettingsTextField(state.t(.userBindings), text: configBinding("gateway.runtimePaths.userBindings"))
-                            SettingsTextField(state.t(.generalCWD), text: configBinding("gateway.runtimePaths.generalCwd"))
-                            SettingsTextField(state.t(.generalJSONL), text: configBinding("gateway.runtimePaths.generalJsonl"))
-                            SettingsTextField(state.t(.boundProjectJSONL), text: configBinding("gateway.runtimePaths.boundProjectJsonl"))
-                        }
-                        .padding(14)
                     }
                 }
             }
@@ -748,6 +778,7 @@ private struct SettingsContentView: View {
                             Spacer()
                             Button(state.t(.addEntry)) { addEntry() }
                                 .buttonStyle(WebToolbarButtonStyle())
+                                .disabled(configChildIDs(parentPath: "models.providers").isEmpty)
                         }
                         let entries = configChildIDs(parentPath: "models.entries")
                         if entries.isEmpty {
@@ -761,6 +792,32 @@ private struct SettingsContentView: View {
                     .padding(14)
                 }
             }
+        }
+    }
+
+    private func ragEndpointCard(_ endpoint: NativeRagEndpointConfigCardSpec) -> some View {
+        SettingsCardBlock(divided: true) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(state.t(endpoint.title))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                Text(state.t(endpoint.detail))
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+
+            ConfigGrid {
+                ForEach(endpoint.fields) { field in
+                    SettingsTextField(
+                        state.t(field.label),
+                        text: configBinding(field.path),
+                        isSecure: field.isSecure
+                    )
+                }
+            }
+            .padding(14)
         }
     }
 
@@ -780,19 +837,24 @@ private struct SettingsContentView: View {
                         .buttonStyle(WebToolbarButtonStyle())
                 }
                 ConfigGrid {
-                    SettingsTextField(state.t(.type), text: configBinding("models.providers.\(provider).type"))
+                    SettingsPickerField(
+                        state.t(.type),
+                        selection: configBinding("models.providers.\(provider).type", fallback: NativeModelsConfigFormFields.defaultProviderType),
+                        options: NativeModelsConfigFormFields.providerTypeOptions,
+                        emptyLabel: NativeModelsConfigFormFields.defaultProviderType
+                    )
                     SettingsTextField(state.t(.baseURL), text: Binding(
                         get: {
-                            provider == "g9claw" ? state.settings.providerConfig.baseURL : configValue("models.providers.\(provider).baseUrl")
+                            isDefaultProvider(provider) ? state.settings.providerConfig.baseURL : configValue("models.providers.\(provider).baseUrl")
                         },
                         set: { value in
-                            if provider == "g9claw" {
+                            if isDefaultProvider(provider) {
                                 state.settings.providerConfig.baseURL = value
                             }
                             setConfigValue("models.providers.\(provider).baseUrl", value)
                         }
                     ))
-                    SettingsTextField(state.t(.apiKey), text: configBinding("models.providers.\(provider).apiKey"))
+                    SettingsTextField(state.t(.apiKey), text: configBinding("models.providers.\(provider).apiKey"), isSecure: true)
                 }
                 Text(state.t(.keychainHelp))
                     .font(.system(size: 11))
@@ -815,7 +877,12 @@ private struct SettingsContentView: View {
                         .buttonStyle(WebToolbarButtonStyle())
                 }
                 ConfigGrid {
-                    SettingsTextField(state.t(.provider), text: configBinding("models.entries.\(entry).provider"))
+                    SettingsPickerField(
+                        state.t(.provider),
+                        selection: configBinding("models.entries.\(entry).provider"),
+                        options: NativeModelsConfigFormFields.providerOptions(providerIDs: configChildIDs(parentPath: "models.providers")),
+                        emptyLabel: state.t(.provider)
+                    )
                     SettingsTextField(state.t(.name), text: Binding(
                         get: {
                             entry == "default" ? state.settings.providerConfig.model : configValue("models.entries.\(entry).name")
@@ -841,13 +908,44 @@ private struct SettingsContentView: View {
         )
     }
 
-    private func configBoolBinding(_ path: String) -> Binding<Bool> {
+    private func configBinding(_ path: String, fallback: String) -> Binding<String> {
         Binding(
             get: {
-                let value = configValue(path).lowercased()
-                return value == "true" || value == "yes" || value == "1"
+                let value = configValue(path)
+                return value.isEmpty ? fallback : value
+            },
+            set: { setConfigValue(path, $0) }
+        )
+    }
+
+    private func configBoolBinding(_ path: String, defaultValue: Bool = false) -> Binding<Bool> {
+        Binding(
+            get: {
+                configBool(path, defaultValue: defaultValue)
             },
             set: { setConfigValue(path, $0 ? "true" : "false") }
+        )
+    }
+
+    private var alwaysOnProjectRows: [WorkspaceProject] {
+        state.projects.filter { project in
+            !state.isGeneralProject(project)
+                && !AlwaysOnProjectConfig.projectRoot(state.effectiveWorkspacePath(for: project)).isEmpty
+        }
+    }
+
+    private func alwaysOnProjectEnabledBinding(root: String) -> Binding<Bool> {
+        Binding(
+            get: {
+                AlwaysOnProjectConfig.isEnabled(yaml: state.g9ClawConfigText, projectRoot: root)
+            },
+            set: { enabled in
+                state.g9ClawConfigText = AlwaysOnProjectConfig.setEnabled(
+                    in: state.g9ClawConfigText,
+                    projectRoot: root,
+                    enabled: enabled
+                )
+            }
         )
     }
 
@@ -863,22 +961,43 @@ private struct SettingsContentView: View {
         state.g9ClawConfigText != savedConfigText
     }
 
-    private func configBool(_ path: String) -> Bool {
-        let lower = configValue(path).lowercased()
-        return lower == "true" || lower == "1" || lower == "yes"
+    private func configBool(_ path: String, defaultValue: Bool = false) -> Bool {
+        NativeConfigBoolValue.resolve(configValue(path), defaultValue: defaultValue)
+    }
+
+    private func reloadSummaryIsReloaded(_ subsystem: NativeConfigReloadSubsystemSpec) -> Bool {
+        switch subsystem.state {
+        case .alwaysReloaded:
+            return true
+        case .boolPath(let path):
+            return configBool(path)
+        case .nonEmptyPath(let path):
+            return !configValue(path).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private func reloadSummaryDetail(_ subsystem: NativeConfigReloadSubsystemSpec) -> String {
+        if reloadSummaryIsReloaded(subsystem) {
+            return state.t(subsystem.reloadedDetail)
+        }
+        if let skippedDetail = subsystem.skippedDetail {
+            return state.t(skippedDetail)
+        }
+        return state.t(.skipped)
     }
 
     private func configFileURL() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".g9claw", isDirectory: true)
-            .appendingPathComponent("config.yaml")
+        EdgeClawConfigPath.configURL()
     }
 
     private func reloadConfigFromDisk() {
         do {
-            let text = try String(contentsOf: configFileURL(), encoding: .utf8)
+            let url = FileManager.default.fileExists(atPath: configFileURL().path)
+                ? configFileURL()
+                : EdgeClawConfigPath.legacyConfigURL()
+            let text = try String(contentsOf: url, encoding: .utf8)
             if isConfigDirty {
-            configExternalNotice = state.t(.configReloadedNotice)
+                configExternalNotice = state.t(.configReloadedNotice)
             }
             state.g9ClawConfigText = text
             savedConfigText = text
@@ -919,7 +1038,7 @@ private struct SettingsContentView: View {
         if let context = values["runtime.contextWindow"].flatMap(Int.init) {
             state.settings.contextWindow = context
         }
-        let defaultProvider = values["models.entries.default.provider"] ?? "g9claw"
+        let defaultProvider = defaultProviderID()
         if let baseURL = values["models.providers.\(defaultProvider).baseUrl"] {
             state.settings.providerConfig.baseURL = baseURL
         }
@@ -953,6 +1072,15 @@ private struct SettingsContentView: View {
         return NativeConfigValidation(errors: errors, warnings: warnings)
     }
 
+    private func defaultProviderID() -> String {
+        let provider = configValue("models.entries.default.provider").trimmingCharacters(in: .whitespacesAndNewlines)
+        return provider.isEmpty ? "edgeclaw" : provider
+    }
+
+    private func isDefaultProvider(_ provider: String) -> Bool {
+        provider == defaultProviderID()
+    }
+
     private func configChildIDs(parentPath: String) -> [String] {
         let prefix = parentPath + "."
         var ids = Set<String>()
@@ -963,6 +1091,14 @@ private struct SettingsContentView: View {
             }
         }
         return ids.sorted()
+    }
+
+    private func configModelOptions(includeEmpty: Bool = false, includeInherit: Bool = false) -> [String] {
+        NativeConfigModelOptions.options(
+            values: LegacyConfigLoader.scalarMap(from: state.g9ClawConfigText),
+            includeEmpty: includeEmpty,
+            includeInherit: includeInherit
+        )
     }
 
     private func dashedEmpty(_ text: String) -> some View {
@@ -985,13 +1121,7 @@ private struct SettingsContentView: View {
         state.g9ClawConfigText = YAMLScalarEditor.appendBlock(
             parentPath: "models.providers",
             id: id,
-            scalars: [
-                "type": "openai-chat",
-                "baseUrl": "",
-                "apiKey": "",
-                "transformer": "null",
-                "headers": "{}",
-            ],
+            scalars: NativeModelsConfigFormFields.newProviderScalars,
             in: state.g9ClawConfigText
         )
     }
@@ -1004,15 +1134,11 @@ private struct SettingsContentView: View {
             index += 1
             id = "entry\(index)"
         }
-        let firstProvider = configChildIDs(parentPath: "models.providers").first ?? ""
+        guard let firstProvider = configChildIDs(parentPath: "models.providers").first else { return }
         state.g9ClawConfigText = YAMLScalarEditor.appendBlock(
             parentPath: "models.entries",
             id: id,
-            scalars: [
-                "provider": firstProvider,
-                "name": "",
-                "contextWindow": "160000",
-            ],
+            scalars: NativeModelsConfigFormFields.newEntryScalars(firstProvider: firstProvider),
             in: state.g9ClawConfigText
         )
     }
@@ -1037,7 +1163,7 @@ private struct SettingsContentView: View {
 
     private func exportPermissions() {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "g9claw-permissions.json"
+        panel.nameFieldStringValue = PermissionsExportDefaults.filename()
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
@@ -1198,9 +1324,15 @@ private struct ConfigSummary: View {
     }
 }
 
-private enum NativeConfigViewMode: String, CaseIterable, Identifiable {
+enum NativeConfigViewMode: String, CaseIterable, Identifiable {
     case form
     case raw
+
+    static let storageKey = "edgeclaw:configView"
+
+    static func fromStoredRaw(_ rawValue: String) -> NativeConfigViewMode {
+        NativeConfigViewMode(rawValue: rawValue) ?? .form
+    }
 
     var id: String { rawValue }
 
@@ -1219,14 +1351,49 @@ private enum NativeConfigViewMode: String, CaseIterable, Identifiable {
     }
 }
 
-private struct NativeConfigValidation {
-    var errors: [String]
-    var warnings: [String]
-    var valid: Bool { errors.isEmpty }
+enum NativeAppearanceSection: String, CaseIterable, Identifiable {
+    case darkMode
+    case language
+    case toolDisplay
+    case viewOptions
+    case inputSettings
+    case projectSorting
+    case codeEditor
+
+    var id: String { rawValue }
 }
 
-private extension G9ClawConfigSection {
-    static let formSections: [G9ClawConfigSection] = [
+enum NativeAppearanceSettingsLayout {
+    static let sectionOrder: [NativeAppearanceSection] = [
+        .darkMode,
+        .language,
+        .toolDisplay,
+        .viewOptions,
+        .inputSettings,
+        .projectSorting,
+        .codeEditor,
+    ]
+    static let usesDarkModeToggle = true
+    static let usesThemePicker = false
+    static let fontSizeOptions = [
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        18,
+        20,
+    ]
+}
+
+enum NativeConfigFormLayout {
+    static let usesSplitSectionNavigation = true
+    static let usesSectionDropdown = false
+    static let sectionNavigationWidth: CGFloat = 180
+    static let sectionNavigationGap: CGFloat = 16
+    static let sectionOrder: [G9ClawConfigSection] = [
         .runtime,
         .models,
         .agents,
@@ -1236,6 +1403,248 @@ private extension G9ClawConfigSection {
         .router,
         .gateway,
     ]
+}
+
+enum NativeReloadSummaryState: Hashable {
+    case alwaysReloaded
+    case boolPath(String)
+    case nonEmptyPath(String)
+}
+
+struct NativeConfigReloadSubsystemSpec: Hashable, Identifiable {
+    let id: String
+    let label: L10nKey
+    let state: NativeReloadSummaryState
+    let reloadedDetail: L10nKey
+    let skippedDetail: L10nKey?
+}
+
+enum NativeConfigReloadSummary {
+    static let subsystems: [NativeConfigReloadSubsystemSpec] = [
+        NativeConfigReloadSubsystemSpec(
+            id: "processEnv",
+            label: .processEnv,
+            state: .alwaysReloaded,
+            reloadedDetail: .nativeSettingsApplied,
+            skippedDetail: nil
+        ),
+        NativeConfigReloadSubsystemSpec(
+            id: "memory",
+            label: .memory,
+            state: .boolPath("memory.enabled"),
+            reloadedDetail: .memoryServiceEnabled,
+            skippedDetail: .memoryDisabled
+        ),
+        NativeConfigReloadSubsystemSpec(
+            id: "router",
+            label: .routerCCR,
+            state: .boolPath("router.enabled"),
+            reloadedDetail: .routerDashboardNative,
+            skippedDetail: .routerDisabled
+        ),
+        NativeConfigReloadSubsystemSpec(
+            id: "gateway",
+            label: .gateway,
+            state: .boolPath("gateway.enabled"),
+            reloadedDetail: .gatewayConfigParsed,
+            skippedDetail: .gatewayDisabled
+        ),
+        NativeConfigReloadSubsystemSpec(
+            id: "proxy",
+            label: .proxy,
+            state: .nonEmptyPath("runtime.proxyPort"),
+            reloadedDetail: .proxyConfigParsed,
+            skippedDetail: .proxyDisabled
+        ),
+    ]
+
+    static var subsystemIDs: [String] {
+        subsystems.map(\.id)
+    }
+}
+
+enum NativeConfigModelOptions {
+    static func entryIDs(values: [String: String]) -> [String] {
+        let prefix = "models.entries."
+        var ids = Set<String>()
+        for key in values.keys where key.hasPrefix(prefix) {
+            let suffix = key.dropFirst(prefix.count)
+            if let first = suffix.split(separator: ".").first {
+                ids.insert(String(first))
+            }
+        }
+        return ids.sorted()
+    }
+
+    static func options(
+        values: [String: String],
+        includeEmpty: Bool = false,
+        includeInherit: Bool = false
+    ) -> [String] {
+        var result: [String] = []
+        if includeEmpty {
+            result.append("")
+        }
+        if includeInherit {
+            result.append("inherit")
+        }
+        result.append(contentsOf: entryIDs(values: values))
+        return result
+    }
+}
+
+enum NativeModelsConfigFormFields {
+    static let defaultProviderType = "openai-chat"
+    static let providerTypeOptions = [
+        "openai-chat",
+        "openai-responses",
+        "anthropic",
+        "litellm",
+        "ccr",
+    ]
+    static let newProviderScalars = [
+        "type": defaultProviderType,
+        "baseUrl": "",
+        "apiKey": "",
+    ]
+
+    static func providerOptions(providerIDs: [String]) -> [String] {
+        [""] + providerIDs
+    }
+
+    static func newEntryScalars(firstProvider: String) -> [String: String] {
+        [
+            "provider": firstProvider,
+            "name": "",
+        ]
+    }
+}
+
+struct NativeConfigTextFieldSpec: Hashable, Identifiable {
+    let label: L10nKey
+    let path: String
+    var isSecure = false
+
+    var id: String { path }
+}
+
+struct NativeRagEndpointConfigCardSpec: Hashable, Identifiable {
+    let id: String
+    let title: L10nKey
+    let detail: L10nKey
+    let fields: [NativeConfigTextFieldSpec]
+    let includesDefaultTopK: Bool
+}
+
+enum NativeRuntimeConfigFormFields {
+    static let workspacesRootPath = "runtime.workspacesRoot"
+    static let textFields: [NativeConfigTextFieldSpec] = [
+        NativeConfigTextFieldSpec(label: .host, path: "runtime.host"),
+        NativeConfigTextFieldSpec(label: .serverPort, path: "runtime.serverPort"),
+        NativeConfigTextFieldSpec(label: .vitePort, path: "runtime.vitePort"),
+        NativeConfigTextFieldSpec(label: .proxyPort, path: "runtime.proxyPort"),
+        NativeConfigTextFieldSpec(label: .contextWindow, path: "runtime.contextWindow"),
+        NativeConfigTextFieldSpec(label: .apiTimeoutMs, path: "runtime.apiTimeoutMs"),
+        NativeConfigTextFieldSpec(label: .databasePath, path: "runtime.databasePath"),
+    ]
+    static let visiblePaths = textFields.map(\.path) + [
+        workspacesRootPath,
+    ]
+}
+
+enum NativeAlwaysOnConfigFormFields {
+    static let enabledPath = "alwaysOn.discovery.trigger.enabled"
+    static let textFields: [NativeConfigTextFieldSpec] = [
+        NativeConfigTextFieldSpec(label: .tickIntervalMinutes, path: "alwaysOn.discovery.trigger.tickIntervalMinutes"),
+        NativeConfigTextFieldSpec(label: .cooldownMinutes, path: "alwaysOn.discovery.trigger.cooldownMinutes"),
+        NativeConfigTextFieldSpec(label: .dailyBudget, path: "alwaysOn.discovery.trigger.dailyBudget"),
+    ]
+    static let visiblePaths = [enabledPath] + textFields.map(\.path)
+}
+
+enum NativeRagConfigFormFields {
+    static let enabledPath = "rag.enabled"
+    static let disableBuiltInWebToolsPath = "rag.disableBuiltInWebTools"
+    static let disableBuiltInWebToolsDefault = true
+    static let booleanDefaults = [
+        enabledPath: false,
+        disableBuiltInWebToolsPath: disableBuiltInWebToolsDefault,
+    ]
+    static let localKnowledgeFields: [NativeConfigTextFieldSpec] = [
+        NativeConfigTextFieldSpec(label: .localKnowledgeBaseURL, path: "rag.localKnowledge.baseUrl"),
+        NativeConfigTextFieldSpec(label: .apiKey, path: "rag.localKnowledge.apiKey", isSecure: true),
+        NativeConfigTextFieldSpec(label: .embeddingModel, path: "rag.localKnowledge.modelName"),
+        NativeConfigTextFieldSpec(label: .databaseURL, path: "rag.localKnowledge.databaseUrl"),
+    ]
+    static let glmWebSearchFields: [NativeConfigTextFieldSpec] = [
+        NativeConfigTextFieldSpec(label: .glmWebSearchBaseURL, path: "rag.glmWebSearch.baseUrl"),
+        NativeConfigTextFieldSpec(label: .apiKey, path: "rag.glmWebSearch.apiKey", isSecure: true),
+        NativeConfigTextFieldSpec(label: .glmDefaultTopK, path: "rag.glmWebSearch.defaultTopK"),
+    ]
+    static let endpointCards: [NativeRagEndpointConfigCardSpec] = [
+        NativeRagEndpointConfigCardSpec(
+            id: "localKnowledge",
+            title: .ragLocalKnowledgeTitle,
+            detail: .ragLocalKnowledgeDetail,
+            fields: localKnowledgeFields,
+            includesDefaultTopK: false
+        ),
+        NativeRagEndpointConfigCardSpec(
+            id: "glmWebSearch",
+            title: .ragGlmWebSearchTitle,
+            detail: .ragGlmWebSearchDetail,
+            fields: glmWebSearchFields,
+            includesDefaultTopK: true
+        ),
+    ]
+    static let textFields: [NativeConfigTextFieldSpec] = localKnowledgeFields + glmWebSearchFields
+}
+
+enum NativeConfigBoolValue {
+    static func resolve(_ rawValue: String, defaultValue: Bool = false) -> Bool {
+        let lower = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower.isEmpty {
+            return defaultValue
+        }
+        if lower == "true" || lower == "1" || lower == "yes" {
+            return true
+        }
+        if lower == "false" || lower == "0" || lower == "no" {
+            return false
+        }
+        return defaultValue
+    }
+}
+
+enum NativeMemoryConfigFormFields {
+    static let enabledPath = "memory.enabled"
+    static let modelPath = "memory.model"
+    static let visiblePaths = [
+        enabledPath,
+        modelPath,
+    ]
+}
+
+enum NativeRouterConfigFormFields {
+    static let enabledPath = "router.enabled"
+    static let visiblePaths = [
+        enabledPath,
+    ]
+}
+
+enum NativeGatewayConfigFormFields {
+    static let enabledPath = "gateway.enabled"
+    static let homePath = "gateway.home"
+    static let visiblePaths = [
+        enabledPath,
+        homePath,
+    ]
+}
+
+private struct NativeConfigValidation {
+    var errors: [String]
+    var warnings: [String]
+    var valid: Bool { errors.isEmpty }
 }
 
 private struct NoticeBanner: View {
@@ -1429,6 +1838,36 @@ enum YAMLScalarEditor {
         return result
     }
 
+    static func setObjectScalar(parentPath: String, id: String, key: String, value: String, in yaml: String) -> String {
+        let parentComponents = parentPath.split(separator: ".").map(String.init)
+        guard !parentComponents.isEmpty, !id.isEmpty, !key.isEmpty else { return yaml }
+
+        var lines = yaml.components(separatedBy: "\n")
+        let scalarComponents = parentComponents + [id, key]
+        if let scalarIndex = lineIndex(forComponents: scalarComponents, in: lines) {
+            let currentIndent = indent(of: lines[scalarIndex])
+            lines[scalarIndex] = "\(String(repeating: " ", count: currentIndent))\(key): \(format(value))"
+            return lines.joined(separator: "\n")
+        }
+
+        let objectComponents = parentComponents + [id]
+        if let objectIndex = lineIndex(forComponents: objectComponents, in: lines) {
+            let objectIndent = indent(of: lines[objectIndex])
+            var insertIndex = objectIndex + 1
+            while insertIndex < lines.count {
+                let trimmed = lines[insertIndex].trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty, indent(of: lines[insertIndex]) <= objectIndent {
+                    break
+                }
+                insertIndex += 1
+            }
+            lines.insert("\(String(repeating: " ", count: objectIndent + 2))\(key): \(format(value))", at: insertIndex)
+            return lines.joined(separator: "\n")
+        }
+
+        return appendBlock(parentPath: parentPath, id: id, scalars: [key: value], in: yaml)
+    }
+
     static func renameObject(parentPath: String, oldID: String, newID: String, in yaml: String) -> String {
         var lines = yaml.components(separatedBy: "\n")
         let path = "\(parentPath).\(oldID)"
@@ -1471,6 +1910,10 @@ enum YAMLScalarEditor {
     }
 
     private static func lineIndex(for path: String, in lines: [String]) -> Int? {
+        lineIndex(forComponents: path.split(separator: ".").map(String.init), in: lines)
+    }
+
+    private static func lineIndex(forComponents components: [String], in lines: [String]) -> Int? {
         var stack: [(indent: Int, key: String)] = []
         for index in lines.indices {
             let line = lines[index]
@@ -1483,8 +1926,8 @@ enum YAMLScalarEditor {
             guard let colon = trimmed.firstIndex(of: ":") else { continue }
             let key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespaces)
             let value = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-            let currentPath = (stack.map(\.key) + [key]).joined(separator: ".")
-            if currentPath == path {
+            let currentComponents = stack.map(\.key) + [key]
+            if currentComponents == components {
                 return index
             }
             if value.isEmpty {
@@ -1512,6 +1955,32 @@ enum YAMLScalarEditor {
             return "\"\(trimmed.replacingOccurrences(of: "\"", with: "\\\""))\""
         }
         return trimmed
+    }
+}
+
+enum AlwaysOnProjectConfig {
+    static func projectRoot(_ root: String) -> String {
+        root.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "[\\\\/]+$", with: "", options: .regularExpression)
+    }
+
+    static func isEnabled(yaml: String, projectRoot rawRoot: String) -> Bool {
+        let root = projectRoot(rawRoot)
+        guard !root.isEmpty else { return false }
+        let value = LegacyConfigLoader.scalarMap(from: yaml)["alwaysOn.discovery.projects.\(root).enabled"]?.lowercased()
+        return value == "true" || value == "1" || value == "yes"
+    }
+
+    static func setEnabled(in yaml: String, projectRoot rawRoot: String, enabled: Bool) -> String {
+        let root = projectRoot(rawRoot)
+        guard !root.isEmpty else { return yaml }
+        return YAMLScalarEditor.setObjectScalar(
+            parentPath: "alwaysOn.discovery.projects",
+            id: root,
+            key: "enabled",
+            value: enabled ? "true" : "false",
+            in: yaml
+        )
     }
 }
 
@@ -1556,10 +2025,12 @@ private struct SettingsFieldLabel: View {
 struct SettingsTextField: View {
     var label: String
     @Binding var text: String
+    var isSecure: Bool
 
-    init(_ label: String, text: Binding<String>) {
+    init(_ label: String, text: Binding<String>, isSecure: Bool = false) {
         self.label = label
         self._text = text
+        self.isSecure = isSecure
     }
 
     var body: some View {
@@ -1567,10 +2038,48 @@ struct SettingsTextField: View {
             Text(label)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(DesignTokens.tertiaryText)
-            TextField(label, text: $text)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.regular)
-                .font(.system(size: 13, design: .monospaced))
+            if isSecure {
+                SecureField(label, text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.regular)
+                    .font(.system(size: 13, design: .monospaced))
+            } else {
+                TextField(label, text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.regular)
+                    .font(.system(size: 13, design: .monospaced))
+            }
+        }
+    }
+}
+
+struct SettingsPickerField: View {
+    var label: String
+    @Binding var selection: String
+    var options: [String]
+    var emptyLabel: String
+
+    init(_ label: String, selection: Binding<String>, options: [String], emptyLabel: String) {
+        self.label = label
+        self._selection = selection
+        self.options = options
+        self.emptyLabel = emptyLabel
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(DesignTokens.tertiaryText)
+            Picker(label, selection: $selection) {
+                ForEach(options, id: \.self) { option in
+                    Text(option.isEmpty || option == "inherit" ? emptyLabel : option)
+                        .tag(option)
+                }
+            }
+            .pickerStyle(.menu)
+            .controlSize(.regular)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
