@@ -19,7 +19,7 @@ enum DesignTokens {
     static let controlSurface = adaptive(light: nsColor(255, 255, 255, 0.48), dark: nsColor(46, 46, 48, 0.46))
     static let controlSurfaceActive = adaptive(light: nsColor(255, 255, 255, 0.82), dark: nsColor(58, 58, 60, 0.70))
     static let modalSurface = adaptive(light: nsColor(255, 255, 255, 0.96), dark: nsColor(24, 24, 26, 0.96))
-    static let sidebarOverlay = adaptive(light: nsColor(248, 248, 248, 0.44), dark: nsColor(22, 22, 24, 0.44))
+    static let sidebarOverlay = adaptive(light: nsColor(248, 248, 248, 0.18), dark: nsColor(22, 22, 24, 0.26))
     static let mutedForeground = adaptive(light: nsColor(115, 115, 115), dark: nsColor(163, 163, 163))
     static let ring = adaptive(light: nsColor(77, 77, 77), dark: nsColor(163, 163, 163))
     static let destructiveForeground = adaptive(light: nsColor(250, 250, 250), dark: nsColor(250, 250, 250))
@@ -227,7 +227,7 @@ struct AppGlassWindowBackground: View {
 struct SidebarGlassBackground: View {
     var body: some View {
         ZStack {
-            VisualEffectBackground(material: .sidebar, blendingMode: .withinWindow)
+            VisualEffectBackground(material: .sidebar, blendingMode: .behindWindow)
             DesignTokens.sidebarOverlay
         }
         .allowsHitTesting(false)
