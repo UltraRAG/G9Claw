@@ -6,6 +6,7 @@ struct SidebarView: View {
     @Environment(\.openSettings) private var openSettings
     @Binding var width: Double
     @AppStorage("sidebar-v2-active-section") private var activeSectionRaw = SidebarSection.projects.rawValue
+    @AppStorage("sidebar-v2-last-project-id") private var lastProjectIDRaw = ""
     @State private var expandedProjectIDs: Set<UUID> = []
     @State private var collapsedSessionProjectIDs: Set<UUID> = []
     @State private var isResizing = false
@@ -40,12 +41,14 @@ struct SidebarView: View {
             if let selectedProjectID = state.selectedProjectID {
                 expandedProjectIDs.insert(selectedProjectID)
             }
+            rememberSelectedProject()
         }
         .onChange(of: state.selectedProjectID) { _, _ in
             syncSectionWithSelection()
             if let selectedProjectID = state.selectedProjectID {
                 expandedProjectIDs.insert(selectedProjectID)
             }
+            rememberSelectedProject()
         }
     }
 
@@ -121,7 +124,9 @@ struct SidebarView: View {
     private func segmentButton(_ section: SidebarSection) -> some View {
         Button {
             activeSection = section
-            if section == .general, let generalProject {
+            if section == .projects {
+                restoreProjectSelection()
+            } else if let generalProject {
                 state.selectProject(generalProject)
             }
         } label: {
@@ -567,6 +572,21 @@ struct SidebarView: View {
         } else {
             activeSection = .projects
         }
+    }
+
+    private func rememberSelectedProject() {
+        guard let selectedProject = state.selectedProject, !state.isGeneralProject(selectedProject) else { return }
+        lastProjectIDRaw = selectedProject.id.uuidString
+    }
+
+    private func restoreProjectSelection() {
+        guard state.selectedProject.map(state.isGeneralProject) ?? true else { return }
+        guard let project = SidebarProjectRestorationPolicy.preferredProject(
+            from: otherProjects,
+            lastProjectIDRaw: lastProjectIDRaw
+        ) else { return }
+        expandedProjectIDs.insert(project.id)
+        state.selectProject(project)
     }
 
     private func relativeDate(_ date: Date) -> String {
@@ -1027,6 +1047,19 @@ struct ProjectCreationWizardView: View {
 private enum WorkspaceCreationType {
     case existing
     case new
+}
+
+struct SidebarProjectRestorationPolicy {
+    static func preferredProject(
+        from projects: [WorkspaceProject],
+        lastProjectIDRaw: String
+    ) -> WorkspaceProject? {
+        if let lastProjectID = UUID(uuidString: lastProjectIDRaw),
+           let rememberedProject = projects.first(where: { $0.id == lastProjectID }) {
+            return rememberedProject
+        }
+        return projects.first
+    }
 }
 
 private enum SidebarSection: String {

@@ -56,6 +56,23 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(WorkspaceService.sortedProjects([old, recent], order: .date).first?.name, "recent")
     }
 
+    func testSidebarProjectRestorationPrefersRememberedProject() {
+        let now = Date()
+        let first = project(name: "first", displayName: "First", date: now)
+        let remembered = project(name: "remembered", displayName: "Remembered", date: now)
+
+        let restored = SidebarProjectRestorationPolicy.preferredProject(
+            from: [first, remembered],
+            lastProjectIDRaw: remembered.id.uuidString
+        )
+
+        XCTAssertEqual(restored?.id, remembered.id)
+        XCTAssertEqual(
+            SidebarProjectRestorationPolicy.preferredProject(from: [first, remembered], lastProjectIDRaw: "")?.id,
+            first.id
+        )
+    }
+
     func testLegacyConfigLoaderReadsDefaultProviderSettings() {
         let yaml = """
         runtime:
