@@ -3602,16 +3602,16 @@ final class ParityLogicTests: XCTestCase {
         let english = LocalizationService(language: .english)
         let chinese = LocalizationService(language: .chineseSimplified)
 
-        XCTAssertEqual(english.text(.alwaysOn), "Always-On")
+        XCTAssertEqual(english.text(.alwaysOn), "Always-on")
         XCTAssertEqual(english.text(.backgroundDiscoveryAgent), "Background discovery agent for this project.")
         XCTAssertEqual(english.text(.plansCronJobs), "Plans & Cron Jobs")
         XCTAssertEqual(english.text(.discover), "Discover")
-        XCTAssertEqual(english.text(.alwaysOnProjectOnly), "Pick a project to view Always-On.")
-        XCTAssertEqual(chinese.text(.alwaysOn), "常驻代理")
+        XCTAssertEqual(english.text(.alwaysOnProjectOnly), "Pick a project to view Always-on.")
+        XCTAssertEqual(chinese.text(.alwaysOn), "常驻")
         XCTAssertEqual(chinese.text(.backgroundDiscoveryAgent), "为该项目持续运行的后台发现代理。")
         XCTAssertEqual(chinese.text(.plansCronJobs), "计划与定时任务")
         XCTAssertEqual(chinese.text(.discover), "扫描")
-        XCTAssertEqual(chinese.text(.alwaysOnProjectOnly), "选择一个项目以查看 Always-On。")
+        XCTAssertEqual(chinese.text(.alwaysOnProjectOnly), "选择一个项目以查看常驻。")
 
         let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-05-23T12:00:00Z"))
         XCTAssertEqual(
@@ -6274,10 +6274,19 @@ final class ParityLogicTests: XCTestCase {
             XCTAssertEqual(layout.visibleTabs, AppTab.primaryTabs)
             XCTAssertTrue(layout.overflowTabs.isEmpty)
             XCTAssertFalse(layout.iconOnly)
-            XCTAssertEqual(layout.estimatedWidth, 508)
+            XCTAssertEqual(layout.estimatedWidth, 544)
         }
         XCTAssertEqual(MainHeaderToolSwitcherLayout.buttonWidth(for: .chat, iconOnly: false), 82)
+        XCTAssertEqual(MainHeaderToolSwitcherLayout.buttonWidth(for: .alwaysOn, iconOnly: false), 118)
         XCTAssertEqual(MainHeaderToolSwitcherLayout.buttonWidth(for: .chat, iconOnly: true), 36)
+
+        let chatOnlyLayout = MainHeaderToolSwitcherLayout.resolve(
+            availableWidth: 760,
+            activeTab: .chat,
+            tabs: [.chat]
+        )
+        XCTAssertEqual(chatOnlyLayout.visibleTabs, [.chat])
+        XCTAssertEqual(chatOnlyLayout.estimatedWidth, 88)
     }
 
     func testCodeEditorPreferencesDefaultToLineNumbersAndMinimapForNewUsers() {

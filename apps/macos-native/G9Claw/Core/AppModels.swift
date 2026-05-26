@@ -1121,7 +1121,7 @@ enum MemoryRecordType: String, Codable, CaseIterable, Identifiable {
         case .project: "Project"
         case .feedback: "Feedback"
         case .user: "User"
-        case .generalProjectMeta: "General Project"
+        case .generalProjectMeta: "Chat Project"
         }
     }
 }

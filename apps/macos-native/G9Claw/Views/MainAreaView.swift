@@ -31,21 +31,24 @@ struct MainAreaView: View {
             let horizontalPadding: CGFloat = availableWidth < 760 ? 12 : 18
             let controlGap: CGFloat = availableWidth < 1080 ? 6 : 10
             let innerWidth = max(0, availableWidth - horizontalPadding * 2)
+            let showsToolSwitcher = showsHeaderToolSwitcher
             let switcherLayout = MainHeaderToolSwitcherLayout.resolve(
                 availableWidth: innerWidth,
                 activeTab: state.activeTab
             )
 
             HStack(spacing: 0) {
-                breadcrumb(showSessionTitle: showSessionTitle)
+                breadcrumb(showSessionTitle: showSessionTitle, showTabLabel: showsToolSwitcher)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .layoutPriority(4)
                     .clipped()
 
-                toolSwitcher(layout: switcherLayout)
-                    .padding(.leading, controlGap)
-                    .frame(width: switcherLayout.estimatedWidth, alignment: .trailing)
-                    .layoutPriority(5)
+                if showsToolSwitcher {
+                    toolSwitcher(layout: switcherLayout)
+                        .padding(.leading, controlGap)
+                        .frame(width: switcherLayout.estimatedWidth, alignment: .trailing)
+                        .layoutPriority(5)
+                }
             }
             .padding(.horizontal, horizontalPadding)
             .frame(width: proxy.size.width, height: DesignTokens.headerHeight)
@@ -59,10 +62,17 @@ struct MainAreaView: View {
                 .fill(DesignTokens.separator.opacity(0.46))
                 .frame(height: 1)
         }
+        .onAppear(perform: clampActiveTabToAvailableTabs)
+        .onChange(of: state.selectedProjectID) { _, _ in
+            clampActiveTabToAvailableTabs()
+        }
+        .onChange(of: state.activeTab) { _, _ in
+            clampActiveTabToAvailableTabs()
+        }
     }
 
-    private func breadcrumb(showSessionTitle: Bool) -> some View {
-        let workspaceTitle = state.selectedProject?.displayName ?? state.t(.general)
+    private func breadcrumb(showSessionTitle: Bool, showTabLabel: Bool) -> some View {
+        let workspaceTitle = selectedWorkspaceTitle
 
         return HStack(spacing: 6) {
             Text(workspaceTitle)
@@ -70,13 +80,15 @@ struct MainAreaView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .layoutPriority(5)
-            Text("/")
-                .foregroundStyle(DesignTokens.neutral400.opacity(0.60))
-            Text(state.tabLabel(state.activeTab))
-                .fontWeight(.medium)
-                .foregroundStyle(DesignTokens.text)
-                .lineLimit(1)
-                .layoutPriority(1)
+            if showTabLabel {
+                Text("/")
+                    .foregroundStyle(DesignTokens.neutral400.opacity(0.60))
+                Text(state.tabLabel(state.activeTab))
+                    .fontWeight(.medium)
+                    .foregroundStyle(DesignTokens.text)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+            }
             if showSessionTitle, let session = state.selectedSession {
                 Text(session.displayTitle)
                     .font(.system(size: 11, design: .monospaced))
@@ -85,10 +97,36 @@ struct MainAreaView: View {
                     .truncationMode(.tail)
                     .padding(.leading, 6)
                     .layoutPriority(0)
-                }
+            }
         }
         .font(.system(size: 12.5))
         .frame(minWidth: 0, alignment: .leading)
+    }
+
+    private var selectedWorkspaceTitle: String {
+        guard let selectedProject = state.selectedProject else {
+            return state.t(.general)
+        }
+        if state.isGeneralProject(selectedProject) {
+            return state.t(.general)
+        }
+        return selectedProject.displayName
+    }
+
+    private var showsHeaderToolSwitcher: Bool {
+        guard let selectedProject = state.selectedProject else {
+            return false
+        }
+        return !state.isGeneralProject(selectedProject)
+    }
+
+    private var availableToolTabs: [AppTab] {
+        showsHeaderToolSwitcher ? AppTab.primaryTabs : [.chat]
+    }
+
+    private func clampActiveTabToAvailableTabs() {
+        guard !availableToolTabs.contains(state.activeTab) else { return }
+        state.activeTab = .chat
     }
 
     @ViewBuilder
@@ -275,7 +313,12 @@ struct MainHeaderToolSwitcherLayout: Equatable {
         if iconOnly {
             return iconButtonWidth
         }
-        return regularButtonWidth
+        switch tab {
+        case .alwaysOn:
+            return 118
+        default:
+            return regularButtonWidth
+        }
     }
 
     private static func estimatedWidth(for visible: [AppTab], overflow: [AppTab], iconOnly: Bool) -> CGFloat {

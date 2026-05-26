@@ -742,7 +742,7 @@ struct MemoryView: View {
                 RoutingStatCard(icon: "clock", label: memory("Latest", "最新"), value: snapshot.latestMemoryAt.map(relativeDate) ?? state.t(.none), detail: memory("latest memory update", "最新记忆更新"))
             }
 
-            MemoryRecordSection(title: memory("Project Memory", "项目记忆"), subtitle: memory("Progress, facts, and state records for the current project.", "当前 project 的进展、事实和状态记录"), records: snapshot.workspace.projectEntries, empty: snapshot.workspace.workspaceMode == "general" ? memory("No general memory yet.", "当前没有通用记忆。") : memory("No project memory yet.", "当前没有项目记忆。")) { record in
+            MemoryRecordSection(title: memory("Project Memory", "项目记忆"), subtitle: memory("Progress, facts, and state records for the current project.", "当前 project 的进展、事实和状态记录"), records: snapshot.workspace.projectEntries, empty: snapshot.workspace.workspaceMode == "general" ? memory("No chat memory yet.", "当前没有对话记忆。") : memory("No project memory yet.", "当前没有项目记忆。")) { record in
                 selectedRecord = record
             }
             MemoryRecordSection(title: memory("Collaboration Feedback", "协作反馈"), subtitle: memory("User preferences, constraints, and delivery rules for the current project.", "用户对当前 project 的偏好、约束和交付规则"), records: snapshot.workspace.feedbackEntries, empty: memory("No collaboration feedback yet.", "当前没有协作反馈。")) { record in

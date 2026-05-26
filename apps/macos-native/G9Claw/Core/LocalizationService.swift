@@ -78,6 +78,7 @@ enum L10nKey: String, CaseIterable {
     case displayName
     case done
     case download
+    case enterProjectWork
     case exported
     case exportAction
     case failed
@@ -102,6 +103,7 @@ enum L10nKey: String, CaseIterable {
     case newFolder
     case newSession
     case name
+    case addNewProject
     case noGeneralWorkspaceFound
     case noProjectsFound
     case noSessionsYet
@@ -351,6 +353,7 @@ enum L10nKey: String, CaseIterable {
     case session
     case selectProject
     case searchMemory
+    case searchProjects
     case storedInKeychain
     case subagents
     case threadSessionsPerUser
@@ -419,12 +422,13 @@ struct LocalizationService {
 
     static let english: [L10nKey: String] = [
         .add: "Add",
+        .addNewProject: "Add new project",
         .agent: "Agent",
         .allow: "Allow",
         .allowedTools: "Allowed tools",
         .allowedToolsDetail: "Tools that auto-run without prompting.",
         .allowedToolPlaceholder: #"e.g. "Bash(git log:*)" or "Write""#,
-        .alwaysOn: "Always-On",
+        .alwaysOn: "Always-on",
         .appearance: "Appearance",
         .askPlaceholder: "Ask G9Claw",
         .attach: "Attach",
@@ -490,12 +494,13 @@ struct LocalizationService {
         .displayName: "Project Alias",
         .done: "Done",
         .download: "Download",
+        .enterProjectWork: "Enter Project Work",
         .exported: "Exported",
         .exportAction: "Export",
         .failed: "Failed",
         .fetch: "Fetch",
         .files: "Files",
-        .general: "General",
+        .general: "Chat",
         .git: "Git",
         .githubURLOptional: "GitHub URL (optional)",
         .hideSidebar: "Hide sidebar",
@@ -512,9 +517,9 @@ struct LocalizationService {
         .newAction: "New",
         .newFile: "New File",
         .newFolder: "New Folder",
-        .newSession: "New Session",
+        .newSession: "New Chat",
         .name: "Name",
-        .noGeneralWorkspaceFound: "No general workspace found",
+        .noGeneralWorkspaceFound: "No chat workspace found",
         .noProjectsFound: "No projects found",
         .noSessionsYet: "No sessions yet",
         .noTokenBudget: "No token budget has been reported for this session yet.",
@@ -601,7 +606,7 @@ struct LocalizationService {
         .addProvider: "Add Provider",
         .allowAllUsers: "Allow All Users",
         .allowAllUsersDetail: "Allow any remote user to interact with the gateway.",
-        .alwaysOnProjectOnly: "Pick a project to view Always-On.",
+        .alwaysOnProjectOnly: "Pick a project to view Always-on.",
         .alwaysOnScope: "Scope",
         .apiKey: "API key",
         .archive: "Archive",
@@ -699,7 +704,7 @@ struct LocalizationService {
         .httpsProxy: "HTTPS Proxy",
         .databasePath: "Database Path",
         .workspacesRoot: "Workspaces Root",
-        .generalWorkspace: "General Workspace",
+        .generalWorkspace: "Chat Workspace",
         .model: "Model",
         .defaultConfig: "Default",
         .tickIntervalMinutes: "Tick Interval Minutes",
@@ -737,8 +742,8 @@ struct LocalizationService {
         .unauthorizedDMBehavior: "Unauthorized DM Behavior",
         .sessionMetadata: "Session Metadata",
         .userBindings: "User Bindings",
-        .generalCWD: "General CWD",
-        .generalJSONL: "General JSONL",
+        .generalCWD: "Chat CWD",
+        .generalJSONL: "Chat JSONL",
         .boundProjectJSONL: "Bound Project JSONL",
         .baseURL: "Base URL",
         .reload: "Reload",
@@ -763,6 +768,7 @@ struct LocalizationService {
         .session: "Session",
         .selectProject: "Select a project",
         .searchMemory: "Search memory",
+        .searchProjects: "Search projects",
         .storedInKeychain: "Stored in Keychain",
         .subagents: "Subagents",
         .threadSessionsPerUser: "Thread Sessions Per User",
@@ -781,7 +787,7 @@ struct LocalizationService {
         .noMemoryRecordsDetail: "Run Index or add memory files in this workspace.",
         .userSummary: "User Summary",
         .noSummaryYet: "No summary yet.",
-        .generalSkillsOnly: "General chat - user-scope skills only",
+        .generalSkillsOnly: "Chat - user-scope skills only",
         .projectSkills: "Project Skills",
         .userSkills: "User Skills",
         .pickSkill: "Pick a skill",
@@ -800,12 +806,13 @@ struct LocalizationService {
 
     static let chineseSimplified: [L10nKey: String] = [
         .add: "添加",
+        .addNewProject: "添加新项目",
         .agent: "智能体",
         .allow: "允许",
         .allowedTools: "允许的工具",
         .allowedToolsDetail: "无需确认即可自动运行的工具。",
         .allowedToolPlaceholder: #"例如 "Bash(git log:*)" 或 "Write""#,
-        .alwaysOn: "常驻代理",
+        .alwaysOn: "常驻",
         .appearance: "外观",
         .askPlaceholder: "询问 G9Claw",
         .attach: "添加附件",
@@ -871,12 +878,13 @@ struct LocalizationService {
         .displayName: "项目别名",
         .done: "完成",
         .download: "下载",
+        .enterProjectWork: "进入项目工作",
         .exported: "已导出",
         .exportAction: "导出",
         .failed: "失败",
         .fetch: "拉取远端",
         .files: "文件",
-        .general: "通用",
+        .general: "对话",
         .git: "Git",
         .githubURLOptional: "GitHub URL（可选）",
         .hideSidebar: "隐藏侧边栏",
@@ -893,9 +901,9 @@ struct LocalizationService {
         .newAction: "新建",
         .newFile: "新建文件",
         .newFolder: "新建文件夹",
-        .newSession: "新会话",
+        .newSession: "新对话",
         .name: "名称",
-        .noGeneralWorkspaceFound: "未找到通用工作区",
+        .noGeneralWorkspaceFound: "未找到对话工作区",
         .noProjectsFound: "未找到项目",
         .noSessionsYet: "暂无会话",
         .noTokenBudget: "当前会话尚未返回 token 预算。",
@@ -982,7 +990,7 @@ struct LocalizationService {
         .addProvider: "添加 Provider",
         .allowAllUsers: "允许所有用户",
         .allowAllUsersDetail: "允许任意远程用户访问网关。",
-        .alwaysOnProjectOnly: "选择一个项目以查看 Always-On。",
+        .alwaysOnProjectOnly: "选择一个项目以查看常驻。",
         .alwaysOnScope: "持久性范围",
         .apiKey: "API key",
         .archive: "归档",
@@ -1080,7 +1088,7 @@ struct LocalizationService {
         .httpsProxy: "HTTPS 代理",
         .databasePath: "数据库路径",
         .workspacesRoot: "工作区根目录",
-        .generalWorkspace: "通用工作区",
+        .generalWorkspace: "对话工作区",
         .model: "模型",
         .defaultConfig: "默认",
         .tickIntervalMinutes: "轮询间隔（分钟）",
@@ -1118,8 +1126,8 @@ struct LocalizationService {
         .unauthorizedDMBehavior: "未授权私信行为",
         .sessionMetadata: "会话元数据",
         .userBindings: "用户绑定",
-        .generalCWD: "通用 CWD",
-        .generalJSONL: "通用 JSONL",
+        .generalCWD: "对话 CWD",
+        .generalJSONL: "对话 JSONL",
         .boundProjectJSONL: "绑定项目 JSONL",
         .baseURL: "Base URL",
         .reload: "重新加载",
@@ -1144,6 +1152,7 @@ struct LocalizationService {
         .session: "会话",
         .selectProject: "选择项目",
         .searchMemory: "搜索记忆",
+        .searchProjects: "搜索项目",
         .storedInKeychain: "已存入 Keychain",
         .subagents: "子智能体",
         .threadSessionsPerUser: "按用户拆分线程会话",
@@ -1162,7 +1171,7 @@ struct LocalizationService {
         .noMemoryRecordsDetail: "运行索引，或在此工作区添加记忆文件。",
         .userSummary: "用户摘要",
         .noSummaryYet: "暂无摘要。",
-        .generalSkillsOnly: "通用对话 - 仅显示用户级技能",
+        .generalSkillsOnly: "对话 - 仅显示用户级技能",
         .projectSkills: "项目技能",
         .userSkills: "用户技能",
         .pickSkill: "选择技能",

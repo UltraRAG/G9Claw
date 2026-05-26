@@ -199,20 +199,18 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 2) {
             sectionHeader(
                 title: state.t(.general),
-                leftActionIcon: isGeneralExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical",
-                leftAction: toggleGeneralExpanded,
-                rightActionIcon: "plus",
+                rightActionIcon: "square.and.pencil",
                 rightAction: {
                     if let generalProject {
-                        expandedProjectIDs.insert(generalProject.id)
-                        state.selectProject(generalProject)
+                        state.startDraftSession(project: generalProject)
+                    } else {
+                        state.startNewSession()
                     }
-                    state.startNewSession()
                 }
             )
 
             if let generalProject {
-                projectGroup(generalProject)
+                sessionRows(for: generalProject, flat: true)
             } else {
                 Text(state.t(.noGeneralWorkspaceFound))
                     .font(.system(size: 11))
@@ -359,7 +357,7 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
             }
 
-            if visibleSessions.isEmpty {
+            if visibleSessions.isEmpty && !showDraftSession {
                 Text(state.t(.noSessionsYet))
                     .font(.system(size: 11))
                     .foregroundStyle(DesignTokens.tertiaryText)
@@ -536,11 +534,6 @@ struct SidebarView: View {
         !otherProjects.isEmpty && otherProjects.allSatisfy { expandedProjectIDs.contains($0.id) }
     }
 
-    private var isGeneralExpanded: Bool {
-        guard let generalProject else { return false }
-        return expandedProjectIDs.contains(generalProject.id)
-    }
-
     private func toggleProject(_ project: WorkspaceProject) {
         if expandedProjectIDs.contains(project.id) {
             expandedProjectIDs.remove(project.id)
@@ -555,16 +548,6 @@ struct SidebarView: View {
             otherProjects.forEach { expandedProjectIDs.remove($0.id) }
         } else {
             otherProjects.forEach { expandedProjectIDs.insert($0.id) }
-        }
-    }
-
-    private func toggleGeneralExpanded() {
-        guard let generalProject else { return }
-        if expandedProjectIDs.contains(generalProject.id) {
-            expandedProjectIDs.remove(generalProject.id)
-        } else {
-            expandedProjectIDs.insert(generalProject.id)
-            state.selectProject(generalProject)
         }
     }
 
@@ -1053,7 +1036,7 @@ private enum SidebarSection: String {
     var title: String {
         switch self {
         case .projects: "Projects"
-        case .general: "General"
+        case .general: "Chat"
         }
     }
 }

@@ -163,6 +163,10 @@ struct ChatView: View {
             ComposerCard(chromeless: false)
                 .environmentObject(state)
                 .frame(maxWidth: DesignTokens.composerMaxWidth)
+            GeneralProjectEntryButton()
+                .environmentObject(state)
+                .frame(maxWidth: DesignTokens.composerMaxWidth, alignment: .leading)
+                .padding(.top, 8)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
@@ -373,6 +377,161 @@ private struct ComposerFooter: View {
             .filter { $0.state == .running }
             .sorted { $0.updatedAt < $1.updatedAt }
             .last
+    }
+}
+
+private struct GeneralProjectEntryButton: View {
+    @EnvironmentObject private var state: AppState
+    @State private var isPresented = false
+    @State private var query = ""
+
+    var body: some View {
+        if isGeneralChat {
+            Button {
+                isPresented.toggle()
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 13, weight: .regular))
+                    Text(state.t(.enterProjectWork))
+                        .font(.system(size: 12.5, weight: .medium))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10.5, weight: .semibold))
+                }
+                .foregroundStyle(DesignTokens.secondaryText)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(DesignTokens.neutral100.opacity(0.78))
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(DesignTokens.separator.opacity(0.72), lineWidth: 1)
+                )
+                .contentShape(Capsule(style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $isPresented, arrowEdge: .top) {
+                projectPicker
+            }
+        }
+    }
+
+    private var projectPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12.5, weight: .regular))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                TextField(state.t(.searchProjects), text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundStyle(DesignTokens.text)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(
+                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                    .fill(DesignTokens.neutral50.opacity(0.74))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                    .stroke(DesignTokens.separator.opacity(0.66), lineWidth: 1)
+            )
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    if filteredProjects.isEmpty {
+                        Text(state.t(.noProjectsFound))
+                            .font(.system(size: 12))
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        ForEach(filteredProjects) { project in
+                            Button {
+                                enter(project)
+                            } label: {
+                                HStack(spacing: 9) {
+                                    Image(systemName: "folder")
+                                        .font(.system(size: 13, weight: .regular))
+                                        .foregroundStyle(DesignTokens.tertiaryText)
+                                        .frame(width: 16)
+                                    Text(project.displayName)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(DesignTokens.text)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 32)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 230)
+
+            Divider()
+                .background(DesignTokens.separator.opacity(0.68))
+
+            Button {
+                isPresented = false
+                query = ""
+                state.showProjectCreationWizard = true
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .frame(width: 16)
+                    Text(state.t(.addNewProject))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(DesignTokens.text)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .frame(width: 300)
+        .background(DesignTokens.background.opacity(0.94))
+    }
+
+    private var isGeneralChat: Bool {
+        guard let selectedProject = state.selectedProject else { return false }
+        return state.isGeneralProject(selectedProject)
+    }
+
+    private var projects: [WorkspaceProject] {
+        WorkspaceService.sortedProjects(state.projects, order: state.settings.projectSortOrder)
+            .filter { !state.isGeneralProject($0) }
+    }
+
+    private var filteredProjects: [WorkspaceProject] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return projects }
+        return projects.filter { project in
+            project.displayName.localizedCaseInsensitiveContains(trimmed) ||
+                project.rootPath.localizedCaseInsensitiveContains(trimmed)
+        }
+    }
+
+    private func enter(_ project: WorkspaceProject) {
+        isPresented = false
+        query = ""
+        state.startDraftSession(project: project)
     }
 }
 

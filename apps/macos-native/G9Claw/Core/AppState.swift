@@ -294,12 +294,13 @@ final class AppState: ObservableObject {
     }
 
     @discardableResult
-    func createSessionForSelectedProject(title: String = "New Session") -> ProjectSession? {
+    func createSessionForSelectedProject(title: String = "") -> ProjectSession? {
         guard let projectIndex = selectedProjectIndex else { return nil }
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let session = ProjectSession(
             id: UUID().uuidString,
             provider: .g9Claw,
-            title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "New Session" : title,
+            title: trimmedTitle.isEmpty ? t(.newSession) : trimmedTitle,
             summary: "",
             createdAt: Date(),
             updatedAt: nil,
@@ -1165,7 +1166,7 @@ final class AppState: ObservableObject {
     private func promptTitle(from prompt: String) -> String {
         let line = prompt.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "New Session" }
+        guard !trimmed.isEmpty else { return t(.newSession) }
         return String(trimmed.prefix(72))
     }
 
@@ -1836,7 +1837,7 @@ final class AppState: ObservableObject {
                 return session.displayTitle
             }
         }
-        return "New Session"
+        return t(.newSession)
     }
 
     private func contextBudgetTitle(_ level: ContextBudgetLevel) -> String {

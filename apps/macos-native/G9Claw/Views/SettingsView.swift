@@ -1065,7 +1065,7 @@ private struct SettingsContentView: View {
             warnings.append("runtime.workspacesRoot is empty; project creation will use the home directory fallback.")
         }
         if (values["gateway.runtimePaths.generalCwd"] ?? "").isEmpty {
-            warnings.append("gateway.runtimePaths.generalCwd is empty; General chat will use the default workspace.")
+            warnings.append("gateway.runtimePaths.generalCwd is empty; Chat will use the default workspace.")
         }
         if configView == .raw && state.g9ClawConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             errors.append("Config YAML is empty.")
