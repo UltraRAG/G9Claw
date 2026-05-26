@@ -832,6 +832,7 @@ private struct ComposerCard: View {
                     RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
                         .fill(state.isCurrentSessionStreaming ? Color(nsColor: NSColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1)) : (canSend ? DesignTokens.neutral900 : DesignTokens.neutral200))
                 )
+                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(!state.isCurrentSessionStreaming && !canSend)
@@ -1160,6 +1161,7 @@ private struct MessageRow: View {
                         .font(.system(size: 12.5, weight: .medium))
                         .frame(width: 24, height: 24)
                         .background(DesignTokens.neutral100.opacity(0.72), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .help(state.settings.language.resolved() == .chineseSimplified ? "复制输出" : "Copy response")
@@ -2558,6 +2560,8 @@ private struct RawToolInputDisclosure: View {
                     .font(.system(size: 11, weight: .medium))
             }
             .foregroundStyle(CodexProcessStyle.detail)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
 
@@ -3021,6 +3025,7 @@ private struct PendingAttachmentPreview: View {
                 .frame(width: 24, height: 24)
                 .background(Circle().fill(DesignTokens.neutral900.opacity(0.92)))
                 .shadow(color: .black.opacity(0.18), radius: 4, x: 0, y: 1)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .help("Remove attachment")
@@ -3535,6 +3540,7 @@ private struct GenericPermissionCard: View {
                                     .stroke(DesignTokens.danger.opacity(0.24), lineWidth: 1)
                             )
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
 
                     Button(isChinese ? "允许一次" : "Allow once") {
                         state.approvePermission(request.id)
@@ -3548,6 +3554,7 @@ private struct GenericPermissionCard: View {
                         RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                             .fill(DesignTokens.warning)
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
 
                     Button(isChinese ? "始终允许" : "Always allow") {
                         state.approvePermission(request.id, remember: true)
@@ -3561,6 +3568,7 @@ private struct GenericPermissionCard: View {
                         RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                             .fill(DesignTokens.neutral900)
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                 }
             }
 
@@ -3577,6 +3585,8 @@ private struct GenericPermissionCard: View {
                             .font(.system(size: 11, weight: .medium))
                     }
                     .foregroundStyle(DesignTokens.warning)
+                    .padding(.vertical, 3)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
@@ -3754,6 +3764,7 @@ private struct ExitPlanModePermissionCard: View {
                                     .stroke(DesignTokens.accent.opacity(0.22), lineWidth: 1)
                             )
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                 }
                 .buttonStyle(.plain)
 
@@ -3857,6 +3868,7 @@ private struct PlanFooterButtonStyle: ButtonStyle {
                             .stroke(tint.opacity(0.20), lineWidth: 1)
                     )
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.72 : 1)
     }
 }
@@ -3926,6 +3938,7 @@ private struct AskUserQuestionPanel: View {
                         Image(systemName: "xmark")
                             .font(.system(size: 11, weight: .bold))
                             .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(DesignTokens.tertiaryText)
@@ -4213,6 +4226,7 @@ private struct DestructivePlanPermissionCard: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .bold))
                         .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(DesignTokens.tertiaryText)
@@ -4241,6 +4255,7 @@ private struct DestructivePlanPermissionCard: View {
                                 .stroke(DesignTokens.separator, lineWidth: 1)
                         )
                 )
+                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
 
                 Spacer()
 
@@ -4258,6 +4273,7 @@ private struct DestructivePlanPermissionCard: View {
                     RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                         .fill(DesignTokens.danger)
                 )
+                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             }
             .padding(12)
             .background(DesignTokens.background.opacity(0.74))
@@ -4692,6 +4708,8 @@ private struct RAGResultContentView: View {
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                 }
                 .foregroundStyle(DesignTokens.tertiaryText)
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
@@ -6088,6 +6106,7 @@ private struct ComposerControlButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .fill(configuration.isPressed ? pressedBackground : idleBackground)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.76 : 1)
     }
 }

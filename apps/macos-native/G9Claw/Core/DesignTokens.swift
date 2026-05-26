@@ -154,6 +154,7 @@ struct NativePillButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .fill(isActive ? DesignTokens.controlSurfaceActive : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.72 : 1)
     }
 }
@@ -172,6 +173,7 @@ struct NativeGlassCapsuleButtonStyle: ButtonStyle {
             .background(
                 GlassControlBackground(isActive: isActive, cornerRadius: height / 3)
             )
+            .contentShape(RoundedRectangle(cornerRadius: height / 3, style: .continuous))
             .opacity(configuration.isPressed ? 0.72 : 1)
             .animation(.snappy(duration: 0.18, extraBounce: 0.04), value: isActive)
     }
@@ -189,6 +191,7 @@ struct SidebarRowStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
                     .fill(isActive ? DesignTokens.selectedRowFill() : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
             .opacity(configuration.isPressed ? 0.75 : 1)
     }
 }

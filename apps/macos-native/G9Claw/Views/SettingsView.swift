@@ -489,6 +489,7 @@ private struct SettingsContentView: View {
                         .padding(.horizontal, 12)
                         .frame(height: 34)
                         .background(configSection == section ? DesignTokens.neutral100 : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                        .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
@@ -2130,6 +2131,7 @@ private struct PillButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .stroke(isActive ? .white.opacity(0.45) : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.75 : 1)
     }
 }
@@ -2139,6 +2141,7 @@ private struct SettingsIconButtonStyle: ButtonStyle {
         configuration.label
             .foregroundStyle(configuration.isPressed ? DesignTokens.text : DesignTokens.secondaryText)
             .background(GlassControlBackground(isActive: false, cornerRadius: 10, material: .popover, showsShadow: false))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .opacity(configuration.isPressed ? 0.82 : 1)
     }
 }

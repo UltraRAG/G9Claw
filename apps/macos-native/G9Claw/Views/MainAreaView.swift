@@ -308,6 +308,7 @@ private struct MainHeaderIconButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .fill(configuration.isPressed ? DesignTokens.neutral100 : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.76 : 1)
     }
 }

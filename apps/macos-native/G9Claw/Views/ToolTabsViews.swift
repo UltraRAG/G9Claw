@@ -1234,6 +1234,7 @@ private struct MemoryRecordCard: View {
             RoundedRectangle(cornerRadius: DesignTokens.radius)
                 .stroke(selected ? DesignTokens.accent : DesignTokens.separator, lineWidth: selected ? 2 : 1)
         )
+        .contentShape(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
     }
 }
 
@@ -1426,6 +1427,7 @@ private struct MemoryTraceListRow: View {
         .padding(12)
         .background(selected ? DesignTokens.neutral100 : DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(selected ? DesignTokens.accent : DesignTokens.separator))
+        .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
     }
 }
 
@@ -1696,6 +1698,7 @@ struct SkillsView: View {
                     .fill(newTab == tab ? DesignTokens.neutral900 : Color.clear)
                     .frame(height: 2)
             }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -2221,6 +2224,7 @@ private struct RoutingBackButtonStyle: ButtonStyle {
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .background(GlassControlBackground(isActive: false, cornerRadius: 14, showsShadow: false))
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .opacity(configuration.isPressed ? 0.72 : 1)
     }
 }
@@ -3618,6 +3622,7 @@ private struct InlineIconButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .stroke(tint.opacity(0.14), lineWidth: 1)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.74 : 1)
     }
 }
@@ -4622,6 +4627,7 @@ private struct SkillScopeSection: View {
                         .padding(.vertical, 7)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(selectedSkillID == skill.id ? DesignTokens.selectedRowFill() : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                        .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                     }
                     .buttonStyle(.plain)
                 }
@@ -5217,6 +5223,7 @@ private struct PillTabButtonStyle: ButtonStyle {
                     }
                 }
             )
+            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
             .opacity(configuration.isPressed ? 0.75 : 1)
     }
 }
@@ -5725,6 +5732,7 @@ struct WebToolbarButtonStyle: ButtonStyle {
                     }
                 }
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.76 : 1)
     }
 }
@@ -5752,6 +5760,7 @@ private struct EditorHeaderIconButtonStyle: ButtonStyle {
                             .stroke(isActive ? tint.opacity(0.22) : DesignTokens.separator.opacity(0.62), lineWidth: 1)
                     )
             )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .opacity(configuration.isPressed ? 0.70 : 1)
     }
 }

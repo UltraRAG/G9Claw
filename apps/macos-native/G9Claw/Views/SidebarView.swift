@@ -60,6 +60,7 @@ struct SidebarView: View {
                 LogoImage()
                     .frame(height: 56, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("G9Claw")
@@ -353,6 +354,7 @@ struct SidebarView: View {
                         RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                             .fill(DesignTokens.selectedRowFill())
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
@@ -383,6 +385,7 @@ struct SidebarView: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -421,6 +424,7 @@ struct SidebarView: View {
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .fill(isSelected ? DesignTokens.selectedRowFill() : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .contextMenu {
@@ -808,6 +812,7 @@ struct ProjectCreationWizardView: View {
                             RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                                 .stroke(DesignTokens.separator.opacity(0.78), lineWidth: 1)
                         )
+                        .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                         .help(state.t(.browse))
                     }
                 }
@@ -936,6 +941,7 @@ struct ProjectCreationWizardView: View {
                 RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
                     .stroke(selected ? DesignTokens.accent.opacity(0.88) : DesignTokens.separator.opacity(hovering ? 0.95 : 0.74), lineWidth: selected ? 1.2 : 1)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { inside in
@@ -1060,6 +1066,7 @@ private struct WebIconButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .fill(configuration.isPressed ? DesignTokens.neutral200 : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.76 : 1)
     }
 }
