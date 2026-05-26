@@ -5375,25 +5375,24 @@ private struct SplitDivider: View {
                 .frame(width: dragging ? 3 : 1)
         }
             .frame(width: 12)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 2)
-                    .onChanged { value in
-                        if !dragging {
-                            dragging = true
-                            startWidth = clamped(width)
-                        }
-                        let delta = reverse ? -value.translation.width : value.translation.width
+            .background(
+                HorizontalResizeHandleSurface(
+                    isHovering: $hovering,
+                    isDragging: $dragging,
+                    onDragStart: { _ in
+                        startWidth = clamped(width)
+                    },
+                    onDragChanged: { deltaX in
+                        let delta = reverse ? -deltaX : deltaX
                         width = clamped(startWidth + delta)
-                    }
-                    .onEnded { _ in dragging = false }
+                    },
+                    onDragEnded: {},
+                    onDoubleClick: nil
+                )
             )
-            .onHover { inside in
-                hovering = inside
-                if inside {
-                    NSCursor.resizeLeftRight.push()
-                } else {
-                    NSCursor.pop()
+            .transaction { transaction in
+                if dragging {
+                    transaction.animation = nil
                 }
             }
             .help(state.t(.dragToResize))

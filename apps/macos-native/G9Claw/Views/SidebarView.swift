@@ -10,6 +10,7 @@ struct SidebarView: View {
     @State private var expandedProjectIDs: Set<UUID> = []
     @State private var collapsedSessionProjectIDs: Set<UUID> = []
     @State private var isResizing = false
+    @State private var isResizeHovering = false
     @State private var resizeStartWidth = Double(DesignTokens.sidebarDefaultWidth)
     @Namespace private var sectionToggleGlassNamespace
 
@@ -67,18 +68,6 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
             .help("G9Claw")
-
-            Button {
-                withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-                    state.setSidebarVisible(false)
-                }
-            } label: {
-                Image(systemName: "sidebar.left")
-                    .font(.system(size: 16, weight: .regular))
-                    .frame(width: 32, height: 32)
-            }
-            .buttonStyle(WebIconButtonStyle())
-            .help(state.t(.hideSidebar))
         }
         .padding(.leading, 8)
         .padding(.trailing, 16)
@@ -497,30 +486,37 @@ struct SidebarView: View {
     }
 
     private var resizeHandle: some View {
-        Rectangle()
-            .fill(isResizing ? DesignTokens.accent.opacity(0.60) : Color.clear)
-            .frame(width: 5)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        if !isResizing {
-                            isResizing = true
-                            resizeStartWidth = width
-                        }
-                        width = clamp(
-                            resizeStartWidth + value.translation.width,
-                            min: Double(DesignTokens.sidebarMinWidth),
-                            max: Double(DesignTokens.sidebarMaxWidth)
-                        )
-                    }
-                    .onEnded { _ in
-                        isResizing = false
-                    }
+        ZStack(alignment: .trailing) {
+            Rectangle()
+                .fill(Color.clear)
+                .frame(width: 18)
+            Rectangle()
+                .fill(isResizing || isResizeHovering ? DesignTokens.accent.opacity(0.62) : Color.clear)
+                .frame(width: isResizing ? 3 : 1)
+                .padding(.trailing, 1)
+        }
+        .frame(width: 18)
+        .background(
+            HorizontalResizeHandleSurface(
+                isHovering: $isResizeHovering,
+                isDragging: $isResizing,
+                onDragStart: { _ in
+                    resizeStartWidth = width
+                },
+                onDragChanged: { deltaX in
+                    width = clamp(
+                        resizeStartWidth + Double(deltaX),
+                        min: Double(DesignTokens.sidebarMinWidth),
+                        max: Double(DesignTokens.sidebarMaxWidth)
+                    )
+                },
+                onDragEnded: {},
+                onDoubleClick: {
+                    width = Double(DesignTokens.sidebarDefaultWidth)
+                }
             )
-            .onTapGesture(count: 2) {
-                width = Double(DesignTokens.sidebarDefaultWidth)
-            }
+        )
+        .help(state.t(.dragToResize))
     }
 
     private var generalProject: WorkspaceProject? {
@@ -597,42 +593,6 @@ struct SidebarView: View {
 
     private func clamp(_ value: Double, min: Double, max: Double) -> Double {
         Swift.min(max, Swift.max(min, value))
-    }
-}
-
-struct CollapsedSidebarRail: View {
-    @EnvironmentObject private var state: AppState
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                Button {
-                    withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-                        state.setSidebarVisible(true)
-                    }
-                } label: {
-                    Image(systemName: "sidebar.left")
-                        .font(.system(size: 16, weight: .regular))
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(WebIconButtonStyle())
-                .help(state.t(.showSidebar))
-            }
-            .padding(.trailing, 10)
-            .padding(.top, 30)
-            .frame(height: DesignTokens.sidebarHeaderHeight + 30)
-
-            Spacer(minLength: 0)
-        }
-        .background {
-            SidebarGlassBackground()
-        }
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(DesignTokens.separator)
-                .frame(width: 1)
-        }
     }
 }
 

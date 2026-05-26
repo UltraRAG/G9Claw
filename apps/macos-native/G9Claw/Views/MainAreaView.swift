@@ -29,8 +29,11 @@ struct MainAreaView: View {
             let availableWidth = proxy.size.width
             let showSessionTitle = availableWidth >= 1160
             let horizontalPadding: CGFloat = availableWidth < 760 ? 12 : 18
+            let leadingTitlebarReserve: CGFloat = state.isSidebarVisible ? 0 : DesignTokens.titlebarContentReserveWhenSidebarHidden
+            let leadingPadding = horizontalPadding + leadingTitlebarReserve
+            let trailingPadding = horizontalPadding
             let controlGap: CGFloat = availableWidth < 1080 ? 6 : 10
-            let innerWidth = max(0, availableWidth - horizontalPadding * 2)
+            let innerWidth = max(0, availableWidth - leadingPadding - trailingPadding)
             let showsToolSwitcher = showsHeaderToolSwitcher
             let switcherLayout = MainHeaderToolSwitcherLayout.resolve(
                 availableWidth: innerWidth,
@@ -50,8 +53,10 @@ struct MainAreaView: View {
                         .layoutPriority(5)
                 }
             }
-            .padding(.horizontal, horizontalPadding)
-            .frame(width: proxy.size.width, height: DesignTokens.headerHeight)
+            .padding(.leading, leadingPadding)
+            .padding(.trailing, trailingPadding)
+            .frame(width: proxy.size.width, height: DesignTokens.titlebarControlSize)
+            .frame(width: proxy.size.width, height: DesignTokens.headerHeight, alignment: .top)
         }
         .frame(height: DesignTokens.headerHeight)
         .background {
@@ -137,7 +142,7 @@ struct MainAreaView: View {
             }
         }
         .padding(.horizontal, MainHeaderToolSwitcherLayout.containerPadding)
-        .padding(.vertical, 3)
+        .padding(.vertical, MainHeaderToolSwitcherLayout.containerVerticalPadding)
         .frame(width: layout.estimatedWidth, height: MainHeaderToolSwitcherLayout.containerHeight, alignment: .trailing)
         .background { toolSwitcherBackground }
         .animation(.snappy(duration: 0.22), value: state.activeTab)
@@ -145,22 +150,22 @@ struct MainAreaView: View {
 
     private var toolSwitcherBackground: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
+            RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous)
                 .fill(DesignTokens.background.opacity(0.24))
                 .background(
                     VisualEffectBackground(material: .hudWindow, blendingMode: .withinWindow)
-                        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous))
                 )
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
+            RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous)
                 .strokeBorder(.white.opacity(0.38), lineWidth: 0.7)
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
+            RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous)
                 .strokeBorder(DesignTokens.separator.opacity(0.54), lineWidth: 0.7)
             LinearGradient(
                 colors: [.white.opacity(0.22), .white.opacity(0.05), .clear],
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous))
             .allowsHitTesting(false)
         }
         .shadow(color: .black.opacity(0.055), radius: 8, y: 3)
@@ -277,7 +282,9 @@ struct MainAreaView: View {
 struct MainHeaderToolSwitcherLayout: Equatable {
     static let itemSpacing: CGFloat = 2
     static let containerPadding: CGFloat = 3
-    static let containerHeight: CGFloat = 34
+    static let containerVerticalPadding: CGFloat = 2
+    static let containerHeight = DesignTokens.titlebarControlSize
+    static let containerCornerRadius = containerHeight / 2
     static let buttonHeight: CGFloat = 28
     private static let regularButtonWidth: CGFloat = 82
     private static let iconButtonWidth: CGFloat = 36

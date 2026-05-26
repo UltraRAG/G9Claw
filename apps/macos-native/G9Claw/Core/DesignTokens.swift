@@ -46,12 +46,16 @@ enum DesignTokens {
 
     static let sidebarMinWidth: CGFloat = 200
     static let sidebarDefaultWidth: CGFloat = 248
-    static let sidebarMaxWidth: CGFloat = 480
-    static let sidebarCollapsedRailWidth: CGFloat = 52
+    static let sidebarMaxWidth: CGFloat = 320
     static let sidebarHeaderHeight: CGFloat = 64
     static let sidebarSegmentHeight: CGFloat = 28
     static let sidebarProjectRowHeight: CGFloat = 32
     static let sidebarFooterHeight: CGFloat = 54
+    static let titlebarSidebarButtonLeading: CGFloat = 78
+    static let titlebarControlSize: CGFloat = 32
+    static let titlebarSidebarGlyphSize: CGFloat = 14
+    static let titlebarContentReserveWhenSidebarHidden: CGFloat = 120
+    static let titlebarControlTop: CGFloat = 0
 
     static let composerMaxWidth: CGFloat = 688
     static let composerTextMinHeight: CGFloat = 44
@@ -294,5 +298,122 @@ struct ComposerGlassBackground: View {
                     .stroke(isFocused ? DesignTokens.neutral300 : DesignTokens.separator.opacity(0.80), lineWidth: 1)
             )
             .shadow(color: .black.opacity(chromeless ? 0.08 : 0.07), radius: 14, y: 8)
+    }
+}
+
+struct HorizontalResizeHandleSurface: NSViewRepresentable {
+    @Binding var isHovering: Bool
+    @Binding var isDragging: Bool
+    var onDragStart: (CGFloat) -> Void
+    var onDragChanged: (CGFloat) -> Void
+    var onDragEnded: () -> Void
+    var onDoubleClick: (() -> Void)?
+
+    func makeNSView(context: Context) -> HorizontalResizeTrackingView {
+        let view = HorizontalResizeTrackingView()
+        updateCallbacks(on: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: HorizontalResizeTrackingView, context: Context) {
+        updateCallbacks(on: nsView)
+    }
+
+    private func updateCallbacks(on view: HorizontalResizeTrackingView) {
+        view.onHoverChanged = { isHovering = $0 }
+        view.onDragStateChanged = { isDragging = $0 }
+        view.onDragStart = onDragStart
+        view.onDragChanged = onDragChanged
+        view.onDragEnded = onDragEnded
+        view.onDoubleClick = onDoubleClick
+    }
+}
+
+final class HorizontalResizeTrackingView: NSView {
+    var onHoverChanged: (Bool) -> Void = { _ in }
+    var onDragStateChanged: (Bool) -> Void = { _ in }
+    var onDragStart: (CGFloat) -> Void = { _ in }
+    var onDragChanged: (CGFloat) -> Void = { _ in }
+    var onDragEnded: () -> Void = {}
+    var onDoubleClick: (() -> Void)?
+
+    private var trackingArea: NSTrackingArea?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func updateTrackingAreas() {
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+        super.updateTrackingAreas()
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChanged(true)
+        NSCursor.resizeLeftRight.set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChanged(false)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            onDoubleClick?()
+            return
+        }
+
+        guard let window else { return }
+        let startX = screenX(for: event)
+        onDragStateChanged(true)
+        onDragStart(startX)
+        NSCursor.resizeLeftRight.set()
+
+        while true {
+            guard let next = window.nextEvent(
+                matching: [.leftMouseDragged, .leftMouseUp],
+                until: .distantFuture,
+                inMode: .eventTracking,
+                dequeue: true
+            ) else {
+                continue
+            }
+
+            switch next.type {
+            case .leftMouseDragged:
+                NSCursor.resizeLeftRight.set()
+                onDragChanged(screenX(for: next) - startX)
+            case .leftMouseUp:
+                onDragStateChanged(false)
+                onDragEnded()
+                window.invalidateCursorRects(for: self)
+                return
+            default:
+                break
+            }
+        }
+    }
+
+    private func screenX(for event: NSEvent) -> CGFloat {
+        guard let eventWindow = event.window ?? window else {
+            return NSEvent.mouseLocation.x
+        }
+        return eventWindow.convertPoint(toScreen: event.locationInWindow).x
     }
 }
