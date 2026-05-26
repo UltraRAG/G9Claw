@@ -650,7 +650,6 @@ struct ProjectCreationWizardView: View {
     @State private var hoveredWorkspaceType: WorkspaceCreationType?
     @State private var displayName = ""
     @State private var workspacePath = ""
-    @State private var githubURL = ""
     @State private var isCreating = false
 
     var body: some View {
@@ -812,13 +811,6 @@ struct ProjectCreationWizardView: View {
                         .help(state.t(.browse))
                     }
                 }
-                if workspaceType == .new {
-                    wizardTextField(state.t(.githubURLOptional), text: $githubURL, monospaced: true)
-                    Text(state.t(.gitURLHelp))
-                        .font(.system(size: 12))
-                        .foregroundStyle(DesignTokens.tertiaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
             .frame(maxWidth: ProjectCreationWizardMetrics.formMaxWidth, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -832,10 +824,6 @@ struct ProjectCreationWizardView: View {
                     reviewRow(state.t(.displayName), finalDisplayName)
                     Divider().padding(.leading, 112)
                     reviewRow(state.t(.workspacePath), expandedPath)
-                    if workspaceType == .new && !githubURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Divider().padding(.leading, 112)
-                        reviewRow("Git", githubURL)
-                    }
                 }
                 .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
                 .overlay(
@@ -1022,6 +1010,7 @@ struct ProjectCreationWizardView: View {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
         panel.directoryURL = URL(fileURLWithPath: state.settings.workspacesRoot)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         workspacePath = url.path
@@ -1034,13 +1023,12 @@ struct ProjectCreationWizardView: View {
         isCreating = true
         let name = finalDisplayName
         let path = expandedPath
-        let git = githubURL.trimmingCharacters(in: .whitespacesAndNewlines)
         Task { @MainActor in
             await state.createProjectFromWizard(
                 displayName: name,
                 path: path,
                 createDirectory: workspaceType == .new,
-                githubURL: git.isEmpty ? nil : git
+                githubURL: nil
             )
             isCreating = false
         }
