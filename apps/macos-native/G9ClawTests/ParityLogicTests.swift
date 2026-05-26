@@ -437,15 +437,15 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertEqual(
             english.text(.ragSectionDetail),
-            "Local retriever and GLM web search APIs used by the bundled 9GClaw RAG skills."
+            "Local retriever and GLM web search APIs used by the bundled G9Claw RAG skills."
         )
         XCTAssertEqual(
             english.text(.ragDetail),
-            "When on, 9GClaw exports G9CLAW_RAG_* env vars so RAG skills can call these APIs."
+            "When on, G9Claw exports G9CLAW_RAG_* env vars so RAG skills can call these APIs."
         )
         XCTAssertEqual(
             english.text(.disableBuiltInWebToolsDetail),
-            "When RAG is enabled, hide WebFetch/WebSearch from model-visible tools so web search goes through 9GClaw RAG skills."
+            "When RAG is enabled, hide WebFetch/WebSearch from model-visible tools so web search goes through G9Claw RAG skills."
         )
         XCTAssertEqual(english.text(.ragLocalKnowledgeTitle), "Local knowledge / Retriever")
         XCTAssertEqual(
@@ -466,7 +466,7 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertEqual(
             chinese.text(.ragSectionDetail),
-            "内置 9GClaw RAG 技能使用的本地检索器和 GLM Web Search API。"
+            "内置 G9Claw RAG 技能使用的本地检索器和 GLM Web Search API。"
         )
         XCTAssertEqual(chinese.text(.ragLocalKnowledgeTitle), "本地知识库 / Retriever")
         XCTAssertEqual(chinese.text(.glmWebSearchBaseURL), "Endpoint URL")

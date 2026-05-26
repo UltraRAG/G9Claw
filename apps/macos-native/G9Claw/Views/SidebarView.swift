@@ -1072,13 +1072,17 @@ private struct WebIconButtonStyle: ButtonStyle {
 }
 
 private struct LogoImage: View {
-    @Environment(\.colorScheme) private var colorScheme
-
     var body: some View {
         if let image = image {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
+            HStack(spacing: 10) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 56, height: 56)
+                Text("G9Claw")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+            }
         } else {
             HStack(spacing: 10) {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -1097,14 +1101,10 @@ private struct LogoImage: View {
     }
 
     private var image: NSImage? {
-        let resourceName = colorScheme == .dark ? "g9claw-logo-white" : "g9claw-logo"
-        if let url = Bundle.main.url(forResource: resourceName, withExtension: "png") {
+        if let url = Bundle.main.url(forResource: "g9claw-logo", withExtension: "png") {
             return NSImage(contentsOf: url)
         }
-        if let fallback = Bundle.main.url(forResource: "g9claw-logo", withExtension: "png") {
-            return NSImage(contentsOf: fallback)
-        }
-        return NSImage(named: resourceName) ?? NSImage(named: "g9claw-logo")
+        return NSImage(named: "g9claw-logo")
     }
 }
 
