@@ -2440,6 +2440,14 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(Set(LocalizationService.chineseSimplified.keys), allKeys)
     }
 
+    func testProjectWelcomePromptIncludesProjectName() {
+        let english = LocalizationService(language: .english)
+        let chinese = LocalizationService(language: .chineseSimplified)
+
+        XCTAssertEqual(english.text(.projectWelcomePrompt, "G9Claw"), "Where should we move G9Claw forward today?")
+        XCTAssertEqual(chinese.text(.projectWelcomePrompt, "原神"), "从「原神」开始，今天推进哪一块？")
+    }
+
     func testAppSettingsStoreRoundTripsLanguage() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("g9claw-settings-\(UUID().uuidString)", isDirectory: true)

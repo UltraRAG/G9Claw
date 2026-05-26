@@ -177,6 +177,7 @@ enum L10nKey: String, CaseIterable {
     case uploadFiles
     case uploadFolder
     case view
+    case projectWelcomePrompt
     case welcomePrompt
     case working
     case nativeInitialized
@@ -592,6 +593,7 @@ struct LocalizationService {
         .uploadFiles: "Upload Files...",
         .uploadFolder: "Upload Folder...",
         .view: "View",
+        .projectWelcomePrompt: "Where should we move %@ forward today?",
         .welcomePrompt: "What would you like to work on today?",
         .working: "Working",
         .nativeInitialized: "Native macOS app initialized",
@@ -976,6 +978,7 @@ struct LocalizationService {
         .uploadFiles: "上传文件...",
         .uploadFolder: "上传文件夹...",
         .view: "查看",
+        .projectWelcomePrompt: "从「%@」开始，今天推进哪一块？",
         .welcomePrompt: "今天想处理什么？",
         .working: "处理中",
         .nativeInitialized: "原生 macOS 应用已初始化",

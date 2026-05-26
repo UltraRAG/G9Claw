@@ -154,7 +154,7 @@ struct ChatView: View {
     private var emptyLanding: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
-            Text(state.t(.welcomePrompt))
+            Text(emptyLandingTitle)
                 .font(.system(size: DesignTokens.welcomeTitleSize, weight: .medium))
                 .tracking(-0.4)
                 .foregroundStyle(DesignTokens.text)
@@ -171,6 +171,13 @@ struct ChatView: View {
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyLandingTitle: String {
+        guard let selectedProject = state.selectedProject, !state.isGeneralProject(selectedProject) else {
+            return state.t(.welcomePrompt)
+        }
+        return state.t(.projectWelcomePrompt, selectedProject.displayName)
     }
 
     private var readOnlyBackgroundEmpty: some View {
