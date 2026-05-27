@@ -21,7 +21,6 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
             sectionToggle
             listBody
             footer
@@ -51,28 +50,6 @@ struct SidebarView: View {
             }
             rememberSelectedProject()
         }
-    }
-
-    private var header: some View {
-        HStack(spacing: 0) {
-            Button {
-                if let generalProject {
-                    state.selectProject(generalProject)
-                    activeSection = .general
-                }
-            } label: {
-                LogoImage()
-                    .frame(height: 56, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("G9Claw")
-        }
-        .padding(.leading, 8)
-        .padding(.trailing, 16)
-        .padding(.top, 30)
-        .frame(height: DesignTokens.sidebarHeaderHeight + 30)
     }
 
     private var sectionToggle: some View {
@@ -105,7 +82,7 @@ struct SidebarView: View {
         )
         .shadow(color: .black.opacity(0.06), radius: 7, y: 3)
         .padding(.horizontal, 12)
-        .padding(.top, 12)
+        .padding(.top, DesignTokens.sidebarContentTopPadding)
         .padding(.bottom, 4)
         .animation(.spring(response: 0.26, dampingFraction: 0.82), value: activeSection)
     }
@@ -1044,43 +1021,6 @@ private struct WebIconButtonStyle: ButtonStyle {
             )
             .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.76 : 1)
-    }
-}
-
-private struct LogoImage: View {
-    var body: some View {
-        if let image = image {
-            HStack(spacing: 10) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 56, height: 56)
-                Text("G9Claw")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(DesignTokens.text)
-            }
-        } else {
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(DesignTokens.text)
-                    .frame(width: 26, height: 26)
-                    .overlay {
-                        Text("9")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(DesignTokens.background)
-                    }
-                Text("G9Claw")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(DesignTokens.text)
-            }
-        }
-    }
-
-    private var image: NSImage? {
-        if let url = Bundle.main.url(forResource: "g9claw-logo", withExtension: "png") {
-            return NSImage(contentsOf: url)
-        }
-        return NSImage(named: "g9claw-logo")
     }
 }
 

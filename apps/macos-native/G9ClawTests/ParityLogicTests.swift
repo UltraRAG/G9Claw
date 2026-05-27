@@ -276,22 +276,22 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertNil(preferred["rag.localKnowledge.milvusUri"])
     }
 
-    func testNativeConfigViewModePersistenceMatchesWebLocalStorageKey() {
-        XCTAssertEqual(NativeConfigViewMode.storageKey, "g9claw:configView")
-        XCTAssertEqual(NativeConfigViewMode.fromStoredRaw("form"), .form)
-        XCTAssertEqual(NativeConfigViewMode.fromStoredRaw("raw"), .raw)
-        XCTAssertEqual(NativeConfigViewMode.fromStoredRaw("invalid"), .form)
-    }
-
     func testNativeConfigFormLayoutMatchesWebSplitSectionNavigation() {
         XCTAssertTrue(NativeConfigFormLayout.usesSplitSectionNavigation)
         XCTAssertFalse(NativeConfigFormLayout.usesSectionDropdown)
+        XCTAssertFalse(NativeConfigFormLayout.usesViewModeToggle)
+        XCTAssertFalse(NativeConfigFormLayout.exposesRawYAMLEditor)
+        XCTAssertEqual(NativeConfigFormLayout.headerActionIDs, [
+            "revealInFinder",
+            "import",
+            "export",
+            "saveAndReloadCurrent",
+        ])
         XCTAssertEqual(NativeConfigFormLayout.sectionNavigationWidth, 180)
         XCTAssertEqual(NativeConfigFormLayout.sectionNavigationGap, 16)
         XCTAssertEqual(NativeConfigFormLayout.sectionOrder, [
             .runtime,
             .models,
-            .agents,
             .alwaysOn,
             .memory,
             .rag,
@@ -307,16 +307,13 @@ final class ParityLogicTests: XCTestCase {
             "memory",
             "router",
             "gateway",
-            "proxy",
         ])
         XCTAssertEqual(NativeConfigReloadSummary.subsystems.map(\.label), [
             .processEnv,
             .memory,
             .routerCCR,
             .gateway,
-            .proxy,
         ])
-        XCTAssertEqual(NativeConfigReloadSummary.subsystems.last?.state, .nonEmptyPath("runtime.proxyPort"))
     }
 
     func testNativeConfigModelPickerOptionsMatchWebFormSelects() {
@@ -359,29 +356,44 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(NativeModelsConfigFormFields.newProviderScalars.keys.contains("transformer"))
         XCTAssertFalse(NativeModelsConfigFormFields.newProviderScalars.keys.contains("headers"))
 
-        XCTAssertEqual(NativeModelsConfigFormFields.providerOptions(providerIDs: ["g9claw", "local"]), [
-            "",
-            "g9claw",
-            "local",
+        XCTAssertTrue(NativeModelsConfigFormFields.usesModelPoolDropdown)
+        XCTAssertTrue(NativeModelsConfigFormFields.usageAssignmentsLiveInModelSection)
+        XCTAssertFalse(NativeModelsConfigFormFields.entryRowsExposeProviderPicker)
+        XCTAssertFalse(NativeModelsConfigFormFields.entryRowsExposeModelNameField)
+        XCTAssertEqual(NativeModelsConfigFormFields.assignmentPaths, [
+            "agents.main.model",
+            "agents.subagents.default",
+            "memory.model",
+            "router.routes.default.model",
+            "router.routes.background.model",
+            "router.routes.think.model",
+            "router.routes.longContext.model",
+            "router.routes.webSearch.model",
+            "router.tokenSaver.judgeModel",
+            "router.tokenSaver.tiers.SIMPLE.model",
+            "router.tokenSaver.tiers.MEDIUM.model",
+            "router.tokenSaver.tiers.COMPLEX.model",
+            "router.tokenSaver.tiers.REASONING.model",
+            "router.autoOrchestrate.mainAgentModel",
         ])
         XCTAssertEqual(NativeModelsConfigFormFields.newEntryScalars(firstProvider: "g9claw"), [
             "provider": "g9claw",
             "name": "",
+            "contextWindow": "",
         ])
-        XCTAssertFalse(NativeModelsConfigFormFields.newEntryScalars(firstProvider: "g9claw").keys.contains("contextWindow"))
     }
 
     func testNativeRuntimeConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeRuntimeConfigFormFields.visiblePaths, [
-            "runtime.host",
-            "runtime.serverPort",
-            "runtime.vitePort",
-            "runtime.proxyPort",
-            "runtime.contextWindow",
             "runtime.apiTimeoutMs",
             "runtime.databasePath",
             "runtime.workspacesRoot",
         ])
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.host"))
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.serverPort"))
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.vitePort"))
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.proxyPort"))
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.contextWindow"))
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.httpsProxy"))
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))
     }
@@ -500,8 +512,8 @@ final class ParityLogicTests: XCTestCase {
     func testNativeMemoryConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeMemoryConfigFormFields.visiblePaths, [
             "memory.enabled",
-            "memory.model",
         ])
+        XCTAssertTrue(NativeModelsConfigFormFields.assignmentPaths.contains("memory.model"))
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.includeAssistant"))
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.reasoningMode"))
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.autoIndexIntervalMinutes"))
@@ -522,6 +534,15 @@ final class ParityLogicTests: XCTestCase {
     func testNativeRouterAndGatewayConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeRouterConfigFormFields.visiblePaths, [
             "router.enabled",
+        ])
+        XCTAssertEqual(NativeRouterConfigFormFields.routeModelFields.map(\.path), [
+            "router.routes.default.model",
+            "router.routes.background.model",
+        ])
+        XCTAssertEqual(NativeRouterConfigFormFields.advancedRouteModelFields.map(\.path), [
+            "router.routes.think.model",
+            "router.routes.longContext.model",
+            "router.routes.webSearch.model",
         ])
         XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.log"))
         XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.default.model"))
@@ -2466,7 +2487,7 @@ final class ParityLogicTests: XCTestCase {
 
     func testNativeAppearanceSettingsLayoutMatchesWebSettingsTab() {
         XCTAssertEqual(NativeAppearanceSettingsLayout.sectionOrder, [
-            .darkMode,
+            .colorScheme,
             .language,
             .toolDisplay,
             .viewOptions,
@@ -2474,8 +2495,9 @@ final class ParityLogicTests: XCTestCase {
             .projectSorting,
             .codeEditor,
         ])
-        XCTAssertTrue(NativeAppearanceSettingsLayout.usesDarkModeToggle)
-        XCTAssertFalse(NativeAppearanceSettingsLayout.usesThemePicker)
+        XCTAssertFalse(NativeAppearanceSettingsLayout.usesDarkModeToggle)
+        XCTAssertTrue(NativeAppearanceSettingsLayout.usesThemePicker)
+        XCTAssertEqual(NativeAppearanceSettingsLayout.colorSchemePickerWidth, 160)
         XCTAssertEqual(NativeAppearanceSettingsLayout.fontSizeOptions, [
             10,
             11,
@@ -2488,8 +2510,10 @@ final class ParityLogicTests: XCTestCase {
             20,
         ])
 
-        XCTAssertEqual(LocalizationService.english[.darkMode], "Dark Mode")
-        XCTAssertEqual(LocalizationService.english[.darkModeDetail], "Toggle between light and dark themes")
+        XCTAssertEqual(LocalizationService.english[.colorScheme], "Theme")
+        XCTAssertEqual(LocalizationService.english[.colorSchemeSystem], "Follow System")
+        XCTAssertEqual(LocalizationService.chineseSimplified[.colorSchemeSystem], "系统跟随")
+        XCTAssertEqual(LocalizationService.english[.colorSchemeDetail], "Follow the system appearance or choose a fixed theme.")
         XCTAssertEqual(LocalizationService.english[.displayLanguageDetail], "Choose your preferred language for the interface")
         XCTAssertEqual(LocalizationService.english[.toolDisplay], "Tool Display")
         XCTAssertEqual(LocalizationService.english[.viewOptions], "View Options")

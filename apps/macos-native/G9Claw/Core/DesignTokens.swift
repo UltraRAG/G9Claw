@@ -47,7 +47,7 @@ enum DesignTokens {
     static let sidebarMinWidth: CGFloat = 200
     static let sidebarDefaultWidth: CGFloat = 248
     static let sidebarMaxWidth: CGFloat = 320
-    static let sidebarHeaderHeight: CGFloat = 64
+    static let sidebarContentTopPadding: CGFloat = headerHeight + 8
     static let sidebarSegmentHeight: CGFloat = 28
     static let sidebarProjectRowHeight: CGFloat = 32
     static let sidebarFooterHeight: CGFloat = 54

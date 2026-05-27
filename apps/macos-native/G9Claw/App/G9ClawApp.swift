@@ -49,6 +49,7 @@ struct G9ClawApp: App {
         Settings {
             SettingsView()
                 .environmentObject(state)
+                .preferredColorScheme(state.settings.colorScheme.swiftUIColorScheme)
                 .frame(width: 920, height: 640)
         }
     }
@@ -58,10 +59,11 @@ struct G9ClawApp: App {
 enum SettingsWindowPresenter {
     static let identifier = NSUserInterfaceItemIdentifier("G9ClawSettingsWindow")
 
-    static func configure(window: NSWindow?) {
+    static func configure(window: NSWindow?, title: String = "Settings") {
         guard let window else { return }
         window.identifier = identifier
-        window.title = "Settings"
+        window.title = title
+        window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 860, height: 620)
     }
@@ -86,17 +88,19 @@ enum SettingsWindowPresenter {
 }
 
 struct SettingsWindowConfigurator: NSViewRepresentable {
+    var title = "Settings"
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         DispatchQueue.main.async {
-            SettingsWindowPresenter.configure(window: view.window)
+            SettingsWindowPresenter.configure(window: view.window, title: title)
         }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
-            SettingsWindowPresenter.configure(window: nsView.window)
+            SettingsWindowPresenter.configure(window: nsView.window, title: title)
         }
     }
 }

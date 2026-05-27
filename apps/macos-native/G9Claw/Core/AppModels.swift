@@ -916,6 +916,17 @@ enum AppColorScheme: String, Codable, CaseIterable, Identifiable {
     case dark
 
     var id: String { rawValue }
+
+    var swiftUIColorScheme: ColorScheme? {
+        switch self {
+        case .system:
+            return nil
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        }
+    }
 }
 
 enum AppLanguage: String, Codable, CaseIterable, Identifiable {
@@ -1021,7 +1032,6 @@ enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
 enum G9ClawConfigSection: String, CaseIterable, Identifiable {
     case runtime
     case models
-    case agents
     case alwaysOn
     case memory
     case rag
@@ -1035,7 +1045,6 @@ enum G9ClawConfigSection: String, CaseIterable, Identifiable {
         switch self {
         case .runtime: "Runtime"
         case .models: "Models"
-        case .agents: "Agents"
         case .alwaysOn: "Always-On"
         case .memory: "Memory"
         case .rag: "RAG"

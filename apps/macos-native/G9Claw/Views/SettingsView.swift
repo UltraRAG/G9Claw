@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
@@ -12,103 +13,95 @@ struct SettingsView: View {
 
 private struct SettingsContentView: View {
     @EnvironmentObject private var state: AppState
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var activeTab: SettingsMainTab = .appearance
+    @State private var currentPage: SettingsPage = .main
     @State private var configSection: G9ClawConfigSection = .runtime
-    @AppStorage(NativeConfigViewMode.storageKey) private var configViewRaw = NativeConfigViewMode.form.rawValue
     @State private var savedConfigText = ""
     @State private var configMessage: String?
     @State private var configError: String?
     @State private var configExternalNotice: String?
-
-    private var configView: NativeConfigViewMode {
-        get { NativeConfigViewMode.fromStoredRaw(configViewRaw) }
-        nonmutating set { configViewRaw = newValue.rawValue }
-    }
+    @State private var selectedModelPoolEntry: String?
+    @State private var showAdvancedRouteModels = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            settingsSidebar
-            Divider()
-            ScrollView {
-                SettingsPageContainer(title: settingsTabLabel(activeTab)) {
-                    if let notice = state.settingsSaveNotice {
-                        Text(notice)
-                            .font(.caption)
-                            .foregroundStyle(DesignTokens.success)
-                    }
-                    activeContent
-                        .transition(.opacity.combined(with: .offset(y: 4)))
-                        .id(activeTab)
+        ScrollView {
+            SettingsPageContainer(
+                title: settingsPageTitle(currentPage),
+                backLabel: currentPage == .main ? nil : state.t(.back),
+                onBack: currentPage == .main ? nil : { currentPage = .main }
+            ) {
+                if let notice = state.settingsSaveNotice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(DesignTokens.success)
                 }
+                currentPageContent
+                    .transition(.opacity.combined(with: .offset(y: 4)))
+                    .id(currentPage)
             }
-            .background(Color(nsColor: .windowBackgroundColor))
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .background(SettingsWindowConfigurator())
-        .frame(minWidth: 860, minHeight: 620)
+        .background(SettingsWindowConfigurator(title: state.t(.settings)))
+        .frame(minWidth: 760, minHeight: 620)
         .onAppear {
-            activeTab = state.settingsInitialTab
+            currentPage = settingsPage(for: state.settingsInitialTab)
             if savedConfigText.isEmpty {
                 savedConfigText = state.g9ClawConfigText
             }
         }
         .onChange(of: state.settingsInitialTab) { _, newValue in
-            activeTab = newValue
+            currentPage = settingsPage(for: newValue)
         }
     }
 
-    private var settingsSidebar: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Spacer()
-                .frame(height: 72)
-            ForEach(SettingsMainTab.allCases) { tab in
-                settingsSidebarRow(tab)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 14)
-        .frame(width: 218)
-        .background {
-            VisualEffectBackground(material: .sidebar, blendingMode: .withinWindow)
-            Color(nsColor: .windowBackgroundColor).opacity(0.28)
-        }
-    }
-
-    private func settingsSidebarRow(_ tab: SettingsMainTab) -> some View {
-        let selected = activeTab == tab
-        return Button {
-            activeTab = tab
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: tab.systemImage)
-                    .font(.system(size: 16, weight: .regular))
-                    .frame(width: 22)
-                Text(settingsTabLabel(tab))
-                    .font(.system(size: 14, weight: selected ? .semibold : .medium))
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(selected ? Color.white : DesignTokens.secondaryText)
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 42)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(selected ? Color.accentColor : Color.clear)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func settingsTabLabel(_ tab: SettingsMainTab) -> String {
+    private func settingsPage(for tab: SettingsMainTab) -> SettingsPage {
         switch tab {
         case .appearance:
-            return state.t(.appearance)
+            return .main
+        case .permissions:
+            return .permissions
+        case .config:
+            return .config
+        }
+    }
+
+    private func settingsPageTitle(_ page: SettingsPage) -> String {
+        switch page {
+        case .main:
+            return state.t(.settings)
+        case .behavior:
+            return local(chinese: "聊天与输入", english: "Chat & Input")
+        case .codeEditor:
+            return state.t(.codeEditor)
         case .permissions:
             return state.t(.permissions)
         case .config:
             return state.t(.config)
+        }
+    }
+
+    private func local(chinese: String, english: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
+    }
+
+    private func nonBlank(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func routerModelDetail(_ id: String) -> String {
+        switch id {
+        case "default":
+            return local(chinese: "普通请求的默认路由模型。", english: "Default route model for regular requests.")
+        case "background":
+            return local(chinese: "后台任务和常驻流程使用的模型。", english: "Model for background tasks and Always-on flows.")
+        case "think":
+            return local(chinese: "需要更强推理时使用的模型。", english: "Model used when stronger reasoning is needed.")
+        case "longContext":
+            return local(chinese: "长上下文请求使用的模型。", english: "Model used for long-context requests.")
+        case "webSearch":
+            return local(chinese: "带 Web 搜索工具的请求使用的模型。", english: "Model used for requests with web-search tools.")
+        default:
+            return ""
         }
     }
 
@@ -123,23 +116,12 @@ private struct SettingsContentView: View {
         }
     }
 
-    private func configViewModeLabel(_ mode: NativeConfigViewMode) -> String {
-        switch mode {
-        case .form:
-            return state.t(.form)
-        case .raw:
-            return state.t(.rawYAML)
-        }
-    }
-
     private func configSectionLabel(_ section: G9ClawConfigSection) -> String {
         switch section {
         case .runtime:
             return state.t(.runtime)
         case .models:
             return state.t(.models)
-        case .agents:
-            return state.t(.agents)
         case .alwaysOn:
             return state.t(.alwaysOn)
         case .memory:
@@ -156,10 +138,14 @@ private struct SettingsContentView: View {
     }
 
     @ViewBuilder
-    private var activeContent: some View {
-        switch activeTab {
-        case .appearance:
-            appearanceContent
+    private var currentPageContent: some View {
+        switch currentPage {
+        case .main:
+            mainSettingsContent
+        case .behavior:
+            behaviorContent
+        case .codeEditor:
+            codeEditorContent
         case .permissions:
             permissionsContent
         case .config:
@@ -167,39 +153,101 @@ private struct SettingsContentView: View {
         }
     }
 
-    private var appearanceContent: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            SettingsSectionBlock(title: state.t(.darkMode)) {
+    private var mainSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            SettingsSectionBlock(title: local(chinese: "基础", english: "Basics")) {
                 SettingsCardBlock {
-                    SettingsRowBlock(title: state.t(.darkMode), detail: state.t(.darkModeDetail)) {
-                        WebSettingsToggle(isOn: darkModeBinding)
+                    SettingsNavigationRow(
+                        systemImage: "doc.badge.gearshape",
+                        title: state.t(.config),
+                        detail: local(chinese: "模型、运行时、RAG、常驻等基础配置", english: "Models, runtime, RAG, Always-on, and essential config")
+                    ) {
+                        currentPage = .config
                     }
                 }
             }
 
-            SettingsSectionBlock(title: state.t(.appearance)) {
+            SettingsSectionBlock(title: local(chinese: "应用", english: "Application")) {
                 SettingsCardBlock {
-                    SettingsRowBlock(title: state.t(.displayLanguage), detail: state.t(.displayLanguageDetail)) {
-                        Picker("", selection: $state.settings.language) {
-                            ForEach(AppLanguage.allCases) { language in
-                                Text(languageOptionLabel(language)).tag(language)
-                            }
+                    VStack(spacing: 0) {
+                        SettingsMenuRow(
+                            systemImage: "paintpalette",
+                            title: state.t(.colorScheme),
+                            detail: state.t(.colorSchemeDetail)
+                        ) {
+                            colorSchemePicker
                         }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 160)
+                        SettingsCardDivider()
+                        SettingsMenuRow(
+                            systemImage: "globe",
+                            title: state.t(.displayLanguage),
+                            detail: state.t(.displayLanguageDetail)
+                        ) {
+                            languagePicker
+                        }
+                        SettingsCardDivider()
+                        SettingsMenuRow(
+                            systemImage: "arrow.up.arrow.down",
+                            title: state.t(.projectSorting),
+                            detail: state.t(.projectSortingDetail)
+                        ) {
+                            projectSortingPicker
+                        }
                     }
                 }
             }
 
+            SettingsSectionBlock(title: local(chinese: "工作流", english: "Workflow")) {
+                SettingsCardBlock {
+                    VStack(spacing: 0) {
+                        SettingsNavigationRow(
+                            systemImage: "text.bubble",
+                            title: local(chinese: "聊天与输入", english: "Chat & Input"),
+                            detail: local(chinese: "工具显示、滚动行为和发送快捷键", english: "Tool display, scrolling, and send shortcut")
+                        ) {
+                            currentPage = .behavior
+                        }
+                        SettingsCardDivider()
+                        SettingsNavigationRow(
+                            systemImage: "chevron.left.forwardslash.chevron.right",
+                            title: state.t(.codeEditor),
+                            detail: local(chinese: "自动换行、行号、缩略图和字号", english: "Word wrap, line numbers, minimap, and font size")
+                        ) {
+                            currentPage = .codeEditor
+                        }
+                    }
+                }
+            }
+
+            SettingsSectionBlock(title: local(chinese: "高级", english: "Advanced")) {
+                SettingsCardBlock {
+                    VStack(spacing: 0) {
+                        SettingsNavigationRow(
+                            systemImage: "shield",
+                            title: state.t(.permissions),
+                            detail: local(chinese: "管理允许和禁用的工具规则", english: "Manage allowed and blocked tool rules")
+                        ) {
+                            currentPage = .permissions
+                        }
+                    }
+                }
+            }
+        }
+        .controlSize(.regular)
+    }
+
+    private var behaviorContent: some View {
+        VStack(alignment: .leading, spacing: 22) {
             SettingsSectionBlock(title: state.t(.toolDisplay)) {
                 SettingsCardBlock(divided: true) {
                     SettingsRowBlock(title: state.t(.autoExpandTools), detail: "") {
                         WebSettingsToggle(isOn: uiPreferenceBinding(\.autoExpandTools))
                     }
+                    SettingsCardDivider()
                     SettingsRowBlock(title: state.t(.showRawParameters), detail: "") {
                         WebSettingsToggle(isOn: uiPreferenceBinding(\.showRawParameters))
                     }
+                    SettingsCardDivider()
                     SettingsRowBlock(title: state.t(.showThinking), detail: "") {
                         WebSettingsToggle(isOn: uiPreferenceBinding(\.showThinking))
                     }
@@ -221,70 +269,80 @@ private struct SettingsContentView: View {
                     }
                 }
             }
+        }
+        .controlSize(.regular)
+    }
 
-            SettingsSectionBlock(title: state.t(.projectSorting)) {
-                SettingsCardBlock {
-                    SettingsRowBlock(title: state.t(.projectSorting), detail: state.t(.projectSortingDetail)) {
-                        Picker("", selection: $state.settings.projectSortOrder) {
-                            Text(state.t(.alphabetical)).tag(ProjectSortOrder.name)
-                            Text(state.t(.recentActivity)).tag(ProjectSortOrder.date)
-                        }
+    private var codeEditorContent: some View {
+        SettingsSectionBlock(title: state.t(.codeEditor)) {
+            SettingsCardBlock(divided: true) {
+                SettingsRowBlock(title: state.t(.wordWrap), detail: state.t(.wordWrapDetail)) {
+                    Toggle("", isOn: $state.settings.codeEditor.wordWrap)
                         .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 160)
-                    }
+                        .toggleStyle(.switch)
                 }
-            }
-
-            SettingsSectionBlock(title: state.t(.codeEditor)) {
-                SettingsCardBlock(divided: true) {
-                    SettingsRowBlock(title: state.t(.wordWrap), detail: state.t(.wordWrapDetail)) {
-                        Toggle("", isOn: $state.settings.codeEditor.wordWrap)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                    }
-                    SettingsRowBlock(title: state.t(.showMinimap), detail: state.t(.showMinimapDetail)) {
-                        Toggle("", isOn: $state.settings.codeEditor.showMinimap)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                    }
-                    SettingsRowBlock(title: state.t(.lineNumbers), detail: state.t(.lineNumbersDetail)) {
-                        Toggle("", isOn: $state.settings.codeEditor.lineNumbers)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                    }
-                    SettingsRowBlock(title: state.t(.fontSize), detail: state.t(.fontSizeDetail)) {
-                        Picker("", selection: $state.settings.codeEditor.fontSize) {
-                            ForEach(NativeAppearanceSettingsLayout.fontSizeOptions, id: \.self) { size in
-                                Text("\(size)px").tag(size)
-                            }
-                        }
+                SettingsCardDivider()
+                SettingsRowBlock(title: state.t(.showMinimap), detail: state.t(.showMinimapDetail)) {
+                    Toggle("", isOn: $state.settings.codeEditor.showMinimap)
                         .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 96)
-                    }
+                        .toggleStyle(.switch)
+                }
+                SettingsCardDivider()
+                SettingsRowBlock(title: state.t(.lineNumbers), detail: state.t(.lineNumbersDetail)) {
+                    Toggle("", isOn: $state.settings.codeEditor.lineNumbers)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                SettingsCardDivider()
+                SettingsRowBlock(title: state.t(.fontSize), detail: state.t(.fontSizeDetail)) {
+                    fontSizePicker
                 }
             }
         }
         .controlSize(.regular)
     }
 
-    private var darkModeBinding: Binding<Bool> {
-        Binding(
-            get: {
-                switch state.settings.colorScheme {
-                case .dark:
-                    return true
-                case .light:
-                    return false
-                case .system:
-                    return colorScheme == .dark
-                }
-            },
-            set: { enabled in
-                state.settings.colorScheme = enabled ? .dark : .light
+    private var colorSchemePicker: some View {
+        Picker("", selection: $state.settings.colorScheme) {
+            ForEach(AppColorScheme.allCases) { scheme in
+                Text(colorSchemeLabel(scheme)).tag(scheme)
             }
-        )
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: NativeAppearanceSettingsLayout.colorSchemePickerWidth)
+    }
+
+    private var languagePicker: some View {
+        Picker("", selection: $state.settings.language) {
+            ForEach(AppLanguage.allCases) { language in
+                Text(languageOptionLabel(language)).tag(language)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: NativeAppearanceSettingsLayout.languagePickerWidth)
+    }
+
+    private var projectSortingPicker: some View {
+        Picker("", selection: $state.settings.projectSortOrder) {
+            Text(state.t(.alphabetical)).tag(ProjectSortOrder.name)
+            Text(state.t(.recentActivity)).tag(ProjectSortOrder.date)
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: NativeAppearanceSettingsLayout.projectSortingPickerWidth)
+    }
+
+    private var fontSizePicker: some View {
+        Picker("", selection: $state.settings.codeEditor.fontSize) {
+            ForEach(NativeAppearanceSettingsLayout.fontSizeOptions, id: \.self) { size in
+                Text("\(size)px").tag(size)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: 96)
     }
 
     private func uiPreferenceBinding(_ keyPath: WritableKeyPath<NativeUIPreferences, Bool>) -> Binding<Bool> {
@@ -297,11 +355,11 @@ private struct SettingsContentView: View {
     private func colorSchemeLabel(_ scheme: AppColorScheme) -> String {
         switch scheme {
         case .system:
-            return state.t(.languageSystem)
+            return state.t(.colorSchemeSystem)
         case .light:
-            return LocalizationService(language: state.settings.language).language == .chineseSimplified ? "浅色" : "Light"
+            return state.t(.colorSchemeLight)
         case .dark:
-            return LocalizationService(language: state.settings.language).language == .chineseSimplified ? "深色" : "Dark"
+            return state.t(.colorSchemeDark)
         }
     }
 
@@ -386,59 +444,51 @@ private struct SettingsContentView: View {
                 }
             }
 
-            if configView == .form {
-                HStack(alignment: .top, spacing: NativeConfigFormLayout.sectionNavigationGap) {
-                    configSectionSidebar
-                    VStack(alignment: .leading, spacing: 16) {
-                        configSectionContent
-                        configValidationSummary
-                    }
+            HStack(alignment: .top, spacing: NativeConfigFormLayout.sectionNavigationGap) {
+                configSectionSidebar
+                configSectionContent
                     .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-            } else {
-                rawYamlPanel
-                configValidationSummary
             }
-
-            reloadSummaryCard
-            configSaveBar
         }
     }
 
     private var configHeaderCard: some View {
         SettingsCardBlock {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "doc.badge.gearshape")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(DesignTokens.tertiaryText)
                         .frame(width: 22)
-                    Text(configFileURL().path.isEmpty ? state.t(.configPreview) : state.t(.configFile))
-                        .font(.system(size: 13, weight: .semibold))
-                    if isConfigDirty {
-                        Text(state.t(.unsaved))
-                            .font(.system(size: 10, weight: .bold))
-                            .tracking(0.6)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .foregroundStyle(DesignTokens.warning)
-                            .background(DesignTokens.warning.opacity(0.10), in: Capsule())
-                            .overlay(Capsule().stroke(DesignTokens.warning.opacity(0.35), lineWidth: 1))
+                        .padding(.top, 1)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            Text(configFileURL().path.isEmpty ? state.t(.configPreview) : state.t(.configFile))
+                                .font(.system(size: 13, weight: .semibold))
+                            if isConfigDirty {
+                                Text(state.t(.unsaved))
+                                    .font(.system(size: 10, weight: .bold))
+                                    .tracking(0.6)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 2)
+                                    .foregroundStyle(DesignTokens.warning)
+                                    .background(DesignTokens.warning.opacity(0.10), in: Capsule())
+                                    .overlay(Capsule().stroke(DesignTokens.warning.opacity(0.35), lineWidth: 1))
+                            }
+                            Spacer()
+                        }
+                        Text(configFileURL().path)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(DesignTokens.neutral100, in: RoundedRectangle(cornerRadius: 5))
                     }
-                    Spacer()
                 }
-                Text(configFileURL().path)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(DesignTokens.neutral100, in: RoundedRectangle(cornerRadius: 5))
                 HStack(spacing: 8) {
-                    configViewModeToggle
-                    Spacer(minLength: 8)
                     Button {
                         revealConfigFile()
                     } label: {
@@ -447,33 +497,100 @@ private struct SettingsContentView: View {
                     }
                     .buttonStyle(WebToolbarButtonStyle())
                     Button {
-                        reloadConfigFromDisk()
+                        importConfigFile()
                     } label: {
-                        Label(state.t(.refresh), systemImage: "arrow.clockwise")
+                        Label(state.t(.importAction), systemImage: "square.and.arrow.down")
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(WebToolbarButtonStyle())
+                    Button {
+                        exportConfigFile()
+                    } label: {
+                        Label(state.t(.exportAction), systemImage: "square.and.arrow.up")
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(WebToolbarButtonStyle())
+                    Spacer(minLength: 8)
+                    Button {
+                        saveConfigAndReload()
+                    } label: {
+                        Label(local(chinese: "保存并重新加载当前配置", english: "Save & Reload Current"), systemImage: "arrow.clockwise")
                             .lineLimit(1)
                     }
                     .buttonStyle(WebToolbarButtonStyle())
                 }
+                Divider()
+                configStatusOverview
             }
             .padding(14)
         }
     }
 
-    private var configViewModeToggle: some View {
-        HStack(spacing: 2) {
-            ForEach(NativeConfigViewMode.allCases) { mode in
-                Button {
-                    configView = mode
-                } label: {
-                    Label(configViewModeLabel(mode), systemImage: mode.systemImage)
-                        .labelStyle(.titleAndIcon)
-                        .lineLimit(1)
+    private var configStatusOverview: some View {
+        let validation = validateConfig()
+        return VStack(alignment: .leading, spacing: 10) {
+            configStatusItem(
+                title: validation.valid ? state.t(.configValid) : state.t(.configInvalid),
+                detail: isConfigDirty ? state.t(.unsavedChanges) : nil,
+                tint: validation.valid ? DesignTokens.success : DesignTokens.danger
+            )
+            LazyVGrid(
+                columns: [
+                    GridItem(.adaptive(minimum: 190), spacing: 10),
+                ],
+                alignment: .leading,
+                spacing: 10
+            ) {
+                ForEach(NativeConfigReloadSummary.subsystems) { subsystem in
+                    let isReloaded = reloadSummaryIsReloaded(subsystem)
+                    configStatusItem(
+                        title: state.t(subsystem.label),
+                        detail: reloadSummaryDetail(subsystem),
+                        tint: isReloaded ? DesignTokens.success : DesignTokens.neutral400
+                    )
                 }
-                .buttonStyle(PillButtonStyle(isActive: configView == mode))
+            }
+            if !validation.errors.isEmpty || !validation.warnings.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(validation.errors, id: \.self) { item in
+                        Text("• \(item)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(DesignTokens.danger)
+                    }
+                    ForEach(validation.warnings, id: \.self) { item in
+                        Text("• \(item)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(DesignTokens.warning)
+                    }
+                }
             }
         }
-        .padding(2)
-        .background(DesignTokens.neutral100, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+    }
+
+    private func configStatusItem(title: String, detail: String?, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(tint)
+                .frame(width: 8, height: 8)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                    .lineLimit(1)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DesignTokens.neutral50.opacity(0.8), in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
     }
 
     private var configSectionSidebar: some View {
@@ -500,89 +617,6 @@ private struct SettingsContentView: View {
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
     }
 
-    private var rawYamlPanel: some View {
-        SettingsCardBlock {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(state.t(.rawYAML))
-                    .font(.system(size: 13, weight: .semibold))
-                TextEditor(text: $state.g9ClawConfigText)
-                    .font(.system(size: 12, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 460)
-                    .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
-                    .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator))
-            }
-            .padding(14)
-        }
-    }
-
-    private var configValidationSummary: some View {
-        let validation = validateConfig()
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: validation.valid ? "checkmark.circle" : "exclamationmark.triangle")
-                    .foregroundStyle(validation.valid ? DesignTokens.success : DesignTokens.danger)
-                Text(validation.valid ? state.t(.configValid) : state.t(.configInvalid))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(validation.valid ? DesignTokens.success : DesignTokens.danger)
-                if isConfigDirty {
-                    Text(state.t(.unsavedChanges))
-                        .font(.system(size: 12))
-                        .foregroundStyle(DesignTokens.tertiaryText)
-                }
-            }
-            ForEach(validation.errors, id: \.self) { item in
-                Text("• \(item)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(DesignTokens.danger)
-            }
-            ForEach(validation.warnings, id: \.self) { item in
-                Text("• \(item)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(DesignTokens.warning)
-            }
-        }
-    }
-
-    private var reloadSummaryCard: some View {
-        SettingsSectionBlock(title: state.t(.reload), detail: state.t(.reloadDetail)) {
-            SettingsCardBlock {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(NativeConfigReloadSummary.subsystems) { subsystem in
-                        ReloadSummaryRow(
-                            name: state.t(subsystem.label),
-                            isReloaded: reloadSummaryIsReloaded(subsystem),
-                            detail: reloadSummaryDetail(subsystem)
-                        )
-                    }
-                }
-                .padding(14)
-            }
-        }
-    }
-
-    private var configSaveBar: some View {
-        HStack(spacing: 8) {
-            Spacer()
-            Button {
-                reloadConfigFromDisk()
-            } label: {
-                Label(state.t(.reloadCurrent), systemImage: "arrow.clockwise")
-            }
-            .buttonStyle(WebToolbarButtonStyle())
-            Button {
-                saveConfigAndReload()
-            } label: {
-                Label(isConfigDirty ? state.t(.saveAndReload) : state.t(.saved), systemImage: "square.and.arrow.down")
-            }
-            .buttonStyle(WebToolbarButtonStyle(isProminent: true))
-            .disabled(!isConfigDirty)
-        }
-        .padding(12)
-        .background(DesignTokens.background.opacity(0.92), in: RoundedRectangle(cornerRadius: DesignTokens.radius))
-        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
-    }
-
     @ViewBuilder
     private var configSectionContent: some View {
         switch configSection {
@@ -606,35 +640,6 @@ private struct SettingsContentView: View {
             }
         case .models:
             modelsConfigContent
-        case .agents:
-            VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: state.t(.mainAgent)) {
-                    SettingsCardBlock {
-                        ConfigGrid {
-                            SettingsPickerField(
-                                state.t(.model),
-                                selection: configBinding("agents.main.model"),
-                                options: configModelOptions(includeEmpty: true),
-                                emptyLabel: state.t(.pickModelEntry)
-                            )
-                        }
-                        .padding(14)
-                    }
-                }
-                SettingsSectionBlock(title: state.t(.subagents)) {
-                    SettingsCardBlock {
-                        ConfigGrid {
-                            SettingsPickerField(
-                                state.t(.defaultConfig),
-                                selection: configBinding("agents.subagents.default"),
-                                options: configModelOptions(includeInherit: true),
-                                emptyLabel: state.t(.inheritMain)
-                            )
-                        }
-                        .padding(14)
-                    }
-                }
-            }
         case .alwaysOn:
             VStack(alignment: .leading, spacing: 18) {
                 SettingsSectionBlock(title: state.t(.discoveryTrigger)) {
@@ -675,17 +680,6 @@ private struct SettingsContentView: View {
                     SettingsCardBlock(divided: true) {
                         SettingsRowBlock(title: state.t(.enabled), detail: state.t(.memoryDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding(NativeMemoryConfigFormFields.enabledPath))
-                        }
-                        if configBool(NativeMemoryConfigFormFields.enabledPath) {
-                            ConfigGrid {
-                                SettingsPickerField(
-                                    state.t(.model),
-                                    selection: configBinding(NativeMemoryConfigFormFields.modelPath),
-                                    options: configModelOptions(includeInherit: true),
-                                    emptyLabel: state.t(.inheritMain)
-                                )
-                            }
-                            .padding(14)
                         }
                     }
                 }
@@ -742,56 +736,190 @@ private struct SettingsContentView: View {
                 }
             }
         case .raw:
-            rawYamlPanel
+            EmptyView()
         }
     }
 
     private var modelsConfigContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            SettingsSectionBlock(title: state.t(.providers), detail: state.t(.providersDetail)) {
+            SettingsSectionBlock(
+                title: local(chinese: "模型池", english: "Model Pool"),
+                detail: local(chinese: "集中维护可复用的模型连接与模型名称。", english: "Manage reusable model connections and model names.")
+            ) {
                 SettingsCardBlock {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Text(state.t(.providers))
+                            Text(local(chinese: "已配置模型", english: "Configured Models"))
                                 .font(.system(size: 13, weight: .semibold))
                             Spacer()
-                            Button(state.t(.addProvider)) { addProvider() }
+                            Button(local(chinese: "添加配置", english: "Add Config")) { addModelPoolEntry() }
                                 .buttonStyle(WebToolbarButtonStyle())
                         }
-                        let providers = configChildIDs(parentPath: "models.providers")
-                        if providers.isEmpty {
-                            dashedEmpty(state.t(.noProvidersConfigured))
+                        let entries = modelPoolEntryIDs
+                        if entries.isEmpty {
+                            dashedEmpty(local(chinese: "暂无模型配置。", english: "No model configs yet."))
                         } else {
-                            ForEach(providers, id: \.self) { provider in
-                                providerCard(provider)
+                            SettingsPickerField(
+                                local(chinese: "选择模型", english: "Select Model"),
+                                selection: selectedModelPoolEntryBinding,
+                                options: entries,
+                                emptyLabel: local(chinese: "选择模型", english: "Select model"),
+                                optionLabel: modelOptionLabel
+                            )
+                            if let entry = selectedModelPoolEntryID {
+                                modelPoolEditorCard(entry)
                             }
                         }
                     }
                     .padding(14)
                 }
             }
-            SettingsSectionBlock(title: state.t(.entries), detail: state.t(.entriesDetail)) {
-                SettingsCardBlock {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text(state.t(.entries))
-                                .font(.system(size: 13, weight: .semibold))
-                            Spacer()
-                            Button(state.t(.addEntry)) { addEntry() }
-                                .buttonStyle(WebToolbarButtonStyle())
-                                .disabled(configChildIDs(parentPath: "models.providers").isEmpty)
-                        }
-                        let entries = configChildIDs(parentPath: "models.entries")
-                        if entries.isEmpty {
-                            dashedEmpty(state.t(.noEntriesConfigured))
-                        } else {
-                            ForEach(entries, id: \.self) { entry in
-                                entryCard(entry)
-                            }
-                        }
-                    }
-                    .padding(14)
+            modelAssignmentsContent
+            routerModelAssignmentsContent
+        }
+    }
+
+    private var modelAssignmentsContent: some View {
+        SettingsSectionBlock(
+            title: local(chinese: "模型使用", english: "Model Usage"),
+            detail: local(chinese: "智能体和记忆都从上方模型池选择模型。", english: "Agents and memory select from the model pool above.")
+        ) {
+            modelAssignmentRowsCard(primaryModelAssignmentRows)
+        }
+    }
+
+    private var routerModelAssignmentsContent: some View {
+        SettingsSectionBlock(
+            title: state.t(.routing),
+            detail: local(chinese: "默认只显示日常最常改的路由模型。", english: "The most common route model choices are shown by default.")
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                modelAssignmentRowsCard(routeModelAssignmentRows)
+                advancedRouteModelsDisclosure
+            }
+        }
+    }
+
+    private var primaryModelAssignmentRows: [NativeModelAssignmentRowSpec] {
+        [
+            NativeModelAssignmentRowSpec(
+                id: "mainAgent",
+                title: state.t(.mainAgent),
+                detail: local(chinese: "默认会话和普通任务使用的模型。", english: "Model used by default chats and regular tasks."),
+                path: "agents.main.model"
+            ),
+            NativeModelAssignmentRowSpec(
+                id: "subagents",
+                title: state.t(.subagents),
+                detail: local(chinese: "子智能体默认模型，可继承主智能体。", english: "Default subagent model; can inherit the main agent."),
+                path: "agents.subagents.default",
+                includeInherit: true
+            ),
+            NativeModelAssignmentRowSpec(
+                id: "memory",
+                title: state.t(.memory),
+                detail: local(chinese: "记忆检索和整理使用的模型，可继承主智能体。", english: "Model for memory retrieval and organization; can inherit the main agent."),
+                path: NativeMemoryConfigFormFields.modelPath,
+                includeInherit: true
+            ),
+        ]
+    }
+
+    private var routeModelAssignmentRows: [NativeModelAssignmentRowSpec] {
+        NativeRouterConfigFormFields.routeModelFields.map { field in
+            NativeModelAssignmentRowSpec(
+                id: field.id,
+                title: state.t(field.label),
+                detail: routerModelDetail(field.id),
+                path: field.path
+            )
+        }
+    }
+
+    private var advancedRouteModelAssignmentRows: [NativeModelAssignmentRowSpec] {
+        NativeRouterConfigFormFields.advancedRouteModelFields.map { field in
+            NativeModelAssignmentRowSpec(
+                id: field.id,
+                title: state.t(field.label),
+                detail: routerModelDetail(field.id),
+                path: field.path
+            )
+        } + routerPolicyModelAssignmentRows
+    }
+
+    private var routerPolicyModelAssignmentRows: [NativeModelAssignmentRowSpec] {
+        [
+            NativeModelAssignmentRowSpec(
+                id: "judgeModel",
+                title: state.t(.judgeModel),
+                detail: local(chinese: "Token Saver 判断任务复杂度时使用的模型。", english: "Model used by Token Saver to judge task complexity."),
+                path: "router.tokenSaver.judgeModel"
+            ),
+            NativeModelAssignmentRowSpec(
+                id: "simpleTier",
+                title: local(chinese: "简单任务", english: "Simple Tier"),
+                detail: local(chinese: "简短问答、文件读取、小改动使用的模型。", english: "Model for simple Q&A, file reads, and small edits."),
+                path: "router.tokenSaver.tiers.SIMPLE.model"
+            ),
+            NativeModelAssignmentRowSpec(
+                id: "mediumTier",
+                title: local(chinese: "中等任务", english: "Medium Tier"),
+                detail: local(chinese: "中等复杂度编码、解释和单文件改动使用的模型。", english: "Model for moderate coding, explanations, and single-file edits."),
+                path: "router.tokenSaver.tiers.MEDIUM.model"
+            ),
+            NativeModelAssignmentRowSpec(
+                id: "complexTier",
+                title: local(chinese: "复杂任务", english: "Complex Tier"),
+                detail: local(chinese: "多步骤编码、架构调整和较大重构使用的模型。", english: "Model for multi-step coding, architecture changes, and larger refactors."),
+                path: "router.tokenSaver.tiers.COMPLEX.model"
+            ),
+            NativeModelAssignmentRowSpec(
+                id: "reasoningTier",
+                title: local(chinese: "推理任务", english: "Reasoning Tier"),
+                detail: local(chinese: "深度推理、新算法和安全分析使用的模型。", english: "Model for deep reasoning, novel algorithms, and security analysis."),
+                path: "router.tokenSaver.tiers.REASONING.model"
+            ),
+            NativeModelAssignmentRowSpec(
+                id: "autoOrchestrate",
+                title: local(chinese: "自动编排", english: "Auto Orchestrate"),
+                detail: local(chinese: "自动编排主智能体使用的模型。", english: "Model used by the auto-orchestrated main agent."),
+                path: "router.autoOrchestrate.mainAgentModel"
+            ),
+        ]
+    }
+
+    private var advancedRouteModelsDisclosure: some View {
+        SettingsCardBlock {
+            DisclosureGroup(isExpanded: $showAdvancedRouteModels) {
+                VStack(spacing: 0) {
+                    SettingsCardDivider()
+                    modelAssignmentRowsList(advancedRouteModelAssignmentRows)
                 }
+                .padding(.top, 4)
+            } label: {
+                SettingsFieldLabel(
+                    title: local(chinese: "高级路由", english: "Advanced Routing"),
+                    detail: local(chinese: "思考、长上下文、Web 搜索、Token Saver 和自动编排。", english: "Thinking, long context, web search, Token Saver, and auto-orchestration.")
+                )
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+    }
+
+    private func modelAssignmentRowsCard(_ rows: [NativeModelAssignmentRowSpec]) -> some View {
+        SettingsCardBlock(divided: true) {
+            modelAssignmentRowsList(rows)
+        }
+    }
+
+    private func modelAssignmentRowsList(_ rows: [NativeModelAssignmentRowSpec]) -> some View {
+        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+            SettingsRowBlock(title: row.title, detail: row.detail) {
+                modelAssignmentPicker(path: row.path, includeInherit: row.includeInherit)
+            }
+            if index < rows.count - 1 {
+                SettingsCardDivider()
             }
         }
     }
@@ -822,22 +950,54 @@ private struct SettingsContentView: View {
         }
     }
 
-    private func providerCard(_ provider: String) -> some View {
-        SettingsCardBlock {
+    private var modelPoolEntryIDs: [String] {
+        configChildIDs(parentPath: "models.entries")
+    }
+
+    private var selectedModelPoolEntryID: String? {
+        let entries = modelPoolEntryIDs
+        if let selectedModelPoolEntry, entries.contains(selectedModelPoolEntry) {
+            return selectedModelPoolEntry
+        }
+        return entries.first
+    }
+
+    private var selectedModelPoolEntryBinding: Binding<String> {
+        Binding(
+            get: { selectedModelPoolEntryID ?? "" },
+            set: { selectedModelPoolEntry = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    private func modelPoolEditorCard(_ entry: String) -> some View {
+        let provider = providerID(forEntry: entry)
+        return SettingsCardBlock {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text(provider)
-                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(modelOptionLabel(entry))
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(modelPoolSummary(forEntry: entry))
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                    }
                     Spacer()
-                    Text(configValue("models.providers.\(provider).type").isEmpty ? state.t(.missing) : configValue("models.providers.\(provider).type"))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(DesignTokens.tertiaryText)
-                    Button(state.t(.rename)) { renameConfigObject(parentPath: "models.providers", oldID: provider) }
-                        .buttonStyle(WebToolbarButtonStyle())
-                    Button(state.t(.remove)) { removeConfigObject(path: "models.providers.\(provider)") }
+                    Button(state.t(.remove)) { removeModelPoolEntry(entry) }
                         .buttonStyle(WebToolbarButtonStyle())
                 }
+
                 ConfigGrid {
+                    SettingsTextField(local(chinese: "模型名称", english: "Model Name"), text: Binding(
+                        get: {
+                            entry == "default" ? state.settings.providerConfig.model : configValue("models.entries.\(entry).name")
+                        },
+                        set: { value in
+                            if entry == "default" {
+                                state.settings.providerConfig.model = value
+                            }
+                            setConfigValue("models.entries.\(entry).name", value)
+                        }
+                    ))
                     SettingsPickerField(
                         state.t(.type),
                         selection: configBinding("models.providers.\(provider).type", fallback: NativeModelsConfigFormFields.defaultProviderType),
@@ -856,47 +1016,12 @@ private struct SettingsContentView: View {
                         }
                     ))
                     SettingsTextField(state.t(.apiKey), text: configBinding("models.providers.\(provider).apiKey"), isSecure: true)
+                    SettingsTextField(state.t(.contextWindow), text: configBinding("models.entries.\(entry).contextWindow"))
                 }
+
                 Text(state.t(.keychainHelp))
                     .font(.system(size: 11))
                     .foregroundStyle(DesignTokens.tertiaryText)
-            }
-            .padding(14)
-        }
-    }
-
-    private func entryCard(_ entry: String) -> some View {
-        SettingsCardBlock {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text(entry)
-                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                    Spacer()
-                    Button(state.t(.rename)) { renameConfigObject(parentPath: "models.entries", oldID: entry) }
-                        .buttonStyle(WebToolbarButtonStyle())
-                    Button(state.t(.remove)) { removeConfigObject(path: "models.entries.\(entry)") }
-                        .buttonStyle(WebToolbarButtonStyle())
-                }
-                ConfigGrid {
-                    SettingsPickerField(
-                        state.t(.provider),
-                        selection: configBinding("models.entries.\(entry).provider"),
-                        options: NativeModelsConfigFormFields.providerOptions(providerIDs: configChildIDs(parentPath: "models.providers")),
-                        emptyLabel: state.t(.provider)
-                    )
-                    SettingsTextField(state.t(.name), text: Binding(
-                        get: {
-                            entry == "default" ? state.settings.providerConfig.model : configValue("models.entries.\(entry).name")
-                        },
-                        set: { value in
-                            if entry == "default" {
-                                state.settings.providerConfig.model = value
-                            }
-                            setConfigValue("models.entries.\(entry).name", value)
-                        }
-                    ))
-                    SettingsTextField(state.t(.contextWindow), text: configBinding("models.entries.\(entry).contextWindow"))
-                }
             }
             .padding(14)
         }
@@ -991,6 +1116,14 @@ private struct SettingsContentView: View {
         G9ClawConfigPath.configURL()
     }
 
+    private var yamlContentTypes: [UTType] {
+        let types = [
+            UTType(filenameExtension: "yaml"),
+            UTType(filenameExtension: "yml"),
+        ].compactMap(\.self)
+        return types.isEmpty ? [.plainText] : types
+    }
+
     private func reloadConfigFromDisk() {
         do {
             let url = FileManager.default.fileExists(atPath: configFileURL().path)
@@ -1012,6 +1145,36 @@ private struct SettingsContentView: View {
 
     private func revealConfigFile() {
         NSWorkspace.shared.activateFileViewerSelecting([configFileURL()])
+    }
+
+    private func importConfigFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = yamlContentTypes
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            state.g9ClawConfigText = try String(contentsOf: url, encoding: .utf8)
+            configError = nil
+            configMessage = local(chinese: "已导入配置，保存并重新加载后生效。", english: "Imported config. Save and reload to apply it.")
+        } catch {
+            configError = error.localizedDescription
+        }
+    }
+
+    private func exportConfigFile() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "config.yaml"
+        panel.allowedContentTypes = yamlContentTypes
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try state.g9ClawConfigText.write(to: url, atomically: true, encoding: .utf8)
+            configError = nil
+            configMessage = state.t(.exported)
+        } catch {
+            configError = error.localizedDescription
+        }
     }
 
     private func saveConfigAndReload() {
@@ -1067,7 +1230,7 @@ private struct SettingsContentView: View {
         if (values["gateway.runtimePaths.generalCwd"] ?? "").isEmpty {
             warnings.append("gateway.runtimePaths.generalCwd is empty; Chat will use the default workspace.")
         }
-        if configView == .raw && state.g9ClawConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if state.g9ClawConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             errors.append("Config YAML is empty.")
         }
         return NativeConfigValidation(errors: errors, warnings: warnings)
@@ -1094,12 +1257,56 @@ private struct SettingsContentView: View {
         return ids.sorted()
     }
 
-    private func configModelOptions(includeEmpty: Bool = false, includeInherit: Bool = false) -> [String] {
-        NativeConfigModelOptions.options(
-            values: LegacyConfigLoader.scalarMap(from: state.g9ClawConfigText),
-            includeEmpty: includeEmpty,
-            includeInherit: includeInherit
-        )
+    private func providerID(forEntry entry: String) -> String {
+        nonBlank(configValue("models.entries.\(entry).provider")) ?? "g9claw"
+    }
+
+    private func modelName(forEntry entry: String) -> String {
+        configValue("models.entries.\(entry).name")
+    }
+
+    private func modelPoolSummary(forEntry entry: String) -> String {
+        let provider = providerID(forEntry: entry)
+        let providerType = nonBlank(configValue("models.providers.\(provider).type")) ?? NativeModelsConfigFormFields.defaultProviderType
+        return "\(provider) · \(providerType)"
+    }
+
+    private func modelOptionLabel(_ option: String) -> String {
+        if option == "inherit" {
+            return state.t(.inheritMain)
+        }
+        if option.isEmpty {
+            return state.t(.pickModelEntry)
+        }
+        let name = nonBlank(modelName(forEntry: option)) ?? option
+        let duplicateCount = modelPoolEntryIDs.filter { candidate in
+            nonBlank(modelName(forEntry: candidate)) == nonBlank(modelName(forEntry: option))
+        }.count
+        return duplicateCount > 1 ? "\(name) · \(providerID(forEntry: option))" : name
+    }
+
+    private func modelAssignmentOptions(path: String, includeInherit: Bool) -> [String] {
+        var options: [String] = includeInherit ? ["inherit"] : []
+        options.append(contentsOf: modelPoolEntryIDs)
+        let currentValue = configValue(path).trimmingCharacters(in: .whitespacesAndNewlines)
+        if currentValue.isEmpty {
+            options.insert("", at: includeInherit ? 1 : 0)
+        } else if !options.contains(currentValue) {
+            let current = currentValue
+            options.insert(current, at: includeInherit ? 1 : 0)
+        }
+        return options.isEmpty ? [""] : options
+    }
+
+    private func modelAssignmentPicker(path: String, includeInherit: Bool = false) -> some View {
+        Picker("", selection: configBinding(path)) {
+            ForEach(modelAssignmentOptions(path: path, includeInherit: includeInherit), id: \.self) { option in
+                Text(modelOptionLabel(option)).tag(option)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: 220)
     }
 
     private func dashedEmpty(_ text: String) -> some View {
@@ -1114,52 +1321,68 @@ private struct SettingsContentView: View {
             )
     }
 
-    private func addProvider() {
-        let ids = Set(configChildIDs(parentPath: "models.providers"))
+    private func addModelPoolEntry() {
+        let entryIDs = Set(modelPoolEntryIDs)
+        var id = entryIDs.contains("default") ? "model1" : "default"
         var index = 1
-        while ids.contains("provider\(index)") { index += 1 }
-        let id = "provider\(index)"
-        state.g9ClawConfigText = YAMLScalarEditor.appendBlock(
-            parentPath: "models.providers",
-            id: id,
-            scalars: NativeModelsConfigFormFields.newProviderScalars,
-            in: state.g9ClawConfigText
-        )
-    }
-
-    private func addEntry() {
-        let ids = Set(configChildIDs(parentPath: "models.entries"))
-        var id = ids.contains("default") ? "entry1" : "default"
-        var index = 1
-        while ids.contains(id) {
+        while entryIDs.contains(id) {
             index += 1
-            id = "entry\(index)"
+            id = "model\(index)"
         }
-        guard let firstProvider = configChildIDs(parentPath: "models.providers").first else { return }
+
+        let providerIDs = Set(configChildIDs(parentPath: "models.providers"))
+        let providerID: String
+        if id == "default", providerIDs.contains("g9claw") {
+            providerID = "g9claw"
+        } else {
+            providerID = id
+        }
+
+        var yaml = state.g9ClawConfigText
+        if !providerIDs.contains(providerID) {
+            yaml = YAMLScalarEditor.appendBlock(
+                parentPath: "models.providers",
+                id: providerID,
+                scalars: NativeModelsConfigFormFields.newProviderScalars,
+                in: yaml
+            )
+        }
         state.g9ClawConfigText = YAMLScalarEditor.appendBlock(
             parentPath: "models.entries",
             id: id,
-            scalars: NativeModelsConfigFormFields.newEntryScalars(firstProvider: firstProvider),
-            in: state.g9ClawConfigText
+            scalars: NativeModelsConfigFormFields.newEntryScalars(firstProvider: providerID),
+            in: yaml
         )
+        selectedModelPoolEntry = id
     }
 
-    private func renameConfigObject(parentPath: String, oldID: String) {
-        let alert = NSAlert()
-        alert.messageText = "\(state.t(.rename)) \(oldID)"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = oldID
-        alert.accessoryView = field
-        alert.addButton(withTitle: state.t(.rename))
-        alert.addButton(withTitle: state.t(.cancel))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let nextID = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !nextID.isEmpty, nextID != oldID else { return }
-        state.g9ClawConfigText = YAMLScalarEditor.renameObject(parentPath: parentPath, oldID: oldID, newID: nextID, in: state.g9ClawConfigText)
+    private func removeModelPoolEntry(_ entry: String) {
+        let provider = providerID(forEntry: entry)
+        let fallbackEntry = modelPoolEntryIDs.first { $0 != entry }
+        let remainingUses = modelPoolEntryIDs
+            .filter { $0 != entry }
+            .filter { providerID(forEntry: $0) == provider }
+            .count
+        var yaml = YAMLScalarEditor.removeObject(path: "models.entries.\(entry)", in: state.g9ClawConfigText)
+        yaml = reassignModelReferences(removing: entry, fallback: fallbackEntry, in: yaml)
+        if remainingUses == 0, provider != "g9claw" {
+            yaml = YAMLScalarEditor.removeObject(path: "models.providers.\(provider)", in: yaml)
+        }
+        state.g9ClawConfigText = yaml
+        if selectedModelPoolEntry == entry {
+            selectedModelPoolEntry = nil
+        }
     }
 
-    private func removeConfigObject(path: String) {
-        state.g9ClawConfigText = YAMLScalarEditor.removeObject(path: path, in: state.g9ClawConfigText)
+    private func reassignModelReferences(removing removedEntry: String, fallback: String?, in yaml: String) -> String {
+        let values = LegacyConfigLoader.scalarMap(from: yaml)
+        return NativeModelsConfigFormFields.assignmentPaths.reduce(yaml) { result, path in
+            guard values[path] == removedEntry else { return result }
+            let replacement = NativeModelsConfigFormFields.inheritableAssignmentPaths.contains(path)
+                ? (fallback ?? "inherit")
+                : (fallback ?? "")
+            return YAMLScalarEditor.set(path: path, value: replacement, in: result)
+        }
     }
 
     private func exportPermissions() {
@@ -1193,10 +1416,25 @@ private struct SettingsContentView: View {
 
 private struct SettingsPageContainer<Content: View>: View {
     var title: String
+    var backLabel: String?
+    var onBack: (() -> Void)?
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 18) {
+            if let backLabel, let onBack {
+                Button(action: onBack) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(backLabel)
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(DesignTokens.secondaryText)
+                }
+                .buttonStyle(.plain)
+                .padding(.bottom, 2)
+            }
             Text(title)
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.primary)
@@ -1205,10 +1443,18 @@ private struct SettingsPageContainer<Content: View>: View {
         }
         .padding(.top, 48)
         .padding(.bottom, 36)
-        .padding(.horizontal, 34)
-        .frame(maxWidth: 760, alignment: .topLeading)
+        .padding(.horizontal, 40)
+        .frame(maxWidth: 860, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .top)
     }
+}
+
+private enum SettingsPage: Hashable {
+    case main
+    case behavior
+    case codeEditor
+    case permissions
+    case config
 }
 
 private struct PermissionListSection: View {
@@ -1325,35 +1571,8 @@ private struct ConfigSummary: View {
     }
 }
 
-enum NativeConfigViewMode: String, CaseIterable, Identifiable {
-    case form
-    case raw
-
-    static let storageKey = "g9claw:configView"
-
-    static func fromStoredRaw(_ rawValue: String) -> NativeConfigViewMode {
-        NativeConfigViewMode(rawValue: rawValue) ?? .form
-    }
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .form: "Form"
-        case .raw: "Raw YAML"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .form: "list.bullet.rectangle"
-        case .raw: "chevron.left.forwardslash.chevron.right"
-        }
-    }
-}
-
 enum NativeAppearanceSection: String, CaseIterable, Identifiable {
-    case darkMode
+    case colorScheme
     case language
     case toolDisplay
     case viewOptions
@@ -1366,7 +1585,7 @@ enum NativeAppearanceSection: String, CaseIterable, Identifiable {
 
 enum NativeAppearanceSettingsLayout {
     static let sectionOrder: [NativeAppearanceSection] = [
-        .darkMode,
+        .colorScheme,
         .language,
         .toolDisplay,
         .viewOptions,
@@ -1374,8 +1593,11 @@ enum NativeAppearanceSettingsLayout {
         .projectSorting,
         .codeEditor,
     ]
-    static let usesDarkModeToggle = true
-    static let usesThemePicker = false
+    static let usesDarkModeToggle = false
+    static let usesThemePicker = true
+    static let colorSchemePickerWidth: CGFloat = 160
+    static let languagePickerWidth: CGFloat = 160
+    static let projectSortingPickerWidth: CGFloat = 160
     static let fontSizeOptions = [
         10,
         11,
@@ -1392,12 +1614,19 @@ enum NativeAppearanceSettingsLayout {
 enum NativeConfigFormLayout {
     static let usesSplitSectionNavigation = true
     static let usesSectionDropdown = false
+    static let usesViewModeToggle = false
+    static let exposesRawYAMLEditor = false
+    static let headerActionIDs = [
+        "revealInFinder",
+        "import",
+        "export",
+        "saveAndReloadCurrent",
+    ]
     static let sectionNavigationWidth: CGFloat = 180
     static let sectionNavigationGap: CGFloat = 16
     static let sectionOrder: [G9ClawConfigSection] = [
         .runtime,
         .models,
-        .agents,
         .alwaysOn,
         .memory,
         .rag,
@@ -1450,13 +1679,6 @@ enum NativeConfigReloadSummary {
             reloadedDetail: .gatewayConfigParsed,
             skippedDetail: .gatewayDisabled
         ),
-        NativeConfigReloadSubsystemSpec(
-            id: "proxy",
-            label: .proxy,
-            state: .nonEmptyPath("runtime.proxyPort"),
-            reloadedDetail: .proxyConfigParsed,
-            skippedDetail: .proxyDisabled
-        ),
     ]
 
     static var subsystemIDs: [String] {
@@ -1495,6 +1717,30 @@ enum NativeConfigModelOptions {
 }
 
 enum NativeModelsConfigFormFields {
+    static let usesModelPoolDropdown = true
+    static let usageAssignmentsLiveInModelSection = true
+    static let entryRowsExposeProviderPicker = false
+    static let entryRowsExposeModelNameField = false
+    static let assignmentPaths = [
+        "agents.main.model",
+        "agents.subagents.default",
+        "memory.model",
+        "router.routes.default.model",
+        "router.routes.background.model",
+        "router.routes.think.model",
+        "router.routes.longContext.model",
+        "router.routes.webSearch.model",
+        "router.tokenSaver.judgeModel",
+        "router.tokenSaver.tiers.SIMPLE.model",
+        "router.tokenSaver.tiers.MEDIUM.model",
+        "router.tokenSaver.tiers.COMPLEX.model",
+        "router.tokenSaver.tiers.REASONING.model",
+        "router.autoOrchestrate.mainAgentModel",
+    ]
+    static let inheritableAssignmentPaths: Set<String> = [
+        "agents.subagents.default",
+        "memory.model",
+    ]
     static let defaultProviderType = "openai-chat"
     static let providerTypeOptions = [
         "openai-chat",
@@ -1509,16 +1755,27 @@ enum NativeModelsConfigFormFields {
         "apiKey": "",
     ]
 
-    static func providerOptions(providerIDs: [String]) -> [String] {
-        [""] + providerIDs
-    }
-
     static func newEntryScalars(firstProvider: String) -> [String: String] {
         [
             "provider": firstProvider,
             "name": "",
+            "contextWindow": "",
         ]
     }
+}
+
+struct NativeModelAssignmentRowSpec: Hashable, Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let path: String
+    var includeInherit = false
+}
+
+struct NativeRouterModelFieldSpec: Hashable, Identifiable {
+    let id: String
+    let label: L10nKey
+    let path: String
 }
 
 struct NativeConfigTextFieldSpec: Hashable, Identifiable {
@@ -1540,11 +1797,6 @@ struct NativeRagEndpointConfigCardSpec: Hashable, Identifiable {
 enum NativeRuntimeConfigFormFields {
     static let workspacesRootPath = "runtime.workspacesRoot"
     static let textFields: [NativeConfigTextFieldSpec] = [
-        NativeConfigTextFieldSpec(label: .host, path: "runtime.host"),
-        NativeConfigTextFieldSpec(label: .serverPort, path: "runtime.serverPort"),
-        NativeConfigTextFieldSpec(label: .vitePort, path: "runtime.vitePort"),
-        NativeConfigTextFieldSpec(label: .proxyPort, path: "runtime.proxyPort"),
-        NativeConfigTextFieldSpec(label: .contextWindow, path: "runtime.contextWindow"),
         NativeConfigTextFieldSpec(label: .apiTimeoutMs, path: "runtime.apiTimeoutMs"),
         NativeConfigTextFieldSpec(label: .databasePath, path: "runtime.databasePath"),
     ]
@@ -1622,12 +1874,20 @@ enum NativeMemoryConfigFormFields {
     static let modelPath = "memory.model"
     static let visiblePaths = [
         enabledPath,
-        modelPath,
     ]
 }
 
 enum NativeRouterConfigFormFields {
     static let enabledPath = "router.enabled"
+    static let routeModelFields: [NativeRouterModelFieldSpec] = [
+        NativeRouterModelFieldSpec(id: "default", label: .defaultRouteModel, path: "router.routes.default.model"),
+        NativeRouterModelFieldSpec(id: "background", label: .backgroundRouteModel, path: "router.routes.background.model"),
+    ]
+    static let advancedRouteModelFields: [NativeRouterModelFieldSpec] = [
+        NativeRouterModelFieldSpec(id: "think", label: .thinkRouteModel, path: "router.routes.think.model"),
+        NativeRouterModelFieldSpec(id: "longContext", label: .longContextRouteModel, path: "router.routes.longContext.model"),
+        NativeRouterModelFieldSpec(id: "webSearch", label: .webSearchRouteModel, path: "router.routes.webSearch.model"),
+    ]
     static let visiblePaths = [
         enabledPath,
     ]
@@ -1669,32 +1929,6 @@ private struct NoticeBanner: View {
         .padding(10)
         .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: DesignTokens.radius))
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(tint.opacity(0.28)))
-    }
-}
-
-private struct ReloadSummaryRow: View {
-    @EnvironmentObject private var state: AppState
-    var name: String
-    var isReloaded: Bool
-    var detail: String
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text(name)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .frame(width: 98, alignment: .leading)
-            Text(isReloaded ? state.t(.reloaded) : state.t(.skipped))
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(isReloaded ? DesignTokens.success : DesignTokens.tertiaryText)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background((isReloaded ? DesignTokens.success : DesignTokens.neutral400).opacity(0.10), in: Capsule())
-            Text(detail)
-                .font(.system(size: 12))
-                .foregroundStyle(DesignTokens.tertiaryText)
-                .lineLimit(1)
-            Spacer()
-        }
     }
 }
 
@@ -1756,6 +1990,70 @@ struct SettingsCardBlock<Content: View>: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1)
         )
+    }
+}
+
+private struct SettingsCardDivider: View {
+    var body: some View {
+        Divider()
+            .padding(.leading, 54)
+    }
+}
+
+private struct SettingsMenuRow<Trailing: View>: View {
+    var systemImage: String
+    var title: String
+    var detail: String
+    @ViewBuilder var trailing: () -> Trailing
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.system(size: 16, weight: .regular))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .frame(width: 28)
+
+            SettingsFieldLabel(title: title, detail: detail)
+
+            Spacer(minLength: 16)
+
+            trailing()
+                .controlSize(.regular)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .frame(minHeight: 58)
+    }
+}
+
+private struct SettingsNavigationRow: View {
+    var systemImage: String
+    var title: String
+    var detail: String
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .frame(width: 28)
+
+                SettingsFieldLabel(title: title, detail: detail)
+
+                Spacer(minLength: 16)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .frame(minHeight: 58)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -2059,12 +2357,22 @@ struct SettingsPickerField: View {
     @Binding var selection: String
     var options: [String]
     var emptyLabel: String
+    var optionLabel: (String) -> String
 
-    init(_ label: String, selection: Binding<String>, options: [String], emptyLabel: String) {
+    init(
+        _ label: String,
+        selection: Binding<String>,
+        options: [String],
+        emptyLabel: String,
+        optionLabel: ((String) -> String)? = nil
+    ) {
         self.label = label
         self._selection = selection
         self.options = options
         self.emptyLabel = emptyLabel
+        self.optionLabel = optionLabel ?? { option in
+            option.isEmpty || option == "inherit" ? emptyLabel : option
+        }
     }
 
     var body: some View {
@@ -2074,7 +2382,7 @@ struct SettingsPickerField: View {
                 .foregroundStyle(DesignTokens.tertiaryText)
             Picker(label, selection: $selection) {
                 ForEach(options, id: \.self) { option in
-                    Text(option.isEmpty || option == "inherit" ? emptyLabel : option)
+                    Text(optionLabel(option))
                         .tag(option)
                 }
             }

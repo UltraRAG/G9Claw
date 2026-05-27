@@ -22,6 +22,11 @@ enum L10nKey: String, CaseIterable {
     case blockedToolPlaceholder
     case browse
     case cancel
+    case colorScheme
+    case colorSchemeDark
+    case colorSchemeDetail
+    case colorSchemeLight
+    case colorSchemeSystem
     case chatRunModeAgent
     case chatRunModeAgentDetail
     case chatRunModePlan
@@ -439,6 +444,11 @@ struct LocalizationService {
         .blockedToolPlaceholder: #"e.g. "Bash(rm:*)""#,
         .browse: "Browse",
         .cancel: "Cancel",
+        .colorScheme: "Theme",
+        .colorSchemeDark: "Dark",
+        .colorSchemeDetail: "Follow the system appearance or choose a fixed theme.",
+        .colorSchemeLight: "Light",
+        .colorSchemeSystem: "Follow System",
         .chatRunModeAgent: "Agent",
         .chatRunModeAgentDetail: "Run the agent with tools and streaming output.",
         .chatRunModePlan: "Plan",
@@ -694,7 +704,7 @@ struct LocalizationService {
         .recurring: "recurring",
         .reloaded: "reloaded",
         .runtime: "Runtime",
-        .runtimeDetail: "Local paths and native runtime defaults.",
+        .runtimeDetail: "API timeout and local paths.",
         .models: "Models",
         .agents: "Agents",
         .host: "Host",
@@ -824,6 +834,11 @@ struct LocalizationService {
         .blockedToolPlaceholder: #"例如 "Bash(rm:*)""#,
         .browse: "浏览",
         .cancel: "取消",
+        .colorScheme: "外观模式",
+        .colorSchemeDark: "深色",
+        .colorSchemeDetail: "跟随系统外观，或固定为浅色/深色主题。",
+        .colorSchemeLight: "浅色",
+        .colorSchemeSystem: "系统跟随",
         .chatRunModeAgent: "智能体",
         .chatRunModeAgentDetail: "使用工具和流式输出运行智能体。",
         .chatRunModePlan: "计划",
@@ -1079,7 +1094,7 @@ struct LocalizationService {
         .recurring: "重复",
         .reloaded: "已重新加载",
         .runtime: "运行时",
-        .runtimeDetail: "本地路径和原生运行时默认值。",
+        .runtimeDetail: "API 超时和本地路径。",
         .models: "模型",
         .agents: "智能体",
         .host: "主机",

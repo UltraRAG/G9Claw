@@ -120,16 +120,3 @@ private struct TitlebarIconButtonStyle: ButtonStyle {
             .opacity(configuration.isPressed ? 0.72 : 1)
     }
 }
-
-private extension AppColorScheme {
-    var swiftUIColorScheme: ColorScheme? {
-        switch self {
-        case .system:
-            return nil
-        case .light:
-            return .light
-        case .dark:
-            return .dark
-        }
-    }
-}
