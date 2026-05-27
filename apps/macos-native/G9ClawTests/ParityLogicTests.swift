@@ -4559,6 +4559,15 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(SkillsService.isSafeSlug(".."))
     }
 
+    func testSkillHubArchivePathValidationRejectsEscapes() {
+        XCTAssertTrue(SkillsService.isSafeArchiveEntry("SKILL.md"))
+        XCTAssertTrue(SkillsService.isSafeArchiveEntry("references/api.md"))
+        XCTAssertFalse(SkillsService.isSafeArchiveEntry("../SKILL.md"))
+        XCTAssertFalse(SkillsService.isSafeArchiveEntry("/tmp/SKILL.md"))
+        XCTAssertFalse(SkillsService.isSafeArchiveEntry("skill\\SKILL.md"))
+        XCTAssertFalse(SkillsService.isSafeArchiveEntry("skill//SKILL.md"))
+    }
+
     func testSkillValidationRequiresSkillMarkdownFrontmatter() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("g9claw-skill-\(UUID().uuidString)", isDirectory: true)
@@ -4582,6 +4591,96 @@ final class ParityLogicTests: XCTestCase {
         result = service.validate(source: root)
         XCTAssertTrue(result.ok)
         XCTAssertTrue(result.hardFails.isEmpty)
+    }
+
+    func testNativeAgentPromptListsWorkspaceSkillsBeforeInvocation() throws {
+        let projectRoot = temporaryDirectory("g9claw-project")
+        defer { try? FileManager.default.removeItem(at: projectRoot) }
+        let skillDir = try writeProjectSkill(
+            projectRoot: projectRoot,
+            slug: "sushiro",
+            name: "sushiro",
+            description: "查询寿司郎中国大陆门店实时排队和等位情况。"
+        )
+
+        let skills = SkillRuntimeService.availableSkills(workspacePath: projectRoot.path)
+        let sushiro = try XCTUnwrap(skills.first { $0.name == "sushiro" })
+        XCTAssertEqual(sushiro.scope, "project")
+        XCTAssertEqual(sushiro.slug, "sushiro")
+
+        let context = NativeAgentRuntime.nativeAgentSkillContext(workspacePath: projectRoot.path)
+        XCTAssertTrue(context.contains("- sushiro (project): 查询寿司郎"))
+        XCTAssertTrue(context.contains("call Skill with the exact skill name"))
+        XCTAssertTrue(context.contains("skillDir"))
+
+        let runContext = AgentRunContext(request: agentRequest(projectPath: projectRoot.path))
+        let output = try SkillRuntimeService.load(
+            inputJSON: #"{"skill":"sushiro","args":"北京寿司郎排队情况"}"#,
+            context: runContext
+        )
+        let payload = try jsonObject(from: output)
+        XCTAssertEqual(payload["skill"] as? String, "sushiro")
+        XCTAssertEqual(payload["skillDir"] as? String, skillDir.path)
+        XCTAssertTrue((payload["executionHint"] as? String)?.contains("skillDir") == true)
+    }
+
+    func testNativeClawHubInstallImportsDownloadedArchive() async throws {
+        let projectRoot = temporaryDirectory("g9claw-project")
+        let archive = try makeSkillArchive(name: "Demo Skill", description: "Installs from a mocked native ClawHub archive.")
+        defer { try? FileManager.default.removeItem(at: projectRoot) }
+
+        let client = MockSkillHubClient(
+            detail: SkillHubSkillDetail(
+                slug: "demo-skill",
+                displayName: "Demo Skill",
+                latestVersion: "1.0.0",
+                isSuspicious: false,
+                isMalwareBlocked: false,
+                moderationSummary: nil
+            ),
+            archive: SkillHubArchive(data: archive, filename: "demo-skill-1.0.0.zip")
+        )
+        let service = SkillsService(skillHubClient: client)
+
+        let result = try await service.clawHubInstall(
+            slug: "demo-skill",
+            scope: .project,
+            projectPath: projectRoot.path
+        )
+
+        XCTAssertTrue(result.ok)
+        XCTAssertTrue(result.installed)
+        XCTAssertEqual(result.skill?.slug, "demo-skill")
+        XCTAssertEqual(client.downloadRequests, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: projectRoot.appendingPathComponent(".g9claw/skills/demo-skill/SKILL.md").path))
+    }
+
+    func testNativeClawHubInstallRequiresForceForSuspiciousSkills() async throws {
+        let projectRoot = temporaryDirectory("g9claw-project")
+        defer { try? FileManager.default.removeItem(at: projectRoot) }
+        let client = MockSkillHubClient(
+            detail: SkillHubSkillDetail(
+                slug: "risky-skill",
+                displayName: "Risky Skill",
+                latestVersion: "1.0.0",
+                isSuspicious: true,
+                isMalwareBlocked: false,
+                moderationSummary: "Manual confirmation required."
+            ),
+            archive: SkillHubArchive(data: Data(), filename: "risky-skill.zip")
+        )
+        let service = SkillsService(skillHubClient: client)
+
+        let result = try await service.clawHubInstall(
+            slug: "risky-skill",
+            scope: .project,
+            projectPath: projectRoot.path
+        )
+
+        XCTAssertFalse(result.ok)
+        XCTAssertTrue(result.needsForce)
+        XCTAssertEqual(result.stderr, "Manual confirmation required.")
+        XCTAssertEqual(client.downloadRequests, 0)
     }
 
     func testNativeTurnControllerRecordsOrderedTimelineItems() async {
@@ -6624,10 +6723,100 @@ final class ParityLogicTests: XCTestCase {
         try (data as Data).write(to: url)
     }
 
+    private func temporaryDirectory(_ prefix: String) -> URL {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func makeSkillArchive(name: String, description: String) throws -> Data {
+        let root = temporaryDirectory("g9claw-skill-archive")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try """
+        ---
+        name: \(name)
+        description: \(description)
+        ---
+
+        # \(name)
+        """.write(to: source.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        try "fixture".write(to: source.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+
+        let archive = root.appendingPathComponent("skill.zip")
+        try runTestProcess(executable: "/usr/bin/ditto", args: ["-c", "-k", source.path, archive.path])
+        return try Data(contentsOf: archive)
+    }
+
+    private func writeProjectSkill(projectRoot: URL, slug: String, name: String, description: String) throws -> URL {
+        let skillDir = projectRoot
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent(slug, isDirectory: true)
+        try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)
+        try """
+        ---
+        name: \(name)
+        description: \(description)
+        ---
+
+        # \(name)
+
+        The CLI is at `scripts/\(slug)`. Invoke it from this skill directory.
+        """.write(to: skillDir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        return skillDir
+    }
+
+    private func runTestProcess(executable: String, args: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = args
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            throw NSError(domain: "ParityLogicTests", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: stderr])
+        }
+    }
+
     private func repoRootURL() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+    }
+}
+
+private final class MockSkillHubClient: SkillHubClient, @unchecked Sendable {
+    var searchResults: [SkillHubSearchResult]
+    var detail: SkillHubSkillDetail
+    var archive: SkillHubArchive
+    var downloadRequests = 0
+
+    init(
+        searchResults: [SkillHubSearchResult] = [],
+        detail: SkillHubSkillDetail,
+        archive: SkillHubArchive
+    ) {
+        self.searchResults = searchResults
+        self.detail = detail
+        self.archive = archive
+    }
+
+    func search(query: String, registry: String?) async throws -> [SkillHubSearchResult] {
+        searchResults
+    }
+
+    func skillDetail(slug: String, version: String?, registry: String?) async throws -> SkillHubSkillDetail {
+        detail
+    }
+
+    func download(slug: String, version: String?, registry: String?) async throws -> SkillHubArchive {
+        downloadRequests += 1
+        return archive
     }
 }

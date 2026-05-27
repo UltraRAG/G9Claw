@@ -1269,8 +1269,209 @@ final class MemoryService {
     }
 }
 
+protocol SkillHubClient: Sendable {
+    func search(query: String, registry: String?) async throws -> [SkillHubSearchResult]
+    func skillDetail(slug: String, version: String?, registry: String?) async throws -> SkillHubSkillDetail
+    func download(slug: String, version: String?, registry: String?) async throws -> SkillHubArchive
+}
+
+struct SkillHubSkillDetail: Hashable, Sendable {
+    var slug: String
+    var displayName: String
+    var latestVersion: String?
+    var isSuspicious: Bool
+    var isMalwareBlocked: Bool
+    var moderationSummary: String?
+}
+
+struct SkillHubArchive: Sendable {
+    var data: Data
+    var filename: String?
+}
+
+final class ClawHubHTTPClient: SkillHubClient {
+    private let defaultRegistry = URL(string: "https://clawhub.ai")!
+    private let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    func search(query: String, registry: String?) async throws -> [SkillHubSearchResult] {
+        let base = try await apiBaseURL(registry: registry)
+        let url = try apiURL(
+            base: base,
+            path: ["api", "v1", "search"],
+            queryItems: [
+                URLQueryItem(name: "q", value: query),
+                URLQueryItem(name: "limit", value: "20"),
+                URLQueryItem(name: "nonSuspiciousOnly", value: "true")
+            ]
+        )
+        let data = try await requestData(url)
+        let response = try JSONDecoder().decode(ClawHubSearchResponse.self, from: data)
+        return response.results.compactMap { item in
+            guard SkillsService.isSafeSlug(item.slug) else { return nil }
+            return SkillHubSearchResult(
+                slug: item.slug,
+                name: item.displayName.nilIfBlank ?? item.slug,
+                score: item.score
+            )
+        }
+    }
+
+    func skillDetail(slug: String, version: String?, registry: String?) async throws -> SkillHubSkillDetail {
+        let base = try await apiBaseURL(registry: registry)
+        let url = try apiURL(
+            base: base,
+            path: ["api", "v1", "skills", slug],
+            queryItems: []
+        )
+        let data = try await requestData(url)
+        let response = try JSONDecoder().decode(ClawHubSkillDetailResponse.self, from: data)
+        return SkillHubSkillDetail(
+            slug: response.skill.slug,
+            displayName: response.skill.displayName.nilIfBlank ?? response.skill.slug,
+            latestVersion: version.nilIfBlank ?? response.latestVersion?.version,
+            isSuspicious: response.moderation?.isSuspicious == true,
+            isMalwareBlocked: response.moderation?.isMalwareBlocked == true,
+            moderationSummary: response.moderation?.summary.nilIfBlank ?? response.moderation?.verdict
+        )
+    }
+
+    func download(slug: String, version: String?, registry: String?) async throws -> SkillHubArchive {
+        let base = try await apiBaseURL(registry: registry)
+        var queryItems = [URLQueryItem(name: "slug", value: slug)]
+        if let version = version?.nilIfBlank {
+            queryItems.append(URLQueryItem(name: "version", value: version))
+        }
+        let url = try apiURL(base: base, path: ["api", "v1", "download"], queryItems: queryItems)
+        let (data, response) = try await request(url)
+        guard response.mimeType == "application/zip" || response.value(forHTTPHeaderField: "Content-Disposition")?.contains(".zip") == true else {
+            throw Self.error(code: 502, message: "SkillHub returned an unexpected download response.")
+        }
+        return SkillHubArchive(
+            data: data,
+            filename: Self.filename(fromContentDisposition: response.value(forHTTPHeaderField: "Content-Disposition"))
+        )
+    }
+
+    private func apiBaseURL(registry: String?) async throws -> URL {
+        guard let registry = registry?.trimmingCharacters(in: .whitespacesAndNewlines), !registry.isEmpty else {
+            return defaultRegistry
+        }
+        let normalized = registry.contains("://") ? registry : "https://\(registry)"
+        guard let registryURL = URL(string: normalized) else {
+            throw Self.error(code: 400, message: "Invalid ClawHub registry URL.")
+        }
+        if let discovered = try? await discoverAPIBase(registryURL: registryURL) {
+            return discovered
+        }
+        return registryURL
+    }
+
+    private func discoverAPIBase(registryURL: URL) async throws -> URL {
+        let discoveryURL = registryURL.appendingPathComponent(".well-known").appendingPathComponent("clawhub.json")
+        let data = try await requestData(discoveryURL)
+        let discovery = try JSONDecoder().decode(ClawHubDiscoveryResponse.self, from: data)
+        if let apiBase = discovery.apiBase, let url = URL(string: apiBase) {
+            return url
+        }
+        return registryURL
+    }
+
+    private func apiURL(base: URL, path: [String], queryItems: [URLQueryItem]) throws -> URL {
+        var url = base
+        for component in path {
+            url.appendPathComponent(component)
+        }
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.queryItems = queryItems.isEmpty ? nil : queryItems
+        guard let finalURL = components?.url else {
+            throw Self.error(code: 400, message: "Invalid SkillHub URL.")
+        }
+        return finalURL
+    }
+
+    private func requestData(_ url: URL) async throws -> Data {
+        try await request(url).0
+    }
+
+    private func request(_ url: URL) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("G9Claw-macOS", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw Self.error(code: 502, message: "SkillHub returned a non-HTTP response.")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8)?.nilIfBlank
+            throw Self.error(code: http.statusCode, message: body ?? "SkillHub request failed with HTTP \(http.statusCode).")
+        }
+        return (data, http)
+    }
+
+    private static func filename(fromContentDisposition header: String?) -> String? {
+        guard let header else { return nil }
+        let pieces = header.components(separatedBy: ";")
+        for piece in pieces {
+            let trimmed = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.lowercased().hasPrefix("filename=") else { continue }
+            let value = String(trimmed.dropFirst("filename=".count))
+            return value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")).nilIfBlank
+        }
+        return nil
+    }
+
+    private static func error(code: Int, message: String) -> NSError {
+        NSError(domain: "SkillHubClient", code: code, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+}
+
+private struct ClawHubDiscoveryResponse: Decodable {
+    var apiBase: String?
+}
+
+private struct ClawHubSearchResponse: Decodable {
+    var results: [ClawHubSearchItem]
+}
+
+private struct ClawHubSearchItem: Decodable {
+    var score: Double?
+    var slug: String
+    var displayName: String?
+}
+
+private struct ClawHubSkillDetailResponse: Decodable {
+    var skill: ClawHubSkillInfo
+    var latestVersion: ClawHubSkillVersion?
+    var moderation: ClawHubModeration?
+}
+
+private struct ClawHubSkillInfo: Decodable {
+    var slug: String
+    var displayName: String?
+}
+
+private struct ClawHubSkillVersion: Decodable {
+    var version: String?
+}
+
+private struct ClawHubModeration: Decodable {
+    var isSuspicious: Bool?
+    var isMalwareBlocked: Bool?
+    var summary: String?
+    var verdict: String?
+}
+
 final class SkillsService: @unchecked Sendable {
     private(set) var skills: [SkillRecord] = []
+    private let skillHubClient: SkillHubClient
+
+    init(skillHubClient: SkillHubClient = ClawHubHTTPClient()) {
+        self.skillHubClient = skillHubClient
+    }
 
     func refresh(projectPath: String?, isGeneral: Bool) {
         var next: [SkillRecord] = []
@@ -1357,17 +1558,10 @@ final class SkillsService: @unchecked Sendable {
         return readSkillMeta(skillDir: target, scope: scope)!
     }
 
-    func clawHubSearch(query: String, registry: String? = nil) throws -> [SkillHubSearchResult] {
+    func clawHubSearch(query: String, registry: String? = nil) async throws -> [SkillHubSearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
-        var args = ["--no-input"]
-        if let registry, !registry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            args.append(contentsOf: ["--registry", registry])
-        }
-        args.append(contentsOf: ["search", trimmed])
-        let result = try runClawHub(args: args, timeout: 30)
-        let output = result.stdout.isEmpty ? result.stderr : result.stdout
-        return parseClawHubSearch(output)
+        return try await skillHubClient.search(query: trimmed, registry: registry)
     }
 
     func clawHubInstall(
@@ -1377,56 +1571,67 @@ final class SkillsService: @unchecked Sendable {
         scope: SkillScope,
         projectPath: String?,
         registry: String? = nil
-    ) throws -> SkillHubInstallResult {
+    ) async throws -> SkillHubInstallResult {
         guard Self.isSafeSlug(slug) else {
             throw NSError(domain: "SkillsService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid slug"])
         }
-        let root: URL
-        let workdir: URL
-        let dir: String
-        switch scope {
-        case .project:
-            guard let projectPath, !projectPath.isEmpty else {
-                throw NSError(domain: "SkillsService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Project scope requires a real project context."])
-            }
-            workdir = URL(fileURLWithPath: projectPath)
-            dir = ".g9claw/skills"
-            root = Self.projectSkillsRoot(projectPath)
-        case .user:
-            workdir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".g9claw", isDirectory: true)
-            dir = "skills"
-            root = Self.userSkillsRoot()
-        }
-
-        var args = ["--no-input", "--workdir", workdir.path, "--dir", dir]
-        if let registry, !registry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            args.append(contentsOf: ["--registry", registry])
-        }
-        args.append(contentsOf: ["install", slug])
-        if let version, !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            args.append(contentsOf: ["--version", version])
-        }
-        if force {
-            args.append("--force")
-        }
-
-        let run = try runClawHub(args: args, timeout: 120, allowNonZero: true)
+        let root = try root(for: scope, projectPath: projectPath)
         let installPath = root.appendingPathComponent(slug, isDirectory: true)
-        let installed = FileManager.default.fileExists(atPath: installPath.appendingPathComponent("SKILL.md").path)
-        let skill = installed ? readSkillMeta(skillDir: installPath, scope: scope) : nil
-        let output = "\(run.stdout)\n\(run.stderr)"
-        let needsForce = !installed && !force && output.range(of: "Use --force to install suspicious", options: [.caseInsensitive]) != nil
+
+        let detail = try await skillHubClient.skillDetail(slug: slug, version: version, registry: registry)
+        if detail.isMalwareBlocked {
+            throw NSError(
+                domain: "SkillsService",
+                code: 403,
+                userInfo: [NSLocalizedDescriptionKey: detail.moderationSummary ?? "This skill is blocked by ClawHub moderation."]
+            )
+        }
+        if detail.isSuspicious && !force {
+            return SkillHubInstallResult(
+                ok: false,
+                slug: slug,
+                scope: scope,
+                installPath: installPath.path,
+                installed: false,
+                skill: nil,
+                stdout: "",
+                stderr: detail.moderationSummary ?? "This skill requires confirmation before installation.",
+                exitCode: 2,
+                needsForce: true
+            )
+        }
+
+        let archive = try await skillHubClient.download(slug: slug, version: version, registry: registry)
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("g9claw-skillhub-\(UUID().uuidString)", isDirectory: true)
+        let archiveName = safeArchiveFilename(archive.filename, fallbackSlug: slug)
+        let archiveURL = tempRoot.appendingPathComponent(archiveName)
+        let extractRoot = tempRoot.appendingPathComponent("extract", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try archive.data.write(to: archiveURL, options: [.atomic])
+        try validateZipArchive(archiveURL)
+        try extractZipArchive(archiveURL, to: extractRoot)
+        let skillRoot = try extractedSkillRoot(in: extractRoot)
+        try validateExtractedSkillTree(skillRoot)
+        let skill = try importFolder(
+            source: skillRoot,
+            scope: scope,
+            projectPath: projectPath,
+            slug: slug,
+            overwrite: force
+        )
         return SkillHubInstallResult(
-            ok: installed,
+            ok: true,
             slug: slug,
             scope: scope,
             installPath: installPath.path,
-            installed: installed,
+            installed: true,
             skill: skill,
-            stdout: run.stdout.trimmingCharacters(in: .whitespacesAndNewlines),
-            stderr: run.stderr.trimmingCharacters(in: .whitespacesAndNewlines),
-            exitCode: run.exitCode,
-            needsForce: needsForce
+            stdout: "Installed \(detail.displayName) from ClawHub.",
+            stderr: "",
+            exitCode: 0,
+            needsForce: false
         )
     }
 
@@ -1559,51 +1764,109 @@ final class SkillsService: @unchecked Sendable {
         return result
     }
 
-    private func parseClawHubSearch(_ output: String) -> [SkillHubSearchResult] {
-        let ansiPattern = #"\u{001B}\[[0-9;]*m"#
-        return output
+    private func safeArchiveFilename(_ filename: String?, fallbackSlug: String) -> String {
+        guard let filename = filename?.nilIfBlank else { return "\(fallbackSlug).zip" }
+        let candidate = URL(fileURLWithPath: filename).lastPathComponent
+        guard candidate.lowercased().hasSuffix(".zip"), !candidate.contains("/") else {
+            return "\(fallbackSlug).zip"
+        }
+        return candidate
+    }
+
+    private func validateZipArchive(_ archiveURL: URL) throws {
+        let run = try runSystemProcess(
+            executable: "/usr/bin/unzip",
+            args: ["-Z1", archiveURL.path],
+            timeout: 20
+        )
+        let entries = run.stdout
             .components(separatedBy: .newlines)
-            .compactMap { raw -> SkillHubSearchResult? in
-                let line = raw
-                    .replacingOccurrences(of: ansiPattern, with: "", options: .regularExpression)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !line.isEmpty,
-                      !line.hasPrefix("-"),
-                      !line.lowercased().hasPrefix("searching") else { return nil }
-                if let parsed = parseScoredSearchLine(line) {
-                    return parsed
-                }
-                let pieces = line.components(separatedBy: Regex.whitespaceRuns).filter { !$0.isEmpty }
-                guard let slug = pieces.first, Self.isSafeSlug(slug) else { return nil }
-                return SkillHubSearchResult(slug: slug, name: pieces.dropFirst().joined(separator: " ").nilIfBlank ?? slug, score: nil)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !entries.isEmpty else {
+            throw NSError(domain: "SkillsService", code: 422, userInfo: [NSLocalizedDescriptionKey: "Skill archive is empty."])
+        }
+        for entry in entries {
+            guard Self.isSafeArchiveEntry(entry) else {
+                throw NSError(
+                    domain: "SkillsService",
+                    code: 422,
+                    userInfo: [NSLocalizedDescriptionKey: "Skill archive contains an unsafe path: \(entry)"]
+                )
             }
+        }
     }
 
-    private func parseScoredSearchLine(_ line: String) -> SkillHubSearchResult? {
-        guard let open = line.lastIndex(of: "("),
-              let close = line.lastIndex(of: ")"),
-              open < close else { return nil }
-        let scoreText = line[line.index(after: open)..<close]
-        let beforeScore = line[..<open].trimmingCharacters(in: .whitespacesAndNewlines)
-        let pieces = beforeScore.components(separatedBy: Regex.whitespaceRuns).filter { !$0.isEmpty }
-        guard let slug = pieces.first, Self.isSafeSlug(slug) else { return nil }
-        let name = pieces.dropFirst().joined(separator: " ").nilIfBlank ?? slug
-        return SkillHubSearchResult(slug: slug, name: name, score: Double(scoreText))
+    private func extractZipArchive(_ archiveURL: URL, to destination: URL) throws {
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        _ = try runSystemProcess(
+            executable: "/usr/bin/ditto",
+            args: ["-x", "-k", archiveURL.path, destination.path],
+            timeout: 60
+        )
     }
 
-    private func runClawHub(args: [String], timeout: TimeInterval, allowNonZero: Bool = false) throws -> (stdout: String, stderr: String, exitCode: Int32) {
+    private func extractedSkillRoot(in extractRoot: URL) throws -> URL {
+        if validate(source: extractRoot).ok {
+            return extractRoot
+        }
+        var candidates: [URL] = []
+        if let enumerator = FileManager.default.enumerator(
+            at: extractRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for case let url as URL in enumerator where url.lastPathComponent == "SKILL.md" {
+                let parent = url.deletingLastPathComponent()
+                if parent != extractRoot,
+                   !candidates.contains(where: { $0.standardizedFileURL == parent.standardizedFileURL }) {
+                    candidates.append(parent)
+                }
+            }
+        }
+        let validCandidates = candidates.filter { validate(source: $0).ok }
+        if validCandidates.count == 1, let candidate = validCandidates.first {
+            return candidate
+        }
+        if validCandidates.isEmpty {
+            throw NSError(domain: "SkillsService", code: 422, userInfo: [NSLocalizedDescriptionKey: "Skill archive does not contain a valid SKILL.md."])
+        }
+        throw NSError(domain: "SkillsService", code: 422, userInfo: [NSLocalizedDescriptionKey: "Skill archive contains multiple skill roots."])
+    }
+
+    private func validateExtractedSkillTree(_ root: URL) throws {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isSymbolicLinkKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey, .fileSizeKey])
+            if values?.isSymbolicLink == true {
+                throw NSError(domain: "SkillsService", code: 422, userInfo: [NSLocalizedDescriptionKey: "Skill archive contains a symbolic link: \(url.lastPathComponent)"])
+            }
+        }
+    }
+
+    static func isSafeArchiveEntry(_ entry: String) -> Bool {
+        let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.hasPrefix("/"),
+              !trimmed.hasPrefix("~"),
+              !trimmed.contains("\\"),
+              !trimmed.contains("\0"),
+              !trimmed.contains("//") else { return false }
+        let components = trimmed
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+        guard !components.isEmpty else { return false }
+        return !components.contains("..")
+    }
+
+    private func runSystemProcess(executable: String, args: [String], timeout: TimeInterval) throws -> (stdout: String, stderr: String, exitCode: Int32) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["clawhub"] + args
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = [
-            environment["PATH"],
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/usr/bin",
-            "/bin"
-        ].compactMap { $0 }.joined(separator: ":")
-        process.environment = environment
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = args
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -1616,7 +1879,7 @@ final class SkillsService: @unchecked Sendable {
             throw NSError(
                 domain: "SkillsService",
                 code: 503,
-                userInfo: [NSLocalizedDescriptionKey: "clawhub CLI not found in PATH. Install with `npm install -g clawhub`."]
+                userInfo: [NSLocalizedDescriptionKey: "Unable to run required macOS archive tool."]
             )
         }
 
@@ -1626,43 +1889,33 @@ final class SkillsService: @unchecked Sendable {
         }
         if process.isRunning {
             process.terminate()
-            throw NSError(domain: "SkillsService", code: 408, userInfo: [NSLocalizedDescriptionKey: "clawhub timed out."])
+            throw NSError(domain: "SkillsService", code: 408, userInfo: [NSLocalizedDescriptionKey: "Archive operation timed out."])
         }
 
         let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        if process.terminationStatus != 0, !allowNonZero {
+        if process.terminationStatus != 0 {
             throw NSError(
                 domain: "SkillsService",
                 code: Int(process.terminationStatus),
-                userInfo: [NSLocalizedDescriptionKey: stderr.nilIfBlank ?? stdout.nilIfBlank ?? "clawhub failed."]
+                userInfo: [NSLocalizedDescriptionKey: stderr.nilIfBlank ?? stdout.nilIfBlank ?? "Archive operation failed."]
             )
         }
         return (stdout, stderr, process.terminationStatus)
     }
 }
 
-private enum Regex {
-    static let whitespaceRuns = try! NSRegularExpression(pattern: #"\s{2,}"#)
-}
-
 private extension String {
-    func components(separatedBy regex: NSRegularExpression) -> [String] {
-        let range = NSRange(startIndex..<endIndex, in: self)
-        var last = startIndex
-        var parts: [String] = []
-        for match in regex.matches(in: self, range: range) {
-            guard let swiftRange = Range(match.range, in: self) else { continue }
-            parts.append(String(self[last..<swiftRange.lowerBound]))
-            last = swiftRange.upperBound
-        }
-        parts.append(String(self[last..<endIndex]))
-        return parts
-    }
-
     var nilIfBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var nilIfBlank: String? {
+        guard let value = self else { return nil }
+        return value.nilIfBlank
     }
 }
 

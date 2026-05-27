@@ -3053,10 +3053,32 @@ struct NativeAgentRuntime: Sendable {
         Prefer the canonical tool names: Read, Write, StrReplace, Delete, EditNotebook, Grep, Glob, SemanticSearch, Shell, Await, ReadLints, Skill, TodoWrite, AskQuestion, SwitchMode, and Task.
         For shell commands, use Shell only when needed and keep commands scoped to the workspace. Use run_in_background plus Await for long-running commands.
         For current public information, weather, or web evidence, call Skill with skill="g9claw-rag:glm-web-search" or skill="g9claw-rag:rag-research". Do not call separate weather, web search, or web fetch tools directly.
+        \(nativeAgentSkillContext(workspacePath: request.projectPath))
         Use Task for delegated analysis or shell-focused background work.
         If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request and no other prose in that assistant turn.
         Example: {"tool":"Read","input":{"file_path":"README.md"}}
         Do not emit markdown fences, language labels such as "bash" or "json", or a prose explanation when requesting a tool.
+        """
+    }
+
+    static func nativeAgentSkillContext(workspacePath: String) -> String {
+        let skills = SkillRuntimeService.availableSkills(workspacePath: workspacePath)
+        let skillLines: String
+        if skills.isEmpty {
+            skillLines = "- No project or user skills are installed for this workspace."
+        } else {
+            skillLines = skills.map { skill in
+                let summary = skill.summary
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let clipped = summary.count > 220 ? String(summary.prefix(220)) + "..." : summary
+                return "- \(skill.name) (\(skill.scope)): \(clipped)"
+            }.joined(separator: "\n")
+        }
+        return """
+        Available skills for this workspace:
+        \(skillLines)
+        To use one, call Skill with the exact skill name above. Skill loads instructions; it does not execute subcommands. After loading a skill, follow its returned instructions using Shell/Read/other tools. If the skill refers to relative paths such as scripts/foo, run them from the returned skillDir or use absolute paths. Do not invent sub-skill names like skill:action unless that exact skill name is listed.
         """
     }
 
@@ -4034,9 +4056,9 @@ enum AgentToolRegistry {
             ),
             functionTool(
                 "Skill",
-                "Load a G9Claw skill. Use g9claw-rag:glm-web-search for public web search and weather, or g9claw-rag:rag-research for source-grounded research.",
+                "Load a G9Claw skill's instructions. This does not execute the skill; after loading, use Shell/Read/other tools according to the returned instructions and skillDir. Use exact names from the system prompt's Available skills list.",
                 [
-                    "skill": stringProperty("Skill name, for example g9claw-rag:glm-web-search."),
+                    "skill": stringProperty("Exact skill name, for example g9claw-rag:glm-web-search."),
                     "args": stringProperty("User query or task arguments for the skill."),
                 ],
                 required: ["skill"]
@@ -4321,11 +4343,19 @@ enum AgentPermissionPolicy {
 struct ResolvedAgentSkill: Sendable, Equatable {
     var requestedName: String
     var canonicalName: String
+    var skillDir: String
     var skillFile: String
     var pluginRoot: String?
     var summary: String
     var allowedTools: [String]
     var content: String
+}
+
+struct AgentSkillCatalogEntry: Sendable, Equatable {
+    var name: String
+    var slug: String
+    var scope: String
+    var summary: String
 }
 
 enum SkillRuntimeService {
@@ -4342,11 +4372,13 @@ enum SkillRuntimeService {
             "skill": resolved.canonicalName,
             "requestedSkill": resolved.requestedName,
             "args": args,
+            "skillDir": resolved.skillDir,
             "skillFile": resolved.skillFile,
             "pluginRoot": resolved.pluginRoot ?? "",
             "summary": resolved.summary,
             "allowedTools": resolved.allowedTools,
             "instructions": limitSkillContent(resolved.content),
+            "executionHint": "Skill loaded only. If instructions mention relative files or scripts, run them from skillDir or use absolute paths with Shell.",
         ]
         return jsonString(payload, pretty: true)
     }
@@ -4380,6 +4412,43 @@ enum SkillRuntimeService {
         }
 
         throw ProviderClientError.toolExecution("Skill not found: \(requested)")
+    }
+
+    static func availableSkills(workspacePath: String, limit: Int = 24) -> [AgentSkillCatalogEntry] {
+        var scopedRoots: [(root: URL, scope: String)] = []
+        let trimmedWorkspace = workspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedWorkspace.isEmpty {
+            scopedRoots.append((projectSkillsRoot(trimmedWorkspace), "project"))
+        }
+        scopedRoots.append((userSkillsRoot(), "user"))
+        if let pluginRoot = ragPluginRoot() {
+            scopedRoots.append((pluginRoot.appendingPathComponent("skills", isDirectory: true), "bundled"))
+        }
+
+        var entries: [AgentSkillCatalogEntry] = []
+        var seen: Set<String> = []
+        for scopedRoot in scopedRoots {
+            guard let children = try? FileManager.default.contentsOfDirectory(
+                at: scopedRoot.root,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for child in children.sorted(by: { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }) {
+                guard let resolved = readSkill(at: child, requested: child.lastPathComponent) else { continue }
+                let dedupeKey = resolved.canonicalName.lowercased()
+                guard seen.insert(dedupeKey).inserted else { continue }
+                entries.append(AgentSkillCatalogEntry(
+                    name: resolved.canonicalName,
+                    slug: child.lastPathComponent,
+                    scope: scopedRoot.scope,
+                    summary: resolved.summary
+                ))
+                if entries.count >= limit {
+                    return entries
+                }
+            }
+        }
+        return entries
     }
 
     static func environment(configValues: [String: String]) -> [String: String] {
@@ -4457,6 +4526,7 @@ enum SkillRuntimeService {
         return ResolvedAgentSkill(
             requestedName: requested,
             canonicalName: canonical,
+            skillDir: directory.path,
             skillFile: file.path,
             pluginRoot: pluginRoot(forSkillFile: file)?.path,
             summary: summary(from: content, frontmatter: frontmatter),

@@ -1939,16 +1939,18 @@ struct SkillsView: View {
         let query = hubQuery
         let service = state.skillsService
         Task.detached(priority: .userInitiated) {
-            let result = Result { try service.clawHubSearch(query: query) }
-            await MainActor.run {
-                switch result {
-                case .success(let results):
+            do {
+                let results = try await service.clawHubSearch(query: query)
+                await MainActor.run {
                     hubResults = results
-                case .failure(let error):
+                    hubSearching = false
+                }
+            } catch {
+                await MainActor.run {
                     modalNotice = error.localizedDescription
                     hubResults = []
+                    hubSearching = false
                 }
-                hubSearching = false
             }
         }
     }
@@ -1963,7 +1965,7 @@ struct SkillsView: View {
         let service = state.skillsService
         Task.detached(priority: .userInitiated) {
             do {
-                let installed = try service.clawHubInstall(
+                let installed = try await service.clawHubInstall(
                     slug: result.slug,
                     force: force,
                     scope: scope,
