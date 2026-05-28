@@ -3894,6 +3894,10 @@ router:
             new AgentToolCall("call-4", "Write", """{"file_path":"notes.txt","content":"draft"}"""),
             new AgentToolResult("call-4", "Write", "Plan mode skipped this workspace-changing Write tool.", false, IsPolicyBlock: true),
             chinese: false);
+        var completedTask = ToolInvocationPresenter.Present(
+            new AgentToolCall("call-5", "Task", """{"type":"generalPurpose","description":"Audit parity","prompt":"Compare mac and windows","cwd":"C:\\repo","isolation":"workspace-write"}"""),
+            new AgentToolResult("call-5", "Task", "done", false),
+            chinese: false);
 
         Assert.Equal(ToolInvocationPhase.Command, runningShell.Phase);
         Assert.Equal(ToolInvocationState.Running, runningShell.State);
@@ -3901,6 +3905,7 @@ router:
         Assert.Equal("Read README.md", completedRead.Summary);
         Assert.Equal("Searched TODO", failedSearch.Summary);
         Assert.Equal("Skipped edit in Plan mode notes.txt", skippedEdit.Summary);
+        Assert.Equal("Completed Subagent / generalPurpose: Audit parity", completedTask.Summary);
     }
 
     [Fact]
@@ -3919,6 +3924,26 @@ router:
         Assert.False(ToolInvocationPresenter.IsBoundary("AskQuestion"));
         Assert.False(ToolInvocationPresenter.IsBoundary("SwitchMode"));
         Assert.False(ToolInvocationPresenter.IsBoundary("Read"));
+    }
+
+    [Fact]
+    public void TaskInvocationPresentationMatchesMacSubagentFields()
+    {
+        var presentation = TaskInvocationPresentation.Parse("""{"subagent_type":"review","task":"Review branch","prompt":"Check tests","cwd":"C:\\repo","isolation":"readonly"}""");
+
+        Assert.NotNull(presentation);
+        Assert.Equal("review", presentation.Type);
+        Assert.Equal("Review branch", presentation.Description);
+        Assert.Equal("Check tests", presentation.Prompt);
+        Assert.Equal("C:\\repo", presentation.Cwd);
+        Assert.Equal("readonly", presentation.Isolation);
+        Assert.Equal("Running Subagent / review: Review branch", presentation.RowTitle(chinese: false, running: true, failed: false));
+        Assert.Equal("Subagent / review: Review branch failed", presentation.RowTitle(chinese: false, running: false, failed: true));
+        Assert.Equal("Subagent / review", presentation.DetailTitle(chinese: false));
+        Assert.Contains("Prompt:\nCheck tests", presentation.DetailText(chinese: false, output: "done"));
+        Assert.Contains("Cwd: C:\\repo", presentation.DetailText(chinese: false, output: "done"));
+        Assert.Contains("Isolation: readonly", presentation.DetailText(chinese: false, output: "done"));
+        Assert.Contains("Output:\ndone", presentation.DetailText(chinese: false, output: "done"));
     }
 
     [Fact]

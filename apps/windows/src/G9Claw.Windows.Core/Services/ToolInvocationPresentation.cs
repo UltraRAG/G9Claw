@@ -50,7 +50,10 @@ public static class ToolInvocationPresenter
         var target = TargetFor(toolName, input);
         var policyBlocked = result?.IsPolicyBlock == true ||
                             result?.Output.TrimStart().StartsWith("Plan mode skipped", StringComparison.Ordinal) == true;
-        var summary = Summary(toolName, phase, state, target, chinese, policyBlocked);
+        var summary = string.Equals(toolName, "Task", StringComparison.OrdinalIgnoreCase) &&
+                      TaskInvocationPresentation.Parse(call.InputJson) is { } taskPresentation
+            ? taskPresentation.RowTitle(chinese, state == ToolInvocationState.Running, state == ToolInvocationState.Failed)
+            : Summary(toolName, phase, state, target, chinese, policyBlocked);
         return new ToolInvocationPresentation(
             phase,
             state,
@@ -290,6 +293,96 @@ public static class ToolInvocationPresenter
 
             return "";
         }
+    }
+}
+
+public sealed record TaskInvocationPresentation(
+    string Type,
+    string Description,
+    string Prompt,
+    string? Cwd,
+    string? Isolation)
+{
+    public static TaskInvocationPresentation? Parse(string inputJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(inputJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return null;
+            var root = document.RootElement;
+            var type = StringValue(root, "type") ??
+                       StringValue(root, "subagent_type") ??
+                       "Agent";
+            var description = StringValue(root, "description") ??
+                              StringValue(root, "task") ??
+                              type;
+            return new TaskInvocationPresentation(
+                type,
+                description,
+                StringValue(root, "prompt") ?? "",
+                StringValue(root, "cwd"),
+                StringValue(root, "isolation"));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    public string RowTitle(bool chinese, bool running, bool failed)
+    {
+        var baseTitle = chinese ? $"\u5b50 Agent / {Type}: {Description}" : $"Subagent / {Type}: {Description}";
+        if (failed) return chinese ? $"{baseTitle} \u5931\u8d25" : $"{baseTitle} failed";
+        if (running) return chinese ? $"\u6b63\u5728\u8fd0\u884c {baseTitle}" : $"Running {baseTitle}";
+        return chinese ? $"\u5df2\u5b8c\u6210 {baseTitle}" : $"Completed {baseTitle}";
+    }
+
+    public string DetailTitle(bool chinese) =>
+        chinese ? $"\u5b50 Agent / {Type}" : $"Subagent / {Type}";
+
+    public string DetailText(bool chinese, string? output)
+    {
+        var lines = new List<string> { Description };
+        if (!string.IsNullOrWhiteSpace(Prompt))
+        {
+            lines.Add("");
+            lines.Add($"{(chinese ? "\u4efb\u52a1" : "Prompt")}:");
+            lines.Add(Prompt);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Cwd))
+        {
+            lines.Add("");
+            lines.Add($"Cwd: {Cwd}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(Isolation))
+        {
+            lines.Add($"{(chinese ? "\u9694\u79bb" : "Isolation")}: {Isolation}");
+        }
+
+        var preview = ToolOutputPreviewLimiter.Preview(output ?? "");
+        if (!string.IsNullOrWhiteSpace(preview))
+        {
+            lines.Add("");
+            lines.Add(chinese ? "\u8f93\u51fa:" : "Output:");
+            lines.Add(preview);
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static string? StringValue(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var value)) return null;
+        var text = value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.GetRawText(),
+            _ => null,
+        };
+        text = text?.Trim();
+        return string.IsNullOrWhiteSpace(text) ? null : text;
     }
 }
 

@@ -2380,10 +2380,20 @@ public sealed partial class MainWindow : Window
         if (expanded)
         {
             var detailPanel = new StackPanel { Spacing = 8 };
-            detailPanel.Children.Add(ToolDetailBox(T("chat.tool.input"), ToolInputDetail(call, presentation)));
-            if (result is not null)
+            if (TaskInvocationPresentation.Parse(call.InputJson) is { } taskPresentation &&
+                string.Equals(AgentToolNameCanonicalizer.Canonical(call.Name), "Task", StringComparison.Ordinal))
             {
-                detailPanel.Children.Add(ToolDetailBox(T("chat.tool.result"), ToolOutputDetail(result.Output)));
+                detailPanel.Children.Add(ToolDetailBox(
+                    taskPresentation.DetailTitle(IsChineseUi()),
+                    taskPresentation.DetailText(IsChineseUi(), result?.Output)));
+            }
+            else
+            {
+                detailPanel.Children.Add(ToolDetailBox(T("chat.tool.input"), ToolInputDetail(call, presentation)));
+                if (result is not null)
+                {
+                    detailPanel.Children.Add(ToolDetailBox(T("chat.tool.result"), ToolOutputDetail(result.Output)));
+                }
             }
 
             detail = detailPanel;
