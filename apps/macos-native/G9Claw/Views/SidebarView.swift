@@ -6,9 +6,11 @@ struct SidebarView: View {
     @Environment(\.openSettings) private var openSettings
     @Binding var width: Double
     @AppStorage("sidebar-v2-active-section") private var activeSectionRaw = SidebarSection.projects.rawValue
+    @AppStorage("sidebar-v2-last-project-id") private var lastProjectIDRaw = ""
     @State private var expandedProjectIDs: Set<UUID> = []
     @State private var collapsedSessionProjectIDs: Set<UUID> = []
     @State private var isResizing = false
+    @State private var isResizeHovering = false
     @State private var resizeStartWidth = Double(DesignTokens.sidebarDefaultWidth)
     @Namespace private var sectionToggleGlassNamespace
 
@@ -19,7 +21,6 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
             sectionToggle
             listBody
             footer
@@ -40,46 +41,15 @@ struct SidebarView: View {
             if let selectedProjectID = state.selectedProjectID {
                 expandedProjectIDs.insert(selectedProjectID)
             }
+            rememberSelectedProject()
         }
         .onChange(of: state.selectedProjectID) { _, _ in
             syncSectionWithSelection()
             if let selectedProjectID = state.selectedProjectID {
                 expandedProjectIDs.insert(selectedProjectID)
             }
+            rememberSelectedProject()
         }
-    }
-
-    private var header: some View {
-        HStack(spacing: 0) {
-            Button {
-                if let generalProject {
-                    state.selectProject(generalProject)
-                    activeSection = .general
-                }
-            } label: {
-                LogoImage()
-                    .frame(height: 56, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .help("G9Claw")
-
-            Button {
-                withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-                    state.isSidebarVisible = false
-                }
-            } label: {
-                Image(systemName: "sidebar.left")
-                    .font(.system(size: 16, weight: .regular))
-                    .frame(width: 32, height: 32)
-            }
-            .buttonStyle(WebIconButtonStyle())
-            .help(state.t(.hideSidebar))
-        }
-        .padding(.leading, 8)
-        .padding(.trailing, 16)
-        .padding(.top, 30)
-        .frame(height: DesignTokens.sidebarHeaderHeight + 30)
     }
 
     private var sectionToggle: some View {
@@ -91,28 +61,22 @@ struct SidebarView: View {
         .frame(height: DesignTokens.sidebarSegmentHeight + 4)
         .background(
             ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(DesignTokens.background.opacity(0.18))
-                    .background(
-                        VisualEffectBackground(material: .hudWindow, blendingMode: .withinWindow)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    )
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(.white.opacity(0.34), lineWidth: 0.7)
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(DesignTokens.separator.opacity(0.55), lineWidth: 0.7)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(DesignTokens.sidebarControlSurface)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(DesignTokens.separator.opacity(0.42), lineWidth: 0.8)
                 LinearGradient(
-                    colors: [.white.opacity(0.30), .white.opacity(0.03), .clear],
+                    colors: [.white.opacity(0.045), .clear],
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .allowsHitTesting(false)
             }
         )
-        .shadow(color: .black.opacity(0.06), radius: 7, y: 3)
+        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
         .padding(.horizontal, 12)
-        .padding(.top, 12)
+        .padding(.top, DesignTokens.sidebarContentTopPadding)
         .padding(.bottom, 4)
         .animation(.spring(response: 0.26, dampingFraction: 0.82), value: activeSection)
     }
@@ -120,23 +84,21 @@ struct SidebarView: View {
     private func segmentButton(_ section: SidebarSection) -> some View {
         Button {
             activeSection = section
-            if section == .general, let generalProject {
+            if section == .projects {
+                restoreProjectSelection()
+            } else if let generalProject {
                 state.selectProject(generalProject)
             }
         } label: {
             ZStack {
                 if activeSection == section {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(DesignTokens.background.opacity(0.58))
-                        .background(
-                            VisualEffectBackground(material: .popover, blendingMode: .withinWindow)
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        )
+                        .fill(DesignTokens.sidebarControlActive)
                         .overlay(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(.white.opacity(0.58), lineWidth: 0.7)
+                                .strokeBorder(.white.opacity(0.08), lineWidth: 0.7)
                         )
-                        .shadow(color: .black.opacity(0.10), radius: 4, y: 2)
+                        .shadow(color: .black.opacity(0.10), radius: 4, y: 1)
                         .matchedGeometryEffect(id: "active-sidebar-section", in: sectionToggleGlassNamespace)
                 }
 
@@ -198,20 +160,18 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 2) {
             sectionHeader(
                 title: state.t(.general),
-                leftActionIcon: isGeneralExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical",
-                leftAction: toggleGeneralExpanded,
-                rightActionIcon: "plus",
+                rightActionIcon: "square.and.pencil",
                 rightAction: {
                     if let generalProject {
-                        expandedProjectIDs.insert(generalProject.id)
-                        state.selectProject(generalProject)
+                        state.startDraftSession(project: generalProject)
+                    } else {
+                        state.startNewSession()
                     }
-                    state.startNewSession()
                 }
             )
 
             if let generalProject {
-                projectGroup(generalProject)
+                sessionRows(for: generalProject, flat: true)
             } else {
                 Text(state.t(.noGeneralWorkspaceFound))
                     .font(.system(size: 11))
@@ -353,11 +313,12 @@ struct SidebarView: View {
                         RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                             .fill(DesignTokens.selectedRowFill())
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
 
-            if visibleSessions.isEmpty {
+            if visibleSessions.isEmpty && !showDraftSession {
                 Text(state.t(.noSessionsYet))
                     .font(.system(size: 11))
                     .foregroundStyle(DesignTokens.tertiaryText)
@@ -383,6 +344,7 @@ struct SidebarView: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -421,6 +383,7 @@ struct SidebarView: View {
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .fill(isSelected ? DesignTokens.selectedRowFill() : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .contextMenu {
@@ -490,30 +453,37 @@ struct SidebarView: View {
     }
 
     private var resizeHandle: some View {
-        Rectangle()
-            .fill(isResizing ? DesignTokens.accent.opacity(0.60) : Color.clear)
-            .frame(width: 5)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        if !isResizing {
-                            isResizing = true
-                            resizeStartWidth = width
-                        }
-                        width = clamp(
-                            resizeStartWidth + value.translation.width,
-                            min: Double(DesignTokens.sidebarMinWidth),
-                            max: Double(DesignTokens.sidebarMaxWidth)
-                        )
-                    }
-                    .onEnded { _ in
-                        isResizing = false
-                    }
+        ZStack(alignment: .trailing) {
+            Rectangle()
+                .fill(Color.clear)
+                .frame(width: 18)
+            Rectangle()
+                .fill(isResizing || isResizeHovering ? DesignTokens.accent.opacity(0.62) : Color.clear)
+                .frame(width: isResizing ? 3 : 1)
+                .padding(.trailing, 1)
+        }
+        .frame(width: 18)
+        .background(
+            HorizontalResizeHandleSurface(
+                isHovering: $isResizeHovering,
+                isDragging: $isResizing,
+                onDragStart: { _ in
+                    resizeStartWidth = width
+                },
+                onDragChanged: { deltaX in
+                    width = clamp(
+                        resizeStartWidth + Double(deltaX),
+                        min: Double(DesignTokens.sidebarMinWidth),
+                        max: Double(DesignTokens.sidebarMaxWidth)
+                    )
+                },
+                onDragEnded: {},
+                onDoubleClick: {
+                    width = Double(DesignTokens.sidebarDefaultWidth)
+                }
             )
-            .onTapGesture(count: 2) {
-                width = Double(DesignTokens.sidebarDefaultWidth)
-            }
+        )
+        .help(state.t(.dragToResize))
     }
 
     private var generalProject: WorkspaceProject? {
@@ -532,11 +502,6 @@ struct SidebarView: View {
         !otherProjects.isEmpty && otherProjects.allSatisfy { expandedProjectIDs.contains($0.id) }
     }
 
-    private var isGeneralExpanded: Bool {
-        guard let generalProject else { return false }
-        return expandedProjectIDs.contains(generalProject.id)
-    }
-
     private func toggleProject(_ project: WorkspaceProject) {
         if expandedProjectIDs.contains(project.id) {
             expandedProjectIDs.remove(project.id)
@@ -551,16 +516,6 @@ struct SidebarView: View {
             otherProjects.forEach { expandedProjectIDs.remove($0.id) }
         } else {
             otherProjects.forEach { expandedProjectIDs.insert($0.id) }
-        }
-    }
-
-    private func toggleGeneralExpanded() {
-        guard let generalProject else { return }
-        if expandedProjectIDs.contains(generalProject.id) {
-            expandedProjectIDs.remove(generalProject.id)
-        } else {
-            expandedProjectIDs.insert(generalProject.id)
-            state.selectProject(generalProject)
         }
     }
 
@@ -582,6 +537,21 @@ struct SidebarView: View {
         }
     }
 
+    private func rememberSelectedProject() {
+        guard let selectedProject = state.selectedProject, !state.isGeneralProject(selectedProject) else { return }
+        lastProjectIDRaw = selectedProject.id.uuidString
+    }
+
+    private func restoreProjectSelection() {
+        guard state.selectedProject.map(state.isGeneralProject) ?? true else { return }
+        guard let project = SidebarProjectRestorationPolicy.preferredProject(
+            from: otherProjects,
+            lastProjectIDRaw: lastProjectIDRaw
+        ) else { return }
+        expandedProjectIDs.insert(project.id)
+        state.selectProject(project)
+    }
+
     private func relativeDate(_ date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
@@ -590,42 +560,6 @@ struct SidebarView: View {
 
     private func clamp(_ value: Double, min: Double, max: Double) -> Double {
         Swift.min(max, Swift.max(min, value))
-    }
-}
-
-struct CollapsedSidebarRail: View {
-    @EnvironmentObject private var state: AppState
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                Button {
-                    withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-                        state.isSidebarVisible = true
-                    }
-                } label: {
-                    Image(systemName: "sidebar.left")
-                        .font(.system(size: 16, weight: .regular))
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(WebIconButtonStyle())
-                .help(state.t(.showSidebar))
-            }
-            .padding(.trailing, 10)
-            .padding(.top, 30)
-            .frame(height: DesignTokens.sidebarHeaderHeight + 30)
-
-            Spacer(minLength: 0)
-        }
-        .background {
-            SidebarGlassBackground()
-        }
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(DesignTokens.separator)
-                .frame(width: 1)
-        }
     }
 }
 
@@ -650,7 +584,6 @@ struct ProjectCreationWizardView: View {
     @State private var hoveredWorkspaceType: WorkspaceCreationType?
     @State private var displayName = ""
     @State private var workspacePath = ""
-    @State private var githubURL = ""
     @State private var isCreating = false
 
     var body: some View {
@@ -809,15 +742,9 @@ struct ProjectCreationWizardView: View {
                             RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                                 .stroke(DesignTokens.separator.opacity(0.78), lineWidth: 1)
                         )
+                        .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                         .help(state.t(.browse))
                     }
-                }
-                if workspaceType == .new {
-                    wizardTextField(state.t(.githubURLOptional), text: $githubURL, monospaced: true)
-                    Text(state.t(.gitURLHelp))
-                        .font(.system(size: 12))
-                        .foregroundStyle(DesignTokens.tertiaryText)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .frame(maxWidth: ProjectCreationWizardMetrics.formMaxWidth, alignment: .topLeading)
@@ -832,10 +759,6 @@ struct ProjectCreationWizardView: View {
                     reviewRow(state.t(.displayName), finalDisplayName)
                     Divider().padding(.leading, 112)
                     reviewRow(state.t(.workspacePath), expandedPath)
-                    if workspaceType == .new && !githubURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Divider().padding(.leading, 112)
-                        reviewRow("Git", githubURL)
-                    }
                 }
                 .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
                 .overlay(
@@ -948,6 +871,7 @@ struct ProjectCreationWizardView: View {
                 RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
                     .stroke(selected ? DesignTokens.accent.opacity(0.88) : DesignTokens.separator.opacity(hovering ? 0.95 : 0.74), lineWidth: selected ? 1.2 : 1)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { inside in
@@ -1022,6 +946,7 @@ struct ProjectCreationWizardView: View {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
         panel.directoryURL = URL(fileURLWithPath: state.settings.workspacesRoot)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         workspacePath = url.path
@@ -1034,13 +959,12 @@ struct ProjectCreationWizardView: View {
         isCreating = true
         let name = finalDisplayName
         let path = expandedPath
-        let git = githubURL.trimmingCharacters(in: .whitespacesAndNewlines)
         Task { @MainActor in
             await state.createProjectFromWizard(
                 displayName: name,
                 path: path,
                 createDirectory: workspaceType == .new,
-                githubURL: git.isEmpty ? nil : git
+                githubURL: nil
             )
             isCreating = false
         }
@@ -1052,6 +976,19 @@ private enum WorkspaceCreationType {
     case new
 }
 
+struct SidebarProjectRestorationPolicy {
+    static func preferredProject(
+        from projects: [WorkspaceProject],
+        lastProjectIDRaw: String
+    ) -> WorkspaceProject? {
+        if let lastProjectID = UUID(uuidString: lastProjectIDRaw),
+           let rememberedProject = projects.first(where: { $0.id == lastProjectID }) {
+            return rememberedProject
+        }
+        return projects.first
+    }
+}
+
 private enum SidebarSection: String {
     case projects
     case general
@@ -1059,7 +996,7 @@ private enum SidebarSection: String {
     var title: String {
         switch self {
         case .projects: "Projects"
-        case .general: "General"
+        case .general: "Chat"
         }
     }
 }
@@ -1072,44 +1009,8 @@ private struct WebIconButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .fill(configuration.isPressed ? DesignTokens.neutral200 : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.76 : 1)
-    }
-}
-
-private struct LogoImage: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        if let image = image {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
-        } else {
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(DesignTokens.text)
-                    .frame(width: 26, height: 26)
-                    .overlay {
-                        Text("9")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(DesignTokens.background)
-                    }
-                Text("G9Claw")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(DesignTokens.text)
-            }
-        }
-    }
-
-    private var image: NSImage? {
-        let resourceName = colorScheme == .dark ? "g9claw-logo-white" : "g9claw-logo"
-        if let url = Bundle.main.url(forResource: resourceName, withExtension: "png") {
-            return NSImage(contentsOf: url)
-        }
-        if let fallback = Bundle.main.url(forResource: "g9claw-logo", withExtension: "png") {
-            return NSImage(contentsOf: fallback)
-        }
-        return NSImage(named: resourceName) ?? NSImage(named: "g9claw-logo")
     }
 }
 

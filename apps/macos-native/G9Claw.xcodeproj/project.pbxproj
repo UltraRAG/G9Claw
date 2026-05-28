@@ -12,7 +12,6 @@
 		B010 /* AppModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F010 /* AppModels.swift */; };
 		B011 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F011 /* AppState.swift */; };
 		B012 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = F012 /* DesignTokens.swift */; };
-		B013 /* ParityCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = F013 /* ParityCatalog.swift */; };
 		B014 /* LocalizationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F014 /* LocalizationService.swift */; };
 		B015 /* AgentTurnModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F015 /* AgentTurnModels.swift */; };
 		B020 /* AppPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = F020 /* AppPaths.swift */; };
@@ -52,13 +51,12 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		APP01 /* G9Claw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = G9Claw.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		APP01 /* PilotDeck.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PilotDeck.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F001 /* G9ClawApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = G9ClawApp.swift; sourceTree = "<group>"; };
 		F002 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		F010 /* AppModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModels.swift; sourceTree = "<group>"; };
 		F011 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		F012 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
-		F013 /* ParityCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityCatalog.swift; sourceTree = "<group>"; };
 		F014 /* LocalizationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationService.swift; sourceTree = "<group>"; };
 		F015 /* AgentTurnModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTurnModels.swift; sourceTree = "<group>"; };
 		F020 /* AppPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPaths.swift; sourceTree = "<group>"; };
@@ -80,7 +78,7 @@
 		F040 /* g9claw-logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "g9claw-logo.png"; sourceTree = "<group>"; };
 		F041 /* g9claw-logo-white.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "g9claw-logo-white.png"; sourceTree = "<group>"; };
 		F042 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		F043 /* g9claw-rag-plugin */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "g9claw-rag-plugin"; path = "../../packages/g9claw-rag-plugin"; sourceTree = SOURCE_ROOT; };
+		F043 /* g9claw-rag-plugin */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "g9claw-rag-plugin"; sourceTree = "<group>"; };
 		F100 /* ParityLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityLogicTests.swift; sourceTree = "<group>"; };
 		FW901 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 		TEST01 /* G9ClawTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = G9ClawTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -144,7 +142,6 @@
 				F010 /* AppModels.swift */,
 				F011 /* AppState.swift */,
 				F012 /* DesignTokens.swift */,
-				F013 /* ParityCatalog.swift */,
 				F014 /* LocalizationService.swift */,
 				F015 /* AgentTurnModels.swift */,
 			);
@@ -211,7 +208,7 @@
 		G9000 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				APP01 /* G9Claw.app */,
+				APP01 /* PilotDeck.app */,
 				TEST01 /* G9ClawTests.xctest */,
 			);
 			name = Products;
@@ -236,8 +233,8 @@
 			packageProductDependencies = (
 				PD900 /* HighlightSwift */,
 			);
-			productName = G9Claw;
-			productReference = APP01 /* G9Claw.app */;
+			productName = PilotDeck;
+			productReference = APP01 /* PilotDeck.app */;
 			productType = "com.apple.product-type.application";
 		};
 		T0100 /* G9ClawTests */ = {
@@ -330,7 +327,6 @@
 				B010 /* AppModels.swift in Sources */,
 				B011 /* AppState.swift in Sources */,
 				B012 /* DesignTokens.swift in Sources */,
-				B013 /* ParityCatalog.swift in Sources */,
 				B014 /* LocalizationService.swift in Sources */,
 				B015 /* AgentTurnModels.swift in Sources */,
 				B020 /* AppPaths.swift in Sources */,
@@ -489,9 +485,9 @@
 				LM_FILTER_WARNINGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.5;
 				MARKETING_VERSION = 0.1.3;
-				PRODUCT_BUNDLE_IDENTIFIER = com.hx.g9claw;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hx.pilotdeck;
 				PRODUCT_MODULE_NAME = G9Claw;
-				PRODUCT_NAME = G9Claw;
+				PRODUCT_NAME = PilotDeck;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
@@ -518,9 +514,9 @@
 				LM_FILTER_WARNINGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.5;
 				MARKETING_VERSION = 0.1.3;
-				PRODUCT_BUNDLE_IDENTIFIER = com.hx.g9claw;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hx.pilotdeck;
 				PRODUCT_MODULE_NAME = G9Claw;
-				PRODUCT_NAME = G9Claw;
+				PRODUCT_NAME = PilotDeck;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
@@ -538,13 +534,13 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				LM_FILTER_WARNINGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.hx.g9claw.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hx.pilotdeck.tests;
 				PRODUCT_MODULE_NAME = G9ClawTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/G9Claw.app/Contents/MacOS/G9Claw";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PilotDeck.app/Contents/MacOS/PilotDeck";
 			};
 			name = Debug;
 		};
@@ -558,13 +554,13 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				LM_FILTER_WARNINGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.hx.g9claw.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hx.pilotdeck.tests;
 				PRODUCT_MODULE_NAME = G9ClawTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/G9Claw.app/Contents/MacOS/G9Claw";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PilotDeck.app/Contents/MacOS/PilotDeck";
 			};
 			name = Release;
 		};

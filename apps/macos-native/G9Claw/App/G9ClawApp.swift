@@ -33,7 +33,7 @@ struct G9ClawApp: App {
                 .keyboardShortcut(",", modifiers: [.command])
             }
 
-            CommandMenu("G9Claw") {
+            CommandMenu("PilotDeck") {
                 Button(state.t(.refreshProjects)) {
                     Task { await state.refreshProjects() }
                 }
@@ -49,6 +49,7 @@ struct G9ClawApp: App {
         Settings {
             SettingsView()
                 .environmentObject(state)
+                .preferredColorScheme(state.settings.colorScheme.swiftUIColorScheme)
                 .frame(width: 920, height: 640)
         }
     }
@@ -56,12 +57,13 @@ struct G9ClawApp: App {
 
 @MainActor
 enum SettingsWindowPresenter {
-    static let identifier = NSUserInterfaceItemIdentifier("G9ClawSettingsWindow")
+    static let identifier = NSUserInterfaceItemIdentifier("PilotDeckSettingsWindow")
 
-    static func configure(window: NSWindow?) {
+    static func configure(window: NSWindow?, title: String = "Settings") {
         guard let window else { return }
         window.identifier = identifier
-        window.title = "Settings"
+        window.title = title
+        window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 860, height: 620)
     }
@@ -86,17 +88,19 @@ enum SettingsWindowPresenter {
 }
 
 struct SettingsWindowConfigurator: NSViewRepresentable {
+    var title = "Settings"
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         DispatchQueue.main.async {
-            SettingsWindowPresenter.configure(window: view.window)
+            SettingsWindowPresenter.configure(window: view.window, title: title)
         }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
-            SettingsWindowPresenter.configure(window: nsView.window)
+            SettingsWindowPresenter.configure(window: nsView.window, title: title)
         }
     }
 }
@@ -151,5 +155,19 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
         window.hasShadow = true
         window.contentView?.wantsLayer = true
         window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        alignTrafficLightButtons(in: window)
+    }
+
+    private func alignTrafficLightButtons(in window: NSWindow) {
+        let adjustedTag = 9_504
+        let buttonTypes: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+        for buttonType in buttonTypes {
+            guard let button = window.standardWindowButton(buttonType),
+                  button.tag != adjustedTag else { continue }
+            var frame = button.frame
+            frame.origin.y = max(0, frame.origin.y - DesignTokens.titlebarControlTop)
+            button.frame = frame
+            button.tag = adjustedTag
+        }
     }
 }

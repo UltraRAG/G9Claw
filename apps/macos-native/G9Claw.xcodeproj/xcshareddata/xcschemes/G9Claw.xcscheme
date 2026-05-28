@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "T0001"
-               BuildableName = "G9Claw.app"
+               BuildableName = "PilotDeck.app"
                BlueprintName = "G9Claw"
                ReferencedContainer = "container:G9Claw.xcodeproj">
             </BuildableReference>
@@ -45,7 +45,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "T0001"
-            BuildableName = "G9Claw.app"
+            BuildableName = "PilotDeck.app"
             BlueprintName = "G9Claw"
             ReferencedContainer = "container:G9Claw.xcodeproj">
          </BuildableReference>
@@ -73,7 +73,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "T0001"
-            BuildableName = "G9Claw.app"
+            BuildableName = "PilotDeck.app"
             BlueprintName = "G9Claw"
             ReferencedContainer = "container:G9Claw.xcodeproj">
          </BuildableReference>
@@ -97,7 +97,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "T0001"
-            BuildableName = "G9Claw.app"
+            BuildableName = "PilotDeck.app"
             BlueprintName = "G9Claw"
             ReferencedContainer = "container:G9Claw.xcodeproj">
          </BuildableReference>

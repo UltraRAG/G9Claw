@@ -11,7 +11,7 @@ enum SessionProvider: String, CaseIterable, Codable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .g9Claw: "G9Claw"
+        case .g9Claw: "PilotDeck"
         default: rawValue.capitalized
         }
     }
@@ -19,6 +19,10 @@ enum SessionProvider: String, CaseIterable, Codable, Identifiable {
     var isNativeAvailable: Bool {
         self == .g9Claw
     }
+}
+
+enum ProjectSessionKind: String, Codable {
+    case backgroundTask = "background_task"
 }
 
 enum ChatRunMode: String, CaseIterable, Codable, Identifiable {
@@ -74,6 +78,136 @@ enum ComposerPermissionMode: String, CaseIterable, Codable, Identifiable {
         case .default: "Ask before running tools that need approval."
         case .bypassPermissions: "Allow trusted tool actions for this run."
         }
+    }
+}
+
+enum ComposerPermissionModeStorage {
+    static let defaultKey = "permissionMode-default"
+    static let sessionKeyPrefix = "permissionMode-"
+
+    static func storedMode(for sessionID: String?, defaults: UserDefaults = .standard) -> ComposerPermissionMode {
+        if let sessionID,
+           let mode = mode(defaults.string(forKey: "\(sessionKeyPrefix)\(sessionID)")) {
+            return mode
+        }
+        return mode(defaults.string(forKey: defaultKey)) ?? .default
+    }
+
+    static func save(_ mode: ComposerPermissionMode, for sessionID: String?, defaults: UserDefaults = .standard) {
+        defaults.set(mode.rawValue, forKey: defaultKey)
+        if let sessionID {
+            defaults.set(mode.rawValue, forKey: "\(sessionKeyPrefix)\(sessionID)")
+        }
+    }
+
+    private static func mode(_ rawValue: String?) -> ComposerPermissionMode? {
+        guard let rawValue else { return nil }
+        return ComposerPermissionMode(rawValue: rawValue)
+    }
+}
+
+struct NativeUIPreferences: Equatable {
+    var autoExpandTools = false
+    var showRawParameters = false
+    var showThinking = true
+    var autoScrollToBottom = true
+    var sendByCtrlEnter = false
+    var sidebarVisible = true
+}
+
+enum ToolRowExpansionPolicy {
+    static func isExpanded(
+        id: String,
+        expandedIDs: Set<String>,
+        collapsedIDs: Set<String>,
+        autoExpandTools: Bool
+    ) -> Bool {
+        if collapsedIDs.contains(id) { return false }
+        if expandedIDs.contains(id) { return true }
+        return autoExpandTools
+    }
+
+    static func toggle(
+        id: String,
+        expandedIDs: inout Set<String>,
+        collapsedIDs: inout Set<String>,
+        autoExpandTools: Bool
+    ) {
+        if isExpanded(
+            id: id,
+            expandedIDs: expandedIDs,
+            collapsedIDs: collapsedIDs,
+            autoExpandTools: autoExpandTools
+        ) {
+            expandedIDs.remove(id)
+            collapsedIDs.insert(id)
+        } else {
+            collapsedIDs.remove(id)
+            expandedIDs.insert(id)
+        }
+    }
+}
+
+enum NativeUIPreferencesStorage {
+    static let storageKey = "uiPreferences"
+
+    static func storedPreferences(defaults: UserDefaults = .standard) -> NativeUIPreferences {
+        if let raw = defaults.string(forKey: storageKey),
+           let data = raw.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return preferences(from: object)
+        }
+
+        var preferences = NativeUIPreferences()
+        preferences.autoExpandTools = boolValue(defaults.object(forKey: "autoExpandTools"), fallback: preferences.autoExpandTools)
+        preferences.showRawParameters = boolValue(defaults.object(forKey: "showRawParameters"), fallback: preferences.showRawParameters)
+        preferences.showThinking = boolValue(defaults.object(forKey: "showThinking"), fallback: preferences.showThinking)
+        preferences.autoScrollToBottom = boolValue(defaults.object(forKey: "autoScrollToBottom"), fallback: preferences.autoScrollToBottom)
+        preferences.sendByCtrlEnter = boolValue(defaults.object(forKey: "sendByCtrlEnter"), fallback: preferences.sendByCtrlEnter)
+        preferences.sidebarVisible = boolValue(defaults.object(forKey: "sidebarVisible"), fallback: preferences.sidebarVisible)
+        return preferences
+    }
+
+    static func saveSidebarVisible(_ visible: Bool, defaults: UserDefaults = .standard) {
+        var preferences = storedPreferences(defaults: defaults)
+        preferences.sidebarVisible = visible
+        save(preferences, defaults: defaults)
+    }
+
+    static func save(_ preferences: NativeUIPreferences, defaults: UserDefaults = .standard) {
+        let object: [String: Bool] = [
+            "autoExpandTools": preferences.autoExpandTools,
+            "showRawParameters": preferences.showRawParameters,
+            "showThinking": preferences.showThinking,
+            "autoScrollToBottom": preferences.autoScrollToBottom,
+            "sendByCtrlEnter": preferences.sendByCtrlEnter,
+            "sidebarVisible": preferences.sidebarVisible,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { return }
+        defaults.set(text, forKey: storageKey)
+    }
+
+    private static func preferences(from object: [String: Any]) -> NativeUIPreferences {
+        var preferences = NativeUIPreferences()
+        preferences.autoExpandTools = boolValue(object["autoExpandTools"], fallback: preferences.autoExpandTools)
+        preferences.showRawParameters = boolValue(object["showRawParameters"], fallback: preferences.showRawParameters)
+        preferences.showThinking = boolValue(object["showThinking"], fallback: preferences.showThinking)
+        preferences.autoScrollToBottom = boolValue(object["autoScrollToBottom"], fallback: preferences.autoScrollToBottom)
+        preferences.sendByCtrlEnter = boolValue(object["sendByCtrlEnter"], fallback: preferences.sendByCtrlEnter)
+        preferences.sidebarVisible = boolValue(object["sidebarVisible"], fallback: preferences.sidebarVisible)
+        return preferences
+    }
+
+    private static func boolValue(_ value: Any?, fallback: Bool) -> Bool {
+        if let value = value as? Bool {
+            return value
+        }
+        if let value = value as? String {
+            if value == "true" { return true }
+            if value == "false" { return false }
+        }
+        return fallback
     }
 }
 
@@ -217,6 +351,15 @@ struct ProjectSession: Identifiable, Hashable, Codable {
     var lastActivity: Date?
     var lastConversationAt: Date? = nil
     var state: SessionState
+    var messageCount: Int? = nil
+    var sessionKind: ProjectSessionKind? = nil
+    var parentSessionId: String? = nil
+    var relativeTranscriptPath: String? = nil
+    var transcriptKey: String? = nil
+    var taskId: String? = nil
+    var taskStatus: String? = nil
+    var outputFile: String? = nil
+    var isReadOnly: Bool? = nil
 
     var displayTitle: String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -225,6 +368,12 @@ struct ProjectSession: Identifiable, Hashable, Codable {
 
     var activityDate: Date {
         lastConversationAt ?? lastActivity ?? updatedAt ?? createdAt
+    }
+
+    var isBackgroundTaskSession: Bool {
+        sessionKind == .backgroundTask &&
+            parentSessionId?.isEmpty == false &&
+            relativeTranscriptPath?.isEmpty == false
     }
 }
 
@@ -237,9 +386,21 @@ enum ChatRole: String, Codable {
 
 enum ChatBlock: Hashable, Codable {
     case text(String)
+    case reasoning(String)
     case toolCall(ToolCall)
     case toolResult(ToolResult)
     case attachment(FileAttachment)
+}
+
+enum ChatBlockVisibilityPolicy {
+    static func isVisible(_ block: ChatBlock, showThinking: Bool) -> Bool {
+        switch block {
+        case .reasoning:
+            return showThinking
+        case .text, .toolCall, .toolResult, .attachment:
+            return true
+        }
+    }
 }
 
 struct ChatMessage: Identifiable, Hashable, Codable {
@@ -433,6 +594,80 @@ struct ToolResult: Hashable, Codable {
     var toolCallId: String
     var output: String
     var isError: Bool
+}
+
+enum AgentToolInputPreview {
+    static func activityDetail(toolName: String, inputJSON: String) -> String {
+        guard AgentToolNameCanonicalizer.canonical(toolName) == "Write" else {
+            return inputJSON
+        }
+        guard let object = jsonObject(from: inputJSON) else {
+            return inputJSON
+        }
+        let path = stringValue(for: ["file_path", "path"], in: object)
+        guard let content = stringValue(for: ["content"], in: object) else {
+            return inputJSON
+        }
+
+        var preview: [String: Any] = [
+            "content_summary": writeContentSummary(content),
+        ]
+        if let path {
+            preview["file_path"] = path
+        }
+        return jsonString(preview) ?? inputJSON
+    }
+
+    static func writeContentSummary(_ content: String, previewLimit: Int = 360) -> String {
+        let lineCount = content.reduce(1) { count, character in
+            character == "\n" ? count + 1 : count
+        }
+        var summary = "\(lineCount) line\(lineCount == 1 ? "" : "s"), \(content.utf8.count) bytes"
+        let compact = content
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !compact.isEmpty {
+            let preview = truncated(compact, limit: previewLimit)
+                .replacingOccurrences(of: "\n", with: " ")
+            summary += " · \(preview)"
+        }
+        return summary
+    }
+
+    private static func jsonObject(from raw: String) -> [String: Any]? {
+        guard let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private static func jsonString(_ object: [String: Any]) -> String? {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let value = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return value
+    }
+
+    private static func stringValue(for keys: [String], in object: [String: Any]) -> String? {
+        for key in keys {
+            if let string = object[key] as? String {
+                let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty || key == "content" {
+                    return string
+                }
+            }
+            if let number = object[key] as? NSNumber {
+                return number.stringValue
+            }
+        }
+        return nil
+    }
+
+    private static func truncated(_ value: String, limit: Int) -> String {
+        guard value.count > limit else { return value }
+        let index = value.index(value.startIndex, offsetBy: max(0, limit - 1))
+        return String(value[..<index]) + "…"
+    }
 }
 
 enum PermissionRequestKind: String, Hashable, Codable, Sendable {
@@ -655,7 +890,7 @@ struct AppSettings: Hashable, Codable {
         providerConfig: .empty,
         workspacesRoot: FileManager.default.homeDirectoryForCurrentUser.path,
         generalWorkspacePath: FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("G9Claw")
+            .appendingPathComponent("PilotDeck")
             .appendingPathComponent("general")
             .path,
         apiTimeoutMs: 120_000,
@@ -681,6 +916,17 @@ enum AppColorScheme: String, Codable, CaseIterable, Identifiable {
     case dark
 
     var id: String { rawValue }
+
+    var swiftUIColorScheme: ColorScheme? {
+        switch self {
+        case .system:
+            return nil
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        }
+    }
 }
 
 enum AppLanguage: String, Codable, CaseIterable, Identifiable {
@@ -706,10 +952,10 @@ struct CodeEditorPreferences: Hashable, Codable {
     var fontSize: Int
 
     static let defaults = CodeEditorPreferences(
-        wordWrap: true,
+        wordWrap: false,
         showMinimap: true,
         lineNumbers: true,
-        fontSize: 13
+        fontSize: 14
     )
 }
 
@@ -719,25 +965,24 @@ struct ToolPermissionSettings: Hashable, Codable {
     var lastUpdated: Date?
 
     static let quickAllowedTools = [
-        "Shell(git log:*)",
-        "Shell(git diff:*)",
-        "Shell(git status:*)",
+        "Bash(git log:*)",
+        "Bash(git diff:*)",
+        "Bash(git status:*)",
         "Read",
         "Write",
-        "StrReplace",
+        "Edit",
         "Glob",
         "Grep",
-        "SemanticSearch",
+        "MultiEdit",
         "Task",
         "TodoWrite",
     ]
 
     static let quickBlockedTools = [
-        "Shell(rm:*)",
-        "Shell(sudo:*)",
+        "Bash(rm:*)",
+        "Bash(sudo:*)",
         "WebFetch",
         "WebSearch",
-        "Delete",
     ]
 
     static let defaults = ToolPermissionSettings(
@@ -745,6 +990,19 @@ struct ToolPermissionSettings: Hashable, Codable {
         disallowedTools: [],
         lastUpdated: nil
     )
+}
+
+enum PermissionsExportDefaults {
+    static let source = "g9claw"
+
+    static func filename(date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return "g9claw-permissions-\(formatter.string(from: date)).json"
+    }
 }
 
 enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
@@ -774,7 +1032,6 @@ enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
 enum G9ClawConfigSection: String, CaseIterable, Identifiable {
     case runtime
     case models
-    case agents
     case alwaysOn
     case memory
     case rag
@@ -788,7 +1045,6 @@ enum G9ClawConfigSection: String, CaseIterable, Identifiable {
         switch self {
         case .runtime: "Runtime"
         case .models: "Models"
-        case .agents: "Agents"
         case .alwaysOn: "Always-On"
         case .memory: "Memory"
         case .rag: "RAG"
@@ -855,6 +1111,10 @@ struct MemoryRecord: Identifiable, Hashable, Codable {
     var relativePath: String = ""
     var deprecated: Bool = false
     var content: String = ""
+    var scope: String = "project"
+    var projectId: String?
+    var sourceSessionKey: String?
+    var capturedAt: Date?
 }
 
 enum MemoryRecordType: String, Codable, CaseIterable, Identifiable {
@@ -870,7 +1130,7 @@ enum MemoryRecordType: String, Codable, CaseIterable, Identifiable {
         case .project: "Project"
         case .feedback: "Feedback"
         case .user: "User"
-        case .generalProjectMeta: "General Project"
+        case .generalProjectMeta: "Chat Project"
         }
     }
 }
@@ -921,15 +1181,97 @@ struct MemoryOverview: Hashable, Codable {
 }
 
 struct MemorySettingsSnapshot: Hashable, Codable {
+    var enabled: Bool
+    var model: String
     var reasoningMode: String
     var autoIndexIntervalMinutes: Int
     var autoDreamIntervalMinutes: Int
+    var captureStrategy: String
+    var includeAssistant: Bool
+    var maxMessageChars: Int
+    var heartbeatBatchSize: Int
 
-    static let defaults = MemorySettingsSnapshot(
-        reasoningMode: "answer_first",
-        autoIndexIntervalMinutes: 30,
-        autoDreamIntervalMinutes: 60
-    )
+    init(
+        enabled: Bool = true,
+        model: String = "inherit",
+        reasoningMode: String = "answer_first",
+        autoIndexIntervalMinutes: Int = 30,
+        autoDreamIntervalMinutes: Int = 60,
+        captureStrategy: String = "last_turn",
+        includeAssistant: Bool = true,
+        maxMessageChars: Int = 6000,
+        heartbeatBatchSize: Int = 30
+    ) {
+        self.enabled = enabled
+        self.model = model
+        self.reasoningMode = reasoningMode == "accuracy_first" ? "accuracy_first" : "answer_first"
+        self.autoIndexIntervalMinutes = Self.normalizedInterval(autoIndexIntervalMinutes, fallback: 30)
+        self.autoDreamIntervalMinutes = Self.normalizedInterval(autoDreamIntervalMinutes, fallback: 60)
+        self.captureStrategy = captureStrategy == "full_session" ? "full_session" : "last_turn"
+        self.includeAssistant = includeAssistant
+        self.maxMessageChars = max(1, maxMessageChars)
+        self.heartbeatBatchSize = max(1, heartbeatBatchSize)
+    }
+
+    static let defaults = MemorySettingsSnapshot()
+
+    static func fromConfigValues(_ values: [String: String]) -> MemorySettingsSnapshot {
+        MemorySettingsSnapshot(
+            enabled: bool(values["memory.enabled"], fallback: true),
+            model: values["memory.model"]?.nilIfBlank ?? "inherit",
+            reasoningMode: values["memory.reasoningMode"]?.nilIfBlank ?? "answer_first",
+            autoIndexIntervalMinutes: int(values["memory.autoIndexIntervalMinutes"], fallback: 30),
+            autoDreamIntervalMinutes: int(values["memory.autoDreamIntervalMinutes"], fallback: 60),
+            captureStrategy: values["memory.captureStrategy"]?.nilIfBlank ?? "last_turn",
+            includeAssistant: bool(values["memory.includeAssistant"], fallback: true),
+            maxMessageChars: int(values["memory.maxMessageChars"], fallback: 6000),
+            heartbeatBatchSize: int(values["memory.heartbeatBatchSize"], fallback: 30)
+        )
+    }
+
+    private static func normalizedInterval(_ value: Int, fallback: Int) -> Int {
+        let resolved = value < 0 ? fallback : value
+        return min(10_080, max(0, resolved))
+    }
+
+    private static func int(_ value: String?, fallback: Int) -> Int {
+        value.flatMap(Int.init) ?? fallback
+    }
+
+    private static func bool(_ value: String?, fallback: Bool) -> Bool {
+        switch value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1", "yes", "on": return true
+        case "false", "0", "no", "off": return false
+        default: return fallback
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case model
+        case reasoningMode
+        case autoIndexIntervalMinutes
+        case autoDreamIntervalMinutes
+        case captureStrategy
+        case includeAssistant
+        case maxMessageChars
+        case heartbeatBatchSize
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            enabled: try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
+            model: try container.decodeIfPresent(String.self, forKey: .model) ?? "inherit",
+            reasoningMode: try container.decodeIfPresent(String.self, forKey: .reasoningMode) ?? "answer_first",
+            autoIndexIntervalMinutes: try container.decodeIfPresent(Int.self, forKey: .autoIndexIntervalMinutes) ?? 30,
+            autoDreamIntervalMinutes: try container.decodeIfPresent(Int.self, forKey: .autoDreamIntervalMinutes) ?? 60,
+            captureStrategy: try container.decodeIfPresent(String.self, forKey: .captureStrategy) ?? "last_turn",
+            includeAssistant: try container.decodeIfPresent(Bool.self, forKey: .includeAssistant) ?? true,
+            maxMessageChars: try container.decodeIfPresent(Int.self, forKey: .maxMessageChars) ?? 6000,
+            heartbeatBatchSize: try container.decodeIfPresent(Int.self, forKey: .heartbeatBatchSize) ?? 30
+        )
+    }
 }
 
 struct MemoryWorkspaceSnapshot: Hashable, Codable {
@@ -1326,6 +1668,7 @@ struct RoutingDashboardSnapshot: Hashable, Codable {
 }
 
 enum AlwaysOnStatus: String, Codable {
+    case scheduled
     case ready
     case queued
     case running
@@ -1345,10 +1688,29 @@ struct AlwaysOnPlan: Identifiable, Hashable, Codable {
     var status: AlwaysOnStatus
     var approvalMode: String
     var planFilePath: String
+    var contextRefs: [String: [String]]? = nil
     var createdAt: Date
     var updatedAt: Date
     var executionSessionId: String?
     var executionStatus: AlwaysOnStatus?
+}
+
+struct AlwaysOnCronLatestRun: Identifiable, Hashable, Codable {
+    var status: AlwaysOnStatus?
+    var runId: String?
+    var startedAt: Date?
+    var sessionId: String?
+    var summary: String?
+    var lastActivity: Date?
+    var taskId: String?
+    var outputFile: String?
+    var parentSessionId: String?
+    var relativeTranscriptPath: String?
+    var transcriptKey: String?
+
+    var id: String {
+        runId ?? sessionId ?? taskId ?? transcriptKey ?? "latest"
+    }
 }
 
 struct AlwaysOnCronJob: Identifiable, Hashable, Codable {
@@ -1361,6 +1723,11 @@ struct AlwaysOnCronJob: Identifiable, Hashable, Codable {
     var createdAt: Date?
     var lastFiredAt: Date?
     var latestSessionId: String?
+    var permanent: Bool = false
+    var manualOnly: Bool = false
+    var originSessionId: String?
+    var transcriptKey: String?
+    var latestRun: AlwaysOnCronLatestRun?
 }
 
 struct AlwaysOnRunHistory: Identifiable, Hashable, Codable {
@@ -1372,6 +1739,167 @@ struct AlwaysOnRunHistory: Identifiable, Hashable, Codable {
     var sourceId: String
     var outputLog: String
     var sessionId: String?
+    var parentSessionId: String?
+    var relativeTranscriptPath: String?
+    var finishedAt: Date? = nil
+    var error: String? = nil
+    var metadata: [String: String] = [:]
+    var transcriptKey: String? = nil
+
+    var shouldPollLog: Bool {
+        status == .queued || status == .running
+    }
+}
+
+enum AlwaysOnRunLogSource: String, Hashable, Codable {
+    case logFile = "log-file"
+    case session
+    case history
+}
+
+struct AlwaysOnRunLog: Identifiable, Hashable, Codable {
+    var runId: String
+    var content: String
+    var truncated: Bool
+    var updatedAt: Date?
+    var size: Int
+    var source: AlwaysOnRunLogSource
+
+    var id: String { runId }
+}
+
+enum AlwaysOnSessionTargetKind: String, Hashable, Codable {
+    case origin
+    case background
+}
+
+struct AlwaysOnSessionTarget: Hashable, Codable {
+    var kind: AlwaysOnSessionTargetKind
+    var sessionId: String
+    var parentSessionId: String?
+    var relativeTranscriptPath: String?
+    var title: String?
+    var summary: String?
+    var lastActivity: Date?
+    var transcriptKey: String?
+    var taskId: String?
+    var taskStatus: String?
+    var outputFile: String?
+
+    static func origin(sessionId: String) -> AlwaysOnSessionTarget {
+        AlwaysOnSessionTarget(
+            kind: .origin,
+            sessionId: sessionId,
+            parentSessionId: nil,
+            relativeTranscriptPath: nil,
+            title: nil,
+            summary: nil,
+            lastActivity: nil,
+            transcriptKey: nil,
+            taskId: nil,
+            taskStatus: nil,
+            outputFile: nil
+        )
+    }
+
+    static func background(
+        sessionId: String,
+        parentSessionId: String,
+        relativeTranscriptPath: String,
+        title: String?,
+        summary: String?,
+        lastActivity: Date?,
+        transcriptKey: String?,
+        taskId: String?,
+        taskStatus: String?,
+        outputFile: String?
+    ) -> AlwaysOnSessionTarget {
+        AlwaysOnSessionTarget(
+            kind: .background,
+            sessionId: sessionId,
+            parentSessionId: parentSessionId,
+            relativeTranscriptPath: relativeTranscriptPath,
+            title: title,
+            summary: summary,
+            lastActivity: lastActivity,
+            transcriptKey: transcriptKey,
+            taskId: taskId,
+            taskStatus: taskStatus,
+            outputFile: outputFile
+        )
+    }
+}
+
+struct AlwaysOnDiscoveryContext: Hashable, Codable {
+    var generatedAt: String
+    var lookbackDays: Int
+    var workspace: Workspace
+    var memory: [MemoryItem]
+    var existingPlans: [PlanItem]
+    var cronJobs: [CronItem]
+    var recentChats: [ChatItem]
+
+    struct Workspace: Hashable, Codable {
+        var projectName: String
+        var projectRoot: String
+        var signals: [String]
+    }
+
+    struct MemoryItem: Hashable, Codable {
+        var path: String
+        var modifiedAt: String
+        var summary: String
+    }
+
+    struct PlanItem: Hashable, Codable {
+        var id: String
+        var title: String
+        var status: String
+        var approvalMode: String
+        var updatedAt: String
+        var summary: String
+    }
+
+    struct CronItem: Hashable, Codable {
+        var id: String
+        var status: String
+        var cron: String
+        var recurring: Bool
+        var manualOnly: Bool
+        var prompt: String
+        var latestRunSummary: String?
+    }
+
+    struct ChatItem: Hashable, Codable {
+        var id: String
+        var summary: String
+        var lastActivity: String
+        var lastUserMessage: String?
+        var lastAssistantMessage: String?
+    }
+}
+
+struct AlwaysOnDiscoveryRequestDedupeStore: Hashable, Codable {
+    private(set) var seen: Set<String> = []
+    private(set) var order: [String] = []
+
+    mutating func shouldProcess(_ requestID: String?, maxSize: Int = 100) -> Bool {
+        guard let normalized = requestID?.trimmingCharacters(in: .whitespacesAndNewlines), !normalized.isEmpty else {
+            return false
+        }
+        guard !seen.contains(normalized) else {
+            return false
+        }
+        seen.insert(normalized)
+        order.append(normalized)
+        while order.count > maxSize {
+            if let oldest = order.first {
+                seen.remove(oldest)
+            }
+            order.removeFirst()
+        }
+        return true
+    }
 }
 
 private extension String {

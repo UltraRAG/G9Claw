@@ -13,7 +13,9 @@ struct ChatView: View {
 
     private var conversationBody: some View {
         Group {
-            if state.currentMessages.isEmpty {
+            if state.currentMessages.isEmpty, isReadOnlyBackgroundSession {
+                readOnlyBackgroundEmpty
+            } else if state.currentMessages.isEmpty {
                 emptyLanding
             } else {
                 VStack(spacing: 0) {
@@ -83,8 +85,13 @@ struct ChatView: View {
                         }
                     }
 
-                    ComposerFooter()
-                        .environmentObject(state)
+                    if isReadOnlyBackgroundSession {
+                        ReadOnlyBackgroundFooter()
+                            .environmentObject(state)
+                    } else {
+                        ComposerFooter()
+                            .environmentObject(state)
+                    }
                 }
             }
         }
@@ -132,8 +139,12 @@ struct ChatView: View {
         scrollPinning.isPinnedToBottom
     }
 
+    private var isReadOnlyBackgroundSession: Bool {
+        state.selectedSession?.isReadOnly == true || state.selectedSession?.isBackgroundTaskSession == true
+    }
+
     private func followBottomIfPinned(_ proxy: ScrollViewProxy) {
-        guard scrollPinning.canAutoFollowOutput() else { return }
+        guard scrollPinning.canAutoFollowOutput(autoScrollToBottom: state.uiPreferences.autoScrollToBottom) else { return }
         scrollPinning.recordProgrammaticScroll()
         withTransaction(Transaction(animation: nil)) {
             proxy.scrollTo(ChatScrollTarget.bottom, anchor: .bottom)
@@ -143,7 +154,7 @@ struct ChatView: View {
     private var emptyLanding: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
-            Text(state.t(.welcomePrompt))
+            Text(emptyLandingTitle)
                 .font(.system(size: DesignTokens.welcomeTitleSize, weight: .medium))
                 .tracking(-0.4)
                 .foregroundStyle(DesignTokens.text)
@@ -152,6 +163,36 @@ struct ChatView: View {
             ComposerCard(chromeless: false)
                 .environmentObject(state)
                 .frame(maxWidth: DesignTokens.composerMaxWidth)
+            GeneralProjectEntryButton()
+                .environmentObject(state)
+                .frame(maxWidth: DesignTokens.composerMaxWidth, alignment: .leading)
+                .padding(.top, 8)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyLandingTitle: String {
+        guard let selectedProject = state.selectedProject, !state.isGeneralProject(selectedProject) else {
+            return state.t(.welcomePrompt)
+        }
+        return state.t(.projectWelcomePrompt, selectedProject.displayName)
+    }
+
+    private var readOnlyBackgroundEmpty: some View {
+        VStack(spacing: 8) {
+            Spacer(minLength: 0)
+            Text(state.t(.readOnlyBackgroundTitle))
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(DesignTokens.text)
+                .multilineTextAlignment(.center)
+            Text(state.t(.readOnlyBackgroundDescription))
+                .font(.system(size: 13))
+                .lineSpacing(3)
+                .foregroundStyle(DesignTokens.secondaryText)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 520)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
@@ -198,6 +239,11 @@ struct ChatScrollPinningState: Equatable {
         }
         guard let lastAutoFollowAt else { return true }
         return now.timeIntervalSince(lastAutoFollowAt) >= Self.autoFollowThrottleInterval
+    }
+
+    func canAutoFollowOutput(autoScrollToBottom: Bool, now: Date = Date()) -> Bool {
+        guard autoScrollToBottom else { return false }
+        return canAutoFollowOutput(now: now)
     }
 
     mutating func recordProgrammaticScroll(now: Date = Date()) {
@@ -341,6 +387,191 @@ private struct ComposerFooter: View {
     }
 }
 
+private struct GeneralProjectEntryButton: View {
+    @EnvironmentObject private var state: AppState
+    @State private var isPresented = false
+    @State private var query = ""
+
+    var body: some View {
+        if isGeneralChat {
+            Button {
+                isPresented.toggle()
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 13, weight: .regular))
+                    Text(state.t(.enterProjectWork))
+                        .font(.system(size: 12.5, weight: .medium))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10.5, weight: .semibold))
+                }
+                .foregroundStyle(DesignTokens.secondaryText)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(DesignTokens.neutral100.opacity(0.78))
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(DesignTokens.separator.opacity(0.72), lineWidth: 1)
+                )
+                .contentShape(Capsule(style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $isPresented, arrowEdge: .top) {
+                projectPicker
+            }
+        }
+    }
+
+    private var projectPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12.5, weight: .regular))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                TextField(state.t(.searchProjects), text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundStyle(DesignTokens.text)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(
+                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                    .fill(DesignTokens.neutral50.opacity(0.74))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                    .stroke(DesignTokens.separator.opacity(0.66), lineWidth: 1)
+            )
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    if filteredProjects.isEmpty {
+                        Text(state.t(.noProjectsFound))
+                            .font(.system(size: 12))
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        ForEach(filteredProjects) { project in
+                            Button {
+                                enter(project)
+                            } label: {
+                                HStack(spacing: 9) {
+                                    Image(systemName: "folder")
+                                        .font(.system(size: 13, weight: .regular))
+                                        .foregroundStyle(DesignTokens.tertiaryText)
+                                        .frame(width: 16)
+                                    Text(project.displayName)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(DesignTokens.text)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 32)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 230)
+
+            Divider()
+                .background(DesignTokens.separator.opacity(0.68))
+
+            Button {
+                isPresented = false
+                query = ""
+                state.showProjectCreationWizard = true
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .frame(width: 16)
+                    Text(state.t(.addNewProject))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(DesignTokens.text)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .frame(width: 300)
+        .background(DesignTokens.background.opacity(0.94))
+    }
+
+    private var isGeneralChat: Bool {
+        guard let selectedProject = state.selectedProject else { return false }
+        return state.isGeneralProject(selectedProject)
+    }
+
+    private var projects: [WorkspaceProject] {
+        WorkspaceService.sortedProjects(state.projects, order: state.settings.projectSortOrder)
+            .filter { !state.isGeneralProject($0) }
+    }
+
+    private var filteredProjects: [WorkspaceProject] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return projects }
+        return projects.filter { project in
+            project.displayName.localizedCaseInsensitiveContains(trimmed) ||
+                project.rootPath.localizedCaseInsensitiveContains(trimmed)
+        }
+    }
+
+    private func enter(_ project: WorkspaceProject) {
+        isPresented = false
+        query = ""
+        state.startDraftSession(project: project)
+    }
+}
+
+private struct ReadOnlyBackgroundFooter: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock")
+                .font(.system(size: 12, weight: .medium))
+            Text(state.t(.readOnlyBackgroundFooter))
+                .font(.system(size: 12.5, weight: .medium))
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(DesignTokens.secondaryText)
+        .padding(.horizontal, 14)
+        .frame(maxWidth: DesignTokens.composerMaxWidth)
+        .frame(height: 40)
+        .background(
+            RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                .fill(DesignTokens.neutral50.opacity(0.74))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                        .stroke(DesignTokens.separator.opacity(0.72), lineWidth: 1)
+                )
+        )
+        .padding(.horizontal, 24)
+        .padding(.top, 6)
+        .padding(.bottom, 16)
+        .frame(maxWidth: .infinity)
+    }
+}
+
 private struct ComposerRunningStatusRow: View {
     @EnvironmentObject private var state: AppState
     var activity: AgentActivity
@@ -442,16 +673,17 @@ private struct ComposerCard: View {
             ZStack(alignment: .topLeading) {
                 if state.composerText.isEmpty && !isComposingMarkedText {
                     Text(state.t(.askPlaceholder))
-                        .font(.system(size: 14))
-                        .foregroundStyle(DesignTokens.neutral400)
-                        .padding(.horizontal, 8)
-                        .padding(.top, 7)
+                        .font(.system(size: 15))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 10)
                 }
                 ComposerTextEditor(
                     text: $state.composerText,
                     isFocused: $focused,
                     hasMarkedText: $isComposingMarkedText,
                     canSubmit: canSend,
+                    sendByCtrlEnter: state.uiPreferences.sendByCtrlEnter,
                     pasteboardAttachments: pastedAttachments,
                     onPasteAttachments: { attachments in
                         addPendingAttachments(attachments)
@@ -471,7 +703,7 @@ private struct ComposerCard: View {
                     .frame(height: DesignTokens.composerTextMinHeight)
             }
 
-            HStack(spacing: 2) {
+            HStack(spacing: 4) {
                 iconControl("paperclip", help: state.t(.attachHelp)) {
                     openAttachmentPanel()
                 }
@@ -483,10 +715,11 @@ private struct ComposerCard: View {
                 contextGauge
                 sendOrStopButton
             }
-            .padding(.horizontal, 4)
-            .padding(.top, 4)
+            .padding(.top, 8)
         }
-        .padding(8)
+        .padding(.horizontal, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
         .background(
             ComposerGlassBackground(isFocused: focused, chromeless: chromeless)
         )
@@ -550,7 +783,7 @@ private struct ComposerCard: View {
         return Menu {
             ForEach(ComposerPermissionMode.allCases) { mode in
                 Button {
-                    state.composerPermissionMode = mode
+                    state.setComposerPermissionMode(mode)
                 } label: {
                     Label(state.permissionModeLabel(mode), systemImage: mode.systemImage)
                 }
@@ -573,7 +806,7 @@ private struct ComposerCard: View {
             ComposerControlButtonStyle(
                 foreground: tone,
                 idleBackground: isBypass ? DesignTokens.warning.opacity(0.10) : .clear,
-                pressedBackground: isBypass ? DesignTokens.warning.opacity(0.18) : DesignTokens.neutral100
+                pressedBackground: isBypass ? DesignTokens.warning.opacity(0.18) : DesignTokens.composerControlSurface
             )
         )
         .help(state.t(.choosePermissionMode))
@@ -596,7 +829,7 @@ private struct ComposerCard: View {
             .frame(minWidth: latestTokenBudget == nil ? 40 : 58)
             .background(
                 Capsule(style: .continuous)
-                    .fill(latestTokenBudget == nil ? Color.clear : DesignTokens.neutral100)
+                    .fill(latestTokenBudget == nil ? Color.clear : DesignTokens.composerControlSurface)
             )
         }
         .buttonStyle(ComposerControlButtonStyle())
@@ -759,18 +992,33 @@ private struct ComposerCard: View {
             }
         } label: {
             Image(systemName: state.isCurrentSessionStreaming ? "stop.fill" : "arrow.up")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(state.isCurrentSessionStreaming ? .white : (canSend ? .white : DesignTokens.neutral400))
-                .frame(width: 32, height: 32)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(sendButtonForeground)
+                .frame(width: 34, height: 34)
                 .background(
-                    RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
-                        .fill(state.isCurrentSessionStreaming ? Color(nsColor: NSColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1)) : (canSend ? DesignTokens.neutral900 : DesignTokens.neutral200))
+                    Circle()
+                        .fill(sendButtonFill)
                 )
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(!state.isCurrentSessionStreaming && !canSend)
         .keyboardShortcut(.return, modifiers: [.command])
         .help(state.isCurrentSessionStreaming ? state.t(.stopGeneration) : state.t(.send))
+    }
+
+    private var sendButtonFill: Color {
+        if state.isCurrentSessionStreaming {
+            return DesignTokens.danger
+        }
+        return canSend ? DesignTokens.composerSendActive : DesignTokens.composerSendDisabled
+    }
+
+    private var sendButtonForeground: Color {
+        if state.isCurrentSessionStreaming {
+            return .white
+        }
+        return canSend ? DesignTokens.composerSendActiveForeground : DesignTokens.composerSendDisabledForeground
     }
 
     private func openAttachmentPanel() {
@@ -1094,6 +1342,7 @@ private struct MessageRow: View {
                         .font(.system(size: 12.5, weight: .medium))
                         .frame(width: 24, height: 24)
                         .background(DesignTokens.neutral100.opacity(0.72), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .help(state.settings.language.resolved() == .chineseSimplified ? "复制输出" : "Copy response")
@@ -1140,6 +1389,12 @@ private struct MessageRow: View {
                 let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !cleaned.isEmpty, !isPureMarkdownSeparator(cleaned) else { continue }
                 segments.append(.text(text))
+            case .reasoning(let text):
+                flushToolGroup()
+                let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !cleaned.isEmpty,
+                      ChatBlockVisibilityPolicy.isVisible(block, showThinking: state.uiPreferences.showThinking) else { continue }
+                segments.append(.reasoning(text))
             case .attachment(let attachment):
                 flushToolGroup()
                 segments.append(.attachment(attachment))
@@ -1227,6 +1482,11 @@ private struct MessageRow: View {
             } else {
                 NativeMarkdownView(text: text, fontSize: assistantFontSize, lineSpacing: 5)
             }
+        case .reasoning(let text):
+            if ChatBlockVisibilityPolicy.isVisible(block, showThinking: state.uiPreferences.showThinking) {
+                ReasoningDisclosure(text: text, compact: compact)
+                    .environmentObject(state)
+            }
         case .toolCall(let call):
             ToolBlock(title: call.name, detail: call.inputJSON, systemImage: "hammer", tint: DesignTokens.warning)
         case .toolResult(let result):
@@ -1246,6 +1506,9 @@ private struct MessageRow: View {
         switch segment {
         case .text(let text):
             NativeMarkdownView(text: text, fontSize: assistantFontSize, lineSpacing: 5)
+        case .reasoning(let text):
+            ReasoningDisclosure(text: text, compact: false)
+                .environmentObject(state)
         case .attachment(let attachment):
             AttachmentChip(attachment: attachment)
         case .tool(let call, let result, let todoDiff):
@@ -1271,6 +1534,8 @@ private struct MessageRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .attachment(let attachment):
             AttachmentChip(attachment: attachment)
+        case .reasoning:
+            EmptyView()
         case .toolCall, .toolResult:
             blockView(block, compact: true)
         }
@@ -1279,10 +1544,47 @@ private struct MessageRow: View {
 
 private enum AssistantBlockSegment {
     case text(String)
+    case reasoning(String)
     case attachment(FileAttachment)
     case tool(ToolCall, ToolResult?, TodoListDiff?)
     case toolGroup([(ToolCall, ToolResult?)])
     case orphanToolResult(ToolResult)
+}
+
+private struct ReasoningDisclosure: View {
+    @EnvironmentObject private var state: AppState
+    @State private var expanded = false
+    var text: String
+    var compact: Bool
+
+    private var trimmedText: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        if !trimmedText.isEmpty {
+            DisclosureGroup(isExpanded: $expanded) {
+                NativeMarkdownView(
+                    text: trimmedText,
+                    fontSize: compact ? 12 : 13,
+                    lineSpacing: 4
+                )
+                .padding(.top, 7)
+                .padding(.leading, 2)
+            } label: {
+                Label(state.t(.thinking), systemImage: "sparkles")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(CodexProcessStyle.title)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(DesignTokens.neutral50.opacity(0.78), in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                    .stroke(DesignTokens.separator.opacity(0.8), lineWidth: 1)
+            )
+        }
+    }
 }
 
 enum ProcessToolGroupingPolicy {
@@ -1397,10 +1699,7 @@ struct ToolInvocationPresentation: Equatable {
                 (["replace_all"], "Replace all", false),
             ])
         case "Write":
-            return fieldPresentation(toolName, rawInput, object, [
-                (["file_path", "path"], "Path", true),
-                (["content"], "Content", false),
-            ])
+            return writePresentation(toolName: toolName, rawInput: rawInput, object: object)
         case "Task":
             return fieldPresentation(toolName, rawInput, object, [
                 (["description"], "Description", true),
@@ -1472,6 +1771,21 @@ struct ToolInvocationPresentation: Equatable {
             output.append(ToolInvocationField(label: spec.1, value: value, isPrimary: spec.2 && !output.contains(where: \.isPrimary)))
         }
         return ToolInvocationPresentation(toolName: toolName, title: toolName, command: nil, fields: output, rawInput: rawInput, parsed: true)
+    }
+
+    private static func writePresentation(toolName: String, rawInput: String, object: [String: Any]) -> ToolInvocationPresentation {
+        var fields: [ToolInvocationField] = []
+        if let path = stringValue(for: ["file_path", "path"], in: object) {
+            fields.append(ToolInvocationField(label: "Path", value: path, isPrimary: true))
+        }
+        if let content = stringValue(for: ["content"], in: object) {
+            fields.append(ToolInvocationField(
+                label: "Content",
+                value: AgentToolInputPreview.writeContentSummary(content, previewLimit: 520),
+                isPrimary: fields.isEmpty
+            ))
+        }
+        return ToolInvocationPresentation(toolName: toolName, title: toolName, command: nil, fields: fields, rawInput: rawInput, parsed: true)
     }
 
     private static func fields(_ specs: [(String, String, Bool)], in object: [String: Any]) -> [ToolInvocationField] {
@@ -1896,7 +2210,7 @@ private struct InlineProcessToolRow: View {
         result?.output.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("Plan mode skipped") == true
     }
     private var expansionKey: String { "tool:\(call.id)" }
-    private var expanded: Bool { state.expandedToolRowIDs.contains(expansionKey) }
+    private var expanded: Bool { state.isToolRowExpanded(expansionKey) }
     private var presentation: ToolInvocationPresentation {
         ToolInvocationPresentation.parse(toolName: call.name, inputJSON: call.inputJSON)
     }
@@ -1919,11 +2233,7 @@ private struct InlineProcessToolRow: View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
                 withAnimation(.easeInOut(duration: 0.16)) {
-                    if expanded {
-                        state.expandedToolRowIDs.remove(expansionKey)
-                    } else {
-                        state.expandedToolRowIDs.insert(expansionKey)
-                    }
+                    state.toggleToolRowExpanded(expansionKey)
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -1978,7 +2288,9 @@ private struct InlineProcessToolRow: View {
                             ToolImagePreview(parsed: image)
                         }
                     }
-                    RawToolInputDisclosure(rawInput: call.inputJSON, isChinese: isChinese)
+                    if state.uiPreferences.showRawParameters {
+                        RawToolInputDisclosure(rawInput: call.inputJSON, isChinese: isChinese)
+                    }
                 }
                 .padding(.leading, 31)
                 .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .topLeading)))
@@ -2429,11 +2741,13 @@ private struct RawToolInputDisclosure: View {
                     .font(.system(size: 11, weight: .medium))
             }
             .foregroundStyle(CodexProcessStyle.detail)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
 
         if isExpanded {
-            Text(rawInput)
+            Text(ToolOutputPreviewLimiter.preview(rawInput, maxChars: 6_000, maxLines: 120))
                 .font(CodexProcessStyle.detailMonoFont)
                 .foregroundStyle(CodexProcessStyle.detailStrong)
                 .lineLimit(12)
@@ -2451,6 +2765,9 @@ private struct ToolInvocationCompactDetail: View {
     var presentation: ToolInvocationPresentation
     var output: String?
     var isError: Bool
+    var rawInput: String? = nil
+    var showsRawInput = false
+    var isChinese = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -2482,6 +2799,10 @@ private struct ToolInvocationCompactDetail: View {
                     .lineLimit(3)
                     .textSelection(.enabled)
             }
+            if showsRawInput, let rawInput {
+                RawToolInputDisclosure(rawInput: rawInput, isChinese: isChinese)
+                    .padding(.top, 2)
+            }
         }
         .padding(.leading, 28)
     }
@@ -2506,17 +2827,13 @@ private struct InlineProcessToolGroupRow: View {
     private var expansionKey: String {
         "tool-group:" + items.map { $0.0.id }.joined(separator: ",")
     }
-    private var expanded: Bool { state.expandedToolRowIDs.contains(expansionKey) }
+    private var expanded: Bool { state.isToolRowExpanded(expansionKey) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
                 withAnimation(.easeInOut(duration: 0.16)) {
-                    if expanded {
-                        state.expandedToolRowIDs.remove(expansionKey)
-                    } else {
-                        state.expandedToolRowIDs.insert(expansionKey)
-                    }
+                    state.toggleToolRowExpanded(expansionKey)
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -2560,7 +2877,10 @@ private struct InlineProcessToolGroupRow: View {
                             ToolInvocationCompactDetail(
                                 presentation: ToolInvocationPresentation.parse(toolName: item.0.name, inputJSON: item.0.inputJSON),
                                 output: item.1?.output,
-                                isError: item.1?.isError == true
+                                isError: item.1?.isError == true,
+                                rawInput: item.0.inputJSON,
+                                showsRawInput: state.uiPreferences.showRawParameters,
+                                isChinese: isChinese
                             )
                         }
                     }
@@ -2882,10 +3202,11 @@ private struct PendingAttachmentPreview: View {
         Button(action: onRemove) {
             Image(systemName: "xmark")
                 .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(DesignTokens.prominentButtonForeground)
                 .frame(width: 24, height: 24)
-                .background(Circle().fill(DesignTokens.neutral900.opacity(0.92)))
+                .background(Circle().fill(DesignTokens.prominentButtonFill.opacity(0.92)))
                 .shadow(color: .black.opacity(0.18), radius: 4, x: 0, y: 1)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .help("Remove attachment")
@@ -3076,11 +3397,32 @@ enum ComposerPasteShortcutPolicy {
     }
 }
 
+enum ComposerSubmitShortcutPolicy {
+    static func isReturnKey(_ keyCode: UInt16) -> Bool {
+        keyCode == 36 || keyCode == 76
+    }
+
+    static func shouldSubmit(
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags,
+        sendByCtrlEnter: Bool
+    ) -> Bool {
+        guard isReturnKey(keyCode) else { return false }
+        let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard !flags.contains(.shift) else { return false }
+        if flags.contains(.control) || flags.contains(.command) {
+            return true
+        }
+        return !sendByCtrlEnter
+    }
+}
+
 private struct ComposerTextEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
     @Binding var hasMarkedText: Bool
     var canSubmit: Bool
+    var sendByCtrlEnter: Bool
     var pasteboardAttachments: (NSPasteboard) -> [FileAttachment]
     var onPasteAttachments: ([FileAttachment]) -> Void
     var onToggleRunMode: () -> Void
@@ -3103,10 +3445,10 @@ private struct ComposerTextEditor: NSViewRepresentable {
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = true
-        textView.font = NSFont.systemFont(ofSize: 14)
+        textView.font = NSFont.systemFont(ofSize: 15)
         textView.textColor = NSColor.labelColor
         textView.insertionPointColor = NSColor.controlAccentColor
-        textView.textContainerInset = NSSize(width: 8, height: 7)
+        textView.textContainerInset = NSSize(width: 10, height: 10)
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true
         textView.isHorizontallyResizable = false
@@ -3117,6 +3459,7 @@ private struct ComposerTextEditor: NSViewRepresentable {
         textView.string = text
         textView.shouldSubmit = { context.coordinator.canSubmit }
         textView.hasActiveMarkedText = { context.coordinator.hasMarkedText }
+        textView.sendByCtrlEnter = sendByCtrlEnter
         textView.onPaste = { pasteboard in
             context.coordinator.handlePaste(pasteboard)
         }
@@ -3146,6 +3489,7 @@ private struct ComposerTextEditor: NSViewRepresentable {
         }
         textView.shouldSubmit = { context.coordinator.canSubmit }
         textView.hasActiveMarkedText = { context.coordinator.hasMarkedText }
+        textView.sendByCtrlEnter = sendByCtrlEnter
         textView.onPaste = { pasteboard in
             context.coordinator.handlePaste(pasteboard)
         }
@@ -3240,6 +3584,7 @@ private struct ComposerTextEditor: NSViewRepresentable {
 private final class SubmitTextView: NSTextView {
     var shouldSubmit: () -> Bool = { false }
     var hasActiveMarkedText: () -> Bool = { false }
+    var sendByCtrlEnter = false
     var onPaste: (NSPasteboard) -> Bool = { _ in false }
     var onSubmit: () -> Void = {}
     var onToggleRunMode: () -> Void = {}
@@ -3280,12 +3625,17 @@ private final class SubmitTextView: NSTextView {
             return
         }
 
-        let isReturn = event.keyCode == 36 || event.keyCode == 76
-        if isReturn, !event.modifierFlags.contains(.shift) {
+        if ComposerSubmitShortcutPolicy.isReturnKey(event.keyCode) {
             if hasMarkedText() || hasActiveMarkedText() {
                 super.keyDown(with: event)
-            } else if shouldSubmit() {
+            } else if ComposerSubmitShortcutPolicy.shouldSubmit(
+                keyCode: event.keyCode,
+                modifierFlags: event.modifierFlags,
+                sendByCtrlEnter: sendByCtrlEnter
+            ), shouldSubmit() {
                 onSubmit()
+            } else {
+                super.keyDown(with: event)
             }
             return
         }
@@ -3371,6 +3721,7 @@ private struct GenericPermissionCard: View {
                                     .stroke(DesignTokens.danger.opacity(0.24), lineWidth: 1)
                             )
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
 
                     Button(isChinese ? "允许一次" : "Allow once") {
                         state.approvePermission(request.id)
@@ -3384,19 +3735,21 @@ private struct GenericPermissionCard: View {
                         RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                             .fill(DesignTokens.warning)
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
 
                     Button(isChinese ? "始终允许" : "Always allow") {
                         state.approvePermission(request.id, remember: true)
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(DesignTokens.prominentButtonForeground)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(
                         RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                            .fill(DesignTokens.neutral900)
+                            .fill(DesignTokens.prominentButtonFill)
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                 }
             }
 
@@ -3413,6 +3766,8 @@ private struct GenericPermissionCard: View {
                             .font(.system(size: 11, weight: .medium))
                     }
                     .foregroundStyle(DesignTokens.warning)
+                    .padding(.vertical, 3)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
@@ -3590,6 +3945,7 @@ private struct ExitPlanModePermissionCard: View {
                                     .stroke(DesignTokens.accent.opacity(0.22), lineWidth: 1)
                             )
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                 }
                 .buttonStyle(.plain)
 
@@ -3693,6 +4049,7 @@ private struct PlanFooterButtonStyle: ButtonStyle {
                             .stroke(tint.opacity(0.20), lineWidth: 1)
                     )
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.72 : 1)
     }
 }
@@ -3762,6 +4119,7 @@ private struct AskUserQuestionPanel: View {
                         Image(systemName: "xmark")
                             .font(.system(size: 11, weight: .bold))
                             .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(DesignTokens.tertiaryText)
@@ -4049,6 +4407,7 @@ private struct DestructivePlanPermissionCard: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .bold))
                         .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(DesignTokens.tertiaryText)
@@ -4077,6 +4436,7 @@ private struct DestructivePlanPermissionCard: View {
                                 .stroke(DesignTokens.separator, lineWidth: 1)
                         )
                 )
+                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
 
                 Spacer()
 
@@ -4094,6 +4454,7 @@ private struct DestructivePlanPermissionCard: View {
                     RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                         .fill(DesignTokens.danger)
                 )
+                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             }
             .padding(12)
             .background(DesignTokens.background.opacity(0.74))
@@ -4528,6 +4889,8 @@ private struct RAGResultContentView: View {
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                 }
                 .foregroundStyle(DesignTokens.tertiaryText)
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
@@ -4695,19 +5058,22 @@ struct ProcessTracePresentation: Equatable {
     }
 
     private static func iconName(for current: AgentActivity?, fallbackActivities: [AgentActivity]) -> String {
-        if fallbackActivities.contains(where: { $0.state == .failed }) { return "exclamationmark.triangle" }
         if let current {
             switch presentationPhase(for: current) {
+            case .status, .thinking: return "sparkles"
+            case .tool: return "hammer"
             case .todo: return "checklist"
             case .command: return "terminal"
             case .search: return "magnifyingglass"
+            case .edit: return "pencil"
             case .subagent: return "person.2"
-            default: break
             }
         }
+        if fallbackActivities.contains(where: { $0.state == .failed }) { return "exclamationmark.triangle" }
         if fallbackActivities.contains(where: { presentationPhase(for: $0) == .todo }) { return "checklist" }
         if fallbackActivities.contains(where: { presentationPhase(for: $0) == .command }) { return "terminal" }
         if fallbackActivities.contains(where: { presentationPhase(for: $0) == .search }) { return "magnifyingglass" }
+        if fallbackActivities.contains(where: { presentationPhase(for: $0) == .edit }) { return "pencil" }
         return "apple.terminal"
     }
 
@@ -4979,10 +5345,22 @@ private struct ProcessLiveStatusRow: View {
     }
 
     private var traceIcon: String {
+        if let running = visibleActivities.last(where: { $0.state == .running }) {
+            switch presentationPhase(for: running) {
+            case .status, .thinking: return "sparkles"
+            case .tool: return "hammer"
+            case .todo: return "checklist"
+            case .command: return "terminal"
+            case .search: return "magnifyingglass"
+            case .edit: return "pencil"
+            case .subagent: return "person.2"
+            }
+        }
         if visibleActivities.contains(where: { $0.state == .failed }) { return "exclamationmark.triangle" }
         if visibleActivities.contains(where: { presentationPhase(for: $0) == .todo }) { return "checklist" }
         if visibleActivities.contains(where: { presentationPhase(for: $0) == .command }) { return "terminal" }
         if visibleActivities.contains(where: { presentationPhase(for: $0) == .search }) { return "magnifyingglass" }
+        if visibleActivities.contains(where: { presentationPhase(for: $0) == .edit }) { return "pencil" }
         return "apple.terminal"
     }
 
@@ -5900,15 +6278,16 @@ private struct ProcessStepIcon: View {
 private struct ComposerControlButtonStyle: ButtonStyle {
     var foreground: Color = DesignTokens.secondaryText
     var idleBackground: Color = .clear
-    var pressedBackground: Color = DesignTokens.neutral100
+    var pressedBackground: Color = DesignTokens.composerControlSurface
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(foreground)
             .background(
-                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(configuration.isPressed ? pressedBackground : idleBackground)
             )
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .opacity(configuration.isPressed ? 0.76 : 1)
     }
 }

@@ -684,7 +684,7 @@ enum PlanTurnRecoveryClassifier {
                     "原生 HTML/CSS/JS",
                     "沿用项目现有技术",
                     "优先响应式移动端",
-                    "由 G9Claw 判断",
+                    "由 PilotDeck 判断",
                 ], fallback: []),
                 "multiSelect": false,
             ],
@@ -777,7 +777,7 @@ enum PlanTurnRecoveryClassifier {
     private static func fallbackOptions(for question: String, sourceText: String) -> [String] {
         let lower = (question + " " + sourceText).lowercased()
         if lower.contains("功能") || lower.contains("模块") || lower.contains("需求") || lower.contains("feature") {
-            return ["基础功能", "功能完整", "视觉展示优先", "由 G9Claw 判断"]
+            return ["基础功能", "功能完整", "视觉展示优先", "由 PilotDeck 判断"]
         }
         if lower.contains("风格") || lower.contains("视觉") || lower.contains("style") || lower.contains("design") {
             return ["简洁现代", "高端质感", "活泼多彩", "系统原生"]
@@ -786,10 +786,10 @@ enum PlanTurnRecoveryClassifier {
             return ["静态演示数据", "本地保存", "支持导入导出", "暂不需要"]
         }
         if lower.contains("技术") || lower.contains("框架") || lower.contains("html") || lower.contains("framework") {
-            return ["原生 HTML/CSS/JS", "沿用现有技术", "轻量框架", "由 G9Claw 判断"]
+            return ["原生 HTML/CSS/JS", "沿用现有技术", "轻量框架", "由 PilotDeck 判断"]
         }
         if looksLikeCalendarTask(lower) {
-            return ["基础月历", "日程管理", "视觉效果优先", "由 G9Claw 判断"]
+            return ["基础月历", "日程管理", "视觉效果优先", "由 PilotDeck 判断"]
         }
         return ["推荐方案", "简洁方案", "功能完整方案", "先继续分析"]
     }
@@ -2157,6 +2157,7 @@ enum AgentEvent: Sendable, Equatable {
     case turnCompleted(AgentTurn)
     case sessionCreated(sessionId: String)
     case contentDelta(String)
+    case reasoningDelta(String)
     case toolUse(id: String, name: String, inputJSON: String)
     case toolResult(id: String, output: String, isError: Bool)
     case permissionRequest(AgentPermissionRequest)
@@ -2835,10 +2836,13 @@ struct NativeAgentRuntime: Sendable {
     static func openAIChatEvents(from object: [String: Any], contextWindow: Int) -> [AgentEvent] {
         var events: [AgentEvent] = []
         if let choices = object["choices"] as? [[String: Any]],
-           let delta = choices.first?["delta"] as? [String: Any],
-           let content = delta["content"] as? String,
-           !content.isEmpty {
-            events.append(.contentDelta(content))
+           let delta = choices.first?["delta"] as? [String: Any] {
+            for reasoning in reasoningDeltas(from: delta) {
+                events.append(.reasoningDelta(reasoning))
+            }
+            if let content = delta["content"] as? String, !content.isEmpty {
+                events.append(.contentDelta(content))
+            }
         }
         if let usage = object["usage"] as? [String: Any],
            let budget = tokenBudget(from: usage, contextWindow: contextWindow) {
@@ -2847,23 +2851,64 @@ struct NativeAgentRuntime: Sendable {
         return events
     }
 
+    private static func reasoningDeltas(from delta: [String: Any]) -> [String] {
+        var values: [String] = []
+        for key in ["reasoning_content", "reasoning", "thinking", "redacted_thinking", "reasoning_summary"] {
+            appendReasoningText(delta[key], to: &values)
+        }
+        return values
+    }
+
+    private static func appendReasoningText(_ value: Any?, to values: inout [String]) {
+        if let text = value as? String {
+            appendReasoningText(text, to: &values)
+            return
+        }
+        guard let object = value as? [String: Any] else { return }
+        for key in ["content", "thinking", "text", "reasoning", "summary"] {
+            appendReasoningText(object[key], to: &values)
+        }
+    }
+
+    private static func appendReasoningText(_ text: String?, to values: inout [String]) {
+        guard let text, !text.isEmpty else { return }
+        values.append(text)
+    }
+
     static func runSubagent(inputJSON: String, context: AgentRunContext) async throws -> String {
         let input = try AgentToolExecutor.inputObject(from: inputJSON)
         let prompt = try AgentToolExecutor.requiredString("prompt", input: input)
         let description = (input["description"] as? String).nilIfBlank ?? "Subagent"
         let extraContext = (input["context"] as? String).nilIfBlank ?? ""
+        let routeTier = RoutingService.classifyTier(prompt: prompt, runMode: context.runMode)
+        let routeSignals = NativeRouterRuntime.requestSignals(
+            prompt: prompt,
+            priorMessages: [],
+            attachments: [],
+            isBackgroundRequest: true,
+            tools: []
+        )
+        let route = NativeRouterRuntime.resolvedProviderRoute(
+            forTier: routeTier,
+            values: context.nativeConfigValues,
+            fallbackProviderConfig: context.providerConfig,
+            fallbackAPIKey: context.apiKey,
+            fallbackContextWindow: context.contextWindow,
+            signals: routeSignals
+        )
+        let providerConfig = route.providerConfig
 
-        let endpoint = try endpointURL(baseURL: context.providerConfig.baseURL, suffix: "chat/completions")
+        let endpoint = try endpointURL(baseURL: providerConfig.baseURL, suffix: "chat/completions")
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
         urlRequest.timeoutInterval = modelStreamTimeoutInterval(from: context.timeoutMs)
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let apiKey = context.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = route.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
             throw ProviderClientError.missingAPIKey
         }
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        for (key, value) in context.providerConfig.headers {
+        for (key, value) in providerConfig.headers {
             urlRequest.setValue(value, forHTTPHeaderField: key)
         }
 
@@ -2877,7 +2922,7 @@ struct NativeAgentRuntime: Sendable {
         \(prompt)
         """
         let body: [String: Any] = [
-            "model": context.providerConfig.model,
+            "model": providerConfig.model,
             "messages": [
                 [
                     "role": "system",
@@ -2997,7 +3042,7 @@ struct NativeAgentRuntime: Sendable {
             """
             : "You are in agent mode. Use tools to inspect and modify the workspace."
         return """
-        You are G9Claw, a native macOS coding agent with a G9Claw style workflow.
+        You are PilotDeck, a native macOS coding agent with a PilotDeck style workflow.
         Workspace root: \(request.projectPath)
         \(modeText)
 
@@ -3008,10 +3053,32 @@ struct NativeAgentRuntime: Sendable {
         Prefer the canonical tool names: Read, Write, StrReplace, Delete, EditNotebook, Grep, Glob, SemanticSearch, Shell, Await, ReadLints, Skill, TodoWrite, AskQuestion, SwitchMode, and Task.
         For shell commands, use Shell only when needed and keep commands scoped to the workspace. Use run_in_background plus Await for long-running commands.
         For current public information, weather, or web evidence, call Skill with skill="g9claw-rag:glm-web-search" or skill="g9claw-rag:rag-research". Do not call separate weather, web search, or web fetch tools directly.
+        \(nativeAgentSkillContext(workspacePath: request.projectPath))
         Use Task for delegated analysis or shell-focused background work.
         If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request and no other prose in that assistant turn.
         Example: {"tool":"Read","input":{"file_path":"README.md"}}
         Do not emit markdown fences, language labels such as "bash" or "json", or a prose explanation when requesting a tool.
+        """
+    }
+
+    static func nativeAgentSkillContext(workspacePath: String) -> String {
+        let skills = SkillRuntimeService.availableSkills(workspacePath: workspacePath)
+        let skillLines: String
+        if skills.isEmpty {
+            skillLines = "- No project or user skills are installed for this workspace."
+        } else {
+            skillLines = skills.map { skill in
+                let summary = skill.summary
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let clipped = summary.count > 220 ? String(summary.prefix(220)) + "..." : summary
+                return "- \(skill.name) (\(skill.scope)): \(clipped)"
+            }.joined(separator: "\n")
+        }
+        return """
+        Available skills for this workspace:
+        \(skillLines)
+        To use one, call Skill with the exact skill name above. Skill loads instructions; it does not execute subcommands. After loading a skill, follow its returned instructions using Shell/Read/other tools. If the skill refers to relative paths such as scripts/foo, run them from the returned skillDir or use absolute paths. Do not invent sub-skill names like skill:action unless that exact skill name is listed.
         """
     }
 
@@ -3129,6 +3196,7 @@ struct NativeAgentRuntime: Sendable {
 
     static func primaryUserPrompt(from prompt: String) -> String {
         let separators = [
+            "\n\nRelevant PilotDeck memory context:",
             "\n\nRelevant G9Claw memory context:",
             "\n\nAttached files:",
             "\n\n附件:",
@@ -3458,7 +3526,7 @@ struct NativeAgentRuntime: Sendable {
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorAppTransportSecurityRequiresSecureConnection {
             return ProviderClientError.transport(
-                "App Transport Security blocked the HTTP provider request. Rebuild and launch the latest G9Claw app bundle so NSAppTransportSecurity is included."
+                "App Transport Security blocked the HTTP provider request. Rebuild and launch the latest PilotDeck app bundle so NSAppTransportSecurity is included."
             )
         }
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
@@ -3989,9 +4057,9 @@ enum AgentToolRegistry {
             ),
             functionTool(
                 "Skill",
-                "Load a G9Claw skill. Use g9claw-rag:glm-web-search for public web search and weather, or g9claw-rag:rag-research for source-grounded research.",
+                "Load a PilotDeck skill's instructions. This does not execute the skill; after loading, use Shell/Read/other tools according to the returned instructions and skillDir. Use exact names from the system prompt's Available skills list.",
                 [
-                    "skill": stringProperty("Skill name, for example g9claw-rag:glm-web-search."),
+                    "skill": stringProperty("Exact skill name, for example g9claw-rag:glm-web-search."),
                     "args": stringProperty("User query or task arguments for the skill."),
                 ],
                 required: ["skill"]
@@ -4174,7 +4242,7 @@ enum AgentPermissionPolicy {
             return .ask("Destructive action plan approval is required before deleting workspace files.")
         }
         if interactiveTools.contains(toolName) {
-            return .ask("G9Claw wants to ask a question.")
+            return .ask("PilotDeck wants to ask a question.")
         }
         if context.permissionMode == .bypassPermissions {
             return .allow
@@ -4183,7 +4251,7 @@ enum AgentPermissionPolicy {
             return .allow
         }
         if toolRequiresPrompt(toolName: toolName, call: call) {
-            return .ask("G9Claw wants to run \(toolName).")
+            return .ask("PilotDeck wants to run \(toolName).")
         }
         return .allow
     }
@@ -4242,7 +4310,11 @@ enum AgentPermissionPolicy {
         let command = input["command"] as? String ?? ""
         if inner == "*" { return true }
         if inner.hasSuffix("*") {
-            return command.hasPrefix(String(inner.dropLast()))
+            var prefix = String(inner.dropLast())
+            if prefix.hasSuffix(":") {
+                prefix.removeLast()
+            }
+            return command.hasPrefix(prefix)
         }
         return command == inner
     }
@@ -4272,11 +4344,19 @@ enum AgentPermissionPolicy {
 struct ResolvedAgentSkill: Sendable, Equatable {
     var requestedName: String
     var canonicalName: String
+    var skillDir: String
     var skillFile: String
     var pluginRoot: String?
     var summary: String
     var allowedTools: [String]
     var content: String
+}
+
+struct AgentSkillCatalogEntry: Sendable, Equatable {
+    var name: String
+    var slug: String
+    var scope: String
+    var summary: String
 }
 
 enum SkillRuntimeService {
@@ -4293,11 +4373,13 @@ enum SkillRuntimeService {
             "skill": resolved.canonicalName,
             "requestedSkill": resolved.requestedName,
             "args": args,
+            "skillDir": resolved.skillDir,
             "skillFile": resolved.skillFile,
             "pluginRoot": resolved.pluginRoot ?? "",
             "summary": resolved.summary,
             "allowedTools": resolved.allowedTools,
             "instructions": limitSkillContent(resolved.content),
+            "executionHint": "Skill loaded only. If instructions mention relative files or scripts, run them from skillDir or use absolute paths with Shell.",
         ]
         return jsonString(payload, pretty: true)
     }
@@ -4333,27 +4415,97 @@ enum SkillRuntimeService {
         throw ProviderClientError.toolExecution("Skill not found: \(requested)")
     }
 
+    static func availableSkills(workspacePath: String, limit: Int = 24) -> [AgentSkillCatalogEntry] {
+        var scopedRoots: [(root: URL, scope: String)] = []
+        let trimmedWorkspace = workspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedWorkspace.isEmpty {
+            scopedRoots.append((projectSkillsRoot(trimmedWorkspace), "project"))
+        }
+        scopedRoots.append((userSkillsRoot(), "user"))
+        if let pluginRoot = ragPluginRoot() {
+            scopedRoots.append((pluginRoot.appendingPathComponent("skills", isDirectory: true), "bundled"))
+        }
+
+        var entries: [AgentSkillCatalogEntry] = []
+        var seen: Set<String> = []
+        for scopedRoot in scopedRoots {
+            guard let children = try? FileManager.default.contentsOfDirectory(
+                at: scopedRoot.root,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for child in children.sorted(by: { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }) {
+                guard let resolved = readSkill(at: child, requested: child.lastPathComponent) else { continue }
+                let dedupeKey = resolved.canonicalName.lowercased()
+                guard seen.insert(dedupeKey).inserted else { continue }
+                entries.append(AgentSkillCatalogEntry(
+                    name: resolved.canonicalName,
+                    slug: child.lastPathComponent,
+                    scope: scopedRoot.scope,
+                    summary: resolved.summary
+                ))
+                if entries.count >= limit {
+                    return entries
+                }
+            }
+        }
+        return entries
+    }
+
     static func environment(configValues: [String: String]) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment.removeValue(forKey: "CLAU" + "DE_PLUGIN_ROOT")
         if let pluginRoot = ragPluginRoot() {
             environment["G9CLAW_PLUGIN_ROOT"] = pluginRoot.path
         }
-        environment["G9CLAW_RAG_ENABLED"] = configValues["rag.enabled"] ?? "false"
-        environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"] = configValues["rag.localKnowledge.baseUrl"]
-        environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_API_KEY"] = configValues["rag.localKnowledge.apiKey"]
-        environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME"] = configValues["rag.localKnowledge.modelName"]
-        environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL"] = configValues["rag.localKnowledge.databaseUrl"]
-        environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_TOP_K"] = configValues["rag.localKnowledge.defaultTopK"]
-        environment["G9CLAW_RAG_GLM_WEB_SEARCH_BASE_URL"] = configValues["rag.glmWebSearch.baseUrl"]
-        environment["G9CLAW_RAG_GLM_WEB_SEARCH_API_KEY"] = configValues["rag.glmWebSearch.apiKey"]
-        environment["G9CLAW_RAG_GLM_WEB_SEARCH_TOP_K"] = configValues["rag.glmWebSearch.defaultTopK"]
+        let ragValues: [String: String] = [
+            "RAG_ENABLED": boolEnvironmentValue(configValues["rag.enabled"], defaultValue: false),
+            "RAG_DISABLE_BUILTIN_WEB_TOOLS": boolEnvironmentValue(configValues["rag.disableBuiltInWebTools"], defaultValue: true),
+            "RAG_LOCAL_KNOWLEDGE_BASE_URL": stripTrailingSlash(configValues["rag.localKnowledge.baseUrl"]),
+            "RAG_LOCAL_KNOWLEDGE_API_KEY": configValues["rag.localKnowledge.apiKey"] ?? "",
+            "RAG_LOCAL_KNOWLEDGE_MODEL_NAME": configValues["rag.localKnowledge.modelName"] ?? "",
+            "RAG_LOCAL_KNOWLEDGE_DATABASE_URL": configValues["rag.localKnowledge.databaseUrl"]?.nilIfBlank
+                ?? configValues["rag.localKnowledge.milvusUri"]?.nilIfBlank
+                ?? "",
+            "RAG_LOCAL_KNOWLEDGE_MILVUS_URI": configValues["rag.localKnowledge.databaseUrl"]?.nilIfBlank
+                ?? configValues["rag.localKnowledge.milvusUri"]?.nilIfBlank
+                ?? "",
+            "RAG_LOCAL_KNOWLEDGE_TOP_K": configValues["rag.localKnowledge.defaultTopK"]?.nilIfBlank ?? "8",
+            "RAG_GLM_WEB_SEARCH_BASE_URL": stripTrailingSlash(configValues["rag.glmWebSearch.baseUrl"]),
+            "RAG_GLM_WEB_SEARCH_API_KEY": configValues["rag.glmWebSearch.apiKey"] ?? "",
+            "RAG_GLM_WEB_SEARCH_TOP_K": configValues["rag.glmWebSearch.defaultTopK"]?.nilIfBlank ?? "8",
+        ]
+        for (key, value) in ragValues {
+            environment["G9CLAW_\(key)"] = value
+        }
         let prefix = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         environment["PATH"] = [prefix, environment["PATH"]].compactMap { $0 }.joined(separator: ":")
         return environment.compactMapValues { value in
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : value
         }
+    }
+
+    private static func boolEnvironmentValue(_ rawValue: String?, defaultValue: Bool) -> String {
+        guard let rawValue = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines), !rawValue.isEmpty else {
+            return defaultValue ? "1" : "0"
+        }
+        switch rawValue.lowercased() {
+        case "true", "1", "yes", "on":
+            return "1"
+        case "false", "0", "no", "off":
+            return "0"
+        default:
+            return defaultValue ? "1" : "0"
+        }
+    }
+
+    private static func stripTrailingSlash(_ rawValue: String?) -> String {
+        guard var value = rawValue?.nilIfBlank else { return "" }
+        while value.count > 1, value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
     }
 
     private static func searchableSkillRoots(workspacePath: String) -> [URL] {
@@ -4375,6 +4527,7 @@ enum SkillRuntimeService {
         return ResolvedAgentSkill(
             requestedName: requested,
             canonicalName: canonical,
+            skillDir: directory.path,
             skillFile: file.path,
             pluginRoot: pluginRoot(forSkillFile: file)?.path,
             summary: summary(from: content, frontmatter: frontmatter),
@@ -4421,12 +4574,10 @@ enum SkillRuntimeService {
         let manager = FileManager.default
         let envRoot = ProcessInfo.processInfo.environment["G9CLAW_REPO_ROOT"].map {
             URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath)
-                .appendingPathComponent("packages/g9claw-rag-plugin", isDirectory: true)
+                .appendingPathComponent("apps/macos-native/G9Claw/Assets/g9claw-rag-plugin", isDirectory: true)
         }
         let bundleRoot = Bundle.main.resourceURL?.appendingPathComponent("g9claw-rag-plugin", isDirectory: true)
-        let sourceRoot = repoRootFromSourceFile().map {
-            $0.appendingPathComponent("packages/g9claw-rag-plugin", isDirectory: true)
-        }
+        let sourceRoot = ragPluginRootFromSourceFile()
         for candidate in [bundleRoot, envRoot, sourceRoot].compactMap({ $0 }) {
             if manager.fileExists(atPath: candidate.appendingPathComponent("skills", isDirectory: true).path) {
                 return candidate
@@ -4435,12 +4586,19 @@ enum SkillRuntimeService {
         return nil
     }
 
-    private static func repoRootFromSourceFile() -> URL? {
+    private static func ragPluginRootFromSourceFile() -> URL? {
         var current = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let relativePaths = [
+            "Assets/g9claw-rag-plugin",
+            "G9Claw/Assets/g9claw-rag-plugin",
+            "apps/macos-native/G9Claw/Assets/g9claw-rag-plugin",
+        ]
         for _ in 0..<10 {
-            let marker = current.appendingPathComponent("packages/g9claw-rag-plugin", isDirectory: true)
-            if FileManager.default.fileExists(atPath: marker.path) {
-                return current
+            for relativePath in relativePaths {
+                let candidate = current.appendingPathComponent(relativePath, isDirectory: true)
+                if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("skills", isDirectory: true).path) {
+                    return candidate
+                }
             }
             current.deleteLastPathComponent()
         }
@@ -5266,11 +5424,11 @@ enum AgentToolExecutor {
         let trimmed = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         let expanded = NSString(string: trimmed).expandingTildeInPath
         guard !expanded.isEmpty, expanded.hasPrefix("/") else {
-            throw ProviderClientError.toolExecution("Workspace path must be an absolute path: \(cwd). Check G9Claw general workspace settings.")
+            throw ProviderClientError.toolExecution("Workspace path must be an absolute path: \(cwd). Check PilotDeck general workspace settings.")
         }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDirectory), isDirectory.boolValue else {
-            throw ProviderClientError.toolExecution("Workspace path does not exist: \(expanded). Check G9Claw general workspace settings.")
+            throw ProviderClientError.toolExecution("Workspace path does not exist: \(expanded). Check PilotDeck general workspace settings.")
         }
         return URL(fileURLWithPath: expanded).standardizedFileURL
     }

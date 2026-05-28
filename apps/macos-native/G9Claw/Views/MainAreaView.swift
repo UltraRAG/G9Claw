@@ -29,26 +29,35 @@ struct MainAreaView: View {
             let availableWidth = proxy.size.width
             let showSessionTitle = availableWidth >= 1160
             let horizontalPadding: CGFloat = availableWidth < 760 ? 12 : 18
+            let leadingTitlebarReserve: CGFloat = state.isSidebarVisible ? 0 : DesignTokens.titlebarContentReserveWhenSidebarHidden
+            let leadingPadding = horizontalPadding + leadingTitlebarReserve
+            let trailingPadding = horizontalPadding
             let controlGap: CGFloat = availableWidth < 1080 ? 6 : 10
-            let innerWidth = max(0, availableWidth - horizontalPadding * 2)
+            let innerWidth = max(0, availableWidth - leadingPadding - trailingPadding)
+            let showsToolSwitcher = showsHeaderToolSwitcher
             let switcherLayout = MainHeaderToolSwitcherLayout.resolve(
                 availableWidth: innerWidth,
                 activeTab: state.activeTab
             )
 
             HStack(spacing: 0) {
-                breadcrumb(showSessionTitle: showSessionTitle)
+                breadcrumb(showSessionTitle: showSessionTitle, showTabLabel: showsToolSwitcher)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .layoutPriority(4)
                     .clipped()
 
-                toolSwitcher(layout: switcherLayout)
-                    .padding(.leading, controlGap)
-                    .frame(width: switcherLayout.estimatedWidth, alignment: .trailing)
-                    .layoutPriority(5)
+                if showsToolSwitcher {
+                    toolSwitcher(layout: switcherLayout)
+                        .padding(.leading, controlGap)
+                        .frame(width: switcherLayout.estimatedWidth, alignment: .trailing)
+                        .layoutPriority(5)
+                }
             }
-            .padding(.horizontal, horizontalPadding)
-            .frame(width: proxy.size.width, height: DesignTokens.headerHeight)
+            .padding(.leading, leadingPadding)
+            .padding(.trailing, trailingPadding)
+            .frame(width: proxy.size.width, height: DesignTokens.titlebarControlSize)
+            .padding(.top, DesignTokens.titlebarControlTop)
+            .frame(width: proxy.size.width, height: DesignTokens.headerHeight, alignment: .top)
         }
         .frame(height: DesignTokens.headerHeight)
         .background {
@@ -59,10 +68,17 @@ struct MainAreaView: View {
                 .fill(DesignTokens.separator.opacity(0.46))
                 .frame(height: 1)
         }
+        .onAppear(perform: clampActiveTabToAvailableTabs)
+        .onChange(of: state.selectedProjectID) { _, _ in
+            clampActiveTabToAvailableTabs()
+        }
+        .onChange(of: state.activeTab) { _, _ in
+            clampActiveTabToAvailableTabs()
+        }
     }
 
-    private func breadcrumb(showSessionTitle: Bool) -> some View {
-        let workspaceTitle = state.selectedProject?.displayName ?? state.t(.general)
+    private func breadcrumb(showSessionTitle: Bool, showTabLabel: Bool) -> some View {
+        let workspaceTitle = selectedWorkspaceTitle
 
         return HStack(spacing: 6) {
             Text(workspaceTitle)
@@ -70,13 +86,15 @@ struct MainAreaView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .layoutPriority(5)
-            Text("/")
-                .foregroundStyle(DesignTokens.neutral400.opacity(0.60))
-            Text(state.tabLabel(state.activeTab))
-                .fontWeight(.medium)
-                .foregroundStyle(DesignTokens.text)
-                .lineLimit(1)
-                .layoutPriority(1)
+            if showTabLabel {
+                Text("/")
+                    .foregroundStyle(DesignTokens.neutral400.opacity(0.60))
+                Text(state.tabLabel(state.activeTab))
+                    .fontWeight(.medium)
+                    .foregroundStyle(DesignTokens.text)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+            }
             if showSessionTitle, let session = state.selectedSession {
                 Text(session.displayTitle)
                     .font(.system(size: 11, design: .monospaced))
@@ -85,10 +103,36 @@ struct MainAreaView: View {
                     .truncationMode(.tail)
                     .padding(.leading, 6)
                     .layoutPriority(0)
-                }
+            }
         }
         .font(.system(size: 12.5))
         .frame(minWidth: 0, alignment: .leading)
+    }
+
+    private var selectedWorkspaceTitle: String {
+        guard let selectedProject = state.selectedProject else {
+            return state.t(.general)
+        }
+        if state.isGeneralProject(selectedProject) {
+            return state.t(.general)
+        }
+        return selectedProject.displayName
+    }
+
+    private var showsHeaderToolSwitcher: Bool {
+        guard let selectedProject = state.selectedProject else {
+            return false
+        }
+        return !state.isGeneralProject(selectedProject)
+    }
+
+    private var availableToolTabs: [AppTab] {
+        showsHeaderToolSwitcher ? AppTab.primaryTabs : [.chat]
+    }
+
+    private func clampActiveTabToAvailableTabs() {
+        guard !availableToolTabs.contains(state.activeTab) else { return }
+        state.activeTab = .chat
     }
 
     @ViewBuilder
@@ -99,7 +143,7 @@ struct MainAreaView: View {
             }
         }
         .padding(.horizontal, MainHeaderToolSwitcherLayout.containerPadding)
-        .padding(.vertical, 3)
+        .padding(.vertical, MainHeaderToolSwitcherLayout.containerVerticalPadding)
         .frame(width: layout.estimatedWidth, height: MainHeaderToolSwitcherLayout.containerHeight, alignment: .trailing)
         .background { toolSwitcherBackground }
         .animation(.snappy(duration: 0.22), value: state.activeTab)
@@ -107,25 +151,20 @@ struct MainAreaView: View {
 
     private var toolSwitcherBackground: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                .fill(DesignTokens.background.opacity(0.24))
+            RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous)
+                .fill(.clear)
                 .background(
-                    VisualEffectBackground(material: .hudWindow, blendingMode: .withinWindow)
-                        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+                    VisualEffectBackground(material: .titlebar, blendingMode: .withinWindow)
+                        .clipShape(RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous))
                 )
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                .strokeBorder(.white.opacity(0.38), lineWidth: 0.7)
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                .strokeBorder(DesignTokens.separator.opacity(0.54), lineWidth: 0.7)
-            LinearGradient(
-                colors: [.white.opacity(0.22), .white.opacity(0.05), .clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-            .allowsHitTesting(false)
+            RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous)
+                .fill(DesignTokens.titlebarSwitchSurface)
+            RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous)
+                .strokeBorder(DesignTokens.titlebarSwitchHighlight, lineWidth: 0.7)
+            RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous)
+                .strokeBorder(DesignTokens.titlebarSwitchBorder, lineWidth: 0.8)
         }
-        .shadow(color: .black.opacity(0.055), radius: 8, y: 3)
+        .shadow(color: .black.opacity(0.045), radius: 6, y: 2)
     }
 
     private func toolButton(_ tab: AppTab, iconOnly: Bool) -> some View {
@@ -158,16 +197,16 @@ struct MainAreaView: View {
                 ZStack {
                     if isActive {
                         RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .fill(DesignTokens.contentSurface.opacity(0.92))
+                            .fill(DesignTokens.titlebarSwitchActiveSurface)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                    .strokeBorder(.white.opacity(0.58), lineWidth: 0.7)
+                                    .strokeBorder(DesignTokens.titlebarSwitchActiveBorder, lineWidth: 0.8)
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                    .stroke(DesignTokens.separator.opacity(0.50), lineWidth: 0.7)
+                                    .strokeBorder(DesignTokens.titlebarSwitchHighlight, lineWidth: 0.6)
                             )
-                            .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
+                            .shadow(color: .black.opacity(0.10), radius: 4, y: 1)
                             .matchedGeometryEffect(id: "tool-switcher-pill", in: toolSwitcherNamespace)
                     }
                 }
@@ -239,7 +278,9 @@ struct MainAreaView: View {
 struct MainHeaderToolSwitcherLayout: Equatable {
     static let itemSpacing: CGFloat = 2
     static let containerPadding: CGFloat = 3
-    static let containerHeight: CGFloat = 34
+    static let containerVerticalPadding: CGFloat = 2
+    static let containerHeight = DesignTokens.titlebarControlSize
+    static let containerCornerRadius = containerHeight / 2
     static let buttonHeight: CGFloat = 28
     private static let regularButtonWidth: CGFloat = 82
     private static let iconButtonWidth: CGFloat = 36
@@ -275,7 +316,12 @@ struct MainHeaderToolSwitcherLayout: Equatable {
         if iconOnly {
             return iconButtonWidth
         }
-        return regularButtonWidth
+        switch tab {
+        case .alwaysOn:
+            return 118
+        default:
+            return regularButtonWidth
+        }
     }
 
     private static func estimatedWidth(for visible: [AppTab], overflow: [AppTab], iconOnly: Bool) -> CGFloat {
@@ -308,6 +354,7 @@ private struct MainHeaderIconButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
                     .fill(configuration.isPressed ? DesignTokens.neutral100 : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
             .opacity(configuration.isPressed ? 0.76 : 1)
     }
 }

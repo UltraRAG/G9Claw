@@ -8,6 +8,7 @@ final class AppState: ObservableObject {
     @Published var selectedProjectID: UUID?
     @Published var selectedSessionID: String?
     @Published var activeTab: AppTab = .chat
+    @Published var uiPreferences = NativeUIPreferencesStorage.storedPreferences()
     @Published var isSidebarVisible = true
     @Published var messagesBySession: [String: [ChatMessage]] = [:]
     @Published var activitiesBySession: [String: [AgentActivity]] = [:]
@@ -35,6 +36,7 @@ final class AppState: ObservableObject {
     @Published var streamRenderRevision = 0
     @Published var isDraftSessionVisible = false
     @Published var expandedToolRowIDs: Set<String> = []
+    @Published var collapsedToolRowIDs: Set<String> = []
     @Published var tokenBudgetBySession: [String: TokenBudget] = [:]
 
     let keychain = KeychainStore()
@@ -64,8 +66,10 @@ final class AppState: ObservableObject {
 
     init() {
         settings.generalWorkspacePath = Self.normalizedGeneralWorkspacePath(settings.generalWorkspacePath)
+        isSidebarVisible = uiPreferences.sidebarVisible
         selectedProjectID = projects.first?.id
         selectedSessionID = projects.first?.sessions.first?.id
+        restoreComposerPermissionMode(for: selectedSessionID)
         if let sessionID = selectedSessionID {
             messagesBySession[sessionID] = [
                 ChatMessage(
@@ -73,7 +77,7 @@ final class AppState: ObservableObject {
                     sessionId: sessionID,
                     provider: .g9Claw,
                     role: .assistant,
-                    blocks: [.text("Native G9Claw is running with the macOS parity shell. Configure a provider in Settings to start a real agent session.")],
+                    blocks: [.text("Native PilotDeck is running with the macOS parity shell. Configure a provider in Settings to start a real agent session.")],
                     createdAt: Date(),
                     isStreaming: false,
                     tokenBudget: nil
@@ -83,7 +87,7 @@ final class AppState: ObservableObject {
     }
 
     nonisolated static func defaultGeneralWorkspacePath(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
-        home.appendingPathComponent("G9Claw", isDirectory: true)
+        home.appendingPathComponent("PilotDeck", isDirectory: true)
             .appendingPathComponent("general", isDirectory: true)
             .standardizedFileURL
             .path
@@ -176,14 +180,38 @@ final class AppState: ObservableObject {
     func selectSession(_ session: ProjectSession) {
         isDraftSessionVisible = false
         selectedSessionID = session.id
+        restoreComposerPermissionMode(for: session.id)
         activeTab = .chat
-        loadPersistedMessagesIfNeeded(sessionID: session.id)
+        if session.isBackgroundTaskSession, let selectedProject {
+            loadBackgroundTaskMessagesIfNeeded(session: session, project: selectedProject)
+        } else {
+            loadPersistedMessagesIfNeeded(sessionID: session.id)
+        }
         if lastErrorBySession[session.id] != nil || session.state == .failed {
             markSession(session.id, state: .failed)
         } else {
             markSession(session.id, state: .idle)
         }
         refreshNativeToolData()
+    }
+
+    func openAlwaysOnSession(_ target: AlwaysOnSessionTarget) {
+        guard let projectIndex = selectedProjectIndex else { return }
+        switch target.kind {
+        case .origin:
+            guard let session = projects[projectIndex].allSessions.first(where: { $0.id == target.sessionId }) else {
+                errorBanner = "This chat record no longer exists."
+                return
+            }
+            selectSession(session)
+        case .background:
+            guard let session = AlwaysOnBackgroundTranscriptLoader.makeSession(
+                target: target,
+                existing: projects[projectIndex].allSessions.first(where: { $0.id == target.sessionId })
+            ) else { return }
+            upsertBackgroundSession(session, projectIndex: projectIndex)
+            selectSession(session)
+        }
     }
 
     func startNewSession() {
@@ -197,6 +225,7 @@ final class AppState: ObservableObject {
             selectedProjectID = projects.first?.id
         }
         selectedSessionID = nil
+        restoreComposerPermissionMode(for: nil)
         isDraftSessionVisible = true
         activeTab = .chat
         refreshNativeToolData()
@@ -206,18 +235,72 @@ final class AppState: ObservableObject {
         composerRunMode = composerRunMode == .agent ? .plan : .agent
     }
 
+    func setSidebarVisible(_ visible: Bool) {
+        updateUIPreferences { preferences in
+            preferences.sidebarVisible = visible
+        }
+    }
+
+    func setSendByCtrlEnter(_ enabled: Bool) {
+        updateUIPreferences { preferences in
+            preferences.sendByCtrlEnter = enabled
+        }
+    }
+
+    func setUIPreference(_ keyPath: WritableKeyPath<NativeUIPreferences, Bool>, _ value: Bool) {
+        updateUIPreferences { preferences in
+            preferences[keyPath: keyPath] = value
+        }
+    }
+
+    func isToolRowExpanded(_ id: String) -> Bool {
+        ToolRowExpansionPolicy.isExpanded(
+            id: id,
+            expandedIDs: expandedToolRowIDs,
+            collapsedIDs: collapsedToolRowIDs,
+            autoExpandTools: uiPreferences.autoExpandTools
+        )
+    }
+
+    func toggleToolRowExpanded(_ id: String) {
+        ToolRowExpansionPolicy.toggle(
+            id: id,
+            expandedIDs: &expandedToolRowIDs,
+            collapsedIDs: &collapsedToolRowIDs,
+            autoExpandTools: uiPreferences.autoExpandTools
+        )
+    }
+
+    private func updateUIPreferences(_ update: (inout NativeUIPreferences) -> Void) {
+        var preferences = uiPreferences
+        update(&preferences)
+        uiPreferences = preferences
+        isSidebarVisible = preferences.sidebarVisible
+        NativeUIPreferencesStorage.save(preferences)
+    }
+
+    func setComposerPermissionMode(_ mode: ComposerPermissionMode) {
+        composerPermissionMode = mode
+        ComposerPermissionModeStorage.save(mode, for: selectedSessionID)
+    }
+
+    private func restoreComposerPermissionMode(for sessionID: String?) {
+        composerPermissionMode = ComposerPermissionModeStorage.storedMode(for: sessionID)
+    }
+
     @discardableResult
     func consumeComposerRunModeForSend() -> ChatRunMode {
         composerRunMode
     }
 
     @discardableResult
-    func createSessionForSelectedProject(title: String = "New Session") -> ProjectSession? {
+    func createSessionForSelectedProject(title: String = "") -> ProjectSession? {
         guard let projectIndex = selectedProjectIndex else { return nil }
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let session = ProjectSession(
             id: UUID().uuidString,
             provider: .g9Claw,
-            title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "New Session" : title,
+            title: trimmedTitle.isEmpty ? t(.newSession) : trimmedTitle,
             summary: "",
             createdAt: Date(),
             updatedAt: nil,
@@ -300,6 +383,7 @@ final class AppState: ObservableObject {
         let prompt = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = pendingAttachments
         guard !prompt.isEmpty || !attachments.isEmpty else { return }
+        guard selectedSession?.isReadOnly != true else { return }
         if selectedSessionID == nil {
             _ = createSessionForSelectedProject(title: promptTitle(from: prompt))
         }
@@ -367,12 +451,6 @@ final class AppState: ObservableObject {
         append(assistantMessage)
         markSession(sessionID, state: .processing)
 
-        let nativeConfig = currentNativeConfigSnapshot()
-        let routeTier = RoutingService.classifyTier(prompt: prompt, runMode: requestedRunMode)
-        let routeEntryID = NativeRouterRuntime.entryID(forTier: routeTier, values: nativeConfig?.rawValues ?? [:])
-        let providerConfig = nativeConfig.flatMap { NativeConfigService.providerConfig(entryID: routeEntryID, values: $0.rawValues) }
-            ?? nativeConfig?.providerConfig
-            ?? settings.providerConfig
         let workspacePath: String
         do {
             workspacePath = try prepareSelectedWorkspacePathForRun()
@@ -380,19 +458,8 @@ final class AppState: ObservableObject {
             handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID)
             return
         }
+        let nativeConfig = currentNativeConfigSnapshot()
         let apiKey: String
-        do {
-            let keychainValue = try keychain.readSecret(account: providerConfig.secretAccount)
-            apiKey = NativeConfigService.resolvedAPIKey(
-                routeEntryID: routeEntryID,
-                nativeConfig: nativeConfig,
-                keychainValue: keychainValue,
-                apiKeyDraft: apiKeyDraft
-            )
-        } catch {
-            handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID)
-            return
-        }
         let basePrompt = agentPrompt(prompt: prompt, attachments: attachments)
         let memoryContext = memoryService.recallForTurn(
             prompt: basePrompt,
@@ -406,9 +473,36 @@ final class AppState: ObservableObject {
             promptWithMemory = """
             \(basePrompt)
 
-            Relevant G9Claw memory context:
+            Relevant PilotDeck memory context:
             \(memoryContext)
             """
+        }
+        let nativeConfigValues = nativeConfig?.rawValues ?? [:]
+        let routeTier = RoutingService.classifyTier(prompt: prompt, runMode: requestedRunMode)
+        let routeSignals = NativeRouterRuntime.requestSignals(
+            prompt: promptWithMemory,
+            priorMessages: historyBeforeSend,
+            attachments: attachments
+        )
+        let routeDecision = NativeRouterRuntime.decision(forTier: routeTier, values: nativeConfigValues, signals: routeSignals)
+        let routeEntryID = routeDecision.entryID
+        let providerConfig = nativeConfig.flatMap { NativeConfigService.providerConfig(entryID: routeEntryID, values: $0.rawValues) }
+            ?? nativeConfig?.providerConfig
+            ?? settings.providerConfig
+        let requestContextWindow = nativeConfig.map {
+            NativeConfigService.contextWindow(entryID: routeEntryID, values: $0.rawValues) ?? $0.contextWindow
+        } ?? settings.contextWindow
+        do {
+            let keychainValue = try keychain.readSecret(account: providerConfig.secretAccount)
+            apiKey = NativeConfigService.resolvedAPIKey(
+                routeEntryID: routeEntryID,
+                nativeConfig: nativeConfig,
+                keychainValue: keychainValue,
+                apiKeyDraft: apiKeyDraft
+            )
+        } catch {
+            handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID)
+            return
         }
 
         let request = AgentRequest(
@@ -420,13 +514,13 @@ final class AppState: ObservableObject {
             apiKey: apiKey,
             priorMessages: historyBeforeSend,
             timeoutMs: nativeConfig?.apiTimeoutMs ?? settings.apiTimeoutMs,
-            contextWindow: nativeConfig?.contextWindow ?? settings.contextWindow,
+            contextWindow: requestContextWindow,
             permissionMode: composerPermissionMode,
             runMode: requestedRunMode,
             workspaceContext: selectedWorkspaceContext,
             toolSettings: settings.permissions,
-            routerRoute: routeEntryID,
-            nativeConfigValues: nativeConfig?.rawValues ?? [:],
+            routerRoute: routeDecision.scenario,
+            nativeConfigValues: nativeConfigValues,
             permissionHandler: { [weak self] permission in
                 guard let self else { return .deny }
                 return await self.requestAgentPermission(permission)
@@ -442,7 +536,7 @@ final class AppState: ObservableObject {
             projectName: routingProjectName,
             model: providerConfig.model,
             route: request.routerRoute,
-            tier: routeTier,
+            tier: routeDecision.tier ?? routeTier,
             query: prompt
         )
 
@@ -766,7 +860,7 @@ final class AppState: ObservableObject {
             throw NSError(
                 domain: "G9ClawWorkspace",
                 code: 404,
-                userInfo: [NSLocalizedDescriptionKey: "Workspace path does not exist: \(workspacePath). Check G9Claw general workspace settings."]
+                userInfo: [NSLocalizedDescriptionKey: "Workspace path does not exist: \(workspacePath). Check PilotDeck general workspace settings."]
             )
         }
         return workspacePath
@@ -786,7 +880,6 @@ final class AppState: ObservableObject {
     func addAllowedTool(_ tool: String) {
         let canonical = canonicalPermissionRule(tool)
         guard !canonical.isEmpty else { return }
-        settings.permissions.disallowedTools.removeAll { permissionRuleEquals($0, canonical) }
         addUnique(canonical, to: \.allowedTools)
         persistSettingsAfterPermissionChange()
     }
@@ -794,8 +887,15 @@ final class AppState: ObservableObject {
     func addBlockedTool(_ tool: String) {
         let canonical = canonicalPermissionRule(tool)
         guard !canonical.isEmpty else { return }
-        settings.permissions.allowedTools.removeAll { permissionRuleEquals($0, canonical) }
         addUnique(canonical, to: \.disallowedTools)
+        persistSettingsAfterPermissionChange()
+    }
+
+    func grantAllowedToolFromChat(_ tool: String) {
+        let canonical = canonicalPermissionRule(tool)
+        guard !canonical.isEmpty else { return }
+        settings.permissions.disallowedTools.removeAll { permissionRuleEquals($0, canonical) }
+        addUnique(canonical, to: \.allowedTools)
         persistSettingsAfterPermissionChange()
     }
 
@@ -812,13 +912,10 @@ final class AppState: ObservableObject {
     }
 
     func exportPermissions(to url: URL) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
         let payload: [String: Any] = [
             "version": 1,
             "exportedAt": ISO8601DateFormatter().string(from: Date()),
-            "source": "g9claw",
+            "source": PermissionsExportDefaults.source,
             "allowedTools": settings.permissions.allowedTools,
             "disallowedTools": settings.permissions.disallowedTools,
         ]
@@ -834,9 +931,7 @@ final class AppState: ObservableObject {
         let mergedAllowed = uniqueCanonicalRules(settings.permissions.allowedTools + allowed)
         let mergedBlocked = uniqueCanonicalRules(settings.permissions.disallowedTools + blocked)
         settings.permissions.disallowedTools = mergedBlocked
-        settings.permissions.allowedTools = mergedAllowed.filter { allowedRule in
-            !mergedBlocked.contains { blockedRule in permissionRuleEquals(blockedRule, allowedRule) }
-        }
+        settings.permissions.allowedTools = mergedAllowed
         settings.permissions.lastUpdated = Date()
         persistSettingsAfterPermissionChange()
     }
@@ -867,11 +962,12 @@ final class AppState: ObservableObject {
         guard let request = pendingPermissions.first(where: { $0.id == id }) else { return }
         pendingPermissions.removeAll { $0.id == id }
         if remember {
-            addAllowedTool(request.toolName)
+            grantAllowedToolFromChat(request.toolName)
         }
         if request.kind == .exitPlanMode {
             updateComposerRunModeAfterPlanDecision(updatedInputJSON: updatedInputJSON)
         }
+        finishPermissionActivity(request, state: .completed)
         statusLine = t(.permissionAllowedFormat, request.toolName)
         permissionContinuations.removeValue(forKey: id)?.resume(returning: .allow(remember: remember, updatedInputJSON: updatedInputJSON))
     }
@@ -882,6 +978,7 @@ final class AppState: ObservableObject {
         if request.kind == .exitPlanMode {
             composerRunMode = .agent
         }
+        finishPermissionActivity(request, state: .cancelled)
         statusLine = t(.permissionDeniedFormat, request.toolName)
         permissionContinuations.removeValue(forKey: id)?.resume(returning: .deny)
     }
@@ -914,6 +1011,7 @@ final class AppState: ObservableObject {
             updated.generalWorkspacePath = Self.normalizedGeneralWorkspacePath(generalWorkspacePath)
         }
         settings = Self.normalizedSettings(updated)
+        memoryService.updateSettings(MemorySettingsSnapshot.fromConfigValues(native.rawValues))
 
         if apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let apiKey = native.apiKey,
@@ -924,8 +1022,9 @@ final class AppState: ObservableObject {
     }
 
     private func loadG9ClawConfigText() {
-        let url = Self.g9ClawConfigURL()
-        g9ClawConfigText = (try? String(contentsOf: url, encoding: .utf8)) ?? Self.defaultG9ClawConfigText()
+        g9ClawConfigText = (try? String(contentsOf: Self.g9ClawConfigURL(), encoding: .utf8))
+            ?? (try? String(contentsOf: Self.legacyG9ClawConfigURL(), encoding: .utf8))
+            ?? Self.defaultG9ClawConfigText()
     }
 
     private func currentNativeConfigSnapshot() -> NativeConfigSnapshot? {
@@ -940,15 +1039,26 @@ final class AppState: ObservableObject {
         try g9ClawConfigText.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private static func g9ClawConfigURL() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".g9claw", isDirectory: true)
-            .appendingPathComponent("config.yaml")
+    static func g9ClawConfigURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        G9ClawConfigPath.configURL(environment: environment, home: home)
+    }
+
+    static func legacyG9ClawConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        G9ClawConfigPath.legacyConfigURL(home: home)
     }
 
     private func bootstrapLocalDebugConfigIfNeeded() throws {
         let url = Self.g9ClawConfigURL()
         guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        if FileManager.default.fileExists(atPath: Self.legacyG9ClawConfigURL().path),
+           let legacyText = try? String(contentsOf: Self.legacyG9ClawConfigURL(), encoding: .utf8) {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try legacyText.write(to: url, atomically: true, encoding: .utf8)
+            return
+        }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Self.defaultG9ClawConfigText().write(to: url, atomically: true, encoding: .utf8)
     }
@@ -1047,201 +1157,16 @@ final class AppState: ObservableObject {
     }
 
     private static func defaultG9ClawConfigText() -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return """
-        version: 1
-        runtime:
-          host: 0.0.0.0
-          serverPort: 3001
-          vitePort: 5173
-          proxyPort: 18080
-          contextWindow: 160000
-          apiTimeoutMs: 120000
-          httpsProxy: ""
-          databasePath: \(home)/.cloudcli/auth.db
-          workspacesRoot: \(home)
-        models:
-          providers:
-            g9claw:
-              type: openai-chat
-              baseUrl: http://58.57.119.12:52010/v1
-              apiKey: ""
-              transformer: null
-              headers: {}
-            g9claw_memory:
-              type: openai-chat
-              baseUrl: http://58.57.119.12:52010/v1
-              apiKey: ""
-              transformer: null
-              headers: {}
-            g9claw_router:
-              type: openai-chat
-              baseUrl: http://58.57.119.12:52010/v1
-              apiKey: ""
-              transformer: null
-              headers: {}
-            openrouter:
-              type: openai-chat
-              baseUrl: https://openrouter.ai/api/v1/chat/completions
-              apiKey: ""
-              transformer: null
-              headers: {}
-          entries:
-            default:
-              provider: g9claw
-              name: qwen3.6-27b
-              contextWindow: 160000
-            memory:
-              provider: g9claw_memory
-              name: qwen3.6-27b
-              contextWindow: 160000
-            router_small:
-              provider: g9claw_router
-              name: qwen3.6-35b-a3b
-              contextWindow: 160000
-        agents:
-          main:
-            model: default
-            params: {}
-          subagents:
-            default: inherit
-            params: {}
-        alwaysOn:
-          discovery:
-            trigger:
-              enabled: false
-              tickIntervalMinutes: 5
-              cooldownMinutes: 60
-              dailyBudget: 4
-              heartbeatStaleSeconds: 90
-              recentUserMsgMinutes: 5
-              preferClient: webui
-            projects: {}
-        memory:
-          enabled: true
-          model: memory
-          params: {}
-          reasoningMode: answer_first
-          autoIndexIntervalMinutes: 1
-          autoDreamIntervalMinutes: 2
-          captureStrategy: last_turn
-          includeAssistant: true
-          maxMessageChars: 6000
-          heartbeatBatchSize: 30
-        rag:
-          enabled: true
-          disableBuiltInWebTools: true
-          localKnowledge:
-            baseUrl: http://58.57.119.12:52010/v1
-            apiKey: ""
-            modelName: qwen3-embedding-0.6b
-            databaseUrl: http://58.57.119.12:52008/search
-            defaultTopK: 10
-          glmWebSearch:
-            baseUrl: https://api.z.ai/api/paas/v4/web_search
-            apiKey: ""
-            defaultTopK: 10
-        router:
-          enabled: true
-          log: false
-          host: 127.0.0.1
-          port: 19080
-          apiTimeoutMs: 120000
-          routes:
-            default:
-              model: default
-              params: {}
-            background:
-              model: router_small
-              params: {}
-            think:
-              model: default
-              params: {}
-            longContext:
-              model: default
-              params: {}
-            webSearch:
-              model: default
-              params: {}
-            longContextThreshold: 60000
-          tokenSaver:
-            enabled: true
-            judgeModel: router_small
-            defaultTier: COMPLEX
-            subagentPolicy: inherit
-            tiers:
-              SIMPLE:
-                model: router_small
-                description: Simple Q&A, file reads, greetings, small edits
-              MEDIUM:
-                model: router_small
-                description: Moderate coding, single-file edits, explanations
-              COMPLEX:
-                model: default
-                description: Multi-step coding, architecture, large refactors
-              REASONING:
-                model: default
-                description: Deep reasoning, novel algorithms, security analysis
-            rules:
-              - Short prompts (<20 words) -> SIMPLE
-              - Single-file edits, code review -> MEDIUM
-              - Multi-file tasks, refactoring -> COMPLEX
-              - Novel architecture, deep analysis -> REASONING
-          autoOrchestrate:
-            enabled: false
-            triggerTiers:
-              - COMPLEX
-              - REASONING
-            mainAgentModel: default
-            skillPath: ~/.g9claw/prompts/auto-orchestrate.md
-            blockedTools: []
-            allowedTools:
-              - Agent
-              - Read
-              - Grep
-              - Glob
-              - TodoRead
-              - TodoWrite
-            subagentMaxTokens: 48000
-            slimSystemPrompt: true
-          tokenStats:
-            enabled: true
-            modelPricing:
-              g9claw,qwen3.6-27b:
-                inputPer1M: 0.4
-                outputPer1M: 3.2
-              g9claw_memory,qwen3.6-27b:
-                inputPer1M: 0.4
-                outputPer1M: 3.2
-              g9claw_router,qwen3.6-35b-a3b:
-                inputPer1M: 0.2
-                outputPer1M: 1.2
-            savingsBaselineModel: g9claw,qwen3.6-27b
-          fallback: {}
-          httpsProxy: ""
-          rewriteSystemPrompt: ""
-          customRouterPath: ""
-        gateway:
-          enabled: false
-          home: \(home)/.g9claw/gateway
-          allowAllUsers: false
-          allowedUsers: []
-          groupSessionsPerUser: true
-          threadSessionsPerUser: false
-          unauthorizedDmBehavior: pair
-          runtimePaths:
-            sessionMetadata: ~/.g9claw/projects/.gateway/sessions.json
-            userBindings: ~/.g9claw/projects/.gateway/user-projects.json
-            generalCwd: \(home)/G9Claw/general
-            generalJsonl: ~/.g9claw/projects/-Users-\(NSUserName())-G9Claw-general/*.jsonl
-            boundProjectJsonl: ~/.g9claw/projects/<encoded-project>/*.jsonl
-        """
+        G9ClawConfigDefaults.configText(
+            homePath: FileManager.default.homeDirectoryForCurrentUser.path,
+            userName: NSUserName()
+        )
     }
 
     private func promptTitle(from prompt: String) -> String {
         let line = prompt.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "New Session" }
+        guard !trimmed.isEmpty else { return t(.newSession) }
         return String(trimmed.prefix(72))
     }
 
@@ -1355,10 +1280,14 @@ final class AppState: ObservableObject {
             statusLine = t(.sessionStartedFormat, sessionId)
         case .contentDelta(let text):
             queueAssistantDelta(text, assistantID: assistantID)
+        case .reasoningDelta(let text):
+            flushPendingAssistantDelta(assistantID: assistantID)
+            appendAssistantReasoningDelta(text, assistantID: assistantID, sessionID: targetSessionID)
         case .toolUse(let id, let name, let inputJSON):
             flushPendingAssistantDelta(assistantID: assistantID)
             let isInteractiveControl = PlanWorkflowPresentation.isInteractiveControl(name)
             let interactiveDetailMessages = interactiveControlDetailMessages(for: name, inputJSON: inputJSON)
+            let displayInput = AgentToolInputPreview.activityDetail(toolName: name, inputJSON: inputJSON)
             if name == "Skill", let targetSessionID {
                 routingService.recordSkillInvocation(
                     sessionID: targetSessionID,
@@ -1379,11 +1308,11 @@ final class AppState: ObservableObject {
             upsertActivity(
                 id: id,
                 title: interactiveControlTitle(for: name) ?? t(.runningToolFormat, name),
-                detail: isInteractiveControl ? "" : inputJSON,
+                detail: isInteractiveControl ? "" : displayInput,
                 phase: activityPhase(for: name),
                 state: .running,
                 toolName: name,
-                detailMessages: isInteractiveControl ? interactiveDetailMessages : [inputJSON],
+                detailMessages: isInteractiveControl ? interactiveDetailMessages : [displayInput],
                 expandedDefault: false,
                 anchorBlockID: assistantID.uuidString,
                 sessionID: targetSessionID
@@ -1395,14 +1324,15 @@ final class AppState: ObservableObject {
             appendAssistantBlock(.toolResult(ToolResult(toolCallId: id, output: output, isError: isError)), assistantID: assistantID, sessionID: targetSessionID)
         case .permissionRequest(let request):
             let isInteractiveControl = PlanWorkflowPresentation.isInteractiveControl(request.toolName)
+            let displayInput = AgentToolInputPreview.activityDetail(toolName: request.toolName, inputJSON: request.inputJSON)
             upsertActivity(
                 id: "permission-\(request.id.uuidString)",
                 title: interactiveControlTitle(for: request.toolName) ?? request.reason,
-                detail: isInteractiveControl ? "" : request.inputJSON,
+                detail: isInteractiveControl ? "" : displayInput,
                 phase: activityPhase(for: request.toolName),
                 state: .running,
                 toolName: request.toolName,
-                detailMessages: isInteractiveControl ? [] : [request.inputJSON],
+                detailMessages: isInteractiveControl ? [] : [displayInput],
                 expandedDefault: AgentActivityPresentationPolicy.expandsPermissionByDefault(request.kind),
                 anchorBlockID: assistantID.uuidString,
                 sessionID: targetSessionID
@@ -1595,6 +1525,24 @@ final class AppState: ObservableObject {
         streamRenderRevision += 1
     }
 
+    private func appendAssistantReasoningDelta(_ text: String, assistantID: UUID, sessionID explicitSessionID: String? = nil) {
+        guard !text.isEmpty else { return }
+        let sessionID = explicitSessionID ?? assistantSessionByID[assistantID] ?? selectedSessionID
+        guard let sessionID,
+              var messages = messagesBySession[sessionID],
+              let index = messages.firstIndex(where: { $0.id == assistantID }) else { return }
+        var message = messages[index]
+        if let lastIndex = message.blocks.indices.last,
+           case .reasoning(let existing) = message.blocks[lastIndex] {
+            message.blocks[lastIndex] = .reasoning(existing + text)
+        } else {
+            message.blocks.append(.reasoning(text))
+        }
+        messages[index] = message
+        messagesBySession[sessionID] = messages
+        streamRenderRevision += 1
+    }
+
     private static func skillName(from inputJSON: String) -> String {
         guard let data = inputJSON.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1742,6 +1690,32 @@ final class AppState: ObservableObject {
         streamRenderRevision += 1
     }
 
+    private func finishPermissionActivity(_ request: PermissionRequest, state: AgentActivityState) {
+        var activities = activitiesBySession[request.sessionId] ?? []
+        let now = Date()
+        let permissionID = "permission-\(request.id.uuidString)"
+        for index in activities.indices {
+            if activities[index].id == permissionID {
+                activities[index].state = state
+                activities[index].endedAt = now
+                activities[index].updatedAt = now
+                continue
+            }
+
+            guard activities[index].state == .running,
+                  activities[index].phase == .status else { continue }
+            let text = "\(activities[index].title) \(activities[index].detail)"
+                .lowercased()
+            if text.contains("permission") || text.contains("权限") {
+                activities[index].state = .completed
+                activities[index].endedAt = now
+                activities[index].updatedAt = now
+            }
+        }
+        activitiesBySession[request.sessionId] = activities
+        streamRenderRevision += 1
+    }
+
     private func completeRunningActivities(sessionID: String, anchorBlockID: String? = nil) {
         guard var activities = activitiesBySession[sessionID] else { return }
         for index in activities.indices where activities[index].state == .running && activityMatchesAnchor(activities[index], anchorBlockID: anchorBlockID) {
@@ -1840,13 +1814,30 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func loadBackgroundTaskMessagesIfNeeded(session: ProjectSession, project: WorkspaceProject) {
+        guard messagesBySession[session.id] == nil else { return }
+        messagesBySession[session.id] = AlwaysOnBackgroundTranscriptLoader.messages(
+            for: session,
+            projectName: project.name
+        )
+        streamRenderRevision += 1
+    }
+
+    private func upsertBackgroundSession(_ session: ProjectSession, projectIndex: Int) {
+        projects[projectIndex].sessions.removeAll { $0.id == session.id }
+        projects[projectIndex].codexSessions.removeAll { $0.id == session.id }
+        projects[projectIndex].cursorSessions.removeAll { $0.id == session.id }
+        projects[projectIndex].geminiSessions.removeAll { $0.id == session.id }
+        projects[projectIndex].sessions.insert(session, at: 0)
+    }
+
     private func sessionTitle(for sessionID: String) -> String {
         for project in projects {
             if let session = project.allSessions.first(where: { $0.id == sessionID }) {
                 return session.displayTitle
             }
         }
-        return "New Session"
+        return t(.newSession)
     }
 
     private func contextBudgetTitle(_ level: ContextBudgetLevel) -> String {
@@ -2059,15 +2050,405 @@ struct NativeConfigSnapshot: Equatable {
     var generalWorkspacePath: String?
     var apiTimeoutMs: Int
     var contextWindow: Int
+    var mainEntryID: String
     var defaultEntryID: String
     var rawValues: [String: String]
 }
 
+enum G9ClawConfigPath {
+    static func configURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        if let override = environment["G9CLAW_CONFIG_PATH"]?.nilIfBlank
+            ?? environment["EDGECLAW_CONFIG_PATH"]?.nilIfBlank {
+            if override == "~" {
+                return home
+            }
+            if override.hasPrefix("~/") {
+                return home.appendingPathComponent(String(override.dropFirst(2)))
+            }
+            return URL(fileURLWithPath: override)
+        }
+        return home
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("config.yaml")
+    }
+
+    static func legacyConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        home
+            .appendingPathComponent(".edgeclaw", isDirectory: true)
+            .appendingPathComponent("config.yaml")
+    }
+}
+
+enum G9ClawConfigDefaults {
+    static func configText(homePath: String, userName: String) -> String {
+        """
+        version: 1
+        runtime:
+          host: 0.0.0.0
+          serverPort: 3001
+          vitePort: 5173
+          proxyPort: 18080
+          contextWindow: 160000
+          apiTimeoutMs: 120000
+          httpsProxy: ""
+          databasePath: \(homePath)/.g9claw/auth.db
+          workspacesRoot: \(homePath)
+        models:
+          providers:
+            g9claw:
+              type: openai-chat
+              baseUrl: ""
+              apiKey: ""
+              transformer: null
+              headers: {}
+          entries:
+            default:
+              provider: g9claw
+              name: ""
+              contextWindow: 160000
+        agents:
+          main:
+            model: default
+            params: {}
+          subagents:
+            default: inherit
+            params: {}
+        alwaysOn:
+          discovery:
+            trigger:
+              enabled: false
+              tickIntervalMinutes: 5
+              cooldownMinutes: 60
+              dailyBudget: 4
+              heartbeatStaleSeconds: 90
+              recentUserMsgMinutes: 5
+              preferClient: webui
+            projects: {}
+        memory:
+          enabled: true
+          model: inherit
+          params: {}
+          reasoningMode: answer_first
+          autoIndexIntervalMinutes: 30
+          autoDreamIntervalMinutes: 60
+          captureStrategy: last_turn
+          includeAssistant: true
+          maxMessageChars: 6000
+          heartbeatBatchSize: 30
+        rag:
+          enabled: false
+          disableBuiltInWebTools: true
+          localKnowledge:
+            baseUrl: ""
+            apiKey: ""
+            modelName: ""
+            databaseUrl: ""
+            defaultTopK: 8
+          glmWebSearch:
+            baseUrl: ""
+            apiKey: ""
+            defaultTopK: 8
+        router:
+          enabled: false
+          log: true
+          host: 127.0.0.1
+          port: 19080
+          apiTimeoutMs: 120000
+          routes:
+            default:
+              model: default
+              params: {}
+            background:
+              model: default
+              params: {}
+            think:
+              model: default
+              params: {}
+            longContext:
+              model: default
+              params: {}
+            webSearch:
+              model: default
+              params: {}
+            longContextThreshold: 60000
+          tokenSaver:
+            enabled: false
+            judgeModel: default
+            defaultTier: MEDIUM
+            subagentPolicy: inherit
+            tiers:
+              SIMPLE:
+                model: default
+                description: Simple Q&A, file reads, greetings, small edits
+              MEDIUM:
+                model: default
+                description: Moderate coding, single-file edits, explanations
+              COMPLEX:
+                model: default
+                description: Multi-step coding, architecture, large refactors
+              REASONING:
+                model: default
+                description: Deep reasoning, novel algorithms, security analysis
+            rules:
+              - Short prompts (<20 words) -> SIMPLE
+              - Single-file edits, code review -> MEDIUM
+              - Multi-file tasks, refactoring -> COMPLEX
+              - Novel architecture, deep analysis -> REASONING
+          autoOrchestrate:
+            enabled: false
+            triggerTiers:
+              - COMPLEX
+              - REASONING
+            mainAgentModel: default
+            skillPath: ~/.g9claw/prompts/auto-orchestrate.md
+            blockedTools: []
+            allowedTools:
+              - Agent
+              - Read
+              - Grep
+              - Glob
+              - TodoRead
+              - TodoWrite
+            subagentMaxTokens: 48000
+            slimSystemPrompt: true
+          tokenStats:
+            enabled: true
+          fallback: {}
+          httpsProxy: ""
+          rewriteSystemPrompt: ""
+          customRouterPath: ""
+        gateway:
+          enabled: false
+          home: \(homePath)/.g9claw/gateway
+          allowAllUsers: false
+          allowedUsers: []
+          groupSessionsPerUser: true
+          threadSessionsPerUser: false
+          unauthorizedDmBehavior: pair
+          streaming:
+            enabled: false
+            transport: edit
+            editInterval: 1.0
+            bufferThreshold: 40
+            cursor: " ▉"
+          sessionReset:
+            default:
+              mode: both
+              atHour: 4
+              idleMinutes: 1440
+              notify: true
+              notifyExcludeChannels:
+                - api_server
+                - webhook
+            byType: {}
+            byChannel: {}
+          quickCommands: {}
+          channels:
+            feishu:
+              enabled: false
+              appId: ""
+              appSecret: ""
+              connectionMode: websocket
+              domainName: feishu
+              verificationToken: ""
+              encryptKey: ""
+              webhookHost: 127.0.0.1
+              webhookPort: 8765
+              webhookPath: /feishu/webhook
+              projectCard: false
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            telegram:
+              enabled: false
+              token: ""
+              webhookUrl: ""
+              webhookPort: null
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            discord:
+              enabled: false
+              token: ""
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            slack:
+              enabled: false
+              botToken: ""
+              appToken: ""
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            wecom:
+              enabled: false
+              botId: ""
+              botSecret: ""
+              websocketUrl: wss://openws.work.weixin.qq.com
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            wecom_callback:
+              enabled: false
+              port: null
+              corpId: ""
+              token: ""
+              encodingAesKey: ""
+              corpSecret: ""
+              agentId: ""
+              apps: []
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            dingtalk:
+              enabled: false
+              clientId: ""
+              clientSecret: ""
+              streamDebug: false
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            weixin:
+              enabled: false
+              baseUrl: ""
+              token: ""
+              accountId: ""
+              cdnAesKey: ""
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            whatsapp:
+              enabled: false
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            signal:
+              enabled: false
+              httpUrl: ""
+              account: ""
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            matrix:
+              enabled: false
+              homeserver: ""
+              accessToken: ""
+              userId: ""
+              password: ""
+              encryption: false
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            mattermost:
+              enabled: false
+              url: ""
+              token: ""
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            email:
+              enabled: false
+              address: ""
+              password: ""
+              imapHost: ""
+              imapPort: 993
+              smtpHost: ""
+              smtpPort: 587
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            sms_twilio:
+              enabled: false
+              accountSid: ""
+              authToken: ""
+              phoneNumber: ""
+              webhookPort: 8790
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+            homeassistant:
+              enabled: false
+              url: ""
+              token: ""
+            api_server:
+              enabled: false
+              key: ""
+              port: 8642
+              host: ""
+              corsOrigins: ""
+              modelName: g9claw-gateway
+            webhook:
+              enabled: false
+              port: 8643
+              secret: ""
+            bluebubbles:
+              enabled: false
+              serverUrl: ""
+              password: ""
+              homeChannel:
+                chatId: ""
+                name: Home
+              allowedUsers: []
+              allowAllUsers: false
+              replyToMode: first
+          runtimePaths:
+            sessionMetadata: ~/.g9claw/projects/.gateway/sessions.json
+            userBindings: ~/.g9claw/projects/.gateway/user-projects.json
+            generalCwd: ~/PilotDeck/general
+            generalJsonl: ~/.g9claw/projects/-Users-\(userName)-PilotDeck-general/*.jsonl
+            boundProjectJsonl: ~/.g9claw/projects/<encoded-project>/*.jsonl
+        """
+    }
+}
+
 enum NativeConfigService {
     static func loadDefaultConfig(
-        url: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".g9claw")
-            .appendingPathComponent("config.yaml")
+        url: URL = G9ClawConfigPath.configURL()
     ) -> NativeConfigSnapshot? {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         return snapshot(from: text)
@@ -2075,18 +2456,20 @@ enum NativeConfigService {
 
     static func snapshot(from yaml: String) -> NativeConfigSnapshot? {
         let values = scalarMap(from: yaml)
-        let defaultEntry = values["router.routes.default.model"]?.nilIfBlank ?? "default"
-        let entryID = values["models.entries.\(defaultEntry).provider"] == nil ? "default" : defaultEntry
-        guard let providerConfig = providerConfig(entryID: entryID, values: values) else { return nil }
-        let apiKey = values["models.providers.\(values["models.entries.\(entryID).provider"] ?? "g9claw").apiKey"]
+        let mainEntry = values["agents.main.model"]?.nilIfBlank ?? "default"
+        let mainEntryID = validEntryID(mainEntry, values: values) ?? "default"
+        let defaultEntry = values["router.routes.default.model"]?.nilIfBlank
+            ?? values["router.default"]?.nilIfBlank
+            ?? mainEntryID
+        let defaultEntryID = validEntryID(defaultEntry, values: values) ?? mainEntryID
+        guard let providerConfig = providerConfig(entryID: mainEntryID, values: values) else { return nil }
+        let apiKey = values["models.providers.\(providerID(entryID: mainEntryID, values: values)).apiKey"]
         let workspacesRoot = values["runtime.workspacesRoot"]
         let generalWorkspacePath = values["gateway.runtimePaths.generalCwd"]
         let apiTimeoutMs = values["runtime.apiTimeoutMs"].flatMap(Int.init)
             ?? values["router.apiTimeoutMs"].flatMap(Int.init)
             ?? 120_000
-        let contextWindow = values["models.entries.\(entryID).contextWindow"].flatMap(Int.init)
-            ?? values["runtime.contextWindow"].flatMap(Int.init)
-            ?? 160_000
+        let contextWindow = contextWindow(entryID: mainEntryID, values: values) ?? 160_000
 
         return NativeConfigSnapshot(
             providerConfig: providerConfig,
@@ -2095,9 +2478,15 @@ enum NativeConfigService {
             generalWorkspacePath: generalWorkspacePath,
             apiTimeoutMs: apiTimeoutMs,
             contextWindow: contextWindow,
-            defaultEntryID: entryID,
+            mainEntryID: mainEntryID,
+            defaultEntryID: defaultEntryID,
             rawValues: values
         )
+    }
+
+    static func contextWindow(entryID: String, values: [String: String]) -> Int? {
+        positiveInt(values["models.entries.\(entryID).contextWindow"])
+            ?? positiveInt(values["runtime.contextWindow"])
     }
 
     static func scalarMap(from yaml: String) -> [String: String] {
@@ -2124,7 +2513,40 @@ enum NativeConfigService {
             result[path] = normalizeScalar(rawValue)
         }
 
-        return result
+        return normalizedScalarMap(result)
+    }
+
+    private static func normalizedScalarMap(_ values: [String: String]) -> [String: String] {
+        var normalized = values
+
+        let topLevelAlwaysOnPrefix = "alwaysOn.discovery.trigger."
+        let legacyAlwaysOnPrefix = "agents.alwaysOn.discovery.trigger."
+        let hasTopLevelAlwaysOnTrigger = normalized.keys.contains { $0.hasPrefix(topLevelAlwaysOnPrefix) }
+        if !hasTopLevelAlwaysOnTrigger {
+            for (key, value) in normalized where key.hasPrefix(legacyAlwaysOnPrefix) {
+                let suffix = String(key.dropFirst(legacyAlwaysOnPrefix.count))
+                normalized["\(topLevelAlwaysOnPrefix)\(suffix)"] = value
+            }
+        }
+        normalized = normalized.filter { !$0.key.hasPrefix("agents.alwaysOn.") }
+
+        if normalized["rag.localKnowledge.databaseUrl"]?.nilIfBlank == nil,
+           let milvusURI = normalized["rag.localKnowledge.milvusUri"]?.nilIfBlank {
+            normalized["rag.localKnowledge.databaseUrl"] = milvusURI
+        }
+        normalized.removeValue(forKey: "rag.localKnowledge.milvusUri")
+        normalized = normalized.filter { $0.key != "compat" && !$0.key.hasPrefix("compat.") }
+
+        return normalized
+    }
+
+    private static func validEntryID(_ entryID: String, values: [String: String]) -> String? {
+        values["models.entries.\(entryID).provider"] == nil ? nil : entryID
+    }
+
+    private static func positiveInt(_ rawValue: String?) -> Int? {
+        guard let value = rawValue.flatMap(Int.init), value > 0 else { return nil }
+        return value
     }
 
     static func providerConfig(entryID: String, values: [String: String]) -> ProviderConfig? {
@@ -2155,7 +2577,7 @@ enum NativeConfigService {
             apiType: apiType,
             baseURL: baseURL,
             model: model,
-            secretAccount: providerID == "g9claw" ? ProviderConfig.empty.secretAccount : "g9claw-provider-\(providerID)-api-key",
+            secretAccount: (providerID == "g9claw" || providerID == "edgeclaw") ? ProviderConfig.empty.secretAccount : "g9claw-provider-\(providerID)-api-key",
             headers: headers
         )
     }
@@ -2195,25 +2617,601 @@ enum NativeConfigService {
 }
 
 enum NativeRouterRuntime {
+    private static let perMessageOverhead = 4
+    private static let multimediaTokens = 2_000
+
+    struct Decision: Equatable {
+        var entryID: String
+        var scenario: String
+        var tier: String?
+    }
+
+    struct RequestSignals: Equatable {
+        var tokenCount: Int
+        var isBackgroundRequest: Bool
+        var hasWebSearchTools: Bool
+        var hasThinking: Bool
+    }
+
+    struct ProviderRoute: Equatable {
+        var decision: Decision
+        var providerConfig: ProviderConfig
+        var apiKey: String
+        var contextWindow: Int
+    }
+
     static func entryID(forTier tier: String, values: [String: String]) -> String {
-        let routerEnabled = values["router.enabled"]?.lowercased()
-        let defaultRoute = values["router.routes.default.model"]?.nilIfBlank ?? "default"
-        guard routerEnabled != "false" else {
-            return defaultRoute
+        decision(forTier: tier, values: values).entryID
+    }
+
+    static func decision(forTier tier: String, values: [String: String], signals: RequestSignals) -> Decision {
+        decision(
+            forTier: tier,
+            values: values,
+            tokenCount: signals.tokenCount,
+            isBackgroundRequest: signals.isBackgroundRequest,
+            hasWebSearchTools: signals.hasWebSearchTools,
+            hasThinking: signals.hasThinking
+        )
+    }
+
+    static func requestSignals(
+        prompt: String,
+        priorMessages: [ChatMessage],
+        attachments: [FileAttachment],
+        isBackgroundRequest: Bool = false,
+        hasThinking: Bool = false,
+        tools: [[String: Any]] = NativeToolRouter.openAITools()
+    ) -> RequestSignals {
+        RequestSignals(
+            tokenCount: estimatedTokenCount(
+                prompt: prompt,
+                priorMessages: priorMessages,
+                attachments: attachments,
+                tools: tools
+            ),
+            isBackgroundRequest: isBackgroundRequest,
+            hasWebSearchTools: hasWebSearchTool(tools),
+            hasThinking: hasThinking
+        )
+    }
+
+    static func resolvedProviderRoute(
+        forTier tier: String,
+        values: [String: String],
+        fallbackProviderConfig: ProviderConfig,
+        fallbackAPIKey: String,
+        fallbackContextWindow: Int,
+        signals: RequestSignals
+    ) -> ProviderRoute {
+        let routeDecision = decision(forTier: tier, values: values, signals: signals)
+        let providerConfig = NativeConfigService.providerConfig(entryID: routeDecision.entryID, values: values)
+            ?? fallbackProviderConfig
+        let providerID = NativeConfigService.providerID(entryID: routeDecision.entryID, values: values)
+        let apiKey = values["models.providers.\(providerID).apiKey"]?.nilIfBlank ?? fallbackAPIKey
+        let contextWindow = NativeConfigService.contextWindow(entryID: routeDecision.entryID, values: values)
+            ?? fallbackContextWindow
+        return ProviderRoute(
+            decision: routeDecision,
+            providerConfig: providerConfig,
+            apiKey: apiKey,
+            contextWindow: contextWindow
+        )
+    }
+
+    static func decision(
+        forTier tier: String,
+        values: [String: String],
+        tokenCount: Int = 0,
+        lastInputTokens: Int? = nil,
+        isBackgroundRequest: Bool = false,
+        hasWebSearchTools: Bool = false,
+        hasThinking: Bool = false
+    ) -> Decision {
+        let mainRoute = mainEntryID(values: values) ?? "default"
+        let defaultRoute = routeEntryID("default", values: values) ?? mainRoute
+        guard isEnabled(values["router.enabled"]) else {
+            return Decision(entryID: mainRoute, scenario: "default", tier: nil)
         }
-        let tokenSaverModel = values["router.tokenSaver.tiers.\(tier).model"]?.nilIfBlank
-        let tierModel = tokenSaverModel
-            ?? values["router.routes.\(tier.lowercased()).model"]?.nilIfBlank
-            ?? defaultRoute
-        return values["models.entries.\(tierModel).provider"] == nil ? defaultRoute : tierModel
+
+        let normalizedTier = tier.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if tokenSaverCanRoute(values: values),
+           let tierModel = values["router.tokenSaver.tiers.\(normalizedTier).model"]?.nilIfBlank,
+           values["models.entries.\(tierModel).provider"] != nil {
+            return Decision(entryID: tierModel, scenario: "tokenSaver", tier: normalizedTier)
+        }
+
+        let threshold = longContextThreshold(values: values)
+        let exceedsCurrentContext = tokenCount > threshold
+        let exceedsLastUsage = (lastInputTokens ?? 0) > threshold && tokenCount > 20_000
+        if (exceedsCurrentContext || exceedsLastUsage),
+           let entryID = routeEntryID("longContext", values: values) {
+            return Decision(entryID: entryID, scenario: "longContext", tier: nil)
+        }
+
+        if isBackgroundRequest, let entryID = routeEntryID("background", values: values) {
+            return Decision(entryID: entryID, scenario: "background", tier: nil)
+        }
+
+        if hasWebSearchTools, let entryID = routeEntryID("webSearch", values: values) {
+            return Decision(entryID: entryID, scenario: "webSearch", tier: nil)
+        }
+
+        if hasThinking, let entryID = routeEntryID("think", values: values) {
+            return Decision(entryID: entryID, scenario: "think", tier: nil)
+        }
+
+        return Decision(entryID: defaultRoute, scenario: "default", tier: nil)
+    }
+
+    private static func tokenSaverCanRoute(values: [String: String]) -> Bool {
+        let enabled = values["router.tokenSaver.enabled"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if enabled == "false" || enabled == "0" || enabled == "no" {
+            return false
+        }
+        if enabled == "true" || enabled == "1" || enabled == "yes" {
+            return true
+        }
+        return values.keys.contains { $0.hasPrefix("router.tokenSaver.tiers.") && $0.hasSuffix(".model") }
+    }
+
+    private static func estimatedTokenCount(
+        prompt: String,
+        priorMessages: [ChatMessage],
+        attachments: [FileAttachment],
+        tools: [[String: Any]]
+    ) -> Int {
+        var total = priorMessages.reduce(0) { partial, message in
+            partial + estimatedTokens(message: message)
+        }
+        total += perMessageOverhead + estimatedValue(userContent(prompt: prompt, attachments: attachments))
+        total += estimatedTools(tools)
+        return max(0, total)
+    }
+
+    private static func estimatedTokens(message: ChatMessage) -> Int {
+        let content = message.plainText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return 0 }
+        return perMessageOverhead + estimatedValue(content)
+    }
+
+    private static func userContent(prompt: String, attachments: [FileAttachment]) -> Any {
+        guard !attachments.isEmpty else { return prompt }
+        let attachmentParts = NativeAttachmentResolver.openAIContentParts(for: attachments).0
+        guard !attachmentParts.isEmpty else { return prompt }
+
+        var content: [[String: Any]] = []
+        if !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            content.append([
+                "type": "text",
+                "text": prompt,
+            ])
+        }
+        content.append(contentsOf: attachmentParts)
+        return content
+    }
+
+    private static func estimatedTools(_ tools: [[String: Any]]) -> Int {
+        tools.reduce(0) { partial, tool in
+            var total = partial
+            if let function = tool["function"] as? [String: Any] {
+                let name = function["name"] as? String ?? ""
+                let description = function["description"] as? String ?? ""
+                if !description.isEmpty {
+                    total += estimatedText("\(name)\(description)")
+                }
+                if let parameters = function["parameters"] {
+                    total += estimatedSerialized(parameters)
+                }
+            } else {
+                let name = tool["name"] as? String ?? ""
+                let description = tool["description"] as? String ?? ""
+                if !description.isEmpty {
+                    total += estimatedText("\(name)\(description)")
+                }
+                if let inputSchema = tool["input_schema"] {
+                    total += estimatedSerialized(inputSchema)
+                }
+            }
+            return total
+        }
+    }
+
+    private static func estimatedValue(_ value: Any?) -> Int {
+        guard let value else { return 0 }
+        if let text = value as? String {
+            return estimatedText(text)
+        }
+        if let parts = value as? [[String: Any]] {
+            return parts.reduce(0) { partial, part in
+                if part["type"] as? String == "image_url" {
+                    return partial + multimediaTokens
+                }
+                return partial + estimatedValue(part["text"]) + estimatedValue(part["image_url"])
+            }
+        }
+        return estimatedSerialized(value)
+    }
+
+    private static func estimatedText(_ text: String) -> Int {
+        max(1, text.count / 4)
+    }
+
+    private static func estimatedSerialized(_ value: Any) -> Int {
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value) else {
+            return estimatedText(String(describing: value))
+        }
+        return max(1, data.count / 4)
+    }
+
+    private static func hasWebSearchTool(_ tools: [[String: Any]]) -> Bool {
+        tools.contains { tool in
+            guard let type = tool["type"] as? String else { return false }
+            return type.hasPrefix("web_search")
+        }
+    }
+
+    private static func isEnabled(_ rawValue: String?) -> Bool {
+        let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value == "true" || value == "1" || value == "yes"
+    }
+
+    private static func mainEntryID(values: [String: String]) -> String? {
+        let candidates = [
+            values["agents.main.model"]?.nilIfBlank,
+            "default",
+        ]
+        guard let entryID = candidates.compactMap({ $0 }).first(where: { values["models.entries.\($0).provider"] != nil }) else {
+            return nil
+        }
+        return entryID
+    }
+
+    private static func routeEntryID(_ route: String, values: [String: String]) -> String? {
+        let candidates = [
+            values["router.routes.\(route).model"]?.nilIfBlank,
+            values["router.\(route)"]?.nilIfBlank,
+        ]
+        guard let entryID = candidates.compactMap({ $0 }).first else { return nil }
+        return values["models.entries.\(entryID).provider"] == nil ? nil : entryID
+    }
+
+    private static func longContextThreshold(values: [String: String]) -> Int {
+        values["router.routes.longContextThreshold"].flatMap(Int.init)
+            ?? values["router.longContextThreshold"].flatMap(Int.init)
+            ?? 60_000
+    }
+}
+
+enum AlwaysOnBackgroundTranscriptLoader {
+    static func makeSession(
+        target: AlwaysOnSessionTarget,
+        existing: ProjectSession?,
+        now: Date = Date()
+    ) -> ProjectSession? {
+        guard target.kind == .background,
+              let parentSessionId = target.parentSessionId?.nilIfBlank,
+              let relativeTranscriptPath = target.relativeTranscriptPath?.nilIfBlank else {
+            return nil
+        }
+        let title = firstNonBlank(target.title, target.summary, existing?.title) ?? "Background task"
+        let summary = firstNonBlank(target.summary, existing?.summary, target.title) ?? title
+        var session = existing ?? ProjectSession(
+            id: target.sessionId,
+            provider: .g9Claw,
+            title: title,
+            summary: summary,
+            createdAt: target.lastActivity ?? now,
+            updatedAt: target.lastActivity,
+            lastActivity: target.lastActivity,
+            lastConversationAt: nil,
+            state: .idle
+        )
+        session.id = target.sessionId
+        session.provider = existing?.provider ?? .g9Claw
+        session.title = title
+        session.summary = summary
+        session.updatedAt = target.lastActivity ?? session.updatedAt
+        session.lastActivity = target.lastActivity ?? session.lastActivity
+        session.sessionKind = .backgroundTask
+        session.parentSessionId = parentSessionId
+        session.relativeTranscriptPath = relativeTranscriptPath
+        session.transcriptKey = firstNonBlank(target.transcriptKey, existing?.transcriptKey)
+            ?? URL(fileURLWithPath: relativeTranscriptPath).lastPathComponent
+        session.taskId = firstNonBlank(target.taskId, existing?.taskId)
+        session.taskStatus = firstNonBlank(target.taskStatus, existing?.taskStatus)
+        session.outputFile = firstNonBlank(target.outputFile, existing?.outputFile)
+        session.isReadOnly = true
+        return session
+    }
+
+    static func messages(
+        for session: ProjectSession,
+        projectName: String,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [ChatMessage] {
+        guard let parentSessionId = session.parentSessionId,
+              let relativeTranscriptPath = session.relativeTranscriptPath,
+              let url = transcriptURL(
+                projectName: projectName,
+                parentSessionId: parentSessionId,
+                relativeTranscriptPath: relativeTranscriptPath,
+                home: home
+              ),
+              let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return []
+        }
+        let messages = text
+            .split(whereSeparator: \.isNewline)
+            .compactMap { jsonObject(from: String($0)) }
+            .flatMap { normalizeEntry($0, session: session) }
+        return messages.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    static func transcriptURL(
+        projectName: String,
+        parentSessionId: String,
+        relativeTranscriptPath: String,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        let parent = parentSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let relative = relativeTranscriptPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !projectName.isEmpty, !parent.isEmpty, !relative.isEmpty else { return nil }
+
+        let projectDirs = [".g9claw", ".claude"].map { directory in
+            home
+                .appendingPathComponent(directory, isDirectory: true)
+                .appendingPathComponent("projects", isDirectory: true)
+                .appendingPathComponent(projectName, isDirectory: true)
+                .standardizedFileURL
+        }
+        for projectDir in projectDirs {
+            let allowedDir = projectDir
+                .appendingPathComponent(parent, isDirectory: true)
+                .appendingPathComponent("subagents", isDirectory: true)
+                .standardizedFileURL
+            let requestedPath = (projectDir.path as NSString).appendingPathComponent(relative)
+            let requested = URL(fileURLWithPath: requestedPath).standardizedFileURL
+
+            if requested.path.hasPrefix(allowedDir.path + "/"),
+               isCronTranscriptFilename(requested.lastPathComponent),
+               fileManager.fileExists(atPath: requested.path) {
+                return requested
+            }
+        }
+        return nil
+    }
+
+    static func backgroundSessionID(parentSessionId: String, transcriptFilename: String) -> String {
+        "background-\(safeSessionIDComponent(parentSessionId))-\(safeSessionIDComponent(deletingJSONLExtension(transcriptFilename)))"
+    }
+
+    static func isCronTranscriptFilename(_ fileName: String) -> Bool {
+        let lower = fileName.lowercased()
+        return lower.hasPrefix("agent-cron") && lower.hasSuffix(".jsonl") && !fileName.contains("/")
+    }
+
+    private static func normalizeEntry(_ raw: [String: Any], session: ProjectSession) -> [ChatMessage] {
+        let message = raw["message"] as? [String: Any]
+        let role = (message?["role"] as? String) ?? (raw["role"] as? String)
+        let createdAt = date(raw["timestamp"]) ?? date(message?["timestamp"]) ?? Date()
+
+        if role == "user" {
+            let text = textContent(message?["content"] ?? raw["content"])
+            return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [
+                chatMessage(session: session, role: .user, blocks: [.text(text)], createdAt: createdAt),
+            ]
+        }
+
+        if role == "assistant" || raw["type"] as? String == "assistant" {
+            if bool(raw["isApiErrorMessage"]) == true {
+                let text = textContent(message?["content"] ?? raw["content"])
+                return [chatMessage(session: session, role: .assistant, blocks: [.text(text.nilIfBlank ?? formatAPIError(raw))], createdAt: createdAt)]
+            }
+            if message?["model"] as? String == "<synthetic>" {
+                return []
+            }
+            let blocks = assistantBlocks(from: message?["content"] ?? raw["content"])
+            return blocks.isEmpty ? [] : [
+                chatMessage(session: session, role: .assistant, blocks: blocks, createdAt: createdAt),
+            ]
+        }
+
+        switch raw["type"] as? String {
+        case "system" where raw["subtype"] as? String == "api_error":
+            return [chatMessage(session: session, role: .system, blocks: [.text(formatAPIError(raw))], createdAt: createdAt)]
+        case "thinking", "redacted_thinking", "reasoning":
+            let text = textContent(raw["thinking"] ?? raw["text"] ?? raw["content"])
+            return text.nilIfBlank.map {
+                [chatMessage(session: session, role: .assistant, blocks: [.reasoning($0)], createdAt: createdAt)]
+            } ?? []
+        case "tool_use":
+            return [chatMessage(session: session, role: .assistant, blocks: [toolCallBlock(raw)], createdAt: createdAt)]
+        case "tool_result":
+            return [chatMessage(session: session, role: .tool, blocks: [toolResultBlock(raw)], createdAt: createdAt)]
+        case "error":
+            let text = textContent(raw["error"]).nilIfBlank ?? textContent(raw["message"]).nilIfBlank ?? "Unknown provider error"
+            return [chatMessage(session: session, role: .system, blocks: [.text(text)], createdAt: createdAt)]
+        default:
+            return []
+        }
+    }
+
+    private static func assistantBlocks(from content: Any?) -> [ChatBlock] {
+        if let parts = content as? [Any] {
+            return parts.flatMap { part -> [ChatBlock] in
+                guard let object = part as? [String: Any] else {
+                    let text = textContent(part)
+                    return text.nilIfBlank.map { [.text($0)] } ?? []
+                }
+                switch object["type"] as? String {
+                case "tool_use":
+                    return [toolCallBlock(object)]
+                case "tool_result":
+                    return [toolResultBlock(object)]
+                case "thinking", "redacted_thinking", "reasoning":
+                    let text = textContent(object["thinking"] ?? object["text"] ?? object["content"])
+                    return text.nilIfBlank.map { [.reasoning($0)] } ?? []
+                case "text", nil:
+                    let text = textContent(object)
+                    return text.nilIfBlank.map { [.text($0)] } ?? []
+                default:
+                    let text = textContent(object)
+                    return text.nilIfBlank.map { [.text($0)] } ?? []
+                }
+            }
+        }
+        let text = textContent(content)
+        return text.nilIfBlank.map { [.text($0)] } ?? []
+    }
+
+    private static func toolCallBlock(_ raw: [String: Any]) -> ChatBlock {
+        .toolCall(ToolCall(
+            id: string(raw["id"]) ?? string(raw["tool_use_id"]) ?? string(raw["toolId"]) ?? string(raw["toolCallId"]) ?? UUID().uuidString,
+            name: string(raw["name"]) ?? string(raw["toolName"]) ?? "UnknownTool",
+            inputJSON: jsonString(raw["input"] ?? raw["toolInput"]) ?? "{}",
+            status: .completed
+        ))
+    }
+
+    private static func toolResultBlock(_ raw: [String: Any]) -> ChatBlock {
+        .toolResult(ToolResult(
+            toolCallId: string(raw["tool_use_id"]) ?? string(raw["toolId"]) ?? string(raw["toolCallId"]) ?? "",
+            output: textContent(raw["content"] ?? raw["output"]),
+            isError: bool(raw["is_error"]) == true || bool(raw["isError"]) == true
+        ))
+    }
+
+    private static func chatMessage(
+        session: ProjectSession,
+        role: ChatRole,
+        blocks: [ChatBlock],
+        createdAt: Date
+    ) -> ChatMessage {
+        ChatMessage(
+            id: UUID(),
+            sessionId: session.id,
+            provider: session.provider,
+            role: role,
+            blocks: blocks,
+            createdAt: createdAt,
+            isStreaming: false,
+            tokenBudget: nil
+        )
+    }
+
+    private static func textContent(_ value: Any?) -> String {
+        if let string = value as? String {
+            return string
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        if let object = value as? [String: Any] {
+            if let text = object["text"] as? String {
+                return text
+            }
+            if let message = object["message"] as? String {
+                return message
+            }
+            return jsonString(object) ?? ""
+        }
+        if let values = value as? [Any] {
+            return values.map(textContent).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n")
+        }
+        return ""
+    }
+
+    private static func formatAPIError(_ raw: [String: Any]) -> String {
+        if let cause = raw["cause"] as? [String: Any] {
+            let code = string(cause["code"]) ?? "API Error"
+            let path = string(cause["path"])
+            return path.map { "\(code): \($0)" } ?? code
+        }
+        return textContent(raw["error"]).nilIfBlank ?? "API Error"
+    }
+
+    private static func jsonObject(from raw: String) -> [String: Any]? {
+        guard let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private static func jsonString(_ value: Any?) -> String? {
+        guard let value,
+              JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func string(_ value: Any?) -> String? {
+        if let value = value as? String {
+            return value
+        }
+        if let value = value as? NSNumber {
+            return value.stringValue
+        }
+        return nil
+    }
+
+    private static func bool(_ value: Any?) -> Bool? {
+        if let value = value as? Bool { return value }
+        if let value = value as? NSNumber { return value.boolValue }
+        if let string = value as? String {
+            switch string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "1", "yes", "on": return true
+            case "false", "0", "no", "off": return false
+            default: return nil
+            }
+        }
+        return nil
+    }
+
+    private static func date(_ value: Any?) -> Date? {
+        if let value = value as? Date { return value }
+        if let number = value as? NSNumber {
+            let raw = number.doubleValue
+            return Date(timeIntervalSince1970: raw > 10_000_000_000 ? raw / 1000 : raw)
+        }
+        guard let string = value as? String else { return nil }
+        if let date = iso8601Date(from: string) {
+            return date
+        }
+        return nil
+    }
+
+    private static func firstNonBlank(_ values: String?...) -> String? {
+        values.compactMap { $0?.nilIfBlank }.first
+    }
+
+    private static func deletingJSONLExtension(_ value: String) -> String {
+        value.lowercased().hasSuffix(".jsonl") ? String(value.dropLast(6)) : value
+    }
+
+    private static func safeSessionIDComponent(_ value: String) -> String {
+        String(value.map { character in
+            character.isLetter || character.isNumber || character == "." || character == "_" || character == "-"
+                ? character
+                : "-"
+        })
+    }
+
+    private static func iso8601Date(from string: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: string) {
+            return date
+        }
+        return ISO8601DateFormatter().date(from: string)
     }
 }
 
 enum LegacyConfigLoader {
     static func loadDefaultConfig(
-        url: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".g9claw")
-            .appendingPathComponent("config.yaml")
+        url: URL = G9ClawConfigPath.configURL()
     ) -> LegacyConfigSnapshot? {
         guard let native = NativeConfigService.loadDefaultConfig(url: url) else { return nil }
         return legacySnapshot(from: native)
