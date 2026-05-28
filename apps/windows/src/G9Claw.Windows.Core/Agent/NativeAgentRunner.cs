@@ -84,8 +84,8 @@ public sealed class NativeAgentRunner
             var planTodoGate = new AgentPlanTodoExecutionGate();
             var deduplicationPolicy = new AgentToolDeduplicationPolicy();
             var deletionVerificationPolicy = new AgentDeletionVerificationPolicy();
+            var loopWatchdog = new AgentLoopWatchdog();
             var round = 0;
-            var duplicateOnlyRounds = 0;
             var partialStreamRecoveryCount = 0;
             var didRecoverContextOverflow = false;
             while (true)
@@ -143,6 +143,11 @@ public sealed class NativeAgentRunner
                             }
 
                             await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                            if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
+                            {
+                                throw ProviderClientException.Transport(watchdogMessage);
+                            }
+
                             roundExchanges.Add(new AgentToolExchange(call, toolResult));
                         }
                     }
@@ -196,23 +201,41 @@ public sealed class NativeAgentRunner
                         }
 
                         await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                        if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
+                        {
+                            throw ProviderClientException.Transport(watchdogMessage);
+                        }
+
                         roundExchanges.Add(new AgentToolExchange(fallbackCall, toolResult));
                     }
                 }
 
                 if (roundExchanges.Count == 0)
                 {
-                    if (roundSkippedDuplicateTool && duplicateOnlyRounds < 2)
+                    if (roundSkippedDuplicateTool)
                     {
-                        duplicateOnlyRounds++;
-                        round++;
-                        continue;
+                        var decision = loopWatchdog.RecordDuplicateOnlyTurn();
+                        if (decision.Kind == AgentLoopWatchdogDecisionKind.ContinueWithNudge)
+                        {
+                            currentRequest = currentRequest with
+                            {
+                                PriorMessages = DuplicateNudgePriorMessages(currentRequest, roundAssistantText.ToString(), decision.Message),
+                                ToolExchanges = toolExchanges.ToList(),
+                            };
+                            turn.RecordStatus("continuing", decision.Message);
+                            await writer.WriteAsync(AgentEvent.Status(request.SessionId, "continuing"), cancellationToken);
+                            round++;
+                            continue;
+                        }
+
+                        turn.RecordStatus("needs continuation", decision.Message);
+                        await writer.WriteAsync(AgentEvent.Status(request.SessionId, "needs continuation"), cancellationToken);
                     }
 
                     break;
                 }
 
-                duplicateOnlyRounds = 0;
+                loopWatchdog.RecordProgress();
                 toolExchanges.AddRange(roundExchanges);
                 currentRequest = currentRequest with { ToolExchanges = toolExchanges.ToList() };
                 round++;
@@ -254,6 +277,34 @@ public sealed class NativeAgentRunner
             The provider response stream disconnected after partial visible output: {message}
             Continue the same task from the latest completed tool result. Do not repeat already completed tool calls unless needed for verification.
             """)],
+            DateTimeOffset.UtcNow,
+            false,
+            null));
+        return messages;
+    }
+
+    private static List<ChatMessage> DuplicateNudgePriorMessages(AgentRequest request, string assistantContent, string nudge)
+    {
+        var messages = request.PriorMessages.ToList();
+        if (!string.IsNullOrWhiteSpace(assistantContent))
+        {
+            messages.Add(new ChatMessage(
+                Guid.NewGuid(),
+                request.SessionId,
+                request.ProviderConfig.Provider,
+                ChatRole.Assistant,
+                [ChatBlock.FromText(assistantContent)],
+                DateTimeOffset.UtcNow,
+                false,
+                null));
+        }
+
+        messages.Add(new ChatMessage(
+            Guid.NewGuid(),
+            request.SessionId,
+            request.ProviderConfig.Provider,
+            ChatRole.User,
+            [ChatBlock.FromText(nudge)],
             DateTimeOffset.UtcNow,
             false,
             null));

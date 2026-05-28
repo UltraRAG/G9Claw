@@ -3156,6 +3156,83 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerNudgesDuplicateOnlyTurnsLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "loop.txt"), "same content");
+        var provider = new DuplicateOnlyNudgeProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "avoid duplicate loop",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        Assert.Equal(3, provider.RequestCount);
+        Assert.True(provider.SawDuplicateNudge);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "duplicate tool request skipped");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "continuing");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after duplicate nudge");
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Error);
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerPausesRepeatedToolErrorsLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new RepeatedUnsupportedToolProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "avoid error loop",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        var errorResults = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+        Assert.Equal(3, provider.RequestCount);
+        Assert.Equal(3, errorResults.Count);
+        Assert.All(errorResults, result => Assert.True(result.IsError));
+        Assert.Contains(events, item =>
+            item.Kind == AgentEventKind.Error &&
+            (item.Text?.Contains("same tool error repeatedly", StringComparison.Ordinal) ?? false));
+    }
+
+    [Fact]
     public void AgentToolDeduplicationPolicyBlocksUnchangedTodoWriteLikeMac()
     {
         var policy = new AgentToolDeduplicationPolicy();
@@ -4324,6 +4401,55 @@ gateway:
 
         private static ProviderStreamEvent Tool(string id, string name, string inputJson) =>
             new(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall(id, name, inputJson));
+    }
+
+    private sealed class DuplicateOnlyNudgeProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+        public bool SawDuplicateNudge { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.PriorMessages.Any(message => message.PlainText.Contains("previous tool request was a duplicate", StringComparison.Ordinal)))
+            {
+                SawDuplicateNudge = true;
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after duplicate nudge");
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+                yield break;
+            }
+
+            yield return new ProviderStreamEvent(
+                ProviderStreamEventKind.ToolCall,
+                ToolCall: new AgentToolCall(
+                    RequestCount == 1 ? "read-1" : "read-duplicate",
+                    "Read",
+                    """{"file_path":"loop.txt"}"""));
+        }
+    }
+
+    private sealed class RepeatedUnsupportedToolProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return new ProviderStreamEvent(
+                ProviderStreamEventKind.ToolCall,
+                ToolCall: new AgentToolCall(
+                    $"bad-{RequestCount}",
+                    "MissingTool",
+                    JsonSerializer.Serialize(new { attempt = RequestCount })));
+        }
     }
 
     private static int ShellTimeout(string inputJson)
