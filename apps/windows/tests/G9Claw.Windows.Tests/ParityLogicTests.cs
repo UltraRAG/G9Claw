@@ -1255,6 +1255,96 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public async Task ProviderClientBuildsMacShapedAttachmentParts()
+    {
+        using var temp = new TempWorkspace();
+        var notesPath = Path.Combine(temp.Root, "notes.md");
+        var pdfPath = Path.Combine(temp.Root, "sample.pdf");
+        var imagePath = Path.Combine(temp.Root, "pixel.png");
+        var missingPath = Path.Combine(temp.Root, "missing.txt");
+        await File.WriteAllTextAsync(notesPath, "alpha\nbeta");
+        await File.WriteAllBytesAsync(pdfPath, MinimalPdf("Hello PDF"));
+        await File.WriteAllBytesAsync(imagePath, [0x89, 0x50, 0x4E, 0x47]);
+
+        var handler = new CapturingProviderHandler("""
+        {"choices":[{"message":{"role":"assistant","content":"ok"}}]}
+        """);
+        var client = new ProviderClient(new HttpClient(handler));
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "Analyze attachments",
+            [
+                new FileAttachment(notesPath, "notes.md", "text/markdown", new FileInfo(notesPath).Length),
+                new FileAttachment(pdfPath, "sample.pdf", "application/pdf", new FileInfo(pdfPath).Length),
+                new FileAttachment(imagePath, "pixel.png", "image/png", new FileInfo(imagePath).Length),
+                new FileAttachment(missingPath, "missing.txt", "text/plain", 0),
+            ],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<ProviderStreamEvent>();
+        await foreach (var providerEvent in client.StreamAsync(request))
+        {
+            events.Add(providerEvent);
+        }
+
+        Assert.Contains(events, item => item.Kind == ProviderStreamEventKind.ContentDelta && item.Text == "ok");
+        using var requestJson = JsonDocument.Parse(handler.Body!);
+        var content = requestJson.RootElement
+            .GetProperty("messages")[0]
+            .GetProperty("content");
+
+        Assert.Equal(JsonValueKind.Array, content.ValueKind);
+        Assert.Equal("Analyze attachments", content[0].GetProperty("text").GetString());
+        Assert.Contains($"<attachment path=\"{notesPath}\">", content[1].GetProperty("text").GetString());
+        Assert.Contains("alpha\nbeta", content[1].GetProperty("text").GetString());
+        Assert.Contains($"<attachment path=\"{pdfPath}\">", content[2].GetProperty("text").GetString());
+        Assert.Contains("## Page 1", content[2].GetProperty("text").GetString());
+        Assert.Contains("Hello PDF", content[2].GetProperty("text").GetString());
+        Assert.Equal("image_url", content[3].GetProperty("type").GetString());
+        Assert.Equal("data:image/png;base64,iVBORw==", content[3].GetProperty("image_url").GetProperty("url").GetString());
+        Assert.Contains("[Attachment diagnostics]", content[4].GetProperty("text").GetString());
+        Assert.Contains($"Attachment not found: {missingPath}.", content[4].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public void NativeAttachmentResolverAppliesMacLimitsAndDiagnostics()
+    {
+        using var temp = new TempWorkspace();
+        var largeText = Path.Combine(temp.Root, "large.txt");
+        var largeImage = Path.Combine(temp.Root, "large.png");
+        using (var stream = File.Create(largeText))
+        {
+            stream.SetLength(NativeAttachmentResolver.MaxTextBytes + 1);
+        }
+        using (var stream = File.Create(largeImage))
+        {
+            stream.SetLength(NativeAttachmentResolver.MaxImageBytes + 1);
+        }
+
+        var result = NativeAttachmentResolver.OpenAIContentParts(
+        [
+            new FileAttachment(largeText, "large.txt", "text/plain", new FileInfo(largeText).Length),
+            new FileAttachment(largeImage, "large.png", "image/png", new FileInfo(largeImage).Length),
+        ]);
+
+        Assert.Single(result.Parts);
+        Assert.Equal("text", result.Parts[0]["type"]);
+        Assert.Contains("Attachment large.txt is", result.Parts[0]["text"]?.ToString());
+        Assert.Contains("Image large.png is", result.Parts[0]["text"]?.ToString());
+        Assert.Equal(2, result.Diagnostics.Count(item => item.Severity == AttachmentDiagnosticSeverity.Warning));
+    }
+
+    [Fact]
     public async Task ProviderNativeSubagentRunnerUsesReadOnlyNonStreamingChatRequest()
     {
         using var temp = new TempWorkspace();

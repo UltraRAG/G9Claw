@@ -636,97 +636,28 @@ public sealed class ProviderClient : IProviderClient
             return request.Prompt;
         }
 
-        var parts = new List<Dictionary<string, object?>>
+        var attachmentParts = NativeAttachmentResolver.OpenAIContentParts(request.Attachments).Parts;
+        if (attachmentParts.Count == 0)
         {
-            new()
-            {
-                ["type"] = "text",
-                ["text"] = PromptWithAttachmentSummary(request),
-            },
-        };
-
-        foreach (var attachment in request.Attachments.Where(item => item.IsImage && File.Exists(item.Path)).Take(8))
-        {
-            try
-            {
-                var bytes = File.ReadAllBytes(attachment.Path);
-                var mimeType = string.IsNullOrWhiteSpace(attachment.MimeType) ? GuessMimeType(attachment) : attachment.MimeType!;
-                parts.Add(new Dictionary<string, object?>
-                {
-                    ["type"] = "image_url",
-                    ["image_url"] = new Dictionary<string, object?>
-                    {
-                        ["url"] = $"data:{mimeType};base64,{Convert.ToBase64String(bytes)}",
-                    },
-                });
-            }
-            catch
-            {
-                // The text summary still carries the attachment name/path if the file cannot be read.
-            }
+            return request.Prompt;
         }
 
+        var parts = new List<Dictionary<string, object?>>();
+        if (!string.IsNullOrWhiteSpace(request.Prompt))
+        {
+            parts.Add(new Dictionary<string, object?>
+            {
+                ["type"] = "text",
+                ["text"] = request.Prompt,
+            });
+        }
+
+        parts.AddRange(attachmentParts);
         return parts;
     }
 
     private static string PromptWithAttachmentSummary(AgentRequest request)
     {
-        if (request.Attachments.Count == 0)
-        {
-            return request.Prompt;
-        }
-
-        var builder = new StringBuilder(request.Prompt ?? "");
-        builder.AppendLine();
-        builder.AppendLine();
-        builder.AppendLine("Attachments:");
-        foreach (var attachment in request.Attachments)
-        {
-            builder.Append("- ")
-                .Append(attachment.FileName)
-                .Append(" (")
-                .Append(attachment.MimeType ?? "file")
-                .Append(", ")
-                .Append(attachment.Bytes)
-                .Append(" bytes)");
-            if (!string.IsNullOrWhiteSpace(attachment.Path))
-            {
-                builder.Append(": ").Append(attachment.Path);
-            }
-
-            if (attachment.IsTextLike && File.Exists(attachment.Path))
-            {
-                try
-                {
-                    var text = File.ReadAllText(attachment.Path);
-                    if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        builder.AppendLine();
-                        builder.AppendLine("```");
-                        builder.AppendLine(text.Length > 12_000 ? text[..12_000] : text);
-                        builder.AppendLine("```");
-                    }
-                }
-                catch
-                {
-                    // Ignore unreadable text attachments; the file metadata remains in the prompt.
-                }
-            }
-            else
-            {
-                builder.AppendLine();
-            }
-        }
-
-        return builder.ToString();
+        return NativeAttachmentResolver.PromptWithAttachments(request.Prompt, request.Attachments);
     }
-
-    private static string GuessMimeType(FileAttachment attachment) => attachment.Extension switch
-    {
-        "jpg" or "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        _ => "image/png",
-    };
 }
