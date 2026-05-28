@@ -242,6 +242,14 @@ public sealed class NativeAgentRunner
             return questionResult;
         }
 
+        var decision = ToolPermissionPolicy.Decide(call, request.ToolSettings, request.PermissionMode);
+        if (decision == ToolPermissionDecision.Denied)
+        {
+            var denied = new AgentToolResult(call.Id, call.Name, "Tool is denied by Settings permissions.", true);
+            turn.RecordToolResult(denied);
+            return denied;
+        }
+
         if (planModePolicy.RequiresExitPlanApproval(call))
         {
             var approved = await RequestPermissionAsync(
@@ -258,16 +266,25 @@ public sealed class NativeAgentRunner
                 return denied;
             }
         }
-        else if (!planModePolicy.AllowsWithoutGenericPermission(call))
+        else if (AgentDestructiveToolClassifier.IsDestructive(call) && !planModePolicy.PlanExecutionApproved)
         {
-            var decision = ToolPermissionPolicy.Decide(call, request.ToolSettings, request.PermissionMode);
-            if (decision == ToolPermissionDecision.Denied)
+            var approved = await RequestPermissionAsync(
+                request,
+                call,
+                options,
+                AgentDestructiveToolClassifier.ApprovalReason,
+                PermissionRequestKind.DestructivePlanApproval,
+                cancellationToken,
+                AgentDestructiveToolClassifier.PlanJson(call));
+            if (!approved)
             {
-                var denied = new AgentToolResult(call.Id, call.Name, "Tool is denied by Settings permissions.", true);
+                var denied = new AgentToolResult(call.Id, call.Name, "Tool execution was denied.", true);
                 turn.RecordToolResult(denied);
                 return denied;
             }
-
+        }
+        else if (!planModePolicy.AllowsWithoutGenericPermission(call))
+        {
             if (decision == ToolPermissionDecision.RequiresApproval)
             {
                 var approved = await RequestPermissionAsync(
@@ -316,9 +333,10 @@ public sealed class NativeAgentRunner
         NativeAgentRunOptions options,
         string reason,
         PermissionRequestKind kind,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? inputJsonOverride = null)
     {
-        var record = _permissionService.Request(request.SessionId, call.Name, call.InputJson, reason, kind);
+        var record = _permissionService.Request(request.SessionId, call.Name, inputJsonOverride ?? call.InputJson, reason, kind);
         var resolved = options.PermissionHandler is null
             ? _permissionService.Resolve(record.Request.Id, allow: false)
             : await options.PermissionHandler(record.Request, cancellationToken);

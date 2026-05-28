@@ -1950,6 +1950,59 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerUsesDestructivePlanApprovalLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var target = Path.Combine(temp.Root, "danger.txt");
+        await File.WriteAllTextAsync(target, "delete me");
+        var provider = new DestructiveDeleteProvider();
+        var permissionRequests = new List<PermissionRequest>();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "delete danger file",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.BypassPermissions,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) =>
+        {
+            permissionRequests.Add(permission);
+            return Task.FromResult(new PermissionRecord(
+                permission,
+                PermissionDecision.Allowed,
+                permission.Scope,
+                DateTimeOffset.UtcNow,
+                null));
+        });
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var result = Assert.Single(events.Where(item => item.Kind == AgentEventKind.ToolResult).Select(item => item.ToolResult!));
+        var permission = Assert.Single(permissionRequests);
+
+        Assert.Equal("Delete", result.ToolName);
+        Assert.False(result.IsError);
+        Assert.Equal(PermissionRequestKind.DestructivePlanApproval, permission.Kind);
+        Assert.Equal("Destructive action plan approval is required before deleting workspace files.", permission.Reason);
+        Assert.Contains("\"destructiveTool\": \"Delete\"", permission.InputJson);
+        Assert.Contains("\"target\": \"danger.txt\"", permission.InputJson);
+        Assert.False(File.Exists(target));
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerDeduplicatesToolsWithMutationEpochLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -2600,6 +2653,27 @@ gateway:
 
         private static ProviderStreamEvent Tool(string id, string name, string inputJson) =>
             new(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall(id, name, inputJson));
+    }
+
+    private sealed class DestructiveDeleteProvider : IProviderClient
+    {
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            if (request.ToolExchanges.Count == 0)
+            {
+                yield return new ProviderStreamEvent(
+                    ProviderStreamEventKind.ToolCall,
+                    ToolCall: new AgentToolCall("delete", "Delete", """{"path":"danger.txt"}"""));
+            }
+            else
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done");
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+        }
     }
 
     private sealed class DuplicateToolProvider : IProviderClient

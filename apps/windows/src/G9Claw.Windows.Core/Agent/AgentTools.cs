@@ -336,13 +336,17 @@ public sealed class AgentPlanModePolicy
     private readonly ChatRunMode _initialRunMode;
     private bool _planExited;
     private bool _planQuestionAnswered;
+    private bool _planExecutionApproved;
 
     public AgentPlanModePolicy(ChatRunMode runMode)
     {
         _initialRunMode = runMode;
         _planExited = runMode == ChatRunMode.Agent;
         _planQuestionAnswered = runMode == ChatRunMode.Agent;
+        _planExecutionApproved = false;
     }
+
+    public bool PlanExecutionApproved => _planExecutionApproved;
 
     public AgentToolResult? BlockingResult(AgentToolCall call)
     {
@@ -398,10 +402,12 @@ public sealed class AgentPlanModePolicy
             if (mode == "agent")
             {
                 _planExited = true;
+                _planExecutionApproved = true;
             }
             else if (mode == "plan")
             {
                 _planExited = false;
+                _planExecutionApproved = false;
             }
         }
     }
@@ -460,6 +466,93 @@ public sealed class AgentPlanModePolicy
     {
         if (!root.TryGetProperty(key, out var value)) return null;
         return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
+    }
+}
+
+public static class AgentDestructiveToolClassifier
+{
+    public const string ApprovalReason = "Destructive action plan approval is required before deleting workspace files.";
+
+    public static bool IsDestructive(AgentToolCall call)
+    {
+        var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        if (toolName == "Delete") return true;
+        return toolName == "Shell" &&
+               StringValue(call.InputJson, "command") is { } command &&
+               IsDestructiveShellCommand(command);
+    }
+
+    public static string PlanJson(AgentToolCall call)
+    {
+        var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        var target = TargetDescription(call);
+        return JsonSerializer.Serialize(new SortedDictionary<string, object?>
+        {
+            ["destructiveTool"] = toolName,
+            ["mode"] = "agent",
+            ["plan"] = $"The agent is about to run a deletion-capable {toolName} operation. Target: {target}.\n\nAfter execution, the agent should verify that the target no longer exists.",
+            ["target"] = target,
+            ["title"] = "Destructive change approval",
+        }, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    public static string TargetDescription(AgentToolCall call)
+    {
+        var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        if (toolName == "Delete")
+        {
+            return StringValue(call.InputJson, "path") ?? "selected path";
+        }
+
+        if (toolName == "Shell" && StringValue(call.InputJson, "command") is { } command)
+        {
+            return Compact(command, 120);
+        }
+
+        return toolName;
+    }
+
+    private static bool IsDestructiveShellCommand(string command)
+    {
+        return command
+            .ToLowerInvariant()
+            .Split(['\n', ';', '&', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(segment =>
+            {
+                var normalized = segment.StartsWith("sudo ", StringComparison.Ordinal)
+                    ? segment[5..]
+                    : segment;
+                return normalized.StartsWith("rm ", StringComparison.Ordinal) ||
+                       normalized.StartsWith("rmdir ", StringComparison.Ordinal) ||
+                       normalized.StartsWith("trash ", StringComparison.Ordinal) ||
+                       normalized.StartsWith("del ", StringComparison.Ordinal) ||
+                       normalized.StartsWith("erase ", StringComparison.Ordinal) ||
+                       normalized.StartsWith("remove-item ", StringComparison.Ordinal) ||
+                       normalized.StartsWith("ri ", StringComparison.Ordinal) ||
+                       (normalized.StartsWith("find ", StringComparison.Ordinal) && normalized.Contains(" -delete", StringComparison.Ordinal));
+            });
+    }
+
+    private static string? StringValue(string inputJson, string key)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(inputJson) ? "{}" : inputJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+            if (!doc.RootElement.TryGetProperty(key, out var value)) return null;
+            var text = value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
+            return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string Compact(string value, int limit)
+    {
+        var normalized = value.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim();
+        return normalized.Length <= limit ? normalized : normalized[..Math.Max(0, limit - 1)] + "...";
     }
 }
 
