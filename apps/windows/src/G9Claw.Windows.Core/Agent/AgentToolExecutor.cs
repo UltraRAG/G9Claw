@@ -48,6 +48,7 @@ public sealed class AgentToolExecutor
                 "WebFetch" => Ok(call, "WebFetch is disabled. Use Skill with g9claw-rag:rag-research for source-grounded web evidence."),
                 "ReadLints" => ReadLints(call),
                 "Skill" => Skill(call, context),
+                "TodoRead" => TodoRead(call, context),
                 "TodoWrite" => TodoWrite(call, context),
                 "AskQuestion" => AskQuestion(call),
                 "SwitchMode" => SwitchMode(call, context),
@@ -345,23 +346,28 @@ public sealed class AgentToolExecutor
         return Ok(call, output.ToString(), artifactPath: record.SkillFile);
     }
 
+    private AgentToolResult TodoRead(AgentToolCall call, AgentToolExecutionContext context) =>
+        Ok(call, _runStore.LoadTodosJson(context.SessionId));
+
     private AgentToolResult TodoWrite(AgentToolCall call, AgentToolExecutionContext context)
     {
         using var doc = JsonDocument.Parse(call.InputJson);
-        if (!doc.RootElement.TryGetProperty("todos", out var todosElement) || todosElement.ValueKind != JsonValueKind.Array)
+        if (!doc.RootElement.TryGetProperty("todos", out var todosElement))
         {
-            return Error(call, "TodoWrite requires a todos array.");
+            return Error(call, "TodoWrite requires todos.");
         }
 
-        var todos = todosElement.EnumerateArray()
-            .Select((todo, index) => new NativeTodoItem(
-                FirstString(todo, ["content", "text", "title"]) ?? todo.ToString(),
-                FirstString(todo, ["status", "state"]) ?? "pending",
-                OptionalInt(todo, "priority") ?? index + 1))
-            .Where(todo => !string.IsNullOrWhiteSpace(todo.Content))
-            .ToList();
-        _runStore.ReplaceTodos(context.SessionId, todos);
-        return Ok(call, $"Saved {todos.Count} todo item(s) for session {context.SessionId}.");
+        var todos = todosElement.ValueKind == JsonValueKind.Array
+            ? todosElement.EnumerateArray()
+                .Select((todo, index) => new NativeTodoItem(
+                    FirstString(todo, ["content", "text", "title"]) ?? todo.ToString(),
+                    FirstString(todo, ["status", "state"]) ?? "pending",
+                    OptionalInt(todo, "priority") ?? index + 1))
+                .Where(todo => !string.IsNullOrWhiteSpace(todo.Content))
+                .ToList()
+            : [];
+        _runStore.ReplaceTodos(context.SessionId, todos, PrettyJson(todosElement));
+        return Ok(call, "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable.");
     }
 
     private static AgentToolResult AskQuestion(AgentToolCall call) =>
@@ -434,6 +440,17 @@ public sealed class AgentToolExecutor
 
     private static int ClampTimeout(long timeoutMs, int minimum) =>
         (int)Math.Max(minimum, Math.Min(timeoutMs, 600_000));
+
+    private static string PrettyJson(JsonElement element)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        {
+            element.WriteTo(writer);
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
 
     private static string FormatRunOutput(NativeBackgroundRun run)
     {

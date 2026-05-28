@@ -2615,16 +2615,27 @@ gateway:
             ToolPermissionSettings.Defaults,
             CancellationToken.None);
 
+        var emptyTodoRead = await executor.ExecuteAsync(new AgentToolCall("todo-read-empty", "TodoRead", "{}"), context);
         var todoResult = await executor.ExecuteAsync(new AgentToolCall("todo", "TodoWrite", """
-        {"todos":[{"content":"Wire Git UI","status":"in_progress","priority":1},{"content":"Add Shell page","status":"pending","priority":2}]}
+        {"todos":[{"content":"Wire Git UI","status":"in_progress","priority":1,"note":"mac-shape"},{"content":"Add Shell page","status":"pending","priority":2}]}
         """), context);
+        var todoRead = await executor.ExecuteAsync(new AgentToolCall("todo-read", "TodoRead", "{}"), context);
         var taskResult = await executor.ExecuteAsync(new AgentToolCall("task", "Task", """
         {"type":"explore","prompt":"Inspect services","description":"Explore services","run_in_background":false}
         """), context);
         var awaitResult = await executor.ExecuteAsync(new AgentToolCall("await", "Await", JsonSerializer.Serialize(new { task_id = taskResult.TaskId })), context);
 
+        Assert.False(emptyTodoRead.IsError);
+        Assert.Equal("[]", emptyTodoRead.Output);
         Assert.False(todoResult.IsError);
+        Assert.Equal("Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable.", todoResult.Output);
         Assert.Equal(2, runStore.LoadTodos("session-1").Count);
+        Assert.False(todoRead.IsError);
+        using (var todosDoc = JsonDocument.Parse(todoRead.Output))
+        {
+            Assert.Equal(2, todosDoc.RootElement.GetArrayLength());
+            Assert.Equal("mac-shape", todosDoc.RootElement[0].GetProperty("note").GetString());
+        }
         Assert.False(taskResult.IsError);
         Assert.StartsWith("task-", taskResult.TaskId);
         Assert.False(awaitResult.IsError);
