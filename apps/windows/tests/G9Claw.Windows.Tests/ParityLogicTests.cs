@@ -2556,6 +2556,45 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerContinuesAfterFallbackJsonToolCallLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "README.md"), "fallback file");
+        var provider = new FallbackJsonToolProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "read via fallback",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        Assert.Equal(2, provider.RequestCount);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ToolUse && item.ToolCall?.Name == "Read");
+        Assert.Contains(events, item =>
+            item.Kind == AgentEventKind.ToolResult &&
+            item.ToolResult?.ToolName == "Read" &&
+            item.ToolResult.Output.Contains("fallback file", StringComparison.Ordinal));
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after fallback");
+        Assert.Single(provider.SeenToolExchangeCounts, count => count == 1);
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerPassesProviderContextToTaskSubagentsLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -3796,6 +3835,36 @@ gateway:
             else
             {
                 yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done");
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+        }
+    }
+
+    private sealed class FallbackJsonToolProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+        public List<int> SeenToolExchangeCounts { get; } = [];
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            SeenToolExchangeCounts.Add(request.ToolExchanges.Count);
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.ToolExchanges.Count == 0)
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: """
+                ```json
+                {"tool":"Read","input":{"file_path":"README.md"}}
+                ```
+                """);
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+            else
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after fallback");
                 yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
             }
         }

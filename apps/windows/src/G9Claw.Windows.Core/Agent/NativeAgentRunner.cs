@@ -93,6 +93,7 @@ public sealed class NativeAgentRunner
                     cancellationToken);
                 var roundExchanges = new List<AgentToolExchange>();
                 var roundSkippedDuplicateTool = false;
+                var roundAssistantText = new StringBuilder();
                 await foreach (var providerEvent in _providerClient.StreamAsync(currentRequest, cancellationToken))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -101,6 +102,7 @@ public sealed class NativeAgentRunner
                         if (agentEvent.Kind == AgentEventKind.ContentDelta && agentEvent.Text is { } text)
                         {
                             assistantText.Append(text);
+                            roundAssistantText.Append(text);
                         }
                         else if (agentEvent.Kind == AgentEventKind.TokenBudget)
                         {
@@ -128,6 +130,24 @@ public sealed class NativeAgentRunner
 
                 if (roundExchanges.Count == 0)
                 {
+                    foreach (var fallbackCall in NativeAgentRuntime.FallbackToolCalls(roundAssistantText.ToString()))
+                    {
+                        await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, fallbackCall), cancellationToken);
+                        var toolResult = await ExecuteToolAsync(currentRequest, turn, fallbackCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
+                        if (toolResult is null)
+                        {
+                            roundSkippedDuplicateTool = true;
+                            await writer.WriteAsync(AgentEvent.Status(request.SessionId, "duplicate fallback tool request skipped"), cancellationToken);
+                            continue;
+                        }
+
+                        await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                        roundExchanges.Add(new AgentToolExchange(fallbackCall, toolResult));
+                    }
+                }
+
+                if (roundExchanges.Count == 0)
+                {
                     if (roundSkippedDuplicateTool && duplicateOnlyRounds < 2)
                     {
                         duplicateOnlyRounds++;
@@ -142,22 +162,6 @@ public sealed class NativeAgentRunner
                 toolExchanges.AddRange(roundExchanges);
                 currentRequest = request with { ToolExchanges = toolExchanges.ToList() };
                 round++;
-            }
-
-            if (toolExchanges.Count == 0)
-            {
-                var fallbackCalls = NativeAgentRuntime.FallbackToolCalls(assistantText.ToString());
-                foreach (var fallbackCall in fallbackCalls)
-                {
-                    await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, fallbackCall), cancellationToken);
-                    var toolResult = await ExecuteToolAsync(request, turn, fallbackCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
-                    if (toolResult is null)
-                    {
-                        continue;
-                    }
-
-                    await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
-                }
             }
 
             turn.RecordAssistantText(assistantText.ToString());
