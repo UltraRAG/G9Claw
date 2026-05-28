@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -17,12 +18,14 @@ public sealed class AgentToolExecutor
     private readonly WorkspaceService _workspaceService;
     private readonly TerminalService _terminalService;
     private readonly NativeRunStore _runStore;
+    private readonly bool _preferRipgrep;
 
-    public AgentToolExecutor(WorkspaceService? workspaceService = null, TerminalService? terminalService = null, NativeRunStore? runStore = null)
+    public AgentToolExecutor(WorkspaceService? workspaceService = null, TerminalService? terminalService = null, NativeRunStore? runStore = null, bool preferRipgrep = true)
     {
         _workspaceService = workspaceService ?? new WorkspaceService();
         _terminalService = terminalService ?? new TerminalService();
         _runStore = runStore ?? new NativeRunStore();
+        _preferRipgrep = preferRipgrep;
     }
 
     public async Task<AgentToolResult> ExecuteAsync(AgentToolCall rawCall, AgentToolExecutionContext context)
@@ -192,6 +195,11 @@ public sealed class AgentToolExecutor
         var pattern = RequiredString(root, "pattern");
         var basePath = OptionalString(root, "path") ?? context.WorkspaceRoot;
         var resolved = WorkspaceService.ResolveWorkspacePath(basePath, context.WorkspaceRoot);
+        if (_preferRipgrep && TryRunRipgrep(root, pattern, resolved, context.WorkspaceRoot) is { } rgOutput)
+        {
+            return Ok(call, rgOutput);
+        }
+
         var glob = OptionalString(root, "glob") ?? OptionalString(root, "include");
         var includeRegex = string.IsNullOrWhiteSpace(glob) ? null : GlobToRegex(glob);
         var outputMode = OptionalString(root, "output_mode") ?? "files_with_matches";
@@ -242,6 +250,151 @@ public sealed class AgentToolExecutor
 
         var sliced = SliceToolOutput(results, offset, headLimit);
         return Ok(call, sliced.Count == 0 ? $"No matches for {pattern}." : string.Join(Environment.NewLine, sliced));
+    }
+
+    private static string? TryRunRipgrep(JsonElement input, string pattern, string searchRoot, string workspaceRoot)
+    {
+        var executable = FindExecutable("rg");
+        if (executable is null) return null;
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executable,
+            WorkingDirectory = workspaceRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var argument in RipgrepArguments(input, pattern, searchRoot))
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        try
+        {
+            using var process = new Process { StartInfo = startInfo };
+            if (!process.Start()) return null;
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(30_000))
+            {
+                try { process.Kill(entireProcessTree: true); }
+                catch { }
+                return null;
+            }
+
+            _ = stderr.GetAwaiter().GetResult();
+            if (process.ExitCode != 0 && process.ExitCode != 1) return null;
+
+            var normalized = stdout.GetAwaiter().GetResult()
+                .Replace("\r\n", "\n")
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => NormalizeRipgrepLine(line, workspaceRoot))
+                .ToList();
+            var offset = Math.Max(0, OptionalInt(input, "offset") ?? 0);
+            var headLimit = OptionalInt(input, "head_limit") ?? 250;
+            var sliced = SliceToolOutput(normalized, offset, headLimit);
+            return sliced.Count == 0 ? $"No matches for {pattern}." : string.Join(Environment.NewLine, sliced);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    internal static IReadOnlyList<string> RipgrepArguments(JsonElement input, string pattern, string searchRoot)
+    {
+        var outputMode = OptionalString(input, "output_mode") ?? "files_with_matches";
+        var args = new List<string> { "--color", "never" };
+        switch (outputMode)
+        {
+            case "content":
+                args.Add("--line-number");
+                break;
+            case "count":
+                args.Add("--count");
+                break;
+            default:
+                args.Add("--files-with-matches");
+                break;
+        }
+
+        var glob = OptionalString(input, "glob") ?? OptionalString(input, "include");
+        if (!string.IsNullOrWhiteSpace(glob))
+        {
+            args.Add("--glob");
+            args.Add(glob);
+        }
+
+        if (OptionalBool(input, "-i") == true) args.Add("-i");
+        if (OptionalBool(input, "multiline") == true)
+        {
+            args.Add("-U");
+            args.Add("--multiline-dotall");
+        }
+
+        var type = OptionalString(input, "type");
+        if (!string.IsNullOrWhiteSpace(type))
+        {
+            args.Add("--type");
+            args.Add(type);
+        }
+
+        if ((OptionalInt(input, "context") ?? OptionalInt(input, "-C")) is int context)
+        {
+            args.Add("-C");
+            args.Add(context.ToString());
+        }
+
+        if (OptionalInt(input, "-B") is int before)
+        {
+            args.Add("-B");
+            args.Add(before.ToString());
+        }
+
+        if (OptionalInt(input, "-A") is int after)
+        {
+            args.Add("-A");
+            args.Add(after.ToString());
+        }
+
+        args.Add("--");
+        args.Add(pattern);
+        args.Add(searchRoot);
+        return args;
+    }
+
+    internal static string NormalizeRipgrepLine(string line, string workspaceRoot)
+    {
+        var normalized = line.Replace('\\', '/');
+        var normalizedRoot = Path.GetFullPath(workspaceRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Replace('\\', '/');
+        var prefix = normalizedRoot + "/";
+        return normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? normalized[prefix.Length..]
+            : normalized;
+    }
+
+    private static string? FindExecutable(string name)
+    {
+        var pathValue = Environment.GetEnvironmentVariable("PATH") ?? "";
+        var suffixes = OperatingSystem.IsWindows()
+            ? new[] { ".exe", ".cmd", ".bat", "" }
+            : new[] { "" };
+        foreach (var directory in pathValue.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = directory.Trim().Trim('"');
+            if (string.IsNullOrWhiteSpace(trimmed)) continue;
+            foreach (var suffix in suffixes)
+            {
+                var candidate = Path.Combine(trimmed, name + suffix);
+                if (File.Exists(candidate)) return candidate;
+            }
+        }
+
+        return null;
     }
 
     private static void AppendGrepContentLines(

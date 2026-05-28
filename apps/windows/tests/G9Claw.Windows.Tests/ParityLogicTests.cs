@@ -911,6 +911,40 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void AgentToolExecutorRipgrepArgumentsMatchMacRuntime()
+    {
+        using var doc = JsonDocument.Parse("""
+        {"output_mode":"content","glob":"*.cs","-i":true,"multiline":true,"type":"cs","context":2,"-B":1,"-A":3}
+        """);
+        var args = AgentToolExecutor.RipgrepArguments(doc.RootElement, "TODO", @"C:\repo");
+
+        var expected = new[]
+        {
+            "--color",
+            "never",
+            "--line-number",
+            "--glob",
+            "*.cs",
+            "-i",
+            "-U",
+            "--multiline-dotall",
+            "--type",
+            "cs",
+            "-C",
+            "2",
+            "-B",
+            "1",
+            "-A",
+            "3",
+            "--",
+            "TODO",
+            @"C:\repo",
+        };
+        Assert.Equal(expected, args);
+        Assert.Equal("src/a.cs:10:TODO", AgentToolExecutor.NormalizeRipgrepLine(@"C:\repo\src\a.cs:10:TODO", @"C:\repo"));
+    }
+
+    [Fact]
     public async Task AgentToolExecutorAwaitCanReadRunningTaskWithoutBlocking()
     {
         using var temp = new TempWorkspace();
@@ -2604,7 +2638,7 @@ gateway:
         await File.WriteAllTextAsync(Path.Combine(temp.Root, "src", "b.txt"), "notes\nTODO third\n");
         await File.WriteAllTextAsync(Path.Combine(temp.Root, "src", "context.txt"), "alpha\nbefore\nHIT focus\nafter\nomega\n");
         await File.WriteAllTextAsync(Path.Combine(temp.Root, "obj", "skip.txt"), "TODO skipped\n");
-        var executor = new AgentToolExecutor();
+        var executor = new AgentToolExecutor(preferRipgrep: false);
         var context = new AgentToolExecutionContext(
             "session-1",
             temp.Root,
