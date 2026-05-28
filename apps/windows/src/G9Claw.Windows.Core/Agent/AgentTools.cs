@@ -102,7 +102,7 @@ public static class AgentToolRegistry
         Tool("SwitchMode", "Switch between plan and agent mode. Use mode=agent with a concrete plan to execute after planning.",
             Props(("mode", Enum(["plan", "agent"], "Target run mode.")), ("plan", Str("The plan to execute when switching to agent mode."))), ["mode"]),
         Tool("Task", "Start a delegated task or subagent.",
-            Props(("type", Enum(["generalPurpose", "explore", "shell", "cursor-guide", "ci-investigator", "best-of-n-runner"], "Task type.")), ("prompt", Str("Concrete task prompt or shell command for type=shell.")), ("description", Str("Optional short label.")), ("model", Str("Optional model hint.")), ("run_in_background", Bool("Run task asynchronously and return a task id.")), ("cwd", Str("Optional workspace-relative or absolute cwd."))), ["prompt"]),
+            Props(("type", Enum(["generalPurpose", "explore", "shell", "cursor-guide", "ci-investigator", "best-of-n-runner"], "Task type. Defaults to generalPurpose.")), ("prompt", Str("Concrete task prompt or shell command for type=shell.")), ("description", Str("Optional short label.")), ("model", Str("Optional model hint.")), ("run_in_background", Bool("Run task asynchronously and return a task id.")), ("cwd", Str("Optional workspace-relative or absolute cwd.")), ("isolation", Enum(["worktree"], "Optional isolation mode. best-of-n-runner uses worktree isolation.")), ("n", Int("Number of isolated attempts for best-of-n-runner."))), ["prompt"]),
     ];
 
     public static IReadOnlyList<Dictionary<string, object?>> OpenAITools()

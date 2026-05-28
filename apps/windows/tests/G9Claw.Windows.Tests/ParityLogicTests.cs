@@ -1044,6 +1044,14 @@ public sealed class ParityLogicTests
         Assert.DoesNotContain("Edit", names);
         Assert.DoesNotContain("WebSearch", names);
         Assert.DoesNotContain("Weather", names);
+
+        var taskSchema = AgentToolRegistry.OpenAITools()
+            .Select(tool => (Dictionary<string, object?>)tool["function"]!)
+            .Single(function => (string)function["name"]! == "Task");
+        var taskParameters = (Dictionary<string, object?>)taskSchema["parameters"]!;
+        var taskProperties = (Dictionary<string, object?>)taskParameters["properties"]!;
+        Assert.Contains("isolation", taskProperties.Keys);
+        Assert.Contains("n", taskProperties.Keys);
     }
 
     [Fact]
@@ -2640,6 +2648,42 @@ gateway:
         Assert.StartsWith("task-", taskResult.TaskId);
         Assert.False(awaitResult.IsError);
         Assert.Contains("Explore services", awaitResult.Output);
+    }
+
+    [Fact]
+    public async Task AgentToolExecutorTaskValidationMatchesMacRuntime()
+    {
+        using var temp = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "not-a-directory.txt"), "file");
+        var executor = new AgentToolExecutor();
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None);
+
+        var missingCwd = await executor.ExecuteAsync(new AgentToolCall("task-missing-cwd", "Task", """
+        {"type":"explore","prompt":"Inspect","cwd":"missing"}
+        """), context);
+        var fileCwd = await executor.ExecuteAsync(new AgentToolCall("task-file-cwd", "Task", """
+        {"type":"explore","prompt":"Inspect","cwd":"not-a-directory.txt"}
+        """), context);
+        var unsupported = await executor.ExecuteAsync(new AgentToolCall("task-unsupported", "Task", """
+        {"type":"unsupported","prompt":"Inspect"}
+        """), context);
+        var generalPurpose = await executor.ExecuteAsync(new AgentToolCall("task-general", "Task", """
+        {"type":"general-purpose","prompt":"Inspect"}
+        """), context);
+
+        Assert.True(missingCwd.IsError);
+        Assert.Contains("Task cwd must be an existing directory: missing", missingCwd.Output);
+        Assert.True(fileCwd.IsError);
+        Assert.Contains("Task cwd must be an existing directory: not-a-directory.txt", fileCwd.Output);
+        Assert.True(unsupported.IsError);
+        Assert.Equal("Unsupported Task type: unsupported", unsupported.Output);
+        Assert.False(generalPurpose.IsError);
+        Assert.Contains("Recorded general-purpose task", generalPurpose.Output);
     }
 
     [Fact]

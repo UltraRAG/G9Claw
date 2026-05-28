@@ -388,12 +388,18 @@ public sealed class AgentToolExecutor
         var prompt = RequiredString(root, "prompt");
         var description = OptionalString(root, "description") ?? prompt.Split('\n').FirstOrDefault() ?? type;
         var cwd = OptionalString(root, "cwd") is { } requestedCwd
-            ? WorkspaceService.ResolveWorkspacePath(requestedCwd, context.WorkspaceRoot)
+            ? ValidatedTaskWorkingDirectory(requestedCwd, context.WorkspaceRoot)
             : context.WorkspaceRoot;
         var background = OptionalBool(root, "run_in_background") ?? true;
         var timeout = ShellTimeoutMilliseconds(root);
+        var normalizedType = NormalizeTaskType(type);
 
-        if (type.Equals("shell", StringComparison.OrdinalIgnoreCase))
+        if (normalizedType is null)
+        {
+            return Error(call, $"Unsupported Task type: {type}");
+        }
+
+        if (normalizedType == "shell")
         {
             if (background)
             {
@@ -405,7 +411,7 @@ public sealed class AgentToolExecutor
             var isError = result.ExitCode != 0;
             return new AgentToolResult(call.Id, call.Name, isError ? result.Output : LimitOutput(result.Output), isError, Diagnostics: new Dictionary<string, string>
             {
-                ["taskType"] = type,
+                ["taskType"] = normalizedType,
                 ["cwd"] = cwd,
                 ["exitCode"] = result.ExitCode?.ToString() ?? "",
             });
@@ -440,6 +446,31 @@ public sealed class AgentToolExecutor
 
     private static int ClampTimeout(long timeoutMs, int minimum) =>
         (int)Math.Max(minimum, Math.Min(timeoutMs, 600_000));
+
+    private static string ValidatedTaskWorkingDirectory(string cwd, string workspaceRoot)
+    {
+        var resolved = WorkspaceService.ResolveWorkspacePath(cwd, workspaceRoot);
+        if (!Directory.Exists(resolved))
+        {
+            throw new InvalidOperationException($"Task cwd must be an existing directory: {cwd}");
+        }
+
+        return resolved;
+    }
+
+    private static string? NormalizeTaskType(string type)
+    {
+        return type.Trim().ToLowerInvariant() switch
+        {
+            "shell" => "shell",
+            "best-of-n-runner" => "best-of-n-runner",
+            "explore" => "explore",
+            "cursor-guide" => "cursor-guide",
+            "ci-investigator" => "ci-investigator",
+            "generalpurpose" or "general-purpose" or "general_purpose" => "generalPurpose",
+            _ => null,
+        };
+    }
 
     private static string PrettyJson(JsonElement element)
     {
