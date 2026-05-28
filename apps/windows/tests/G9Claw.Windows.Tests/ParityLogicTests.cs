@@ -3890,12 +3890,17 @@ router:
             new AgentToolCall("call-3", "Grep", """{"pattern":"TODO"}"""),
             new AgentToolResult("call-3", "Grep", "boom", true),
             chinese: false);
+        var skippedEdit = ToolInvocationPresenter.Present(
+            new AgentToolCall("call-4", "Write", """{"file_path":"notes.txt","content":"draft"}"""),
+            new AgentToolResult("call-4", "Write", "Plan mode skipped this workspace-changing Write tool.", false, IsPolicyBlock: true),
+            chinese: false);
 
         Assert.Equal(ToolInvocationPhase.Command, runningShell.Phase);
         Assert.Equal(ToolInvocationState.Running, runningShell.State);
-        Assert.Equal("\u6b63\u5728\u8fd0\u884c: dir", runningShell.Summary);
-        Assert.Equal("Read: README.md", completedRead.Summary);
-        Assert.Equal("Search failed: TODO", failedSearch.Summary);
+        Assert.Equal("\u6b63\u5728\u8fd0\u884c\u547d\u4ee4 dir", runningShell.Summary);
+        Assert.Equal("Read README.md", completedRead.Summary);
+        Assert.Equal("Searched TODO", failedSearch.Summary);
+        Assert.Equal("Skipped edit in Plan mode notes.txt", skippedEdit.Summary);
     }
 
     [Fact]
@@ -3904,13 +3909,15 @@ router:
         var group = ToolInvocationPresenter.PresentGroup(
             [
                 (new AgentToolCall("read", "Read", """{"file_path":"a.txt"}"""), new AgentToolResult("read", "Read", "a", false)),
+                (new AgentToolCall("read-again", "Read", """{"file_path":"a.txt"}"""), new AgentToolResult("read-again", "Read", "a", false)),
                 (new AgentToolCall("grep", "Grep", """{"pattern":"TODO"}"""), new AgentToolResult("grep", "Grep", "b", false)),
             ],
             chinese: false);
 
-        Assert.Equal("read 1 files, searched 1 times", group.Summary);
+        Assert.Equal("explored 1 file, 1 search", group.Summary);
         Assert.True(ToolInvocationPresenter.IsBoundary("Task"));
-        Assert.True(ToolInvocationPresenter.IsBoundary("AskQuestion"));
+        Assert.False(ToolInvocationPresenter.IsBoundary("AskQuestion"));
+        Assert.False(ToolInvocationPresenter.IsBoundary("SwitchMode"));
         Assert.False(ToolInvocationPresenter.IsBoundary("Read"));
     }
 

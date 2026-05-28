@@ -48,7 +48,9 @@ public static class ToolInvocationPresenter
                 : ToolInvocationState.Completed;
         var input = ToolInput.FromJson(call.InputJson);
         var target = TargetFor(toolName, input);
-        var summary = Summary(toolName, phase, state, target, chinese);
+        var policyBlocked = result?.IsPolicyBlock == true ||
+                            result?.Output.TrimStart().StartsWith("Plan mode skipped", StringComparison.Ordinal) == true;
+        var summary = Summary(toolName, phase, state, target, chinese, policyBlocked);
         return new ToolInvocationPresentation(
             phase,
             state,
@@ -68,31 +70,35 @@ public static class ToolInvocationPresenter
             return Present(running.Call, null, chinese);
         }
 
-        var failed = items.FirstOrDefault(item => item.Result?.IsError == true);
-        if (failed.Call is not null)
-        {
-            return Present(failed.Call, failed.Result, chinese);
-        }
-
-        var reads = items.Count(item => PhaseFor(AgentToolNameCanonicalizer.Canonical(item.Call.Name)) == ToolInvocationPhase.Read);
-        var edits = items.Count(item => PhaseFor(AgentToolNameCanonicalizer.Canonical(item.Call.Name)) == ToolInvocationPhase.Edit);
+        var readTargets = items
+            .Where(item => PhaseFor(AgentToolNameCanonicalizer.Canonical(item.Call.Name)) == ToolInvocationPhase.Read)
+            .Select(item => Target(item.Call.Name, item.Call.InputJson) ?? item.Call.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        var editTargets = items
+            .Where(item => PhaseFor(AgentToolNameCanonicalizer.Canonical(item.Call.Name)) == ToolInvocationPhase.Edit)
+            .Select(item => Target(item.Call.Name, item.Call.InputJson) ?? item.Call.Id)
+            .ToHashSet(StringComparer.Ordinal);
         var searches = items.Count(item => PhaseFor(AgentToolNameCanonicalizer.Canonical(item.Call.Name)) == ToolInvocationPhase.Search);
         var commands = items.Count(item => PhaseFor(AgentToolNameCanonicalizer.Canonical(item.Call.Name)) == ToolInvocationPhase.Command);
-        var other = Math.Max(0, items.Count - reads - edits - searches - commands);
+        var todos = items.Count(item => PhaseFor(AgentToolNameCanonicalizer.Canonical(item.Call.Name)) == ToolInvocationPhase.Todo);
+        var other = Math.Max(0, items.Count - readTargets.Count - editTargets.Count - searches - commands - todos);
+        var hasKnownWork = todos > 0 || readTargets.Count > 0 || searches > 0 || editTargets.Count > 0 || commands > 0;
         var summary = chinese
             ? string.Join("\u3001", Parts([
-                reads > 0 ? $"\u5df2\u8bfb\u53d6 {reads} \u4e2a\u6587\u4ef6" : "",
-                edits > 0 ? $"\u5df2\u7f16\u8f91 {edits} \u4e2a\u6587\u4ef6" : "",
+                todos > 0 ? "\u5df2\u66f4\u65b0 Todo List" : "",
+                readTargets.Count > 0 ? $"\u5df2\u63a2\u7d22 {readTargets.Count} \u4e2a\u6587\u4ef6" : "",
                 searches > 0 ? $"\u5df2\u641c\u7d22 {searches} \u6b21" : "",
+                editTargets.Count > 0 ? $"\u5df2\u7f16\u8f91 {editTargets.Count} \u4e2a\u6587\u4ef6" : "",
                 commands > 0 ? $"\u5df2\u8fd0\u884c {commands} \u6761\u547d\u4ee4" : "",
-                other > 0 ? $"\u5df2\u4f7f\u7528 {other} \u4e2a\u5de5\u5177" : "",
+                !hasKnownWork && other > 0 ? $"\u5df2\u4f7f\u7528 {other} \u4e2a\u5de5\u5177" : "",
             ]))
             : string.Join(", ", Parts([
-                reads > 0 ? $"read {reads} files" : "",
-                edits > 0 ? $"edited {edits} files" : "",
-                searches > 0 ? $"searched {searches} times" : "",
-                commands > 0 ? $"ran {commands} commands" : "",
-                other > 0 ? $"used {other} tools" : "",
+                todos > 0 ? "updated Todo List" : "",
+                readTargets.Count > 0 ? $"explored {readTargets.Count} {(readTargets.Count == 1 ? "file" : "files")}" : "",
+                searches > 0 ? $"{searches} {(searches == 1 ? "search" : "searches")}" : "",
+                editTargets.Count > 0 ? $"edited {editTargets.Count} {(editTargets.Count == 1 ? "file" : "files")}" : "",
+                commands > 0 ? $"ran {commands} {(commands == 1 ? "command" : "commands")}" : "",
+                !hasKnownWork && other > 0 ? $"used {other} {(other == 1 ? "tool" : "tools")}" : "",
             ]));
         if (string.IsNullOrWhiteSpace(summary))
         {
@@ -113,9 +119,7 @@ public static class ToolInvocationPresenter
         var canonical = AgentToolNameCanonicalizer.Canonical(toolName);
         return string.Equals(canonical, "TodoWrite", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(canonical, "TodoRead", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(canonical, "Task", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(canonical, "AskQuestion", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(canonical, "SwitchMode", StringComparison.OrdinalIgnoreCase);
+               string.Equals(canonical, "Task", StringComparison.OrdinalIgnoreCase);
     }
 
     private static ToolInvocationPhase PhaseFor(string toolName)
@@ -163,44 +167,55 @@ public static class ToolInvocationPresenter
         return ToolInvocationPhase.Tool;
     }
 
-    private static string Summary(string toolName, ToolInvocationPhase phase, ToolInvocationState state, string target, bool chinese)
+    private static string Summary(string toolName, ToolInvocationPhase phase, ToolInvocationState state, string target, bool chinese, bool policyBlocked)
     {
-        var value = string.IsNullOrWhiteSpace(target) ? toolName : target;
+        var suffix = string.IsNullOrWhiteSpace(target) ? "" : $" {target}";
+        var canonical = AgentToolNameCanonicalizer.Canonical(toolName);
+        if (string.Equals(canonical, "TodoWrite", StringComparison.OrdinalIgnoreCase))
+        {
+            return state == ToolInvocationState.Running
+                ? (chinese ? "\u6b63\u5728\u66f4\u65b0 Todo List" : "Updating Todo List")
+                : (chinese ? "\u5df2\u66f4\u65b0 Todo List" : "Updated Todo List");
+        }
+
+        if (string.Equals(canonical, "TodoRead", StringComparison.OrdinalIgnoreCase))
+        {
+            return state == ToolInvocationState.Running
+                ? (chinese ? "\u6b63\u5728\u8bfb\u53d6 Todo List" : "Reading Todo List")
+                : (chinese ? "\u5df2\u8bfb\u53d6 Todo List" : "Read Todo List");
+        }
+
         return (phase, state, chinese) switch
         {
-            (ToolInvocationPhase.Command, ToolInvocationState.Running, true) => $"\u6b63\u5728\u8fd0\u884c: {value}",
-            (ToolInvocationPhase.Command, ToolInvocationState.Completed, true) => $"\u5df2\u8fd0\u884c: {value}",
-            (ToolInvocationPhase.Command, ToolInvocationState.Failed, true) => $"\u8fd0\u884c\u5931\u8d25: {value}",
-            (ToolInvocationPhase.Read, ToolInvocationState.Running, true) => $"\u6b63\u5728\u8bfb\u53d6: {value}",
-            (ToolInvocationPhase.Read, ToolInvocationState.Completed, true) => $"\u5df2\u8bfb\u53d6: {value}",
-            (ToolInvocationPhase.Read, ToolInvocationState.Failed, true) => $"\u8bfb\u53d6\u5931\u8d25: {value}",
-            (ToolInvocationPhase.Search, ToolInvocationState.Running, true) => $"\u6b63\u5728\u641c\u7d22: {value}",
-            (ToolInvocationPhase.Search, ToolInvocationState.Completed, true) => $"\u5df2\u641c\u7d22: {value}",
-            (ToolInvocationPhase.Search, ToolInvocationState.Failed, true) => $"\u641c\u7d22\u5931\u8d25: {value}",
-            (ToolInvocationPhase.Edit, ToolInvocationState.Running, true) => $"\u6b63\u5728\u7f16\u8f91: {value}",
-            (ToolInvocationPhase.Edit, ToolInvocationState.Completed, true) => $"\u5df2\u7f16\u8f91: {value}",
-            (ToolInvocationPhase.Edit, ToolInvocationState.Failed, true) => $"\u7f16\u8f91\u5931\u8d25: {value}",
-            (ToolInvocationPhase.Todo, ToolInvocationState.Running, true) => "\u6b63\u5728\u66f4\u65b0 Todo List",
-            (ToolInvocationPhase.Todo, ToolInvocationState.Completed, true) => "\u5df2\u66f4\u65b0 Todo List",
-            (ToolInvocationPhase.Task, ToolInvocationState.Running, true) => $"\u6b63\u5728\u6267\u884c\u4efb\u52a1: {value}",
-            (ToolInvocationPhase.Task, ToolInvocationState.Completed, true) => $"\u5df2\u6267\u884c\u4efb\u52a1: {value}",
-            (_, ToolInvocationState.Running, true) => $"\u6b63\u5728\u4f7f\u7528: {toolName}",
-            (_, ToolInvocationState.Completed, true) => $"\u5df2\u4f7f\u7528: {toolName}",
+            (ToolInvocationPhase.Command, _, true) when policyBlocked => $"\u8ba1\u5212\u6a21\u5f0f\u5df2\u8df3\u8fc7\u547d\u4ee4{suffix}",
+            (ToolInvocationPhase.Edit, _, true) when policyBlocked => $"\u8ba1\u5212\u6a21\u5f0f\u5df2\u8df3\u8fc7\u7f16\u8f91{suffix}",
+            (ToolInvocationPhase.Command, ToolInvocationState.Running, true) => $"\u6b63\u5728\u8fd0\u884c\u547d\u4ee4{suffix}",
+            (ToolInvocationPhase.Command, _, true) => $"\u5df2\u8fd0\u884c\u547d\u4ee4{suffix}",
+            (ToolInvocationPhase.Read, ToolInvocationState.Running, true) => $"\u6b63\u5728\u8bfb\u53d6{suffix}",
+            (ToolInvocationPhase.Read, _, true) => $"\u5df2\u8bfb\u53d6{suffix}",
+            (ToolInvocationPhase.Search, ToolInvocationState.Running, true) => $"\u6b63\u5728\u641c\u7d22{suffix}",
+            (ToolInvocationPhase.Search, _, true) => $"\u5df2\u641c\u7d22{suffix}",
+            (ToolInvocationPhase.Edit, ToolInvocationState.Running, true) => $"\u6b63\u5728\u7f16\u8f91{suffix}",
+            (ToolInvocationPhase.Edit, _, true) => $"\u5df2\u7f16\u8f91{suffix}",
+            (ToolInvocationPhase.Task, ToolInvocationState.Running, true) => $"\u6b63\u5728\u8fd0\u884c\u4efb\u52a1{suffix}",
+            (ToolInvocationPhase.Task, _, true) => $"\u5df2\u8fd0\u884c\u4efb\u52a1{suffix}",
+            (_, ToolInvocationState.Running, true) => $"\u6b63\u5728\u8fd0\u884c {toolName}",
+            (_, ToolInvocationState.Completed, true) => $"\u5df2\u5b8c\u6210 {toolName}",
             (_, ToolInvocationState.Failed, true) => $"{toolName} \u5931\u8d25",
-            (ToolInvocationPhase.Command, ToolInvocationState.Running, false) => $"Running: {value}",
-            (ToolInvocationPhase.Command, ToolInvocationState.Completed, false) => $"Ran: {value}",
-            (ToolInvocationPhase.Command, ToolInvocationState.Failed, false) => $"Command failed: {value}",
-            (ToolInvocationPhase.Read, ToolInvocationState.Running, false) => $"Reading: {value}",
-            (ToolInvocationPhase.Read, ToolInvocationState.Completed, false) => $"Read: {value}",
-            (ToolInvocationPhase.Read, ToolInvocationState.Failed, false) => $"Read failed: {value}",
-            (ToolInvocationPhase.Search, ToolInvocationState.Running, false) => $"Searching: {value}",
-            (ToolInvocationPhase.Search, ToolInvocationState.Completed, false) => $"Searched: {value}",
-            (ToolInvocationPhase.Search, ToolInvocationState.Failed, false) => $"Search failed: {value}",
-            (ToolInvocationPhase.Edit, ToolInvocationState.Running, false) => $"Editing: {value}",
-            (ToolInvocationPhase.Edit, ToolInvocationState.Completed, false) => $"Edited: {value}",
-            (ToolInvocationPhase.Edit, ToolInvocationState.Failed, false) => $"Edit failed: {value}",
-            (_, ToolInvocationState.Running, false) => $"Using: {toolName}",
-            (_, ToolInvocationState.Completed, false) => $"Used: {toolName}",
+            (ToolInvocationPhase.Command, _, false) when policyBlocked => $"Skipped command in Plan mode{suffix}",
+            (ToolInvocationPhase.Edit, _, false) when policyBlocked => $"Skipped edit in Plan mode{suffix}",
+            (ToolInvocationPhase.Command, ToolInvocationState.Running, false) => $"Running command{suffix}",
+            (ToolInvocationPhase.Command, _, false) => $"Ran command{suffix}",
+            (ToolInvocationPhase.Read, ToolInvocationState.Running, false) => $"Reading{suffix}",
+            (ToolInvocationPhase.Read, _, false) => $"Read{suffix}",
+            (ToolInvocationPhase.Search, ToolInvocationState.Running, false) => $"Searching{suffix}",
+            (ToolInvocationPhase.Search, _, false) => $"Searched{suffix}",
+            (ToolInvocationPhase.Edit, ToolInvocationState.Running, false) => $"Editing{suffix}",
+            (ToolInvocationPhase.Edit, _, false) => $"Edited{suffix}",
+            (ToolInvocationPhase.Task, ToolInvocationState.Running, false) => $"Running task{suffix}",
+            (ToolInvocationPhase.Task, _, false) => $"Ran task{suffix}",
+            (_, ToolInvocationState.Running, false) => $"Running {toolName}",
+            (_, ToolInvocationState.Completed, false) => $"Completed {toolName}",
             (_, ToolInvocationState.Failed, false) => $"{toolName} failed",
             _ => toolName,
         };
