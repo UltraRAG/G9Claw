@@ -1025,9 +1025,9 @@ public static partial class NativeAgentRuntime
         if (string.IsNullOrWhiteSpace(text)) return [];
         var trimmed = text.Trim();
 
-        if (Regex.Match(trimmed, @"(?is)^<command>.*</command>$").Success)
+        if (LegacyCommandFallbackToolCall(trimmed) is { } legacyCommand)
         {
-            return [new AgentToolCall($"call-{Guid.NewGuid():D}", "Glob", """{"pattern":"*"}""")];
+            return [legacyCommand];
         }
 
         var invoke = InvokeBlock.Match(trimmed);
@@ -1062,6 +1062,66 @@ public static partial class NativeAgentRuntime
         }
 
         return jsonText is null ? [] : ToolCallsFromJson(jsonText);
+    }
+
+    private static AgentToolCall? LegacyCommandFallbackToolCall(string text)
+    {
+        foreach (var pattern in new[] { @"(?is)^<command>\s*(?<body>.*?)\s*</command>$", @"(?is)^<bash>\s*(?<body>.*?)\s*</bash>$" })
+        {
+            var match = Regex.Match(text, pattern);
+            if (!match.Success) continue;
+
+            var body = match.Groups["body"].Value.Trim();
+            if (string.IsNullOrWhiteSpace(body)) return null;
+
+            var command = body;
+            var description = "Run workspace command";
+            if (body.StartsWith("{", StringComparison.Ordinal))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(body);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                    {
+                        command = FirstString(doc.RootElement, "command") ??
+                                  FirstString(doc.RootElement, "cmd") ??
+                                  FirstString(doc.RootElement, "input") ??
+                                  "";
+                        description = FirstString(doc.RootElement, "description") ?? description;
+                    }
+                }
+                catch (JsonException)
+                {
+                    command = body;
+                }
+            }
+
+            var trimmedCommand = command.Trim();
+            if (string.IsNullOrWhiteSpace(trimmedCommand)) return null;
+
+            if (trimmedCommand == "ls" || trimmedCommand.StartsWith("ls ", StringComparison.Ordinal))
+            {
+                return new AgentToolCall(
+                    $"call-{Guid.NewGuid():D}",
+                    "Glob",
+                    JsonSerializer.Serialize(new SortedDictionary<string, object?>
+                    {
+                        ["path"] = ".",
+                        ["pattern"] = "*",
+                    }, ToolArgumentNormalizer.JsonWriteOptions));
+            }
+
+            return new AgentToolCall(
+                $"call-{Guid.NewGuid():D}",
+                "Shell",
+                JsonSerializer.Serialize(new SortedDictionary<string, object?>
+                {
+                    ["command"] = trimmedCommand,
+                    ["description"] = description,
+                }, ToolArgumentNormalizer.JsonWriteOptions));
+        }
+
+        return null;
     }
 
     private static IReadOnlyList<AgentToolCall> ToolCallsFromJson(string json)
@@ -1116,6 +1176,12 @@ public static partial class NativeAgentRuntime
         {
             return [];
         }
+    }
+
+    private static string? FirstString(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var value)) return null;
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
     }
 }
 

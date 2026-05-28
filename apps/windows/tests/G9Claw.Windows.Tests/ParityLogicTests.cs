@@ -1571,6 +1571,24 @@ router:
     }
 
     [Fact]
+    public void NativeAgentRuntimeParsesLegacyCommandFallbackLikeMac()
+    {
+        var shell = NativeAgentRuntime.FallbackToolCalls("<command>pwd</command>");
+        var shellJson = JsonDocument.Parse(shell.Single().InputJson).RootElement;
+
+        Assert.Equal("Shell", shell.Single().Name);
+        Assert.Equal("pwd", shellJson.GetProperty("command").GetString());
+        Assert.Equal("Run workspace command", shellJson.GetProperty("description").GetString());
+
+        var glob = NativeAgentRuntime.FallbackToolCalls("<bash>{\"command\":\"ls -la\",\"description\":\"List files\"}</bash>");
+        var globJson = JsonDocument.Parse(glob.Single().InputJson).RootElement;
+
+        Assert.Equal("Glob", glob.Single().Name);
+        Assert.Equal("*", globJson.GetProperty("pattern").GetString());
+        Assert.Equal(".", globJson.GetProperty("path").GetString());
+    }
+
+    [Fact]
     public void NativeAgentRuntimeDoesNotParseMixedMarkdownFallbackToolCall()
     {
         const string text = """
