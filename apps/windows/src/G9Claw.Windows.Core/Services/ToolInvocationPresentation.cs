@@ -30,6 +30,13 @@ public sealed record ToolInvocationPresentation(
 
 public static class ToolInvocationPresenter
 {
+    public static string? Target(string toolName, string inputJson, int limit = 72)
+    {
+        var canonical = AgentToolNameCanonicalizer.Canonical(toolName);
+        var target = TargetFor(canonical, ToolInput.FromJson(inputJson));
+        return string.IsNullOrWhiteSpace(target) ? null : Compact(target, limit);
+    }
+
     public static ToolInvocationPresentation Present(AgentToolCall call, AgentToolResult? result, bool chinese)
     {
         var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);

@@ -266,6 +266,68 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void ProcessTraceSummaryMatchesMacRunningToolPolicies()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var read = new AgentActivity(
+            "read",
+            "session-1",
+            "run-1",
+            "",
+            """{"file_path":"README.md"}""",
+            AgentActivityPhase.Tool,
+            AgentActivityState.Running,
+            now,
+            now,
+            "Read");
+        var ask = read with
+        {
+            Id = "ask",
+            ToolName = "AskQuestion",
+            Detail = """{"questions":[{"label":"Proceed?"}]}""",
+            CreatedAt = now.AddSeconds(1),
+        };
+        var switchMode = read with
+        {
+            Id = "switch",
+            ToolName = "SwitchMode",
+            Detail = """{"plan":"Continue"}""",
+            CreatedAt = now.AddSeconds(2),
+        };
+
+        var readSummary = ProcessTraceSummary.Make([read], chinese: false);
+        var askSummary = ProcessTraceSummary.Make([read with { State = AgentActivityState.Completed }, ask], chinese: false);
+        var switchSummary = ProcessTraceSummary.Make([ask with { State = AgentActivityState.Completed }, switchMode], chinese: false);
+
+        Assert.Equal("Reading README.md", readSummary.Text);
+        Assert.True(readSummary.ShouldShimmer);
+        Assert.Equal("read", readSummary.RunningActivityId);
+        Assert.Equal("Waiting for your answer", askSummary.Text);
+        Assert.Equal("ask", askSummary.RunningActivityId);
+        Assert.Equal("Waiting for plan confirmation", switchSummary.Text);
+        Assert.Equal("switch", switchSummary.RunningActivityId);
+    }
+
+    [Fact]
+    public void ProcessTraceSummaryAggregatesCompletedToolsLikeMac()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var readA = CompletedActivity("read-a", "Read", """{"file_path":"README.md"}""", now);
+        var readB = CompletedActivity("read-b", "Read", """{"file_path":"README.md"}""", now.AddSeconds(1));
+        var question = CompletedActivity("question", "AskQuestion", "done", now.AddSeconds(2)) with
+        {
+            DetailMessages = ["questions_count=2"],
+        };
+        var permissionQuestion = CompletedActivity("permission-question", "AskQuestion", "done", now.AddSeconds(3));
+        var todo = CompletedActivity("todo", "TodoWrite", """{"todos":[{"content":"ship"}]}""", now.AddSeconds(4));
+        var summary = ProcessTraceSummary.Make([readA, readB, question, permissionQuestion, todo], chinese: false);
+
+        Assert.Equal("asked 2 questions, updated Todo List, explored 1 file", summary.Text);
+        Assert.False(summary.ShouldShimmer);
+        Assert.Null(summary.RunningActivityId);
+    }
+
+    [Fact]
     public void AgentToolPresentationClassifierAndInputPreviewMatchMacPolicies()
     {
         Assert.True(AgentToolPresentationClassifier.IsReadTool("read"));
@@ -4515,6 +4577,18 @@ gateway:
         date,
         date,
         state);
+
+    private static AgentActivity CompletedActivity(string id, string toolName, string detail, DateTimeOffset createdAt) => new(
+        id,
+        "session-1",
+        "run-1",
+        "",
+        detail,
+        AgentToolPresentationClassifier.PhaseForToolName(toolName),
+        AgentActivityState.Completed,
+        createdAt,
+        createdAt,
+        toolName);
 
     private static void AssertNoCompletedAssistantTurnTextContains(IReadOnlyList<AgentEvent> events, string text)
     {

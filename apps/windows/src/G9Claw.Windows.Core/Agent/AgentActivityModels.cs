@@ -76,6 +76,186 @@ public sealed record AgentActivity(
         ProcessTraceActivities(activities).Count > 0;
 }
 
+public sealed record ProcessTraceSummary(
+    string Text,
+    bool ShouldShimmer,
+    string? RunningActivityId)
+{
+    public static ProcessTraceSummary Make(IEnumerable<AgentActivity> activities, bool chinese)
+    {
+        var visible = VisibleActivities(activities);
+        var runningTool = visible.LastOrDefault(activity =>
+            activity.State == AgentActivityState.Running &&
+            !string.IsNullOrWhiteSpace(activity.ToolName));
+        if (runningTool is not null)
+        {
+            return new ProcessTraceSummary(RunningText(runningTool, chinese), true, runningTool.Id);
+        }
+
+        var running = visible.LastOrDefault(activity => activity.State == AgentActivityState.Running);
+        if (running is not null)
+        {
+            var title = running.Title.Trim();
+            return new ProcessTraceSummary(
+                string.IsNullOrWhiteSpace(title) ? (chinese ? "\u6b63\u5728\u5904\u7406" : "Processing") : title,
+                true,
+                running.Id);
+        }
+
+        return new ProcessTraceSummary(AggregateText(visible, chinese), false, null);
+    }
+
+    private static List<AgentActivity> VisibleActivities(IEnumerable<AgentActivity> activities) =>
+        activities
+            .Where(activity =>
+                !string.IsNullOrWhiteSpace(activity.Title) ||
+                !string.IsNullOrWhiteSpace(activity.Detail) ||
+                activity.ToolName is not null)
+            .OrderBy(activity => activity.CreatedAt)
+            .ToList();
+
+    private static string RunningText(AgentActivity activity, bool chinese)
+    {
+        var target = TargetFor(activity);
+        var targetText = string.IsNullOrWhiteSpace(target) ? "" : $" {target}";
+        var toolName = activity.ToolName ?? "";
+        var canonical = AgentToolNameCanonicalizer.Canonical(toolName).ToLowerInvariant();
+        var phase = AgentToolPresentationClassifier.PhaseForToolName(toolName);
+
+        if (canonical == "askquestion") return chinese ? "\u7b49\u5f85\u4f60\u7684\u56de\u7b54" : "Waiting for your answer";
+        if (canonical == "switchmode") return chinese ? "\u7b49\u5f85\u8ba1\u5212\u786e\u8ba4" : "Waiting for plan confirmation";
+        if (canonical == "read") return chinese ? $"\u6b63\u5728\u8bfb\u53d6{targetText}" : $"Reading{targetText}";
+        if (canonical == "write") return chinese ? $"\u6b63\u5728\u5199\u5165{targetText}" : $"Writing{targetText}";
+        if (canonical is "strreplace" or "editnotebook") return chinese ? $"\u6b63\u5728\u7f16\u8f91{targetText}" : $"Editing{targetText}";
+        if (canonical == "delete") return chinese ? $"\u6b63\u5728\u5220\u9664{targetText}" : $"Deleting{targetText}";
+        if (canonical == "todowrite") return chinese ? "\u6b63\u5728\u66f4\u65b0 Todo List" : "Updating Todo List";
+        if (canonical == "todoread") return chinese ? "\u6b63\u5728\u8bfb\u53d6 Todo List" : "Reading Todo List";
+
+        return phase switch
+        {
+            AgentActivityPhase.Search => chinese ? $"\u6b63\u5728\u641c\u7d22{targetText}" : $"Searching{targetText}",
+            AgentActivityPhase.Command => chinese ? $"\u6b63\u5728\u6267\u884c{targetText}" : $"Running{targetText}",
+            AgentActivityPhase.Edit => chinese ? $"\u6b63\u5728\u7f16\u8f91{targetText}" : $"Editing{targetText}",
+            AgentActivityPhase.Todo => chinese ? "\u6b63\u5728\u66f4\u65b0 Todo List" : "Updating Todo List",
+            AgentActivityPhase.Subagent => chinese ? $"\u6b63\u5728\u8fd0\u884c\u4efb\u52a1{targetText}" : $"Running task{targetText}",
+            AgentActivityPhase.Thinking => chinese ? "\u6b63\u5728\u601d\u8003" : "Thinking",
+            AgentActivityPhase.Status => StatusText(activity.Title, chinese),
+            _ => FallbackText(activity.Title, chinese),
+        };
+    }
+
+    private static string StatusText(string title, bool chinese)
+    {
+        var fallback = title.Trim();
+        var lower = fallback.ToLowerInvariant();
+        if (lower.Contains("connecting", StringComparison.Ordinal)) return chinese ? "\u6b63\u5728\u8fde\u63a5\u6a21\u578b" : "Connecting to model";
+        if (lower.Contains("continuing", StringComparison.Ordinal) || fallback.Contains("\u7ee7\u7eed", StringComparison.Ordinal)) return chinese ? "\u6b63\u5728\u7ee7\u7eed\u5904\u7406" : "Continuing";
+        return string.IsNullOrWhiteSpace(fallback) ? (chinese ? "\u6b63\u5728\u601d\u8003" : "Thinking") : fallback;
+    }
+
+    private static string FallbackText(string title, bool chinese)
+    {
+        var fallback = title.Trim();
+        return string.IsNullOrWhiteSpace(fallback) ? (chinese ? "\u6b63\u5728\u5904\u7406" : "Processing") : fallback;
+    }
+
+    private static string AggregateText(IReadOnlyList<AgentActivity> activities, bool chinese)
+    {
+        var reads = UniqueTargetCount(activities, activity =>
+            activity.ToolName is not null && AgentToolPresentationClassifier.IsReadTool(activity.ToolName));
+        var edits = UniqueTargetCount(activities, activity =>
+            AgentToolPresentationClassifier.PhaseForToolName(activity.ToolName ?? "") == AgentActivityPhase.Edit);
+        var searches = activities.Count(activity =>
+            AgentToolPresentationClassifier.PhaseForToolName(activity.ToolName ?? "") == AgentActivityPhase.Search);
+        var commands = activities.Count(activity =>
+            AgentToolPresentationClassifier.PhaseForToolName(activity.ToolName ?? "") == AgentActivityPhase.Command);
+        var todos = activities.Count(activity =>
+            AgentToolPresentationClassifier.PhaseForToolName(activity.ToolName ?? "") == AgentActivityPhase.Todo);
+        var questions = QuestionCount(activities);
+        var otherTools = activities.Count(activity => activity.ToolName is not null);
+
+        var parts = new List<string>();
+        if (chinese)
+        {
+            if (questions > 0) parts.Add($"\u5df2\u8be2\u95ee {questions} \u4e2a\u95ee\u9898");
+            if (todos > 0) parts.Add("\u5df2\u66f4\u65b0 Todo List");
+            if (reads > 0) parts.Add($"\u5df2\u63a2\u7d22 {reads} \u4e2a\u6587\u4ef6");
+            if (searches > 0) parts.Add($"{searches} \u6b21\u641c\u7d22");
+            if (edits > 0) parts.Add($"\u5df2\u7f16\u8f91 {edits} \u4e2a\u6587\u4ef6");
+            if (commands > 0) parts.Add($"\u5df2\u8fd0\u884c {commands} \u6761\u547d\u4ee4");
+            if (parts.Count == 0 && otherTools > 0) parts.Add($"\u5df2\u4f7f\u7528 {otherTools} \u4e2a\u5de5\u5177");
+            return parts.Count == 0 ? "\u6b63\u5728\u5904\u7406" : string.Join(" ", parts);
+        }
+
+        if (questions > 0) parts.Add($"asked {questions} {(questions == 1 ? "question" : "questions")}");
+        if (todos > 0) parts.Add("updated Todo List");
+        if (reads > 0) parts.Add($"explored {reads} {(reads == 1 ? "file" : "files")}");
+        if (searches > 0) parts.Add($"{searches} {(searches == 1 ? "search" : "searches")}");
+        if (edits > 0) parts.Add($"edited {edits} {(edits == 1 ? "file" : "files")}");
+        if (commands > 0) parts.Add($"ran {commands} {(commands == 1 ? "command" : "commands")}");
+        if (parts.Count == 0 && otherTools > 0) parts.Add($"used {otherTools} {(otherTools == 1 ? "tool" : "tools")}");
+        return parts.Count == 0 ? "Processing" : string.Join(", ", parts);
+    }
+
+    private static int QuestionCount(IEnumerable<AgentActivity> activities) =>
+        activities.Sum(activity =>
+            AgentToolNameCanonicalizer.Canonical(activity.ToolName ?? "") == "AskQuestion" &&
+            !activity.Id.StartsWith("permission-", StringComparison.Ordinal) &&
+            activity.State == AgentActivityState.Completed
+                ? QuestionCount(activity.DetailMessages) ?? 1
+                : 0);
+
+    private static int? QuestionCount(IEnumerable<string>? values)
+    {
+        if (values is null) return null;
+        const string prefix = "questions_count=";
+        foreach (var value in values)
+        {
+            if (value.StartsWith(prefix, StringComparison.Ordinal) &&
+                int.TryParse(value[prefix.Length..], out var count))
+            {
+                return count;
+            }
+        }
+
+        return null;
+    }
+
+    private static int UniqueTargetCount(IEnumerable<AgentActivity> activities, Func<AgentActivity, bool> predicate) =>
+        activities
+            .Where(predicate)
+            .Select(activity => TargetFor(activity) ?? activity.Id)
+            .ToHashSet(StringComparer.Ordinal)
+            .Count;
+
+    private static string? TargetFor(AgentActivity activity)
+    {
+        if (string.IsNullOrWhiteSpace(activity.ToolName)) return null;
+        var sources = new[] { activity.Detail }.Concat(activity.DetailMessages ?? []);
+        foreach (var source in sources)
+        {
+            var target = ToolInvocationPresenter.Target(activity.ToolName, source, 64);
+            if (!string.IsNullOrWhiteSpace(target)) return target;
+
+            var compact = Compact(source, 64);
+            if (!string.IsNullOrWhiteSpace(compact) &&
+                !compact.StartsWith("{", StringComparison.Ordinal))
+            {
+                return compact;
+            }
+        }
+
+        return null;
+    }
+
+    private static string Compact(string? value, int limit)
+    {
+        var normalized = (value ?? "").Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim();
+        if (normalized.Length <= limit) return normalized;
+        return $"{normalized[..Math.Max(0, limit - 1)]}\u2026";
+    }
+}
+
 public enum AgentActivityPhase
 {
     Status,
