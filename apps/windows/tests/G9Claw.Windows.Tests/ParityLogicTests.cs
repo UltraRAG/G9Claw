@@ -975,6 +975,86 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public async Task AgentToolExecutorReadLintsRunsConfiguredCommandLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        Directory.CreateDirectory(Path.Combine(temp.Root, "src"));
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "src", "file.cs"), "class Demo {}\n");
+        var executor = new AgentToolExecutor();
+        var noConfigContext = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None);
+
+        var noConfig = await executor.ExecuteAsync(new AgentToolCall("lint-none", "ReadLints", """{"path":"src"}"""), noConfigContext);
+
+        Assert.False(noConfig.IsError);
+        using (var noConfigJson = JsonDocument.Parse(noConfig.Output))
+        {
+            Assert.Equal(0, noConfigJson.RootElement.GetProperty("diagnostics").GetArrayLength());
+            Assert.Equal(
+                "No native lint.command is configured and no live LSP diagnostics are available.",
+                noConfigJson.RootElement.GetProperty("message").GetString());
+        }
+
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None,
+            new Dictionary<string, string>
+            {
+                ["lint.command"] = "Write-Output \"src/file.cs:2:4: warning: env=$env:G9CLAW_RAG_ENABLED\"; Write-Output \"src/file.cs:3: error: broken\"",
+                ["rag.enabled"] = "true",
+            });
+
+        var result = await executor.ExecuteAsync(new AgentToolCall("lint", "ReadLints", """
+        {"path":"src","severity":"warning","limit":10}
+        """), context);
+
+        Assert.False(result.IsError);
+        using var json = JsonDocument.Parse(result.Output);
+        var root = json.RootElement;
+        var diagnostics = root.GetProperty("diagnostics");
+        Assert.Equal(1, diagnostics.GetArrayLength());
+        var diagnostic = diagnostics[0];
+        Assert.Equal("src/file.cs", diagnostic.GetProperty("file").GetString());
+        Assert.Equal(2, diagnostic.GetProperty("line").GetInt32());
+        Assert.Equal(4, diagnostic.GetProperty("column").GetInt32());
+        Assert.Equal("warning", diagnostic.GetProperty("severity").GetString());
+        Assert.Equal("env=1", diagnostic.GetProperty("message").GetString());
+        Assert.Equal(0, root.GetProperty("exitCode").GetInt32());
+        Assert.False(root.GetProperty("truncated").GetBoolean());
+    }
+
+    [Fact]
+    public void AgentToolExecutorParsesLintDiagnosticsLikeMac()
+    {
+        var diagnostics = AgentToolExecutor.ParseLintDiagnostics("""
+        src/App.swift:2:5: warning: lint warning
+        src/B.swift:3: error: broken
+        src/C.swift:4: info: skipped
+        src/D.swift:5: no explicit level
+        """, "error", 10);
+
+        Assert.Equal(2, diagnostics.Count);
+        Assert.Equal("src/B.swift", diagnostics[0]["file"]);
+        Assert.Equal(3, diagnostics[0]["line"]);
+        Assert.Equal(0, diagnostics[0]["column"]);
+        Assert.Equal("error", diagnostics[0]["severity"]);
+        Assert.Equal("broken", diagnostics[0]["message"]);
+        Assert.Equal("src/D.swift", diagnostics[1]["file"]);
+        Assert.Equal("error", diagnostics[1]["severity"]);
+
+        var warning = AgentToolExecutor.ParseLintDiagnostics("src/App.swift:2:5: warning: lint warning", null, 1);
+        Assert.Equal("warning", warning[0]["severity"]);
+        Assert.Equal(5, warning[0]["column"]);
+    }
+
+    [Fact]
     public void AgentToolExecutorRipgrepArgumentsMatchMacRuntime()
     {
         using var doc = JsonDocument.Parse("""

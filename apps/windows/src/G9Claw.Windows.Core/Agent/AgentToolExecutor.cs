@@ -52,7 +52,7 @@ public sealed class AgentToolExecutor
                 "Shell" => await ShellAsync(call, context),
                 "Await" => await AwaitAsync(call, context),
                 "WebFetch" => Ok(call, "WebFetch is disabled. Use Skill with g9claw-rag:rag-research for source-grounded web evidence."),
-                "ReadLints" => ReadLints(call),
+                "ReadLints" => await ReadLintsAsync(call, context),
                 "Skill" => Skill(call, context),
                 "TodoRead" => TodoRead(call, context),
                 "TodoWrite" => TodoWrite(call, context),
@@ -516,8 +516,58 @@ public sealed class AgentToolExecutor
         });
     }
 
-    private static AgentToolResult ReadLints(AgentToolCall call) =>
-        Ok(call, "No native diagnostics provider is attached yet.");
+    private async Task<AgentToolResult> ReadLintsAsync(AgentToolCall call, AgentToolExecutionContext context)
+    {
+        using var doc = JsonDocument.Parse(call.InputJson);
+        var root = doc.RootElement;
+        var limit = Math.Max(1, Math.Min(OptionalInt(root, "limit") ?? 100, 500));
+        var severity = OptionalString(root, "severity")?.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(severity)) severity = null;
+        var scopedPath = OptionalString(root, "path");
+        scopedPath = string.IsNullOrWhiteSpace(scopedPath) ? "." : scopedPath;
+        var resolved = WorkspaceService.ResolveWorkspacePath(scopedPath, context.WorkspaceRoot);
+        if (!File.Exists(resolved) && !Directory.Exists(resolved))
+        {
+            return Error(call, $"Path does not exist: {scopedPath}");
+        }
+
+        var command = NativeConfigValue(context.NativeConfigValues, "lint.command");
+        if (command is null)
+        {
+            return Ok(call, PrettyJson(new JsonObject
+            {
+                ["diagnostics"] = new JsonArray(),
+                ["message"] = "No native lint.command is configured and no live LSP diagnostics are available.",
+            }));
+        }
+
+        var result = await _terminalService.RunAsync(
+            command,
+            context.WorkspaceRoot,
+            120_000,
+            context.CancellationToken,
+            SkillRuntimeEnvironment.Build(context.NativeConfigValues));
+        var diagnostics = ParseLintDiagnostics(result.Output, severity, limit);
+        var diagnosticsJson = new JsonArray();
+        foreach (var diagnostic in diagnostics)
+        {
+            diagnosticsJson.Add(new JsonObject
+            {
+                ["file"] = diagnostic["file"].ToString(),
+                ["line"] = (int)diagnostic["line"],
+                ["column"] = (int)diagnostic["column"],
+                ["severity"] = diagnostic["severity"].ToString(),
+                ["message"] = diagnostic["message"].ToString(),
+            });
+        }
+
+        return Ok(call, PrettyJson(new JsonObject
+        {
+            ["diagnostics"] = diagnosticsJson,
+            ["exitCode"] = result.ExitCode,
+            ["truncated"] = diagnostics.Count >= limit,
+        }));
+    }
 
     private AgentToolResult Skill(AgentToolCall call, AgentToolExecutionContext context)
     {
@@ -670,6 +720,43 @@ public sealed class AgentToolExecutor
             _ => null,
         };
     }
+
+    internal static IReadOnlyList<Dictionary<string, object>> ParseLintDiagnostics(string output, string? severity, int limit)
+    {
+        limit = Math.Max(1, limit);
+        severity = string.IsNullOrWhiteSpace(severity) ? null : severity.Trim().ToLowerInvariant();
+        var regex = new Regex(
+            @"^(.+?):(\d+):(?:(\d+):)?\s*(?:(error|warning|info|note):)?\s*(.+)$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        var diagnostics = new List<Dictionary<string, object>>();
+        using var reader = new StringReader(output);
+        while (reader.ReadLine() is { } line)
+        {
+            var match = regex.Match(line);
+            if (!match.Success) continue;
+            var level = match.Groups[4].Success ? match.Groups[4].Value.ToLowerInvariant() : "error";
+            if (severity is not null && level != severity) continue;
+            diagnostics.Add(new Dictionary<string, object>
+            {
+                ["file"] = match.Groups[1].Value,
+                ["line"] = ParseDiagnosticNumber(match.Groups[2].Value),
+                ["column"] = match.Groups[3].Success ? ParseDiagnosticNumber(match.Groups[3].Value) : 0,
+                ["severity"] = level,
+                ["message"] = match.Groups[5].Value,
+            });
+            if (diagnostics.Count >= limit) break;
+        }
+
+        return diagnostics;
+    }
+
+    private static int ParseDiagnosticNumber(string value) =>
+        int.TryParse(value, out var parsed) ? parsed : 0;
+
+    private static string? NativeConfigValue(IReadOnlyDictionary<string, string>? values, string key) =>
+        values is not null && values.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+            ? value
+            : null;
 
     private static string PrettyJson(JsonElement element)
     {
