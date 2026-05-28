@@ -3198,6 +3198,46 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerNudgesIncompleteTodosLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new IncompleteTodoProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "implement todo tracked change",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.BypassPermissions,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        var results = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+        Assert.Equal(5, provider.RequestCount);
+        Assert.Equal(["Write", "TodoWrite", "TodoWrite"], results.Select(result => result.ToolName));
+        Assert.True(provider.SawIncompleteTodoNudge);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "continuing");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after completed todos");
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Error);
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerUsesDestructivePlanApprovalLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -4679,6 +4719,45 @@ gateway:
 
             yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after verification");
             yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+        }
+    }
+
+    private sealed class IncompleteTodoProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+        public bool SawIncompleteTodoNudge { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            SawIncompleteTodoNudge |= request.PriorMessages.Any(message =>
+                message.PlainText.Contains("todo list still has unfinished items", StringComparison.Ordinal));
+            switch (request.ToolExchanges.Count)
+            {
+                case 0:
+                    yield return new ProviderStreamEvent(
+                        ProviderStreamEventKind.ToolCall,
+                        ToolCall: new AgentToolCall("write-file", "Write", """{"file_path":"todo.txt","content":"started"}"""));
+                    yield break;
+                case 1:
+                    yield return new ProviderStreamEvent(
+                        ProviderStreamEventKind.ToolCall,
+                        ToolCall: new AgentToolCall("todo-pending", "TodoWrite", """{"todos":[{"content":"finish implementation","status":"in_progress"}]}"""));
+                    yield break;
+                case 2 when SawIncompleteTodoNudge:
+                    yield return new ProviderStreamEvent(
+                        ProviderStreamEventKind.ToolCall,
+                        ToolCall: new AgentToolCall("todo-done", "TodoWrite", """{"todos":[{"content":"finish implementation","status":"completed"}]}"""));
+                    yield break;
+                default:
+                    yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after completed todos");
+                    yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+                    yield break;
+            }
         }
     }
 

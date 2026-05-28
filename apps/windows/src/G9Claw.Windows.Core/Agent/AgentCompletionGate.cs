@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace G9Claw.Windows.Core;
 
 public enum AgentCompletionDecisionKind
@@ -22,6 +24,7 @@ public sealed class AgentCompletionGate
     private int _mutatingToolCount;
     private int _verificationAfterMutationCount;
     private bool _lastToolResultWasError;
+    private bool _hasIncompleteTodos;
 
     public AgentCompletionDecision Decision(AgentRequest request, string assistantContent)
     {
@@ -59,6 +62,14 @@ public sealed class AgentCompletionGate
             """);
         }
 
+        if (_hasIncompleteTodos)
+        {
+            return ContinueOrPause("""
+            Continue the workspace task. The todo list still has unfinished items.
+            Complete the current todo item, update TodoWrite when progress changes, and do not give the final summary until every required todo is completed or explicitly canceled.
+            """);
+        }
+
         if (LooksLikeOngoingWorkspaceWork(assistantContent))
         {
             return ContinueOrPause("""
@@ -84,6 +95,11 @@ public sealed class AgentCompletionGate
         }
 
         _continuationNudgeCount = 0;
+        if (AgentToolNameCanonicalizer.Canonical(call.Name) == "TodoWrite")
+        {
+            _hasIncompleteTodos = HasIncompleteTodos(call.InputJson);
+        }
+
         if (AgentToolBehaviorClassifier.IsWorkspaceMutatingTool(call))
         {
             _mutatingToolCount++;
@@ -111,6 +127,78 @@ public sealed class AgentCompletionGate
         AgentToolNameCanonicalizer.Canonical(call.Name) is "Read" or "Glob" or "Grep" or "SemanticSearch" or "ReadLints" or "TodoRead" or "Skill" or "Await" ||
         (AgentToolNameCanonicalizer.Canonical(call.Name) == "Shell" && AgentToolBehaviorClassifier.IsReadOnlyShell(call.InputJson)) ||
         (AgentToolNameCanonicalizer.Canonical(call.Name) == "Task" && AgentToolBehaviorClassifier.IsReadOnlyTask(call.InputJson));
+
+    private static bool HasIncompleteTodos(string inputJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(inputJson) ? "{}" : inputJson);
+            return ContainsIncompleteTodo(doc.RootElement);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool ContainsIncompleteTodo(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            if (value.TryGetProperty("todos", out var todos))
+            {
+                return ContainsIncompleteTodo(todos);
+            }
+
+            if (value.TryGetProperty("content", out _) ||
+                value.TryGetProperty("title", out _) ||
+                value.TryGetProperty("task", out _))
+            {
+                var rawStatus = StringValue(value, "status") ??
+                    (BoolValue(value, "done") == true ? "completed" : "pending");
+                var status = rawStatus.Trim().ToLowerInvariant();
+                return status is not ("completed" or "done");
+            }
+
+            foreach (var property in value.EnumerateObject())
+            {
+                if (ContainsIncompleteTodo(property.Value))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return value.ValueKind == JsonValueKind.Array &&
+            value.EnumerateArray().Any(ContainsIncompleteTodo);
+    }
+
+    private static string? StringValue(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
+    }
+
+    private static bool? BoolValue(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null,
+        };
+    }
 
     private static bool IsWorkspaceMutationRequest(string prompt)
     {
