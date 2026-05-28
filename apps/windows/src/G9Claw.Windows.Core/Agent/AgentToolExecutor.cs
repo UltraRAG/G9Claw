@@ -197,6 +197,9 @@ public sealed class AgentToolExecutor
         var outputMode = OptionalString(root, "output_mode") ?? "files_with_matches";
         var headLimit = OptionalInt(root, "head_limit") ?? 250;
         var offset = Math.Max(0, OptionalInt(root, "offset") ?? 0);
+        var contextLines = Math.Max(0, OptionalInt(root, "context") ?? OptionalInt(root, "-C") ?? 0);
+        var beforeLines = Math.Max(0, OptionalInt(root, "-B") ?? contextLines);
+        var afterLines = Math.Max(0, OptionalInt(root, "-A") ?? contextLines);
         var options = OptionalBool(root, "-i") == true ? RegexOptions.IgnoreCase : RegexOptions.None;
         var regex = new Regex(pattern, options | RegexOptions.Compiled);
         var files = Directory.Exists(resolved) ? EnumerateSearchableFiles(resolved, null) : [resolved];
@@ -206,18 +209,19 @@ public sealed class AgentToolExecutor
 
         foreach (var file in files)
         {
-            var lineNumber = 0;
             var relative = RelativeWorkspacePath(context.WorkspaceRoot, file);
             if (includeRegex is not null && !includeRegex.IsMatch(relative)) continue;
-            foreach (var line in SafeReadLines(file))
+            var lines = SafeReadLines(file).ToList();
+            var emittedContextLines = new HashSet<int>();
+            for (var index = 0; index < lines.Count; index++)
             {
-                lineNumber++;
+                var line = lines[index];
                 if (!regex.IsMatch(line)) continue;
                 counts[relative] = counts.GetValueOrDefault(relative) + 1;
                 switch (outputMode)
                 {
                     case "content":
-                        results.Add($"{relative}:{lineNumber}:{line}");
+                        AppendGrepContentLines(results, emittedContextLines, relative, lines, index, beforeLines, afterLines);
                         break;
                     case "count":
                         break;
@@ -238,6 +242,26 @@ public sealed class AgentToolExecutor
 
         var sliced = SliceToolOutput(results, offset, headLimit);
         return Ok(call, sliced.Count == 0 ? $"No matches for {pattern}." : string.Join(Environment.NewLine, sliced));
+    }
+
+    private static void AppendGrepContentLines(
+        List<string> results,
+        HashSet<int> emittedContextLines,
+        string relative,
+        IReadOnlyList<string> lines,
+        int matchIndex,
+        int beforeLines,
+        int afterLines)
+    {
+        var start = Math.Max(0, matchIndex - beforeLines);
+        var end = Math.Min(lines.Count - 1, matchIndex + afterLines);
+        for (var index = start; index <= end; index++)
+        {
+            if (emittedContextLines.Add(index))
+            {
+                results.Add($"{relative}:{index + 1}:{lines[index]}");
+            }
+        }
     }
 
     private AgentToolResult Glob(AgentToolCall call, AgentToolExecutionContext context)

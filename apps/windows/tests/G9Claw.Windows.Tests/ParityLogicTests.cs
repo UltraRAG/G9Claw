@@ -1052,6 +1052,20 @@ public sealed class ParityLogicTests
         var taskProperties = (Dictionary<string, object?>)taskParameters["properties"]!;
         Assert.Contains("isolation", taskProperties.Keys);
         Assert.Contains("n", taskProperties.Keys);
+
+        var grepSchema = AgentToolRegistry.OpenAITools()
+            .Select(tool => (Dictionary<string, object?>)tool["function"]!)
+            .Single(function => (string)function["name"]! == "Grep");
+        var grepParameters = (Dictionary<string, object?>)grepSchema["parameters"]!;
+        var grepProperties = (Dictionary<string, object?>)grepParameters["properties"]!;
+        Assert.Contains("-B", grepProperties.Keys);
+        Assert.Contains("-A", grepProperties.Keys);
+        Assert.Contains("-C", grepProperties.Keys);
+        Assert.Contains("context", grepProperties.Keys);
+        Assert.Contains("-n", grepProperties.Keys);
+        Assert.Contains("type", grepProperties.Keys);
+        Assert.Contains("offset", grepProperties.Keys);
+        Assert.Contains("multiline", grepProperties.Keys);
     }
 
     [Fact]
@@ -2588,6 +2602,7 @@ gateway:
         Directory.CreateDirectory(Path.Combine(temp.Root, "obj"));
         await File.WriteAllTextAsync(Path.Combine(temp.Root, "src", "a.txt"), "TODO first\nkeep\nTODO second\n");
         await File.WriteAllTextAsync(Path.Combine(temp.Root, "src", "b.txt"), "notes\nTODO third\n");
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "src", "context.txt"), "alpha\nbefore\nHIT focus\nafter\nomega\n");
         await File.WriteAllTextAsync(Path.Combine(temp.Root, "obj", "skip.txt"), "TODO skipped\n");
         var executor = new AgentToolExecutor();
         var context = new AgentToolExecutionContext(
@@ -2611,6 +2626,25 @@ gateway:
             offset = 1,
             head_limit = 1,
         })), context);
+        var grepContext = await executor.ExecuteAsync(new AgentToolCall("grep-context", "Grep", JsonSerializer.Serialize(new
+        {
+            pattern = "HIT",
+            path = ".",
+            glob = "src/context.txt",
+            output_mode = "content",
+            context = 1,
+            head_limit = 0,
+        })), context);
+        var grepBeforeAfter = await executor.ExecuteAsync(new AgentToolCall("grep-before-after", "Grep", JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["pattern"] = "HIT",
+            ["path"] = ".",
+            ["glob"] = "src/context.txt",
+            ["output_mode"] = "content",
+            ["-B"] = 2,
+            ["-A"] = 0,
+            ["head_limit"] = 0,
+        })), context);
         var glob = await executor.ExecuteAsync(new AgentToolCall("glob", "Glob", JsonSerializer.Serialize(new
         {
             pattern = "**/*.txt",
@@ -2631,8 +2665,12 @@ gateway:
         Assert.Equal(["src/a.txt:2", "src/b.txt:1"], OutputLines(grepCount.Output));
         Assert.False(grepContent.IsError);
         Assert.Equal("src/a.txt:3:TODO second", grepContent.Output);
+        Assert.False(grepContext.IsError);
+        Assert.Equal(["src/context.txt:2:before", "src/context.txt:3:HIT focus", "src/context.txt:4:after"], OutputLines(grepContext.Output));
+        Assert.False(grepBeforeAfter.IsError);
+        Assert.Equal(["src/context.txt:1:alpha", "src/context.txt:2:before", "src/context.txt:3:HIT focus"], OutputLines(grepBeforeAfter.Output));
         Assert.False(glob.IsError);
-        Assert.Equal(["src/a.txt", "src/b.txt"], OutputLines(glob.Output));
+        Assert.Equal(["src/a.txt", "src/b.txt", "src/context.txt"], OutputLines(glob.Output));
         Assert.False(semantic.IsError);
         using var semanticJson = JsonDocument.Parse(semantic.Output);
         var firstSemanticHit = semanticJson.RootElement.GetProperty("results")[0];
