@@ -22,10 +22,15 @@ public static class SessionProviderExtensions
     };
 
     public static string DisplayName(this SessionProvider provider) =>
-        provider == SessionProvider.G9Claw ? "G9Claw" : provider.ToString();
+        provider == SessionProvider.G9Claw ? "PilotDeck" : provider.ToString();
 
     public static bool IsNativeAvailable(this SessionProvider provider) =>
         provider == SessionProvider.G9Claw;
+}
+
+public enum ProjectSessionKind
+{
+    BackgroundTask,
 }
 
 public enum ChatRunMode
@@ -34,10 +39,110 @@ public enum ChatRunMode
     Plan,
 }
 
+public sealed record ChatRunModeDescriptor(
+    ChatRunMode Mode,
+    string Id,
+    string Label,
+    string SystemImage,
+    string Detail);
+
+public static class ChatRunModeCatalog
+{
+    public static readonly IReadOnlyList<ChatRunModeDescriptor> All =
+    [
+        new(ChatRunMode.Agent, "agent", "\u667a\u80fd\u4f53", "sparkles", "Run the agent with tools and streaming output."),
+        new(ChatRunMode.Plan, "plan", "\u8ba1\u5212", "checklist", "Ask the agent to produce a plan first."),
+    ];
+
+    public static string Id(this ChatRunMode mode) => Descriptor(mode).Id;
+    public static string Label(this ChatRunMode mode) => Descriptor(mode).Label;
+    public static string SystemImage(this ChatRunMode mode) => Descriptor(mode).SystemImage;
+    public static string Detail(this ChatRunMode mode) => Descriptor(mode).Detail;
+
+    private static ChatRunModeDescriptor Descriptor(ChatRunMode mode) =>
+        All.FirstOrDefault(descriptor => descriptor.Mode == mode)
+        ?? new ChatRunModeDescriptor(mode, mode.ToString().ToLowerInvariant(), mode.ToString(), "", "");
+}
+
 public enum ComposerPermissionMode
 {
     Default,
     BypassPermissions,
+}
+
+public sealed record ComposerPermissionModeDescriptor(
+    ComposerPermissionMode Mode,
+    string Id,
+    string Label,
+    string SystemImage,
+    string Detail);
+
+public static class ComposerPermissionModeCatalog
+{
+    public const string DefaultStorageKey = "permissionMode-default";
+    public const string SessionStorageKeyPrefix = "permissionMode-";
+
+    public static readonly IReadOnlyList<ComposerPermissionModeDescriptor> All =
+    [
+        new(ComposerPermissionMode.Default, "default", "Default permissions", "hand.raised", "Ask before running tools that need approval."),
+        new(ComposerPermissionMode.BypassPermissions, "bypassPermissions", "\u5b8c\u5168\u8bbf\u95ee\u6743\u9650", "shield.lefthalf.filled", "Allow trusted tool actions for this run."),
+    ];
+
+    public static string Id(this ComposerPermissionMode mode) => Descriptor(mode).Id;
+    public static string Label(this ComposerPermissionMode mode) => Descriptor(mode).Label;
+    public static string SystemImage(this ComposerPermissionMode mode) => Descriptor(mode).SystemImage;
+    public static string Detail(this ComposerPermissionMode mode) => Descriptor(mode).Detail;
+
+    public static ComposerPermissionMode FromId(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return ComposerPermissionMode.Default;
+        var descriptor = All.FirstOrDefault(item => string.Equals(item.Id, id.Trim(), StringComparison.Ordinal));
+        return descriptor?.Mode ?? ComposerPermissionMode.Default;
+    }
+
+    private static ComposerPermissionModeDescriptor Descriptor(ComposerPermissionMode mode) =>
+        All.FirstOrDefault(descriptor => descriptor.Mode == mode)
+        ?? All[0];
+}
+
+public sealed record NativeUIPreferences(
+    bool AutoExpandTools = false,
+    bool ShowRawParameters = false,
+    bool ShowThinking = true,
+    bool AutoScrollToBottom = true,
+    bool SendByCtrlEnter = false,
+    bool SidebarVisible = true);
+
+public static class ToolRowExpansionPolicy
+{
+    public static bool IsExpanded(
+        string id,
+        ISet<string> expandedIds,
+        ISet<string> collapsedIds,
+        bool autoExpandTools)
+    {
+        if (collapsedIds.Contains(id)) return false;
+        if (expandedIds.Contains(id)) return true;
+        return autoExpandTools;
+    }
+
+    public static void Toggle(
+        string id,
+        ISet<string> expandedIds,
+        ISet<string> collapsedIds,
+        bool autoExpandTools)
+    {
+        if (IsExpanded(id, expandedIds, collapsedIds, autoExpandTools))
+        {
+            expandedIds.Remove(id);
+            collapsedIds.Add(id);
+        }
+        else
+        {
+            collapsedIds.Remove(id);
+            expandedIds.Add(id);
+        }
+    }
 }
 
 public enum AppTab
@@ -110,11 +215,25 @@ public sealed record ProjectSession(
     DateTimeOffset? UpdatedAt,
     DateTimeOffset? LastActivity,
     DateTimeOffset? LastConversationAt,
-    SessionState State)
+    SessionState State,
+    int? MessageCount = null,
+    ProjectSessionKind? SessionKind = null,
+    string? ParentSessionId = null,
+    string? RelativeTranscriptPath = null,
+    string? TranscriptKey = null,
+    string? TaskId = null,
+    string? TaskStatus = null,
+    string? OutputFile = null,
+    bool? IsReadOnly = null)
 {
     public string DisplayTitle => string.IsNullOrWhiteSpace(Title) ? Id : Title.Trim();
 
     public DateTimeOffset ActivityDate => LastConversationAt ?? LastActivity ?? UpdatedAt ?? CreatedAt;
+
+    public bool IsBackgroundTaskSession =>
+        SessionKind == ProjectSessionKind.BackgroundTask &&
+        !string.IsNullOrWhiteSpace(ParentSessionId) &&
+        !string.IsNullOrWhiteSpace(RelativeTranscriptPath);
 }
 
 public enum ChatRole
@@ -128,6 +247,7 @@ public enum ChatRole
 public enum ChatBlockKind
 {
     Text,
+    Reasoning,
     ToolCall,
     ToolResult,
     Attachment,
@@ -150,6 +270,13 @@ public sealed record ChatBlock(
     ProviderErrorInfo? ProviderError = null)
 {
     public static ChatBlock FromText(string text) => new(ChatBlockKind.Text, Text: text);
+    public static ChatBlock FromReasoning(string text) => new(ChatBlockKind.Reasoning, Text: text);
+}
+
+public static class ChatBlockVisibilityPolicy
+{
+    public static bool IsVisible(ChatBlock block, bool showThinking) =>
+        block.Kind != ChatBlockKind.Reasoning || showThinking;
 }
 
 public sealed record ChatMessage(
@@ -875,10 +1002,17 @@ public sealed record AlwaysOnPlan(
     string Content,
     AlwaysOnStatus Status,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string Rationale = "",
+    string ApprovalMode = "",
+    string PlanFilePath = "",
+    Dictionary<string, List<string>>? ContextRefs = null,
+    string? ExecutionSessionId = null,
+    AlwaysOnStatus? ExecutionStatus = null);
 
 public enum AlwaysOnStatus
 {
+    Scheduled,
     Ready,
     Queued,
     Running,

@@ -83,6 +83,148 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void CoreDescriptorsMatchNativeMacAppModels()
+    {
+        Assert.Equal("g9claw", SessionProvider.G9Claw.Id());
+        Assert.Equal("PilotDeck", SessionProvider.G9Claw.DisplayName());
+        Assert.Equal("Cursor", SessionProvider.Cursor.DisplayName());
+        Assert.True(SessionProvider.G9Claw.IsNativeAvailable());
+        Assert.False(SessionProvider.Codex.IsNativeAvailable());
+
+        Assert.Equal("agent", ChatRunMode.Agent.Id());
+        Assert.Equal("\u667a\u80fd\u4f53", ChatRunMode.Agent.Label());
+        Assert.Equal("sparkles", ChatRunMode.Agent.SystemImage());
+        Assert.Equal("Run the agent with tools and streaming output.", ChatRunMode.Agent.Detail());
+        Assert.Equal("plan", ChatRunMode.Plan.Id());
+        Assert.Equal("\u8ba1\u5212", ChatRunMode.Plan.Label());
+        Assert.Equal("checklist", ChatRunMode.Plan.SystemImage());
+
+        Assert.Equal("permissionMode-default", ComposerPermissionModeCatalog.DefaultStorageKey);
+        Assert.Equal("permissionMode-", ComposerPermissionModeCatalog.SessionStorageKeyPrefix);
+        Assert.Equal("default", ComposerPermissionMode.Default.Id());
+        Assert.Equal("Default permissions", ComposerPermissionMode.Default.Label());
+        Assert.Equal("hand.raised", ComposerPermissionMode.Default.SystemImage());
+        Assert.Equal("bypassPermissions", ComposerPermissionMode.BypassPermissions.Id());
+        Assert.Equal("\u5b8c\u5168\u8bbf\u95ee\u6743\u9650", ComposerPermissionMode.BypassPermissions.Label());
+        Assert.Equal("shield.lefthalf.filled", ComposerPermissionMode.BypassPermissions.SystemImage());
+    }
+
+    [Fact]
+    public void NativeUIPreferencesAndToolExpansionMatchMacDefaults()
+    {
+        var preferences = new NativeUIPreferences();
+
+        Assert.False(preferences.AutoExpandTools);
+        Assert.False(preferences.ShowRawParameters);
+        Assert.True(preferences.ShowThinking);
+        Assert.True(preferences.AutoScrollToBottom);
+        Assert.False(preferences.SendByCtrlEnter);
+        Assert.True(preferences.SidebarVisible);
+
+        var expanded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var collapsed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        Assert.False(ToolRowExpansionPolicy.IsExpanded("tool-1", expanded, collapsed, autoExpandTools: false));
+        Assert.True(ToolRowExpansionPolicy.IsExpanded("tool-1", expanded, collapsed, autoExpandTools: true));
+
+        ToolRowExpansionPolicy.Toggle("tool-1", expanded, collapsed, autoExpandTools: true);
+        Assert.False(ToolRowExpansionPolicy.IsExpanded("tool-1", expanded, collapsed, autoExpandTools: true));
+        Assert.Contains("tool-1", collapsed);
+
+        ToolRowExpansionPolicy.Toggle("tool-1", expanded, collapsed, autoExpandTools: true);
+        Assert.True(ToolRowExpansionPolicy.IsExpanded("tool-1", expanded, collapsed, autoExpandTools: true));
+        Assert.Contains("tool-1", expanded);
+    }
+
+    [Fact]
+    public void ProjectSessionAndChatBlocksExposeMacParityMetadata()
+    {
+        var session = new ProjectSession(
+            "task-session",
+            SessionProvider.G9Claw,
+            "",
+            "background task",
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null,
+            SessionState.Idle,
+            MessageCount: 3,
+            SessionKind: ProjectSessionKind.BackgroundTask,
+            ParentSessionId: "parent-session",
+            RelativeTranscriptPath: "tasks/task-session.jsonl",
+            TranscriptKey: "transcript-key",
+            TaskId: "task-1",
+            TaskStatus: "running",
+            OutputFile: "output.log",
+            IsReadOnly: true);
+
+        Assert.Equal("task-session", session.DisplayTitle);
+        Assert.True(session.IsBackgroundTaskSession);
+        Assert.Equal(3, session.MessageCount);
+        Assert.Equal("task-1", session.TaskId);
+        Assert.True(session.IsReadOnly);
+
+        var reasoning = ChatBlock.FromReasoning("thinking");
+        var text = ChatBlock.FromText("answer");
+
+        Assert.False(ChatBlockVisibilityPolicy.IsVisible(reasoning, showThinking: false));
+        Assert.True(ChatBlockVisibilityPolicy.IsVisible(reasoning, showThinking: true));
+        Assert.True(ChatBlockVisibilityPolicy.IsVisible(text, showThinking: false));
+    }
+
+    [Fact]
+    public void AgentTurnModelsExposeMacLifecycleAndPayloadShape()
+    {
+        Assert.Contains(TurnLifecycle.WaitingApproval, Enum.GetValues<TurnLifecycle>());
+        Assert.Contains(AgentTurnItemKind.Reasoning, Enum.GetValues<AgentTurnItemKind>());
+        Assert.Contains(AgentTurnItemKind.CommandExecution, Enum.GetValues<AgentTurnItemKind>());
+        Assert.Contains(AgentTurnItemKind.ContextCompaction, Enum.GetValues<AgentTurnItemKind>());
+        Assert.Contains(AgentTurnItemStatus.Pending, Enum.GetValues<AgentTurnItemStatus>());
+        Assert.Contains(AgentTurnItemStatus.Declined, Enum.GetValues<AgentTurnItemStatus>());
+
+        var command = new CommandExecutionPayload("git status", @"C:\repo", "clean", "", 0, 12);
+        var fileChange = new FileChangePayload("README.md", "modify", Additions: 2, Deletions: 1);
+        var webSearch = new WebSearchPayload("WinUI 3", 5);
+        var item = new AgentTurnItem(
+            "item-1",
+            1,
+            AgentTurnItemKind.WebSearch,
+            AgentTurnItemStatus.Pending,
+            "",
+            "",
+            null,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null,
+            command,
+            fileChange,
+            null,
+            "session-1",
+            "turn-1",
+            webSearch);
+        var turn = new AgentTurn(
+            "turn-1",
+            "session-1",
+            Guid.NewGuid(),
+            @"C:\repo",
+            AgentTurnStatus.InProgress,
+            ChatRunMode.Agent,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null,
+            [item]);
+
+        Assert.True(item.IsRenderable);
+        Assert.Equal("session-1", item.SessionId);
+        Assert.Equal("turn-1", item.TurnId);
+        Assert.Equal(12, command.DurationMs);
+        Assert.Equal(2, fileChange.Additions);
+        Assert.Equal(5, webSearch.ResultCount);
+        Assert.True(turn.HasPendingWork);
+    }
+
+    [Fact]
     public void WebV2UiSettingsNormalizeSidebarBoundsAndLists()
     {
         var tooSmall = new V2UiSettings(12, SidebarSection.General, null!, null!).Normalize();

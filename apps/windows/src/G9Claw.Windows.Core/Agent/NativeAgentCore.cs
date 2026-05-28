@@ -4,29 +4,48 @@ public enum AgentTurnStatus
 {
     InProgress,
     Completed,
-    Failed,
     Interrupted,
+    Failed,
+}
+
+public enum TurnLifecycle
+{
+    Idle,
+    RunningModel,
+    RunningTool,
+    WaitingApproval,
+    WaitingUserInput,
+    Retrying,
+    Completed,
+    Failed,
+    Cancelled,
 }
 
 public enum AgentTurnItemKind
 {
     UserMessage,
     AgentMessage,
-    Status,
+    Reasoning,
+    Plan,
+    CommandExecution,
+    FileChange,
     ToolCall,
     ToolResult,
+    WebSearch,
+    ContextCompaction,
+    Status,
     Command,
     Search,
-    FileChange,
     Question,
-    Plan,
 }
 
 public enum AgentTurnItemStatus
 {
+    Pending,
     InProgress,
     Completed,
     Failed,
+    Declined,
     Interrupted,
 }
 
@@ -35,12 +54,15 @@ public sealed record CommandExecutionPayload(
     string Cwd,
     string Stdout,
     string Stderr,
-    int? ExitCode);
+    int? ExitCode,
+    int? DurationMs = null);
 
 public sealed record FileChangePayload(
     string Path,
     string Operation,
-    string? Diff);
+    string? Diff = null,
+    int? Additions = null,
+    int? Deletions = null);
 
 public sealed record ToolInvocationPayload(
     string CallId,
@@ -48,6 +70,10 @@ public sealed record ToolInvocationPayload(
     string InputJson,
     string? Output,
     bool IsError);
+
+public sealed record WebSearchPayload(
+    string Query,
+    int? ResultCount);
 
 public sealed record AgentTurnItem(
     string Id,
@@ -62,7 +88,19 @@ public sealed record AgentTurnItem(
     DateTimeOffset? CompletedAt,
     CommandExecutionPayload? CommandExecution,
     FileChangePayload? FileChange,
-    ToolInvocationPayload? ToolInvocation);
+    ToolInvocationPayload? ToolInvocation,
+    string SessionId = "",
+    string TurnId = "",
+    WebSearchPayload? WebSearch = null)
+{
+    public bool IsRenderable =>
+        !string.IsNullOrWhiteSpace(Title) ||
+        !string.IsNullOrWhiteSpace(Text) ||
+        ToolInvocation is not null ||
+        CommandExecution is not null ||
+        FileChange is not null ||
+        WebSearch is not null;
+}
 
 public sealed record AgentTurn(
     string Id,
@@ -74,7 +112,12 @@ public sealed record AgentTurn(
     DateTimeOffset StartedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt,
-    List<AgentTurnItem> Items);
+    List<AgentTurnItem> Items)
+{
+    public bool HasPendingWork =>
+        Status == AgentTurnStatus.InProgress &&
+        Items.Any(item => item.Status is AgentTurnItemStatus.Pending or AgentTurnItemStatus.InProgress);
+}
 
 public sealed record AgentTurnStoreSnapshot(
     string SessionId,
@@ -341,7 +384,9 @@ public sealed class NativeTurnController
             status == AgentTurnItemStatus.InProgress ? null : now,
             commandExecution,
             fileChange,
-            toolInvocation);
+            toolInvocation,
+            SessionId,
+            TurnId);
         _items.Add(item);
         UpdatedAt = now;
         return item;
