@@ -26,6 +26,11 @@
   <ItemGroup>
     <Content Include="Assets\9gclaw-logo.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\9gclaw-logo-white.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\macos-native\G9Claw\Assets\g9claw-rag-plugin\**\*">
+      <Link>Assets\g9claw-rag-plugin\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
   </ItemGroup>
 
   <Target Name="RemoveUnusedWebView2RuntimeFiles" AfterTargets="Build;Publish">

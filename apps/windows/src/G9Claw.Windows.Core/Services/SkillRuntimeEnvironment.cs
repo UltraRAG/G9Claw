@@ -53,10 +53,16 @@ public static class SkillRuntimeEnvironment
 
     public static string? PluginRoot()
     {
-        var explicitRoot = Environment.GetEnvironmentVariable("G9CLAW_PLUGIN_ROOT");
+        return PluginRoot(
+            Environment.GetEnvironmentVariable("G9CLAW_PLUGIN_ROOT"),
+            Environment.GetEnvironmentVariable("G9CLAW_REPO_ROOT"),
+            CandidateSearchRoots());
+    }
+
+    internal static string? PluginRoot(string? explicitRoot, string? repoRoot, IEnumerable<string> searchRoots)
+    {
         if (HasSkills(explicitRoot)) return PathHelpers.NormalizeFullPath(explicitRoot!);
 
-        var repoRoot = Environment.GetEnvironmentVariable("G9CLAW_REPO_ROOT");
         if (!string.IsNullOrWhiteSpace(repoRoot))
         {
             var candidate = Path.Combine(
@@ -69,7 +75,7 @@ public static class SkillRuntimeEnvironment
             if (HasSkills(candidate)) return PathHelpers.NormalizeFullPath(candidate);
         }
 
-        foreach (var root in CandidateSearchRoots())
+        foreach (var root in searchRoots)
         {
             foreach (var candidate in CandidatePluginRoots(root))
             {

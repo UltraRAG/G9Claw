@@ -950,6 +950,19 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void SkillRuntimeEnvironmentFindsBundledPluginAssetsLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var pluginRoot = Path.Combine(temp.Root, "Assets", "g9claw-rag-plugin");
+        Directory.CreateDirectory(Path.Combine(pluginRoot, "skills", "rag-research"));
+        File.WriteAllText(Path.Combine(pluginRoot, "skills", "rag-research", "SKILL.md"), "Use bundled RAG.");
+
+        var resolved = SkillRuntimeEnvironment.PluginRoot(null, null, [temp.Root]);
+
+        Assert.Equal(PathHelpers.NormalizeFullPath(pluginRoot), resolved);
+    }
+
+    [Fact]
     public async Task AgentToolExecutorShellReceivesNativeConfigEnvironment()
     {
         using var temp = new TempWorkspace();
