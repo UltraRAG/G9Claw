@@ -385,11 +385,13 @@ public static class ContextBudgetPresenter
             ? ContextBudgetLevel.Recovering
             : lowerStage.Contains("compact")
                 ? ContextBudgetLevel.Compacting
-                : percent >= 90
-                    ? ContextBudgetLevel.Warning
-                    : percent >= 75
-                        ? ContextBudgetLevel.Attention
-                        : ContextBudgetLevel.Normal;
+                : percent >= 95
+                    ? ContextBudgetLevel.Recovering
+                    : percent >= 80
+                        ? ContextBudgetLevel.Warning
+                        : percent >= 60
+                            ? ContextBudgetLevel.Attention
+                            : ContextBudgetLevel.Normal;
         var detail = $"{LevelLabel(level)}: Used {budget.Used:N0} tokens of {budget.Total:N0}.";
         return new ContextBudgetSnapshot(
             Math.Max(0, budget.Used),

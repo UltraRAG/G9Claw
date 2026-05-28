@@ -10,6 +10,23 @@ public sealed record NativeContextRecoveryResult(
 
 public static partial class NativeAgentRuntime
 {
+    public static TokenBudget ContextBudgetSnapshot(AgentRequest request) =>
+        new(EstimateRequestTokens(request), Math.Max(request.ContextWindow, 1));
+
+    public static ContextBudgetLevel ContextBudgetLevelFor(TokenBudget budget)
+    {
+        if (budget.Total <= 0)
+        {
+            return ContextBudgetLevel.Normal;
+        }
+
+        var ratio = (double)Math.Max(0, budget.Used) / budget.Total;
+        if (ratio >= 0.95) return ContextBudgetLevel.Recovering;
+        if (ratio >= 0.80) return ContextBudgetLevel.Warning;
+        if (ratio >= 0.60) return ContextBudgetLevel.Attention;
+        return ContextBudgetLevel.Normal;
+    }
+
     public static bool IsPromptTooLongError(Exception error)
     {
         if (error is not ProviderClientException { StatusCode: 400 or 413 } providerError)
@@ -25,10 +42,55 @@ public static partial class NativeAgentRuntime
             lower.Contains("tokens exceed", StringComparison.Ordinal);
     }
 
+    public static NativeContextRecoveryResult? CompactContextIfNeeded(AgentRequest request)
+    {
+        var before = ContextBudgetSnapshot(request);
+        var beforeLevel = ContextBudgetLevelFor(before);
+        if (beforeLevel is not (ContextBudgetLevel.Warning or ContextBudgetLevel.Recovering))
+        {
+            return null;
+        }
+
+        var compactedToolExchanges = MicroCompactToolResults(request.ToolExchanges);
+        var compactedRequest = request with { ToolExchanges = compactedToolExchanges };
+        var after = ContextBudgetSnapshot(compactedRequest);
+        var status = "micro";
+
+        if (ContextBudgetLevelFor(after) is ContextBudgetLevel.Warning or ContextBudgetLevel.Recovering)
+        {
+            compactedRequest = request with
+            {
+                PriorMessages = SnipPriorMessages(request, 10),
+                ToolExchanges = compactedToolExchanges.TakeLast(6).ToList(),
+            };
+            after = ContextBudgetSnapshot(compactedRequest);
+            status = "snip";
+        }
+
+        if (ContextBudgetLevelFor(after) is ContextBudgetLevel.Warning or ContextBudgetLevel.Recovering)
+        {
+            compactedRequest = request with
+            {
+                PriorMessages = SnipPriorMessages(request, 6),
+                ToolExchanges = compactedToolExchanges.TakeLast(4).ToList(),
+            };
+            after = ContextBudgetSnapshot(compactedRequest);
+            status = "full";
+        }
+
+        return new NativeContextRecoveryResult(
+            compactedRequest.PriorMessages,
+            compactedRequest.ToolExchanges,
+            before.Used,
+            after.Used,
+            beforeLevel == ContextBudgetLevel.Recovering ? "blocking_threshold" : "warning_threshold",
+            status);
+    }
+
     public static NativeContextRecoveryResult ForceRecoverContext(AgentRequest request)
     {
         var preTokens = EstimateRequestTokens(request);
-        var compactedPrior = SnipPriorMessages(request);
+        var compactedPrior = SnipPriorMessages(request, 4);
         var compactedToolExchanges = request.ToolExchanges.TakeLast(4).ToList();
         var recoveredRequest = request with
         {
@@ -45,7 +107,7 @@ public static partial class NativeAgentRuntime
             "recovering");
     }
 
-    private static List<ChatMessage> SnipPriorMessages(AgentRequest request)
+    private static List<ChatMessage> SnipPriorMessages(AgentRequest request, int tailCount)
     {
         var systemMessages = request.PriorMessages
             .Where(message => message.Role == ChatRole.System)
@@ -53,7 +115,7 @@ public static partial class NativeAgentRuntime
         var body = request.PriorMessages
             .Where(message => message.Role != ChatRole.System)
             .ToList();
-        var tail = body.TakeLast(4).ToList();
+        var tail = body.TakeLast(Math.Max(1, tailCount)).ToList();
         var dropped = Math.Max(0, body.Count - tail.Count);
         var compacted = new List<ChatMessage>(systemMessages.Count + tail.Count + 1);
         compacted.AddRange(systemMessages);
@@ -77,6 +139,26 @@ public static partial class NativeAgentRuntime
 
         compacted.AddRange(tail);
         return compacted;
+    }
+
+    private static List<AgentToolExchange> MicroCompactToolResults(List<AgentToolExchange> exchanges)
+    {
+        if (exchanges.Count <= 4)
+        {
+            return exchanges.ToList();
+        }
+
+        var recentStart = Math.Max(0, exchanges.Count - 4);
+        return exchanges.Select((exchange, index) =>
+        {
+            if (index >= recentStart || exchange.Result.Output.Length <= 3000)
+            {
+                return exchange;
+            }
+
+            var compactedOutput = $"{exchange.Result.Output[..1600]}\n... (microcompacted, original {exchange.Result.Output.Length} characters)";
+            return exchange with { Result = exchange.Result with { Output = compactedOutput } };
+        }).ToList();
     }
 
     private static int EstimateRequestTokens(AgentRequest request)

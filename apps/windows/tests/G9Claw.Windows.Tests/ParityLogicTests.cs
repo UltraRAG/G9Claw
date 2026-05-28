@@ -2716,6 +2716,77 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerCompactsContextBeforeProviderLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var priorMessages = new List<ChatMessage>
+        {
+            new(
+                Guid.NewGuid(),
+                "session-1",
+                SessionProvider.G9Claw,
+                ChatRole.System,
+                [ChatBlock.FromText("system prompt")],
+                DateTimeOffset.UtcNow,
+                false,
+                null),
+        };
+        priorMessages.AddRange(Enumerable.Range(0, 12).Select(index => new ChatMessage(
+            Guid.NewGuid(),
+            "session-1",
+            SessionProvider.G9Claw,
+            index % 2 == 0 ? ChatRole.User : ChatRole.Assistant,
+            [ChatBlock.FromText($"older message {index}")],
+            DateTimeOffset.UtcNow,
+            false,
+            null)));
+
+        var provider = new RecordingRequestProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "continue with a large context",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            priorMessages,
+            120000,
+            6000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            [])
+        {
+            ToolExchanges = Enumerable.Range(1, 6)
+                .Select(index => new AgentToolExchange(
+                    new AgentToolCall($"call-{index}", "Read", "{}"),
+                    new AgentToolResult($"call-{index}", "Read", new string((char)('a' + index), 3600), false)))
+                .ToList(),
+        };
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        var firstBudget = events.First(item => item.Kind == AgentEventKind.TokenBudget).TokenBudget!;
+        var compactedBudget = events.Last(item => item.Kind == AgentEventKind.TokenBudget).TokenBudget!;
+        Assert.Equal(1, provider.RequestCount);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "warning_threshold");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "context compacting");
+        Assert.True(compactedBudget.Used < firstBudget.Used);
+        Assert.Equal(6000, compactedBudget.Total);
+        Assert.Contains(provider.SeenRequest!.ToolExchanges.Take(2), exchange =>
+            exchange.Result.Output.Contains("microcompacted", StringComparison.Ordinal));
+        Assert.Equal(6, provider.SeenRequest.ToolExchanges.Count);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done");
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Error);
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerPassesProviderContextToTaskSubagentsLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -3105,12 +3176,16 @@ router:
     public void ContextBudgetPresenterComputesLevelAndCompactionState()
     {
         var unknown = ContextBudgetPresenter.FromBudget(null);
-        var attention = ContextBudgetPresenter.FromBudget(new TokenBudget(76, 100));
+        var attention = ContextBudgetPresenter.FromBudget(new TokenBudget(61, 100));
+        var warning = ContextBudgetPresenter.FromBudget(new TokenBudget(81, 100));
+        var recovering = ContextBudgetPresenter.FromBudget(new TokenBudget(96, 100));
         var compacting = ContextBudgetPresenter.FromBudget(new TokenBudget(50, 100), "compact stage 2", 2);
 
         Assert.Null(unknown.Percent);
         Assert.Equal(ContextBudgetLevel.Attention, attention.Level);
-        Assert.Equal(76, attention.Percent);
+        Assert.Equal(61, attention.Percent);
+        Assert.Equal(ContextBudgetLevel.Warning, warning.Level);
+        Assert.Equal(ContextBudgetLevel.Recovering, recovering.Level);
         Assert.Equal(ContextBudgetLevel.Compacting, compacting.Level);
         Assert.Equal("compact stage 2", compacting.CompactStage);
         Assert.Equal(2, compacting.CompactCount);
@@ -4036,6 +4111,24 @@ gateway:
             RecoveredPriorMessages = request.PriorMessages.ToList();
             RecoveredToolExchangeCount = request.ToolExchanges.Count;
             yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "recovered");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+        }
+    }
+
+    private sealed class RecordingRequestProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+        public AgentRequest? SeenRequest { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            SeenRequest = request;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done");
             yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
         }
     }

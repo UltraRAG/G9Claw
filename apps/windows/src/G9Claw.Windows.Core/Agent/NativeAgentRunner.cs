@@ -93,6 +93,22 @@ public sealed class NativeAgentRunner
                 await writer.WriteAsync(
                     AgentEvent.Status(request.SessionId, round == 0 ? "Connecting to provider..." : "Continuing with tool results..."),
                     cancellationToken);
+                var contextBudget = NativeAgentRuntime.ContextBudgetSnapshot(currentRequest);
+                await writer.WriteAsync(AgentEvent.Budget(request.SessionId, contextBudget), cancellationToken);
+                if (NativeAgentRuntime.CompactContextIfNeeded(currentRequest) is { } compaction)
+                {
+                    currentRequest = currentRequest with
+                    {
+                        PriorMessages = compaction.PriorMessages,
+                        ToolExchanges = compaction.ToolExchanges,
+                    };
+                    toolExchanges = compaction.ToolExchanges.ToList();
+                    turn.RecordStatus("context compacting", compaction.Trigger);
+                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, compaction.Trigger), cancellationToken);
+                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, "context compacting"), cancellationToken);
+                    await writer.WriteAsync(AgentEvent.Budget(request.SessionId, new TokenBudget(compaction.PostTokens, request.ContextWindow)), cancellationToken);
+                }
+
                 var roundExchanges = new List<AgentToolExchange>();
                 var roundSkippedDuplicateTool = false;
                 var roundAssistantText = new StringBuilder();
