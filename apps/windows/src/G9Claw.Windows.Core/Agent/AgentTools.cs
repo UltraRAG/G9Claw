@@ -347,6 +347,8 @@ public sealed class AgentPlanModePolicy
     }
 
     public bool PlanExecutionApproved => _planExecutionApproved;
+    public bool PlanExited => _planExited;
+    public bool PlanQuestionAnswered => _planQuestionAnswered;
 
     public AgentToolResult? BlockingResult(AgentToolCall call)
     {

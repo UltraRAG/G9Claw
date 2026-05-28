@@ -210,6 +210,32 @@ public sealed class NativeAgentRunner
                     }
                 }
 
+                if (roundExchanges.Count == 0 &&
+                    request.RunMode == ChatRunMode.Plan &&
+                    !planModePolicy.PlanExited &&
+                    PlanTurnRecoveryClassifier.Recovery(
+                        roundAssistantText.ToString(),
+                        request.Prompt,
+                        planModePolicy.PlanQuestionAnswered) is { } planRecovery)
+                {
+                    turn.RecordStatus(planRecovery.WorkflowStatus);
+                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, planRecovery.WorkflowStatus), cancellationToken);
+                    turn.RecordStatus(planRecovery.GenerationStatus);
+                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, planRecovery.GenerationStatus), cancellationToken);
+                    await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, planRecovery.Call), cancellationToken);
+                    var toolResult = await ExecuteToolAsync(currentRequest, turn, planRecovery.Call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
+                    if (toolResult is not null)
+                    {
+                        await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                        if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
+                        {
+                            throw ProviderClientException.Transport(watchdogMessage);
+                        }
+
+                        roundExchanges.Add(new AgentToolExchange(planRecovery.Call, toolResult));
+                    }
+                }
+
                 if (roundExchanges.Count == 0)
                 {
                     if (roundSkippedDuplicateTool)
@@ -517,25 +543,38 @@ public sealed class NativeAgentRunner
         {
             using var doc = JsonDocument.Parse(inputJson);
             var root = doc.RootElement;
-            var question = StringValue(root, "question") ?? StringValue(root, "prompt") ?? "The agent needs more information.";
-            var header = StringValue(root, "header") ?? "Question";
-            var options = new List<AgentQuestionOption>();
-            if (root.TryGetProperty("options", out var values) && values.ValueKind == JsonValueKind.Array)
+            if (root.TryGetProperty("questions", out var questionValues) && questionValues.ValueKind == JsonValueKind.Array)
             {
-                foreach (var option in values.EnumerateArray())
+                var questions = new List<AgentQuestion>();
+                foreach (var questionValue in questionValues.EnumerateArray())
                 {
-                    if (option.ValueKind == JsonValueKind.String)
+                    if (questionValue.ValueKind != JsonValueKind.Object)
                     {
-                        options.Add(new AgentQuestionOption(option.GetString() ?? ""));
+                        continue;
                     }
-                    else
+
+                    var itemQuestion = StringValue(questionValue, "question") ?? StringValue(questionValue, "prompt");
+                    if (string.IsNullOrWhiteSpace(itemQuestion))
                     {
-                        options.Add(new AgentQuestionOption(StringValue(option, "label") ?? option.ToString(), StringValue(option, "description")));
+                        continue;
                     }
+
+                    questions.Add(new AgentQuestion(
+                        StringValue(questionValue, "header") ?? "Question",
+                        itemQuestion,
+                        QuestionOptions(questionValue),
+                        BoolValue(questionValue, "multiSelect") ?? false));
+                }
+
+                if (questions.Count > 0)
+                {
+                    return new AgentInteractivePayload(questions);
                 }
             }
 
-            return new AgentInteractivePayload([new AgentQuestion(header, question, options, false)]);
+            var question = StringValue(root, "question") ?? StringValue(root, "prompt") ?? "The agent needs more information.";
+            var header = StringValue(root, "header") ?? "Question";
+            return new AgentInteractivePayload([new AgentQuestion(header, question, QuestionOptions(root), BoolValue(root, "multiSelect") ?? false)]);
         }
         catch
         {
@@ -543,10 +582,44 @@ public sealed class NativeAgentRunner
         }
     }
 
+    private static List<AgentQuestionOption> QuestionOptions(JsonElement root)
+    {
+        var options = new List<AgentQuestionOption>();
+        if (!root.TryGetProperty("options", out var values) || values.ValueKind != JsonValueKind.Array)
+        {
+            return options;
+        }
+
+        foreach (var option in values.EnumerateArray())
+        {
+            if (option.ValueKind == JsonValueKind.String)
+            {
+                options.Add(new AgentQuestionOption(option.GetString() ?? ""));
+            }
+            else
+            {
+                options.Add(new AgentQuestionOption(StringValue(option, "label") ?? option.ToString(), StringValue(option, "description")));
+            }
+        }
+
+        return options;
+    }
+
     private static string? StringValue(JsonElement root, string key)
     {
         if (!root.TryGetProperty(key, out var value)) return null;
         return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
+    }
+
+    private static bool? BoolValue(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var value)) return null;
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null,
+        };
     }
 }
 

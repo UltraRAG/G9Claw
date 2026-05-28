@@ -2999,6 +2999,114 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerRecoversPlainTextPlanQuestionLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new PlainTextPlanQuestionProvider();
+        var permissionRequests = new List<PermissionRequest>();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "make a safe plan",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Plan,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) =>
+        {
+            permissionRequests.Add(permission);
+            return Task.FromResult(new PermissionRecord(
+                permission,
+                PermissionDecision.Allowed,
+                permission.Scope,
+                DateTimeOffset.UtcNow,
+                "inspect src first"));
+        });
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var toolResults = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+        var askResult = Assert.Single(toolResults, result => result.ToolName == "AskQuestion");
+        Assert.Equal(3, provider.RequestCount);
+        Assert.Equal("inspect src first", askResult.Output);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanTurnRecoveryClassifier.RecoveringStatus);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanTurnRecoveryClassifier.GeneratingQuestionStatus);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after direct switch");
+        Assert.Equal([PermissionRequestKind.AskUserQuestion, PermissionRequestKind.ExitPlanMode], permissionRequests.Select(permission => permission.Kind));
+        Assert.Contains("Which files should I inspect first?", permissionRequests[0].InteractivePayload!.Questions[0].Question);
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerRecoversPlainTextPlanSwitchModeLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new PlainTextPlanSwitchProvider();
+        var permissionRequests = new List<PermissionRequest>();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "prepare and approve a plan",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Plan,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) =>
+        {
+            permissionRequests.Add(permission);
+            return Task.FromResult(new PermissionRecord(
+                permission,
+                PermissionDecision.Allowed,
+                permission.Scope,
+                DateTimeOffset.UtcNow,
+                permission.Kind == PermissionRequestKind.AskUserQuestion ? "approved" : null));
+        });
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var results = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+        Assert.Equal(3, provider.RequestCount);
+        Assert.Equal(["AskQuestion", "SwitchMode"], results.Select(result => result.ToolName));
+        Assert.False(results[1].IsError);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanTurnRecoveryClassifier.RecoveringStatus);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanTurnRecoveryClassifier.GeneratingPlanStatus);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after recovered plan");
+        Assert.Equal([PermissionRequestKind.AskUserQuestion, PermissionRequestKind.ExitPlanMode], permissionRequests.Select(permission => permission.Kind));
+        using var doc = JsonDocument.Parse(events.Single(item => item.Kind == AgentEventKind.ToolUse && item.ToolCall?.Name == "SwitchMode").ToolCall!.InputJson);
+        Assert.True(doc.RootElement.GetProperty("recoveredFromPlainText").GetBoolean());
+        Assert.Contains("1. Read project files", doc.RootElement.GetProperty("plan").GetString());
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerUsesDestructivePlanApprovalLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -4327,6 +4435,72 @@ gateway:
 
         private static ProviderStreamEvent Tool(string id, string name, string inputJson) =>
             new(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall(id, name, inputJson));
+    }
+
+    private sealed class PlainTextPlanQuestionProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.ToolExchanges.Count == 0)
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "Which files should I inspect first?");
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+                yield break;
+            }
+
+            if (request.ToolExchanges.Count == 1)
+            {
+                yield return new ProviderStreamEvent(
+                    ProviderStreamEventKind.ToolCall,
+                    ToolCall: new AgentToolCall("switch", "SwitchMode", """{"mode":"agent","plan":"Direct approved plan"}"""));
+                yield break;
+            }
+
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after direct switch");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+        }
+    }
+
+    private sealed class PlainTextPlanSwitchProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            switch (request.ToolExchanges.Count)
+            {
+                case 0:
+                    yield return new ProviderStreamEvent(
+                        ProviderStreamEventKind.ToolCall,
+                        ToolCall: new AgentToolCall("question", "AskQuestion", """{"question":"Approve this direction?","options":["Yes"]}"""));
+                    yield break;
+                case 1:
+                    yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: """
+                    Plan
+
+                    1. Read project files
+                    2. Update the Windows implementation
+                    """);
+                    yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+                    yield break;
+                default:
+                    yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after recovered plan");
+                    yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+                    yield break;
+            }
+        }
     }
 
     private sealed class DestructiveDeleteProvider : IProviderClient
