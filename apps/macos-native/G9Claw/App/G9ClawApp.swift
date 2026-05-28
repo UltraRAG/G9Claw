@@ -155,5 +155,19 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
         window.hasShadow = true
         window.contentView?.wantsLayer = true
         window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        alignTrafficLightButtons(in: window)
+    }
+
+    private func alignTrafficLightButtons(in window: NSWindow) {
+        let adjustedTag = 9_504
+        let buttonTypes: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+        for buttonType in buttonTypes {
+            guard let button = window.standardWindowButton(buttonType),
+                  button.tag != adjustedTag else { continue }
+            var frame = button.frame
+            frame.origin.y = max(0, frame.origin.y - DesignTokens.titlebarControlTop)
+            button.frame = frame
+            button.tag = adjustedTag
+        }
     }
 }

@@ -56,6 +56,7 @@ struct MainAreaView: View {
             .padding(.leading, leadingPadding)
             .padding(.trailing, trailingPadding)
             .frame(width: proxy.size.width, height: DesignTokens.titlebarControlSize)
+            .padding(.top, DesignTokens.titlebarControlTop)
             .frame(width: proxy.size.width, height: DesignTokens.headerHeight, alignment: .top)
         }
         .frame(height: DesignTokens.headerHeight)
@@ -151,24 +152,19 @@ struct MainAreaView: View {
     private var toolSwitcherBackground: some View {
         ZStack {
             RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous)
-                .fill(DesignTokens.background.opacity(0.24))
+                .fill(.clear)
                 .background(
-                    VisualEffectBackground(material: .hudWindow, blendingMode: .withinWindow)
+                    VisualEffectBackground(material: .titlebar, blendingMode: .withinWindow)
                         .clipShape(RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous))
                 )
             RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous)
-                .strokeBorder(.white.opacity(0.38), lineWidth: 0.7)
+                .fill(DesignTokens.titlebarSwitchSurface)
             RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous)
-                .strokeBorder(DesignTokens.separator.opacity(0.54), lineWidth: 0.7)
-            LinearGradient(
-                colors: [.white.opacity(0.22), .white.opacity(0.05), .clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .clipShape(RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous))
-            .allowsHitTesting(false)
+                .strokeBorder(DesignTokens.titlebarSwitchHighlight, lineWidth: 0.7)
+            RoundedRectangle(cornerRadius: MainHeaderToolSwitcherLayout.containerCornerRadius, style: .continuous)
+                .strokeBorder(DesignTokens.titlebarSwitchBorder, lineWidth: 0.8)
         }
-        .shadow(color: .black.opacity(0.055), radius: 8, y: 3)
+        .shadow(color: .black.opacity(0.045), radius: 6, y: 2)
     }
 
     private func toolButton(_ tab: AppTab, iconOnly: Bool) -> some View {
@@ -201,16 +197,16 @@ struct MainAreaView: View {
                 ZStack {
                     if isActive {
                         RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .fill(DesignTokens.contentSurface.opacity(0.92))
+                            .fill(DesignTokens.titlebarSwitchActiveSurface)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                    .strokeBorder(.white.opacity(0.58), lineWidth: 0.7)
+                                    .strokeBorder(DesignTokens.titlebarSwitchActiveBorder, lineWidth: 0.8)
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                    .stroke(DesignTokens.separator.opacity(0.50), lineWidth: 0.7)
+                                    .strokeBorder(DesignTokens.titlebarSwitchHighlight, lineWidth: 0.6)
                             )
-                            .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
+                            .shadow(color: .black.opacity(0.10), radius: 4, y: 1)
                             .matchedGeometryEffect(id: "tool-switcher-pill", in: toolSwitcherNamespace)
                     }
                 }

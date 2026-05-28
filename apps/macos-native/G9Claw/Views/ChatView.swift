@@ -673,10 +673,10 @@ private struct ComposerCard: View {
             ZStack(alignment: .topLeading) {
                 if state.composerText.isEmpty && !isComposingMarkedText {
                     Text(state.t(.askPlaceholder))
-                        .font(.system(size: 14))
-                        .foregroundStyle(DesignTokens.neutral400)
-                        .padding(.horizontal, 8)
-                        .padding(.top, 7)
+                        .font(.system(size: 15))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 10)
                 }
                 ComposerTextEditor(
                     text: $state.composerText,
@@ -703,7 +703,7 @@ private struct ComposerCard: View {
                     .frame(height: DesignTokens.composerTextMinHeight)
             }
 
-            HStack(spacing: 2) {
+            HStack(spacing: 4) {
                 iconControl("paperclip", help: state.t(.attachHelp)) {
                     openAttachmentPanel()
                 }
@@ -715,10 +715,11 @@ private struct ComposerCard: View {
                 contextGauge
                 sendOrStopButton
             }
-            .padding(.horizontal, 4)
-            .padding(.top, 4)
+            .padding(.top, 8)
         }
-        .padding(8)
+        .padding(.horizontal, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
         .background(
             ComposerGlassBackground(isFocused: focused, chromeless: chromeless)
         )
@@ -805,7 +806,7 @@ private struct ComposerCard: View {
             ComposerControlButtonStyle(
                 foreground: tone,
                 idleBackground: isBypass ? DesignTokens.warning.opacity(0.10) : .clear,
-                pressedBackground: isBypass ? DesignTokens.warning.opacity(0.18) : DesignTokens.neutral100
+                pressedBackground: isBypass ? DesignTokens.warning.opacity(0.18) : DesignTokens.composerControlSurface
             )
         )
         .help(state.t(.choosePermissionMode))
@@ -828,7 +829,7 @@ private struct ComposerCard: View {
             .frame(minWidth: latestTokenBudget == nil ? 40 : 58)
             .background(
                 Capsule(style: .continuous)
-                    .fill(latestTokenBudget == nil ? Color.clear : DesignTokens.neutral100)
+                    .fill(latestTokenBudget == nil ? Color.clear : DesignTokens.composerControlSurface)
             )
         }
         .buttonStyle(ComposerControlButtonStyle())
@@ -991,19 +992,33 @@ private struct ComposerCard: View {
             }
         } label: {
             Image(systemName: state.isCurrentSessionStreaming ? "stop.fill" : "arrow.up")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(state.isCurrentSessionStreaming ? .white : (canSend ? .white : DesignTokens.neutral400))
-                .frame(width: 32, height: 32)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(sendButtonForeground)
+                .frame(width: 34, height: 34)
                 .background(
-                    RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
-                        .fill(state.isCurrentSessionStreaming ? Color(nsColor: NSColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1)) : (canSend ? DesignTokens.neutral900 : DesignTokens.neutral200))
+                    Circle()
+                        .fill(sendButtonFill)
                 )
-                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(!state.isCurrentSessionStreaming && !canSend)
         .keyboardShortcut(.return, modifiers: [.command])
         .help(state.isCurrentSessionStreaming ? state.t(.stopGeneration) : state.t(.send))
+    }
+
+    private var sendButtonFill: Color {
+        if state.isCurrentSessionStreaming {
+            return DesignTokens.danger
+        }
+        return canSend ? DesignTokens.composerSendActive : DesignTokens.composerSendDisabled
+    }
+
+    private var sendButtonForeground: Color {
+        if state.isCurrentSessionStreaming {
+            return .white
+        }
+        return canSend ? DesignTokens.composerSendActiveForeground : DesignTokens.composerSendDisabledForeground
     }
 
     private func openAttachmentPanel() {
@@ -3187,9 +3202,9 @@ private struct PendingAttachmentPreview: View {
         Button(action: onRemove) {
             Image(systemName: "xmark")
                 .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(DesignTokens.prominentButtonForeground)
                 .frame(width: 24, height: 24)
-                .background(Circle().fill(DesignTokens.neutral900.opacity(0.92)))
+                .background(Circle().fill(DesignTokens.prominentButtonFill.opacity(0.92)))
                 .shadow(color: .black.opacity(0.18), radius: 4, x: 0, y: 1)
                 .contentShape(Circle())
         }
@@ -3430,10 +3445,10 @@ private struct ComposerTextEditor: NSViewRepresentable {
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = true
-        textView.font = NSFont.systemFont(ofSize: 14)
+        textView.font = NSFont.systemFont(ofSize: 15)
         textView.textColor = NSColor.labelColor
         textView.insertionPointColor = NSColor.controlAccentColor
-        textView.textContainerInset = NSSize(width: 8, height: 7)
+        textView.textContainerInset = NSSize(width: 10, height: 10)
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true
         textView.isHorizontallyResizable = false
@@ -3727,12 +3742,12 @@ private struct GenericPermissionCard: View {
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(DesignTokens.prominentButtonForeground)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(
                         RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                            .fill(DesignTokens.neutral900)
+                            .fill(DesignTokens.prominentButtonFill)
                     )
                     .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                 }
@@ -6263,16 +6278,16 @@ private struct ProcessStepIcon: View {
 private struct ComposerControlButtonStyle: ButtonStyle {
     var foreground: Color = DesignTokens.secondaryText
     var idleBackground: Color = .clear
-    var pressedBackground: Color = DesignTokens.neutral100
+    var pressedBackground: Color = DesignTokens.composerControlSurface
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(foreground)
             .background(
-                RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(configuration.isPressed ? pressedBackground : idleBackground)
             )
-            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .opacity(configuration.isPressed ? 0.76 : 1)
     }
 }

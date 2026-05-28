@@ -5714,12 +5714,17 @@ private struct RoutingStatCard: View {
 }
 
 struct WebToolbarButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     var isProminent = false
 
     func makeBody(configuration: Configuration) -> some View {
+        let foreground = isProminent
+            ? (isEnabled ? DesignTokens.prominentButtonForeground : DesignTokens.prominentButtonDisabledForeground)
+            : (isEnabled ? DesignTokens.secondaryText : DesignTokens.tertiaryText.opacity(0.72))
+
         configuration.label
             .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(isProminent ? Color.white : DesignTokens.secondaryText)
+            .foregroundStyle(foreground)
             .lineLimit(1)
             .padding(.horizontal, 10)
             .frame(minWidth: isProminent ? 56 : 32, minHeight: 32)
@@ -5727,7 +5732,7 @@ struct WebToolbarButtonStyle: ButtonStyle {
                 Group {
                     if isProminent {
                         RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
-                            .fill(DesignTokens.neutral900)
+                            .fill(isEnabled ? DesignTokens.prominentButtonFill : DesignTokens.prominentButtonDisabledFill)
                     } else {
                         GlassControlBackground(isActive: false, cornerRadius: DesignTokens.smallRadius, showsShadow: false)
                     }

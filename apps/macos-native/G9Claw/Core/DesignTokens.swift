@@ -3,7 +3,7 @@ import SwiftUI
 
 enum DesignTokens {
     static let background = neutral950InDark(light: .white)
-    static let sidebarBackground = neutral900InDark(light: nsColor(250, 250, 250))
+    static let sidebarBackground = adaptive(light: nsColor(250, 250, 250), dark: nsColor(38, 39, 46))
     static let panel = neutral800InDark(light: nsColor(245, 245, 245))
     static let text = neutral100InDark(light: nsColor(23, 23, 23))
     static let secondaryText = neutral400InDark(light: nsColor(82, 82, 82))
@@ -19,7 +19,27 @@ enum DesignTokens {
     static let controlSurface = adaptive(light: nsColor(255, 255, 255, 0.48), dark: nsColor(46, 46, 48, 0.46))
     static let controlSurfaceActive = adaptive(light: nsColor(255, 255, 255, 0.82), dark: nsColor(58, 58, 60, 0.70))
     static let modalSurface = adaptive(light: nsColor(255, 255, 255, 0.96), dark: nsColor(24, 24, 26, 0.96))
-    static let sidebarOverlay = adaptive(light: nsColor(248, 248, 248, 0.18), dark: nsColor(22, 22, 24, 0.26))
+    static let sidebarOverlay = adaptive(light: nsColor(248, 248, 248, 0.22), dark: nsColor(24, 24, 28, 0.58))
+    static let sidebarControlSurface = adaptive(light: nsColor(236, 236, 242, 0.62), dark: nsColor(28, 28, 32, 0.72))
+    static let sidebarControlActive = adaptive(light: nsColor(255, 255, 255, 0.78), dark: nsColor(60, 60, 66, 0.66))
+    static let titlebarSwitchSurface = adaptive(light: nsColor(250, 250, 252, 0.52), dark: nsColor(31, 31, 35, 0.54))
+    static let titlebarSwitchBorder = adaptive(light: nsColor(164, 164, 172, 0.42), dark: nsColor(112, 112, 120, 0.30))
+    static let titlebarSwitchHighlight = adaptive(light: nsColor(255, 255, 255, 0.46), dark: nsColor(255, 255, 255, 0.055))
+    static let titlebarSwitchActiveSurface = adaptive(light: nsColor(255, 255, 255, 0.78), dark: nsColor(62, 62, 68, 0.48))
+    static let titlebarSwitchActiveBorder = adaptive(light: nsColor(154, 154, 164, 0.44), dark: nsColor(180, 180, 188, 0.20))
+    static let mainOverlay = adaptive(light: nsColor(255, 255, 255, 0.48), dark: nsColor(13, 13, 15, 0.91))
+    static let composerSurface = adaptive(light: nsColor(255, 255, 255, 0.90), dark: nsColor(43, 43, 45, 0.94))
+    static let composerBorder = adaptive(light: nsColor(208, 208, 214, 0.92), dark: nsColor(92, 92, 96, 0.72))
+    static let composerFocusedBorder = adaptive(light: nsColor(138, 138, 148, 0.92), dark: nsColor(126, 126, 132, 0.86))
+    static let composerControlSurface = adaptive(light: nsColor(244, 244, 246, 0.86), dark: nsColor(58, 58, 60, 0.72))
+    static let composerSendActive = adaptive(light: nsColor(24, 24, 27), dark: nsColor(246, 246, 246))
+    static let composerSendActiveForeground = adaptive(light: nsColor(255, 255, 255), dark: nsColor(28, 28, 30))
+    static let composerSendDisabled = adaptive(light: nsColor(225, 225, 229), dark: nsColor(65, 65, 67))
+    static let composerSendDisabledForeground = adaptive(light: nsColor(148, 148, 156), dark: nsColor(150, 150, 154))
+    static let prominentButtonFill = adaptive(light: nsColor(23, 23, 23), dark: nsColor(246, 246, 246))
+    static let prominentButtonForeground = adaptive(light: nsColor(255, 255, 255), dark: nsColor(28, 28, 30))
+    static let prominentButtonDisabledFill = adaptive(light: nsColor(229, 229, 234, 0.90), dark: nsColor(54, 54, 58, 0.78))
+    static let prominentButtonDisabledForeground = adaptive(light: nsColor(148, 148, 156), dark: nsColor(150, 150, 154))
     static let mutedForeground = adaptive(light: nsColor(115, 115, 115), dark: nsColor(163, 163, 163))
     static let ring = adaptive(light: nsColor(77, 77, 77), dark: nsColor(163, 163, 163))
     static let destructiveForeground = adaptive(light: nsColor(250, 250, 250), dark: nsColor(250, 250, 250))
@@ -55,10 +75,10 @@ enum DesignTokens {
     static let titlebarControlSize: CGFloat = 32
     static let titlebarSidebarGlyphSize: CGFloat = 14
     static let titlebarContentReserveWhenSidebarHidden: CGFloat = 120
-    static let titlebarControlTop: CGFloat = 0
+    static let titlebarControlTop: CGFloat = 4
 
     static let composerMaxWidth: CGFloat = 688
-    static let composerTextMinHeight: CGFloat = 44
+    static let composerTextMinHeight: CGFloat = 56
     static let transcriptMaxWidth: CGFloat = 824
     static let transcriptPaddingH: CGFloat = 20
     static let transcriptPaddingV: CGFloat = 20
@@ -77,11 +97,11 @@ enum DesignTokens {
     }
 
     static func selectedRowFill() -> Color {
-        neutral200.opacity(0.70)
+        adaptive(light: nsColor(229, 229, 234, 0.78), dark: nsColor(62, 63, 72, 0.78))
     }
 
     static func hoverFill() -> Color {
-        neutral100
+        adaptive(light: nsColor(238, 238, 242, 0.72), dark: nsColor(50, 51, 59, 0.58))
     }
 
     private static func neutral950InDark(light: NSColor) -> Color {
@@ -222,7 +242,7 @@ struct AppGlassWindowBackground: View {
     var body: some View {
         ZStack {
             VisualEffectBackground(material: .windowBackground, blendingMode: .behindWindow)
-            DesignTokens.background.opacity(0.24)
+            DesignTokens.background.opacity(0.34)
         }
         .allowsHitTesting(false)
     }
@@ -231,8 +251,18 @@ struct AppGlassWindowBackground: View {
 struct SidebarGlassBackground: View {
     var body: some View {
         ZStack {
-            VisualEffectBackground(material: .sidebar, blendingMode: .behindWindow)
+            VisualEffectBackground(material: .underWindowBackground, blendingMode: .behindWindow)
             DesignTokens.sidebarOverlay
+            LinearGradient(
+                colors: [.white.opacity(0.055), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.08)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
         }
         .allowsHitTesting(false)
     }
@@ -242,7 +272,7 @@ struct MainGlassBackground: View {
     var body: some View {
         ZStack {
             VisualEffectBackground(material: .contentBackground, blendingMode: .withinWindow)
-            DesignTokens.background.opacity(0.16)
+            DesignTokens.mainOverlay
         }
         .allowsHitTesting(false)
     }
@@ -278,7 +308,7 @@ struct GlassControlBackground: View {
 }
 
 struct ComposerGlassBackground: View {
-    var cornerRadius: CGFloat = DesignTokens.largeRadius
+    var cornerRadius: CGFloat = 18
     var isFocused: Bool = false
     var chromeless: Bool = false
 
@@ -287,17 +317,22 @@ struct ComposerGlassBackground: View {
             .fill(.clear)
             .background(
                 ZStack {
-                    VisualEffectBackground(material: .popover, blendingMode: .withinWindow)
-                    DesignTokens.contentSurface
+                    VisualEffectBackground(material: .hudWindow, blendingMode: .withinWindow)
+                    DesignTokens.composerSurface
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .allowsHitTesting(false)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(isFocused ? DesignTokens.neutral300 : DesignTokens.separator.opacity(0.80), lineWidth: 1)
+                    .stroke(isFocused ? DesignTokens.composerFocusedBorder : DesignTokens.composerBorder, lineWidth: 1)
             )
-            .shadow(color: .black.opacity(chromeless ? 0.08 : 0.07), radius: 14, y: 8)
+            .overlay(alignment: .top) {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(.white.opacity(0.10), lineWidth: 0.7)
+                    .blendMode(.plusLighter)
+            }
+            .shadow(color: .black.opacity(chromeless ? 0.12 : 0.16), radius: 18, y: 10)
     }
 }
 

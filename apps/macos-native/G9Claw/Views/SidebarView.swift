@@ -61,26 +61,20 @@ struct SidebarView: View {
         .frame(height: DesignTokens.sidebarSegmentHeight + 4)
         .background(
             ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(DesignTokens.background.opacity(0.18))
-                    .background(
-                        VisualEffectBackground(material: .hudWindow, blendingMode: .withinWindow)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    )
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(.white.opacity(0.34), lineWidth: 0.7)
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(DesignTokens.separator.opacity(0.55), lineWidth: 0.7)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(DesignTokens.sidebarControlSurface)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(DesignTokens.separator.opacity(0.42), lineWidth: 0.8)
                 LinearGradient(
-                    colors: [.white.opacity(0.30), .white.opacity(0.03), .clear],
+                    colors: [.white.opacity(0.045), .clear],
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .allowsHitTesting(false)
             }
         )
-        .shadow(color: .black.opacity(0.06), radius: 7, y: 3)
+        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
         .padding(.horizontal, 12)
         .padding(.top, DesignTokens.sidebarContentTopPadding)
         .padding(.bottom, 4)
@@ -99,16 +93,12 @@ struct SidebarView: View {
             ZStack {
                 if activeSection == section {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(DesignTokens.background.opacity(0.58))
-                        .background(
-                            VisualEffectBackground(material: .popover, blendingMode: .withinWindow)
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        )
+                        .fill(DesignTokens.sidebarControlActive)
                         .overlay(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(.white.opacity(0.58), lineWidth: 0.7)
+                                .strokeBorder(.white.opacity(0.08), lineWidth: 0.7)
                         )
-                        .shadow(color: .black.opacity(0.10), radius: 4, y: 2)
+                        .shadow(color: .black.opacity(0.10), radius: 4, y: 1)
                         .matchedGeometryEffect(id: "active-sidebar-section", in: sectionToggleGlassNamespace)
                 }
 
