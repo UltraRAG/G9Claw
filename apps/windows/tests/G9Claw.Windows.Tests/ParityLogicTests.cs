@@ -493,6 +493,53 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void ConfigAndPreferenceHelpersMatchMacStoragePolicies()
+    {
+        var date = new DateTimeOffset(2026, 5, 29, 23, 30, 0, TimeSpan.FromHours(8));
+        var permissionValues = ComposerPermissionModeStorage.Save(ComposerPermissionMode.BypassPermissions, "session-1");
+        var uiJson = NativeUIPreferencesStorage.Save(new NativeUIPreferences(
+            AutoExpandTools: true,
+            ShowRawParameters: true,
+            ShowThinking: false,
+            AutoScrollToBottom: true,
+            SendByCtrlEnter: true,
+            SidebarVisible: false));
+        var restoredUi = NativeUIPreferencesStorage.StoredPreferences(new Dictionary<string, string>
+        {
+            [NativeUIPreferencesStorage.StorageKey] = uiJson,
+        });
+        var legacyUi = NativeUIPreferencesStorage.StoredPreferences(new Dictionary<string, string>
+        {
+            ["autoExpandTools"] = "true",
+            ["showThinking"] = "false",
+            ["sidebarVisible"] = "false",
+        });
+        var workspace = new WorkspaceContext(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), "demo", "Demo", @"C:\repo", IsGeneral: false);
+        var editor = CodeEditorPreferences.Defaults;
+
+        Assert.Equal("g9claw", PermissionsExportDefaults.Source);
+        Assert.Equal("g9claw-permissions-2026-05-29.json", PermissionsExportDefaults.Filename(date));
+        Assert.Equal("alwaysOn", G9ClawConfigSection.AlwaysOn.Id());
+        Assert.Equal("Always-On", G9ClawConfigSection.AlwaysOn.Label());
+        Assert.Equal("Raw YAML", G9ClawConfigSection.Raw.Label());
+        Assert.Equal(ComposerPermissionMode.BypassPermissions, ComposerPermissionModeStorage.StoredMode("session-1", permissionValues));
+        Assert.Equal(ComposerPermissionMode.BypassPermissions, ComposerPermissionModeStorage.StoredMode(null, permissionValues));
+        Assert.True(restoredUi.AutoExpandTools);
+        Assert.True(restoredUi.ShowRawParameters);
+        Assert.False(restoredUi.ShowThinking);
+        Assert.True(restoredUi.SendByCtrlEnter);
+        Assert.False(restoredUi.SidebarVisible);
+        Assert.True(legacyUi.AutoExpandTools);
+        Assert.False(legacyUi.ShowThinking);
+        Assert.False(legacyUi.SidebarVisible);
+        Assert.Equal("Demo", workspace.DisplayName);
+        Assert.False(workspace.IsGeneral);
+        Assert.False(editor.WordWrap);
+        Assert.True(editor.ShowMinimap);
+        Assert.Equal(14, editor.FontSize);
+    }
+
+    [Fact]
     public void WebV2UiSettingsNormalizeSidebarBoundsAndLists()
     {
         var tooSmall = new V2UiSettings(12, SidebarSection.General, null!, null!).Normalize();
@@ -1272,6 +1319,74 @@ public sealed class ParityLogicTests
         Assert.Equal(0.010m, snapshot.BaselineCost);
         Assert.Equal(0.007m, snapshot.SavedCost);
         Assert.Equal("cheap", Assert.Single(snapshot.ModelBreakdown).Model);
+    }
+
+    [Fact]
+    public void RoutingDashboardSessionMatchesMacFallbackTotals()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var byTier = new Dictionary<string, RoutingBucket>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["SIMPLE"] = new RoutingBucket(2, 100, 20, 5, 125, 3, 0.01m, 0.05m, 0.04m),
+        };
+        var byModel = new Dictionary<string, RoutingBucket>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["qwen"] = new RoutingBucket(4, 200, 30, 0, 230, 4, 0.02m, 0.08m, 0.06m),
+        };
+        var byRole = new Dictionary<string, RoutingBucket>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["assistant"] = new RoutingBucket(1, 50, 10, 0, 60, 2, 0.01m, 0.03m, 0.02m),
+        };
+        var entry = new RoutingRequestLogEntry(
+            "entry-1",
+            now,
+            "assistant",
+            "SIMPLE",
+            "qwen",
+            125,
+            0.01m,
+            0.05m,
+            0.04m,
+            Query: "ping",
+            Scenario: "chat",
+            Route: "default",
+            Skill: "none");
+        var session = new RoutingDashboardSession(
+            "session-1",
+            "Chat",
+            "Demo",
+            now,
+            125,
+            0.01m,
+            0.04m,
+            Total: null,
+            ByTier: byTier,
+            ByModel: byModel,
+            ByScenario: null,
+            ByRole: byRole,
+            RequestLog: ["assistant SIMPLE qwen"],
+            RequestEntries: [entry]);
+        var snapshot = new RoutingDashboardSnapshot(
+            RequestCount: 1,
+            InputTokens: 100,
+            OutputTokens: 25,
+            EstimatedCost: 0.01m,
+            BaselineCost: 0.05m,
+            RecentRoutes: [],
+            ModelBreakdown: [],
+            TotalProjects: 1,
+            TotalSessions: 2,
+            RoutedSessions: 1,
+            RecentSessions: [session]);
+
+        Assert.Equal(4, session.EffectiveTotal.Count);
+        Assert.Equal(4, session.EffectiveTotal.RequestCount);
+        Assert.Empty(session.EffectiveByScenario);
+        Assert.Equal("entry-1", Assert.Single(session.EffectiveRequestEntries).Id);
+        Assert.Equal(1, snapshot.TotalProjects);
+        Assert.Equal(2, snapshot.TotalSessions);
+        Assert.Equal(1, snapshot.RoutedSessions);
+        Assert.Equal("session-1", Assert.Single(snapshot.EffectiveRecentSessions).Id);
     }
 
     [Fact]

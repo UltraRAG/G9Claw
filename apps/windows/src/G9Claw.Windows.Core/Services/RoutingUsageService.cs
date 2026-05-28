@@ -40,10 +40,79 @@ public sealed record RoutingDashboardSnapshot(
     decimal EstimatedCost,
     decimal BaselineCost,
     IReadOnlyList<RoutingUsageRecord> RecentRoutes,
-    IReadOnlyList<RoutingModelBreakdown> ModelBreakdown)
+    IReadOnlyList<RoutingModelBreakdown> ModelBreakdown,
+    int TotalProjects = 0,
+    int TotalSessions = 0,
+    int RoutedSessions = 0,
+    IReadOnlyList<RoutingDashboardSession>? RecentSessions = null)
 {
     public int TotalTokens => InputTokens + OutputTokens;
     public decimal SavedCost => Math.Max(0, BaselineCost - EstimatedCost);
+    public IReadOnlyList<RoutingDashboardSession> EffectiveRecentSessions => RecentSessions ?? [];
+}
+
+public sealed record RoutingRequestLogEntry(
+    string Id,
+    DateTimeOffset Ts,
+    string Role,
+    string? Tier,
+    string Model,
+    int Tokens,
+    decimal Cost,
+    decimal? BaselineCost = null,
+    decimal? SavedCost = null,
+    string? Query = null,
+    string? Scenario = null,
+    string? Route = null,
+    string? Skill = null);
+
+public sealed record RoutingDashboardSession(
+    string Id,
+    string Title,
+    string ProjectName,
+    DateTimeOffset LastActiveAt,
+    int TotalTokens,
+    decimal EstimatedCost,
+    decimal SavedCost,
+    RoutingBucket? Total,
+    Dictionary<string, RoutingBucket> ByTier,
+    Dictionary<string, RoutingBucket> ByModel,
+    Dictionary<string, RoutingBucket>? ByScenario,
+    Dictionary<string, RoutingBucket>? ByRole,
+    IReadOnlyList<string> RequestLog,
+    IReadOnlyList<RoutingRequestLogEntry>? RequestEntries = null)
+{
+    public RoutingBucket EffectiveTotal => Total ?? new RoutingBucket(
+        InferredRequestCount(ByTier, ByModel, ByRole ?? []),
+        TotalTokens,
+        0,
+        0,
+        TotalTokens,
+        InferredRequestCount(ByTier, ByModel, ByRole ?? []),
+        EstimatedCost,
+        EstimatedCost + SavedCost,
+        SavedCost);
+
+    public Dictionary<string, RoutingBucket> EffectiveByScenario => ByScenario ?? new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, RoutingBucket> EffectiveByRole => ByRole ?? new(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlyList<RoutingRequestLogEntry> EffectiveRequestEntries => RequestEntries ?? [];
+
+    public static int InferredRequestCount(
+        IReadOnlyDictionary<string, RoutingBucket> byTier,
+        IReadOnlyDictionary<string, RoutingBucket> byModel,
+        IReadOnlyDictionary<string, RoutingBucket> byRole)
+    {
+        var sums = new[]
+        {
+            SumRequests(byTier),
+            SumRequests(byModel),
+            SumRequests(byRole),
+        };
+        return sums.Max();
+    }
+
+    private static int SumRequests(IReadOnlyDictionary<string, RoutingBucket> buckets) =>
+        buckets.Values.Sum(bucket => Math.Max(bucket.Count, bucket.RequestCount));
 }
 
 public static class RoutingUsageEstimator
