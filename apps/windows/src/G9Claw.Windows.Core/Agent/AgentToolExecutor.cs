@@ -16,20 +16,27 @@ public sealed record AgentToolExecutionContext(
     CancellationToken CancellationToken,
     IReadOnlyDictionary<string, string>? NativeConfigValues = null,
     int SubagentDepth = 0,
-    int? MaxSubagentDepth = null);
+    int? MaxSubagentDepth = null,
+    ProviderConfig? ProviderConfig = null,
+    string? ApiKey = null,
+    int TimeoutMs = 120_000,
+    int ContextWindow = 160_000,
+    ComposerPermissionMode PermissionMode = ComposerPermissionMode.Default);
 
 public sealed class AgentToolExecutor
 {
     private readonly WorkspaceService _workspaceService;
     private readonly TerminalService _terminalService;
     private readonly NativeRunStore _runStore;
+    private readonly INativeSubagentRunner _subagentRunner;
     private readonly bool _preferRipgrep;
 
-    public AgentToolExecutor(WorkspaceService? workspaceService = null, TerminalService? terminalService = null, NativeRunStore? runStore = null, bool preferRipgrep = true)
+    public AgentToolExecutor(WorkspaceService? workspaceService = null, TerminalService? terminalService = null, NativeRunStore? runStore = null, INativeSubagentRunner? subagentRunner = null, bool preferRipgrep = true)
     {
         _workspaceService = workspaceService ?? new WorkspaceService();
         _terminalService = terminalService ?? new TerminalService();
         _runStore = runStore ?? new NativeRunStore();
+        _subagentRunner = subagentRunner ?? new ProviderNativeSubagentRunner();
         _preferRipgrep = preferRipgrep;
     }
 
@@ -677,7 +684,7 @@ public sealed class AgentToolExecutor
             });
         }
 
-        var output = await TaskOutputAsync(normalizedType, type, prompt, description, cwd, root, context.CancellationToken);
+        var output = await TaskOutputAsync(normalizedType, type, prompt, description, cwd, root, context);
         var task = background
             ? _runStore.StartRecordedTask(normalizedType, description, cwd, output, context.CancellationToken)
             : _runStore.CreateRecordedTask(type, description, cwd, output);
@@ -733,7 +740,7 @@ public sealed class AgentToolExecutor
         string description,
         string cwd,
         JsonElement input,
-        CancellationToken cancellationToken)
+        AgentToolExecutionContext context)
     {
         if (normalizedType == "best-of-n-runner")
         {
@@ -741,12 +748,17 @@ public sealed class AgentToolExecutor
             var attempts = new JsonArray();
             for (var index = 1; index <= n; index++)
             {
+                var attemptPrompt = $"{prompt}\n\nAttempt {index} of {n}. Use this isolated git worktree and return the best concise result.";
+                var attemptDescription = $"best-of-n {index}";
                 var result = await WithIsolatedGitWorktreeAsync(cwd, worktreePath =>
-                    RecordedTaskOutput(
+                    TaskSubagentOutputAsync(
                         type,
-                        $"best-of-n {index}",
-                        $"{prompt}\n\nAttempt {index} of {n}. Use this isolated git worktree and return the best concise result."),
-                    cancellationToken);
+                        attemptPrompt,
+                        attemptDescription,
+                        worktreePath,
+                        $"Task isolation: git worktree at {worktreePath}",
+                        context),
+                    context.CancellationToken);
                 attempts.Add(new JsonObject
                 {
                     ["attempt"] = index,
@@ -766,7 +778,14 @@ public sealed class AgentToolExecutor
         if (string.Equals(OptionalString(input, "isolation")?.Trim(), "worktree", StringComparison.OrdinalIgnoreCase))
         {
             var result = await WithIsolatedGitWorktreeAsync(cwd, worktreePath =>
-                RecordedTaskOutput(type, description, prompt), cancellationToken);
+                TaskSubagentOutputAsync(
+                    type,
+                    prompt,
+                    description,
+                    worktreePath,
+                    $"Task type: {type}\nTask isolation: git worktree at {worktreePath}",
+                    context),
+                context.CancellationToken);
             return PrettyJson(new JsonObject
             {
                 ["type"] = type,
@@ -775,15 +794,39 @@ public sealed class AgentToolExecutor
             });
         }
 
-        return RecordedTaskOutput(type, description, prompt);
+        return await TaskSubagentOutputAsync(type, prompt, description, cwd, $"Task type: {type}", context);
     }
 
     private static string RecordedTaskOutput(string type, string description, string prompt) =>
         $"Recorded {type} task: {description}\n\n{prompt}";
 
+    private Task<string> TaskSubagentOutputAsync(
+        string type,
+        string prompt,
+        string description,
+        string workspaceRoot,
+        string extraContext,
+        AgentToolExecutionContext context)
+    {
+        if (_subagentRunner.RequiresProviderConfig &&
+            (context.ProviderConfig is null || string.IsNullOrWhiteSpace(context.ApiKey)))
+        {
+            return Task.FromResult(RecordedTaskOutput(type, description, prompt));
+        }
+
+        var childContext = context with
+        {
+            WorkspaceRoot = workspaceRoot,
+            SubagentDepth = context.SubagentDepth + 1,
+        };
+        return _subagentRunner.RunAsync(
+            new NativeSubagentRequest(workspaceRoot, prompt, description, extraContext, childContext),
+            context.CancellationToken);
+    }
+
     private static async Task<(string WorktreePath, string Output)> WithIsolatedGitWorktreeAsync(
         string workspacePath,
-        Func<string, string> operation,
+        Func<string, Task<string>> operation,
         CancellationToken cancellationToken)
     {
         var environment = SkillRuntimeEnvironment.Build(null);
@@ -811,7 +854,7 @@ public sealed class AgentToolExecutor
                 environment,
                 120_000,
                 cancellationToken);
-            return (worktreePath, operation(worktreePath));
+            return (worktreePath, await operation(worktreePath));
         }
         finally
         {

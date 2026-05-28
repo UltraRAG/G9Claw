@@ -141,6 +141,8 @@ public sealed record AgentRequest(
     Dictionary<string, string> NativeConfigValues)
 {
     public List<AgentToolExchange> ToolExchanges { get; init; } = [];
+    public bool EnableTools { get; init; } = true;
+    public bool Stream { get; init; } = true;
 }
 
 public sealed record AgentToolExchange(

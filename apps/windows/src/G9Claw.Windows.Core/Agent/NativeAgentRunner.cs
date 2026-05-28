@@ -311,7 +311,12 @@ public sealed class NativeAgentRunner
             request.RunMode,
             request.ToolSettings,
             cancellationToken,
-            request.NativeConfigValues);
+            request.NativeConfigValues,
+            ProviderConfig: request.ProviderConfig,
+            ApiKey: request.ApiKey,
+            TimeoutMs: request.TimeoutMs,
+            ContextWindow: request.ContextWindow,
+            PermissionMode: request.PermissionMode);
         var result = await _toolExecutor.ExecuteAsync(call, context);
         if (!result.IsError)
         {

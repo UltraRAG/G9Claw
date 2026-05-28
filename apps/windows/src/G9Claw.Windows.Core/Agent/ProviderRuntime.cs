@@ -541,28 +541,48 @@ public sealed class ProviderClient : IProviderClient
         return httpRequest;
     }
 
-    private static Dictionary<string, object?> BuildOpenAIChatBody(AgentRequest request) => new()
+    private static Dictionary<string, object?> BuildOpenAIChatBody(AgentRequest request)
     {
-        ["model"] = request.ProviderConfig.Model,
-        ["stream"] = true,
-        ["stream_options"] = new Dictionary<string, object?> { ["include_usage"] = true },
-        ["messages"] = BuildOpenAIMessages(request),
-        ["tools"] = AgentToolRegistry.OpenAITools(),
-        ["tool_choice"] = "auto",
-    };
+        var body = new Dictionary<string, object?>
+        {
+            ["model"] = request.ProviderConfig.Model,
+            ["stream"] = request.Stream,
+            ["messages"] = BuildOpenAIMessages(request),
+        };
+        if (request.Stream)
+        {
+            body["stream_options"] = new Dictionary<string, object?> { ["include_usage"] = true };
+        }
 
-    private static Dictionary<string, object?> BuildOpenAIResponsesBody(AgentRequest request) => new()
+        if (request.EnableTools)
+        {
+            body["tools"] = AgentToolRegistry.OpenAITools();
+            body["tool_choice"] = "auto";
+        }
+
+        return body;
+    }
+
+    private static Dictionary<string, object?> BuildOpenAIResponsesBody(AgentRequest request)
     {
-        ["model"] = request.ProviderConfig.Model,
-        ["stream"] = true,
-        ["input"] = PromptWithAttachmentSummary(request),
-        ["tools"] = AgentToolRegistry.OpenAITools().Select(tool => tool["function"]).ToList(),
-    };
+        var body = new Dictionary<string, object?>
+        {
+            ["model"] = request.ProviderConfig.Model,
+            ["stream"] = request.Stream,
+            ["input"] = PromptWithAttachmentSummary(request),
+        };
+        if (request.EnableTools)
+        {
+            body["tools"] = AgentToolRegistry.OpenAITools().Select(tool => tool["function"]).ToList();
+        }
+
+        return body;
+    }
 
     private static Dictionary<string, object?> BuildAnthropicBody(AgentRequest request) => new()
     {
         ["model"] = request.ProviderConfig.Model,
-        ["stream"] = true,
+        ["stream"] = request.Stream,
         ["max_tokens"] = 4096,
         ["messages"] = new[] { new Dictionary<string, object?> { ["role"] = "user", ["content"] = PromptWithAttachmentSummary(request) } },
     };

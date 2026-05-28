@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Runtime.CompilerServices;
@@ -1254,6 +1255,59 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public async Task ProviderNativeSubagentRunnerUsesReadOnlyNonStreamingChatRequest()
+    {
+        using var temp = new TempWorkspace();
+        var handler = new CapturingProviderHandler("""
+        {"choices":[{"message":{"role":"assistant","content":"subagent answer"}}],"usage":{"total_tokens":7}}
+        """);
+        var runner = new ProviderNativeSubagentRunner(new ProviderClient(new HttpClient(handler)));
+        var providerConfig = new ProviderConfig(
+            SessionProvider.G9Claw,
+            ProviderApiType.OpenAIChat,
+            "http://provider.local/v1",
+            "test-model",
+            "secret",
+            []);
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None,
+            ProviderConfig: providerConfig,
+            ApiKey: "test-key");
+
+        var output = await runner.RunAsync(
+            new NativeSubagentRequest(temp.Root, "Inspect services", "Explore services", "Task type: explore", context),
+            CancellationToken.None);
+
+        using (var outputJson = JsonDocument.Parse(output))
+        {
+            Assert.Equal("Explore services", outputJson.RootElement.GetProperty("description").GetString());
+            Assert.Equal("Inspect services", outputJson.RootElement.GetProperty("prompt").GetString());
+            Assert.Equal("subagent answer", outputJson.RootElement.GetProperty("result").GetString());
+        }
+
+        Assert.Equal(HttpMethod.Post, handler.Request!.Method);
+        Assert.Equal("Bearer", handler.Request.Headers.Authorization?.Scheme);
+        Assert.Equal("test-key", handler.Request.Headers.Authorization?.Parameter);
+        using var requestJson = JsonDocument.Parse(handler.Body!);
+        var root = requestJson.RootElement;
+        Assert.Equal("test-model", root.GetProperty("model").GetString());
+        Assert.False(root.GetProperty("stream").GetBoolean());
+        Assert.False(root.TryGetProperty("stream_options", out _));
+        Assert.False(root.TryGetProperty("tools", out _));
+        Assert.False(root.TryGetProperty("tool_choice", out _));
+        var messages = root.GetProperty("messages");
+        Assert.Equal("system", messages[0].GetProperty("role").GetString());
+        Assert.Contains("read-only subagent", messages[0].GetProperty("content").GetString());
+        Assert.Equal("user", messages[1].GetProperty("role").GetString());
+        Assert.Contains($"Workspace: {temp.Root}", messages[1].GetProperty("content").GetString());
+        Assert.Contains("Task type: explore", messages[1].GetProperty("content").GetString());
+    }
+
+    [Fact]
     public void ProviderRetryPolicyMatchesCodexTransientDefaults()
     {
         var policy = ProviderRetryPolicy.CodexDefault;
@@ -2201,6 +2255,57 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerPassesProviderContextToTaskSubagentsLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var providerConfig = new ProviderConfig(
+            SessionProvider.G9Claw,
+            ProviderApiType.OpenAIChat,
+            "http://provider.local/v1",
+            "test-model",
+            "secret",
+            []);
+        var subagent = new RecordingSubagentRunner(requiresProviderConfig: true);
+        var toolExecutor = new AgentToolExecutor(
+            runStore: new NativeRunStore(Path.Combine(temp.Root, "run-history")),
+            subagentRunner: subagent);
+        var runner = new NativeAgentRunner(
+            providerClient: new SingleTaskProvider(),
+            toolExecutor: toolExecutor);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "delegate work",
+            [],
+            providerConfig,
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.BypassPermissions,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            new Dictionary<string, string> { ["runtime.maxSubagentDepth"] = "2" });
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        var subagentRequest = Assert.Single(subagent.Requests);
+        Assert.Equal(providerConfig, subagentRequest.Context.ProviderConfig);
+        Assert.Equal("test-key", subagentRequest.Context.ApiKey);
+        Assert.Equal(1, subagentRequest.Context.SubagentDepth);
+        Assert.Contains(events, item =>
+            item.Kind == AgentEventKind.ToolResult &&
+            item.ToolResult?.ToolName == "Task" &&
+            item.ToolResult.Output.Contains("subagent result for Explore services", StringComparison.Ordinal));
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done");
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerCachesRepeatedRootGlobDiscoveryLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -3099,6 +3204,102 @@ gateway:
     }
 
     [Fact]
+    public async Task AgentToolExecutorTaskRunsConfiguredSubagentLikeMacRuntime()
+    {
+        using var temp = new TempWorkspace();
+        var subagent = new RecordingSubagentRunner(requiresProviderConfig: true);
+        var executor = new AgentToolExecutor(subagentRunner: subagent);
+        var providerConfig = new ProviderConfig(
+            SessionProvider.G9Claw,
+            ProviderApiType.OpenAIChat,
+            "http://provider.local/v1",
+            "test-model",
+            "secret",
+            []);
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None,
+            new Dictionary<string, string> { ["runtime.maxSubagentDepth"] = "2" },
+            ProviderConfig: providerConfig,
+            ApiKey: "test-key",
+            TimeoutMs: 12_345,
+            ContextWindow: 77_000,
+            PermissionMode: ComposerPermissionMode.BypassPermissions);
+
+        var result = await executor.ExecuteAsync(new AgentToolCall("task-subagent", "Task", """
+        {"type":"explore","prompt":"Inspect services","description":"Explore services"}
+        """), context);
+
+        Assert.False(result.IsError);
+        var request = Assert.Single(subagent.Requests);
+        Assert.Equal(temp.Root, request.WorkspaceRoot);
+        Assert.Equal("Inspect services", request.Prompt);
+        Assert.Equal("Explore services", request.Description);
+        Assert.Equal("Task type: explore", request.ExtraContext);
+        Assert.Equal(1, request.Context.SubagentDepth);
+        Assert.Equal(providerConfig, request.Context.ProviderConfig);
+        Assert.Equal("test-key", request.Context.ApiKey);
+        Assert.Equal(12_345, request.Context.TimeoutMs);
+        Assert.Equal(77_000, request.Context.ContextWindow);
+        Assert.Equal(ComposerPermissionMode.BypassPermissions, request.Context.PermissionMode);
+        using var outputJson = JsonDocument.Parse(result.Output);
+        Assert.Equal("Explore services", outputJson.RootElement.GetProperty("description").GetString());
+        Assert.Equal("Inspect services", outputJson.RootElement.GetProperty("prompt").GetString());
+        Assert.Contains("Task type: explore", outputJson.RootElement.GetProperty("result").GetString());
+    }
+
+    [Fact]
+    public async Task AgentToolExecutorTaskWorktreeSubagentsUseIsolatedWorkspaceLikeMacRuntime()
+    {
+        using var temp = new TempWorkspace();
+        InitializeGitRepository(temp.Root);
+        var subagent = new RecordingSubagentRunner();
+        var executor = new AgentToolExecutor(
+            runStore: new NativeRunStore(Path.Combine(temp.Root, "run-history")),
+            subagentRunner: subagent);
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None);
+
+        var isolated = await executor.ExecuteAsync(new AgentToolCall("task-worktree-subagent", "Task", """
+        {"type":"explore","prompt":"Inspect services","description":"Explore services","isolation":"worktree"}
+        """), context);
+        var bestOfN = await executor.ExecuteAsync(new AgentToolCall("task-best-of-n-subagent", "Task", """
+        {"type":"best-of-n-runner","prompt":"Inspect services","n":2}
+        """), context);
+
+        Assert.False(isolated.IsError);
+        Assert.False(bestOfN.IsError);
+        Assert.Equal(3, subagent.Requests.Count);
+        var isolatedRequest = subagent.Requests[0];
+        Assert.Contains("g9claw-worktrees", isolatedRequest.WorkspaceRoot);
+        Assert.Equal(isolatedRequest.WorkspaceRoot, isolatedRequest.Context.WorkspaceRoot);
+        Assert.Contains($"Task isolation: git worktree at {isolatedRequest.WorkspaceRoot}", isolatedRequest.ExtraContext);
+        Assert.False(Directory.Exists(isolatedRequest.WorkspaceRoot));
+        using (var isolatedJson = JsonDocument.Parse(isolated.Output))
+        {
+            Assert.Equal(isolatedRequest.WorkspaceRoot, isolatedJson.RootElement.GetProperty("worktree").GetString());
+            Assert.Contains("subagent result for Explore services", isolatedJson.RootElement.GetProperty("result").GetString());
+        }
+
+        using var bestJson = JsonDocument.Parse(bestOfN.Output);
+        var attempts = bestJson.RootElement.GetProperty("attempts");
+        Assert.Equal(2, attempts.GetArrayLength());
+        Assert.Contains("Attempt 1 of 2", subagent.Requests[1].Prompt);
+        Assert.Contains("Attempt 2 of 2", subagent.Requests[2].Prompt);
+        Assert.Equal("best-of-n 1", subagent.Requests[1].Description);
+        Assert.Equal("best-of-n 2", subagent.Requests[2].Description);
+        Assert.Contains("g9claw-worktrees", attempts[0].GetProperty("worktree").GetString());
+        Assert.Contains("subagent result for best-of-n 1", attempts[0].GetProperty("result").GetString());
+    }
+
+    [Fact]
     public async Task AgentToolExecutorTaskValidationMatchesMacRuntime()
     {
         using var temp = new TempWorkspace();
@@ -3238,6 +3439,66 @@ gateway:
         date,
         date,
         state);
+
+    private sealed class CapturingProviderHandler(string responseBody) : HttpMessageHandler
+    {
+        public HttpRequestMessage? Request { get; private set; }
+        public string? Body { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Request = request;
+            Body = request.Content is null
+                ? ""
+                : await request.Content.ReadAsStringAsync(cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(responseBody, Encoding.UTF8, "application/json"),
+            };
+        }
+    }
+
+    private sealed class RecordingSubagentRunner(bool requiresProviderConfig = false) : INativeSubagentRunner
+    {
+        public bool RequiresProviderConfig { get; } = requiresProviderConfig;
+        public List<NativeSubagentRequest> Requests { get; } = [];
+
+        public Task<string> RunAsync(NativeSubagentRequest request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Requests.Add(request);
+            return Task.FromResult(JsonSerializer.Serialize(new
+            {
+                description = request.Description,
+                prompt = request.Prompt,
+                result = $"subagent result for {request.Description}\n{request.ExtraContext}",
+            }, new JsonSerializerOptions { WriteIndented = true }));
+        }
+    }
+
+    private sealed class SingleTaskProvider : IProviderClient
+    {
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.ToolExchanges.Count == 0)
+            {
+                yield return new ProviderStreamEvent(
+                    ProviderStreamEventKind.ToolCall,
+                    ToolCall: new AgentToolCall("task", "Task", """
+                    {"type":"explore","prompt":"Inspect services","description":"Explore services"}
+                    """));
+            }
+            else
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done");
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+        }
+    }
 
     private sealed class MultiRoundToolProvider(int rounds) : IProviderClient
     {
