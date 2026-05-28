@@ -2395,11 +2395,10 @@ public sealed partial class MainWindow : Window
             }
             else
             {
-                detailPanel.Children.Add(ToolDetailBox(T("chat.tool.input"), ToolInputDetail(call, presentation)));
-                if (result is not null)
-                {
-                    detailPanel.Children.Add(ToolDetailBox(T("chat.tool.result"), ToolOutputDetail(result.Output)));
-                }
+                var detailPresentation = ToolInvocationDetailPresentation.Parse(call.Name, call.InputJson);
+                detailPanel.Children.Add(ToolDetailBox(
+                    detailPresentation.Title,
+                    detailPresentation.DetailText(IsChineseUi(), result?.Output, State.UiPreferences.ShowRawParameters)));
             }
 
             detail = detailPanel;
@@ -2420,9 +2419,10 @@ public sealed partial class MainWindow : Window
             foreach (var item in items)
             {
                 var itemPresentation = ToolInvocationPresenter.Present(item.Call, item.Result, IsChineseUi());
+                var detailPresentation = ToolInvocationDetailPresentation.Parse(item.Call.Name, item.Call.InputJson);
                 detailPanel.Children.Add(ToolDetailBox(
                     itemPresentation.Summary,
-                    item.Result is null ? ToolInputDetail(item.Call, itemPresentation) : ToolOutputDetail(item.Result.Output)));
+                    detailPresentation.DetailText(IsChineseUi(), item.Result?.Output, State.UiPreferences.ShowRawParameters)));
             }
 
             detail = detailPanel;
@@ -2430,14 +2430,6 @@ public sealed partial class MainWindow : Window
 
         return ToolInlineRow(key, presentation, expanded, detail);
     }
-
-    private string ToolInputDetail(AgentToolCall call, ToolInvocationPresentation presentation) =>
-        State.UiPreferences.ShowRawParameters
-            ? ToolOutputPreviewLimiter.Preview(call.InputJson, maxChars: 6_000, maxLines: 120)
-            : presentation.InputPreview;
-
-    private static string ToolOutputDetail(string output) =>
-        ToolOutputPreviewLimiter.Preview(output);
 
     private FrameworkElement ToolResultRow(AgentToolResult result)
     {

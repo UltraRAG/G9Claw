@@ -3988,6 +3988,37 @@ router:
     }
 
     [Fact]
+    public void ToolInvocationDetailPresentationMatchesMacParsedFields()
+    {
+        var shell = ToolInvocationDetailPresentation.Parse(
+            "Shell",
+            """{"command":"dotnet test","cwd":"C:\\repo","description":"Run tests","timeout":120000}""");
+        var write = ToolInvocationDetailPresentation.Parse(
+            "Write",
+            """{"file_path":"README.md","content":"hello\nworld"}""");
+        var webFetch = ToolInvocationDetailPresentation.Parse(
+            "WebFetch",
+            """{"url":"https://example.com","prompt":"Summarize"}""");
+        var raw = ToolInvocationDetailPresentation.Parse("Unknown", "not json");
+
+        Assert.Equal("Shell", shell.Title);
+        Assert.Equal("dotnet test", shell.Command);
+        Assert.Equal("Cwd", shell.Fields[0].Label);
+        Assert.True(shell.Fields[0].IsPrimary);
+        Assert.Contains("$ dotnet test", shell.DetailText(chinese: false, output: "ok", showRawInput: true));
+        Assert.Contains("Output:\nok", shell.DetailText(chinese: false, output: "ok", showRawInput: true));
+        Assert.Contains("Raw input:", shell.DetailText(chinese: false, output: "ok", showRawInput: true));
+
+        Assert.Equal("README.md", write.PrimaryValue);
+        Assert.Contains("2 lines", write.Fields.Single(field => field.Label == "Content").Value);
+        Assert.Equal("https://example.com", webFetch.PrimaryValue);
+        Assert.Equal("Summarize", webFetch.Fields.Single(field => field.Label == "Prompt").Value);
+        Assert.False(raw.Parsed);
+        Assert.Equal("Raw input", raw.Fields[0].Label);
+        Assert.Equal("https://example.com", ToolInvocationPresenter.Target("WebFetch", """{"url":"https://example.com","prompt":"Summarize"}"""));
+    }
+
+    [Fact]
     public void ToolOutputPreviewLimiterMatchesMacDisplayCaps()
     {
         var manyLines = string.Join("\n", Enumerable.Range(1, 82).Select(index => $"line {index}"));

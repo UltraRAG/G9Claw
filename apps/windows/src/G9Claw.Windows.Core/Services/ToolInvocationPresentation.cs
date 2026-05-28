@@ -32,8 +32,7 @@ public static class ToolInvocationPresenter
 {
     public static string? Target(string toolName, string inputJson, int limit = 72)
     {
-        var canonical = AgentToolNameCanonicalizer.Canonical(toolName);
-        var target = TargetFor(canonical, ToolInput.FromJson(inputJson));
+        var target = ToolInvocationDetailPresentation.Parse(toolName, inputJson).PrimaryValue;
         return string.IsNullOrWhiteSpace(target) ? null : Compact(target, limit);
     }
 
@@ -301,6 +300,240 @@ public static class ToolInvocationPresenter
             return "";
         }
     }
+}
+
+public sealed record ToolInvocationFieldPresentation(
+    string Label,
+    string Value,
+    bool IsPrimary = false);
+
+public sealed record ToolInvocationDetailPresentation(
+    string ToolName,
+    string Title,
+    string? Command,
+    IReadOnlyList<ToolInvocationFieldPresentation> Fields,
+    string RawInput,
+    bool Parsed)
+{
+    public string? PrimaryValue =>
+        !string.IsNullOrWhiteSpace(Command)
+            ? Command
+            : Fields.FirstOrDefault(item => item.IsPrimary)?.Value ?? Fields.FirstOrDefault()?.Value;
+
+    public static ToolInvocationDetailPresentation Parse(string rawToolName, string inputJson)
+    {
+        var toolName = AgentToolNameCanonicalizer.Canonical(rawToolName);
+        try
+        {
+            using var document = JsonDocument.Parse(inputJson);
+            if (document.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                var presentation = ParsedPresentation(toolName, document.RootElement, inputJson);
+                if (!string.IsNullOrWhiteSpace(presentation.Command) || presentation.Fields.Count > 0)
+                {
+                    return presentation;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return new ToolInvocationDetailPresentation(
+            toolName,
+            toolName,
+            null,
+            [new ToolInvocationFieldPresentation("Raw input", inputJson, true)],
+            inputJson,
+            false);
+    }
+
+    public string DetailText(bool chinese, string? output, bool showRawInput = false)
+    {
+        var lines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(Command))
+        {
+            lines.Add("$ " + Command.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", "\n  "));
+        }
+        else
+        {
+            foreach (var field in Fields)
+            {
+                lines.Add($"{field.Label}:");
+                lines.Add(field.Value);
+                lines.Add("");
+            }
+
+            if (lines.Count > 0 && string.IsNullOrEmpty(lines[^1]))
+            {
+                lines.RemoveAt(lines.Count - 1);
+            }
+        }
+
+        var preview = ToolOutputPreviewLimiter.Preview(output ?? "");
+        if (!string.IsNullOrWhiteSpace(preview))
+        {
+            if (lines.Count > 0) lines.Add("");
+            lines.Add(chinese ? "\u8f93\u51fa:" : "Output:");
+            lines.Add(preview);
+        }
+
+        if (showRawInput)
+        {
+            if (lines.Count > 0) lines.Add("");
+            lines.Add(chinese ? "\u539f\u59cb\u53c2\u6570:" : "Raw input:");
+            lines.Add(ToolOutputPreviewLimiter.Preview(RawInput, maxChars: 6_000, maxLines: 120));
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static ToolInvocationDetailPresentation ParsedPresentation(string toolName, JsonElement root, string rawInput) =>
+        toolName switch
+        {
+            "Shell" => new ToolInvocationDetailPresentation(
+                toolName,
+                "Shell",
+                StringValue(root, "command", "input_command", "input", "cmd"),
+                BuildFields(root, [
+                    (["cwd"], "Cwd", true),
+                    (["description"], "Description", false),
+                    (["timeout"], "Timeout", false),
+                ]),
+                rawInput,
+                true),
+            "Read" => FieldPresentation(toolName, rawInput, root, [
+                (["file_path", "path"], "Path", true),
+                (["offset"], "Offset", false),
+                (["limit"], "Limit", false),
+            ]),
+            "Grep" => FieldPresentation(toolName, rawInput, root, [
+                (["pattern", "query"], "Pattern", true),
+                (["path"], "Path", false),
+                (["glob"], "Glob", false),
+            ]),
+            "Glob" => FieldPresentation(toolName, rawInput, root, [
+                (["pattern", "glob"], "Pattern", true),
+                (["path"], "Path", false),
+            ]),
+            "StrReplace" => FieldPresentation(toolName, rawInput, root, [
+                (["file_path", "path"], "Path", true),
+                (["old_string", "oldString"], "Old", false),
+                (["new_string", "newString"], "New", false),
+                (["replace_all"], "Replace all", false),
+            ]),
+            "Write" => WritePresentation(toolName, rawInput, root),
+            "Task" => FieldPresentation(toolName, rawInput, root, [
+                (["description"], "Description", true),
+                (["prompt"], "Prompt", true),
+                (["type", "subagent_type"], "Type", false),
+                (["cwd"], "Cwd", false),
+            ]),
+            "Skill" => FieldPresentation(toolName, rawInput, root, [
+                (["skill"], "Skill", true),
+                (["args"], "Args", false),
+            ]),
+            "TodoRead" => new ToolInvocationDetailPresentation(
+                toolName,
+                "Todo List",
+                null,
+                [new ToolInvocationFieldPresentation("Action", "Read todo list", true)],
+                rawInput,
+                true),
+            "TodoWrite" => new ToolInvocationDetailPresentation(
+                toolName,
+                "Todo List",
+                null,
+                [new ToolInvocationFieldPresentation(
+                    "Summary",
+                    TodoListPresentation.Parse(toolName, rawInput, null)?.Summary(chinese: false) ?? "Update todo list",
+                    true)],
+                rawInput,
+                true),
+            "WebSearch" => FieldPresentation(toolName, rawInput, root, [
+                (["query", "q"], "Query", true),
+            ]),
+            "WebFetch" => FieldPresentation(toolName, rawInput, root, [
+                (["url"], "URL", true),
+                (["prompt"], "Prompt", false),
+            ]),
+            "SemanticSearch" => FieldPresentation(toolName, rawInput, root, [
+                (["query"], "Query", true),
+                (["path"], "Path", false),
+            ]),
+            _ => FieldPresentation(toolName, rawInput, root, [
+                (["file_path", "path"], "Path", true),
+                (["pattern"], "Pattern", true),
+                (["query"], "Query", true),
+                (["description"], "Description", true),
+                (["prompt"], "Prompt", true),
+                (["url"], "URL", true),
+            ]),
+        };
+
+    private static ToolInvocationDetailPresentation FieldPresentation(
+        string toolName,
+        string rawInput,
+        JsonElement root,
+        IReadOnlyList<(string[] Keys, string Label, bool Primary)> specs) =>
+        new(toolName, toolName, null, BuildFields(root, specs), rawInput, true);
+
+    private static ToolInvocationDetailPresentation WritePresentation(string toolName, string rawInput, JsonElement root)
+    {
+        var fields = new List<ToolInvocationFieldPresentation>();
+        if (StringValue(root, "file_path", "path") is { } path)
+        {
+            fields.Add(new ToolInvocationFieldPresentation("Path", path, true));
+        }
+
+        if (StringValue(root, "content") is { } content)
+        {
+            fields.Add(new ToolInvocationFieldPresentation(
+                "Content",
+                AgentToolInputPreview.WriteContentSummary(content, previewLimit: 520),
+                fields.Count == 0));
+        }
+
+        return new ToolInvocationDetailPresentation(toolName, toolName, null, fields, rawInput, true);
+    }
+
+    private static List<ToolInvocationFieldPresentation> BuildFields(
+        JsonElement root,
+        IReadOnlyList<(string[] Keys, string Label, bool Primary)> specs)
+    {
+        var fields = new List<ToolInvocationFieldPresentation>();
+        foreach (var (keys, label, primary) in specs)
+        {
+            var value = StringValue(root, keys);
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            fields.Add(new ToolInvocationFieldPresentation(label, value, primary && fields.All(item => !item.IsPrimary)));
+        }
+
+        return fields;
+    }
+
+    private static string? StringValue(JsonElement root, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (!root.TryGetProperty(key, out var value)) continue;
+            var text = DisplayString(value)?.Trim();
+            if (!string.IsNullOrWhiteSpace(text)) return text;
+        }
+
+        return null;
+    }
+
+    private static string? DisplayString(JsonElement value) =>
+        value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.GetRawText(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            JsonValueKind.Object or JsonValueKind.Array => JsonSerializer.Serialize(value, new JsonSerializerOptions { WriteIndented = false }),
+            _ => null,
+        };
 }
 
 public enum TodoPresentationStatus
