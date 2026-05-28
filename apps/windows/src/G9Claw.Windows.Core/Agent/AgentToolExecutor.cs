@@ -490,7 +490,8 @@ public sealed class AgentToolExecutor
 
         var result = await _terminalService.RunAsync(command, cwd, timeout, context.CancellationToken, environment);
         var isError = result.ExitCode != 0;
-        return new AgentToolResult(call.Id, call.Name, isError ? result.Output : LimitOutput(result.Output), isError, Diagnostics: new Dictionary<string, string>
+        var output = ShellResultText(result);
+        return new AgentToolResult(call.Id, call.Name, isError ? output : LimitOutput(output), isError, Diagnostics: new Dictionary<string, string>
         {
             ["cwd"] = result.Cwd,
             ["exitCode"] = result.ExitCode?.ToString() ?? "",
@@ -667,7 +668,8 @@ public sealed class AgentToolExecutor
 
             var result = await _terminalService.RunAsync(prompt, cwd, timeout, context.CancellationToken, environment);
             var isError = result.ExitCode != 0;
-            return new AgentToolResult(call.Id, call.Name, isError ? result.Output : LimitOutput(result.Output), isError, Diagnostics: new Dictionary<string, string>
+            var shellOutput = ShellResultText(result);
+            return new AgentToolResult(call.Id, call.Name, isError ? shellOutput : LimitOutput(shellOutput), isError, Diagnostics: new Dictionary<string, string>
             {
                 ["taskType"] = normalizedType,
                 ["cwd"] = cwd,
@@ -694,6 +696,18 @@ public sealed class AgentToolExecutor
 
     private static string LimitOutput(string output) =>
         output.Length <= 20_000 ? output : output[..20_000] + "\n... output truncated ...";
+
+    internal static string ShellResultText(TerminalRun result)
+    {
+        var parts = new List<string> { $"exit code: {result.ExitCode ?? -1}" };
+        var output = result.Output.TrimEnd('\r', '\n');
+        if (!string.IsNullOrEmpty(output))
+        {
+            parts.Add(output);
+        }
+
+        return string.Join('\n', parts);
+    }
 
     internal static int ShellTimeoutMilliseconds(JsonElement root)
     {

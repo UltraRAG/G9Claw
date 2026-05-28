@@ -985,7 +985,7 @@ public sealed class ParityLogicTests
         """), context);
 
         Assert.False(result.IsError);
-        Assert.Equal(["1", "5"], OutputLines(result.Output));
+        Assert.Equal(["exit code: 0", "1", "5"], OutputLines(result.Output));
     }
 
     [Fact]
@@ -1019,7 +1019,7 @@ public sealed class ParityLogicTests
         })), context);
 
         Assert.False(foreground.IsError);
-        Assert.Equal(["1", "7"], OutputLines(foreground.Output));
+        Assert.Equal(["exit code: 0", "1", "7"], OutputLines(foreground.Output));
         Assert.False(background.IsError);
         using (var backgroundJson = JsonDocument.Parse(background.Output))
         {
@@ -1032,6 +1032,7 @@ public sealed class ParityLogicTests
         using (var awaitedJson = JsonDocument.Parse(awaited.Output))
         {
             Assert.Equal("completed", awaitedJson.RootElement.GetProperty("status").GetString());
+            Assert.Contains("exit code: 0", awaitedJson.RootElement.GetProperty("output").GetString());
             Assert.Contains("1", awaitedJson.RootElement.GetProperty("output").GetString());
         }
     }
@@ -1193,6 +1194,7 @@ public sealed class ParityLogicTests
         {
             Assert.Equal(taskResult.TaskId, completedJson.RootElement.GetProperty("task_id").GetString());
             Assert.Equal("completed", completedJson.RootElement.GetProperty("status").GetString());
+            Assert.Contains("exit code: 0", completedJson.RootElement.GetProperty("output").GetString());
             Assert.Contains("done", completedJson.RootElement.GetProperty("output").GetString());
         }
     }

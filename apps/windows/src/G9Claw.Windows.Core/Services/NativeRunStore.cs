@@ -179,7 +179,7 @@ public sealed class NativeRunStore
                 var result = await terminalService.RunAsync(command, cwd, timeoutMs, cancellationToken, environment);
                 _runs[id] = started with
                 {
-                    Output = result.Output,
+                    Output = AgentToolExecutor.ShellResultText(result),
                     Status = result.ExitCode == 0 ? TaskStatus.Completed : TaskStatus.Failed,
                     ExitCode = result.ExitCode,
                     CompletedAt = DateTimeOffset.UtcNow,
