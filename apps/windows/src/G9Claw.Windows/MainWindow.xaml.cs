@@ -4143,10 +4143,11 @@ public sealed partial class MainWindow : Window
         }
 
         ResolvedAgentModel resolvedModel;
+        Dictionary<string, string> routeValues;
         try
         {
             var routeTier = NativeRoutingClassifier.ClassifyTier(prompt, State.ComposerRunMode);
-            var routeValues = CurrentNativeConfigValues();
+            routeValues = CurrentNativeConfigValues();
             var routeEntry = NativeRouterRuntime.EntryIdForTier(routeTier, routeValues);
             resolvedModel = AgentModelResolver.Resolve(State.Settings, routeEntry, routeTier, "router");
         }
@@ -4196,7 +4197,7 @@ public sealed partial class MainWindow : Window
         var assistantMessageId = State.BeginStreamingAssistantMessage(session.Id, forceNew: true);
         RenderAll();
 
-        var request = CreateAgentRequest(session, prompt, attachments, resolvedModel, apiKey!, priorMessages);
+        var request = CreateAgentRequest(session, prompt, attachments, resolvedModel, apiKey!, priorMessages, routeValues);
         _ = RunNativeAgentAsync(request, assistantMessageId, runCts, runCts.Token);
     }
 
@@ -4209,9 +4210,16 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private AgentRequest CreateAgentRequest(ProjectSession session, string prompt, List<FileAttachment> attachments, ResolvedAgentModel model, string apiKey, List<ChatMessage> priorMessages)
+    private AgentRequest CreateAgentRequest(
+        ProjectSession session,
+        string prompt,
+        List<FileAttachment> attachments,
+        ResolvedAgentModel model,
+        string apiKey,
+        List<ChatMessage> priorMessages,
+        IReadOnlyDictionary<string, string>? nativeConfigValues = null)
     {
-        var configValues = AgentConfigValuesForModel(model);
+        var configValues = AgentConfigValuesForModel(model, nativeConfigValues);
 
         return new AgentRequest(
             session.Id,

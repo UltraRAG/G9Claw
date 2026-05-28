@@ -167,17 +167,139 @@ public static class NativeConfigService
 
 public static class NativeRouterRuntime
 {
-    public static string EntryIdForTier(string tier, Dictionary<string, string> values)
-    {
-        var routerEnabled = values.GetValueOrDefault("router.enabled")?.ToLowerInvariant();
-        var defaultRoute = Values.TryGetNonBlank(values, "router.routes.default.model") ?? "default";
-        if (routerEnabled == "false") return defaultRoute;
+    public sealed record Decision(string EntryId, string Scenario, string? Tier);
 
-        var candidate = Values.TryGetNonBlank(values, $"router.tokenSaver.tiers.{tier}.model") ??
-                        Values.TryGetNonBlank(values, $"router.routes.{tier.ToLowerInvariant()}.model") ??
-                        defaultRoute;
-        return values.ContainsKey($"models.entries.{candidate}.provider") ? candidate : defaultRoute;
+    public sealed record RequestSignals(
+        int TokenCount = 0,
+        bool IsBackgroundRequest = false,
+        bool HasWebSearchTools = false,
+        bool HasThinking = false);
+
+    public sealed record ProviderRoute(
+        Decision Decision,
+        ProviderConfig ProviderConfig,
+        string ApiKey,
+        int ContextWindow,
+        string ProviderId);
+
+    public static string EntryIdForTier(string tier, Dictionary<string, string> values) =>
+        DecisionForTier(tier, values).EntryId;
+
+    public static RequestSignals SignalsForPrompt(
+        string prompt,
+        bool isBackgroundRequest = false,
+        bool hasWebSearchTools = false,
+        bool hasThinking = false) =>
+        new(EstimatedTokens(prompt), isBackgroundRequest, hasWebSearchTools, hasThinking);
+
+    public static ProviderRoute ResolveProviderRoute(
+        string tier,
+        Dictionary<string, string> values,
+        ProviderConfig fallbackProviderConfig,
+        string fallbackApiKey,
+        int fallbackContextWindow,
+        RequestSignals? signals = null)
+    {
+        signals ??= new RequestSignals();
+        var decision = DecisionForTier(tier, values, signals);
+        var providerConfig = NativeConfigService.ProviderConfigFor(decision.EntryId, values) ?? fallbackProviderConfig;
+        var providerId = NativeConfigService.ProviderId(decision.EntryId, values);
+        var apiKey = Values.FirstNonMasked(
+            values.GetValueOrDefault($"models.providers.{providerId}.apiKey"),
+            fallbackApiKey) ?? "";
+        var contextWindow = Values.TryGetInt(values, $"models.entries.{decision.EntryId}.contextWindow") ?? fallbackContextWindow;
+        return new ProviderRoute(decision, providerConfig, apiKey, contextWindow, providerId);
     }
+
+    public static Decision DecisionForTier(
+        string tier,
+        Dictionary<string, string> values,
+        RequestSignals? signals = null)
+    {
+        signals ??= new RequestSignals();
+        var mainRoute = MainEntryId(values) ?? "default";
+        var defaultRoute = RouteEntryId("default", values) ?? mainRoute;
+        if (!IsEnabled(values.GetValueOrDefault("router.enabled")))
+        {
+            return new Decision(mainRoute, "default", null);
+        }
+
+        var normalizedTier = (tier ?? "").Trim().ToUpperInvariant();
+        var tokenSaverTier = Values.TryGetNonBlank(values, $"router.tokenSaver.tiers.{normalizedTier}.model");
+        if (TokenSaverCanRoute(values) &&
+            HasModelEntry(values, tokenSaverTier))
+        {
+            return new Decision(tokenSaverTier!, "tokenSaver", normalizedTier);
+        }
+
+        var threshold = LongContextThreshold(values);
+        if (signals.TokenCount > threshold &&
+            RouteEntryId("longContext", values) is { } longContextRoute)
+        {
+            return new Decision(longContextRoute, "longContext", null);
+        }
+
+        if (signals.IsBackgroundRequest &&
+            RouteEntryId("background", values) is { } backgroundRoute)
+        {
+            return new Decision(backgroundRoute, "background", null);
+        }
+
+        if (signals.HasWebSearchTools &&
+            RouteEntryId("webSearch", values) is { } webSearchRoute)
+        {
+            return new Decision(webSearchRoute, "webSearch", null);
+        }
+
+        if (signals.HasThinking &&
+            RouteEntryId("think", values) is { } thinkRoute)
+        {
+            return new Decision(thinkRoute, "think", null);
+        }
+
+        return new Decision(defaultRoute, "default", null);
+    }
+
+    private static bool TokenSaverCanRoute(Dictionary<string, string> values)
+    {
+        var enabled = values.GetValueOrDefault("router.tokenSaver.enabled")?.Trim().ToLowerInvariant();
+        if (enabled is "false" or "0" or "no") return false;
+        if (enabled is "true" or "1" or "yes") return true;
+        return values.Keys.Any(key => key.StartsWith("router.tokenSaver.tiers.", StringComparison.Ordinal) &&
+                                      key.EndsWith(".model", StringComparison.Ordinal));
+    }
+
+    private static string? MainEntryId(Dictionary<string, string> values)
+    {
+        var configured = Values.TryGetNonBlank(values, "agents.main.model");
+        if (HasModelEntry(values, configured)) return configured;
+        return HasModelEntry(values, "default") ? "default" : null;
+    }
+
+    private static string? RouteEntryId(string route, Dictionary<string, string> values)
+    {
+        var candidate = Values.TryGetNonBlank(values, $"router.routes.{route}.model") ??
+                        Values.TryGetNonBlank(values, $"router.{route}");
+        return HasModelEntry(values, candidate) ? candidate : null;
+    }
+
+    private static bool HasModelEntry(Dictionary<string, string> values, string? entryId) =>
+        !string.IsNullOrWhiteSpace(entryId) &&
+        values.ContainsKey($"models.entries.{entryId.Trim()}.provider");
+
+    private static int LongContextThreshold(Dictionary<string, string> values) =>
+        Values.TryGetInt(values, "router.routes.longContextThreshold") ??
+        Values.TryGetInt(values, "router.longContextThreshold") ??
+        60_000;
+
+    private static bool IsEnabled(string? rawValue)
+    {
+        var value = rawValue?.Trim().ToLowerInvariant();
+        return value is "true" or "1" or "yes";
+    }
+
+    private static int EstimatedTokens(string? text) =>
+        Math.Max(0, (text ?? "").Length / 4);
 }
 
 public static class NativeRoutingClassifier

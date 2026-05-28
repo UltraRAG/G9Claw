@@ -1308,6 +1308,79 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public async Task ProviderNativeSubagentRunnerRoutesBackgroundSubagentLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var handler = new CapturingProviderHandler("""
+        {"choices":[{"message":{"role":"assistant","content":"background answer"}}]}
+        """);
+        var runner = new ProviderNativeSubagentRunner(new ProviderClient(new HttpClient(handler)));
+        var parentProvider = new ProviderConfig(
+            SessionProvider.G9Claw,
+            ProviderApiType.OpenAIChat,
+            "http://main.local/v1",
+            "main-model",
+            "main-secret",
+            []);
+        var rawValues = NativeConfigService.ScalarMap("""
+models:
+  providers:
+    main:
+      type: openai-chat
+      baseUrl: http://main.local/v1
+      apiKey: main-key
+    background:
+      type: openai-chat
+      baseUrl: http://background.local/v1
+      apiKey: background-key
+  entries:
+    default:
+      provider: main
+      name: main-model
+      contextWindow: 160000
+    background_agent:
+      provider: background
+      name: background-model
+      contextWindow: 64000
+agents:
+  main:
+    model: default
+router:
+  enabled: true
+  routes:
+    default:
+      model: default
+    background:
+      model: background_agent
+""");
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None,
+            rawValues,
+            ProviderConfig: parentProvider,
+            ApiKey: "parent-key",
+            ContextWindow: 160_000);
+
+        var output = await runner.RunAsync(
+            new NativeSubagentRequest(temp.Root, "Inspect services", "Explore services", "Task type: explore", context),
+            CancellationToken.None);
+
+        using (var outputJson = JsonDocument.Parse(output))
+        {
+            Assert.Equal("background answer", outputJson.RootElement.GetProperty("result").GetString());
+        }
+
+        Assert.Equal("http://background.local/v1/chat/completions", handler.Request!.RequestUri!.ToString());
+        Assert.Equal("background-key", handler.Request.Headers.Authorization?.Parameter);
+        using var requestJson = JsonDocument.Parse(handler.Body!);
+        Assert.Equal("background-model", requestJson.RootElement.GetProperty("model").GetString());
+        Assert.False(requestJson.RootElement.GetProperty("stream").GetBoolean());
+    }
+
+    [Fact]
     public void ProviderRetryPolicyMatchesCodexTransientDefaults()
     {
         var policy = ProviderRetryPolicy.CodexDefault;
@@ -1964,6 +2037,84 @@ router:
 
         Assert.Equal("router_small", NativeRouterRuntime.EntryIdForTier("SIMPLE", values));
         Assert.Equal("default", NativeRouterRuntime.EntryIdForTier("COMPLEX", values));
+    }
+
+    [Fact]
+    public void NativeRouterRuntimeDecisionMatchesMacRoutingScenarios()
+    {
+        const string yaml = """
+models:
+  providers:
+    main:
+      type: openai-chat
+      baseUrl: http://main.local/v1
+    router:
+      type: openai-chat
+      baseUrl: http://router.local/v1
+  entries:
+    default:
+      provider: main
+      name: main-model
+    router_default:
+      provider: router
+      name: default-router-model
+    simple:
+      provider: router
+      name: simple-model
+    long:
+      provider: router
+      name: long-model
+    background:
+      provider: router
+      name: background-model
+    search:
+      provider: router
+      name: search-model
+    think:
+      provider: router
+      name: think-model
+agents:
+  main:
+    model: default
+router:
+  enabled: true
+  routes:
+    default:
+      model: router_default
+    longContext:
+      model: long
+    background:
+      model: background
+    webSearch:
+      model: search
+    think:
+      model: think
+    longContextThreshold: 12
+  tokenSaver:
+    tiers:
+      SIMPLE:
+        model: simple
+""";
+
+        var values = NativeConfigService.ScalarMap(yaml);
+
+        Assert.Equal(new NativeRouterRuntime.Decision("simple", "tokenSaver", "SIMPLE"),
+            NativeRouterRuntime.DecisionForTier("SIMPLE", values));
+        Assert.Equal(new NativeRouterRuntime.Decision("long", "longContext", null),
+            NativeRouterRuntime.DecisionForTier("COMPLEX", values, new NativeRouterRuntime.RequestSignals(TokenCount: 13)));
+        Assert.Equal(new NativeRouterRuntime.Decision("background", "background", null),
+            NativeRouterRuntime.DecisionForTier("COMPLEX", values, new NativeRouterRuntime.RequestSignals(IsBackgroundRequest: true)));
+        Assert.Equal(new NativeRouterRuntime.Decision("search", "webSearch", null),
+            NativeRouterRuntime.DecisionForTier("COMPLEX", values, new NativeRouterRuntime.RequestSignals(HasWebSearchTools: true)));
+        Assert.Equal(new NativeRouterRuntime.Decision("think", "think", null),
+            NativeRouterRuntime.DecisionForTier("COMPLEX", values, new NativeRouterRuntime.RequestSignals(HasThinking: true)));
+        Assert.Equal(new NativeRouterRuntime.Decision("router_default", "default", null),
+            NativeRouterRuntime.DecisionForTier("COMPLEX", values));
+
+        values["router.enabled"] = "false";
+
+        Assert.Equal(new NativeRouterRuntime.Decision("default", "default", null),
+            NativeRouterRuntime.DecisionForTier("SIMPLE", values));
     }
 
     [Fact]

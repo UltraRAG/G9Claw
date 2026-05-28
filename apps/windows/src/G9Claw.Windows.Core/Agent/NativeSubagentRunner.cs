@@ -37,6 +37,27 @@ public sealed class ProviderNativeSubagentRunner : INativeSubagentRunner
             throw new InvalidOperationException("Subagent execution requires provider configuration and API key.");
         }
 
+        var configValues = context.NativeConfigValues is null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(context.NativeConfigValues, StringComparer.OrdinalIgnoreCase);
+        var routeTier = NativeRoutingClassifier.ClassifyTier(request.Prompt, context.RunMode);
+        var route = NativeRouterRuntime.ResolveProviderRoute(
+            routeTier,
+            configValues,
+            context.ProviderConfig,
+            context.ApiKey,
+            context.ContextWindow,
+            NativeRouterRuntime.SignalsForPrompt(request.Prompt, isBackgroundRequest: true));
+        configValues["router.tier"] = route.Decision.Tier ?? routeTier;
+        configValues["router.routeEntryId"] = route.Decision.EntryId;
+        configValues["router.routeSource"] = "subagent";
+        configValues["provider.providerId"] = route.ProviderId;
+        configValues["provider.modelEntryId"] = route.Decision.EntryId;
+        configValues["provider.modelName"] = route.ProviderConfig.Model;
+        configValues["provider.endpointUrl"] = NativeAgentRuntime.EndpointUrl(
+            route.ProviderConfig.BaseUrl,
+            AgentModelResolver.SuffixFor(route.ProviderConfig.ApiType)).ToString();
+
         var content = $"""
         Workspace: {request.WorkspaceRoot}
         Description: {request.Description}
@@ -51,8 +72,8 @@ public sealed class ProviderNativeSubagentRunner : INativeSubagentRunner
             request.WorkspaceRoot,
             content,
             [],
-            context.ProviderConfig,
-            context.ApiKey,
+            route.ProviderConfig,
+            route.ApiKey,
             [
                 new ChatMessage(
                     Guid.NewGuid(),
@@ -65,12 +86,12 @@ public sealed class ProviderNativeSubagentRunner : INativeSubagentRunner
                     null),
             ],
             context.TimeoutMs,
-            context.ContextWindow,
+            route.ContextWindow,
             context.PermissionMode,
             context.RunMode,
             context.PermissionSettings,
-            "task",
-            context.NativeConfigValues?.ToDictionary(item => item.Key, item => item.Value, StringComparer.OrdinalIgnoreCase) ?? [])
+            route.Decision.Scenario,
+            configValues)
         {
             EnableTools = false,
             Stream = false,
