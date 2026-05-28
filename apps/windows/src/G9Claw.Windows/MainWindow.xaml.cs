@@ -1065,8 +1065,11 @@ public sealed partial class MainWindow : Window
         var processTracePresentation = ProcessTracePresentation.Make(
             AgentActivity.ProcessTraceActivities(State.CurrentActivities),
             IsChineseUi());
+        var composerRunningStatus = ComposerRunningStatusPresentation.Make(State.CurrentActivities, IsChineseUi());
         var inlinePermissionRequests = InlinePendingPermissions();
-        var footerReserve = V2LayoutMetrics.ComposerMinHeight + (inlinePermissionRequests.Count == 0
+        var footerReserve = V2LayoutMetrics.ComposerMinHeight +
+            (composerRunningStatus.ShouldRender ? 34 : 0) +
+            (inlinePermissionRequests.Count == 0
             ? 66
             : inlinePermissionRequests.Any(request => request.Kind is PermissionRequestKind.AskUserQuestion or PermissionRequestKind.ExitPlanMode or PermissionRequestKind.DestructivePlanApproval) ? 620 : 214);
         var hasMessages = processTracePresentation.ShouldRender ||
@@ -1136,6 +1139,10 @@ public sealed partial class MainWindow : Window
             Spacing = 8,
         };
         TrackChatColumnWidth(composerFooter);
+        if (composerRunningStatus.ShouldRender)
+        {
+            composerFooter.Children.Add(ComposerRunningStatusRow(composerRunningStatus));
+        }
         if (inlinePermissionRequests.Count > 0)
         {
             composerFooter.Children.Add(PermissionBanner(inlinePermissionRequests));
@@ -1239,6 +1246,61 @@ public sealed partial class MainWindow : Window
         composerShell.Loaded += (_, _) => ApplyChatColumnWidth();
 
         return root;
+    }
+
+    private FrameworkElement ComposerRunningStatusRow(ComposerRunningStatusPresentation presentation)
+    {
+        var row = new Grid
+        {
+            Height = 22,
+            Margin = new Thickness(24, 0, 24, 0),
+            ColumnSpacing = 7,
+            MaxWidth = V2LayoutMetrics.ComposerMaxWidth,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+            },
+        };
+        row.Children.Add(new ProgressRing
+        {
+            IsActive = presentation.ShouldShimmer,
+            Width = 12,
+            Height = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        var summary = new TextBlock
+        {
+            Text = presentation.SummaryText,
+            FontSize = 12.5,
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = 360,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(summary, 1);
+        row.Children.Add(summary);
+
+        if (!string.IsNullOrWhiteSpace(presentation.DetailText))
+        {
+            var detail = new TextBlock
+            {
+                Text = presentation.DetailText,
+                FontSize = 11.5,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = 280,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(detail, 2);
+            row.Children.Add(detail);
+        }
+
+        return row;
     }
 
     private IReadOnlyList<PermissionRequest> InlinePendingPermissions() =>

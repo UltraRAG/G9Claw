@@ -309,6 +309,42 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void ComposerRunningStatusMatchesMacFooterPolicy()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var status = new AgentActivity(
+            "status",
+            "session-1",
+            "run-1",
+            "Working",
+            "Indexing workspace",
+            AgentActivityPhase.Status,
+            AgentActivityState.Running,
+            now,
+            now);
+        var read = status with
+        {
+            Id = "read",
+            Title = "",
+            Detail = """{"file_path":"README.md"}""",
+            ToolName = "Read",
+            UpdatedAt = now.AddSeconds(1),
+        };
+
+        var presentation = ComposerRunningStatusPresentation.Make([status, read], chinese: false);
+        var statusOnly = ComposerRunningStatusPresentation.Make([status], chinese: false);
+        var idle = ComposerRunningStatusPresentation.Make([status with { State = AgentActivityState.Completed }], chinese: false);
+
+        Assert.True(presentation.ShouldRender);
+        Assert.True(presentation.ShouldShimmer);
+        Assert.Equal("Reading README.md", presentation.SummaryText);
+        Assert.Equal("read", presentation.ActivityId);
+        Assert.Equal("", presentation.DetailText);
+        Assert.Equal("Indexing workspace", statusOnly.DetailText);
+        Assert.False(idle.ShouldRender);
+    }
+
+    [Fact]
     public void ProcessTraceSummaryAggregatesCompletedToolsLikeMac()
     {
         var now = DateTimeOffset.UtcNow;

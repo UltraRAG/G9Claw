@@ -256,6 +256,35 @@ public sealed record ProcessTraceSummary(
     }
 }
 
+public sealed record ComposerRunningStatusPresentation(
+    bool ShouldRender,
+    string SummaryText,
+    bool ShouldShimmer,
+    string DetailText,
+    string? ActivityId)
+{
+    public static ComposerRunningStatusPresentation Make(IEnumerable<AgentActivity> activities, bool chinese)
+    {
+        var running = activities
+            .Where(activity => activity.State == AgentActivityState.Running)
+            .OrderBy(activity => activity.UpdatedAt)
+            .LastOrDefault();
+        if (running is null)
+        {
+            return new ComposerRunningStatusPresentation(false, "", false, "", null);
+        }
+
+        var summary = ProcessTraceSummary.Make([running], chinese);
+        var detail = running.ToolName is null ? running.Detail.Trim() : "";
+        return new ComposerRunningStatusPresentation(
+            true,
+            summary.Text,
+            summary.ShouldShimmer || running.State == AgentActivityState.Running,
+            detail,
+            running.Id);
+    }
+}
+
 public sealed record CodexTraceDetailRow(
     string Title,
     string Detail,
