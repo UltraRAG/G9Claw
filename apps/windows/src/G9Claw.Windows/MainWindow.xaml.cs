@@ -4516,48 +4516,153 @@ public sealed partial class MainWindow : Window
         RenderAll();
         if (request.Kind == PermissionRequestKind.AskUserQuestion)
         {
-            var question = request.InteractivePayload?.Questions.FirstOrDefault();
-            var responseBox = new TextBox
-            {
-                PlaceholderText = "Answer",
-                AcceptsReturn = true,
-                TextWrapping = TextWrapping.Wrap,
-                MinHeight = 120,
-                Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
-            };
+            var payload = request.InteractivePayload is { Questions.Count: > 0 }
+                ? request.InteractivePayload
+                : new AgentInteractivePayload([new AgentQuestion("Question", request.Reason, [], false)]);
+            var answerControls = new List<AskQuestionAnswerControls>();
             var panel = new StackPanel
             {
                 Spacing = 10,
-                Children =
-                {
-                    new TextBlock { Text = question?.Question ?? request.Reason, TextWrapping = TextWrapping.Wrap, Foreground = Brush("V2ForegroundBrush") },
-                    responseBox,
-                },
             };
-            if (question?.Options.Count > 0)
+            var errorText = new TextBlock
             {
-                panel.Children.Add(new TextBlock
+                Text = "Please answer at least one question before continuing.",
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 12,
+                Foreground = Brush("V2RedBrush"),
+                Visibility = Visibility.Collapsed,
+            };
+            panel.Children.Add(errorText);
+
+            for (var index = 0; index < payload.Questions.Count; index++)
+            {
+                var question = payload.Questions[index];
+                var questionPanel = new StackPanel { Spacing = 8 };
+                questionPanel.Children.Add(new TextBlock
                 {
-                    Text = string.Join(Environment.NewLine, question.Options.Select(option => string.IsNullOrWhiteSpace(option.Description) ? option.Label : $"{option.Label} - {option.Description}")),
-                    TextWrapping = TextWrapping.Wrap,
+                    Text = payload.Questions.Count > 1
+                        ? $"{index + 1}/{payload.Questions.Count}  {(string.IsNullOrWhiteSpace(question.Header) ? "Question" : question.Header)}"
+                        : string.IsNullOrWhiteSpace(question.Header) ? "Question" : question.Header,
                     FontSize = 12,
-                    Foreground = Brush("V2MutedForegroundBrush"),
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = Brush("V2BlueBrush"),
                 });
+                questionPanel.Children.Add(new TextBlock
+                {
+                    Text = question.Question,
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 14,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = Brush("V2ForegroundBrush"),
+                });
+
+                var checkBoxes = new List<CheckBox>();
+                var radioButtons = new List<RadioButton>();
+                for (var optionIndex = 0; optionIndex < question.Options.Count; optionIndex++)
+                {
+                    var option = question.Options[optionIndex];
+                    if (question.MultiSelect)
+                    {
+                        var checkBox = new CheckBox
+                        {
+                            Content = QuestionOptionContent(optionIndex, option),
+                            Foreground = Brush("V2ForegroundBrush"),
+                        };
+                        checkBoxes.Add(checkBox);
+                        questionPanel.Children.Add(checkBox);
+                    }
+                    else
+                    {
+                        var radioButton = new RadioButton
+                        {
+                            GroupName = $"ask-{request.Id:N}-{index}",
+                            Content = QuestionOptionContent(optionIndex, option),
+                            Foreground = Brush("V2ForegroundBrush"),
+                        };
+                        radioButtons.Add(radioButton);
+                        questionPanel.Children.Add(radioButton);
+                    }
+                }
+
+                var customBox = new TextBox
+                {
+                    PlaceholderText = question.Options.Count == 0 ? "Type your answer" : "Other / custom answer",
+                    AcceptsReturn = question.Options.Count == 0,
+                    TextWrapping = TextWrapping.Wrap,
+                    MinHeight = question.Options.Count == 0 ? 84 : 0,
+                    Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+                };
+                questionPanel.Children.Add(customBox);
+                answerControls.Add(new AskQuestionAnswerControls(question, checkBoxes, radioButtons, customBox));
+
+                var container = new Border
+                {
+                    Padding = new Thickness(10),
+                    CornerRadius = new CornerRadius(8),
+                    BorderThickness = new Thickness(1),
+                    BorderBrush = Brush("V2BorderBrush"),
+                    Background = Brush("V2CardBrush"),
+                    Child = questionPanel,
+                };
+                panel.Children.Add(container);
+            }
+
+            string UpdatedQuestionInputJson()
+            {
+                return AskQuestionAnswerCodec.UpdatedInputJson(
+                    request.InputJson,
+                    answerControls.ToDictionary(
+                        item => item.Question.Question,
+                        item => item.Answer(),
+                        StringComparer.Ordinal));
+            }
+
+            static StackPanel QuestionOptionContent(int index, AgentQuestionOption option)
+            {
+                var stack = new StackPanel { Spacing = 2 };
+                stack.Children.Add(new TextBlock
+                {
+                    Text = $"{index + 1}. {option.Label}",
+                    FontSize = 12,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    TextWrapping = TextWrapping.Wrap,
+                });
+                if (!string.IsNullOrWhiteSpace(option.Description))
+                {
+                    stack.Children.Add(new TextBlock
+                    {
+                        Text = option.Description,
+                        FontSize = 12,
+                        TextWrapping = TextWrapping.Wrap,
+                    });
+                }
+
+                return stack;
             }
 
             var questionDialog = new ContentDialog
             {
                 XamlRoot = RootGrid.XamlRoot,
-                Title = question?.Header ?? "Question",
+                Title = payload.Questions.Count > 1 ? "Answer questions" : payload.Questions[0].Header,
                 Content = panel,
                 PrimaryButtonText = T("common.ok"),
                 CloseButtonText = T("common.cancel"),
                 DefaultButton = ContentDialogButton.Primary,
             };
+            questionDialog.PrimaryButtonClick += (_, args) =>
+            {
+                if (AskQuestionAnswerCodec.HasNonEmptyAnswers(UpdatedQuestionInputJson()))
+                {
+                    return;
+                }
+
+                errorText.Visibility = Visibility.Visible;
+                args.Cancel = true;
+            };
             var questionResult = await questionDialog.ShowAsync();
             State.PendingPermissions.Remove(request);
             return questionResult == ContentDialogResult.Primary
-                ? new PermissionRecord(request, PermissionDecision.Allowed, PermissionScope.Session, DateTimeOffset.UtcNow, responseBox.Text)
+                ? new PermissionRecord(request, PermissionDecision.Allowed, PermissionScope.Session, DateTimeOffset.UtcNow, UpdatedQuestionInputJson())
                 : new PermissionRecord(request, PermissionDecision.Denied, null, DateTimeOffset.UtcNow, null);
         }
 
@@ -4597,6 +4702,32 @@ public sealed partial class MainWindow : Window
             ContentDialogResult.Secondary => new PermissionRecord(request, PermissionDecision.Allowed, PermissionScope.Project, DateTimeOffset.UtcNow, null),
             _ => new PermissionRecord(request, PermissionDecision.Denied, null, DateTimeOffset.UtcNow, null),
         };
+    }
+
+    private sealed record AskQuestionAnswerControls(
+        AgentQuestion Question,
+        IReadOnlyList<CheckBox> CheckBoxes,
+        IReadOnlyList<RadioButton> RadioButtons,
+        TextBox CustomBox)
+    {
+        public string Answer()
+        {
+            var values = new List<string>();
+            values.AddRange(CheckBoxes
+                .Where(item => item.IsChecked == true)
+                .Select((_, index) => Question.Options[index].Label));
+            values.AddRange(RadioButtons
+                .Select((item, index) => item.IsChecked == true ? Question.Options[index].Label : "")
+                .Where(item => !string.IsNullOrWhiteSpace(item)));
+
+            var custom = CustomBox.Text.Trim();
+            if (!string.IsNullOrWhiteSpace(custom))
+            {
+                values.Add(custom);
+            }
+
+            return string.Join(", ", values);
+        }
     }
 
     private async Task<string?> ReadProviderSecretAsync(ResolvedAgentModel model)

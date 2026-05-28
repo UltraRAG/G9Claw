@@ -741,9 +741,15 @@ public sealed class NativeAgentRunner
             return new AgentToolResult(call.Id, call.Name, "User declined to answer.", true);
         }
 
-        return new AgentToolResult(call.Id, call.Name, string.IsNullOrWhiteSpace(resolved.Response)
+        var response = resolved.Response?.Trim() ?? "";
+        if (AskQuestionAnswerCodec.HasNonEmptyAnswers(response))
+        {
+            return new AgentToolResult(call.Id, call.Name, AskQuestionAnswerCodec.Output(response), false);
+        }
+
+        return new AgentToolResult(call.Id, call.Name, string.IsNullOrWhiteSpace(response)
             ? "User answered with an empty response."
-            : resolved.Response.Trim(), false);
+            : response, false);
     }
 
     private static AgentInteractivePayload BuildInteractivePayload(string inputJson)

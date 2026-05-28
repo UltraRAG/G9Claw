@@ -1517,6 +1517,76 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerFormatsAskQuestionAnswersLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new AskQuestionAnswerProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "ask before planning",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) =>
+        {
+            var questions = permission.InteractivePayload!.Questions;
+            var updated = AskQuestionAnswerCodec.UpdatedInputJson(permission.InputJson, new Dictionary<string, string>
+            {
+                [questions[0].Question] = "Use the safer option",
+                [questions[1].Question] = "Keep Windows native",
+            });
+            return Task.FromResult(new PermissionRecord(
+                permission,
+                PermissionDecision.Allowed,
+                PermissionScope.Session,
+                DateTimeOffset.UtcNow,
+                updated));
+        });
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var result = Assert.Single(events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!));
+        Assert.Equal("AskQuestion", result.ToolName);
+        Assert.Contains("User has answered your questions", result.Output);
+        Assert.Contains("\"Any constraints?\"=\"Keep Windows native\"", result.Output);
+        Assert.Contains("\"Which scope?\"=\"Use the safer option\"", result.Output);
+        Assert.Contains("call SwitchMode with mode=\"agent\"", result.Output);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after answer");
+    }
+
+    [Fact]
+    public void AskQuestionAnswerCodecBuildsMacStyleAnswersPayload()
+    {
+        var updated = AskQuestionAnswerCodec.UpdatedInputJson(
+            """{"question":"Which scope?","options":["Safe","Fast"]}""",
+            new Dictionary<string, string>
+            {
+                ["Which scope?"] = "Safe",
+            });
+
+        using var doc = JsonDocument.Parse(updated);
+        Assert.Equal("Safe", doc.RootElement.GetProperty("answers").GetProperty("Which scope?").GetString());
+        Assert.True(AskQuestionAnswerCodec.HasNonEmptyAnswers(updated));
+        Assert.Contains("\"Which scope?\"=\"Safe\"", AskQuestionAnswerCodec.Output(updated));
+    }
+
+    [Fact]
     public void AgentToolSchemasIncludeG9ClawCodeCoreTools()
     {
         var names = AgentToolRegistry.OpenAITools()
@@ -4413,6 +4483,47 @@ gateway:
             }
 
             yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "recovered after retry");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+        }
+    }
+
+    private sealed class AskQuestionAnswerProvider : IProviderClient
+    {
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.ToolExchanges.Count == 0)
+            {
+                yield return new ProviderStreamEvent(
+                    ProviderStreamEventKind.ToolCall,
+                    ToolCall: new AgentToolCall("ask", "AskQuestion", """
+                    {
+                      "questions": [
+                        {
+                          "header": "Scope",
+                          "question": "Which scope?",
+                          "options": [
+                            {
+                              "label": "Use the safer option",
+                              "description": "Keep blast radius small."
+                            }
+                          ]
+                        },
+                        {
+                          "header": "Constraints",
+                          "question": "Any constraints?",
+                          "options": []
+                        }
+                      ]
+                    }
+                    """));
+                yield break;
+            }
+
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after answer");
             yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
         }
     }
