@@ -99,6 +99,11 @@ public sealed partial class MainWindow : Window
     private readonly HashSet<string> _expandedFileDirectories = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<Guid> _expandedPermissionInputIds = [];
     private readonly Dictionary<Guid, TaskCompletionSource<PermissionRecord>> _pendingPermissionCompletions = [];
+    private readonly Dictionary<Guid, int> _askQuestionIndexes = [];
+    private readonly Dictionary<Guid, Dictionary<string, HashSet<string>>> _askQuestionSelections = [];
+    private readonly Dictionary<Guid, Dictionary<string, string>> _askQuestionOtherAnswers = [];
+    private readonly Dictionary<Guid, HashSet<string>> _askQuestionOtherActiveQuestions = [];
+    private readonly HashSet<string> _askQuestionValidationErrors = new(StringComparer.Ordinal);
     private readonly ICredentialStore _credentialStore;
     private readonly NativeAgentRunner _agentRunner;
     private readonly NativeRunStore _runStore;
@@ -1059,7 +1064,9 @@ public sealed partial class MainWindow : Window
             AgentActivity.ProcessTraceActivities(State.CurrentActivities),
             IsChineseUi());
         var inlinePermissionRequests = InlinePendingPermissions();
-        var footerReserve = V2LayoutMetrics.ComposerMinHeight + (inlinePermissionRequests.Count > 0 ? 214 : 66);
+        var footerReserve = V2LayoutMetrics.ComposerMinHeight + (inlinePermissionRequests.Count == 0
+            ? 66
+            : inlinePermissionRequests.Any(request => request.Kind == PermissionRequestKind.AskUserQuestion) ? 390 : 214);
         var hasMessages = processTracePresentation.ShouldRender ||
             State.CurrentMessages.Count > 0 ||
             (State.SelectedSessionId is { } currentSessionId &&
@@ -1247,7 +1254,9 @@ public sealed partial class MainWindow : Window
         };
         foreach (var request in requests)
         {
-            stack.Children.Add(GenericPermissionCard(request));
+            stack.Children.Add(request.Kind == PermissionRequestKind.AskUserQuestion
+                ? AskUserQuestionPanel(request)
+                : GenericPermissionCard(request));
         }
 
         if (requests.Count <= 1) return stack;
@@ -1402,6 +1411,492 @@ public sealed partial class MainWindow : Window
             Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(20, 245, 158, 11)),
             Child = stack,
         };
+    }
+
+    private FrameworkElement AskUserQuestionPanel(PermissionRequest request)
+    {
+        var payload = request.InteractivePayload is { Questions.Count: > 0 }
+            ? request.InteractivePayload
+            : new AgentInteractivePayload([new AgentQuestion("Question", request.Reason, [], false)]);
+        var isChinese = IsChineseUi();
+        var currentIndex = Math.Clamp(_askQuestionIndexes.GetValueOrDefault(request.Id), 0, Math.Max(0, payload.Questions.Count - 1));
+        _askQuestionIndexes[request.Id] = currentIndex;
+        var question = payload.Questions[currentIndex];
+
+        var stack = new StackPanel { Spacing = 0 };
+        stack.Children.Add(new Border
+        {
+            Height = 3,
+            Background = Brush("V2BlueBrush"),
+        });
+
+        var body = new StackPanel
+        {
+            Spacing = 14,
+            Padding = new Thickness(14),
+        };
+
+        var header = new Grid { ColumnSpacing = 10 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new Border
+        {
+            Width = 30,
+            Height = 30,
+            CornerRadius = new CornerRadius(15),
+            Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(44, 59, 130, 246)),
+            Child = Icon("MessageSquarePlus", 15, Brush("V2BlueBrush")),
+        });
+
+        var headerCopy = new StackPanel { Spacing = 3 };
+        var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        titleRow.Children.Add(new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(question.Header) ? "AskQuestion" : question.Header,
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2BlueBrush"),
+        });
+        if (payload.Questions.Count > 1)
+        {
+            titleRow.Children.Add(new TextBlock
+            {
+                Text = $"{currentIndex + 1} / {payload.Questions.Count}",
+                FontSize = 11,
+                FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                Foreground = Brush("V2MutedForegroundBrush"),
+            });
+        }
+        headerCopy.Children.Add(titleRow);
+        headerCopy.Children.Add(new TextBlock
+        {
+            Text = question.Question,
+            FontSize = 14,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("V2ForegroundBrush"),
+        });
+        Grid.SetColumn(headerCopy, 1);
+        header.Children.Add(headerCopy);
+
+        var close = new Button
+        {
+            MinWidth = 0,
+            MinHeight = 0,
+            Width = 28,
+            Height = 28,
+            Padding = new Thickness(0),
+            Background = Transparent,
+            BorderBrush = Transparent,
+            Content = Icon("X", 12, Brush("V2MutedForegroundBrush")),
+        };
+        close.Click += async (_, _) => await ResolveInlinePermissionRequestAsync(request, PermissionDecision.Denied, null, null);
+        Grid.SetColumn(close, 2);
+        header.Children.Add(close);
+        body.Children.Add(header);
+
+        if (payload.Questions.Count > 1)
+        {
+            body.Children.Add(AskQuestionProgress(payload.Questions.Count, currentIndex));
+        }
+
+        var options = new StackPanel { Spacing = 8 };
+        for (var index = 0; index < question.Options.Count; index++)
+        {
+            options.Children.Add(AskQuestionOptionButton(request, question, question.Options[index], index));
+        }
+        options.Children.Add(AskQuestionOtherButton(request, question));
+        if (AskQuestionOtherActive(request.Id, question) || question.Options.Count == 0)
+        {
+            options.Children.Add(AskQuestionOtherInput(request, question));
+        }
+        body.Children.Add(options);
+
+        if (_askQuestionValidationErrors.Contains(AskQuestionValidationKey(request.Id, question)))
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = isChinese ? "\u8bf7\u5148\u9009\u62e9\u6216\u8f93\u5165\u7b54\u6848\u3002" : "Choose or type an answer before continuing.",
+                FontSize = 12,
+                Foreground = Brush("V2RedBrush"),
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+        };
+        if (currentIndex > 0)
+        {
+            actions.Children.Add(AskQuestionNavButton(isChinese ? "\u4e0a\u4e00\u6b65" : "Back", Brush("V2SecondaryForegroundBrush"), () =>
+            {
+                _askQuestionIndexes[request.Id] = Math.Max(0, currentIndex - 1);
+                RenderContent();
+            }));
+        }
+
+        var primary = AskQuestionNavButton(
+            currentIndex == payload.Questions.Count - 1 ? (isChinese ? "\u63d0\u4ea4" : "Submit") : (isChinese ? "\u4e0b\u4e00\u6b65" : "Next"),
+            Brush("V2BlueBrush"),
+            async () =>
+            {
+                if (!AskQuestionHasAnswer(request.Id, question))
+                {
+                    _askQuestionValidationErrors.Add(AskQuestionValidationKey(request.Id, question));
+                    RenderContent();
+                    return;
+                }
+                if (currentIndex == payload.Questions.Count - 1)
+                {
+                    await SubmitAskQuestionAsync(request, payload);
+                    return;
+                }
+
+                _askQuestionIndexes[request.Id] = Math.Min(payload.Questions.Count - 1, currentIndex + 1);
+                RenderContent();
+            });
+        actions.Children.Add(primary);
+        body.Children.Add(actions);
+
+        stack.Children.Add(body);
+        return new Border
+        {
+            MaxWidth = V2LayoutMetrics.ComposerMaxWidth,
+            CornerRadius = new CornerRadius(8),
+            BorderThickness = new Thickness(1),
+            BorderBrush = Brush("V2BorderBrush"),
+            Background = Brush("V2CardBrush"),
+            Child = stack,
+        };
+    }
+
+    private FrameworkElement AskQuestionProgress(int count, int currentIndex)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+        for (var index = 0; index < count; index++)
+        {
+            row.Children.Add(new Border
+            {
+                Width = index == currentIndex ? 18 : 6,
+                Height = 6,
+                CornerRadius = new CornerRadius(3),
+                Background = index == currentIndex ? Brush("V2BlueBrush") : Brush("V2BorderBrush"),
+            });
+        }
+
+        return row;
+    }
+
+    private Button AskQuestionOptionButton(PermissionRequest request, AgentQuestion question, AgentQuestionOption option, int index)
+    {
+        var selected = AskQuestionSelection(request.Id, question).Contains(option.Label);
+        var content = new Grid { ColumnSpacing = 10 };
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        content.Children.Add(new Border
+        {
+            Width = 20,
+            Height = 20,
+            CornerRadius = new CornerRadius(5),
+            Background = selected ? Brush("V2BlueBrush") : Brush("V2MutedBrush"),
+            Child = new TextBlock
+            {
+                Text = $"{index + 1}",
+                FontSize = 11,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = selected ? Brush("V2InverseForegroundBrush") : Brush("V2MutedForegroundBrush"),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        });
+
+        var copy = new StackPanel { Spacing = 2 };
+        copy.Children.Add(new TextBlock
+        {
+            Text = option.Label,
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("V2ForegroundBrush"),
+        });
+        if (!string.IsNullOrWhiteSpace(option.Description))
+        {
+            copy.Children.Add(new TextBlock
+            {
+                Text = option.Description,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = Brush("V2MutedForegroundBrush"),
+            });
+        }
+        Grid.SetColumn(copy, 1);
+        content.Children.Add(copy);
+
+        if (selected)
+        {
+            var check = Icon("CheckCircle", 14, Brush("V2BlueBrush"));
+            Grid.SetColumn(check, 2);
+            content.Children.Add(check);
+        }
+
+        return AskQuestionChoiceButton(content, selected, () =>
+        {
+            ToggleAskQuestionOption(request.Id, question, option.Label);
+            RenderContent();
+        });
+    }
+
+    private Button AskQuestionOtherButton(PermissionRequest request, AgentQuestion question)
+    {
+        var selected = AskQuestionOtherActive(request.Id, question) || question.Options.Count == 0;
+        var isChinese = IsChineseUi();
+        var content = new Grid { ColumnSpacing = 10 };
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        content.Children.Add(Icon(selected ? "CheckCircle" : "CircleGauge", 16, selected ? Brush("V2BlueBrush") : Brush("V2MutedForegroundBrush")));
+        var copy = new StackPanel { Spacing = 2 };
+        copy.Children.Add(new TextBlock
+        {
+            Text = isChinese ? "\u5176\u4ed6" : "Other",
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+            Foreground = Brush("V2ForegroundBrush"),
+        });
+        copy.Children.Add(new TextBlock
+        {
+            Text = isChinese ? "\u9009\u62e9\u540e\u586b\u5199\u81ea\u5b9a\u4e49\u7b54\u6848" : "Select to type a custom answer",
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("V2MutedForegroundBrush"),
+        });
+        Grid.SetColumn(copy, 1);
+        content.Children.Add(copy);
+
+        var button = AskQuestionChoiceButton(content, selected, () =>
+        {
+            ToggleAskQuestionOther(request.Id, question);
+            RenderContent();
+        });
+        button.IsEnabled = question.Options.Count > 0;
+        return button;
+    }
+
+    private FrameworkElement AskQuestionOtherInput(PermissionRequest request, AgentQuestion question)
+    {
+        var isChinese = IsChineseUi();
+        var row = new Grid { ColumnSpacing = 10 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.Children.Add(new TextBlock
+        {
+            Text = isChinese ? "\u8865\u5145" : "Custom",
+            Width = 44,
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2MutedForegroundBrush"),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var input = new TextBox
+        {
+            Text = AskQuestionOtherAnswer(request.Id, question),
+            PlaceholderText = isChinese ? "\u8f93\u5165\u81ea\u5b9a\u4e49\u7b54\u6848" : "Type a custom answer",
+            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+            BorderThickness = new Thickness(0),
+            Background = Transparent,
+            FontSize = 13,
+        };
+        input.TextChanged += (_, _) => SetAskQuestionOtherAnswer(request.Id, question, input.Text);
+        Grid.SetColumn(input, 1);
+        row.Children.Add(input);
+        return new Border
+        {
+            Padding = new Thickness(10),
+            CornerRadius = new CornerRadius(6),
+            BorderThickness = new Thickness(1),
+            BorderBrush = Brush("V2BorderBrush"),
+            Background = Brush("V2MutedBrush"),
+            Child = row,
+        };
+    }
+
+    private Button AskQuestionChoiceButton(UIElement content, bool selected, Action onClick)
+    {
+        var button = new Button
+        {
+            MinWidth = 0,
+            MinHeight = 0,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Background = selected ? new SolidColorBrush(global::Windows.UI.Color.FromArgb(18, 59, 130, 246)) : Brush("V2MutedBrush"),
+            BorderBrush = selected ? Brush("V2BlueBrush") : Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(10),
+            Content = content,
+        };
+        button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    private Button AskQuestionNavButton(string label, Brush foreground, Func<Task> onClick)
+    {
+        var button = PermissionActionButton(label, foreground, Transparent, onClick);
+        button.MinWidth = 74;
+        return button;
+    }
+
+    private Button AskQuestionNavButton(string label, Brush foreground, Action onClick) =>
+        AskQuestionNavButton(label, foreground, () =>
+        {
+            onClick();
+            return Task.CompletedTask;
+        });
+
+    private Dictionary<string, HashSet<string>> AskQuestionSelections(Guid requestId)
+    {
+        if (!_askQuestionSelections.TryGetValue(requestId, out var selections))
+        {
+            selections = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            _askQuestionSelections[requestId] = selections;
+        }
+
+        return selections;
+    }
+
+    private HashSet<string> AskQuestionSelection(Guid requestId, AgentQuestion question)
+    {
+        var selections = AskQuestionSelections(requestId);
+        if (!selections.TryGetValue(question.Question, out var values))
+        {
+            values = new HashSet<string>(StringComparer.Ordinal);
+            selections[question.Question] = values;
+        }
+
+        return values;
+    }
+
+    private Dictionary<string, string> AskQuestionOtherAnswers(Guid requestId)
+    {
+        if (!_askQuestionOtherAnswers.TryGetValue(requestId, out var answers))
+        {
+            answers = new Dictionary<string, string>(StringComparer.Ordinal);
+            _askQuestionOtherAnswers[requestId] = answers;
+        }
+
+        return answers;
+    }
+
+    private HashSet<string> AskQuestionOtherActiveQuestions(Guid requestId)
+    {
+        if (!_askQuestionOtherActiveQuestions.TryGetValue(requestId, out var questions))
+        {
+            questions = new HashSet<string>(StringComparer.Ordinal);
+            _askQuestionOtherActiveQuestions[requestId] = questions;
+        }
+
+        return questions;
+    }
+
+    private bool AskQuestionOtherActive(Guid requestId, AgentQuestion question) =>
+        AskQuestionOtherActiveQuestions(requestId).Contains(question.Question);
+
+    private string AskQuestionOtherAnswer(Guid requestId, AgentQuestion question) =>
+        AskQuestionOtherAnswers(requestId).GetValueOrDefault(question.Question, "");
+
+    private string AskQuestionValidationKey(Guid requestId, AgentQuestion question) =>
+        $"{requestId:N}:{question.Question}";
+
+    private void SetAskQuestionOtherAnswer(Guid requestId, AgentQuestion question, string value)
+    {
+        AskQuestionOtherAnswers(requestId)[question.Question] = value;
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            _askQuestionValidationErrors.Remove(AskQuestionValidationKey(requestId, question));
+        }
+    }
+
+    private void ToggleAskQuestionOption(Guid requestId, AgentQuestion question, string option)
+    {
+        _askQuestionValidationErrors.Remove(AskQuestionValidationKey(requestId, question));
+        var values = AskQuestionSelection(requestId, question);
+        if (question.MultiSelect)
+        {
+            if (!values.Remove(option))
+            {
+                values.Add(option);
+            }
+            return;
+        }
+
+        if (values.Contains(option))
+        {
+            values.Clear();
+            return;
+        }
+
+        values.Clear();
+        values.Add(option);
+        AskQuestionOtherActiveQuestions(requestId).Remove(question.Question);
+    }
+
+    private void ToggleAskQuestionOther(Guid requestId, AgentQuestion question)
+    {
+        _askQuestionValidationErrors.Remove(AskQuestionValidationKey(requestId, question));
+        var active = AskQuestionOtherActiveQuestions(requestId);
+        if (!active.Remove(question.Question))
+        {
+            if (!question.MultiSelect)
+            {
+                AskQuestionSelection(requestId, question).Clear();
+            }
+            active.Add(question.Question);
+        }
+    }
+
+    private bool AskQuestionHasAnswer(Guid requestId, AgentQuestion question)
+    {
+        if (AskQuestionSelection(requestId, question).Count > 0) return true;
+        return (AskQuestionOtherActive(requestId, question) || question.Options.Count == 0) &&
+               !string.IsNullOrWhiteSpace(AskQuestionOtherAnswer(requestId, question));
+    }
+
+    private string AskQuestionAnswer(Guid requestId, AgentQuestion question)
+    {
+        var values = AskQuestionSelection(requestId, question)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToList();
+        var other = AskQuestionOtherAnswer(requestId, question).Trim();
+        if ((AskQuestionOtherActive(requestId, question) || question.Options.Count == 0) && !string.IsNullOrWhiteSpace(other))
+        {
+            values.Add(other);
+        }
+
+        return string.Join(", ", values);
+    }
+
+    private async Task SubmitAskQuestionAsync(PermissionRequest request, AgentInteractivePayload payload)
+    {
+        var answers = payload.Questions.ToDictionary(
+            question => question.Question,
+            question => AskQuestionAnswer(request.Id, question),
+            StringComparer.Ordinal);
+        var updated = AskQuestionAnswerCodec.UpdatedInputJson(request.InputJson, answers);
+        await ResolveInlinePermissionRequestAsync(request, PermissionDecision.Allowed, PermissionScope.Session, updated);
+    }
+
+    private void ClearInlinePermissionState(Guid requestId)
+    {
+        _expandedPermissionInputIds.Remove(requestId);
+        _askQuestionIndexes.Remove(requestId);
+        _askQuestionSelections.Remove(requestId);
+        _askQuestionOtherAnswers.Remove(requestId);
+        _askQuestionOtherActiveQuestions.Remove(requestId);
+        _askQuestionValidationErrors.RemoveWhere(key => key.StartsWith($"{requestId:N}:", StringComparison.Ordinal));
     }
 
     private Button PermissionActionButton(string label, Brush foreground, Brush background, Func<Task> onClick)
@@ -4904,161 +5399,9 @@ public sealed partial class MainWindow : Window
             State.PendingPermissions.Add(request);
         }
         RenderAll();
-        if (request.Kind == PermissionRequestKind.Tool)
+        if (request.Kind is PermissionRequestKind.Tool or PermissionRequestKind.AskUserQuestion)
         {
             return await AwaitInlinePermissionRequestAsync(request, cancellationToken);
-        }
-
-        if (request.Kind == PermissionRequestKind.AskUserQuestion)
-        {
-            var payload = request.InteractivePayload is { Questions.Count: > 0 }
-                ? request.InteractivePayload
-                : new AgentInteractivePayload([new AgentQuestion("Question", request.Reason, [], false)]);
-            var answerControls = new List<AskQuestionAnswerControls>();
-            var panel = new StackPanel
-            {
-                Spacing = 10,
-            };
-            var errorText = new TextBlock
-            {
-                Text = "Please answer at least one question before continuing.",
-                TextWrapping = TextWrapping.Wrap,
-                FontSize = 12,
-                Foreground = Brush("V2RedBrush"),
-                Visibility = Visibility.Collapsed,
-            };
-            panel.Children.Add(errorText);
-
-            for (var index = 0; index < payload.Questions.Count; index++)
-            {
-                var question = payload.Questions[index];
-                var questionPanel = new StackPanel { Spacing = 8 };
-                questionPanel.Children.Add(new TextBlock
-                {
-                    Text = payload.Questions.Count > 1
-                        ? $"{index + 1}/{payload.Questions.Count}  {(string.IsNullOrWhiteSpace(question.Header) ? "Question" : question.Header)}"
-                        : string.IsNullOrWhiteSpace(question.Header) ? "Question" : question.Header,
-                    FontSize = 12,
-                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                    Foreground = Brush("V2BlueBrush"),
-                });
-                questionPanel.Children.Add(new TextBlock
-                {
-                    Text = question.Question,
-                    TextWrapping = TextWrapping.Wrap,
-                    FontSize = 14,
-                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                    Foreground = Brush("V2ForegroundBrush"),
-                });
-
-                var checkBoxes = new List<CheckBox>();
-                var radioButtons = new List<RadioButton>();
-                for (var optionIndex = 0; optionIndex < question.Options.Count; optionIndex++)
-                {
-                    var option = question.Options[optionIndex];
-                    if (question.MultiSelect)
-                    {
-                        var checkBox = new CheckBox
-                        {
-                            Content = QuestionOptionContent(optionIndex, option),
-                            Foreground = Brush("V2ForegroundBrush"),
-                        };
-                        checkBoxes.Add(checkBox);
-                        questionPanel.Children.Add(checkBox);
-                    }
-                    else
-                    {
-                        var radioButton = new RadioButton
-                        {
-                            GroupName = $"ask-{request.Id:N}-{index}",
-                            Content = QuestionOptionContent(optionIndex, option),
-                            Foreground = Brush("V2ForegroundBrush"),
-                        };
-                        radioButtons.Add(radioButton);
-                        questionPanel.Children.Add(radioButton);
-                    }
-                }
-
-                var customBox = new TextBox
-                {
-                    PlaceholderText = question.Options.Count == 0 ? "Type your answer" : "Other / custom answer",
-                    AcceptsReturn = question.Options.Count == 0,
-                    TextWrapping = TextWrapping.Wrap,
-                    MinHeight = question.Options.Count == 0 ? 84 : 0,
-                    Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
-                };
-                questionPanel.Children.Add(customBox);
-                answerControls.Add(new AskQuestionAnswerControls(question, checkBoxes, radioButtons, customBox));
-
-                var container = new Border
-                {
-                    Padding = new Thickness(10),
-                    CornerRadius = new CornerRadius(8),
-                    BorderThickness = new Thickness(1),
-                    BorderBrush = Brush("V2BorderBrush"),
-                    Background = Brush("V2CardBrush"),
-                    Child = questionPanel,
-                };
-                panel.Children.Add(container);
-            }
-
-            string UpdatedQuestionInputJson()
-            {
-                return AskQuestionAnswerCodec.UpdatedInputJson(
-                    request.InputJson,
-                    answerControls.ToDictionary(
-                        item => item.Question.Question,
-                        item => item.Answer(),
-                        StringComparer.Ordinal));
-            }
-
-            static StackPanel QuestionOptionContent(int index, AgentQuestionOption option)
-            {
-                var stack = new StackPanel { Spacing = 2 };
-                stack.Children.Add(new TextBlock
-                {
-                    Text = $"{index + 1}. {option.Label}",
-                    FontSize = 12,
-                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                    TextWrapping = TextWrapping.Wrap,
-                });
-                if (!string.IsNullOrWhiteSpace(option.Description))
-                {
-                    stack.Children.Add(new TextBlock
-                    {
-                        Text = option.Description,
-                        FontSize = 12,
-                        TextWrapping = TextWrapping.Wrap,
-                    });
-                }
-
-                return stack;
-            }
-
-            var questionDialog = new ContentDialog
-            {
-                XamlRoot = RootGrid.XamlRoot,
-                Title = payload.Questions.Count > 1 ? "Answer questions" : payload.Questions[0].Header,
-                Content = panel,
-                PrimaryButtonText = T("common.ok"),
-                CloseButtonText = T("common.cancel"),
-                DefaultButton = ContentDialogButton.Primary,
-            };
-            questionDialog.PrimaryButtonClick += (_, args) =>
-            {
-                if (AskQuestionAnswerCodec.HasNonEmptyAnswers(UpdatedQuestionInputJson()))
-                {
-                    return;
-                }
-
-                errorText.Visibility = Visibility.Visible;
-                args.Cancel = true;
-            };
-            var questionResult = await questionDialog.ShowAsync();
-            State.PendingPermissions.Remove(request);
-            return questionResult == ContentDialogResult.Primary
-                ? new PermissionRecord(request, PermissionDecision.Allowed, PermissionScope.Session, DateTimeOffset.UtcNow, UpdatedQuestionInputJson())
-                : new PermissionRecord(request, PermissionDecision.Denied, null, DateTimeOffset.UtcNow, null);
         }
 
         if (request.Kind == PermissionRequestKind.ExitPlanMode)
@@ -5271,7 +5614,7 @@ public sealed partial class MainWindow : Window
     {
         if (!_pendingPermissionCompletions.Remove(request.Id, out var completion)) return;
         State.PendingPermissions.RemoveAll(item => item.Id == request.Id);
-        _expandedPermissionInputIds.Remove(request.Id);
+        ClearInlinePermissionState(request.Id);
 
         if (decision == PermissionDecision.Allowed && remember)
         {
@@ -5287,32 +5630,6 @@ public sealed partial class MainWindow : Window
             : $"Permission denied: {request.ToolName}";
         completion.TrySetResult(new PermissionRecord(request, decision, grantedScope, DateTimeOffset.UtcNow, response));
         RenderAll();
-    }
-
-    private sealed record AskQuestionAnswerControls(
-        AgentQuestion Question,
-        IReadOnlyList<CheckBox> CheckBoxes,
-        IReadOnlyList<RadioButton> RadioButtons,
-        TextBox CustomBox)
-    {
-        public string Answer()
-        {
-            var values = new List<string>();
-            values.AddRange(CheckBoxes
-                .Where(item => item.IsChecked == true)
-                .Select((_, index) => Question.Options[index].Label));
-            values.AddRange(RadioButtons
-                .Select((item, index) => item.IsChecked == true ? Question.Options[index].Label : "")
-                .Where(item => !string.IsNullOrWhiteSpace(item)));
-
-            var custom = CustomBox.Text.Trim();
-            if (!string.IsNullOrWhiteSpace(custom))
-            {
-                values.Add(custom);
-            }
-
-            return string.Join(", ", values);
-        }
     }
 
     private async Task<string?> ReadProviderSecretAsync(ResolvedAgentModel model)
