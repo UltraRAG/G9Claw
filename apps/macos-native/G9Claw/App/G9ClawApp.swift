@@ -33,7 +33,7 @@ struct G9ClawApp: App {
                 .keyboardShortcut(",", modifiers: [.command])
             }
 
-            CommandMenu("G9Claw") {
+            CommandMenu("PilotDeck") {
                 Button(state.t(.refreshProjects)) {
                     Task { await state.refreshProjects() }
                 }
@@ -57,7 +57,7 @@ struct G9ClawApp: App {
 
 @MainActor
 enum SettingsWindowPresenter {
-    static let identifier = NSUserInterfaceItemIdentifier("G9ClawSettingsWindow")
+    static let identifier = NSUserInterfaceItemIdentifier("PilotDeckSettingsWindow")
 
     static func configure(window: NSWindow?, title: String = "Settings") {
         guard let window else { return }

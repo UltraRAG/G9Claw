@@ -684,7 +684,7 @@ enum PlanTurnRecoveryClassifier {
                     "原生 HTML/CSS/JS",
                     "沿用项目现有技术",
                     "优先响应式移动端",
-                    "由 G9Claw 判断",
+                    "由 PilotDeck 判断",
                 ], fallback: []),
                 "multiSelect": false,
             ],
@@ -777,7 +777,7 @@ enum PlanTurnRecoveryClassifier {
     private static func fallbackOptions(for question: String, sourceText: String) -> [String] {
         let lower = (question + " " + sourceText).lowercased()
         if lower.contains("功能") || lower.contains("模块") || lower.contains("需求") || lower.contains("feature") {
-            return ["基础功能", "功能完整", "视觉展示优先", "由 G9Claw 判断"]
+            return ["基础功能", "功能完整", "视觉展示优先", "由 PilotDeck 判断"]
         }
         if lower.contains("风格") || lower.contains("视觉") || lower.contains("style") || lower.contains("design") {
             return ["简洁现代", "高端质感", "活泼多彩", "系统原生"]
@@ -786,10 +786,10 @@ enum PlanTurnRecoveryClassifier {
             return ["静态演示数据", "本地保存", "支持导入导出", "暂不需要"]
         }
         if lower.contains("技术") || lower.contains("框架") || lower.contains("html") || lower.contains("framework") {
-            return ["原生 HTML/CSS/JS", "沿用现有技术", "轻量框架", "由 G9Claw 判断"]
+            return ["原生 HTML/CSS/JS", "沿用现有技术", "轻量框架", "由 PilotDeck 判断"]
         }
         if looksLikeCalendarTask(lower) {
-            return ["基础月历", "日程管理", "视觉效果优先", "由 G9Claw 判断"]
+            return ["基础月历", "日程管理", "视觉效果优先", "由 PilotDeck 判断"]
         }
         return ["推荐方案", "简洁方案", "功能完整方案", "先继续分析"]
     }
@@ -3042,7 +3042,7 @@ struct NativeAgentRuntime: Sendable {
             """
             : "You are in agent mode. Use tools to inspect and modify the workspace."
         return """
-        You are G9Claw, a native macOS coding agent with a G9Claw style workflow.
+        You are PilotDeck, a native macOS coding agent with a PilotDeck style workflow.
         Workspace root: \(request.projectPath)
         \(modeText)
 
@@ -3196,6 +3196,7 @@ struct NativeAgentRuntime: Sendable {
 
     static func primaryUserPrompt(from prompt: String) -> String {
         let separators = [
+            "\n\nRelevant PilotDeck memory context:",
             "\n\nRelevant G9Claw memory context:",
             "\n\nAttached files:",
             "\n\n附件:",
@@ -3525,7 +3526,7 @@ struct NativeAgentRuntime: Sendable {
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorAppTransportSecurityRequiresSecureConnection {
             return ProviderClientError.transport(
-                "App Transport Security blocked the HTTP provider request. Rebuild and launch the latest G9Claw app bundle so NSAppTransportSecurity is included."
+                "App Transport Security blocked the HTTP provider request. Rebuild and launch the latest PilotDeck app bundle so NSAppTransportSecurity is included."
             )
         }
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
@@ -4056,7 +4057,7 @@ enum AgentToolRegistry {
             ),
             functionTool(
                 "Skill",
-                "Load a G9Claw skill's instructions. This does not execute the skill; after loading, use Shell/Read/other tools according to the returned instructions and skillDir. Use exact names from the system prompt's Available skills list.",
+                "Load a PilotDeck skill's instructions. This does not execute the skill; after loading, use Shell/Read/other tools according to the returned instructions and skillDir. Use exact names from the system prompt's Available skills list.",
                 [
                     "skill": stringProperty("Exact skill name, for example g9claw-rag:glm-web-search."),
                     "args": stringProperty("User query or task arguments for the skill."),
@@ -4241,7 +4242,7 @@ enum AgentPermissionPolicy {
             return .ask("Destructive action plan approval is required before deleting workspace files.")
         }
         if interactiveTools.contains(toolName) {
-            return .ask("G9Claw wants to ask a question.")
+            return .ask("PilotDeck wants to ask a question.")
         }
         if context.permissionMode == .bypassPermissions {
             return .allow
@@ -4250,7 +4251,7 @@ enum AgentPermissionPolicy {
             return .allow
         }
         if toolRequiresPrompt(toolName: toolName, call: call) {
-            return .ask("G9Claw wants to run \(toolName).")
+            return .ask("PilotDeck wants to run \(toolName).")
         }
         return .allow
     }
@@ -5418,11 +5419,11 @@ enum AgentToolExecutor {
         let trimmed = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         let expanded = NSString(string: trimmed).expandingTildeInPath
         guard !expanded.isEmpty, expanded.hasPrefix("/") else {
-            throw ProviderClientError.toolExecution("Workspace path must be an absolute path: \(cwd). Check G9Claw general workspace settings.")
+            throw ProviderClientError.toolExecution("Workspace path must be an absolute path: \(cwd). Check PilotDeck general workspace settings.")
         }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDirectory), isDirectory.boolValue else {
-            throw ProviderClientError.toolExecution("Workspace path does not exist: \(expanded). Check G9Claw general workspace settings.")
+            throw ProviderClientError.toolExecution("Workspace path does not exist: \(expanded). Check PilotDeck general workspace settings.")
         }
         return URL(fileURLWithPath: expanded).standardizedFileURL
     }

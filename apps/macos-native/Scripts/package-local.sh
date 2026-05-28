@@ -7,9 +7,9 @@ PROJECT="$APP_ROOT/G9Claw.xcodeproj"
 CONFIGURATION="${CONFIGURATION:-Release}"
 DERIVED_DATA="${DERIVED_DATA:-$APP_ROOT/build/DerivedDataLocal}"
 DIST_DIR="${DIST_DIR:-$APP_ROOT/build/dist}"
-PACKAGE_DIR="$DIST_DIR/G9Claw-mac-local"
-APP_NAME="G9Claw.app"
-ZIP_NAME="G9Claw-mac-local.zip"
+PACKAGE_DIR="$DIST_DIR/PilotDeck-mac-local"
+APP_NAME="PilotDeck.app"
+ZIP_NAME="PilotDeck-mac-local.zip"
 
 rm -rf "$DIST_DIR"
 mkdir -p "$PACKAGE_DIR"
@@ -42,14 +42,14 @@ xattr -cr "$STAGED_APP"
 cat > "$PACKAGE_DIR/INSTALL.txt" <<'EOF'
 Passwordless install:
 
-1. Unzip G9Claw-mac-local.zip.
-2. Move G9Claw.app to ~/Applications, not /Applications.
+1. Unzip PilotDeck-mac-local.zip.
+2. Move PilotDeck.app to ~/Applications, not /Applications.
 
 Terminal equivalent:
 
 mkdir -p "$HOME/Applications"
-ditto "G9Claw.app" "$HOME/Applications/G9Claw.app"
-open "$HOME/Applications/G9Claw.app"
+ditto "PilotDeck.app" "$HOME/Applications/PilotDeck.app"
+open "$HOME/Applications/PilotDeck.app"
 
 If macOS blocks the app as unidentified, that is Gatekeeper because this local
 build is ad-hoc signed rather than Developer ID signed and notarized.
@@ -57,8 +57,8 @@ EOF
 
 (
   cd "$DIST_DIR"
-  ditto -c -k --norsrc --keepParent "G9Claw-mac-local" "$ZIP_NAME"
+  ditto -c -k --norsrc --keepParent "PilotDeck-mac-local" "$ZIP_NAME"
 )
 
 echo "Created $DIST_DIR/$ZIP_NAME"
-echo "Install without an admin password by placing G9Claw.app in ~/Applications."
+echo "Install without an admin password by placing PilotDeck.app in ~/Applications."

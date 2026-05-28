@@ -106,11 +106,11 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertEqual(
             AppState.normalizedGeneralWorkspacePath("general", home: home),
-            "/Users/tester/G9Claw/general"
+            "/Users/tester/PilotDeck/general"
         )
         XCTAssertEqual(
             AppState.normalizedGeneralWorkspacePath("  ", home: home),
-            "/Users/tester/G9Claw/general"
+            "/Users/tester/PilotDeck/general"
         )
         XCTAssertEqual(
             AppState.normalizedGeneralWorkspacePath("/Users/tester/Projects/demo", home: home),
@@ -150,7 +150,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(values["router.enabled"], "false")
         XCTAssertEqual(values["router.tokenSaver.enabled"], "false")
         XCTAssertEqual(values["gateway.home"], "/Users/tester/.g9claw/gateway")
-        XCTAssertEqual(values["gateway.runtimePaths.generalCwd"], "~/G9Claw/general")
+        XCTAssertEqual(values["gateway.runtimePaths.generalCwd"], "~/PilotDeck/general")
 
         let channelNames = Set(values.keys.compactMap { key -> String? in
             guard key.hasPrefix("gateway.channels.") else { return nil }
@@ -466,15 +466,15 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertEqual(
             english.text(.ragSectionDetail),
-            "Local retriever and GLM web search APIs used by the bundled G9Claw RAG skills."
+            "Local retriever and GLM web search APIs used by the bundled PilotDeck RAG skills."
         )
         XCTAssertEqual(
             english.text(.ragDetail),
-            "When on, G9Claw exports G9CLAW_RAG_* env vars so RAG skills can call these APIs."
+            "When on, PilotDeck exports G9CLAW_RAG_* env vars so RAG skills can call these APIs."
         )
         XCTAssertEqual(
             english.text(.disableBuiltInWebToolsDetail),
-            "When RAG is enabled, hide WebFetch/WebSearch from model-visible tools so web search goes through G9Claw RAG skills."
+            "When RAG is enabled, hide WebFetch/WebSearch from model-visible tools so web search goes through PilotDeck RAG skills."
         )
         XCTAssertEqual(english.text(.ragLocalKnowledgeTitle), "Local knowledge / Retriever")
         XCTAssertEqual(
@@ -495,7 +495,7 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertEqual(
             chinese.text(.ragSectionDetail),
-            "内置 G9Claw RAG 技能使用的本地检索器和 GLM Web Search API。"
+            "内置 PilotDeck RAG 技能使用的本地检索器和 GLM Web Search API。"
         )
         XCTAssertEqual(chinese.text(.ragLocalKnowledgeTitle), "本地知识库 / Retriever")
         XCTAssertEqual(chinese.text(.glmWebSearchBaseURL), "Endpoint URL")

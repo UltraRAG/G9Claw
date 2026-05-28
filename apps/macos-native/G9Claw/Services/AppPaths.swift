@@ -15,7 +15,7 @@ struct AppPaths {
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
-        ).appendingPathComponent("G9Claw", isDirectory: true)
+        ).appendingPathComponent("PilotDeck", isDirectory: true)
         let logsRoot = try manager.url(
             for: .libraryDirectory,
             in: .userDomainMask,
@@ -23,7 +23,7 @@ struct AppPaths {
             create: true
         )
         .appendingPathComponent("Logs", isDirectory: true)
-        .appendingPathComponent("G9Claw", isDirectory: true)
+        .appendingPathComponent("PilotDeck", isDirectory: true)
 
         let paths = AppPaths(
             applicationSupport: appSupportRoot,

@@ -77,7 +77,7 @@ final class AppState: ObservableObject {
                     sessionId: sessionID,
                     provider: .g9Claw,
                     role: .assistant,
-                    blocks: [.text("Native G9Claw is running with the macOS parity shell. Configure a provider in Settings to start a real agent session.")],
+                    blocks: [.text("Native PilotDeck is running with the macOS parity shell. Configure a provider in Settings to start a real agent session.")],
                     createdAt: Date(),
                     isStreaming: false,
                     tokenBudget: nil
@@ -87,7 +87,7 @@ final class AppState: ObservableObject {
     }
 
     nonisolated static func defaultGeneralWorkspacePath(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
-        home.appendingPathComponent("G9Claw", isDirectory: true)
+        home.appendingPathComponent("PilotDeck", isDirectory: true)
             .appendingPathComponent("general", isDirectory: true)
             .standardizedFileURL
             .path
@@ -473,7 +473,7 @@ final class AppState: ObservableObject {
             promptWithMemory = """
             \(basePrompt)
 
-            Relevant G9Claw memory context:
+            Relevant PilotDeck memory context:
             \(memoryContext)
             """
         }
@@ -860,7 +860,7 @@ final class AppState: ObservableObject {
             throw NSError(
                 domain: "G9ClawWorkspace",
                 code: 404,
-                userInfo: [NSLocalizedDescriptionKey: "Workspace path does not exist: \(workspacePath). Check G9Claw general workspace settings."]
+                userInfo: [NSLocalizedDescriptionKey: "Workspace path does not exist: \(workspacePath). Check PilotDeck general workspace settings."]
             )
         }
         return workspacePath
@@ -2439,8 +2439,8 @@ enum G9ClawConfigDefaults {
           runtimePaths:
             sessionMetadata: ~/.g9claw/projects/.gateway/sessions.json
             userBindings: ~/.g9claw/projects/.gateway/user-projects.json
-            generalCwd: ~/G9Claw/general
-            generalJsonl: ~/.g9claw/projects/-Users-\(userName)-G9Claw-general/*.jsonl
+            generalCwd: ~/PilotDeck/general
+            generalJsonl: ~/.g9claw/projects/-Users-\(userName)-PilotDeck-general/*.jsonl
             boundProjectJsonl: ~/.g9claw/projects/<encoded-project>/*.jsonl
         """
     }

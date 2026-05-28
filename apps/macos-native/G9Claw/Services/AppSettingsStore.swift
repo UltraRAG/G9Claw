@@ -10,7 +10,7 @@ struct AppSettingsStore {
             self.url = FileManager.default
                 .urls(for: .applicationSupportDirectory, in: .userDomainMask)
                 .first!
-                .appendingPathComponent("G9Claw", isDirectory: true)
+                .appendingPathComponent("PilotDeck", isDirectory: true)
                 .appendingPathComponent("settings.json")
         }
     }

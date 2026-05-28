@@ -11,7 +11,7 @@ enum SessionProvider: String, CaseIterable, Codable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .g9Claw: "G9Claw"
+        case .g9Claw: "PilotDeck"
         default: rawValue.capitalized
         }
     }
@@ -890,7 +890,7 @@ struct AppSettings: Hashable, Codable {
         providerConfig: .empty,
         workspacesRoot: FileManager.default.homeDirectoryForCurrentUser.path,
         generalWorkspacePath: FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("G9Claw")
+            .appendingPathComponent("PilotDeck")
             .appendingPathComponent("general")
             .path,
         apiTimeoutMs: 120_000,
