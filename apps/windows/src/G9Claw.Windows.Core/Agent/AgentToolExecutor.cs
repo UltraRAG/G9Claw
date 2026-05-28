@@ -13,7 +13,8 @@ public sealed record AgentToolExecutionContext(
     string WorkspaceRoot,
     ChatRunMode RunMode,
     ToolPermissionSettings PermissionSettings,
-    CancellationToken CancellationToken);
+    CancellationToken CancellationToken,
+    IReadOnlyDictionary<string, string>? NativeConfigValues = null);
 
 public sealed class AgentToolExecutor
 {
@@ -478,13 +479,14 @@ public sealed class AgentToolExecutor
         var cwd = OptionalString(doc.RootElement, "cwd") is { } requestedCwd
             ? WorkspaceService.ResolveWorkspacePath(requestedCwd, context.WorkspaceRoot)
             : context.WorkspaceRoot;
+        var environment = SkillRuntimeEnvironment.Build(context.NativeConfigValues);
         if (OptionalBool(doc.RootElement, "run_in_background") == true)
         {
-            var run = _runStore.StartShellTask(command, cwd, _terminalService, timeout, context.CancellationToken);
+            var run = _runStore.StartShellTask(command, cwd, _terminalService, timeout, context.CancellationToken, environment);
             return Ok(call, $"Started background shell task {run.Id}. Use Await with task_id={run.Id} to read output.", taskId: run.Id);
         }
 
-        var result = await _terminalService.RunAsync(command, cwd, timeout, context.CancellationToken);
+        var result = await _terminalService.RunAsync(command, cwd, timeout, context.CancellationToken, environment);
         var isError = result.ExitCode != 0;
         return new AgentToolResult(call.Id, call.Name, isError ? result.Output : LimitOutput(result.Output), isError, Diagnostics: new Dictionary<string, string>
         {

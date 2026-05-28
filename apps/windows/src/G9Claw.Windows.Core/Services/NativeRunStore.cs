@@ -107,7 +107,8 @@ public sealed class NativeRunStore
         string cwd,
         TerminalService terminalService,
         int timeoutMs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         var id = $"task-{Guid.NewGuid():D}";
         var started = new NativeBackgroundRun(
@@ -127,7 +128,7 @@ public sealed class NativeRunStore
         {
             try
             {
-                var result = await terminalService.RunAsync(command, cwd, timeoutMs, cancellationToken);
+                var result = await terminalService.RunAsync(command, cwd, timeoutMs, cancellationToken, environment);
                 _runs[id] = started with
                 {
                     Output = result.Output,

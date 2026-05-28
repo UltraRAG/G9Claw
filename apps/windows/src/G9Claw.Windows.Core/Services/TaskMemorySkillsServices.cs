@@ -116,6 +116,10 @@ public sealed class SkillService
             (Path.Combine(home, ".codex", "skills"), SkillScope.User),
             (Path.Combine(home, ".agents", "skills"), SkillScope.User),
         };
+        if (SkillRuntimeEnvironment.PluginRoot() is { } pluginRoot)
+        {
+            roots.Add((Path.Combine(pluginRoot, "skills"), SkillScope.Plugin));
+        }
         if (!string.IsNullOrWhiteSpace(projectRoot))
         {
             roots.Add((Path.Combine(projectRoot, ".g9claw", "skills"), SkillScope.Project));

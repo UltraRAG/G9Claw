@@ -18,7 +18,8 @@ public sealed class TerminalService
         string command,
         string? cwd = null,
         int timeoutMs = 120_000,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         var workingDirectory = string.IsNullOrWhiteSpace(cwd)
             ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
@@ -37,6 +38,14 @@ public sealed class TerminalService
             CreateNoWindow = true,
             WorkingDirectory = workingDirectory,
         };
+        if (environment is not null)
+        {
+            foreach (var (key, value) in environment)
+            {
+                psi.Environment[key] = value;
+            }
+        }
+
         psi.ArgumentList.Add("-NoLogo");
         psi.ArgumentList.Add("-NoProfile");
         psi.ArgumentList.Add("-ExecutionPolicy");

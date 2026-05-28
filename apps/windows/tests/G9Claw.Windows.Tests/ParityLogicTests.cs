@@ -912,6 +912,69 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void SkillRuntimeEnvironmentMatchesMacRagConfigMapping()
+    {
+        var environment = SkillRuntimeEnvironment.Build(
+            new Dictionary<string, string>
+            {
+                ["rag.enabled"] = "yes",
+                ["rag.disableBuiltInWebTools"] = "false",
+                ["rag.localKnowledge.baseUrl"] = "http://local.example/",
+                ["rag.localKnowledge.apiKey"] = "local-key",
+                ["rag.localKnowledge.modelName"] = "embed",
+                ["rag.localKnowledge.databaseUrl"] = "http://milvus.example/",
+                ["rag.localKnowledge.defaultTopK"] = "12",
+                ["rag.glmWebSearch.baseUrl"] = "http://glm.example/",
+                ["rag.glmWebSearch.apiKey"] = "glm-key",
+            },
+            new Dictionary<string, string>
+            {
+                ["PATH"] = @"C:\Tools",
+                ["CLAUDE_PLUGIN_ROOT"] = @"C:\legacy",
+            },
+            pluginRoot: @"C:\plugins\g9claw-rag-plugin");
+
+        Assert.Equal(@"C:\plugins\g9claw-rag-plugin", environment["G9CLAW_PLUGIN_ROOT"]);
+        Assert.Equal("1", environment["G9CLAW_RAG_ENABLED"]);
+        Assert.Equal("0", environment["G9CLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS"]);
+        Assert.Equal("http://local.example", environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"]);
+        Assert.Equal("local-key", environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_API_KEY"]);
+        Assert.Equal("embed", environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME"]);
+        Assert.Equal("http://milvus.example/", environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL"]);
+        Assert.Equal("http://milvus.example/", environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI"]);
+        Assert.Equal("12", environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_TOP_K"]);
+        Assert.Equal("http://glm.example", environment["G9CLAW_RAG_GLM_WEB_SEARCH_BASE_URL"]);
+        Assert.Equal("glm-key", environment["G9CLAW_RAG_GLM_WEB_SEARCH_API_KEY"]);
+        Assert.Equal("8", environment["G9CLAW_RAG_GLM_WEB_SEARCH_TOP_K"]);
+        Assert.False(environment.ContainsKey("CLAUDE_PLUGIN_ROOT"));
+    }
+
+    [Fact]
+    public async Task AgentToolExecutorShellReceivesNativeConfigEnvironment()
+    {
+        using var temp = new TempWorkspace();
+        var executor = new AgentToolExecutor();
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None,
+            new Dictionary<string, string>
+            {
+                ["rag.enabled"] = "true",
+                ["rag.glmWebSearch.defaultTopK"] = "5",
+            });
+
+        var result = await executor.ExecuteAsync(new AgentToolCall("shell-env", "Shell", """
+        {"command":"Write-Output $env:G9CLAW_RAG_ENABLED; Write-Output $env:G9CLAW_RAG_GLM_WEB_SEARCH_TOP_K"}
+        """), context);
+
+        Assert.False(result.IsError);
+        Assert.Equal(["1", "5"], OutputLines(result.Output));
+    }
+
+    [Fact]
     public void AgentToolExecutorRipgrepArgumentsMatchMacRuntime()
     {
         using var doc = JsonDocument.Parse("""

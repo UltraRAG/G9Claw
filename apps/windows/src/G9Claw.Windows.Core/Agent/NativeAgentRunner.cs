@@ -310,7 +310,8 @@ public sealed class NativeAgentRunner
             request.ProjectPath,
             request.RunMode,
             request.ToolSettings,
-            cancellationToken);
+            cancellationToken,
+            request.NativeConfigValues);
         var result = await _toolExecutor.ExecuteAsync(call, context);
         if (!result.IsError)
         {

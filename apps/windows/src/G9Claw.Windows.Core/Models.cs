@@ -984,6 +984,7 @@ public enum SkillScope
 {
     User,
     Project,
+    Plugin,
 }
 
 public sealed record RoutingBucket(
