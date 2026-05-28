@@ -329,6 +329,140 @@ public sealed class AgentPlanTodoExecutionGate
     }
 }
 
+public sealed class AgentPlanModePolicy
+{
+    public const string ExitPlanApprovalReason = "Plan approval is required before leaving Plan mode.";
+
+    private readonly ChatRunMode _initialRunMode;
+    private bool _planExited;
+    private bool _planQuestionAnswered;
+
+    public AgentPlanModePolicy(ChatRunMode runMode)
+    {
+        _initialRunMode = runMode;
+        _planExited = runMode == ChatRunMode.Agent;
+        _planQuestionAnswered = runMode == ChatRunMode.Agent;
+    }
+
+    public AgentToolResult? BlockingResult(AgentToolCall call)
+    {
+        var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        if (_initialRunMode == ChatRunMode.Plan && !_planExited && !IsPlanModeSafe(toolName, call))
+        {
+            return PolicyBlock(call, PlanModePolicyBlockMessage(toolName));
+        }
+
+        if (toolName == "SwitchMode" &&
+            SwitchModeTarget(call.InputJson) == "agent" &&
+            _initialRunMode == ChatRunMode.Plan &&
+            !_planExited &&
+            !_planQuestionAnswered &&
+            !IsRecoveredPlainTextPlan(call.InputJson))
+        {
+            return PolicyBlock(
+                call,
+                "Plan mode requires AskQuestion before leaving Plan mode. Ask the user a blocking question first, then generate the final plan.");
+        }
+
+        return null;
+    }
+
+    public bool AllowsWithoutGenericPermission(AgentToolCall call)
+    {
+        return _initialRunMode == ChatRunMode.Plan &&
+               !_planExited &&
+               AgentToolNameCanonicalizer.Canonical(call.Name) == "Shell" &&
+               AgentToolBehaviorClassifier.IsReadOnlyShell(call.InputJson);
+    }
+
+    public bool RequiresExitPlanApproval(AgentToolCall call)
+    {
+        return _initialRunMode == ChatRunMode.Plan &&
+               !_planExited &&
+               AgentToolNameCanonicalizer.Canonical(call.Name) == "SwitchMode" &&
+               SwitchModeTarget(call.InputJson) == "agent";
+    }
+
+    public void Record(AgentToolCall call, AgentToolResult result)
+    {
+        if (result.IsPolicyBlock) return;
+        var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        if (toolName == "AskQuestion" && !result.IsError)
+        {
+            _planQuestionAnswered = true;
+        }
+
+        if (toolName == "SwitchMode" && !result.IsError)
+        {
+            var mode = SwitchModeTarget(call.InputJson);
+            if (mode == "agent")
+            {
+                _planExited = true;
+            }
+            else if (mode == "plan")
+            {
+                _planExited = false;
+            }
+        }
+    }
+
+    private static bool IsPlanModeSafe(string toolName, AgentToolCall call)
+    {
+        return toolName switch
+        {
+            "Read" or "Glob" or "Grep" or "SemanticSearch" or "ReadLints" or "Skill" or "TodoRead" or "TodoWrite" or "AskQuestion" or "SwitchMode" or "Await" => true,
+            "Shell" => AgentToolBehaviorClassifier.IsReadOnlyShell(call.InputJson),
+            "Task" => AgentToolBehaviorClassifier.IsReadOnlyTask(call.InputJson),
+            _ => false,
+        };
+    }
+
+    private static string PlanModePolicyBlockMessage(string toolName)
+    {
+        return toolName == "Shell"
+            ? "Plan mode skipped this write-capable shell command. Use read-only commands while planning, then call SwitchMode with mode=\"agent\" and a concrete plan before mutating the workspace."
+            : $"Plan mode skipped this workspace-changing {toolName} tool. Continue planning with read/search tools, then call SwitchMode with mode=\"agent\" and a concrete plan before mutating the workspace.";
+    }
+
+    private static AgentToolResult PolicyBlock(AgentToolCall call, string output) =>
+        new(call.Id, AgentToolNameCanonicalizer.Canonical(call.Name), output, false, IsPolicyBlock: true);
+
+    private static string SwitchModeTarget(string inputJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(inputJson) ? "{}" : inputJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return "agent";
+            return StringValue(doc.RootElement, "mode")?.Trim().ToLowerInvariant() ?? "agent";
+        }
+        catch (JsonException)
+        {
+            return "agent";
+        }
+    }
+
+    private static bool IsRecoveredPlainTextPlan(string inputJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(inputJson) ? "{}" : inputJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return false;
+            return doc.RootElement.TryGetProperty("recoveredFromPlainText", out var value) &&
+                   value.ValueKind == JsonValueKind.True;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static string? StringValue(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var value)) return null;
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
+    }
+}
+
 public sealed record AgentToolDeduplicationDecision(AgentToolResult? Result, bool Skip);
 
 public sealed class AgentToolDeduplicationPolicy

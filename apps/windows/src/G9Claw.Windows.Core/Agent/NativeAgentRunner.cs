@@ -80,6 +80,7 @@ public sealed class NativeAgentRunner
             var toolExchanges = new List<AgentToolExchange>();
             var currentRequest = request;
             var rootGlobPolicy = new AgentRootGlobExecutionPolicy();
+            var planModePolicy = new AgentPlanModePolicy(request.RunMode);
             var planTodoGate = new AgentPlanTodoExecutionGate();
             var deduplicationPolicy = new AgentToolDeduplicationPolicy();
             var round = 0;
@@ -110,7 +111,7 @@ public sealed class NativeAgentRunner
 
                     if (providerEvent.Kind == ProviderStreamEventKind.ToolCall && providerEvent.ToolCall is { } call)
                     {
-                        var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planTodoGate, deduplicationPolicy, cancellationToken);
+                        var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, cancellationToken);
                         if (toolResult is null)
                         {
                             roundSkippedDuplicateTool = true;
@@ -148,7 +149,7 @@ public sealed class NativeAgentRunner
                 foreach (var fallbackCall in fallbackCalls)
                 {
                     await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, fallbackCall), cancellationToken);
-                    var toolResult = await ExecuteToolAsync(request, turn, fallbackCall, options, rootGlobPolicy, planTodoGate, deduplicationPolicy, cancellationToken);
+                    var toolResult = await ExecuteToolAsync(request, turn, fallbackCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, cancellationToken);
                     if (toolResult is null)
                     {
                         continue;
@@ -188,6 +189,7 @@ public sealed class NativeAgentRunner
         AgentToolCall rawCall,
         NativeAgentRunOptions options,
         AgentRootGlobExecutionPolicy rootGlobPolicy,
+        AgentPlanModePolicy planModePolicy,
         AgentPlanTodoExecutionGate planTodoGate,
         AgentToolDeduplicationPolicy deduplicationPolicy,
         CancellationToken cancellationToken)
@@ -205,6 +207,12 @@ public sealed class NativeAgentRunner
         {
             turn.RecordToolResult(cached);
             return cached;
+        }
+
+        if (planModePolicy.BlockingResult(call) is { } planBlock)
+        {
+            turn.RecordToolResult(planBlock);
+            return planBlock;
         }
 
         if (planTodoGate.BlockingResult(call) is { } todoBlock)
@@ -228,37 +236,53 @@ public sealed class NativeAgentRunner
         {
             var questionResult = await AskQuestionAsync(request, turn, call, options, cancellationToken);
             turn.RecordToolResult(questionResult);
+            planModePolicy.Record(call, questionResult);
             planTodoGate.Record(call, questionResult);
             deduplicationPolicy.Record(call, questionResult);
             return questionResult;
         }
 
-        var decision = ToolPermissionPolicy.Decide(call, request.ToolSettings, request.PermissionMode);
-        if (decision == ToolPermissionDecision.Denied)
+        if (planModePolicy.RequiresExitPlanApproval(call))
         {
-            var denied = new AgentToolResult(call.Id, call.Name, "Tool is denied by Settings permissions.", true);
-            turn.RecordToolResult(denied);
-            return denied;
-        }
-
-        if (decision == ToolPermissionDecision.RequiresApproval)
-        {
-            var record = _permissionService.Request(request.SessionId, call.Name, call.InputJson, ToolPermissionPolicy.Reason(call.Name));
-            PermissionRecord resolved;
-            if (options.PermissionHandler is null)
-            {
-                resolved = _permissionService.Resolve(record.Request.Id, allow: false);
-            }
-            else
-            {
-                resolved = await options.PermissionHandler(record.Request, cancellationToken);
-            }
-
-            if (resolved.Decision != PermissionDecision.Allowed)
+            var approved = await RequestPermissionAsync(
+                request,
+                call,
+                options,
+                AgentPlanModePolicy.ExitPlanApprovalReason,
+                PermissionRequestKind.ExitPlanMode,
+                cancellationToken);
+            if (!approved)
             {
                 var denied = new AgentToolResult(call.Id, call.Name, "Tool execution was denied.", true);
                 turn.RecordToolResult(denied);
                 return denied;
+            }
+        }
+        else if (!planModePolicy.AllowsWithoutGenericPermission(call))
+        {
+            var decision = ToolPermissionPolicy.Decide(call, request.ToolSettings, request.PermissionMode);
+            if (decision == ToolPermissionDecision.Denied)
+            {
+                var denied = new AgentToolResult(call.Id, call.Name, "Tool is denied by Settings permissions.", true);
+                turn.RecordToolResult(denied);
+                return denied;
+            }
+
+            if (decision == ToolPermissionDecision.RequiresApproval)
+            {
+                var approved = await RequestPermissionAsync(
+                    request,
+                    call,
+                    options,
+                    ToolPermissionPolicy.Reason(call.Name),
+                    PermissionRequestKind.Tool,
+                    cancellationToken);
+                if (!approved)
+                {
+                    var denied = new AgentToolResult(call.Id, call.Name, "Tool execution was denied.", true);
+                    turn.RecordToolResult(denied);
+                    return denied;
+                }
             }
         }
 
@@ -279,10 +303,26 @@ public sealed class NativeAgentRunner
             turn.MarkPlanExited();
         }
 
+        planModePolicy.Record(call, result);
         planTodoGate.Record(call, result);
         deduplicationPolicy.Record(call, result);
         turn.RecordToolResult(result);
         return result;
+    }
+
+    private async Task<bool> RequestPermissionAsync(
+        AgentRequest request,
+        AgentToolCall call,
+        NativeAgentRunOptions options,
+        string reason,
+        PermissionRequestKind kind,
+        CancellationToken cancellationToken)
+    {
+        var record = _permissionService.Request(request.SessionId, call.Name, call.InputJson, reason, kind);
+        var resolved = options.PermissionHandler is null
+            ? _permissionService.Resolve(record.Request.Id, allow: false)
+            : await options.PermissionHandler(record.Request, cancellationToken);
+        return resolved.Decision == PermissionDecision.Allowed;
     }
 
     private async Task<AgentToolResult> AskQuestionAsync(

@@ -1863,7 +1863,64 @@ router:
             PermissionDecision.Allowed,
             permission.Scope,
             DateTimeOffset.UtcNow,
-            null)));
+            permission.Kind == PermissionRequestKind.AskUserQuestion ? "approved" : null)));
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var results = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+
+        Assert.Equal(7, provider.RequestCount);
+        Assert.Equal(["AskQuestion", "SwitchMode", "Write", "TodoWrite", "Write", "StrReplace"], results.Select(result => result.ToolName));
+        Assert.Equal("approved", results[0].Output);
+        Assert.False(results[2].IsError);
+        Assert.True(results[2].IsPolicyBlock);
+        Assert.Contains("Initialize the execution todo list with TodoWrite", results[2].Output);
+        Assert.False(results[4].IsError);
+        Assert.False(results[4].IsPolicyBlock);
+        Assert.True(results[5].IsPolicyBlock);
+        Assert.Contains("Update the todo list with TodoWrite", results[5].Output);
+        Assert.Equal("created", await File.ReadAllTextAsync(Path.Combine(temp.Root, "plan.txt")));
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerEnforcesPlanModeSafetyLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new PlanModeSafetyProvider();
+        var permissionRequests = new List<PermissionRequest>();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "plan before mutating",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.BypassPermissions,
+            ChatRunMode.Plan,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) =>
+        {
+            permissionRequests.Add(permission);
+            return Task.FromResult(new PermissionRecord(
+                permission,
+                PermissionDecision.Allowed,
+                permission.Scope,
+                DateTimeOffset.UtcNow,
+                permission.Kind == PermissionRequestKind.AskUserQuestion ? "approved" : null));
+        });
 
         var events = new List<AgentEvent>();
         await foreach (var agentEvent in runner.RunAsync(request, options))
@@ -1877,15 +1934,19 @@ router:
             .ToList();
 
         Assert.Equal(6, provider.RequestCount);
-        Assert.Equal(["SwitchMode", "Write", "TodoWrite", "Write", "StrReplace"], results.Select(result => result.ToolName));
+        Assert.Equal(["Write", "Shell", "SwitchMode", "AskQuestion", "SwitchMode"], results.Select(result => result.ToolName));
+        Assert.True(results[0].IsPolicyBlock);
+        Assert.Contains("Plan mode skipped this workspace-changing Write tool", results[0].Output);
         Assert.False(results[1].IsError);
-        Assert.True(results[1].IsPolicyBlock);
-        Assert.Contains("Initialize the execution todo list with TodoWrite", results[1].Output);
-        Assert.False(results[3].IsError);
-        Assert.False(results[3].IsPolicyBlock);
-        Assert.True(results[4].IsPolicyBlock);
-        Assert.Contains("Update the todo list with TodoWrite", results[4].Output);
-        Assert.Equal("created", await File.ReadAllTextAsync(Path.Combine(temp.Root, "plan.txt")));
+        Assert.False(results[1].IsPolicyBlock);
+        Assert.True(results[2].IsPolicyBlock);
+        Assert.Contains("Plan mode requires AskQuestion before leaving Plan mode", results[2].Output);
+        Assert.Equal("approved", results[3].Output);
+        Assert.False(results[4].IsError);
+        Assert.False(results[4].IsPolicyBlock);
+        Assert.Equal([PermissionRequestKind.AskUserQuestion, PermissionRequestKind.ExitPlanMode], permissionRequests.Select(permission => permission.Kind));
+        Assert.Equal("Plan approval is required before leaving Plan mode.", permissionRequests[1].Reason);
+        Assert.False(File.Exists(Path.Combine(temp.Root, "blocked.txt")));
     }
 
     [Fact]
@@ -2494,14 +2555,44 @@ gateway:
             await Task.CompletedTask;
             yield return request.ToolExchanges.Count switch
             {
-                0 => Tool("switch", "SwitchMode", """{"mode":"agent","plan":"Approved plan"}"""),
-                1 => Tool("blocked-write", "Write", """{"file_path":"plan.txt","content":"blocked"}"""),
-                2 => Tool("todo", "TodoWrite", """{"todos":[{"content":"write plan file","status":"in_progress","priority":1}]}"""),
-                3 => Tool("write", "Write", """{"file_path":"plan.txt","content":"created"}"""),
-                4 => Tool("blocked-edit", "StrReplace", """{"file_path":"plan.txt","old_string":"created","new_string":"changed"}"""),
+                0 => Tool("question", "AskQuestion", """{"question":"Approve this plan?","options":["Yes"]}"""),
+                1 => Tool("switch", "SwitchMode", """{"mode":"agent","plan":"Approved plan"}"""),
+                2 => Tool("blocked-write", "Write", """{"file_path":"plan.txt","content":"blocked"}"""),
+                3 => Tool("todo", "TodoWrite", """{"todos":[{"content":"write plan file","status":"in_progress","priority":1}]}"""),
+                4 => Tool("write", "Write", """{"file_path":"plan.txt","content":"created"}"""),
+                5 => Tool("blocked-edit", "StrReplace", """{"file_path":"plan.txt","old_string":"created","new_string":"changed"}"""),
                 _ => new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done"),
             };
-            if (request.ToolExchanges.Count > 4)
+            if (request.ToolExchanges.Count > 5)
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+        }
+
+        private static ProviderStreamEvent Tool(string id, string name, string inputJson) =>
+            new(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall(id, name, inputJson));
+    }
+
+    private sealed class PlanModeSafetyProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            yield return RequestCount switch
+            {
+                1 => Tool("blocked-write", "Write", """{"file_path":"blocked.txt","content":"blocked"}"""),
+                2 => Tool("read-only-shell", "Shell", """{"command":"pwd"}"""),
+                3 => Tool("blocked-switch", "SwitchMode", """{"mode":"agent","plan":"Need approval"}"""),
+                4 => Tool("question", "AskQuestion", """{"question":"Approve this plan?","options":["Yes"]}"""),
+                5 => Tool("switch", "SwitchMode", """{"mode":"agent","plan":"Approved plan"}"""),
+                _ => new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done"),
+            };
+            if (RequestCount > 5)
             {
                 yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
             }
