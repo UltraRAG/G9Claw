@@ -14,7 +14,9 @@ public sealed record AgentToolExecutionContext(
     ChatRunMode RunMode,
     ToolPermissionSettings PermissionSettings,
     CancellationToken CancellationToken,
-    IReadOnlyDictionary<string, string>? NativeConfigValues = null);
+    IReadOnlyDictionary<string, string>? NativeConfigValues = null,
+    int SubagentDepth = 0,
+    int? MaxSubagentDepth = null);
 
 public sealed class AgentToolExecutor
 {
@@ -631,6 +633,12 @@ public sealed class AgentToolExecutor
 
     private async Task<AgentToolResult> TaskToolAsync(AgentToolCall call, AgentToolExecutionContext context)
     {
+        var maxSubagentDepth = MaxSubagentDepth(context);
+        if (context.SubagentDepth >= maxSubagentDepth)
+        {
+            return Error(call, $"subagent_depth_exceeded (depth={context.SubagentDepth}, max={maxSubagentDepth}); nested Task is not allowed.");
+        }
+
         using var doc = JsonDocument.Parse(call.InputJson);
         var root = doc.RootElement;
         var type = OptionalString(root, "type") ?? "generalPurpose";
@@ -696,6 +704,23 @@ public sealed class AgentToolExecutor
 
     private static int ClampTimeout(long timeoutMs, int minimum) =>
         (int)Math.Max(minimum, Math.Min(timeoutMs, 600_000));
+
+    internal static int MaxSubagentDepth(AgentToolExecutionContext context)
+    {
+        if (context.MaxSubagentDepth is { } maxSubagentDepth)
+        {
+            return Math.Max(0, maxSubagentDepth);
+        }
+
+        if (context.NativeConfigValues is not null &&
+            context.NativeConfigValues.TryGetValue("runtime.maxSubagentDepth", out var configured) &&
+            int.TryParse(configured, out var parsed))
+        {
+            return Math.Max(0, parsed);
+        }
+
+        return 1;
+    }
 
     private static string ValidatedTaskWorkingDirectory(string cwd, string workspaceRoot)
     {

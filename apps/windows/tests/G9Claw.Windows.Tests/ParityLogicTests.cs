@@ -3032,6 +3032,62 @@ gateway:
     }
 
     [Fact]
+    public async Task AgentToolExecutorTaskSubagentDepthMatchesMacRuntime()
+    {
+        using var temp = new TempWorkspace();
+        var executor = new AgentToolExecutor();
+        var disabledByConfig = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None,
+            new Dictionary<string, string>
+            {
+                ["runtime.maxSubagentDepth"] = "0",
+            });
+        var nestedAtLimit = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None,
+            SubagentDepth: 1,
+            MaxSubagentDepth: 1);
+        var nestedAllowed = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None,
+            SubagentDepth: 1,
+            MaxSubagentDepth: 2);
+
+        var disabled = await executor.ExecuteAsync(new AgentToolCall("task-disabled", "Task", """
+        {"type":"generalPurpose","prompt":"Inspect"}
+        """), disabledByConfig);
+        var exceeded = await executor.ExecuteAsync(new AgentToolCall("task-exceeded", "Task", """
+        {"type":"generalPurpose","prompt":"Inspect"}
+        """), nestedAtLimit);
+        var allowed = await executor.ExecuteAsync(new AgentToolCall("task-allowed", "Task", """
+        {"type":"generalPurpose","prompt":"Inspect"}
+        """), nestedAllowed);
+
+        Assert.True(disabled.IsError);
+        Assert.Equal("subagent_depth_exceeded (depth=0, max=0); nested Task is not allowed.", disabled.Output);
+        Assert.True(exceeded.IsError);
+        Assert.Equal("subagent_depth_exceeded (depth=1, max=1); nested Task is not allowed.", exceeded.Output);
+        Assert.False(allowed.IsError);
+        Assert.Equal(0, AgentToolExecutor.MaxSubagentDepth(new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None,
+            MaxSubagentDepth: -1)));
+    }
+
+    [Fact]
     public async Task AgentSkillToolReadsProjectSkillContent()
     {
         using var temp = new TempWorkspace();
