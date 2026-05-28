@@ -570,6 +570,10 @@
         "workspacesRoot": {
           "label": "Workspaces root",
           "description": "扫描项目时使用的工作区根目录。"
+        },
+        "generalCwd": {
+          "label": "对话工作区",
+          "description": "General 对话使用的工作目录；它和项目扫描根目录是分开配置的。"
         }
       }
     },

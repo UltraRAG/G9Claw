@@ -570,6 +570,10 @@
         "workspacesRoot": {
           "label": "Workspaces root",
           "description": "Directory under which projects are scanned."
+        },
+        "generalCwd": {
+          "label": "Chat workspace",
+          "description": "Working directory used by General chat; this is configured separately from the project scan root."
         }
       }
     },

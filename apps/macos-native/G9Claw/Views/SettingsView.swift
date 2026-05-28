@@ -634,6 +634,13 @@ private struct SettingsContentView: View {
                                 setConfigValue(NativeRuntimeConfigFormFields.workspacesRootPath, value)
                             }
                         ))
+                        SettingsTextField(state.t(.generalWorkspace), text: Binding(
+                            get: { state.settings.generalWorkspacePath },
+                            set: { value in
+                                state.settings.generalWorkspacePath = value
+                                setConfigValue(NativeRuntimeConfigFormFields.generalWorkspacePath, value)
+                            }
+                        ))
                     }
                     .padding(14)
                 }
@@ -1796,12 +1803,14 @@ struct NativeRagEndpointConfigCardSpec: Hashable, Identifiable {
 
 enum NativeRuntimeConfigFormFields {
     static let workspacesRootPath = "runtime.workspacesRoot"
+    static let generalWorkspacePath = "gateway.runtimePaths.generalCwd"
     static let textFields: [NativeConfigTextFieldSpec] = [
         NativeConfigTextFieldSpec(label: .apiTimeoutMs, path: "runtime.apiTimeoutMs"),
         NativeConfigTextFieldSpec(label: .databasePath, path: "runtime.databasePath"),
     ]
     static let visiblePaths = textFields.map(\.path) + [
         workspacesRootPath,
+        generalWorkspacePath,
     ]
 }
 

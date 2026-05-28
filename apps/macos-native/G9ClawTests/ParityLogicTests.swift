@@ -388,6 +388,7 @@ final class ParityLogicTests: XCTestCase {
             "runtime.apiTimeoutMs",
             "runtime.databasePath",
             "runtime.workspacesRoot",
+            "gateway.runtimePaths.generalCwd",
         ])
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.host"))
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.serverPort"))
@@ -395,7 +396,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.proxyPort"))
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.contextWindow"))
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.httpsProxy"))
-        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))
+        XCTAssertTrue(NativeRuntimeConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))
     }
 
     func testNativeRagConfigFormFieldsExposeBothWebEndpointApiKeys() {

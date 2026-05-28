@@ -95,7 +95,13 @@ type EdgeClawConfig = {
     };
   };
   router?: { enabled?: boolean } & Record<string, unknown>;
-  gateway?: { enabled?: boolean; home?: string } & Record<string, unknown>;
+  gateway?: {
+    enabled?: boolean;
+    home?: string;
+    runtimePaths?: {
+      generalCwd?: string;
+    } & Record<string, unknown>;
+  } & Record<string, unknown>;
 };
 
 type SectionId = 'runtime' | 'models' | 'agents' | 'alwaysOn' | 'memory' | 'rag' | 'router' | 'gateway';
@@ -328,6 +334,7 @@ function RuntimeSection({ config, onChange }: { config: EdgeClawConfig; onChange
   const r = config.runtime ?? {};
   const set = <K extends keyof NonNullable<EdgeClawConfig['runtime']>>(key: K, value: NonNullable<EdgeClawConfig['runtime']>[K]) =>
     onChange(patch(config, ['runtime', key as string], value));
+  const generalCwd = config.gateway?.runtimePaths?.generalCwd ?? '';
   return (
     <SettingsSection title={t('edgeClawConfig.runtime.title')} description={t('edgeClawConfig.runtime.description')}>
       <SettingsCard divided>
@@ -354,6 +361,9 @@ function RuntimeSection({ config, onChange }: { config: EdgeClawConfig; onChange
         </FormRow>
         <FormRow label={t('edgeClawConfig.runtime.fields.workspacesRoot.label')} description={t('edgeClawConfig.runtime.fields.workspacesRoot.description')}>
           <TextInput value={r.workspacesRoot} placeholder="~" monospace onChange={(v) => set('workspacesRoot', v)} />
+        </FormRow>
+        <FormRow label={t('edgeClawConfig.runtime.fields.generalCwd.label')} description={t('edgeClawConfig.runtime.fields.generalCwd.description')}>
+          <TextInput value={generalCwd} placeholder="~/PilotDeck/general" monospace onChange={(v) => onChange(patch(config, ['gateway', 'runtimePaths', 'generalCwd'], v))} />
         </FormRow>
       </SettingsCard>
     </SettingsSection>
