@@ -45,6 +45,7 @@ public sealed class AgentToolExecutor
                 "SemanticSearch" => SemanticSearch(call, context),
                 "Shell" => await ShellAsync(call, context),
                 "Await" => await AwaitAsync(call, context),
+                "WebFetch" => Ok(call, "WebFetch is disabled. Use Skill with g9claw-rag:rag-research for source-grounded web evidence."),
                 "ReadLints" => ReadLints(call),
                 "Skill" => Skill(call, context),
                 "TodoWrite" => TodoWrite(call, context),

@@ -1059,6 +1059,25 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public async Task LegacyWebFetchReturnsMacDisabledGuidance()
+    {
+        using var temp = new TempWorkspace();
+        var executor = new AgentToolExecutor();
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None);
+
+        var result = await executor.ExecuteAsync(new AgentToolCall("fetch", "web_fetch", """{"url":"https://example.com"}"""), context);
+
+        Assert.False(result.IsError);
+        Assert.Equal("WebFetch", result.ToolName);
+        Assert.Equal("WebFetch is disabled. Use Skill with g9claw-rag:rag-research for source-grounded web evidence.", result.Output);
+    }
+
+    [Fact]
     public void ToolArgumentNormalizerTurnsMalformedArgumentsIntoRecoverableToolResult()
     {
         var invocation = ToolArgumentNormalizer.Normalize(new AgentToolCall("call-bad", "Edit", """{file_path:"index.html"}"""));
