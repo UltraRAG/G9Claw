@@ -88,6 +88,7 @@ public sealed class NativeAgentRunner
             var round = 0;
             var partialStreamRecoveryCount = 0;
             var didRecoverContextOverflow = false;
+            var didForceWorkspaceBootstrap = false;
             while (true)
             {
                 await writer.WriteAsync(
@@ -233,6 +234,28 @@ public sealed class NativeAgentRunner
                         }
 
                         roundExchanges.Add(new AgentToolExchange(planRecovery.Call, toolResult));
+                    }
+                }
+
+                if (roundExchanges.Count == 0 &&
+                    !didForceWorkspaceBootstrap &&
+                    WorkspaceBootstrapPolicy.ShouldForceWorkspaceBootstrap(currentRequest, toolExchanges, roundAssistantText.ToString()))
+                {
+                    didForceWorkspaceBootstrap = true;
+                    var bootstrapCall = WorkspaceBootstrapPolicy.ForcedWorkspaceBootstrapToolCall();
+                    turn.RecordStatus("exploring workspace");
+                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, "exploring workspace"), cancellationToken);
+                    await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, bootstrapCall), cancellationToken);
+                    var toolResult = await ExecuteToolAsync(currentRequest, turn, bootstrapCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
+                    if (toolResult is not null)
+                    {
+                        await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                        if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
+                        {
+                            throw ProviderClientException.Transport(watchdogMessage);
+                        }
+
+                        roundExchanges.Add(new AgentToolExchange(bootstrapCall, toolResult));
                     }
                 }
 

@@ -3107,6 +3107,50 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerBootstrapsWorkspaceWhenModelSkipsToolsLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        Directory.CreateDirectory(Path.Combine(temp.Root, "src"));
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "src", "App.cs"), "class App {}");
+        var provider = new WorkspaceBootstrapProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "implement the requested code change",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        var toolResults = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+        var bootstrapResult = Assert.Single(toolResults, result => result.ToolName == "Glob");
+        Assert.Equal(2, provider.RequestCount);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "exploring workspace");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ToolUse && item.ToolCall?.Name == "Glob");
+        Assert.Contains("src/App.cs", bootstrapResult.Output.Replace('\\', '/'));
+        Assert.True(provider.SawBootstrapExchange);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after bootstrap");
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Error);
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerUsesDestructivePlanApprovalLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -4500,6 +4544,41 @@ gateway:
                     yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
                     yield break;
             }
+        }
+    }
+
+    private sealed class WorkspaceBootstrapProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+        public bool SawBootstrapExchange { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.ToolExchanges.Count == 0)
+            {
+                yield return new ProviderStreamEvent(
+                    ProviderStreamEventKind.ContentDelta,
+                    Text: """
+                    I will implement it like this:
+
+                    ```csharp
+                    // draft code
+                    ```
+                    """);
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+                yield break;
+            }
+
+            SawBootstrapExchange = request.ToolExchanges.Any(exchange =>
+                exchange.Call.Name == "Glob" &&
+                exchange.Call.InputJson.Contains("\"pattern\":\"**/*\"", StringComparison.Ordinal));
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after bootstrap");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
         }
     }
 
