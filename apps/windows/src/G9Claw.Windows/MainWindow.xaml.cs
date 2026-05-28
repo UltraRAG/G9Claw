@@ -1321,13 +1321,47 @@ public sealed partial class MainWindow : Window
 
         if (presentation.Compacting)
         {
-            stack.Children.Add(new TextBlock
+            var compactingRow = new Grid
             {
-                Text = IsChineseUi() ? "\u6b63\u5728\u81ea\u52a8\u538b\u7f29\u4e0a\u4e0b\u6587" : "Automatically compacting context",
-                FontSize = 12,
-                Foreground = Brush("V2MutedForegroundBrush"),
                 HorizontalAlignment = HorizontalAlignment.Left,
-            });
+                MaxWidth = 620,
+                ColumnSpacing = 16,
+                ColumnDefinitions =
+                {
+                    new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                    new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                },
+                Children =
+                {
+                    new Border
+                    {
+                        Height = 1,
+                        Background = Brush("V2BorderBrush"),
+                        VerticalAlignment = VerticalAlignment.Center,
+                        MinWidth = 80,
+                    },
+                    new TextBlock
+                    {
+                        Text = IsChineseUi() ? "\u6b63\u5728\u81ea\u52a8\u538b\u7f29\u4e0a\u4e0b\u6587" : "Automatically compacting context",
+                        FontSize = 12,
+                        FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                        Foreground = Brush("V2SecondaryForegroundBrush"),
+                        VerticalAlignment = VerticalAlignment.Center,
+                        TextWrapping = TextWrapping.NoWrap,
+                    },
+                    new Border
+                    {
+                        Height = 1,
+                        Background = Brush("V2BorderBrush"),
+                        VerticalAlignment = VerticalAlignment.Center,
+                        MinWidth = 80,
+                    },
+                },
+            };
+            Grid.SetColumn((FrameworkElement)compactingRow.Children[1], 1);
+            Grid.SetColumn((FrameworkElement)compactingRow.Children[2], 2);
+            stack.Children.Add(compactingRow);
         }
 
         return stack;
