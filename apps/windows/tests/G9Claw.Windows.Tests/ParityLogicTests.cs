@@ -3898,6 +3898,10 @@ router:
             new AgentToolCall("call-5", "Task", """{"type":"generalPurpose","description":"Audit parity","prompt":"Compare mac and windows","cwd":"C:\\repo","isolation":"workspace-write"}"""),
             new AgentToolResult("call-5", "Task", "done", false),
             chinese: false);
+        var completedTodo = ToolInvocationPresenter.Present(
+            new AgentToolCall("call-6", "TodoWrite", """{"todos":[{"content":"Done item","status":"completed"},{"content":"Active item","status":"in_progress"},{"content":"Next item","status":"pending"}]}"""),
+            new AgentToolResult("call-6", "TodoWrite", "Saved 3 todo item(s).", false),
+            chinese: false);
 
         Assert.Equal(ToolInvocationPhase.Command, runningShell.Phase);
         Assert.Equal(ToolInvocationState.Running, runningShell.State);
@@ -3906,6 +3910,7 @@ router:
         Assert.Equal("Searched TODO", failedSearch.Summary);
         Assert.Equal("Skipped edit in Plan mode notes.txt", skippedEdit.Summary);
         Assert.Equal("Completed Subagent / generalPurpose: Audit parity", completedTask.Summary);
+        Assert.Equal("Updated Todo List \u00b7 1 done \u00b7 1 in progress \u00b7 1 pending", completedTodo.Summary);
     }
 
     [Fact]
@@ -3944,6 +3949,42 @@ router:
         Assert.Contains("Cwd: C:\\repo", presentation.DetailText(chinese: false, output: "done"));
         Assert.Contains("Isolation: readonly", presentation.DetailText(chinese: false, output: "done"));
         Assert.Contains("Output:\ndone", presentation.DetailText(chinese: false, output: "done"));
+    }
+
+    [Fact]
+    public void TodoListPresentationMatchesMacJsonAndMarkdownParsing()
+    {
+        var json = TodoListPresentation.Parse(
+            "TodoWrite",
+            """{"todos":[{"id":"a","content":"Ship feature","status":"completed"},{"content":"Write tests","status":"active"},{"content":"Update docs","done":false}]}""",
+            resultOutput: null);
+
+        Assert.NotNull(json);
+        Assert.Equal(3, json.Snapshot.TotalCount);
+        Assert.Equal(1, json.Snapshot.CompletedCount);
+        Assert.Equal(1, json.Snapshot.InProgressCount);
+        Assert.Equal(1, json.Snapshot.PendingCount);
+        Assert.Equal("a", json.Snapshot.Items[0].StableKey);
+        Assert.Equal("content:write tests", json.Snapshot.Items[1].StableKey);
+        Assert.Equal("1 done \u00b7 1 in progress \u00b7 1 pending", json.Summary(chinese: false));
+        Assert.Equal("Updated Todo List \u00b7 1 done \u00b7 1 in progress \u00b7 1 pending", json.RowTitle("TodoWrite", chinese: false, running: false));
+        Assert.Contains("- [x] Ship feature (done)", json.DetailText(chinese: false));
+        Assert.Contains("- [ ] Write tests (in progress)", json.DetailText(chinese: false));
+
+        var markdown = TodoListPresentation.Parse(
+            "TodoRead",
+            "{}",
+            """
+            - [x] Done
+            - [ ] Current
+            - [ ] Later
+            """);
+
+        Assert.NotNull(markdown);
+        Assert.Equal(TodoPresentationStatus.Completed, markdown.Snapshot.Items[0].Status);
+        Assert.Equal(TodoPresentationStatus.InProgress, markdown.Snapshot.Items[1].Status);
+        Assert.Equal(TodoPresentationStatus.Pending, markdown.Snapshot.Items[2].Status);
+        Assert.Equal("Read Todo List \u00b7 1 done \u00b7 1 in progress \u00b7 1 pending", markdown.RowTitle("TodoRead", chinese: false, running: false));
     }
 
     [Fact]

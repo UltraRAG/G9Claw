@@ -2387,6 +2387,12 @@ public sealed partial class MainWindow : Window
                     taskPresentation.DetailTitle(IsChineseUi()),
                     taskPresentation.DetailText(IsChineseUi(), result?.Output)));
             }
+            else if (TodoListPresentation.Parse(call.Name, call.InputJson, result?.Output) is { } todoPresentation)
+            {
+                detailPanel.Children.Add(ToolDetailBox(
+                    todoPresentation.DetailTitle(IsChineseUi()),
+                    todoPresentation.DetailText(IsChineseUi())));
+            }
             else
             {
                 detailPanel.Children.Add(ToolDetailBox(T("chat.tool.input"), ToolInputDetail(call, presentation)));

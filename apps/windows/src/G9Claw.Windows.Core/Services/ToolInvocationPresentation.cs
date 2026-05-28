@@ -50,10 +50,17 @@ public static class ToolInvocationPresenter
         var target = TargetFor(toolName, input);
         var policyBlocked = result?.IsPolicyBlock == true ||
                             result?.Output.TrimStart().StartsWith("Plan mode skipped", StringComparison.Ordinal) == true;
-        var summary = string.Equals(toolName, "Task", StringComparison.OrdinalIgnoreCase) &&
-                      TaskInvocationPresentation.Parse(call.InputJson) is { } taskPresentation
-            ? taskPresentation.RowTitle(chinese, state == ToolInvocationState.Running, state == ToolInvocationState.Failed)
-            : Summary(toolName, phase, state, target, chinese, policyBlocked);
+        var summary = Summary(toolName, phase, state, target, chinese, policyBlocked);
+        if (TodoListPresentation.Parse(toolName, call.InputJson, result?.Output) is { } todoPresentation)
+        {
+            summary = todoPresentation.RowTitle(toolName, chinese, state == ToolInvocationState.Running);
+        }
+        else if (string.Equals(toolName, "Task", StringComparison.OrdinalIgnoreCase) &&
+                 TaskInvocationPresentation.Parse(call.InputJson) is { } taskPresentation)
+        {
+            summary = taskPresentation.RowTitle(chinese, state == ToolInvocationState.Running, state == ToolInvocationState.Failed);
+        }
+
         return new ToolInvocationPresentation(
             phase,
             state,
@@ -293,6 +300,259 @@ public static class ToolInvocationPresenter
 
             return "";
         }
+    }
+}
+
+public enum TodoPresentationStatus
+{
+    Completed,
+    InProgress,
+    Pending,
+}
+
+public sealed record TodoListItemPresentation(
+    string Id,
+    string? ExplicitId,
+    string Content,
+    TodoPresentationStatus Status,
+    int SourceIndex)
+{
+    public string StableKey
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(ExplicitId)) return ExplicitId;
+            var normalized = Content.Trim().ToLowerInvariant();
+            return string.IsNullOrWhiteSpace(normalized) ? $"index:{SourceIndex}" : $"content:{normalized}";
+        }
+    }
+}
+
+public sealed record TodoListSnapshot(IReadOnlyList<TodoListItemPresentation> Items)
+{
+    public int CompletedCount => Items.Count(item => item.Status == TodoPresentationStatus.Completed);
+    public int InProgressCount => Items.Count(item => item.Status == TodoPresentationStatus.InProgress);
+    public int PendingCount => Items.Count(item => item.Status == TodoPresentationStatus.Pending);
+    public int TotalCount => Items.Count;
+}
+
+public sealed record TodoListDiff(
+    IReadOnlySet<string> ChangedItemKeys,
+    IReadOnlySet<string> CompletedItemKeys)
+{
+    public static TodoListDiff Empty { get; } = new(new HashSet<string>(), new HashSet<string>());
+
+    public static TodoListDiff Make(TodoListSnapshot? previous, TodoListSnapshot current)
+    {
+        if (previous is null) return Empty;
+        var oldByKey = previous.Items.ToDictionary(item => item.StableKey, StringComparer.Ordinal);
+        var changed = new HashSet<string>(StringComparer.Ordinal);
+        var completed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in current.Items)
+        {
+            oldByKey.TryGetValue(item.StableKey, out var old);
+            if (old is null || old.Status != item.Status || old.Content != item.Content)
+            {
+                changed.Add(item.StableKey);
+            }
+
+            if (old?.Status != TodoPresentationStatus.Completed && item.Status == TodoPresentationStatus.Completed)
+            {
+                completed.Add(item.StableKey);
+            }
+        }
+
+        return new TodoListDiff(changed, completed);
+    }
+}
+
+public sealed record TodoListPresentation(
+    TodoListSnapshot Snapshot,
+    TodoListDiff Diff)
+{
+    public static TodoListPresentation? Parse(
+        string toolName,
+        string inputJson,
+        string? resultOutput,
+        TodoListSnapshot? previous = null)
+    {
+        var canonical = AgentToolNameCanonicalizer.Canonical(toolName);
+        if (canonical is not ("TodoWrite" or "TodoRead")) return null;
+        var resultSource = resultOutput?.Trim();
+        var source = canonical == "TodoRead"
+            ? (!string.IsNullOrWhiteSpace(resultSource) ? resultSource! : inputJson)
+            : inputJson;
+        var snapshot = SnapshotFrom(source);
+        return snapshot is null ? null : new TodoListPresentation(snapshot, TodoListDiff.Make(previous, snapshot));
+    }
+
+    public string Summary(bool chinese) =>
+        chinese
+            ? $"{Snapshot.CompletedCount} \u5b8c\u6210 \u00b7 {Snapshot.InProgressCount} \u8fdb\u884c\u4e2d \u00b7 {Snapshot.PendingCount} \u5f85\u529e"
+            : $"{Snapshot.CompletedCount} done \u00b7 {Snapshot.InProgressCount} in progress \u00b7 {Snapshot.PendingCount} pending";
+
+    public string RowTitle(string toolName, bool chinese, bool running)
+    {
+        var canonical = AgentToolNameCanonicalizer.Canonical(toolName);
+        var title = canonical == "TodoRead"
+            ? running
+                ? (chinese ? "\u6b63\u5728\u8bfb\u53d6 Todo List" : "Reading Todo List")
+                : (chinese ? "\u5df2\u8bfb\u53d6 Todo List" : "Read Todo List")
+            : running
+                ? (chinese ? "\u6b63\u5728\u66f4\u65b0 Todo List" : "Updating Todo List")
+                : (chinese ? "\u5df2\u66f4\u65b0 Todo List" : "Updated Todo List");
+        return running ? title : $"{title} \u00b7 {Summary(chinese)}";
+    }
+
+    public string DetailTitle(bool chinese) => "Todo List";
+
+    public string DetailText(bool chinese)
+    {
+        var lines = new List<string> { Summary(chinese), "" };
+        foreach (var item in Snapshot.Items)
+        {
+            var status = item.Status switch
+            {
+                TodoPresentationStatus.Completed => chinese ? "\u5b8c\u6210" : "done",
+                TodoPresentationStatus.InProgress => chinese ? "\u8fdb\u884c\u4e2d" : "in progress",
+                _ => chinese ? "\u5f85\u529e" : "pending",
+            };
+            var marker = item.Status == TodoPresentationStatus.Completed ? "x" : " ";
+            lines.Add($"- [{marker}] {item.Content} ({status})");
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static TodoListSnapshot? SnapshotFrom(string source)
+    {
+        var trimmed = source.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed)) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(trimmed);
+            var items = TodoItemsFrom(document.RootElement);
+            if (items is { Count: > 0 }) return new TodoListSnapshot(items);
+        }
+        catch (JsonException)
+        {
+        }
+
+        var markdownItems = TodoItemsFromMarkdown(trimmed);
+        return markdownItems.Count == 0 ? null : new TodoListSnapshot(markdownItems);
+    }
+
+    private static List<TodoListItemPresentation>? TodoItemsFrom(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            if (value.TryGetProperty("todos", out var todos))
+            {
+                return TodoItemsFrom(todos);
+            }
+
+            if (StringValue(value, "markdown") is { } markdown)
+            {
+                return TodoItemsFromMarkdown(markdown);
+            }
+
+            var item = TodoItemFrom(value, 0);
+            return item is null ? null : [item];
+        }
+
+        if (value.ValueKind != JsonValueKind.Array) return null;
+        var output = new List<TodoListItemPresentation>();
+        var index = 0;
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.Object && TodoItemFrom(item, index) is { } parsed)
+            {
+                output.Add(parsed);
+            }
+
+            index++;
+        }
+
+        return output;
+    }
+
+    private static TodoListItemPresentation? TodoItemFrom(JsonElement value, int fallbackIndex)
+    {
+        var content = StringValue(value, "content") ??
+                      StringValue(value, "title") ??
+                      StringValue(value, "subject") ??
+                      StringValue(value, "task");
+        if (string.IsNullOrWhiteSpace(content)) return null;
+        var explicitId = StringValue(value, "id");
+        var id = string.IsNullOrWhiteSpace(explicitId) ? $"todo-{fallbackIndex + 1}" : explicitId!;
+        var rawStatus = StringValue(value, "status") ??
+                        (value.TryGetProperty("done", out var done) && done.ValueKind == JsonValueKind.True ? "completed" : "pending");
+        return new TodoListItemPresentation(
+            id,
+            string.IsNullOrWhiteSpace(explicitId) ? null : explicitId,
+            content.Trim(),
+            NormalizedStatus(rawStatus),
+            fallbackIndex);
+    }
+
+    private static List<TodoListItemPresentation> TodoItemsFromMarkdown(string markdown)
+    {
+        var output = new List<TodoListItemPresentation>();
+        var assignedInProgress = false;
+        var lines = markdown.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var trimmed = lines[index].Trim();
+            if (!trimmed.StartsWith("- [", StringComparison.Ordinal) &&
+                !trimmed.StartsWith("* [", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var checkedItem = trimmed.StartsWith("- [x]", StringComparison.OrdinalIgnoreCase) ||
+                              trimmed.StartsWith("* [x]", StringComparison.OrdinalIgnoreCase);
+            var close = trimmed.IndexOf(']');
+            if (close < 0 || close + 1 >= trimmed.Length) continue;
+            var content = trimmed[(close + 1)..].Trim(' ', '-', '\t');
+            if (string.IsNullOrWhiteSpace(content)) continue;
+            var status = checkedItem
+                ? TodoPresentationStatus.Completed
+                : !assignedInProgress
+                    ? TodoPresentationStatus.InProgress
+                    : TodoPresentationStatus.Pending;
+            if (status == TodoPresentationStatus.InProgress)
+            {
+                assignedInProgress = true;
+            }
+
+            output.Add(new TodoListItemPresentation($"todo-{index + 1}", null, content, status, index));
+        }
+
+        return output;
+    }
+
+    private static TodoPresentationStatus NormalizedStatus(string rawStatus)
+    {
+        var value = rawStatus.Trim().ToLowerInvariant().Replace('-', '_');
+        return value switch
+        {
+            "completed" or "complete" or "done" or "finished" or "success" => TodoPresentationStatus.Completed,
+            "in_progress" or "inprogress" or "progress" or "active" or "current" or "running" => TodoPresentationStatus.InProgress,
+            _ => TodoPresentationStatus.Pending,
+        };
+    }
+
+    private static string? StringValue(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var value)) return null;
+        var text = value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.GetRawText(),
+            _ => null,
+        };
+        text = text?.Trim();
+        return string.IsNullOrWhiteSpace(text) ? null : text;
     }
 }
 
