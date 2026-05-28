@@ -104,6 +104,8 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<Guid, Dictionary<string, string>> _askQuestionOtherAnswers = [];
     private readonly Dictionary<Guid, HashSet<string>> _askQuestionOtherActiveQuestions = [];
     private readonly HashSet<string> _askQuestionValidationErrors = new(StringComparer.Ordinal);
+    private readonly Dictionary<Guid, string> _exitPlanFeedback = [];
+    private readonly HashSet<Guid> _exitPlanFeedbackErrors = [];
     private readonly ICredentialStore _credentialStore;
     private readonly NativeAgentRunner _agentRunner;
     private readonly NativeRunStore _runStore;
@@ -1066,7 +1068,7 @@ public sealed partial class MainWindow : Window
         var inlinePermissionRequests = InlinePendingPermissions();
         var footerReserve = V2LayoutMetrics.ComposerMinHeight + (inlinePermissionRequests.Count == 0
             ? 66
-            : inlinePermissionRequests.Any(request => request.Kind == PermissionRequestKind.AskUserQuestion) ? 390 : 214);
+            : inlinePermissionRequests.Any(request => request.Kind is PermissionRequestKind.AskUserQuestion or PermissionRequestKind.ExitPlanMode) ? 620 : 214);
         var hasMessages = processTracePresentation.ShouldRender ||
             State.CurrentMessages.Count > 0 ||
             (State.SelectedSessionId is { } currentSessionId &&
@@ -1245,6 +1247,13 @@ public sealed partial class MainWindow : Window
             .OrderBy(request => request.CreatedAt)
             .ToList();
 
+    private FrameworkElement PermissionCardFor(PermissionRequest request) => request.Kind switch
+    {
+        PermissionRequestKind.AskUserQuestion => AskUserQuestionPanel(request),
+        PermissionRequestKind.ExitPlanMode => ExitPlanModePermissionCard(request),
+        _ => GenericPermissionCard(request),
+    };
+
     private FrameworkElement PermissionBanner(IReadOnlyList<PermissionRequest> requests)
     {
         var stack = new StackPanel
@@ -1254,9 +1263,7 @@ public sealed partial class MainWindow : Window
         };
         foreach (var request in requests)
         {
-            stack.Children.Add(request.Kind == PermissionRequestKind.AskUserQuestion
-                ? AskUserQuestionPanel(request)
-                : GenericPermissionCard(request));
+            stack.Children.Add(PermissionCardFor(request));
         }
 
         if (requests.Count <= 1) return stack;
@@ -1897,6 +1904,223 @@ public sealed partial class MainWindow : Window
         _askQuestionOtherAnswers.Remove(requestId);
         _askQuestionOtherActiveQuestions.Remove(requestId);
         _askQuestionValidationErrors.RemoveWhere(key => key.StartsWith($"{requestId:N}:", StringComparison.Ordinal));
+        _exitPlanFeedback.Remove(requestId);
+        _exitPlanFeedbackErrors.Remove(requestId);
+    }
+
+    private FrameworkElement ExitPlanModePermissionCard(PermissionRequest request)
+    {
+        var isChinese = IsChineseUi();
+        var feedback = _exitPlanFeedback.GetValueOrDefault(request.Id, "");
+        var stack = new StackPanel { Spacing = 0 };
+
+        var header = new Grid
+        {
+            ColumnSpacing = 12,
+            Padding = new Thickness(12),
+            Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(14, 59, 130, 246)),
+        };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.Children.Add(new Border
+        {
+            Width = 34,
+            Height = 34,
+            CornerRadius = new CornerRadius(10),
+            Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(30, 59, 130, 246)),
+            Child = Icon("ListChecks", 16, Brush("V2BlueBrush")),
+        });
+        var headerCopy = new StackPanel { Spacing = 4 };
+        headerCopy.Children.Add(new TextBlock
+        {
+            Text = isChinese ? "\u8ba1\u5212\u5df2\u51c6\u5907\u597d" : "Plan is ready",
+            FontSize = 14,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
+        });
+        headerCopy.Children.Add(new TextBlock
+        {
+            Text = isChinese
+                ? "\u786e\u8ba4\u540e\u4f1a\u9000\u51fa Plan \u6a21\u5f0f\uff0c\u5e76\u8ba9\u4ee3\u7406\u5f00\u59cb\u6309\u8ba1\u5212\u6267\u884c\u3002"
+                : "Confirm to leave Plan mode and let the agent execute this plan.",
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+        });
+        Grid.SetColumn(headerCopy, 1);
+        header.Children.Add(headerCopy);
+        stack.Children.Add(header);
+
+        var planPanel = new StackPanel
+        {
+            Spacing = 8,
+            Padding = new Thickness(12, 10, 12, 10),
+        };
+        planPanel.Children.Add(new Border
+        {
+            MinHeight = 220,
+            MaxHeight = 460,
+            CornerRadius = new CornerRadius(8),
+            BorderThickness = new Thickness(1),
+            BorderBrush = Brush("V2BorderBrush"),
+            Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(14, 59, 130, 246)),
+            Child = new Grid
+            {
+                Children =
+                {
+                    new ScrollViewer
+                    {
+                        MinHeight = 220,
+                        MaxHeight = 460,
+                        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                        Padding = new Thickness(14),
+                        Content = MarkdownContent(ExitPlanModeInputCodec.ExtractPlanMarkdown(request.InputJson, isChinese)),
+                    },
+                    new Border
+                    {
+                        HorizontalAlignment = HorizontalAlignment.Left,
+                        VerticalAlignment = VerticalAlignment.Top,
+                        Margin = new Thickness(8),
+                        Padding = new Thickness(10, 5, 10, 5),
+                        CornerRadius = new CornerRadius(12),
+                        Background = Brush("V2CardBrush"),
+                        Child = new TextBlock
+                        {
+                            Text = isChinese ? "\u8ba1\u5212" : "Plan",
+                            FontSize = 11,
+                            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                            Foreground = Brush("V2BlueBrush"),
+                        },
+                    },
+                },
+            },
+        });
+        stack.Children.Add(planPanel);
+
+        var footer = new StackPanel
+        {
+            Spacing = 8,
+            Padding = new Thickness(12),
+            Background = Brush("V2BackgroundBrush"),
+        };
+        var executeDirect = PermissionActionButton(
+            isChinese ? "\u662f\uff0c\u76f4\u63a5\u6267\u884c\u8ba1\u5212" : "Yes, execute the plan",
+            Brush("V2BlueBrush"),
+            new SolidColorBrush(global::Windows.UI.Color.FromArgb(18, 59, 130, 246)),
+            async () => await ResolveExitPlanModeAsync(request, "agent", null));
+        executeDirect.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        executeDirect.Content = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children =
+            {
+                Icon("CheckCircle", 13, Brush("V2BlueBrush")),
+                new TextBlock
+                {
+                    Text = isChinese ? "\u662f\uff0c\u76f4\u63a5\u6267\u884c\u8ba1\u5212" : "Yes, execute the plan",
+                    FontSize = 12,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = Brush("V2BlueBrush"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+            },
+        };
+        footer.Children.Add(executeDirect);
+
+        var feedbackBox = new TextBox
+        {
+            Text = feedback,
+            PlaceholderText = isChinese ? "\u5426\uff0c\u8865\u5145\u8981\u6c42" : "No, add requirements",
+            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+            BorderThickness = new Thickness(1),
+            BorderBrush = Brush("V2BorderBrush"),
+            Background = Brush("V2CardBrush"),
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            MinHeight = 38,
+        };
+        feedbackBox.TextChanged += (_, _) =>
+        {
+            _exitPlanFeedback[request.Id] = feedbackBox.Text;
+            if (!string.IsNullOrWhiteSpace(feedbackBox.Text))
+            {
+                _exitPlanFeedbackErrors.Remove(request.Id);
+            }
+        };
+        feedbackBox.KeyDown += async (_, args) =>
+        {
+            if (args.Key == global::Windows.System.VirtualKey.Enter)
+            {
+                args.Handled = true;
+                await SubmitExitPlanFeedbackAsync(request);
+            }
+        };
+        footer.Children.Add(feedbackBox);
+        if (_exitPlanFeedbackErrors.Contains(request.Id))
+        {
+            footer.Children.Add(new TextBlock
+            {
+                Text = isChinese ? "\u8bf7\u8f93\u5165\u9700\u8981\u7ee7\u7eed\u5b8c\u5584\u7684\u8981\u6c42\u3002" : "Add feedback before keeping the plan in Plan mode.",
+                FontSize = 12,
+                Foreground = Brush("V2RedBrush"),
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+
+        var footerActions = new Grid { ColumnSpacing = 8 };
+        footerActions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        footerActions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var cancel = PermissionActionButton(
+            isChinese ? "\u53d6\u6d88\u8ba1\u5212" : "Cancel plan",
+            Brush("V2SecondaryForegroundBrush"),
+            new SolidColorBrush(global::Windows.UI.Color.FromArgb(12, 115, 115, 115)),
+            async () => await ResolveInlinePermissionRequestAsync(request, PermissionDecision.Denied, null, null));
+        cancel.HorizontalAlignment = HorizontalAlignment.Stretch;
+        footerActions.Children.Add(cancel);
+
+        var execute = PermissionActionButton(
+            isChinese ? "\u6267\u884c\u8ba1\u5212" : "Execute plan",
+            Brush("V2BlueBrush"),
+            new SolidColorBrush(global::Windows.UI.Color.FromArgb(18, 59, 130, 246)),
+            async () => await ResolveExitPlanModeAsync(request, "agent", null));
+        execute.HorizontalAlignment = HorizontalAlignment.Stretch;
+        Grid.SetColumn(execute, 1);
+        footerActions.Children.Add(execute);
+        footer.Children.Add(footerActions);
+        stack.Children.Add(footer);
+
+        return new Border
+        {
+            MaxWidth = V2LayoutMetrics.ComposerMaxWidth,
+            CornerRadius = new CornerRadius(16),
+            BorderThickness = new Thickness(1),
+            BorderBrush = Brush("V2BorderBrush"),
+            Background = Brush("V2CardBrush"),
+            Child = stack,
+        };
+    }
+
+    private async Task ResolveExitPlanModeAsync(PermissionRequest request, string mode, string? feedback)
+    {
+        await ResolveInlinePermissionRequestAsync(
+            request,
+            PermissionDecision.Allowed,
+            PermissionScope.Session,
+            ExitPlanModeInputCodec.UpdatedInputJson(request.InputJson, mode, feedback));
+    }
+
+    private async Task SubmitExitPlanFeedbackAsync(PermissionRequest request)
+    {
+        var feedback = _exitPlanFeedback.GetValueOrDefault(request.Id, "").Trim();
+        if (string.IsNullOrWhiteSpace(feedback))
+        {
+            _exitPlanFeedbackErrors.Add(request.Id);
+            RenderContent();
+            return;
+        }
+
+        await ResolveExitPlanModeAsync(request, "plan", feedback);
     }
 
     private Button PermissionActionButton(string label, Brush foreground, Brush background, Func<Task> onClick)
@@ -5399,109 +5623,9 @@ public sealed partial class MainWindow : Window
             State.PendingPermissions.Add(request);
         }
         RenderAll();
-        if (request.Kind is PermissionRequestKind.Tool or PermissionRequestKind.AskUserQuestion)
+        if (request.Kind is PermissionRequestKind.Tool or PermissionRequestKind.AskUserQuestion or PermissionRequestKind.ExitPlanMode)
         {
             return await AwaitInlinePermissionRequestAsync(request, cancellationToken);
-        }
-
-        if (request.Kind == PermissionRequestKind.ExitPlanMode)
-        {
-            var isChinese = IsChineseUi();
-            var feedbackBox = new TextBox
-            {
-                PlaceholderText = isChinese ? "否，补充要求" : "No, add requirements",
-                TextWrapping = TextWrapping.Wrap,
-                AcceptsReturn = true,
-                MinHeight = 72,
-                Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
-            };
-            var feedbackError = new TextBlock
-            {
-                Text = isChinese ? "请输入需要继续完善的要求。" : "Add feedback before keeping the plan in Plan mode.",
-                FontSize = 12,
-                TextWrapping = TextWrapping.Wrap,
-                Foreground = Brush("V2RedBrush"),
-                Visibility = Visibility.Collapsed,
-            };
-            var planContent = new Border
-            {
-                Padding = new Thickness(12),
-                CornerRadius = new CornerRadius(8),
-                BorderThickness = new Thickness(1),
-                BorderBrush = Brush("V2BlueBrush"),
-                Background = Brush("V2CardBrush"),
-                Child = new ScrollViewer
-                {
-                    MinHeight = 220,
-                    MaxHeight = 460,
-                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                    Content = MarkdownContent(ExitPlanModeInputCodec.ExtractPlanMarkdown(request.InputJson, isChinese)),
-                },
-            };
-            var panel = new StackPanel
-            {
-                Spacing = 12,
-                Children =
-                {
-                    new TextBlock
-                    {
-                        Text = isChinese
-                            ? "确认后会退出 Plan 模式，并让模型开始按计划执行。也可以补充要求，让模型继续完善计划。"
-                            : "Confirm to leave Plan mode and let the agent execute this plan, or add feedback and keep planning.",
-                        TextWrapping = TextWrapping.Wrap,
-                        Foreground = Brush("V2MutedForegroundBrush"),
-                    },
-                    new TextBlock
-                    {
-                        Text = isChinese ? "计划" : "Plan",
-                        FontSize = 12,
-                        FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                        Foreground = Brush("V2BlueBrush"),
-                    },
-                    planContent,
-                    feedbackBox,
-                    feedbackError,
-                },
-            };
-            var planDialog = new ContentDialog
-            {
-                XamlRoot = RootGrid.XamlRoot,
-                Title = isChinese ? "计划已准备好" : "Plan is ready",
-                Content = panel,
-                PrimaryButtonText = isChinese ? "执行计划" : "Execute plan",
-                SecondaryButtonText = isChinese ? "继续完善" : "Keep planning",
-                CloseButtonText = isChinese ? "取消计划" : "Cancel plan",
-                DefaultButton = ContentDialogButton.Primary,
-            };
-            planDialog.SecondaryButtonClick += (_, args) =>
-            {
-                if (!string.IsNullOrWhiteSpace(feedbackBox.Text))
-                {
-                    return;
-                }
-
-                feedbackError.Visibility = Visibility.Visible;
-                args.Cancel = true;
-            };
-
-            var planResult = await planDialog.ShowAsync();
-            State.PendingPermissions.Remove(request);
-            return planResult switch
-            {
-                ContentDialogResult.Primary => new PermissionRecord(
-                    request,
-                    PermissionDecision.Allowed,
-                    PermissionScope.Session,
-                    DateTimeOffset.UtcNow,
-                    ExitPlanModeInputCodec.UpdatedInputJson(request.InputJson, "agent", null)),
-                ContentDialogResult.Secondary => new PermissionRecord(
-                    request,
-                    PermissionDecision.Allowed,
-                    PermissionScope.Session,
-                    DateTimeOffset.UtcNow,
-                    ExitPlanModeInputCodec.UpdatedInputJson(request.InputJson, "plan", feedbackBox.Text)),
-                _ => new PermissionRecord(request, PermissionDecision.Denied, null, DateTimeOffset.UtcNow, null),
-            };
         }
 
         if (request.Kind == PermissionRequestKind.DestructivePlanApproval)
