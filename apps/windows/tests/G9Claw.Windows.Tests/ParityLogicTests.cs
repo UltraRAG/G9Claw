@@ -1157,6 +1157,44 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public async Task AgentToolExecutorReadHandlesTextNotebookAndImagesLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "notes.txt"), "alpha\nbeta\ngamma");
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "demo.ipynb"), """
+        {"cells":[{"cell_type":"markdown","source":["# Title\n","Body"]},{"cell_type":"code","source":"print(1)"}]}
+        """);
+        await File.WriteAllBytesAsync(Path.Combine(temp.Root, "pixel.png"), [0x89, 0x50, 0x4E, 0x47]);
+        var executor = new AgentToolExecutor();
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None);
+
+        var text = await executor.ExecuteAsync(new AgentToolCall("read-text", "Read", """{"file_path":"notes.txt","offset":2,"limit":2}"""), context);
+        var notebook = await executor.ExecuteAsync(new AgentToolCall("read-notebook", "Read", """{"file_path":"demo.ipynb"}"""), context);
+        var image = await executor.ExecuteAsync(new AgentToolCall("read-image", "Read", """{"file_path":"pixel.png"}"""), context);
+
+        Assert.False(text.IsError);
+        Assert.Equal(["2: beta", "3: gamma"], OutputLines(text.Output));
+        Assert.False(notebook.IsError);
+        Assert.Contains("Notebook demo.ipynb", notebook.Output);
+        Assert.Contains("cells: 2", notebook.Output);
+        Assert.Contains("## Cell 0 [markdown]", notebook.Output);
+        Assert.Contains("# Title\nBody", notebook.Output);
+        Assert.False(image.IsError);
+        using var imageJson = JsonDocument.Parse(image.Output);
+        Assert.Equal("image", imageJson.RootElement.GetProperty("type").GetString());
+        var file = imageJson.RootElement.GetProperty("file");
+        Assert.Equal("pixel.png", file.GetProperty("filePath").GetString());
+        Assert.Equal("image/png", file.GetProperty("mediaType").GetString());
+        Assert.Equal(4, file.GetProperty("originalSize").GetInt32());
+        Assert.Equal("iVBORw==", file.GetProperty("base64").GetString());
+    }
+
+    [Fact]
     public void ToolArgumentNormalizerTurnsMalformedArgumentsIntoRecoverableToolResult()
     {
         var invocation = ToolArgumentNormalizer.Normalize(new AgentToolCall("call-bad", "Edit", """{file_path:"index.html"}"""));

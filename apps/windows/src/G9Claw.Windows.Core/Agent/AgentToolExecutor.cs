@@ -80,14 +80,27 @@ public sealed class AgentToolExecutor
         if (Directory.Exists(resolved)) return Error(call, "Read expects a file path, not a directory.");
         if (!File.Exists(resolved)) return Error(call, $"File does not exist: {resolved}");
 
+        var extension = Path.GetExtension(resolved).TrimStart('.').ToLowerInvariant();
+        if (extension == "ipynb")
+        {
+            return Ok(call, ReadNotebook(resolved, context.WorkspaceRoot));
+        }
+
+        if (ImageMimeType(extension) is not null)
+        {
+            return Ok(call, ReadImage(resolved, context.WorkspaceRoot, extension));
+        }
+
         var offset = OptionalInt(doc.RootElement, "offset") ?? 1;
-        var limit = OptionalInt(doc.RootElement, "limit") ?? 400;
+        var allLines = File.ReadLines(resolved, Encoding.UTF8).ToList();
+        var lineOffset = Math.Max(0, offset - 1);
+        var limit = OptionalInt(doc.RootElement, "limit") ?? Math.Min(allLines.Count, 2_000);
         var lines = File.ReadLines(resolved, Encoding.UTF8)
-            .Skip(Math.Max(0, offset - 1))
+            .Skip(lineOffset)
             .Take(Math.Max(1, limit))
+            .Select((line, index) => $"{lineOffset + index + 1}: {line}")
             .ToList();
-        var header = $"{Path.GetRelativePath(context.WorkspaceRoot, resolved)} ({new FileInfo(resolved).Length} bytes)";
-        return Ok(call, $"{header}\n{string.Join(Environment.NewLine, lines)}");
+        return Ok(call, string.Join(Environment.NewLine, lines));
     }
 
     private AgentToolResult Write(AgentToolCall call, AgentToolExecutionContext context)
@@ -483,6 +496,9 @@ public sealed class AgentToolExecutor
         return Encoding.UTF8.GetString(stream.ToArray());
     }
 
+    private static string PrettyJson(JsonNode node) =>
+        node.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+
     private static string FormatRunOutput(NativeBackgroundRun run)
     {
         var builder = new StringBuilder()
@@ -493,6 +509,73 @@ public sealed class AgentToolExecutor
         builder.AppendLine()
             .Append(string.IsNullOrWhiteSpace(run.Output) ? "(no output yet)" : run.Output);
         return builder.ToString();
+    }
+
+    private static string ReadImage(string path, string workspaceRoot, string extension)
+    {
+        var mimeType = ImageMimeType(extension) ?? throw new InvalidOperationException($"Unsupported image type: {extension}");
+        var bytes = File.ReadAllBytes(path);
+        return PrettyJson(new JsonObject
+        {
+            ["type"] = "image",
+            ["file"] = new JsonObject
+            {
+                ["filePath"] = RelativeWorkspacePath(workspaceRoot, path),
+                ["mediaType"] = mimeType,
+                ["originalSize"] = bytes.Length,
+                ["base64"] = Convert.ToBase64String(bytes),
+            },
+        });
+    }
+
+    private static string ReadNotebook(string path, string workspaceRoot)
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
+        if (!doc.RootElement.TryGetProperty("cells", out var cells) || cells.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("Notebook JSON must contain a cells array.");
+        }
+
+        var output = new List<string>
+        {
+            $"Notebook {RelativeWorkspacePath(workspaceRoot, path)}",
+            $"cells: {cells.GetArrayLength()}",
+            "",
+        };
+        var index = 0;
+        foreach (var cell in cells.EnumerateArray())
+        {
+            var cellType = cell.TryGetProperty("cell_type", out var typeElement) ? typeElement.GetString() ?? "unknown" : "unknown";
+            var source = cell.TryGetProperty("source", out var sourceElement) ? NotebookSourceString(sourceElement) : "";
+            output.Add($"## Cell {index} [{cellType}]");
+            output.Add(string.IsNullOrEmpty(source) ? "(empty)" : source[..Math.Min(source.Length, 4_000)]);
+            output.Add("");
+            index++;
+        }
+
+        return string.Join("\n", output);
+    }
+
+    private static string NotebookSourceString(JsonElement source)
+    {
+        return source.ValueKind switch
+        {
+            JsonValueKind.String => source.GetString() ?? "",
+            JsonValueKind.Array => string.Concat(source.EnumerateArray().Select(item => item.ValueKind == JsonValueKind.String ? item.GetString() : item.ToString())),
+            _ => source.ToString(),
+        };
+    }
+
+    private static string? ImageMimeType(string extension)
+    {
+        return extension.ToLowerInvariant() switch
+        {
+            "jpg" or "jpeg" => "image/jpeg",
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            _ => null,
+        };
     }
 
     private static string ApplyReplacement(string text, string oldString, string newString, bool replaceAll)
