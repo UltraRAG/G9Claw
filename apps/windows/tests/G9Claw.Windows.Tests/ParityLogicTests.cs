@@ -3124,7 +3124,7 @@ router:
             [],
             120000,
             160000,
-            ComposerPermissionMode.Default,
+            ComposerPermissionMode.BypassPermissions,
             ChatRunMode.Agent,
             ToolPermissionSettings.Defaults,
             "default",
@@ -3141,12 +3141,59 @@ router:
             .Select(item => item.ToolResult!)
             .ToList();
         var bootstrapResult = Assert.Single(toolResults, result => result.ToolName == "Glob");
-        Assert.Equal(2, provider.RequestCount);
+        var writeResult = Assert.Single(toolResults, result => result.ToolName == "Write");
+        Assert.Equal(4, provider.RequestCount);
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "exploring workspace");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "continuing");
         Assert.Contains(events, item => item.Kind == AgentEventKind.ToolUse && item.ToolCall?.Name == "Glob");
         Assert.Contains("src/App.cs", bootstrapResult.Output.Replace('\\', '/'));
         Assert.True(provider.SawBootstrapExchange);
-        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after bootstrap");
+        Assert.True(provider.SawCompletionNudge);
+        Assert.False(writeResult.IsError);
+        Assert.Equal("updated", await File.ReadAllTextAsync(Path.Combine(temp.Root, "src", "App.cs")));
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after write");
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Error);
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerNudgesPostMutationVerificationLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "verify.txt"), "bug");
+        var provider = new PostMutationVerificationProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "fix the bug in verify.txt",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.BypassPermissions,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        var results = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+        Assert.Equal(4, provider.RequestCount);
+        Assert.Equal(["Write", "Read"], results.Select(result => result.ToolName));
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "continuing");
+        Assert.True(provider.SawVerificationNudge);
+        Assert.Contains("fixed", results[1].Output);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after verification");
         Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Error);
     }
 
@@ -4551,6 +4598,7 @@ gateway:
     {
         public int RequestCount { get; private set; }
         public bool SawBootstrapExchange { get; private set; }
+        public bool SawCompletionNudge { get; private set; }
 
         public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
             AgentRequest request,
@@ -4559,6 +4607,26 @@ gateway:
             RequestCount++;
             await Task.CompletedTask;
             cancellationToken.ThrowIfCancellationRequested();
+            SawBootstrapExchange |= request.ToolExchanges.Any(exchange =>
+                exchange.Call.Name == "Glob" &&
+                exchange.Call.InputJson.Contains("\"pattern\":\"**/*\"", StringComparison.Ordinal));
+            SawCompletionNudge |= request.PriorMessages.Any(message =>
+                message.PlainText.Contains("You have not completed the requested change yet", StringComparison.Ordinal));
+            if (SawCompletionNudge && request.ToolExchanges.All(exchange => exchange.Call.Name != "Write"))
+            {
+                yield return new ProviderStreamEvent(
+                    ProviderStreamEventKind.ToolCall,
+                    ToolCall: new AgentToolCall("write-after-nudge", "Write", """{"file_path":"src/App.cs","content":"updated"}"""));
+                yield break;
+            }
+
+            if (request.ToolExchanges.Any(exchange => exchange.Call.Name == "Write"))
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after write");
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+                yield break;
+            }
+
             if (request.ToolExchanges.Count == 0)
             {
                 yield return new ProviderStreamEvent(
@@ -4574,10 +4642,42 @@ gateway:
                 yield break;
             }
 
-            SawBootstrapExchange = request.ToolExchanges.Any(exchange =>
-                exchange.Call.Name == "Glob" &&
-                exchange.Call.InputJson.Contains("\"pattern\":\"**/*\"", StringComparison.Ordinal));
             yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after bootstrap");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+        }
+    }
+
+    private sealed class PostMutationVerificationProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+        public bool SawVerificationNudge { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            SawVerificationNudge |= request.PriorMessages.Any(message =>
+                message.PlainText.Contains("changed files, but have not verified", StringComparison.Ordinal));
+            if (request.ToolExchanges.Count == 0)
+            {
+                yield return new ProviderStreamEvent(
+                    ProviderStreamEventKind.ToolCall,
+                    ToolCall: new AgentToolCall("write-fix", "Write", """{"file_path":"verify.txt","content":"fixed"}"""));
+                yield break;
+            }
+
+            if (SawVerificationNudge && request.ToolExchanges.All(exchange => exchange.Call.Name != "Read"))
+            {
+                yield return new ProviderStreamEvent(
+                    ProviderStreamEventKind.ToolCall,
+                    ToolCall: new AgentToolCall("read-verify", "Read", """{"file_path":"verify.txt"}"""));
+                yield break;
+            }
+
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after verification");
             yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
         }
     }

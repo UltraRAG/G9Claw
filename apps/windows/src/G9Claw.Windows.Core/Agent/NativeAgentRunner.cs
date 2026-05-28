@@ -85,6 +85,7 @@ public sealed class NativeAgentRunner
             var deduplicationPolicy = new AgentToolDeduplicationPolicy();
             var deletionVerificationPolicy = new AgentDeletionVerificationPolicy();
             var loopWatchdog = new AgentLoopWatchdog();
+            var completionGate = new AgentCompletionGate();
             var round = 0;
             var partialStreamRecoveryCount = 0;
             var didRecoverContextOverflow = false;
@@ -144,6 +145,7 @@ public sealed class NativeAgentRunner
                             }
 
                             await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                            completionGate.RecordToolResult(call, toolResult);
                             if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
                             {
                                 throw ProviderClientException.Transport(watchdogMessage);
@@ -202,6 +204,7 @@ public sealed class NativeAgentRunner
                         }
 
                         await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                        completionGate.RecordToolResult(fallbackCall, toolResult);
                         if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
                         {
                             throw ProviderClientException.Transport(watchdogMessage);
@@ -228,6 +231,7 @@ public sealed class NativeAgentRunner
                     if (toolResult is not null)
                     {
                         await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                        completionGate.RecordToolResult(planRecovery.Call, toolResult);
                         if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
                         {
                             throw ProviderClientException.Transport(watchdogMessage);
@@ -250,6 +254,7 @@ public sealed class NativeAgentRunner
                     if (toolResult is not null)
                     {
                         await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                        completionGate.RecordToolResult(bootstrapCall, toolResult);
                         if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
                         {
                             throw ProviderClientException.Transport(watchdogMessage);
@@ -268,7 +273,7 @@ public sealed class NativeAgentRunner
                         {
                             currentRequest = currentRequest with
                             {
-                                PriorMessages = DuplicateNudgePriorMessages(currentRequest, roundAssistantText.ToString(), decision.Message),
+                                PriorMessages = NudgePriorMessages(currentRequest, roundAssistantText.ToString(), decision.Message),
                                 ToolExchanges = toolExchanges.ToList(),
                             };
                             turn.RecordStatus("continuing", decision.Message);
@@ -279,6 +284,33 @@ public sealed class NativeAgentRunner
 
                         turn.RecordStatus("needs continuation", decision.Message);
                         await writer.WriteAsync(AgentEvent.Status(request.SessionId, "needs continuation"), cancellationToken);
+                        break;
+                    }
+
+                    var completionDecision = completionGate.Decision(currentRequest, roundAssistantText.ToString());
+                    if (completionDecision.Kind == AgentCompletionDecisionKind.ContinueWithNudge)
+                    {
+                        currentRequest = currentRequest with
+                        {
+                            PriorMessages = NudgePriorMessages(currentRequest, roundAssistantText.ToString(), completionDecision.Message),
+                            ToolExchanges = toolExchanges.ToList(),
+                        };
+                        turn.RecordStatus("continuing", completionDecision.Message);
+                        await writer.WriteAsync(AgentEvent.Status(request.SessionId, "continuing"), cancellationToken);
+                        round++;
+                        continue;
+                    }
+
+                    if (completionDecision.Kind == AgentCompletionDecisionKind.PauseNeedsUser)
+                    {
+                        turn.RecordStatus("needs continuation", completionDecision.Message);
+                        await writer.WriteAsync(AgentEvent.Status(request.SessionId, "needs continuation"), cancellationToken);
+                        break;
+                    }
+
+                    if (completionDecision.Kind == AgentCompletionDecisionKind.RealError)
+                    {
+                        throw ProviderClientException.Transport(completionDecision.Message);
                     }
 
                     break;
@@ -332,7 +364,7 @@ public sealed class NativeAgentRunner
         return messages;
     }
 
-    private static List<ChatMessage> DuplicateNudgePriorMessages(AgentRequest request, string assistantContent, string nudge)
+    private static List<ChatMessage> NudgePriorMessages(AgentRequest request, string assistantContent, string nudge)
     {
         var messages = request.PriorMessages.ToList();
         if (!string.IsNullOrWhiteSpace(assistantContent))
