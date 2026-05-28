@@ -22,7 +22,18 @@ public sealed class AppState : INotifyPropertyChanged
     public List<TerminalRun> TerminalRuns { get; } = [];
     public List<TaskPlan> TaskPlans { get; } = [];
     public List<MemoryRecord> MemoryRecords { get; } = [];
+    public MemoryDashboardSnapshot MemoryDashboard { get; set; } = new(
+        0,
+        0,
+        0,
+        null,
+        [],
+        "",
+        [],
+        [],
+        []);
     public List<SkillRecord> Skills { get; } = [];
+    public List<SkillValidationIssue> SkillValidationIssues { get; } = [];
     public List<AlwaysOnPlan> AlwaysOnPlans { get; } = [];
     public List<AlwaysOnCronJob> AlwaysOnCronJobs { get; } = [];
     public List<AlwaysOnRunHistory> AlwaysOnRunHistory { get; } = [];

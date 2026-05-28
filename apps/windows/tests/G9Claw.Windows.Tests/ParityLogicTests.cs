@@ -389,6 +389,110 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void MemorySnapshotsMatchMacDefaultsAndConfigNormalization()
+    {
+        var defaults = MemorySettingsSnapshot.Defaults;
+        var fromConfig = MemorySettingsSnapshot.FromConfigValues(new Dictionary<string, string>
+        {
+            ["memory.enabled"] = "off",
+            ["memory.model"] = " memory ",
+            ["memory.reasoningMode"] = "accuracy_first",
+            ["memory.autoIndexIntervalMinutes"] = "-5",
+            ["memory.autoDreamIntervalMinutes"] = "20000",
+            ["memory.captureStrategy"] = "full_session",
+            ["memory.includeAssistant"] = "no",
+            ["memory.maxMessageChars"] = "0",
+            ["memory.heartbeatBatchSize"] = "0",
+        });
+        var workspace = MemoryWorkspaceSnapshot.Empty;
+        var states = MemoryJobState.IdleStates();
+        var dashboard = new MemoryDashboardSnapshot(
+            0,
+            0,
+            0,
+            null,
+            [],
+            "",
+            [],
+            [],
+            []);
+
+        Assert.True(defaults.Enabled);
+        Assert.Equal("inherit", defaults.Model);
+        Assert.Equal(30, defaults.AutoIndexIntervalMinutes);
+        Assert.Equal(60, defaults.AutoDreamIntervalMinutes);
+        Assert.False(fromConfig.Enabled);
+        Assert.Equal("memory", fromConfig.Model);
+        Assert.Equal("accuracy_first", fromConfig.ReasoningMode);
+        Assert.Equal(30, fromConfig.AutoIndexIntervalMinutes);
+        Assert.Equal(10_080, fromConfig.AutoDreamIntervalMinutes);
+        Assert.Equal("full_session", fromConfig.CaptureStrategy);
+        Assert.False(fromConfig.IncludeAssistant);
+        Assert.Equal(1, fromConfig.MaxMessageChars);
+        Assert.Equal(1, fromConfig.HeartbeatBatchSize);
+        Assert.Equal("MEMORY.md", workspace.ManifestPath);
+        Assert.Equal("project", workspace.WorkspaceMode);
+        Assert.Equal(MemoryJobPhase.Idle, states[MemoryJobKind.Recall].Phase);
+        Assert.Equal(MemorySchedulerSnapshot.Disabled, dashboard.EffectiveScheduler);
+        Assert.Equal(MemoryOverview.Empty, dashboard.EffectiveOverview);
+        Assert.Equal(MemoryWorkspaceSnapshot.Empty, dashboard.EffectiveWorkspace);
+        Assert.Equal(MemoryJobPhase.Idle, dashboard.EffectiveJobStates[MemoryJobKind.Dream].Phase);
+    }
+
+    [Fact]
+    public void MemoryTraceAndSkillHubModelsExposeMacUiIdentity()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var meta = new MemoryProjectMeta(
+            "project-1",
+            "Demo",
+            "Project memory",
+            "active",
+            @"C:\repo",
+            "projects/demo",
+            "project",
+            ReadOnly: false,
+            UpdatedAt: now);
+        var step = new MemoryTraceStep("step-1", "Recall", "Loaded memory", "completed", now);
+        var trace = new MemoryTraceRecord(
+            "trace-1",
+            "Recall trace",
+            "completed",
+            "manual",
+            now,
+            new Dictionary<string, string> { ["project"] = "Demo" },
+            "context",
+            "tools",
+            "reply",
+            [step]);
+        var hardFail = new SkillValidationIssue("missing-skill", "SKILL.md is required");
+        var warning = new SkillValidationIssue("large-file", "Large file");
+        var validation = new SkillValidationResult(false, [hardFail], [warning], 3, 1200);
+        var search = new SkillHubSearchResult("demo-skill", "Demo Skill", 0.97);
+        var install = new SkillHubInstallResult(
+            true,
+            "demo-skill",
+            SkillScope.Project,
+            @"C:\repo\.codex\skills\demo-skill",
+            Installed: true,
+            Skill: null,
+            Stdout: "ok",
+            Stderr: "",
+            ExitCode: 0,
+            NeedsForce: false);
+
+        Assert.Equal("project-1", meta.Id);
+        Assert.Equal("Recall", Assert.Single(trace.Steps).Title);
+        Assert.NotEqual(Guid.Empty, hardFail.Id);
+        Assert.False(validation.Ok);
+        Assert.Equal("missing-skill", Assert.Single(validation.HardFails).Code);
+        Assert.Equal("demo-skill", search.Id);
+        Assert.Equal(SkillScope.Project, install.Scope);
+        Assert.True(install.Installed);
+        Assert.False(install.NeedsForce);
+    }
+
+    [Fact]
     public void WebV2UiSettingsNormalizeSidebarBoundsAndLists()
     {
         var tooSmall = new V2UiSettings(12, SidebarSection.General, null!, null!).Normalize();
