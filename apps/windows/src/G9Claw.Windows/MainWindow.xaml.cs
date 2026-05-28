@@ -1068,7 +1068,7 @@ public sealed partial class MainWindow : Window
         var inlinePermissionRequests = InlinePendingPermissions();
         var footerReserve = V2LayoutMetrics.ComposerMinHeight + (inlinePermissionRequests.Count == 0
             ? 66
-            : inlinePermissionRequests.Any(request => request.Kind is PermissionRequestKind.AskUserQuestion or PermissionRequestKind.ExitPlanMode) ? 620 : 214);
+            : inlinePermissionRequests.Any(request => request.Kind is PermissionRequestKind.AskUserQuestion or PermissionRequestKind.ExitPlanMode or PermissionRequestKind.DestructivePlanApproval) ? 620 : 214);
         var hasMessages = processTracePresentation.ShouldRender ||
             State.CurrentMessages.Count > 0 ||
             (State.SelectedSessionId is { } currentSessionId &&
@@ -1251,6 +1251,7 @@ public sealed partial class MainWindow : Window
     {
         PermissionRequestKind.AskUserQuestion => AskUserQuestionPanel(request),
         PermissionRequestKind.ExitPlanMode => ExitPlanModePermissionCard(request),
+        PermissionRequestKind.DestructivePlanApproval => DestructivePlanPermissionCard(request),
         _ => GenericPermissionCard(request),
     };
 
@@ -2121,6 +2122,127 @@ public sealed partial class MainWindow : Window
         }
 
         await ResolveExitPlanModeAsync(request, "plan", feedback);
+    }
+
+    private FrameworkElement DestructivePlanPermissionCard(PermissionRequest request)
+    {
+        var isChinese = IsChineseUi();
+        var toolName = DestructivePlanInputCodec.ToolName(request.InputJson, request.ToolName);
+        var target = DestructivePlanInputCodec.Target(request.InputJson, isChinese);
+        var stack = new StackPanel { Spacing = 0 };
+
+        var header = new Grid
+        {
+            ColumnSpacing = 11,
+            Padding = new Thickness(12),
+            Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(14, 239, 68, 68)),
+        };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new Border
+        {
+            Width = 32,
+            Height = 32,
+            CornerRadius = new CornerRadius(9),
+            Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(30, 239, 68, 68)),
+            Child = Icon("Trash", 15, Brush("V2RedBrush")),
+        });
+
+        var copy = new StackPanel { Spacing = 4 };
+        copy.Children.Add(new TextBlock
+        {
+            Text = isChinese ? "\u786e\u8ba4\u5220\u9664\u8ba1\u5212" : "Confirm deletion plan",
+            FontSize = 14,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
+        });
+        copy.Children.Add(new TextBlock
+        {
+            Text = $"{toolName} - {target}",
+            FontSize = 11.5,
+            FontFamily = new FontFamily("Consolas"),
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+        });
+        Grid.SetColumn(copy, 1);
+        header.Children.Add(copy);
+
+        var close = new Button
+        {
+            MinWidth = 0,
+            MinHeight = 0,
+            Width = 28,
+            Height = 28,
+            Padding = new Thickness(0),
+            Background = Transparent,
+            BorderBrush = Transparent,
+            Content = Icon("X", 12, Brush("V2MutedForegroundBrush")),
+        };
+        close.Click += async (_, _) => await ResolveInlinePermissionRequestAsync(request, PermissionDecision.Denied, null, null);
+        Grid.SetColumn(close, 2);
+        header.Children.Add(close);
+        stack.Children.Add(header);
+
+        stack.Children.Add(new Border
+        {
+            Padding = new Thickness(12, 10, 12, 10),
+            Child = MarkdownContent(DestructivePlanInputCodec.PlanMarkdown(request.InputJson, isChinese)),
+        });
+
+        var footer = new Grid
+        {
+            ColumnSpacing = 8,
+            Padding = new Thickness(12),
+            Background = Brush("V2BackgroundBrush"),
+        };
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var cancel = PermissionActionButton(
+            isChinese ? "\u53d6\u6d88" : "Cancel",
+            Brush("V2SecondaryForegroundBrush"),
+            Brush("V2CardBrush"),
+            async () => await ResolveInlinePermissionRequestAsync(request, PermissionDecision.Denied, null, null));
+        footer.Children.Add(cancel);
+
+        var execute = PermissionActionButton(
+            isChinese ? "\u6267\u884c\u8ba1\u5212" : "Execute plan",
+            Brush("V2InverseForegroundBrush"),
+            Brush("V2RedBrush"),
+            async () => await ResolveInlinePermissionRequestAsync(request, PermissionDecision.Allowed, PermissionScope.Session, null));
+        execute.Content = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Children =
+            {
+                Icon("CheckCircle", 13, Brush("V2InverseForegroundBrush")),
+                new TextBlock
+                {
+                    Text = isChinese ? "\u6267\u884c\u8ba1\u5212" : "Execute plan",
+                    FontSize = 12,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = Brush("V2InverseForegroundBrush"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+            },
+        };
+        Grid.SetColumn(execute, 2);
+        footer.Children.Add(execute);
+        stack.Children.Add(footer);
+
+        return new Border
+        {
+            MaxWidth = V2LayoutMetrics.ComposerMaxWidth,
+            CornerRadius = new CornerRadius(16),
+            BorderThickness = new Thickness(1),
+            BorderBrush = Brush("V2RedBrush"),
+            Background = Brush("V2CardBrush"),
+            Child = stack,
+        };
     }
 
     private Button PermissionActionButton(string label, Brush foreground, Brush background, Func<Task> onClick)
@@ -5623,54 +5745,9 @@ public sealed partial class MainWindow : Window
             State.PendingPermissions.Add(request);
         }
         RenderAll();
-        if (request.Kind is PermissionRequestKind.Tool or PermissionRequestKind.AskUserQuestion or PermissionRequestKind.ExitPlanMode)
+        if (request.Kind is PermissionRequestKind.Tool or PermissionRequestKind.AskUserQuestion or PermissionRequestKind.ExitPlanMode or PermissionRequestKind.DestructivePlanApproval)
         {
             return await AwaitInlinePermissionRequestAsync(request, cancellationToken);
-        }
-
-        if (request.Kind == PermissionRequestKind.DestructivePlanApproval)
-        {
-            var isChinese = IsChineseUi();
-            var toolName = DestructivePlanInputCodec.ToolName(request.InputJson, request.ToolName);
-            var target = DestructivePlanInputCodec.Target(request.InputJson, isChinese);
-            var panel = new StackPanel
-            {
-                Spacing = 12,
-                Children =
-                {
-                    new TextBlock
-                    {
-                        Text = $"{toolName} - {target}",
-                        FontSize = 12,
-                        FontFamily = new FontFamily("Consolas"),
-                        TextTrimming = TextTrimming.CharacterEllipsis,
-                        Foreground = Brush("V2MutedForegroundBrush"),
-                    },
-                    new Border
-                    {
-                        Padding = new Thickness(12),
-                        CornerRadius = new CornerRadius(8),
-                        BorderThickness = new Thickness(1),
-                        BorderBrush = Brush("V2RedBrush"),
-                        Background = Brush("V2CardBrush"),
-                        Child = MarkdownContent(DestructivePlanInputCodec.PlanMarkdown(request.InputJson, isChinese)),
-                    },
-                },
-            };
-            var destructiveDialog = new ContentDialog
-            {
-                XamlRoot = RootGrid.XamlRoot,
-                Title = isChinese ? "确认删除计划" : "Confirm deletion plan",
-                Content = panel,
-                PrimaryButtonText = isChinese ? "执行计划" : "Execute plan",
-                CloseButtonText = isChinese ? "取消" : "Cancel",
-                DefaultButton = ContentDialogButton.Close,
-            };
-            var destructiveResult = await destructiveDialog.ShowAsync();
-            State.PendingPermissions.Remove(request);
-            return destructiveResult == ContentDialogResult.Primary
-                ? new PermissionRecord(request, PermissionDecision.Allowed, PermissionScope.Session, DateTimeOffset.UtcNow, null)
-                : new PermissionRecord(request, PermissionDecision.Denied, null, DateTimeOffset.UtcNow, null);
         }
 
         var details = new StackPanel
