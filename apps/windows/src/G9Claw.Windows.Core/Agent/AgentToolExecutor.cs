@@ -287,7 +287,8 @@ public sealed class AgentToolExecutor
         }
 
         var result = await _terminalService.RunAsync(command, cwd, timeout, context.CancellationToken);
-        return new AgentToolResult(call.Id, call.Name, result.Output, result.ExitCode != 0, Diagnostics: new Dictionary<string, string>
+        var isError = result.ExitCode != 0;
+        return new AgentToolResult(call.Id, call.Name, isError ? result.Output : LimitOutput(result.Output), isError, Diagnostics: new Dictionary<string, string>
         {
             ["cwd"] = result.Cwd,
             ["exitCode"] = result.ExitCode?.ToString() ?? "",
@@ -302,7 +303,8 @@ public sealed class AgentToolExecutor
         var run = await _runStore.AwaitAsync(taskId, TimeSpan.FromMilliseconds(timeout), context.CancellationToken);
         if (run is null) return Error(call, $"Unknown task id: {taskId}");
         var output = FormatRunOutput(run);
-        return new AgentToolResult(call.Id, call.Name, output, run.Status == TaskStatus.Failed, TaskId: run.Id, Diagnostics: new Dictionary<string, string>
+        var isError = run.Status == TaskStatus.Failed;
+        return new AgentToolResult(call.Id, call.Name, isError ? output : LimitOutput(output), isError, TaskId: run.Id, Diagnostics: new Dictionary<string, string>
         {
             ["status"] = run.Status.ToString(),
             ["kind"] = run.Kind,
@@ -391,7 +393,8 @@ public sealed class AgentToolExecutor
             }
 
             var result = await _terminalService.RunAsync(prompt, cwd, timeout, context.CancellationToken);
-            return new AgentToolResult(call.Id, call.Name, result.Output, result.ExitCode != 0, Diagnostics: new Dictionary<string, string>
+            var isError = result.ExitCode != 0;
+            return new AgentToolResult(call.Id, call.Name, isError ? result.Output : LimitOutput(result.Output), isError, Diagnostics: new Dictionary<string, string>
             {
                 ["taskType"] = type,
                 ["cwd"] = cwd,
@@ -405,9 +408,12 @@ public sealed class AgentToolExecutor
     }
 
     private static AgentToolResult Ok(AgentToolCall call, string output, string? artifactPath = null, string? taskId = null) =>
-        new(call.Id, call.Name, output, false, artifactPath, taskId);
+        new(call.Id, call.Name, LimitOutput(output), false, artifactPath, taskId);
 
     private static AgentToolResult Error(AgentToolCall call, string output) => new(call.Id, call.Name, output, true);
+
+    private static string LimitOutput(string output) =>
+        output.Length <= 20_000 ? output : output[..20_000] + "\n... output truncated ...";
 
     private static string FormatRunOutput(NativeBackgroundRun run)
     {

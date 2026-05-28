@@ -1078,6 +1078,26 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public async Task AgentToolExecutorLimitsSuccessfulOutputLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "large.txt"), new string('a', 25_000));
+        var executor = new AgentToolExecutor();
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None);
+
+        var result = await executor.ExecuteAsync(new AgentToolCall("read-large", "Read", """{"file_path":"large.txt","limit":1}"""), context);
+
+        Assert.False(result.IsError);
+        Assert.EndsWith("\n... output truncated ...", result.Output);
+        Assert.Equal(20_000 + "\n... output truncated ...".Length, result.Output.Length);
+    }
+
+    [Fact]
     public void ToolArgumentNormalizerTurnsMalformedArgumentsIntoRecoverableToolResult()
     {
         var invocation = ToolArgumentNormalizer.Normalize(new AgentToolCall("call-bad", "Edit", """{file_path:"index.html"}"""));
