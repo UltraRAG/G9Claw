@@ -1610,6 +1610,16 @@ router:
     }
 
     [Fact]
+    public void DestructivePlanInputCodecReadsMacStylePlanCardFields()
+    {
+        var planJson = AgentDestructiveToolClassifier.PlanJson(new AgentToolCall("delete", "Delete", """{"path":"old.txt"}"""));
+
+        Assert.Equal("Delete", DestructivePlanInputCodec.ToolName(planJson, "Fallback"));
+        Assert.Equal("old.txt", DestructivePlanInputCodec.Target(planJson, chinese: false));
+        Assert.Contains("deletion-capable Delete operation", DestructivePlanInputCodec.PlanMarkdown(planJson, chinese: false));
+    }
+
+    [Fact]
     public void AgentToolSchemasIncludeG9ClawCodeCoreTools()
     {
         var names = AgentToolRegistry.OpenAITools()

@@ -4766,6 +4766,51 @@ public sealed partial class MainWindow : Window
             };
         }
 
+        if (request.Kind == PermissionRequestKind.DestructivePlanApproval)
+        {
+            var isChinese = IsChineseUi();
+            var toolName = DestructivePlanInputCodec.ToolName(request.InputJson, request.ToolName);
+            var target = DestructivePlanInputCodec.Target(request.InputJson, isChinese);
+            var panel = new StackPanel
+            {
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = $"{toolName} - {target}",
+                        FontSize = 12,
+                        FontFamily = new FontFamily("Consolas"),
+                        TextTrimming = TextTrimming.CharacterEllipsis,
+                        Foreground = Brush("V2MutedForegroundBrush"),
+                    },
+                    new Border
+                    {
+                        Padding = new Thickness(12),
+                        CornerRadius = new CornerRadius(8),
+                        BorderThickness = new Thickness(1),
+                        BorderBrush = Brush("V2RedBrush"),
+                        Background = Brush("V2CardBrush"),
+                        Child = MarkdownContent(DestructivePlanInputCodec.PlanMarkdown(request.InputJson, isChinese)),
+                    },
+                },
+            };
+            var destructiveDialog = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                Title = isChinese ? "确认删除计划" : "Confirm deletion plan",
+                Content = panel,
+                PrimaryButtonText = isChinese ? "执行计划" : "Execute plan",
+                CloseButtonText = isChinese ? "取消" : "Cancel",
+                DefaultButton = ContentDialogButton.Close,
+            };
+            var destructiveResult = await destructiveDialog.ShowAsync();
+            State.PendingPermissions.Remove(request);
+            return destructiveResult == ContentDialogResult.Primary
+                ? new PermissionRecord(request, PermissionDecision.Allowed, PermissionScope.Session, DateTimeOffset.UtcNow, null)
+                : new PermissionRecord(request, PermissionDecision.Denied, null, DateTimeOffset.UtcNow, null);
+        }
+
         var details = new StackPanel
         {
             Spacing = 8,
