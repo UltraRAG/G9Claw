@@ -574,6 +574,57 @@ public sealed record ToolPermissionSettings(
     public static ToolPermissionSettings Defaults => new([], [], null);
 }
 
+public static class PermissionSettingsMutation
+{
+    public static ToolPermissionSettings GrantAllowedToolFromChat(
+        ToolPermissionSettings? settings,
+        string toolName,
+        DateTimeOffset? now = null)
+    {
+        settings ??= ToolPermissionSettings.Defaults;
+        var canonical = CanonicalPermissionRule(toolName);
+        if (string.IsNullOrWhiteSpace(canonical)) return settings;
+
+        var allowed = settings.AllowedTools
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .ToList();
+        var removedDisallowed = settings.DisallowedTools.Any(item => PermissionRuleEquals(item, canonical));
+        var disallowed = settings.DisallowedTools
+            .Where(item => !PermissionRuleEquals(item, canonical))
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .ToList();
+
+        var alreadyAllowed = allowed.Any(item => PermissionRuleEquals(item, canonical));
+        if (!alreadyAllowed)
+        {
+            allowed.Add(canonical);
+        }
+
+        return settings with
+        {
+            AllowedTools = allowed,
+            DisallowedTools = disallowed,
+            LastUpdated = removedDisallowed || !alreadyAllowed ? now ?? DateTimeOffset.UtcNow : settings.LastUpdated,
+        };
+    }
+
+    public static string CanonicalPermissionRule(string? tool)
+    {
+        var trimmed = tool?.Trim() ?? "";
+        if (trimmed.Length == 0) return "";
+        var lower = trimmed.ToLowerInvariant();
+        if (lower.StartsWith("bash(", StringComparison.Ordinal) && trimmed.EndsWith(')'))
+        {
+            return trimmed;
+        }
+
+        return AgentToolNameCanonicalizer.Canonical(trimmed);
+    }
+
+    public static bool PermissionRuleEquals(string left, string right) =>
+        string.Equals(CanonicalPermissionRule(left), CanonicalPermissionRule(right), StringComparison.Ordinal);
+}
+
 public static class NativeSettingsIds
 {
     public static string Normalize(string? value, string fallback)

@@ -97,6 +97,8 @@ public sealed partial class MainWindow : Window
     private readonly HashSet<string> _processingSessionIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _unreadSessionIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _expandedFileDirectories = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<Guid> _expandedPermissionInputIds = [];
+    private readonly Dictionary<Guid, TaskCompletionSource<PermissionRecord>> _pendingPermissionCompletions = [];
     private readonly ICredentialStore _credentialStore;
     private readonly NativeAgentRunner _agentRunner;
     private readonly NativeRunStore _runStore;
@@ -1056,6 +1058,8 @@ public sealed partial class MainWindow : Window
         var processTracePresentation = ProcessTracePresentation.Make(
             AgentActivity.ProcessTraceActivities(State.CurrentActivities),
             IsChineseUi());
+        var inlinePermissionRequests = InlinePendingPermissions();
+        var footerReserve = V2LayoutMetrics.ComposerMinHeight + (inlinePermissionRequests.Count > 0 ? 214 : 66);
         var hasMessages = processTracePresentation.ShouldRender ||
             State.CurrentMessages.Count > 0 ||
             (State.SelectedSessionId is { } currentSessionId &&
@@ -1073,7 +1077,7 @@ public sealed partial class MainWindow : Window
             {
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(24, 24, 24, V2LayoutMetrics.ComposerMinHeight + 48),
+                Margin = new Thickness(24, 24, 24, footerReserve),
                 MaxWidth = V2LayoutMetrics.ChatColumnMaxWidth,
                 Spacing = 0,
             };
@@ -1095,7 +1099,7 @@ public sealed partial class MainWindow : Window
             {
                 MaxWidth = V2LayoutMetrics.ChatColumnMaxWidth,
                 HorizontalAlignment = HorizontalAlignment.Center,
-                Padding = new Thickness(0, 20, 0, V2LayoutMetrics.ComposerMinHeight + 66),
+                Padding = new Thickness(0, 20, 0, footerReserve),
                 Spacing = 18,
             };
             TrackChatColumnWidth(messages);
@@ -1114,13 +1118,24 @@ public sealed partial class MainWindow : Window
             root.Children.Add(scroll);
         }
 
+        var composerFooter = new StackPanel
+        {
+            MaxWidth = V2LayoutMetrics.ComposerMaxWidth,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 0, V2LayoutMetrics.ComposerBottomPadding),
+            Spacing = 8,
+        };
+        TrackChatColumnWidth(composerFooter);
+        if (inlinePermissionRequests.Count > 0)
+        {
+            composerFooter.Children.Add(PermissionBanner(inlinePermissionRequests));
+        }
+
         var composerShell = new Border
         {
             MaxWidth = V2LayoutMetrics.ComposerMaxWidth,
             MinHeight = V2LayoutMetrics.ComposerMinHeight,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Margin = new Thickness(0, 0, 0, V2LayoutMetrics.ComposerBottomPadding),
             BorderBrush = Brush("V2BorderBrush"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(12),
@@ -1210,10 +1225,207 @@ public sealed partial class MainWindow : Window
         controlsRow.Children.Add(rightControls);
         composerStack.Children.Add(controlsRow);
 
-        root.Children.Add(composerShell);
+        composerFooter.Children.Add(composerShell);
+        root.Children.Add(composerFooter);
         composerShell.Loaded += (_, _) => ApplyChatColumnWidth();
 
         return root;
+    }
+
+    private IReadOnlyList<PermissionRequest> InlinePendingPermissions() =>
+        State.PendingPermissions
+            .Where(request => _pendingPermissionCompletions.ContainsKey(request.Id))
+            .OrderBy(request => request.CreatedAt)
+            .ToList();
+
+    private FrameworkElement PermissionBanner(IReadOnlyList<PermissionRequest> requests)
+    {
+        var stack = new StackPanel
+        {
+            Spacing = 10,
+            MaxWidth = V2LayoutMetrics.ComposerMaxWidth,
+        };
+        foreach (var request in requests)
+        {
+            stack.Children.Add(GenericPermissionCard(request));
+        }
+
+        if (requests.Count <= 1) return stack;
+        return new ScrollViewer
+        {
+            MaxHeight = 132,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = stack,
+        };
+    }
+
+    private FrameworkElement GenericPermissionCard(PermissionRequest request)
+    {
+        var isChinese = IsChineseUi();
+        var showingInput = _expandedPermissionInputIds.Contains(request.Id);
+        var stack = new StackPanel { Spacing = 10 };
+
+        var header = new Grid { ColumnSpacing = 10 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        header.Children.Add(Icon("AlertCircle", 15, Brush("V2AmberBrush")));
+
+        var copy = new StackPanel { Spacing = 4 };
+        copy.Children.Add(new TextBlock
+        {
+            Text = isChinese ? "\u9700\u8981\u6743\u9650\u786e\u8ba4" : "Permission required",
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
+        });
+        copy.Children.Add(new TextBlock
+        {
+            Text = request.Reason,
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+        });
+        var toolRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        toolRow.Children.Add(new TextBlock
+        {
+            Text = isChinese ? "\u5de5\u5177:" : "Tool:",
+            FontSize = 11,
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+            Foreground = Brush("V2MutedForegroundBrush"),
+        });
+        toolRow.Children.Add(new TextBlock
+        {
+            Text = request.ToolName,
+            FontSize = 11,
+            FontFamily = new FontFamily("Consolas"),
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+        });
+        copy.Children.Add(toolRow);
+        Grid.SetColumn(copy, 1);
+        header.Children.Add(copy);
+
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+        actions.Children.Add(PermissionActionButton(
+            isChinese ? "\u62d2\u7edd" : "Deny",
+            Brush("V2RedBrush"),
+            Transparent,
+            async () => await ResolveInlinePermissionRequestAsync(request, PermissionDecision.Denied, null, null)));
+        actions.Children.Add(PermissionActionButton(
+            isChinese ? "\u5141\u8bb8\u4e00\u6b21" : "Allow once",
+            Brush("V2AmberBrush"),
+            new SolidColorBrush(global::Windows.UI.Color.FromArgb(24, 245, 158, 11)),
+            async () => await ResolveInlinePermissionRequestAsync(request, PermissionDecision.Allowed, PermissionScope.Session, null)));
+        actions.Children.Add(PermissionActionButton(
+            isChinese ? "\u59cb\u7ec8\u5141\u8bb8" : "Always allow",
+            Brush("V2InverseForegroundBrush"),
+            Brush("V2InverseBrush"),
+            async () => await ResolveInlinePermissionRequestAsync(request, PermissionDecision.Allowed, PermissionScope.Project, null, remember: true)));
+        Grid.SetColumn(actions, 2);
+        header.Children.Add(actions);
+        stack.Children.Add(header);
+
+        if (!string.IsNullOrWhiteSpace(request.InputJson))
+        {
+            var inputToggle = new Button
+            {
+                MinWidth = 0,
+                MinHeight = 0,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Background = Transparent,
+                BorderBrush = Transparent,
+                Padding = new Thickness(0, 3, 0, 3),
+                Content = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 6,
+                    Children =
+                    {
+                        Icon(showingInput ? "ChevronDown" : "ChevronRight", 10, Brush("V2AmberBrush")),
+                        new TextBlock
+                        {
+                            Text = isChinese ? "\u67e5\u770b\u5de5\u5177\u8f93\u5165" : "View tool input",
+                            FontSize = 11,
+                            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                            Foreground = Brush("V2AmberBrush"),
+                            VerticalAlignment = VerticalAlignment.Center,
+                        },
+                    },
+                },
+            };
+            inputToggle.Click += (_, _) =>
+            {
+                if (!_expandedPermissionInputIds.Remove(request.Id))
+                {
+                    _expandedPermissionInputIds.Add(request.Id);
+                }
+                RenderContent();
+            };
+            stack.Children.Add(inputToggle);
+
+            if (showingInput)
+            {
+                stack.Children.Add(new Border
+                {
+                    Padding = new Thickness(10),
+                    CornerRadius = new CornerRadius(6),
+                    BorderThickness = new Thickness(1),
+                    BorderBrush = Brush("V2BorderBrush"),
+                    Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(18, 245, 158, 11)),
+                    Child = new TextBlock
+                    {
+                        Text = request.InputJson,
+                        FontSize = 10,
+                        FontFamily = new FontFamily("Consolas"),
+                        Foreground = Brush("V2SecondaryForegroundBrush"),
+                        TextWrapping = TextWrapping.Wrap,
+                        MaxHeight = 168,
+                    },
+                });
+            }
+        }
+
+        return new Border
+        {
+            Padding = new Thickness(12),
+            CornerRadius = new CornerRadius(8),
+            BorderThickness = new Thickness(1),
+            BorderBrush = Brush("V2AmberBrush"),
+            Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(20, 245, 158, 11)),
+            Child = stack,
+        };
+    }
+
+    private Button PermissionActionButton(string label, Brush foreground, Brush background, Func<Task> onClick)
+    {
+        var button = new Button
+        {
+            MinWidth = 0,
+            MinHeight = 0,
+            Padding = new Thickness(10, 6, 10, 6),
+            Background = background,
+            BorderBrush = foreground,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(6),
+            Foreground = foreground,
+            Content = new TextBlock
+            {
+                Text = label,
+                FontSize = 12,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                TextWrapping = TextWrapping.NoWrap,
+            },
+        };
+        button.Click += async (_, _) => await onClick();
+        return button;
     }
 
     private FrameworkElement ProcessLiveStatusRow(ProcessTracePresentation presentation)
@@ -4671,7 +4883,7 @@ public sealed partial class MainWindow : Window
             {
                 try
                 {
-                    completion.TrySetResult(await ShowPermissionRequestOnUiAsync(request));
+                    completion.TrySetResult(await ShowPermissionRequestOnUiAsync(request, cancellationToken));
                 }
                 catch (Exception ex)
                 {
@@ -4685,10 +4897,18 @@ public sealed partial class MainWindow : Window
         return completion.Task;
     }
 
-    private async Task<PermissionRecord> ShowPermissionRequestOnUiAsync(PermissionRequest request)
+    private async Task<PermissionRecord> ShowPermissionRequestOnUiAsync(PermissionRequest request, CancellationToken cancellationToken)
     {
-        State.PendingPermissions.Add(request);
+        if (!State.PendingPermissions.Any(item => item.Id == request.Id))
+        {
+            State.PendingPermissions.Add(request);
+        }
         RenderAll();
+        if (request.Kind == PermissionRequestKind.Tool)
+        {
+            return await AwaitInlinePermissionRequestAsync(request, cancellationToken);
+        }
+
         if (request.Kind == PermissionRequestKind.AskUserQuestion)
         {
             var payload = request.InteractivePayload is { Questions.Count: > 0 }
@@ -5022,6 +5242,51 @@ public sealed partial class MainWindow : Window
             ContentDialogResult.Secondary => new PermissionRecord(request, PermissionDecision.Allowed, PermissionScope.Project, DateTimeOffset.UtcNow, null),
             _ => new PermissionRecord(request, PermissionDecision.Denied, null, DateTimeOffset.UtcNow, null),
         };
+    }
+
+    private async Task<PermissionRecord> AwaitInlinePermissionRequestAsync(PermissionRequest request, CancellationToken cancellationToken)
+    {
+        var completion = new TaskCompletionSource<PermissionRecord>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingPermissionCompletions[request.Id] = completion;
+        using var registration = cancellationToken.Register(() =>
+        {
+            if (!DispatcherQueue.TryEnqueue(async () =>
+                {
+                    await ResolveInlinePermissionRequestAsync(request, PermissionDecision.Denied, null, null);
+                }))
+            {
+                completion.TrySetCanceled(cancellationToken);
+            }
+        });
+        RenderContent();
+        return await completion.Task;
+    }
+
+    private async Task ResolveInlinePermissionRequestAsync(
+        PermissionRequest request,
+        PermissionDecision decision,
+        PermissionScope? grantedScope,
+        string? response,
+        bool remember = false)
+    {
+        if (!_pendingPermissionCompletions.Remove(request.Id, out var completion)) return;
+        State.PendingPermissions.RemoveAll(item => item.Id == request.Id);
+        _expandedPermissionInputIds.Remove(request.Id);
+
+        if (decision == PermissionDecision.Allowed && remember)
+        {
+            State.Settings = State.Settings with
+            {
+                Permissions = PermissionSettingsMutation.GrantAllowedToolFromChat(State.Settings.Permissions, request.ToolName),
+            };
+            await _settingsStore.SaveAsync(State.Settings);
+        }
+
+        State.StatusLine = decision == PermissionDecision.Allowed
+            ? $"Permission allowed: {request.ToolName}"
+            : $"Permission denied: {request.ToolName}";
+        completion.TrySetResult(new PermissionRecord(request, decision, grantedScope, DateTimeOffset.UtcNow, response));
+        RenderAll();
     }
 
     private sealed record AskQuestionAnswerControls(

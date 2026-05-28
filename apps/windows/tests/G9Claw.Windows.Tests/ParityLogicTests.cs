@@ -657,6 +657,26 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void PermissionSettingsGrantFromChatMatchesMacAlwaysAllowPolicy()
+    {
+        var now = new DateTimeOffset(2026, 5, 30, 1, 10, 0, TimeSpan.FromHours(8));
+        var settings = new ToolPermissionSettings(
+            ["Read"],
+            ["Write", "Shell"],
+            LastUpdated: null);
+
+        var granted = PermissionSettingsMutation.GrantAllowedToolFromChat(settings, "Write", now);
+        var duplicate = PermissionSettingsMutation.GrantAllowedToolFromChat(granted, "write", now.AddMinutes(1));
+
+        Assert.Equal(["Read", "Write"], granted.AllowedTools);
+        Assert.Equal(["Shell"], granted.DisallowedTools);
+        Assert.Equal(now, granted.LastUpdated);
+        Assert.Equal(["Read", "Write"], duplicate.AllowedTools);
+        Assert.Equal(now, duplicate.LastUpdated);
+        Assert.Equal("Bash(git status:*)", PermissionSettingsMutation.CanonicalPermissionRule("Bash(git status:*)"));
+    }
+
+    [Fact]
     public async Task NativeUIPreferencesStoreRoundTripsMacPreferenceShape()
     {
         using var temp = new TempWorkspace();
