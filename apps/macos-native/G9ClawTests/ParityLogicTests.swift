@@ -5889,7 +5889,7 @@ final class ParityLogicTests: XCTestCase {
         let root = repoRootURL()
         let scanRoots = [
             root.appendingPathComponent("apps/macos-native", isDirectory: true),
-            root.appendingPathComponent("packages/g9claw-rag-plugin", isDirectory: true),
+            root.appendingPathComponent("apps/macos-native/G9Claw/Assets/g9claw-rag-plugin", isDirectory: true),
         ]
         let forbidden = [
             "9" + "GClaw",

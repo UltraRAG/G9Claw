@@ -3252,7 +3252,7 @@ final class AlwaysOnService {
 
     private func workspaceSignals(projectRoot: String) -> [String] {
         let root = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
-        let names = ["package.json", "README.md", "TODO-MacApp.md", ".git"]
+        let names = ["package.json", "README.md", ".git"]
         return names.compactMap { name in
             let url = root.appendingPathComponent(name)
             return FileManager.default.fileExists(atPath: url.path) ? "\(name) present" : nil

@@ -4574,12 +4574,10 @@ enum SkillRuntimeService {
         let manager = FileManager.default
         let envRoot = ProcessInfo.processInfo.environment["G9CLAW_REPO_ROOT"].map {
             URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath)
-                .appendingPathComponent("packages/g9claw-rag-plugin", isDirectory: true)
+                .appendingPathComponent("apps/macos-native/G9Claw/Assets/g9claw-rag-plugin", isDirectory: true)
         }
         let bundleRoot = Bundle.main.resourceURL?.appendingPathComponent("g9claw-rag-plugin", isDirectory: true)
-        let sourceRoot = repoRootFromSourceFile().map {
-            $0.appendingPathComponent("packages/g9claw-rag-plugin", isDirectory: true)
-        }
+        let sourceRoot = ragPluginRootFromSourceFile()
         for candidate in [bundleRoot, envRoot, sourceRoot].compactMap({ $0 }) {
             if manager.fileExists(atPath: candidate.appendingPathComponent("skills", isDirectory: true).path) {
                 return candidate
@@ -4588,12 +4586,19 @@ enum SkillRuntimeService {
         return nil
     }
 
-    private static func repoRootFromSourceFile() -> URL? {
+    private static func ragPluginRootFromSourceFile() -> URL? {
         var current = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let relativePaths = [
+            "Assets/g9claw-rag-plugin",
+            "G9Claw/Assets/g9claw-rag-plugin",
+            "apps/macos-native/G9Claw/Assets/g9claw-rag-plugin",
+        ]
         for _ in 0..<10 {
-            let marker = current.appendingPathComponent("packages/g9claw-rag-plugin", isDirectory: true)
-            if FileManager.default.fileExists(atPath: marker.path) {
-                return current
+            for relativePath in relativePaths {
+                let candidate = current.appendingPathComponent(relativePath, isDirectory: true)
+                if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("skills", isDirectory: true).path) {
+                    return candidate
+                }
             }
             current.deleteLastPathComponent()
         }

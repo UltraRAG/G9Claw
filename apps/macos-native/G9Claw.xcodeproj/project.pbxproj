@@ -12,7 +12,6 @@
 		B010 /* AppModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F010 /* AppModels.swift */; };
 		B011 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F011 /* AppState.swift */; };
 		B012 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = F012 /* DesignTokens.swift */; };
-		B013 /* ParityCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = F013 /* ParityCatalog.swift */; };
 		B014 /* LocalizationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F014 /* LocalizationService.swift */; };
 		B015 /* AgentTurnModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F015 /* AgentTurnModels.swift */; };
 		B020 /* AppPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = F020 /* AppPaths.swift */; };
@@ -58,7 +57,6 @@
 		F010 /* AppModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModels.swift; sourceTree = "<group>"; };
 		F011 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		F012 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
-		F013 /* ParityCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityCatalog.swift; sourceTree = "<group>"; };
 		F014 /* LocalizationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationService.swift; sourceTree = "<group>"; };
 		F015 /* AgentTurnModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTurnModels.swift; sourceTree = "<group>"; };
 		F020 /* AppPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPaths.swift; sourceTree = "<group>"; };
@@ -80,7 +78,7 @@
 		F040 /* g9claw-logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "g9claw-logo.png"; sourceTree = "<group>"; };
 		F041 /* g9claw-logo-white.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "g9claw-logo-white.png"; sourceTree = "<group>"; };
 		F042 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		F043 /* g9claw-rag-plugin */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "g9claw-rag-plugin"; path = "../../packages/g9claw-rag-plugin"; sourceTree = SOURCE_ROOT; };
+		F043 /* g9claw-rag-plugin */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "g9claw-rag-plugin"; sourceTree = "<group>"; };
 		F100 /* ParityLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityLogicTests.swift; sourceTree = "<group>"; };
 		FW901 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 		TEST01 /* G9ClawTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = G9ClawTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -144,7 +142,6 @@
 				F010 /* AppModels.swift */,
 				F011 /* AppState.swift */,
 				F012 /* DesignTokens.swift */,
-				F013 /* ParityCatalog.swift */,
 				F014 /* LocalizationService.swift */,
 				F015 /* AgentTurnModels.swift */,
 			);
@@ -330,7 +327,6 @@
 				B010 /* AppModels.swift in Sources */,
 				B011 /* AppState.swift in Sources */,
 				B012 /* DesignTokens.swift in Sources */,
-				B013 /* ParityCatalog.swift in Sources */,
 				B014 /* LocalizationService.swift in Sources */,
 				B015 /* AgentTurnModels.swift in Sources */,
 				B020 /* AppPaths.swift in Sources */,
