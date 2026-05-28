@@ -896,6 +896,57 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void AgentToolExecutorTimeoutRulesMatchMacToolRuntime()
+    {
+        Assert.Equal(120_000, ShellTimeout("""{}"""));
+        Assert.Equal(1_000, ShellTimeout("""{"timeout":250}"""));
+        Assert.Equal(2_500, ShellTimeout("""{"timeout":"2500"}"""));
+        Assert.Equal(600_000, ShellTimeout("""{"timeout":700000}"""));
+        Assert.Equal(2_000, ShellTimeout("""{"timeout_seconds":2}"""));
+
+        Assert.Equal(30_000, AwaitTimeout("""{}"""));
+        Assert.Equal(0, AwaitTimeout("""{"timeout":-1}"""));
+        Assert.Equal(45_000, AwaitTimeout("""{"timeout":"45000"}"""));
+        Assert.Equal(600_000, AwaitTimeout("""{"timeout":700000}"""));
+    }
+
+    [Fact]
+    public async Task AgentToolExecutorAwaitCanReadRunningTaskWithoutBlocking()
+    {
+        using var temp = new TempWorkspace();
+        var runStore = new NativeRunStore(Path.Combine(temp.Root, "run-history"));
+        var executor = new AgentToolExecutor(runStore: runStore);
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None);
+
+        var taskResult = await executor.ExecuteAsync(new AgentToolCall("shell", "Shell", """
+        {"command":"Start-Sleep -Seconds 2; Write-Output done","run_in_background":true}
+        """), context);
+        var awaitResult = await executor.ExecuteAsync(new AgentToolCall("await", "Await", JsonSerializer.Serialize(new
+        {
+            task_id = taskResult.TaskId,
+            block = false,
+            timeout = 600_000,
+        })), context);
+
+        Assert.False(taskResult.IsError);
+        Assert.False(awaitResult.IsError);
+        Assert.Equal(taskResult.TaskId, awaitResult.TaskId);
+        Assert.Equal("Running", awaitResult.Diagnostics?["status"]);
+
+        var completed = await executor.ExecuteAsync(new AgentToolCall("await-complete", "Await", JsonSerializer.Serialize(new
+        {
+            task_id = taskResult.TaskId,
+            timeout = 5_000,
+        })), context);
+        Assert.False(completed.IsError);
+    }
+
+    [Fact]
     public void NativeAgentRuntimeEndpointDoesNotDuplicateChatCompletions()
     {
         var full = NativeAgentRuntime.EndpointUrl("https://openrouter.ai/api/v1/chat/completions", "chat/completions");
@@ -2820,6 +2871,18 @@ gateway:
 
         private static ProviderStreamEvent Tool(string id, string name, string inputJson) =>
             new(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall(id, name, inputJson));
+    }
+
+    private static int ShellTimeout(string inputJson)
+    {
+        using var doc = JsonDocument.Parse(inputJson);
+        return AgentToolExecutor.ShellTimeoutMilliseconds(doc.RootElement);
+    }
+
+    private static int AwaitTimeout(string inputJson)
+    {
+        using var doc = JsonDocument.Parse(inputJson);
+        return AgentToolExecutor.AwaitTimeoutMilliseconds(doc.RootElement);
     }
 
     private sealed class TempWorkspace : IDisposable

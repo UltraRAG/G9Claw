@@ -276,7 +276,7 @@ public sealed class AgentToolExecutor
     {
         using var doc = JsonDocument.Parse(call.InputJson);
         var command = RequiredString(doc.RootElement, "command");
-        var timeout = OptionalInt(doc.RootElement, "timeout") ?? 120_000;
+        var timeout = ShellTimeoutMilliseconds(doc.RootElement);
         var cwd = OptionalString(doc.RootElement, "cwd") is { } requestedCwd
             ? WorkspaceService.ResolveWorkspacePath(requestedCwd, context.WorkspaceRoot)
             : context.WorkspaceRoot;
@@ -299,8 +299,11 @@ public sealed class AgentToolExecutor
     {
         using var doc = JsonDocument.Parse(call.InputJson);
         var taskId = RequiredString(doc.RootElement, "task_id");
-        var timeout = OptionalInt(doc.RootElement, "timeout") ?? 60_000;
-        var run = await _runStore.AwaitAsync(taskId, TimeSpan.FromMilliseconds(timeout), context.CancellationToken);
+        var block = OptionalBool(doc.RootElement, "block") ?? true;
+        var timeout = AwaitTimeoutMilliseconds(doc.RootElement);
+        var run = block
+            ? await _runStore.AwaitAsync(taskId, TimeSpan.FromMilliseconds(timeout), context.CancellationToken)
+            : _runStore.Snapshot(taskId);
         if (run is null) return Error(call, $"Unknown task id: {taskId}");
         var output = FormatRunOutput(run);
         var isError = run.Status == TaskStatus.Failed;
@@ -382,7 +385,7 @@ public sealed class AgentToolExecutor
             ? WorkspaceService.ResolveWorkspacePath(requestedCwd, context.WorkspaceRoot)
             : context.WorkspaceRoot;
         var background = OptionalBool(root, "run_in_background") ?? true;
-        var timeout = OptionalInt(root, "timeout") ?? 120_000;
+        var timeout = ShellTimeoutMilliseconds(root);
 
         if (type.Equals("shell", StringComparison.OrdinalIgnoreCase))
         {
@@ -414,6 +417,23 @@ public sealed class AgentToolExecutor
 
     private static string LimitOutput(string output) =>
         output.Length <= 20_000 ? output : output[..20_000] + "\n... output truncated ...";
+
+    internal static int ShellTimeoutMilliseconds(JsonElement root)
+    {
+        if (OptionalInt(root, "timeout") is { } timeout) return ClampTimeout(timeout, 1_000);
+        if (OptionalInt(root, "timeout_seconds") is { } timeoutSeconds)
+        {
+            return ClampTimeout((long)timeoutSeconds * 1_000, 1_000);
+        }
+
+        return 120_000;
+    }
+
+    internal static int AwaitTimeoutMilliseconds(JsonElement root) =>
+        ClampTimeout(OptionalInt(root, "timeout") ?? 30_000, 0);
+
+    private static int ClampTimeout(long timeoutMs, int minimum) =>
+        (int)Math.Max(minimum, Math.Min(timeoutMs, 600_000));
 
     private static string FormatRunOutput(NativeBackgroundRun run)
     {
