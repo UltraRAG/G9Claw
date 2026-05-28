@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Runtime.CompilerServices;
 using G9Claw.Windows.Core;
@@ -1212,6 +1213,7 @@ public sealed class ParityLogicTests
         await File.WriteAllTextAsync(Path.Combine(temp.Root, "demo.ipynb"), """
         {"cells":[{"cell_type":"markdown","source":["# Title\n","Body"]},{"cell_type":"code","source":"print(1)"}]}
         """);
+        await File.WriteAllBytesAsync(Path.Combine(temp.Root, "sample.pdf"), MinimalPdf("Hello PDF"));
         await File.WriteAllBytesAsync(Path.Combine(temp.Root, "pixel.png"), [0x89, 0x50, 0x4E, 0x47]);
         var executor = new AgentToolExecutor();
         var context = new AgentToolExecutionContext(
@@ -1223,6 +1225,7 @@ public sealed class ParityLogicTests
 
         var text = await executor.ExecuteAsync(new AgentToolCall("read-text", "Read", """{"file_path":"notes.txt","offset":2,"limit":2}"""), context);
         var notebook = await executor.ExecuteAsync(new AgentToolCall("read-notebook", "Read", """{"file_path":"demo.ipynb"}"""), context);
+        var pdf = await executor.ExecuteAsync(new AgentToolCall("read-pdf", "Read", """{"file_path":"sample.pdf","pages":"1"}"""), context);
         var image = await executor.ExecuteAsync(new AgentToolCall("read-image", "Read", """{"file_path":"pixel.png"}"""), context);
 
         Assert.False(text.IsError);
@@ -1232,6 +1235,13 @@ public sealed class ParityLogicTests
         Assert.Contains("cells: 2", notebook.Output);
         Assert.Contains("## Cell 0 [markdown]", notebook.Output);
         Assert.Contains("# Title\nBody", notebook.Output);
+        Assert.False(pdf.IsError);
+        Assert.Contains("PDF sample.pdf", pdf.Output);
+        Assert.Contains("pages: 1", pdf.Output);
+        Assert.Contains("selected: 1", pdf.Output);
+        Assert.Contains("## Page 1", pdf.Output);
+        Assert.Contains("Hello PDF", pdf.Output);
+        Assert.Equal([1, 2, 3, 5], AgentToolExecutor.ParsePdfPages("3-1,5,99", 5));
         Assert.False(image.IsError);
         using var imageJson = JsonDocument.Parse(image.Output);
         Assert.Equal("image", imageJson.RootElement.GetProperty("type").GetString());
@@ -2719,6 +2729,37 @@ gateway:
 
     private static string[] OutputLines(string output) =>
         output.Replace("\r\n", "\n").Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+    private static byte[] MinimalPdf(string text)
+    {
+        var escaped = text.Replace(@"\", @"\\").Replace("(", @"\(").Replace(")", @"\)");
+        var stream = $"BT /F1 18 Tf 72 720 Td ({escaped}) Tj ET";
+        var objects = new[]
+        {
+            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n",
+            "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+            $"5 0 obj\n<< /Length {Encoding.ASCII.GetByteCount(stream)} >>\nstream\n{stream}\nendstream\nendobj\n",
+        };
+        var builder = new StringBuilder("%PDF-1.4\n");
+        var offsets = new List<int> { 0 };
+        foreach (var obj in objects)
+        {
+            offsets.Add(Encoding.ASCII.GetByteCount(builder.ToString()));
+            builder.Append(obj);
+        }
+
+        var xrefOffset = Encoding.ASCII.GetByteCount(builder.ToString());
+        builder.Append("xref\n0 6\n0000000000 65535 f \n");
+        foreach (var offset in offsets.Skip(1))
+        {
+            builder.Append($"{offset:D10} 00000 n \n");
+        }
+
+        builder.Append($"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xrefOffset}\n%%EOF\n");
+        return Encoding.ASCII.GetBytes(builder.ToString());
+    }
 
     [Fact]
     public async Task AgentToolExecutorPersistsTodosAndSharesTaskAwaitState()

@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using UglyToad.PdfPig;
+using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 
 namespace G9Claw.Windows.Core;
 
@@ -87,6 +89,11 @@ public sealed class AgentToolExecutor
         if (extension == "ipynb")
         {
             return Ok(call, ReadNotebook(resolved, context.WorkspaceRoot));
+        }
+
+        if (extension == "pdf")
+        {
+            return Ok(call, ReadPdf(resolved, context.WorkspaceRoot, OptionalString(doc.RootElement, "pages")));
         }
 
         if (ImageMimeType(extension) is not null)
@@ -731,6 +738,62 @@ public sealed class AgentToolExecutor
         }
 
         return string.Join("\n", output);
+    }
+
+    private static string ReadPdf(string path, string workspaceRoot, string? pages)
+    {
+        using var document = PdfDocument.Open(path);
+        var pageNumbers = ParsePdfPages(pages, document.NumberOfPages);
+        var sections = new List<string>
+        {
+            $"PDF {RelativeWorkspacePath(workspaceRoot, path)}",
+            $"pages: {document.NumberOfPages}",
+            $"selected: {string.Join(",", pageNumbers)}",
+            "",
+        };
+
+        foreach (var number in pageNumbers)
+        {
+            var page = document.GetPage(number);
+            var text = ContentOrderTextExtractor.GetText(page).Trim();
+            sections.Add($"## Page {number}");
+            sections.Add(string.IsNullOrWhiteSpace(text) ? "(no extractable text)" : text);
+            sections.Add("");
+        }
+
+        return string.Join("\n", sections);
+    }
+
+    internal static IReadOnlyList<int> ParsePdfPages(string? value, int total)
+    {
+        if (total <= 0) return [];
+        var trimmed = value?.Trim() ?? "";
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return Enumerable.Range(1, Math.Min(total, 10)).ToList();
+        }
+
+        var pages = new SortedSet<int>();
+        foreach (var part in trimmed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var bounds = part.Split('-', 2, StringSplitOptions.TrimEntries)
+                .Select(item => int.TryParse(item, out var parsed) ? parsed : (int?)null)
+                .OfType<int>()
+                .ToList();
+            if (bounds.Count == 2)
+            {
+                for (var page = Math.Min(bounds[0], bounds[1]); page <= Math.Max(bounds[0], bounds[1]); page++)
+                {
+                    if (page >= 1 && page <= total) pages.Add(page);
+                }
+            }
+            else if (bounds.Count == 1 && bounds[0] >= 1 && bounds[0] <= total)
+            {
+                pages.Add(bounds[0]);
+            }
+        }
+
+        return pages.Take(10).ToList();
     }
 
     private static string NotebookSourceString(JsonElement source)
