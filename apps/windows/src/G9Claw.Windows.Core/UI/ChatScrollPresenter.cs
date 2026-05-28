@@ -13,10 +13,14 @@ public static class ChatScrollPresenter
             : new ChatScrollSnapshot(false, Math.Clamp(verticalOffset, 0, maxOffset));
     }
 
-    public static double TargetOffset(ChatScrollSnapshot snapshot, double extentHeight, double viewportHeight)
+    public static double TargetOffset(
+        ChatScrollSnapshot snapshot,
+        double extentHeight,
+        double viewportHeight,
+        bool autoScrollToBottom = true)
     {
         var maxOffset = MaxOffset(extentHeight, viewportHeight);
-        return snapshot.StickToBottom
+        return snapshot.StickToBottom && autoScrollToBottom
             ? maxOffset
             : Math.Clamp(snapshot.Offset, 0, maxOffset);
     }

@@ -3,6 +3,7 @@ namespace G9Claw.Windows.Core;
 public sealed record AppPathSet(
     string Root,
     string SettingsFile,
+    string UiPreferencesFile,
     string CredentialsDirectory,
     string SessionsDirectory,
     string LogsDirectory,
@@ -25,6 +26,7 @@ public static class AppPaths
         return new AppPathSet(
             root,
             Path.Combine(root, "settings.json"),
+            Path.Combine(root, "ui-preferences.json"),
             Path.Combine(root, "credentials"),
             Path.Combine(root, "sessions"),
             Path.Combine(root, "logs"),

@@ -107,6 +107,7 @@ public sealed partial class MainWindow : Window
     private readonly AlwaysOnStore _alwaysOnStore;
     private readonly TaskPlanStore _taskPlanStore;
     private readonly TaskMasterService _taskMasterService;
+    private readonly NativeUIPreferencesStore _uiPreferencesStore;
 
     private WorkspaceService _workspaceService;
     private V2UiSettings _uiSettings;
@@ -167,6 +168,7 @@ public sealed partial class MainWindow : Window
         _alwaysOnStore = new AlwaysOnStore();
         _taskPlanStore = new TaskPlanStore();
         _taskMasterService = new TaskMasterService();
+        _uiPreferencesStore = new NativeUIPreferencesStore();
         State = AppState.CreateDefault();
         _uiSettings = State.Settings.UiSettings.Normalize();
         _strings = new StringCatalog(State.Settings.Language);
@@ -401,6 +403,9 @@ public sealed partial class MainWindow : Window
         }
 
         _uiSettings = State.Settings.UiSettings.NormalizeForStartup();
+        State.UiPreferences = await _uiPreferencesStore.LoadAsync() ?? State.UiPreferences;
+        _isSidebarVisible = State.UiPreferences.SidebarVisible;
+        State.IsSidebarVisible = _isSidebarVisible;
         SyncSidebarSectionWithProject(State.SelectedProject);
         if (!Equals(_uiSettings, State.Settings.UiSettings))
         {
@@ -531,10 +536,7 @@ public sealed partial class MainWindow : Window
             scroll.ViewportHeight,
             ChatBottomStickThreshold);
         _chatStickToBottom = snapshot.StickToBottom;
-        if (!_chatStickToBottom)
-        {
-            _chatScrollOffset = snapshot.Offset;
-        }
+        _chatScrollOffset = snapshot.Offset;
     }
 
     private void RestoreChatScrollState(ScrollViewer scroll)
@@ -544,7 +546,8 @@ public sealed partial class MainWindow : Window
             var target = ChatScrollPresenter.TargetOffset(
                 new ChatScrollSnapshot(_chatStickToBottom, _chatScrollOffset),
                 scroll.ExtentHeight,
-                scroll.ViewportHeight);
+                scroll.ViewportHeight,
+                State.UiPreferences.AutoScrollToBottom);
             _suppressChatScrollTracking = true;
             scroll.ChangeView(null, target, null, disableAnimation: true);
             DispatcherQueue.TryEnqueue(() =>
@@ -1207,7 +1210,13 @@ public sealed partial class MainWindow : Window
     private async void OnComposerKeyDown(object sender, KeyRoutedEventArgs args)
     {
         var shiftDown = IsShiftDown();
-        var action = ComposerKeyPolicy.Decide(ComposerKeyFromVirtualKey(args.Key), shiftDown, IsImeComposing());
+        var controlDown = IsControlDown();
+        var action = ComposerKeyPolicy.Decide(
+            ComposerKeyFromVirtualKey(args.Key),
+            shiftDown,
+            controlDown,
+            IsImeComposing(),
+            State.UiPreferences.SendByCtrlEnter);
         if (action == ComposerKeyAction.ToggleRunMode)
         {
             args.Handled = true;
@@ -1779,6 +1788,12 @@ public sealed partial class MainWindow : Window
     private static bool IsShiftDown()
     {
         var state = global::Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(global::Windows.System.VirtualKey.Shift);
+        return (state & global::Windows.UI.Core.CoreVirtualKeyStates.Down) == global::Windows.UI.Core.CoreVirtualKeyStates.Down;
+    }
+
+    private static bool IsControlDown()
+    {
+        var state = global::Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(global::Windows.System.VirtualKey.Control);
         return (state & global::Windows.UI.Core.CoreVirtualKeyStates.Down) == global::Windows.UI.Core.CoreVirtualKeyStates.Down;
     }
 
@@ -2365,7 +2380,7 @@ public sealed partial class MainWindow : Window
         if (expanded)
         {
             var detailPanel = new StackPanel { Spacing = 8 };
-            detailPanel.Children.Add(ToolDetailBox(T("chat.tool.input"), call.InputJson));
+            detailPanel.Children.Add(ToolDetailBox(T("chat.tool.input"), ToolInputDetail(call, presentation)));
             if (result is not null)
             {
                 detailPanel.Children.Add(ToolDetailBox(T("chat.tool.result"), result.Output));
@@ -2389,7 +2404,7 @@ public sealed partial class MainWindow : Window
             foreach (var item in items)
             {
                 var itemPresentation = ToolInvocationPresenter.Present(item.Call, item.Result, IsChineseUi());
-                detailPanel.Children.Add(ToolDetailBox(itemPresentation.Summary, item.Result?.Output ?? item.Call.InputJson));
+                detailPanel.Children.Add(ToolDetailBox(itemPresentation.Summary, item.Result?.Output ?? ToolInputDetail(item.Call, itemPresentation)));
             }
 
             detail = detailPanel;
@@ -2397,6 +2412,9 @@ public sealed partial class MainWindow : Window
 
         return ToolInlineRow(key, presentation, expanded, detail);
     }
+
+    private string ToolInputDetail(AgentToolCall call, ToolInvocationPresentation presentation) =>
+        State.UiPreferences.ShowRawParameters ? call.InputJson : presentation.InputPreview;
 
     private FrameworkElement ToolResultRow(AgentToolResult result)
     {
@@ -4750,12 +4768,14 @@ public sealed partial class MainWindow : Window
     private void OnCollapseSidebarClick(object sender, RoutedEventArgs e)
     {
         _isSidebarVisible = false;
+        PersistUiPreferences();
         RenderAll();
     }
 
     private void OnOpenSidebarClick(object sender, RoutedEventArgs e)
     {
         _isSidebarVisible = true;
+        PersistUiPreferences();
         RenderAll();
     }
 
@@ -4941,6 +4961,11 @@ public sealed partial class MainWindow : Window
         var minimap = Check(T("settings.appearance.showMinimap"), draft.EditorShowMinimap);
         var lineNumbers = Check(T("settings.appearance.lineNumbers"), draft.EditorLineNumbers);
         var editorFont = Box(draft.EditorFontSize.ToString(), "13");
+        var autoExpandTools = Check(T("settings.preferences.autoExpandTools"), State.UiPreferences.AutoExpandTools);
+        var showRawParameters = Check(T("settings.preferences.showRawParameters"), State.UiPreferences.ShowRawParameters);
+        var showThinking = Check(T("settings.preferences.showThinking"), State.UiPreferences.ShowThinking);
+        var autoScrollToBottom = Check(T("settings.preferences.autoScrollToBottom"), State.UiPreferences.AutoScrollToBottom);
+        var sendByCtrlEnter = Check(T("settings.preferences.sendByCtrlEnter"), State.UiPreferences.SendByCtrlEnter);
 
         var allowedTools = Area(string.Join(Environment.NewLine, draft.AllowedTools));
         var disallowedTools = Area(string.Join(Environment.NewLine, draft.DisallowedTools));
@@ -5038,6 +5063,14 @@ public sealed partial class MainWindow : Window
             SettingsSection(T("settings.appearance.title"), T("settings.appearance.detail"),
                 Field(T("settings.appearance.theme"), colorScheme),
                 Field(T("settings.appearance.language"), language)),
+            SettingsSection(T("settings.preferences.toolDisplay"), "",
+                autoExpandTools,
+                showRawParameters,
+                showThinking),
+            SettingsSection(T("settings.preferences.viewOptions"), "",
+                autoScrollToBottom),
+            SettingsSection(T("settings.preferences.inputSettings"), T("settings.preferences.sendByCtrlEnterDetail"),
+                sendByCtrlEnter),
             SettingsSection(T("settings.appearance.projectSorting"), "",
                 Field(T("settings.appearance.projectSorting"), sortOrder)),
             SettingsSection(T("settings.appearance.codeEditor"), "",
@@ -5289,6 +5322,13 @@ public sealed partial class MainWindow : Window
             try
             {
                 errorText.Text = "";
+                var nextUiPreferences = new NativeUIPreferences(
+                    AutoExpandTools: autoExpandTools.IsChecked == true,
+                    ShowRawParameters: showRawParameters.IsChecked == true,
+                    ShowThinking: showThinking.IsChecked == true,
+                    AutoScrollToBottom: autoScrollToBottom.IsChecked == true,
+                    SendByCtrlEnter: sendByCtrlEnter.IsChecked == true,
+                    SidebarVisible: _isSidebarVisible);
                 AppSettings nextSettings;
                 if (viewModel.ConfigViewMode == SettingsConfigViewMode.RawYaml)
                 {
@@ -5418,11 +5458,14 @@ public sealed partial class MainWindow : Window
                 }
 
                 State.Settings = AppState.NormalizeSettings(nextSettings);
+                State.UiPreferences = nextUiPreferences;
+                State.IsSidebarVisible = _isSidebarVisible;
                 _uiSettings = State.Settings.UiSettings.Normalize();
                 _strings = new StringCatalog(State.Settings.Language);
                 _workspaceService = new WorkspaceService(State.Settings.WorkspacesRoot);
                 ApplyUiSettings();
                 await _settingsStore.SaveAsync(State.Settings);
+                await _uiPreferencesStore.SaveAsync(State.UiPreferences);
                 NativeConfigService.WriteDefaultConfigText(State.Settings.RawConfigDocument?.LastYaml ?? NativeConfigYamlCodec.ToYaml(State.Settings));
                 await RefreshProviderPreflightAsync();
                 saveStatus.Text = T("common.saved");
@@ -6426,6 +6469,13 @@ public sealed partial class MainWindow : Window
         };
         State.Settings = State.Settings with { UiSettings = _uiSettings.Normalize() };
         _ = _settingsStore.SaveAsync(State.Settings);
+    }
+
+    private void PersistUiPreferences()
+    {
+        State.UiPreferences = State.UiPreferences with { SidebarVisible = _isSidebarVisible };
+        State.IsSidebarVisible = _isSidebarVisible;
+        _ = _uiPreferencesStore.SaveAsync(State.UiPreferences);
     }
 
     private void OnSidebarDividerPointerPressed(object sender, PointerRoutedEventArgs e)

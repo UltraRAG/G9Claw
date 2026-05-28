@@ -37,3 +37,30 @@ public sealed class AppSettingsStore
         await JsonSerializer.SerializeAsync(stream, AppState.NormalizeSettings(settings), JsonOptions, cancellationToken);
     }
 }
+
+public sealed class NativeUIPreferencesStore
+{
+    private readonly string _preferencesFile;
+
+    public NativeUIPreferencesStore(string? preferencesFile = null)
+    {
+        _preferencesFile = preferencesFile ?? AppPaths.Current().UiPreferencesFile;
+    }
+
+    public async Task<NativeUIPreferences?> LoadAsync(CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(_preferencesFile)) return null;
+        var raw = await File.ReadAllTextAsync(_preferencesFile, cancellationToken);
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        return NativeUIPreferencesStorage.StoredPreferences(new Dictionary<string, string>
+        {
+            [NativeUIPreferencesStorage.StorageKey] = raw,
+        });
+    }
+
+    public async Task SaveAsync(NativeUIPreferences preferences, CancellationToken cancellationToken = default)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_preferencesFile)!);
+        await File.WriteAllTextAsync(_preferencesFile, NativeUIPreferencesStorage.Save(preferences), cancellationToken);
+    }
+}

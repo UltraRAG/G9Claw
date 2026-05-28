@@ -540,6 +540,27 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public async Task NativeUIPreferencesStoreRoundTripsMacPreferenceShape()
+    {
+        using var temp = new TempWorkspace();
+        var file = Path.Combine(temp.Root, "ui-preferences.json");
+        var store = new NativeUIPreferencesStore(file);
+        var preferences = new NativeUIPreferences(
+            AutoExpandTools: true,
+            ShowRawParameters: true,
+            ShowThinking: false,
+            AutoScrollToBottom: false,
+            SendByCtrlEnter: true,
+            SidebarVisible: false);
+
+        await store.SaveAsync(preferences);
+        var loaded = await store.LoadAsync();
+
+        Assert.Equal(preferences, loaded);
+        Assert.Contains("autoExpandTools", await File.ReadAllTextAsync(file));
+    }
+
+    [Fact]
     public void WebV2UiSettingsNormalizeSidebarBoundsAndLists()
     {
         var tooSmall = new V2UiSettings(12, SidebarSection.General, null!, null!).Normalize();
@@ -1843,10 +1864,12 @@ router:
     [Fact]
     public void ComposerKeyPolicyHandlesSendNewlineModeToggleAndIme()
     {
-        Assert.Equal(ComposerKeyAction.Send, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, isImeComposing: false));
-        Assert.Equal(ComposerKeyAction.InsertNewLine, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: true, isImeComposing: false));
-        Assert.Equal(ComposerKeyAction.ToggleRunMode, ComposerKeyPolicy.Decide(ComposerKey.Tab, shiftDown: true, isImeComposing: false));
-        Assert.Equal(ComposerKeyAction.None, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, isImeComposing: true));
+        Assert.Equal(ComposerKeyAction.Send, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, controlDown: false, isImeComposing: false, sendByCtrlEnter: false));
+        Assert.Equal(ComposerKeyAction.InsertNewLine, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: true, controlDown: false, isImeComposing: false, sendByCtrlEnter: false));
+        Assert.Equal(ComposerKeyAction.ToggleRunMode, ComposerKeyPolicy.Decide(ComposerKey.Tab, shiftDown: true, controlDown: false, isImeComposing: false, sendByCtrlEnter: false));
+        Assert.Equal(ComposerKeyAction.None, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, controlDown: false, isImeComposing: true, sendByCtrlEnter: false));
+        Assert.Equal(ComposerKeyAction.None, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, controlDown: false, isImeComposing: false, sendByCtrlEnter: true));
+        Assert.Equal(ComposerKeyAction.Send, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, controlDown: true, isImeComposing: false, sendByCtrlEnter: true));
     }
 
     [Fact]
@@ -1857,6 +1880,7 @@ router:
 
         Assert.True(bottom.StickToBottom);
         Assert.Equal(1180, ChatScrollPresenter.TargetOffset(bottom, extentHeight: 1700, viewportHeight: 520));
+        Assert.Equal(980, ChatScrollPresenter.TargetOffset(bottom, extentHeight: 1700, viewportHeight: 520, autoScrollToBottom: false));
         Assert.False(history.StickToBottom);
         Assert.Equal(400, ChatScrollPresenter.TargetOffset(history, extentHeight: 1700, viewportHeight: 520));
     }
