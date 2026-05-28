@@ -225,6 +225,73 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void AgentActivityModelsMatchMacProcessTracePolicies()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var status = new AgentActivity(
+            "status",
+            "session-1",
+            "run-1",
+            "Working",
+            "",
+            AgentActivityPhase.Status,
+            AgentActivityState.Running,
+            now,
+            now);
+        var quiet = status with
+        {
+            Id = "quiet",
+            State = AgentActivityState.Completed,
+            Title = "Done",
+        };
+        var tool = status with
+        {
+            Id = "tool",
+            Phase = AgentActivityPhase.Tool,
+            State = AgentActivityState.Completed,
+            ToolName = "Read",
+            CreatedAt = now.AddSeconds(1),
+            AnchorBlockId = "block-1",
+        };
+
+        var trace = AgentActivity.ProcessTraceActivities([quiet, tool, status]);
+
+        Assert.Equal(["status", "tool"], trace.Select(activity => activity.Id));
+        Assert.True(AgentActivity.HasRenderableProcessTrace(trace));
+        Assert.Equal(["tool"], AgentActivity.ProcessTraceActivities([quiet, tool, status], "block-1").Select(activity => activity.Id));
+        Assert.False(AgentActivityPresentationPolicy.ExpandsPermissionByDefault(PermissionRequestKind.Tool));
+    }
+
+    [Fact]
+    public void AgentToolPresentationClassifierAndInputPreviewMatchMacPolicies()
+    {
+        Assert.True(AgentToolPresentationClassifier.IsReadTool("read"));
+        Assert.True(AgentToolPresentationClassifier.IsSearchTool("grep"));
+        Assert.Equal(AgentActivityPhase.Search, AgentToolPresentationClassifier.PhaseForToolName("semantic_search"));
+        Assert.Equal(AgentActivityPhase.Command, AgentToolPresentationClassifier.PhaseForToolName("bash"));
+        Assert.Equal(AgentActivityPhase.Edit, AgentToolPresentationClassifier.PhaseForToolName("write"));
+        Assert.Equal(AgentActivityPhase.Todo, AgentToolPresentationClassifier.PhaseForToolName("todo_write"));
+        Assert.Equal(AgentActivityPhase.Subagent, AgentToolPresentationClassifier.PhaseForToolName("task"));
+        Assert.Equal(AgentActivityPhase.Tool, AgentToolPresentationClassifier.PhaseForToolName("Read"));
+
+        var preview = AgentToolInputPreview.ActivityDetail(
+            "Write",
+            """{"file_path":"README.md","content":"hello\nworld"}""");
+
+        Assert.Contains("README.md", preview);
+        Assert.Contains("2 lines", preview);
+        Assert.Contains("11 bytes", preview);
+        Assert.Equal("""{"query":"test"}""", AgentToolInputPreview.ActivityDetail("Grep", """{"query":"test"}"""));
+
+        var call = new ToolCall("call-1", "Read", "{}", ToolCallStatus.Running);
+        var result = new ToolResult("call-1", "ok", false);
+
+        Assert.Equal("call-1", call.Id);
+        Assert.Equal(ToolCallStatus.Running, call.Status);
+        Assert.False(result.IsError);
+    }
+
+    [Fact]
     public void WebV2UiSettingsNormalizeSidebarBoundsAndLists()
     {
         var tooSmall = new V2UiSettings(12, SidebarSection.General, null!, null!).Normalize();
