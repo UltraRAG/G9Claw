@@ -228,6 +228,163 @@ public sealed class AgentRootGlobExecutionPolicy
     }
 }
 
+public sealed class AgentPlanTodoExecutionGate
+{
+    private bool _planExecutionApproved;
+    private bool _todoRequiresInitialization;
+    private bool _todoRequiresRefresh;
+
+    public AgentToolResult? BlockingResult(AgentToolCall call)
+    {
+        if (!_planExecutionApproved) return null;
+        var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        if (toolName == "TodoWrite" || IsReadOnlyTool(call)) return null;
+        if (_todoRequiresInitialization)
+        {
+            return RequiredTodoResult(
+                call,
+                "Initialize the execution todo list with TodoWrite before the first workspace-changing tool after plan approval.");
+        }
+
+        if (_todoRequiresRefresh)
+        {
+            return RequiredTodoResult(
+                call,
+                "Update the todo list with TodoWrite before the next workspace-changing tool so progress remains visible.");
+        }
+
+        return null;
+    }
+
+    public void Record(AgentToolCall call, AgentToolResult result)
+    {
+        if (result.IsPolicyBlock) return;
+        var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        if (!result.IsError && toolName == "SwitchMode")
+        {
+            var mode = SwitchModeTarget(call.InputJson);
+            if (mode == "agent")
+            {
+                _planExecutionApproved = true;
+                _todoRequiresInitialization = true;
+                _todoRequiresRefresh = false;
+            }
+            else if (mode == "plan")
+            {
+                _planExecutionApproved = false;
+                _todoRequiresInitialization = false;
+                _todoRequiresRefresh = false;
+            }
+
+            return;
+        }
+
+        if (!result.IsError && toolName == "TodoWrite")
+        {
+            _todoRequiresInitialization = false;
+            _todoRequiresRefresh = false;
+        }
+        else if (RequiresTodoRefresh(call, result))
+        {
+            _todoRequiresRefresh = true;
+        }
+    }
+
+    private static bool RequiresTodoRefresh(AgentToolCall call, AgentToolResult result)
+    {
+        if (result.IsError || result.IsPolicyBlock) return false;
+        var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        return toolName != "TodoWrite" && !IsReadOnlyTool(call);
+    }
+
+    private static bool IsReadOnlyTool(AgentToolCall call)
+    {
+        return AgentToolNameCanonicalizer.Canonical(call.Name) switch
+        {
+            "Read" or "Glob" or "Grep" or "SemanticSearch" or "ReadLints" or "TodoRead" or "AskQuestion" or "SwitchMode" or "Await" or "Skill" => true,
+            "Shell" => IsReadOnlyShell(call.InputJson),
+            "Task" => IsReadOnlyTask(call.InputJson),
+            _ => false,
+        };
+    }
+
+    private static AgentToolResult RequiredTodoResult(AgentToolCall call, string reason)
+    {
+        var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        return new AgentToolResult(
+            call.Id,
+            toolName,
+            $"{reason} The requested {toolName} tool was not executed yet; call TodoWrite next, then retry this tool.",
+            false,
+            IsPolicyBlock: true);
+    }
+
+    private static string SwitchModeTarget(string inputJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(inputJson) ? "{}" : inputJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return "agent";
+            return FirstString(doc.RootElement, "mode")?.Trim().ToLowerInvariant() ?? "agent";
+        }
+        catch (JsonException)
+        {
+            return "agent";
+        }
+    }
+
+    private static bool IsReadOnlyShell(string inputJson)
+    {
+        var command = StringValue(inputJson, "command");
+        if (string.IsNullOrWhiteSpace(command)) return false;
+        var trimmed = command.Trim().ToLowerInvariant();
+        var writeMarkers = new[]
+        {
+            ">", ">>", "| tee", " out-file", " set-content", " add-content", "rm ", "del ", "erase ", "remove-item",
+            "mv ", "move-item", "cp ", "copy-item", "mkdir ", "new-item", "touch ", "sed -i", "perl -pi",
+            "python ", "node ", "npm ", "bun ", "dotnet ", "msbuild "
+        };
+        if (writeMarkers.Any(marker => trimmed.Contains(marker, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        var readPrefixes = new[]
+        {
+            "date", "get-date", "pwd", "ls", "dir", "get-childitem", "find", "grep", "rg", "select-string",
+            "cat", "type", "get-content", "wc", "measure-object", "head", "tail", "stat", "file", "du",
+            "git status", "git diff", "git log", "git show", "git ls-files"
+        };
+        return readPrefixes.Any(prefix => trimmed == prefix || trimmed.StartsWith(prefix + " ", StringComparison.Ordinal));
+    }
+
+    private static bool IsReadOnlyTask(string inputJson)
+    {
+        var type = StringValue(inputJson, "type") ?? "generalPurpose";
+        return type.Trim().ToLowerInvariant() is "explore" or "cursor-guide" or "ci-investigator";
+    }
+
+    private static string? StringValue(string inputJson, string key)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(inputJson) ? "{}" : inputJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+            return FirstString(doc.RootElement, key);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? FirstString(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var value)) return null;
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
+    }
+}
+
 public static class ToolArgumentNormalizer
 {
     internal static readonly JsonSerializerOptions JsonWriteOptions = new()

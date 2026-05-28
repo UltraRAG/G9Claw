@@ -1838,6 +1838,57 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerRequiresTodoWriteAfterPlanApprovalLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new PlanTodoGateProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "approve and execute plan",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Plan,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) => Task.FromResult(new PermissionRecord(
+            permission,
+            PermissionDecision.Allowed,
+            permission.Scope,
+            DateTimeOffset.UtcNow,
+            null)));
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var results = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+
+        Assert.Equal(6, provider.RequestCount);
+        Assert.Equal(["SwitchMode", "Write", "TodoWrite", "Write", "StrReplace"], results.Select(result => result.ToolName));
+        Assert.False(results[1].IsError);
+        Assert.True(results[1].IsPolicyBlock);
+        Assert.Contains("Initialize the execution todo list with TodoWrite", results[1].Output);
+        Assert.False(results[3].IsError);
+        Assert.False(results[3].IsPolicyBlock);
+        Assert.True(results[4].IsPolicyBlock);
+        Assert.Contains("Update the todo list with TodoWrite", results[4].Output);
+        Assert.Equal("created", await File.ReadAllTextAsync(Path.Combine(temp.Root, "plan.txt")));
+    }
+
+    [Fact]
     public void ContextBudgetPresenterComputesLevelAndCompactionState()
     {
         var unknown = ContextBudgetPresenter.FromBudget(null);
@@ -2359,6 +2410,35 @@ gateway:
             new(
                 ProviderStreamEventKind.ToolCall,
                 ToolCall: new AgentToolCall(id, "Glob", """{"pattern":"**/*","path":"."}"""));
+    }
+
+    private sealed class PlanTodoGateProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            yield return request.ToolExchanges.Count switch
+            {
+                0 => Tool("switch", "SwitchMode", """{"mode":"agent","plan":"Approved plan"}"""),
+                1 => Tool("blocked-write", "Write", """{"file_path":"plan.txt","content":"blocked"}"""),
+                2 => Tool("todo", "TodoWrite", """{"todos":[{"content":"write plan file","status":"in_progress","priority":1}]}"""),
+                3 => Tool("write", "Write", """{"file_path":"plan.txt","content":"created"}"""),
+                4 => Tool("blocked-edit", "StrReplace", """{"file_path":"plan.txt","old_string":"created","new_string":"changed"}"""),
+                _ => new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done"),
+            };
+            if (request.ToolExchanges.Count > 4)
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+        }
+
+        private static ProviderStreamEvent Tool(string id, string name, string inputJson) =>
+            new(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall(id, name, inputJson));
     }
 
     private sealed class TempWorkspace : IDisposable

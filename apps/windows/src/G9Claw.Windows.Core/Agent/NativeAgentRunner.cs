@@ -80,6 +80,7 @@ public sealed class NativeAgentRunner
             var toolExchanges = new List<AgentToolExchange>();
             var currentRequest = request;
             var rootGlobPolicy = new AgentRootGlobExecutionPolicy();
+            var planTodoGate = new AgentPlanTodoExecutionGate();
             var round = 0;
             while (true)
             {
@@ -106,7 +107,7 @@ public sealed class NativeAgentRunner
 
                     if (providerEvent.Kind == ProviderStreamEventKind.ToolCall && providerEvent.ToolCall is { } call)
                     {
-                        var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, cancellationToken);
+                        var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planTodoGate, cancellationToken);
                         await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
                         roundExchanges.Add(new AgentToolExchange(call, toolResult));
                     }
@@ -128,7 +129,7 @@ public sealed class NativeAgentRunner
                 foreach (var fallbackCall in fallbackCalls)
                 {
                     await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, fallbackCall), cancellationToken);
-                    var toolResult = await ExecuteToolAsync(request, turn, fallbackCall, options, rootGlobPolicy, cancellationToken);
+                    var toolResult = await ExecuteToolAsync(request, turn, fallbackCall, options, rootGlobPolicy, planTodoGate, cancellationToken);
                     await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
                 }
             }
@@ -163,6 +164,7 @@ public sealed class NativeAgentRunner
         AgentToolCall rawCall,
         NativeAgentRunOptions options,
         AgentRootGlobExecutionPolicy rootGlobPolicy,
+        AgentPlanTodoExecutionGate planTodoGate,
         CancellationToken cancellationToken)
     {
         var normalized = ToolArgumentNormalizer.Normalize(rawCall);
@@ -180,10 +182,17 @@ public sealed class NativeAgentRunner
             return cached;
         }
 
+        if (planTodoGate.BlockingResult(call) is { } todoBlock)
+        {
+            turn.RecordToolResult(todoBlock);
+            return todoBlock;
+        }
+
         if (call.Name == "AskQuestion")
         {
             var questionResult = await AskQuestionAsync(request, turn, call, options, cancellationToken);
             turn.RecordToolResult(questionResult);
+            planTodoGate.Record(call, questionResult);
             return questionResult;
         }
 
@@ -233,6 +242,7 @@ public sealed class NativeAgentRunner
             turn.MarkPlanExited();
         }
 
+        planTodoGate.Record(call, result);
         turn.RecordToolResult(result);
         return result;
     }
