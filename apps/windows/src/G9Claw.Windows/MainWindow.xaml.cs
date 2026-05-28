@@ -143,9 +143,6 @@ public sealed partial class MainWindow : Window
     private bool _suppressChatScrollTracking;
     private string? _lastContextStage;
     private int _contextCompactCount;
-    private readonly HashSet<string> _expandedToolRowIds = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _collapsedToolRowIds = new(StringComparer.OrdinalIgnoreCase);
-
     public AppState State { get; private set; }
     public ObservableCollection<ChatLine> ChatLines { get; } = [];
 
@@ -2621,15 +2618,15 @@ public sealed partial class MainWindow : Window
     private bool IsToolRowExpanded(string key) =>
         ToolRowExpansionPolicy.IsExpanded(
             key,
-            _expandedToolRowIds,
-            _collapsedToolRowIds,
+            State.ExpandedToolRowIds,
+            State.CollapsedToolRowIds,
             State.UiPreferences.AutoExpandTools);
 
     private void ToggleToolRow(string key) =>
         ToolRowExpansionPolicy.Toggle(
             key,
-            _expandedToolRowIds,
-            _collapsedToolRowIds,
+            State.ExpandedToolRowIds,
+            State.CollapsedToolRowIds,
             State.UiPreferences.AutoExpandTools);
 
     private FrameworkElement TurnTrace(AgentTurn turn)

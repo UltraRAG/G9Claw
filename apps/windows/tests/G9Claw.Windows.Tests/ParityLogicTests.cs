@@ -1596,6 +1596,75 @@ router:
     }
 
     [Fact]
+    public void AppStateExposesMacParitySessionActivityAndUiState()
+    {
+        var state = AppState.CreateDefault();
+        var project = state.Projects.First();
+        state.SelectProject(project);
+        var sessionId = state.CreateSessionForSelectedProject("Parity")!.Id;
+        var now = DateTimeOffset.UtcNow;
+        var activity = new AgentActivity(
+            "activity-1",
+            sessionId,
+            "run-1",
+            "Running",
+            "",
+            AgentActivityPhase.Status,
+            AgentActivityState.Running,
+            now,
+            now);
+        var late = new AgentTurnItem(
+            "item-2",
+            2,
+            AgentTurnItemKind.Status,
+            AgentTurnItemStatus.Completed,
+            "Second",
+            "",
+            null,
+            now,
+            now,
+            now,
+            null,
+            null,
+            null,
+            sessionId,
+            "turn-1");
+        var early = late with { Id = "item-1", Sequence = 1, Title = "First" };
+
+        state.ActivitiesBySession[sessionId] = [activity];
+        state.TurnItemsBySession[sessionId] = [late, early];
+        state.MessagesBySession[sessionId].Add(new ChatMessage(
+            Guid.NewGuid(),
+            sessionId,
+            SessionProvider.G9Claw,
+            ChatRole.Assistant,
+            [ChatBlock.FromText("streaming")],
+            now,
+            IsStreaming: true,
+            TokenBudget: null));
+        state.ExpandedToolRowIds.Add("tool-1");
+        state.CollapsedToolRowIds.Add("tool-2");
+        state.IsSidebarVisible = state.UiPreferences.SidebarVisible;
+        state.GitOutput = "git status";
+        state.G9ClawConfigText = "runtime:";
+        state.ToolRefreshRevision++;
+        state.StreamRenderRevision++;
+        state.IsDraftSessionVisible = true;
+
+        Assert.Equal("activity-1", Assert.Single(state.CurrentActivities).Id);
+        Assert.Equal(["item-1", "item-2"], state.CurrentTurnItems.Select(item => item.Id));
+        Assert.True(state.IsCurrentSessionStreaming);
+        Assert.Contains("tool-1", state.ExpandedToolRowIds);
+        Assert.Contains("tool-2", state.CollapsedToolRowIds);
+        Assert.True(state.IsSidebarVisible);
+        Assert.Equal("git status", state.GitOutput);
+        Assert.Equal("runtime:", state.G9ClawConfigText);
+        Assert.Equal(1, state.ToolRefreshRevision);
+        Assert.Equal(1, state.StreamRenderRevision);
+        Assert.True(state.IsDraftSessionVisible);
+    }
+
+    [Fact]
     public void AppStateBeginsNewAssistantMessageForEachTurnAndIgnoresLateEvents()
     {
         var state = AppState.CreateDefault();

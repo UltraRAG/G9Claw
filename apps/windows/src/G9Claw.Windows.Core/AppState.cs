@@ -15,8 +15,10 @@ public sealed class AppState : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public ObservableList<WorkspaceProject> Projects { get; } = [];
+    public Dictionary<string, List<AgentActivity>> ActivitiesBySession { get; } = [];
     public Dictionary<string, List<ChatMessage>> MessagesBySession { get; } = [];
     public Dictionary<string, List<AgentTurn>> TurnsBySession { get; } = [];
+    public Dictionary<string, List<AgentTurnItem>> TurnItemsBySession { get; } = [];
     public Dictionary<string, TokenBudget> TokenBudgetBySession { get; } = [];
     public List<PermissionRequest> PendingPermissions { get; } = [];
     public List<TerminalRun> TerminalRuns { get; } = [];
@@ -40,9 +42,24 @@ public sealed class AppState : INotifyPropertyChanged
     public List<AlwaysOnRunLog> AlwaysOnRunLogs { get; } = [];
     public List<RoutingUsageRecord> RoutingUsage { get; } = [];
     public List<FileAttachment> PendingAttachments { get; } = [];
+    public HashSet<string> ExpandedToolRowIds { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> CollapsedToolRowIds { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public NativeUIPreferences UiPreferences { get; set; } = new();
     public AppSettings Settings { get; set; }
+    public bool IsSidebarVisible { get; set; } = true;
+    public string ApiKeyDraft { get; set; } = "";
+    public string GitOutput { get; set; } = "";
+    public WorkspaceFile? SelectedFile { get; set; }
+    public string SelectedFileContent { get; set; } = "";
+    public bool ShowSettings { get; set; }
+    public bool ShowProjectCreationWizard { get; set; }
+    public SettingsMainTab SettingsInitialTab { get; set; } = SettingsMainTab.Appearance;
+    public string G9ClawConfigText { get; set; } = "";
+    public string? SettingsSaveNotice { get; set; }
+    public int ToolRefreshRevision { get; set; }
+    public int StreamRenderRevision { get; set; }
+    public bool IsDraftSessionVisible { get; set; }
 
     public Guid? SelectedProjectId
     {
@@ -95,6 +112,18 @@ public sealed class AppState : INotifyPropertyChanged
         SelectedSessionId is { } sessionId && MessagesBySession.TryGetValue(sessionId, out var messages)
             ? messages
             : [];
+
+    public IReadOnlyList<AgentActivity> CurrentActivities =>
+        SelectedSessionId is { } sessionId && ActivitiesBySession.TryGetValue(sessionId, out var activities)
+            ? activities
+            : [];
+
+    public IReadOnlyList<AgentTurnItem> CurrentTurnItems =>
+        SelectedSessionId is { } sessionId && TurnItemsBySession.TryGetValue(sessionId, out var items)
+            ? items.OrderBy(item => item.Sequence).ToList()
+            : [];
+
+    public bool IsCurrentSessionStreaming => CurrentMessages.Any(message => message.IsStreaming);
 
     public static AppState CreateDefault()
     {
