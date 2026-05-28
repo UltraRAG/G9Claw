@@ -4666,6 +4666,106 @@ public sealed partial class MainWindow : Window
                 : new PermissionRecord(request, PermissionDecision.Denied, null, DateTimeOffset.UtcNow, null);
         }
 
+        if (request.Kind == PermissionRequestKind.ExitPlanMode)
+        {
+            var isChinese = IsChineseUi();
+            var feedbackBox = new TextBox
+            {
+                PlaceholderText = isChinese ? "否，补充要求" : "No, add requirements",
+                TextWrapping = TextWrapping.Wrap,
+                AcceptsReturn = true,
+                MinHeight = 72,
+                Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+            };
+            var feedbackError = new TextBlock
+            {
+                Text = isChinese ? "请输入需要继续完善的要求。" : "Add feedback before keeping the plan in Plan mode.",
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = Brush("V2RedBrush"),
+                Visibility = Visibility.Collapsed,
+            };
+            var planContent = new Border
+            {
+                Padding = new Thickness(12),
+                CornerRadius = new CornerRadius(8),
+                BorderThickness = new Thickness(1),
+                BorderBrush = Brush("V2BlueBrush"),
+                Background = Brush("V2CardBrush"),
+                Child = new ScrollViewer
+                {
+                    MinHeight = 220,
+                    MaxHeight = 460,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    Content = MarkdownContent(ExitPlanModeInputCodec.ExtractPlanMarkdown(request.InputJson, isChinese)),
+                },
+            };
+            var panel = new StackPanel
+            {
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = isChinese
+                            ? "确认后会退出 Plan 模式，并让模型开始按计划执行。也可以补充要求，让模型继续完善计划。"
+                            : "Confirm to leave Plan mode and let the agent execute this plan, or add feedback and keep planning.",
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = Brush("V2MutedForegroundBrush"),
+                    },
+                    new TextBlock
+                    {
+                        Text = isChinese ? "计划" : "Plan",
+                        FontSize = 12,
+                        FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                        Foreground = Brush("V2BlueBrush"),
+                    },
+                    planContent,
+                    feedbackBox,
+                    feedbackError,
+                },
+            };
+            var planDialog = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                Title = isChinese ? "计划已准备好" : "Plan is ready",
+                Content = panel,
+                PrimaryButtonText = isChinese ? "执行计划" : "Execute plan",
+                SecondaryButtonText = isChinese ? "继续完善" : "Keep planning",
+                CloseButtonText = isChinese ? "取消计划" : "Cancel plan",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+            planDialog.SecondaryButtonClick += (_, args) =>
+            {
+                if (!string.IsNullOrWhiteSpace(feedbackBox.Text))
+                {
+                    return;
+                }
+
+                feedbackError.Visibility = Visibility.Visible;
+                args.Cancel = true;
+            };
+
+            var planResult = await planDialog.ShowAsync();
+            State.PendingPermissions.Remove(request);
+            return planResult switch
+            {
+                ContentDialogResult.Primary => new PermissionRecord(
+                    request,
+                    PermissionDecision.Allowed,
+                    PermissionScope.Session,
+                    DateTimeOffset.UtcNow,
+                    ExitPlanModeInputCodec.UpdatedInputJson(request.InputJson, "agent", null)),
+                ContentDialogResult.Secondary => new PermissionRecord(
+                    request,
+                    PermissionDecision.Allowed,
+                    PermissionScope.Session,
+                    DateTimeOffset.UtcNow,
+                    ExitPlanModeInputCodec.UpdatedInputJson(request.InputJson, "plan", feedbackBox.Text)),
+                _ => new PermissionRecord(request, PermissionDecision.Denied, null, DateTimeOffset.UtcNow, null),
+            };
+        }
+
         var details = new StackPanel
         {
             Spacing = 8,

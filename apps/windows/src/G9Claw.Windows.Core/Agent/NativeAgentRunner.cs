@@ -616,18 +616,24 @@ public sealed class NativeAgentRunner
 
         if (planModePolicy.RequiresExitPlanApproval(call))
         {
-            var approved = await RequestPermissionAsync(
+            var permission = await RequestPermissionRecordAsync(
                 request,
                 call,
                 options,
                 AgentPlanModePolicy.ExitPlanApprovalReason,
                 PermissionRequestKind.ExitPlanMode,
                 cancellationToken);
-            if (!approved)
+            if (permission.Decision != PermissionDecision.Allowed)
             {
                 var denied = new AgentToolResult(call.Id, call.Name, "Tool execution was denied.", true);
                 turn.RecordToolResult(denied);
                 return denied;
+            }
+
+            if (!string.IsNullOrWhiteSpace(permission.Response) &&
+                ToolArgumentNormalizer.CanonicalObjectJson(permission.Response).Success)
+            {
+                call = call with { InputJson = permission.Response };
             }
         }
         else if (AgentDestructiveToolClassifier.IsDestructive(call) && !planModePolicy.PlanExecutionApproved)
@@ -707,11 +713,30 @@ public sealed class NativeAgentRunner
         CancellationToken cancellationToken,
         string? inputJsonOverride = null)
     {
+        var resolved = await RequestPermissionRecordAsync(
+            request,
+            call,
+            options,
+            reason,
+            kind,
+            cancellationToken,
+            inputJsonOverride);
+        return resolved.Decision == PermissionDecision.Allowed;
+    }
+
+    private async Task<PermissionRecord> RequestPermissionRecordAsync(
+        AgentRequest request,
+        AgentToolCall call,
+        NativeAgentRunOptions options,
+        string reason,
+        PermissionRequestKind kind,
+        CancellationToken cancellationToken,
+        string? inputJsonOverride = null)
+    {
         var record = _permissionService.Request(request.SessionId, call.Name, inputJsonOverride ?? call.InputJson, reason, kind);
-        var resolved = options.PermissionHandler is null
+        return options.PermissionHandler is null
             ? _permissionService.Resolve(record.Request.Id, allow: false)
             : await options.PermissionHandler(record.Request, cancellationToken);
-        return resolved.Decision == PermissionDecision.Allowed;
     }
 
     private async Task<AgentToolResult> AskQuestionAsync(

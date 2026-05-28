@@ -1587,6 +1587,29 @@ router:
     }
 
     [Fact]
+    public void ExitPlanModeInputCodecBuildsFeedbackPayloadAndExtractsPlanLikeMac()
+    {
+        var input = """
+        {
+          "assistantPlanMarkdown": "Plan v1",
+          "steps": ["ignored because markdown wins"]
+        }
+        """;
+
+        var feedback = ExitPlanModeInputCodec.UpdatedInputJson(input, "plan", "Add tests");
+        using var feedbackDoc = JsonDocument.Parse(feedback);
+
+        Assert.Equal("plan", feedbackDoc.RootElement.GetProperty("mode").GetString());
+        Assert.Equal("Add tests", feedbackDoc.RootElement.GetProperty("userFeedback").GetString());
+        Assert.Equal("Plan v1", ExitPlanModeInputCodec.ExtractPlanMarkdown(input, chinese: false));
+
+        var execute = ExitPlanModeInputCodec.UpdatedInputJson(feedback, "agent", null);
+        using var executeDoc = JsonDocument.Parse(execute);
+        Assert.Equal("agent", executeDoc.RootElement.GetProperty("mode").GetString());
+        Assert.False(executeDoc.RootElement.TryGetProperty("userFeedback", out _));
+    }
+
+    [Fact]
     public void AgentToolSchemasIncludeG9ClawCodeCoreTools()
     {
         var names = AgentToolRegistry.OpenAITools()
@@ -3118,6 +3141,70 @@ router:
         Assert.Equal([PermissionRequestKind.AskUserQuestion, PermissionRequestKind.ExitPlanMode], permissionRequests.Select(permission => permission.Kind));
         Assert.Equal("Plan approval is required before leaving Plan mode.", permissionRequests[1].Reason);
         Assert.False(File.Exists(Path.Combine(temp.Root, "blocked.txt")));
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerKeepsPlanningWithExitPlanFeedbackLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new ExitPlanFeedbackProvider();
+        var exitPlanRequests = 0;
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "plan with feedback before execution",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.BypassPermissions,
+            ChatRunMode.Plan,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) =>
+        {
+            if (permission.Kind == PermissionRequestKind.AskUserQuestion)
+            {
+                return Task.FromResult(new PermissionRecord(
+                    permission,
+                    PermissionDecision.Allowed,
+                    PermissionScope.Session,
+                    DateTimeOffset.UtcNow,
+                    "approved"));
+            }
+
+            exitPlanRequests++;
+            var updated = exitPlanRequests == 1
+                ? ExitPlanModeInputCodec.UpdatedInputJson(permission.InputJson, "plan", "Add test coverage before executing.")
+                : ExitPlanModeInputCodec.UpdatedInputJson(permission.InputJson, "agent", null);
+            return Task.FromResult(new PermissionRecord(
+                permission,
+                PermissionDecision.Allowed,
+                PermissionScope.Session,
+                DateTimeOffset.UtcNow,
+                updated));
+        });
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var results = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+        Assert.Equal(["AskQuestion", "SwitchMode", "SwitchMode"], results.Select(result => result.ToolName));
+        Assert.Contains("Stay in Plan mode. User requested revisions:", results[1].Output);
+        Assert.Contains("Add test coverage before executing.", results[1].Output);
+        Assert.Contains("Plan v2", results[2].Output);
+        Assert.Equal(2, exitPlanRequests);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after revised plan");
     }
 
     [Fact]
@@ -4759,6 +4846,34 @@ gateway:
                 _ => new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done"),
             };
             if (RequestCount > 5)
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+        }
+
+        private static ProviderStreamEvent Tool(string id, string name, string inputJson) =>
+            new(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall(id, name, inputJson));
+    }
+
+    private sealed class ExitPlanFeedbackProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return request.ToolExchanges.Count switch
+            {
+                0 => Tool("question", "AskQuestion", """{"question":"Approve plan direction?","options":["Yes"]}"""),
+                1 => Tool("switch-v1", "SwitchMode", """{"mode":"agent","plan":"Plan v1"}"""),
+                2 => Tool("switch-v2", "SwitchMode", """{"mode":"agent","plan":"Plan v2"}"""),
+                _ => new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after revised plan"),
+            };
+            if (request.ToolExchanges.Count > 2)
             {
                 yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
             }

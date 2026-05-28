@@ -636,7 +636,14 @@ public sealed class AgentToolExecutor
     {
         using var doc = JsonDocument.Parse(call.InputJson);
         var mode = OptionalString(doc.RootElement, "mode") ?? (context.RunMode == ChatRunMode.Plan ? "agent" : "plan");
-        return Ok(call, $"SwitchMode accepted: {mode}.");
+        if (string.Equals(mode, "plan", StringComparison.OrdinalIgnoreCase) &&
+            OptionalString(doc.RootElement, "userFeedback") is { } feedback &&
+            !string.IsNullOrWhiteSpace(feedback))
+        {
+            return Ok(call, $"Stay in Plan mode. User requested revisions:\n{feedback.Trim()}");
+        }
+
+        return Ok(call, OptionalString(doc.RootElement, "plan") ?? $"SwitchMode accepted: {mode}.");
     }
 
     private async Task<AgentToolResult> TaskToolAsync(AgentToolCall call, AgentToolExecutionContext context)
