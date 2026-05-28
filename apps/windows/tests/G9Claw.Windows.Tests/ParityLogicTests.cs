@@ -975,6 +975,44 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public async Task AgentToolExecutorTaskShellReceivesNativeConfigEnvironment()
+    {
+        using var temp = new TempWorkspace();
+        var runStore = new NativeRunStore(Path.Combine(temp.Root, "run-history"));
+        var executor = new AgentToolExecutor(runStore: runStore);
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None,
+            new Dictionary<string, string>
+            {
+                ["rag.enabled"] = "true",
+                ["rag.glmWebSearch.defaultTopK"] = "7",
+            });
+
+        var foreground = await executor.ExecuteAsync(new AgentToolCall("task-shell-env", "Task", """
+        {"type":"shell","prompt":"Write-Output $env:G9CLAW_RAG_ENABLED; Write-Output $env:G9CLAW_RAG_GLM_WEB_SEARCH_TOP_K","run_in_background":false}
+        """), context);
+        var background = await executor.ExecuteAsync(new AgentToolCall("task-shell-background-env", "Task", """
+        {"type":"shell","prompt":"Write-Output $env:G9CLAW_RAG_ENABLED","description":"Background env","run_in_background":true}
+        """), context);
+        var awaited = await executor.ExecuteAsync(new AgentToolCall("task-shell-background-await", "Await", JsonSerializer.Serialize(new
+        {
+            task_id = background.TaskId,
+            timeout = 5_000,
+        })), context);
+
+        Assert.False(foreground.IsError);
+        Assert.Equal(["1", "7"], OutputLines(foreground.Output));
+        Assert.False(background.IsError);
+        Assert.False(awaited.IsError);
+        Assert.Equal("Completed", awaited.Diagnostics?["status"]);
+        Assert.Contains("1", OutputLines(awaited.Output));
+    }
+
+    [Fact]
     public async Task AgentToolExecutorReadLintsRunsConfiguredCommandLikeMac()
     {
         using var temp = new TempWorkspace();

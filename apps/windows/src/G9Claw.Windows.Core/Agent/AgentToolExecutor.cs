@@ -650,13 +650,14 @@ public sealed class AgentToolExecutor
 
         if (normalizedType == "shell")
         {
+            var environment = SkillRuntimeEnvironment.Build(context.NativeConfigValues);
             if (background)
             {
-                var run = _runStore.StartShellTask(prompt, cwd, _terminalService, timeout, context.CancellationToken);
+                var run = _runStore.StartShellTask(prompt, cwd, _terminalService, timeout, context.CancellationToken, environment);
                 return Ok(call, $"Started shell task {run.Id}: {description}", taskId: run.Id);
             }
 
-            var result = await _terminalService.RunAsync(prompt, cwd, timeout, context.CancellationToken);
+            var result = await _terminalService.RunAsync(prompt, cwd, timeout, context.CancellationToken, environment);
             var isError = result.ExitCode != 0;
             return new AgentToolResult(call.Id, call.Name, isError ? result.Output : LimitOutput(result.Output), isError, Diagnostics: new Dictionary<string, string>
             {
