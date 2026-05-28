@@ -328,6 +328,58 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void ProcessTracePresentationMatchesMacLiveStatusPolicies()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var rootGlob = new AgentActivity(
+            "glob",
+            "session-1",
+            "run-1",
+            "",
+            """{"pattern":"**/*","path":"."}""",
+            AgentActivityPhase.Search,
+            AgentActivityState.Running,
+            now,
+            now,
+            "Glob");
+        var presentation = ProcessTracePresentation.Make([rootGlob], chinese: false);
+
+        Assert.True(presentation.ShouldRender);
+        Assert.True(presentation.ShouldShimmer);
+        Assert.Equal("Search", presentation.IconName);
+        Assert.Equal("Searching **/*", presentation.SummaryText);
+        var detail = Assert.Single(presentation.DetailRows);
+        Assert.Equal("Exploring workspace", detail.Title);
+        Assert.Equal("**/*", detail.Detail);
+        Assert.True(presentation.CanExpand);
+
+        var ask = rootGlob with
+        {
+            Id = "ask",
+            ToolName = "AskQuestion",
+            Detail = """{"questions":[{"label":"Continue?"}]}""",
+        };
+        var askPresentation = ProcessTracePresentation.Make([ask], chinese: false);
+        Assert.True(askPresentation.ShouldRender);
+        Assert.Equal("Waiting for your answer", askPresentation.SummaryText);
+        Assert.Empty(askPresentation.DetailRows);
+        Assert.False(askPresentation.CanExpand);
+
+        var compacting = rootGlob with
+        {
+            Id = "compact",
+            Title = "Automatically compacting context",
+            Detail = "",
+            ToolName = null,
+            Phase = AgentActivityPhase.Status,
+            State = AgentActivityState.Completed,
+        };
+        var compactingPresentation = ProcessTracePresentation.Make([compacting], chinese: false);
+        Assert.True(compactingPresentation.ShouldRender);
+        Assert.True(compactingPresentation.Compacting);
+    }
+
+    [Fact]
     public void AgentToolPresentationClassifierAndInputPreviewMatchMacPolicies()
     {
         Assert.True(AgentToolPresentationClassifier.IsReadTool("read"));

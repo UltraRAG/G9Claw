@@ -256,6 +256,209 @@ public sealed record ProcessTraceSummary(
     }
 }
 
+public sealed record CodexTraceDetailRow(
+    string Title,
+    string Detail,
+    bool IsRunning);
+
+public sealed record ProcessTracePresentation(
+    bool ShouldRender,
+    string SummaryText,
+    bool ShouldShimmer,
+    string IconName,
+    IReadOnlyList<CodexTraceDetailRow> DetailRows,
+    bool Compacting)
+{
+    public bool CanExpand => DetailRows.Count > 0;
+
+    public static ProcessTracePresentation Make(IEnumerable<AgentActivity> activities, bool chinese)
+    {
+        var visible = activities
+            .Where(activity =>
+                !string.IsNullOrWhiteSpace(activity.Title) ||
+                !string.IsNullOrWhiteSpace(activity.Detail) ||
+                activity.ToolName is not null)
+            .OrderBy(activity => activity.CreatedAt)
+            .ToList();
+        var summary = ProcessTraceSummary.Make(visible, chinese);
+        var current = visible.LastOrDefault(activity => activity.State == AgentActivityState.Running);
+        var compacting = visible.Any(activity =>
+        {
+            var haystack = $"{activity.Title} {activity.Detail} {activity.ToolName ?? ""}".ToLowerInvariant();
+            return haystack.Contains("compact", StringComparison.Ordinal) ||
+                   haystack.Contains("\u538b\u7f29", StringComparison.Ordinal);
+        });
+
+        return new ProcessTracePresentation(
+            current is not null || compacting,
+            summary.Text,
+            summary.ShouldShimmer,
+            IconNameFor(current, visible),
+            current is null ? [] : CurrentDetailRows(current, chinese),
+            compacting);
+    }
+
+    private static IReadOnlyList<CodexTraceDetailRow> CurrentDetailRows(AgentActivity activity, bool chinese)
+    {
+        if (activity.State != AgentActivityState.Running) return [];
+        if (IsInteractiveControlActivity(activity)) return [];
+        var phase = PresentationPhase(activity);
+        if (phase == AgentActivityPhase.Todo) return [];
+
+        var title = DetailTitle(activity, chinese);
+        var detail = CompactDetail(activity);
+        if (string.IsNullOrWhiteSpace(title)) return [];
+        return [new CodexTraceDetailRow(title, detail, true)];
+    }
+
+    private static string IconNameFor(AgentActivity? current, IReadOnlyList<AgentActivity> fallbackActivities)
+    {
+        if (current is not null)
+        {
+            return PresentationPhase(current) switch
+            {
+                AgentActivityPhase.Status or AgentActivityPhase.Thinking => "Sparkles",
+                AgentActivityPhase.Tool => "Hammer",
+                AgentActivityPhase.Todo => "ListChecks",
+                AgentActivityPhase.Command => "Terminal",
+                AgentActivityPhase.Search => "Search",
+                AgentActivityPhase.Edit => "Edit",
+                AgentActivityPhase.Subagent => "Bot",
+                _ => "Terminal",
+            };
+        }
+
+        if (fallbackActivities.Any(activity => activity.State == AgentActivityState.Failed)) return "AlertCircle";
+        if (fallbackActivities.Any(activity => PresentationPhase(activity) == AgentActivityPhase.Todo)) return "ListChecks";
+        if (fallbackActivities.Any(activity => PresentationPhase(activity) == AgentActivityPhase.Command)) return "Terminal";
+        if (fallbackActivities.Any(activity => PresentationPhase(activity) == AgentActivityPhase.Search)) return "Search";
+        if (fallbackActivities.Any(activity => PresentationPhase(activity) == AgentActivityPhase.Edit)) return "Edit";
+        return "Terminal";
+    }
+
+    private static string DetailTitle(AgentActivity activity, bool chinese)
+    {
+        var target = Target(activity);
+        var toolName = activity.ToolName ?? "";
+        var phase = PresentationPhase(activity);
+        if (phase == AgentActivityPhase.Search)
+        {
+            if (IsRootWorkspaceGlob(activity)) return chinese ? "\u6b63\u5728\u63a2\u7d22\u5de5\u4f5c\u533a" : "Exploring workspace";
+            return target is null
+                ? (chinese ? "\u6b63\u5728\u641c\u7d22" : "Searching")
+                : (chinese ? $"\u6b63\u5728\u641c\u7d22 {target}" : $"Searching {target}");
+        }
+
+        if (AgentToolPresentationClassifier.IsReadTool(toolName))
+        {
+            return target is null
+                ? (chinese ? "\u6b63\u5728\u8bfb\u53d6\u6587\u4ef6" : "Reading file")
+                : (chinese ? $"\u6b63\u5728\u8bfb\u53d6 {target}" : $"Reading {target}");
+        }
+
+        if (phase == AgentActivityPhase.Edit)
+        {
+            return target is null
+                ? (chinese ? "\u6b63\u5728\u7f16\u8f91\u6587\u4ef6" : "Editing file")
+                : (chinese ? $"\u6b63\u5728\u7f16\u8f91 {target}" : $"Editing {target}");
+        }
+
+        if (phase == AgentActivityPhase.Command)
+        {
+            return target is null
+                ? (chinese ? "\u6b63\u5728\u6267\u884c\u547d\u4ee4" : "Running command")
+                : (chinese ? $"\u6b63\u5728\u6267\u884c\u547d\u4ee4 {target}" : $"Running {target}");
+        }
+
+        if (phase == AgentActivityPhase.Subagent)
+        {
+            return target is null
+                ? (chinese ? "\u6b63\u5728\u8fd0\u884c\u4efb\u52a1" : "Running task")
+                : (chinese ? $"\u6b63\u5728\u8fd0\u884c\u4efb\u52a1 {target}" : $"Running task {target}");
+        }
+
+        var fallback = activity.Title.Trim();
+        return string.IsNullOrWhiteSpace(fallback) ? (chinese ? "\u6b63\u5728\u5904\u7406" : "Processing") : fallback;
+    }
+
+    private static string CompactDetail(AgentActivity activity)
+    {
+        var candidates = new[] { activity.Detail }.Concat(activity.DetailMessages ?? []);
+        foreach (var value in candidates)
+        {
+            var trimmed = value.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed)) continue;
+            if (trimmed.StartsWith("{", StringComparison.Ordinal) && trimmed.EndsWith("}", StringComparison.Ordinal))
+            {
+                if (Target(activity) is { } target) return target;
+                continue;
+            }
+
+            if (IsLowValueStatus(trimmed)) continue;
+            return CompactPreview(trimmed, 130);
+        }
+
+        return "";
+    }
+
+    private static string? Target(AgentActivity activity)
+    {
+        if (string.IsNullOrWhiteSpace(activity.ToolName)) return null;
+        foreach (var source in new[] { activity.Detail }.Concat(activity.DetailMessages ?? []))
+        {
+            var target = ToolInvocationPresenter.Target(activity.ToolName, source, 72);
+            if (!string.IsNullOrWhiteSpace(target)) return target;
+        }
+
+        return null;
+    }
+
+    private static AgentActivityPhase PresentationPhase(AgentActivity activity) =>
+        string.IsNullOrWhiteSpace(activity.ToolName)
+            ? activity.Phase
+            : AgentToolPresentationClassifier.PhaseForToolName(activity.ToolName);
+
+    private static bool IsInteractiveControlActivity(AgentActivity activity)
+    {
+        if (activity.ToolName is null) return false;
+        var canonical = AgentToolNameCanonicalizer.Canonical(activity.ToolName);
+        return canonical == "AskQuestion" || canonical == "SwitchMode";
+    }
+
+    private static bool IsRootWorkspaceGlob(AgentActivity activity)
+    {
+        if (AgentToolNameCanonicalizer.Canonical(activity.ToolName ?? "") != "Glob") return false;
+        return new[] { activity.Detail }
+            .Concat(activity.DetailMessages ?? [])
+            .Any(source => AgentRootGlobExecutionPolicy.IsRootWorkspaceGlob(new AgentToolCall(activity.Id, "Glob", source)));
+    }
+
+    private static bool IsLowValueStatus(string value)
+    {
+        var haystack = value.ToLowerInvariant();
+        var markers = new[]
+        {
+            "connecting",
+            "streaming",
+            "processing",
+            "thinking",
+            "agent state",
+            "\u6b63\u5728\u8fde\u63a5",
+            "\u6b63\u5728\u63a5\u6536\u54cd\u5e94",
+            "\u5904\u7406\u4e2d",
+            "\u6b63\u5728\u601d\u8003",
+        };
+        return markers.Any(marker => haystack.Contains(marker, StringComparison.Ordinal));
+    }
+
+    private static string CompactPreview(string value, int limit)
+    {
+        var compact = value.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim();
+        if (compact.Length <= limit) return compact;
+        return $"{compact[..Math.Max(0, limit - 1)]}\u2026";
+    }
+}
+
 public enum AgentActivityPhase
 {
     Status,

@@ -1053,7 +1053,11 @@ public sealed partial class MainWindow : Window
 
         root.SizeChanged += (_, _) => ApplyChatColumnWidth();
 
-        var hasMessages = State.CurrentMessages.Count > 0 ||
+        var processTracePresentation = ProcessTracePresentation.Make(
+            AgentActivity.ProcessTraceActivities(State.CurrentActivities),
+            IsChineseUi());
+        var hasMessages = processTracePresentation.ShouldRender ||
+            State.CurrentMessages.Count > 0 ||
             (State.SelectedSessionId is { } currentSessionId &&
              State.TurnsBySession.TryGetValue(currentSessionId, out var currentTurns) &&
              currentTurns.Count > 0);
@@ -1095,6 +1099,11 @@ public sealed partial class MainWindow : Window
                 Spacing = 18,
             };
             TrackChatColumnWidth(messages);
+
+            if (processTracePresentation.ShouldRender)
+            {
+                messages.Children.Add(ProcessLiveStatusRow(processTracePresentation));
+            }
 
             foreach (var message in State.CurrentMessages)
             {
@@ -1205,6 +1214,123 @@ public sealed partial class MainWindow : Window
         composerShell.Loaded += (_, _) => ApplyChatColumnWidth();
 
         return root;
+    }
+
+    private FrameworkElement ProcessLiveStatusRow(ProcessTracePresentation presentation)
+    {
+        var key = $"process-live:{State.SelectedSessionId ?? "draft"}";
+        var expanded = presentation.CanExpand && IsToolRowExpanded(key);
+        var stack = new StackPanel { Spacing = 7, Margin = new Thickness(0, 0, 0, 2) };
+        var button = new Button
+        {
+            MinWidth = 0,
+            MinHeight = 0,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Background = Transparent,
+            BorderBrush = Transparent,
+            Padding = new Thickness(0, 2, 0, 2),
+            UseSystemFocusVisuals = false,
+            Content = new Grid
+            {
+                ColumnSpacing = 8,
+                ColumnDefinitions =
+                {
+                    new ColumnDefinition { Width = new GridLength(18) },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                },
+                Children =
+                {
+                    Icon(presentation.IconName, 15, Brush("V2MutedForegroundBrush")),
+                    new TextBlock
+                    {
+                        Text = presentation.SummaryText,
+                        FontSize = 13,
+                        FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                        Foreground = Brush("V2MutedForegroundBrush"),
+                        VerticalAlignment = VerticalAlignment.Center,
+                        TextTrimming = TextTrimming.CharacterEllipsis,
+                        MaxWidth = 560,
+                    },
+                    new ProgressRing
+                    {
+                        IsActive = presentation.ShouldShimmer,
+                        Width = 12,
+                        Height = 12,
+                        Visibility = presentation.ShouldShimmer ? Visibility.Visible : Visibility.Collapsed,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    Icon(expanded ? "ChevronDown" : "ChevronRight", 12, Brush("V2MutedForegroundBrush")),
+                },
+            },
+        };
+        if (button.Content is Grid grid)
+        {
+            Grid.SetColumn((FrameworkElement)grid.Children[1], 1);
+            Grid.SetColumn((FrameworkElement)grid.Children[2], 2);
+            Grid.SetColumn((FrameworkElement)grid.Children[3], 3);
+            grid.Children[3].Visibility = presentation.CanExpand ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        if (presentation.CanExpand)
+        {
+            button.Click += (_, _) =>
+            {
+                ToggleToolRow(key);
+                RenderContent();
+            };
+        }
+
+        stack.Children.Add(button);
+        if (expanded)
+        {
+            var detailPanel = new StackPanel { Spacing = 7, Margin = new Thickness(26, 0, 0, 0) };
+            foreach (var row in presentation.DetailRows)
+            {
+                detailPanel.Children.Add(new StackPanel
+                {
+                    Spacing = 3,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = row.Title,
+                            FontSize = 12,
+                            Foreground = Brush("V2SecondaryForegroundBrush"),
+                            TextWrapping = TextWrapping.Wrap,
+                            MaxWidth = 620,
+                        },
+                        new TextBlock
+                        {
+                            Text = row.Detail,
+                            FontSize = 11,
+                            FontFamily = new FontFamily("Consolas"),
+                            Foreground = Brush("V2MutedForegroundBrush"),
+                            TextWrapping = TextWrapping.Wrap,
+                            MaxWidth = 620,
+                            Visibility = string.IsNullOrWhiteSpace(row.Detail) ? Visibility.Collapsed : Visibility.Visible,
+                        },
+                    },
+                });
+            }
+
+            stack.Children.Add(detailPanel);
+        }
+
+        if (presentation.Compacting)
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = IsChineseUi() ? "\u6b63\u5728\u81ea\u52a8\u538b\u7f29\u4e0a\u4e0b\u6587" : "Automatically compacting context",
+                FontSize = 12,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                HorizontalAlignment = HorizontalAlignment.Left,
+            });
+        }
+
+        return stack;
     }
 
     private async void OnComposerKeyDown(object sender, KeyRoutedEventArgs args)
