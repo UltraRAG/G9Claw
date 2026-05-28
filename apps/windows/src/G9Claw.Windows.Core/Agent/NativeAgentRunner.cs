@@ -118,73 +118,93 @@ public sealed class NativeAgentRunner
                 var deferredPlanContent = new StringBuilder();
                 try
                 {
-                    await foreach (var providerEvent in _providerClient.StreamAsync(currentRequest, cancellationToken))
+                    var providerFailedAttempts = 0;
+                    while (true)
                     {
-                        cancellationToken.ThrowIfCancellationRequested();
-
-                        if (providerEvent.Kind == ProviderStreamEventKind.ContentDelta && providerEvent.Text is { } text)
+                        try
                         {
-                            roundAssistantText.Append(text);
-                            if (ShouldDeferVisiblePlanContent(request.RunMode, planModePolicy.PlanExited))
+                            await foreach (var providerEvent in _providerClient.StreamAsync(currentRequest, cancellationToken))
                             {
-                                deferredPlanContent.Append(text);
-                            }
-                            else
-                            {
-                                await FlushDeferredContentAsync(deferredPlanContent, assistantText, writer, request.SessionId, cancellationToken);
-                                assistantText.Append(text);
-                                await writer.WriteAsync(AgentEvent.ContentDelta(request.SessionId, text), cancellationToken);
+                                cancellationToken.ThrowIfCancellationRequested();
+
+                                if (providerEvent.Kind == ProviderStreamEventKind.ContentDelta && providerEvent.Text is { } text)
+                                {
+                                    roundAssistantText.Append(text);
+                                    if (ShouldDeferVisiblePlanContent(request.RunMode, planModePolicy.PlanExited))
+                                    {
+                                        deferredPlanContent.Append(text);
+                                    }
+                                    else
+                                    {
+                                        await FlushDeferredContentAsync(deferredPlanContent, assistantText, writer, request.SessionId, cancellationToken);
+                                        assistantText.Append(text);
+                                        await writer.WriteAsync(AgentEvent.ContentDelta(request.SessionId, text), cancellationToken);
+                                    }
+
+                                    continue;
+                                }
+
+                                if (providerEvent.Kind == ProviderStreamEventKind.TokenBudget && providerEvent.TokenBudget is { } budget)
+                                {
+                                    lastBudget = budget;
+                                    await writer.WriteAsync(AgentEvent.Budget(request.SessionId, budget), cancellationToken);
+                                    continue;
+                                }
+
+                                if (providerEvent.Kind == ProviderStreamEventKind.Done)
+                                {
+                                    await writer.WriteAsync(AgentEvent.StreamEnd(request.SessionId), cancellationToken);
+                                    await writer.WriteAsync(AgentEvent.Complete(request.SessionId), cancellationToken);
+                                    continue;
+                                }
+
+                                if (providerEvent.Kind == ProviderStreamEventKind.ToolCall && providerEvent.ToolCall is { } call)
+                                {
+                                    if (ShouldShowDeferredPlanContentBeforeTool(deferredPlanContent.ToString(), call, request.RunMode, planModePolicy.PlanExited))
+                                    {
+                                        await FlushDeferredContentAsync(deferredPlanContent, assistantText, writer, request.SessionId, cancellationToken);
+                                    }
+                                    else
+                                    {
+                                        deferredPlanContent.Clear();
+                                    }
+
+                                    await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, call), cancellationToken);
+                                    var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
+                                    if (toolResult is null)
+                                    {
+                                        roundSkippedDuplicateTool = true;
+                                        await writer.WriteAsync(AgentEvent.Status(request.SessionId, "duplicate tool request skipped"), cancellationToken);
+                                        continue;
+                                    }
+
+                                    await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                                    completionGate.RecordToolResult(call, toolResult);
+                                    if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
+                                    {
+                                        throw ProviderClientException.Transport(watchdogMessage);
+                                    }
+
+                                    roundExchanges.Add(new AgentToolExchange(call, toolResult));
+                                }
                             }
 
-                            continue;
+                            partialStreamRecoveryCount = 0;
+                            break;
                         }
-
-                        if (providerEvent.Kind == ProviderStreamEventKind.TokenBudget && providerEvent.TokenBudget is { } budget)
+                        catch (Exception ex) when (ShouldRetryProviderTurn(ex, providerFailedAttempts, cancellationToken))
                         {
-                            lastBudget = budget;
-                            await writer.WriteAsync(AgentEvent.Budget(request.SessionId, budget), cancellationToken);
-                            continue;
-                        }
-
-                        if (providerEvent.Kind == ProviderStreamEventKind.Done)
-                        {
-                            await writer.WriteAsync(AgentEvent.StreamEnd(request.SessionId), cancellationToken);
-                            await writer.WriteAsync(AgentEvent.Complete(request.SessionId), cancellationToken);
-                            continue;
-                        }
-
-                        if (providerEvent.Kind == ProviderStreamEventKind.ToolCall && providerEvent.ToolCall is { } call)
-                        {
-                            if (ShouldShowDeferredPlanContentBeforeTool(deferredPlanContent.ToString(), call, request.RunMode, planModePolicy.PlanExited))
+                            var decision = NativeAgentRuntime.RetryDecision(ex, providerFailedAttempts);
+                            providerFailedAttempts++;
+                            await writer.WriteAsync(
+                                AgentEvent.Status(request.SessionId, $"Reconnecting... {providerFailedAttempts}/{ProviderRetryPolicy.CodexDefault.StreamMaxRetries}"),
+                                cancellationToken);
+                            if (decision.Delay > TimeSpan.Zero)
                             {
-                                await FlushDeferredContentAsync(deferredPlanContent, assistantText, writer, request.SessionId, cancellationToken);
+                                await Task.Delay(decision.Delay, cancellationToken);
                             }
-                            else
-                            {
-                                deferredPlanContent.Clear();
-                            }
-
-                            await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, call), cancellationToken);
-                            var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
-                            if (toolResult is null)
-                            {
-                                roundSkippedDuplicateTool = true;
-                                await writer.WriteAsync(AgentEvent.Status(request.SessionId, "duplicate tool request skipped"), cancellationToken);
-                                continue;
-                            }
-
-                            await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
-                            completionGate.RecordToolResult(call, toolResult);
-                            if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
-                            {
-                                throw ProviderClientException.Transport(watchdogMessage);
-                            }
-
-                            roundExchanges.Add(new AgentToolExchange(call, toolResult));
                         }
                     }
-
-                    partialStreamRecoveryCount = 0;
                 }
                 catch (ProviderClientException ex) when (ex.PartialVisibleOutput && partialStreamRecoveryCount < 2)
                 {
@@ -423,6 +443,10 @@ public sealed class NativeAgentRunner
 
     private static bool ShouldDeferVisiblePlanContent(ChatRunMode runMode, bool planExited) =>
         runMode == ChatRunMode.Plan && !planExited;
+
+    private static bool ShouldRetryProviderTurn(Exception error, int failedAttempts, CancellationToken cancellationToken) =>
+        !cancellationToken.IsCancellationRequested &&
+        NativeAgentRuntime.RetryDecision(error, failedAttempts).ShouldRetry;
 
     private static bool ShouldShowDeferredPlanContentBeforeTool(
         string deferredContent,

@@ -1483,6 +1483,40 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerRetriesTransientProviderFailureLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new TransientFailureProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "retry transient provider failure",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        Assert.Equal(2, provider.RequestCount);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "Reconnecting... 1/5");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "recovered after retry");
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Error);
+    }
+
+    [Fact]
     public void AgentToolSchemasIncludeG9ClawCodeCoreTools()
     {
         var names = AgentToolRegistry.OpenAITools()
@@ -4358,6 +4392,27 @@ gateway:
                 prompt = request.Prompt,
                 result = $"subagent result for {request.Description}\n{request.ExtraContext}",
             }, new JsonSerializerOptions { WriteIndented = true }));
+        }
+    }
+
+    private sealed class TransientFailureProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (RequestCount == 1)
+            {
+                throw ProviderClientException.HttpError(502, "bad gateway");
+            }
+
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "recovered after retry");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
         }
     }
 
