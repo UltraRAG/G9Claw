@@ -1889,6 +1889,73 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerDeduplicatesToolsWithMutationEpochLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new DuplicateToolProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "exercise duplicate tool calls",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) => Task.FromResult(new PermissionRecord(
+            permission,
+            PermissionDecision.Allowed,
+            permission.Scope,
+            DateTimeOffset.UtcNow,
+            null)));
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var results = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+
+        Assert.Equal(7, provider.RequestCount);
+        Assert.Equal(["Write", "Write", "Read", "StrReplace", "Read"], results.Select(result => result.ToolName));
+        Assert.False(results[0].IsPolicyBlock);
+        Assert.True(results[1].IsPolicyBlock);
+        Assert.Contains("Duplicate tool request skipped", results[1].Output);
+        Assert.DoesNotContain(results, result => result.CallId == "read-duplicate");
+        Assert.Contains("first", results[2].Output);
+        Assert.Contains("changed", results[4].Output);
+        Assert.Equal("changed", await File.ReadAllTextAsync(Path.Combine(temp.Root, "dupe.txt")));
+    }
+
+    [Fact]
+    public void AgentToolDeduplicationPolicyBlocksUnchangedTodoWriteLikeMac()
+    {
+        var policy = new AgentToolDeduplicationPolicy();
+        var first = new AgentToolCall("todo-1", "TodoWrite", """{"todos":[{"content":"ship","status":"pending"}]}""");
+        var duplicate = new AgentToolCall("todo-2", "TodoWrite", """{"todos":[{"status":"pending","content":"ship"}]}""");
+
+        Assert.Null(policy.Deduplicate(first));
+        policy.Record(first, new AgentToolResult(first.Id, "TodoWrite", "Saved 1 todo item(s).", false));
+        var duplicateDecision = policy.Deduplicate(duplicate);
+
+        Assert.NotNull(duplicateDecision);
+        Assert.False(duplicateDecision!.Skip);
+        Assert.True(duplicateDecision.Result?.IsPolicyBlock);
+        Assert.Contains("Todo list is already up to date", duplicateDecision.Result?.Output);
+    }
+
+    [Fact]
     public void ContextBudgetPresenterComputesLevelAndCompactionState()
     {
         var unknown = ContextBudgetPresenter.FromBudget(null);
@@ -2370,7 +2437,10 @@ gateway:
             {
                 yield return new ProviderStreamEvent(
                     ProviderStreamEventKind.ToolCall,
-                    ToolCall: new AgentToolCall($"call-{request.ToolExchanges.Count + 1}", "ReadLints", "{}"));
+                    ToolCall: new AgentToolCall(
+                        $"call-{request.ToolExchanges.Count + 1}",
+                        "ReadLints",
+                        JsonSerializer.Serialize(new { path = $"round-{request.ToolExchanges.Count + 1}.cs" })));
             }
             else
             {
@@ -2432,6 +2502,36 @@ gateway:
                 _ => new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done"),
             };
             if (request.ToolExchanges.Count > 4)
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+        }
+
+        private static ProviderStreamEvent Tool(string id, string name, string inputJson) =>
+            new(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall(id, name, inputJson));
+    }
+
+    private sealed class DuplicateToolProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            yield return RequestCount switch
+            {
+                1 => Tool("write-1", "Write", """{"file_path":"dupe.txt","content":"first"}"""),
+                2 => Tool("write-duplicate", "Write", """{"file_path":"dupe.txt","content":"first"}"""),
+                3 => Tool("read-1", "Read", """{"file_path":"dupe.txt"}"""),
+                4 => Tool("read-duplicate", "Read", """{"file_path":"dupe.txt"}"""),
+                5 => Tool("replace", "StrReplace", """{"file_path":"dupe.txt","old_string":"first","new_string":"changed"}"""),
+                6 => Tool("read-after-mutation", "Read", """{"file_path":"dupe.txt"}"""),
+                _ => new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done"),
+            };
+            if (RequestCount > 6)
             {
                 yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
             }

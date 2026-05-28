@@ -81,13 +81,16 @@ public sealed class NativeAgentRunner
             var currentRequest = request;
             var rootGlobPolicy = new AgentRootGlobExecutionPolicy();
             var planTodoGate = new AgentPlanTodoExecutionGate();
+            var deduplicationPolicy = new AgentToolDeduplicationPolicy();
             var round = 0;
+            var duplicateOnlyRounds = 0;
             while (true)
             {
                 await writer.WriteAsync(
                     AgentEvent.Status(request.SessionId, round == 0 ? "Connecting to provider..." : "Continuing with tool results..."),
                     cancellationToken);
                 var roundExchanges = new List<AgentToolExchange>();
+                var roundSkippedDuplicateTool = false;
                 await foreach (var providerEvent in _providerClient.StreamAsync(currentRequest, cancellationToken))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -107,17 +110,33 @@ public sealed class NativeAgentRunner
 
                     if (providerEvent.Kind == ProviderStreamEventKind.ToolCall && providerEvent.ToolCall is { } call)
                     {
-                        var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planTodoGate, cancellationToken);
+                        var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planTodoGate, deduplicationPolicy, cancellationToken);
+                        if (toolResult is null)
+                        {
+                            roundSkippedDuplicateTool = true;
+                            await writer.WriteAsync(AgentEvent.Status(request.SessionId, "duplicate tool request skipped"), cancellationToken);
+                            continue;
+                        }
+
                         await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
                         roundExchanges.Add(new AgentToolExchange(call, toolResult));
                     }
+
                 }
 
                 if (roundExchanges.Count == 0)
                 {
+                    if (roundSkippedDuplicateTool && duplicateOnlyRounds < 2)
+                    {
+                        duplicateOnlyRounds++;
+                        round++;
+                        continue;
+                    }
+
                     break;
                 }
 
+                duplicateOnlyRounds = 0;
                 toolExchanges.AddRange(roundExchanges);
                 currentRequest = request with { ToolExchanges = toolExchanges.ToList() };
                 round++;
@@ -129,7 +148,12 @@ public sealed class NativeAgentRunner
                 foreach (var fallbackCall in fallbackCalls)
                 {
                     await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, fallbackCall), cancellationToken);
-                    var toolResult = await ExecuteToolAsync(request, turn, fallbackCall, options, rootGlobPolicy, planTodoGate, cancellationToken);
+                    var toolResult = await ExecuteToolAsync(request, turn, fallbackCall, options, rootGlobPolicy, planTodoGate, deduplicationPolicy, cancellationToken);
+                    if (toolResult is null)
+                    {
+                        continue;
+                    }
+
                     await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
                 }
             }
@@ -158,13 +182,14 @@ public sealed class NativeAgentRunner
         }
     }
 
-    private async Task<AgentToolResult> ExecuteToolAsync(
+    private async Task<AgentToolResult?> ExecuteToolAsync(
         AgentRequest request,
         NativeTurnController turn,
         AgentToolCall rawCall,
         NativeAgentRunOptions options,
         AgentRootGlobExecutionPolicy rootGlobPolicy,
         AgentPlanTodoExecutionGate planTodoGate,
+        AgentToolDeduplicationPolicy deduplicationPolicy,
         CancellationToken cancellationToken)
     {
         var normalized = ToolArgumentNormalizer.Normalize(rawCall);
@@ -188,11 +213,23 @@ public sealed class NativeAgentRunner
             return todoBlock;
         }
 
+        if (deduplicationPolicy.Deduplicate(call) is { } duplicate)
+        {
+            if (duplicate.Skip)
+            {
+                return null;
+            }
+
+            turn.RecordToolResult(duplicate.Result!);
+            return duplicate.Result;
+        }
+
         if (call.Name == "AskQuestion")
         {
             var questionResult = await AskQuestionAsync(request, turn, call, options, cancellationToken);
             turn.RecordToolResult(questionResult);
             planTodoGate.Record(call, questionResult);
+            deduplicationPolicy.Record(call, questionResult);
             return questionResult;
         }
 
@@ -243,6 +280,7 @@ public sealed class NativeAgentRunner
         }
 
         planTodoGate.Record(call, result);
+        deduplicationPolicy.Record(call, result);
         turn.RecordToolResult(result);
         return result;
     }

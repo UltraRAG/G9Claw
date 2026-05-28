@@ -238,7 +238,7 @@ public sealed class AgentPlanTodoExecutionGate
     {
         if (!_planExecutionApproved) return null;
         var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
-        if (toolName == "TodoWrite" || IsReadOnlyTool(call)) return null;
+        if (toolName == "TodoWrite" || AgentToolBehaviorClassifier.IsReadOnlyTool(call)) return null;
         if (_todoRequiresInitialization)
         {
             return RequiredTodoResult(
@@ -294,18 +294,7 @@ public sealed class AgentPlanTodoExecutionGate
     {
         if (result.IsError || result.IsPolicyBlock) return false;
         var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
-        return toolName != "TodoWrite" && !IsReadOnlyTool(call);
-    }
-
-    private static bool IsReadOnlyTool(AgentToolCall call)
-    {
-        return AgentToolNameCanonicalizer.Canonical(call.Name) switch
-        {
-            "Read" or "Glob" or "Grep" or "SemanticSearch" or "ReadLints" or "TodoRead" or "AskQuestion" or "SwitchMode" or "Await" or "Skill" => true,
-            "Shell" => IsReadOnlyShell(call.InputJson),
-            "Task" => IsReadOnlyTask(call.InputJson),
-            _ => false,
-        };
+        return toolName != "TodoWrite" && !AgentToolBehaviorClassifier.IsReadOnlyTool(call);
     }
 
     private static AgentToolResult RequiredTodoResult(AgentToolCall call, string reason)
@@ -333,7 +322,153 @@ public sealed class AgentPlanTodoExecutionGate
         }
     }
 
-    private static bool IsReadOnlyShell(string inputJson)
+    private static string? FirstString(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var value)) return null;
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
+    }
+}
+
+public sealed record AgentToolDeduplicationDecision(AgentToolResult? Result, bool Skip);
+
+public sealed class AgentToolDeduplicationPolicy
+{
+    private readonly HashSet<string> _executedToolSignatures = new(StringComparer.Ordinal);
+    private int _workspaceMutationEpoch;
+    private string? _todosSignature = "[]";
+
+    public AgentToolDeduplicationDecision? Deduplicate(AgentToolCall call)
+    {
+        var canonicalName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        if (canonicalName == "TodoWrite")
+        {
+            var incoming = TodoSnapshotSignature(call.InputJson);
+            if (!string.IsNullOrWhiteSpace(incoming) && incoming == _todosSignature)
+            {
+                return new AgentToolDeduplicationDecision(
+                    DuplicateToolResult(
+                        call,
+                        "Todo list is already up to date. Continue with the next unfinished item or inspect current files before updating TodoWrite again."),
+                    false);
+            }
+
+            return null;
+        }
+
+        if (MarkToolCallIfNeeded(call))
+        {
+            return null;
+        }
+
+        if (IsDuplicateSoftBlockTool(call))
+        {
+            return new AgentToolDeduplicationDecision(
+                DuplicateToolResult(
+                    call,
+                    "Duplicate tool request skipped; inspect current file or continue with the next distinct step."),
+                false);
+        }
+
+        return new AgentToolDeduplicationDecision(null, true);
+    }
+
+    public void Record(AgentToolCall call, AgentToolResult result)
+    {
+        if (result.IsPolicyBlock) return;
+        var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        if (!result.IsError && toolName == "TodoWrite")
+        {
+            _todosSignature = TodoSnapshotSignature(call.InputJson);
+        }
+
+        if (!result.IsError && AgentToolBehaviorClassifier.IsWorkspaceMutatingTool(call))
+        {
+            _workspaceMutationEpoch++;
+        }
+    }
+
+    private bool MarkToolCallIfNeeded(AgentToolCall call) =>
+        _executedToolSignatures.Add(DeduplicationKey(call));
+
+    private string DeduplicationKey(AgentToolCall call)
+    {
+        var canonicalName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        var baseKey = $"{canonicalName}:{call.InputJson}";
+        return IsEpochScopedTool(call) ? $"{_workspaceMutationEpoch}:{baseKey}" : baseKey;
+    }
+
+    private static bool IsEpochScopedTool(AgentToolCall call)
+    {
+        return AgentToolNameCanonicalizer.Canonical(call.Name) switch
+        {
+            "Read" or "Grep" or "Glob" or "ReadLints" or "SemanticSearch" or "TodoRead" or "Skill" or "Await" => true,
+            "Shell" => AgentToolBehaviorClassifier.IsReadOnlyShell(call.InputJson),
+            "Task" => AgentToolBehaviorClassifier.IsReadOnlyTask(call.InputJson),
+            _ => false,
+        };
+    }
+
+    private static bool IsDuplicateSoftBlockTool(AgentToolCall call)
+    {
+        return AgentToolNameCanonicalizer.Canonical(call.Name) switch
+        {
+            "Write" or "StrReplace" or "Delete" or "EditNotebook" => true,
+            "Shell" => !AgentToolBehaviorClassifier.IsReadOnlyShell(call.InputJson),
+            "Task" => !AgentToolBehaviorClassifier.IsReadOnlyTask(call.InputJson),
+            _ => false,
+        };
+    }
+
+    private static AgentToolResult DuplicateToolResult(AgentToolCall call, string detail) =>
+        new(call.Id, AgentToolNameCanonicalizer.Canonical(call.Name), detail, false, IsPolicyBlock: true);
+
+    private static string? TodoSnapshotSignature(string inputJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(inputJson) ? "{}" : inputJson);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("todos", out var todos))
+            {
+                return JsonCanonicalizer.ToCanonicalJson(todos);
+            }
+
+            return doc.RootElement.ValueKind == JsonValueKind.Array
+                ? JsonCanonicalizer.ToCanonicalJson(doc.RootElement)
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+}
+
+public static class AgentToolBehaviorClassifier
+{
+    public static bool IsReadOnlyTool(AgentToolCall call)
+    {
+        return AgentToolNameCanonicalizer.Canonical(call.Name) switch
+        {
+            "Read" or "Glob" or "Grep" or "SemanticSearch" or "ReadLints" or "TodoRead" or "AskQuestion" or "SwitchMode" or "Await" or "Skill" => true,
+            "Shell" => IsReadOnlyShell(call.InputJson),
+            "Task" => IsReadOnlyTask(call.InputJson),
+            _ => false,
+        };
+    }
+
+    public static bool IsWorkspaceMutatingTool(AgentToolCall call)
+    {
+        return AgentToolNameCanonicalizer.Canonical(call.Name) switch
+        {
+            "Write" or "StrReplace" or "Delete" or "EditNotebook" => true,
+            "Shell" => !IsReadOnlyShell(call.InputJson),
+            "Task" => !IsReadOnlyTask(call.InputJson),
+            _ => false,
+        };
+    }
+
+    public static bool IsReadOnlyShell(string inputJson)
     {
         var command = StringValue(inputJson, "command");
         if (string.IsNullOrWhiteSpace(command)) return false;
@@ -358,7 +493,7 @@ public sealed class AgentPlanTodoExecutionGate
         return readPrefixes.Any(prefix => trimmed == prefix || trimmed.StartsWith(prefix + " ", StringComparison.Ordinal));
     }
 
-    private static bool IsReadOnlyTask(string inputJson)
+    public static bool IsReadOnlyTask(string inputJson)
     {
         var type = StringValue(inputJson, "type") ?? "generalPurpose";
         return type.Trim().ToLowerInvariant() is "explore" or "cursor-guide" or "ci-investigator";
@@ -370,18 +505,13 @@ public sealed class AgentPlanTodoExecutionGate
         {
             using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(inputJson) ? "{}" : inputJson);
             if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
-            return FirstString(doc.RootElement, key);
+            if (!doc.RootElement.TryGetProperty(key, out var value)) return null;
+            return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
         }
         catch (JsonException)
         {
             return null;
         }
-    }
-
-    private static string? FirstString(JsonElement root, string key)
-    {
-        if (!root.TryGetProperty(key, out var value)) return null;
-        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
     }
 }
 
