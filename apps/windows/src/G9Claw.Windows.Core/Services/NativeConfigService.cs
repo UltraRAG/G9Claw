@@ -167,6 +167,9 @@ public static class NativeConfigService
 
 public static class NativeRouterRuntime
 {
+    private const int PerMessageOverhead = 4;
+    private const int MultimediaTokens = 2_000;
+
     public sealed record Decision(string EntryId, string Scenario, string? Tier);
 
     public sealed record RequestSignals(
@@ -191,6 +194,20 @@ public static class NativeRouterRuntime
         bool hasWebSearchTools = false,
         bool hasThinking = false) =>
         new(EstimatedTokens(prompt), isBackgroundRequest, hasWebSearchTools, hasThinking);
+
+    public static RequestSignals SignalsForRequest(
+        string prompt,
+        IReadOnlyList<ChatMessage> priorMessages,
+        IReadOnlyList<FileAttachment> attachments,
+        bool isBackgroundRequest = false,
+        bool hasWebSearchTools = false,
+        bool hasThinking = false)
+    {
+        var tokenCount = priorMessages.Sum(EstimatedTokens);
+        tokenCount += PerMessageOverhead + EstimatedTokens(UserContentForEstimate(prompt, attachments));
+        tokenCount += EstimatedTools(AgentToolRegistry.OpenAITools());
+        return new RequestSignals(tokenCount, isBackgroundRequest, hasWebSearchTools, hasThinking);
+    }
 
     public static ProviderRoute ResolveProviderRoute(
         string tier,
@@ -300,6 +317,89 @@ public static class NativeRouterRuntime
 
     private static int EstimatedTokens(string? text) =>
         Math.Max(0, (text ?? "").Length / 4);
+
+    private static int EstimatedTokens(ChatMessage message)
+    {
+        var content = message.PlainText.Trim();
+        return string.IsNullOrEmpty(content)
+            ? 0
+            : PerMessageOverhead + EstimatedTokens(content);
+    }
+
+    private static int EstimatedTools(IReadOnlyList<Dictionary<string, object?>> tools)
+    {
+        var total = 0;
+        foreach (var tool in tools)
+        {
+            if (tool.TryGetValue("function", out var functionValue) &&
+                functionValue is Dictionary<string, object?> function)
+            {
+                total += EstimatedTokens(function.GetValueOrDefault("name")?.ToString());
+                total += EstimatedTokens(function.GetValueOrDefault("description")?.ToString());
+                total += EstimatedSerialized(function.GetValueOrDefault("parameters"));
+            }
+            else
+            {
+                total += EstimatedSerialized(tool);
+            }
+        }
+
+        return total;
+    }
+
+    private static int EstimatedSerialized(object? value) =>
+        value switch
+        {
+            null => 0,
+            string text => EstimatedTokens(text),
+            Dictionary<string, object?> dict => Math.Max(1, dict.Sum(item => EstimatedTokens(item.Key) + EstimatedSerialized(item.Value))),
+            IReadOnlyDictionary<string, object?> dict => Math.Max(1, dict.Sum(item => EstimatedTokens(item.Key) + EstimatedSerialized(item.Value))),
+            IEnumerable<object?> values => Math.Max(1, values.Sum(EstimatedSerialized)),
+            _ => EstimatedTokens(value.ToString()),
+        };
+
+    private static string UserContentForEstimate(string prompt, IReadOnlyList<FileAttachment> attachments)
+    {
+        if (attachments.Count == 0) return prompt;
+
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(prompt))
+        {
+            parts.Add(prompt);
+        }
+
+        foreach (var attachment in attachments)
+        {
+            parts.Add(AttachmentEstimateText(attachment));
+        }
+
+        return string.Join('\n', parts);
+    }
+
+    private static string AttachmentEstimateText(FileAttachment attachment)
+    {
+        if (attachment.IsImage)
+        {
+            return new string('i', MultimediaTokens * 4);
+        }
+
+        if (attachment.IsTextLike && File.Exists(attachment.Path))
+        {
+            try
+            {
+                var text = File.ReadAllText(attachment.Path);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return $"<attachment path=\"{attachment.Path}\">\n{text[..Math.Min(text.Length, 30_000)]}\n</attachment>";
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        return $"{attachment.FileName} {attachment.MimeType ?? "file"} {attachment.Bytes} {attachment.Path}";
+    }
 }
 
 public static class NativeRoutingClassifier

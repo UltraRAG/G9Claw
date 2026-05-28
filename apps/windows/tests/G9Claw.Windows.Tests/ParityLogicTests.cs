@@ -2118,6 +2118,66 @@ router:
     }
 
     [Fact]
+    public void NativeRouterRuntimeSignalsIncludeHistoryAttachmentsAndToolsLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var attachmentPath = Path.Combine(temp.Root, "notes.md");
+        File.WriteAllText(attachmentPath, new string('a', 2_000));
+        var priorMessages = new List<ChatMessage>
+        {
+            new(
+                Guid.NewGuid(),
+                "session-1",
+                SessionProvider.G9Claw,
+                ChatRole.User,
+                [ChatBlock.FromText(new string('h', 1_000))],
+                DateTimeOffset.UtcNow,
+                false,
+                null),
+        };
+        var attachments = new List<FileAttachment>
+        {
+            new(attachmentPath, "notes.md", "text/markdown", new FileInfo(attachmentPath).Length),
+        };
+        var values = NativeConfigService.ScalarMap("""
+models:
+  providers:
+    main:
+      type: openai-chat
+      baseUrl: http://main.local/v1
+    long:
+      type: openai-chat
+      baseUrl: http://long.local/v1
+  entries:
+    default:
+      provider: main
+      name: main-model
+    long_context:
+      provider: long
+      name: long-model
+router:
+  enabled: true
+  routes:
+    default:
+      model: default
+    longContext:
+      model: long_context
+    longContextThreshold: 300
+""");
+
+        var signals = NativeRouterRuntime.SignalsForRequest("short", priorMessages, attachments);
+        var imageSignals = NativeRouterRuntime.SignalsForRequest(
+            "short",
+            [],
+            [new FileAttachment(Path.Combine(temp.Root, "image.png"), "image.png", "image/png", 42)]);
+
+        Assert.True(signals.TokenCount > 300);
+        Assert.True(imageSignals.TokenCount >= 2_000);
+        Assert.Equal(new NativeRouterRuntime.Decision("long_context", "longContext", null),
+            NativeRouterRuntime.DecisionForTier("COMPLEX", values, signals));
+    }
+
+    [Fact]
     public void AgentModelResolverCanResolveRouterSelectedEntry()
     {
         var settings = AppSettings.Defaults(@"C:\Users\tester") with

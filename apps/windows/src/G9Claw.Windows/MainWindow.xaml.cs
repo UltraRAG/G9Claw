@@ -4142,14 +4142,16 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        var priorMessages = State.CurrentMessages.ToList();
         ResolvedAgentModel resolvedModel;
         Dictionary<string, string> routeValues;
         try
         {
             var routeTier = NativeRoutingClassifier.ClassifyTier(prompt, State.ComposerRunMode);
             routeValues = CurrentNativeConfigValues();
-            var routeEntry = NativeRouterRuntime.EntryIdForTier(routeTier, routeValues);
-            resolvedModel = AgentModelResolver.Resolve(State.Settings, routeEntry, routeTier, "router");
+            var routeSignals = NativeRouterRuntime.SignalsForRequest(prompt, priorMessages, attachments);
+            var routeDecision = NativeRouterRuntime.DecisionForTier(routeTier, routeValues, routeSignals);
+            resolvedModel = AgentModelResolver.Resolve(State.Settings, routeDecision.EntryId, routeTier, "router");
         }
         catch (Exception ex)
         {
@@ -4168,7 +4170,6 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var priorMessages = State.CurrentMessages.ToList();
         var userBlocks = new List<ChatBlock>();
         if (!string.IsNullOrWhiteSpace(prompt))
         {
