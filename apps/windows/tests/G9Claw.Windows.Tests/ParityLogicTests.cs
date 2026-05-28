@@ -2595,6 +2595,43 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerRecoversPartialStreamLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new PartialStreamRecoveryProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "continue after partial stream",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        Assert.Equal(2, provider.RequestCount);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "partial ");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "recovered");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "partial_stream_timeout_recovery");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "waiting for model response");
+        Assert.Contains(provider.RecoveryPrompts, prompt => prompt.Contains("Continue the same task from the latest completed tool result", StringComparison.Ordinal));
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Error);
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerPassesProviderContextToTaskSubagentsLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -3867,6 +3904,30 @@ gateway:
                 yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after fallback");
                 yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
             }
+        }
+    }
+
+    private sealed class PartialStreamRecoveryProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+        public List<string> RecoveryPrompts { get; } = [];
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (RequestCount == 1)
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "partial ");
+                throw ProviderClientException.StreamInterruptedAfterPartialOutput("lost connection");
+            }
+
+            RecoveryPrompts.AddRange(request.PriorMessages.Select(message => message.PlainText));
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "recovered");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
         }
     }
 

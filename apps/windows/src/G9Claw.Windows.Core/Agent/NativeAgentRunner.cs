@@ -86,6 +86,7 @@ public sealed class NativeAgentRunner
             var deletionVerificationPolicy = new AgentDeletionVerificationPolicy();
             var round = 0;
             var duplicateOnlyRounds = 0;
+            var partialStreamRecoveryCount = 0;
             while (true)
             {
                 await writer.WriteAsync(
@@ -94,38 +95,56 @@ public sealed class NativeAgentRunner
                 var roundExchanges = new List<AgentToolExchange>();
                 var roundSkippedDuplicateTool = false;
                 var roundAssistantText = new StringBuilder();
-                await foreach (var providerEvent in _providerClient.StreamAsync(currentRequest, cancellationToken))
+                try
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    foreach (var agentEvent in AgentEventNormalizer.FromProviderEvent(request.SessionId, providerEvent))
+                    await foreach (var providerEvent in _providerClient.StreamAsync(currentRequest, cancellationToken))
                     {
-                        if (agentEvent.Kind == AgentEventKind.ContentDelta && agentEvent.Text is { } text)
+                        cancellationToken.ThrowIfCancellationRequested();
+                        foreach (var agentEvent in AgentEventNormalizer.FromProviderEvent(request.SessionId, providerEvent))
                         {
-                            assistantText.Append(text);
-                            roundAssistantText.Append(text);
-                        }
-                        else if (agentEvent.Kind == AgentEventKind.TokenBudget)
-                        {
-                            lastBudget = agentEvent.TokenBudget;
+                            if (agentEvent.Kind == AgentEventKind.ContentDelta && agentEvent.Text is { } text)
+                            {
+                                assistantText.Append(text);
+                                roundAssistantText.Append(text);
+                            }
+                            else if (agentEvent.Kind == AgentEventKind.TokenBudget)
+                            {
+                                lastBudget = agentEvent.TokenBudget;
+                            }
+
+                            await writer.WriteAsync(agentEvent, cancellationToken);
                         }
 
-                        await writer.WriteAsync(agentEvent, cancellationToken);
+                        if (providerEvent.Kind == ProviderStreamEventKind.ToolCall && providerEvent.ToolCall is { } call)
+                        {
+                            var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
+                            if (toolResult is null)
+                            {
+                                roundSkippedDuplicateTool = true;
+                                await writer.WriteAsync(AgentEvent.Status(request.SessionId, "duplicate tool request skipped"), cancellationToken);
+                                continue;
+                            }
+
+                            await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                            roundExchanges.Add(new AgentToolExchange(call, toolResult));
+                        }
                     }
 
-                    if (providerEvent.Kind == ProviderStreamEventKind.ToolCall && providerEvent.ToolCall is { } call)
+                    partialStreamRecoveryCount = 0;
+                }
+                catch (ProviderClientException ex) when (ex.PartialVisibleOutput && partialStreamRecoveryCount < 2)
+                {
+                    partialStreamRecoveryCount++;
+                    toolExchanges.AddRange(roundExchanges);
+                    currentRequest = currentRequest with
                     {
-                        var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
-                        if (toolResult is null)
-                        {
-                            roundSkippedDuplicateTool = true;
-                            await writer.WriteAsync(AgentEvent.Status(request.SessionId, "duplicate tool request skipped"), cancellationToken);
-                            continue;
-                        }
-
-                        await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
-                        roundExchanges.Add(new AgentToolExchange(call, toolResult));
-                    }
-
+                        PriorMessages = RecoveryPriorMessages(currentRequest, ex.Message),
+                        ToolExchanges = toolExchanges.ToList(),
+                    };
+                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, "partial_stream_timeout_recovery"), cancellationToken);
+                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, "waiting for model response"), cancellationToken);
+                    round++;
+                    continue;
                 }
 
                 if (roundExchanges.Count == 0)
@@ -186,6 +205,24 @@ public sealed class NativeAgentRunner
             await writer.WriteAsync(AgentEvent.Error(request.SessionId, ex.Message), CancellationToken.None);
             await writer.WriteAsync(new AgentEvent(AgentEventKind.TurnCompleted, request.SessionId, Turn: turn.Snapshot()), CancellationToken.None);
         }
+    }
+
+    private static List<ChatMessage> RecoveryPriorMessages(AgentRequest request, string message)
+    {
+        var messages = request.PriorMessages.ToList();
+        messages.Add(new ChatMessage(
+            Guid.NewGuid(),
+            request.SessionId,
+            SessionProvider.G9Claw,
+            ChatRole.User,
+            [ChatBlock.FromText($"""
+            The provider response stream disconnected after partial visible output: {message}
+            Continue the same task from the latest completed tool result. Do not repeat already completed tool calls unless needed for verification.
+            """)],
+            DateTimeOffset.UtcNow,
+            false,
+            null));
+        return messages;
     }
 
     private async Task<AgentToolResult?> ExecuteToolAsync(
