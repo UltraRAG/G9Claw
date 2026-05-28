@@ -56,7 +56,7 @@ public static class ToolInvocationPresenter
             state,
             summary,
             Compact(string.IsNullOrWhiteSpace(target) ? call.InputJson : target, 240),
-            result is null ? null : Compact(result.Output, 360),
+            result is null ? null : ToolOutputPreviewLimiter.Preview(result.Output),
             IsBoundary(toolName));
     }
 
@@ -110,7 +110,7 @@ public static class ToolInvocationPresenter
             ToolInvocationState.Completed,
             summary,
             summary,
-            Compact(items.LastOrDefault(item => item.Result is not null).Result?.Output ?? "", 360),
+            ToolOutputPreviewLimiter.Preview(items.LastOrDefault(item => item.Result is not null).Result?.Output ?? ""),
             false);
     }
 
@@ -290,5 +290,31 @@ public static class ToolInvocationPresenter
 
             return "";
         }
+    }
+}
+
+public static class ToolOutputPreviewLimiter
+{
+    private const string TruncationNotice = "... output truncated for display ...";
+
+    public static string Preview(string value, int maxChars = 2_400, int maxLines = 80)
+    {
+        var normalized = (value ?? "").Replace("\r\n", "\n").Replace('\r', '\n');
+        var lines = normalized.Split('\n');
+        var truncated = false;
+        if (lines.Length > maxLines)
+        {
+            lines = lines.Take(maxLines).ToArray();
+            truncated = true;
+        }
+
+        var output = string.Join("\n", lines);
+        if (output.Length > maxChars)
+        {
+            output = output[..Math.Max(0, maxChars)];
+            truncated = true;
+        }
+
+        return truncated ? $"{output}\n{TruncationNotice}" : output;
     }
 }

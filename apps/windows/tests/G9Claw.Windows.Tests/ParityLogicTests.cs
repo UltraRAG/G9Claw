@@ -3922,6 +3922,27 @@ router:
     }
 
     [Fact]
+    public void ToolOutputPreviewLimiterMatchesMacDisplayCaps()
+    {
+        var manyLines = string.Join("\n", Enumerable.Range(1, 82).Select(index => $"line {index}"));
+        var lineLimited = ToolOutputPreviewLimiter.Preview(manyLines);
+        var lineLimitedLines = lineLimited.Split('\n');
+
+        Assert.Equal("line 1", lineLimitedLines[0]);
+        Assert.Equal("line 80", lineLimitedLines[79]);
+        Assert.Equal("... output truncated for display ...", lineLimitedLines[80]);
+        Assert.DoesNotContain("line 81", lineLimited);
+
+        var charLimited = ToolOutputPreviewLimiter.Preview(new string('x', 2_405));
+        Assert.StartsWith(new string('x', 2_400), charLimited);
+        Assert.EndsWith("\n... output truncated for display ...", charLimited);
+
+        var rawInputLimited = ToolOutputPreviewLimiter.Preview(new string('p', 6_005), maxChars: 6_000, maxLines: 120);
+        Assert.StartsWith(new string('p', 6_000), rawInputLimited);
+        Assert.EndsWith("\n... output truncated for display ...", rawInputLimited);
+    }
+
+    [Fact]
     public void MarkdownPresentationParsesCommonAssistantMarkdown()
     {
         var blocks = MarkdownPresentation.Parse("""

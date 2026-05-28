@@ -2383,7 +2383,7 @@ public sealed partial class MainWindow : Window
             detailPanel.Children.Add(ToolDetailBox(T("chat.tool.input"), ToolInputDetail(call, presentation)));
             if (result is not null)
             {
-                detailPanel.Children.Add(ToolDetailBox(T("chat.tool.result"), result.Output));
+                detailPanel.Children.Add(ToolDetailBox(T("chat.tool.result"), ToolOutputDetail(result.Output)));
             }
 
             detail = detailPanel;
@@ -2404,7 +2404,9 @@ public sealed partial class MainWindow : Window
             foreach (var item in items)
             {
                 var itemPresentation = ToolInvocationPresenter.Present(item.Call, item.Result, IsChineseUi());
-                detailPanel.Children.Add(ToolDetailBox(itemPresentation.Summary, item.Result?.Output ?? ToolInputDetail(item.Call, itemPresentation)));
+                detailPanel.Children.Add(ToolDetailBox(
+                    itemPresentation.Summary,
+                    item.Result is null ? ToolInputDetail(item.Call, itemPresentation) : ToolOutputDetail(item.Result.Output)));
             }
 
             detail = detailPanel;
@@ -2414,7 +2416,12 @@ public sealed partial class MainWindow : Window
     }
 
     private string ToolInputDetail(AgentToolCall call, ToolInvocationPresentation presentation) =>
-        State.UiPreferences.ShowRawParameters ? call.InputJson : presentation.InputPreview;
+        State.UiPreferences.ShowRawParameters
+            ? ToolOutputPreviewLimiter.Preview(call.InputJson, maxChars: 6_000, maxLines: 120)
+            : presentation.InputPreview;
+
+    private static string ToolOutputDetail(string output) =>
+        ToolOutputPreviewLimiter.Preview(output);
 
     private FrameworkElement ToolResultRow(AgentToolResult result)
     {
