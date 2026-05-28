@@ -26,7 +26,7 @@ public static class ComposerKeyPolicy
     {
         return key switch
         {
-            ComposerKey.Tab when shiftDown && !isImeComposing => ComposerKeyAction.ToggleRunMode,
+            ComposerKey.Tab when shiftDown && !controlDown && !isImeComposing => ComposerKeyAction.ToggleRunMode,
             ComposerKey.Enter when isImeComposing => ComposerKeyAction.None,
             ComposerKey.Enter when shiftDown => ComposerKeyAction.InsertNewLine,
             ComposerKey.Enter when controlDown => ComposerKeyAction.Send,

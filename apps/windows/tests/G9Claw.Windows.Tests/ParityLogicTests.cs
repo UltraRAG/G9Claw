@@ -3627,6 +3627,7 @@ router:
         Assert.Equal(ComposerKeyAction.Send, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, controlDown: false, isImeComposing: false, sendByCtrlEnter: false));
         Assert.Equal(ComposerKeyAction.InsertNewLine, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: true, controlDown: false, isImeComposing: false, sendByCtrlEnter: false));
         Assert.Equal(ComposerKeyAction.ToggleRunMode, ComposerKeyPolicy.Decide(ComposerKey.Tab, shiftDown: true, controlDown: false, isImeComposing: false, sendByCtrlEnter: false));
+        Assert.Equal(ComposerKeyAction.None, ComposerKeyPolicy.Decide(ComposerKey.Tab, shiftDown: true, controlDown: true, isImeComposing: false, sendByCtrlEnter: false));
         Assert.Equal(ComposerKeyAction.None, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, controlDown: false, isImeComposing: true, sendByCtrlEnter: false));
         Assert.Equal(ComposerKeyAction.None, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, controlDown: false, isImeComposing: false, sendByCtrlEnter: true));
         Assert.Equal(ComposerKeyAction.Send, ComposerKeyPolicy.Decide(ComposerKey.Enter, shiftDown: false, controlDown: true, isImeComposing: false, sendByCtrlEnter: true));
