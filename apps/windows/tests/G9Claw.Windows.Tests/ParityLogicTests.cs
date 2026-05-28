@@ -292,6 +292,103 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void AlwaysOnCronAndRunModelsMatchMacDerivedIdentityAndPolling()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var latest = new AlwaysOnCronLatestRun(
+            AlwaysOnStatus.Running,
+            null,
+            now,
+            null,
+            "latest run",
+            now,
+            "task-1",
+            "out.log",
+            "parent",
+            "tasks/task-1.jsonl",
+            "transcript-1");
+        var cron = new AlwaysOnCronJob(
+            "cron-1",
+            "Review project memory",
+            "*/15 * * * *",
+            AlwaysOnStatus.Scheduled,
+            Recurring: true,
+            Durable: true,
+            CreatedAt: now.AddHours(-1),
+            LastFiredAt: now,
+            LatestSessionId: "session-1",
+            Permanent: true,
+            ManualOnly: false,
+            OriginSessionId: "origin-1",
+            TranscriptKey: "transcript-1",
+            LatestRun: latest);
+        var queued = new AlwaysOnRunHistory(
+            "run-1",
+            "Run discovery",
+            "cron",
+            AlwaysOnStatus.Queued,
+            now,
+            "cron-1",
+            "",
+            null,
+            null,
+            null);
+        var completed = queued with { Status = AlwaysOnStatus.Completed };
+        var log = new AlwaysOnRunLog("run-1", "output", Truncated: false, now, 6, AlwaysOnRunLogSource.LogFile);
+
+        Assert.Equal("task-1", latest.Id);
+        Assert.True(cron.Recurring);
+        Assert.True(cron.Permanent);
+        Assert.Same(latest, cron.LatestRun);
+        Assert.True(queued.ShouldPollLog);
+        Assert.False(completed.ShouldPollLog);
+        Assert.Equal("run-1", log.Id);
+        Assert.Equal("log-file", log.Source.Id());
+    }
+
+    [Fact]
+    public void AlwaysOnSessionTargetsAndDiscoveryDedupeMatchMacPolicies()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var origin = AlwaysOnSessionTarget.Origin("session-1");
+        var background = AlwaysOnSessionTarget.Background(
+            "session-2",
+            "session-1",
+            "tasks/session-2.jsonl",
+            "Background task",
+            "summary",
+            now,
+            "transcript-2",
+            "task-2",
+            "running",
+            "task.log");
+        var context = new AlwaysOnDiscoveryContext(
+            "2026-05-29T00:00:00Z",
+            7,
+            new AlwaysOnDiscoveryWorkspace("Demo", @"C:\repo", ["git:dirty"]),
+            [new AlwaysOnDiscoveryMemoryItem("MEMORY.md", "2026-05-29T00:00:00Z", "memory")],
+            [new AlwaysOnDiscoveryPlanItem("plan-1", "Plan", "ready", "manual", "2026-05-29", "summary")],
+            [new AlwaysOnDiscoveryCronItem("cron-1", "scheduled", "*/15 * * * *", true, false, "prompt", "ran")],
+            [new AlwaysOnDiscoveryChatItem("chat-1", "summary", "2026-05-29", "user", "assistant")]);
+        var dedupe = new AlwaysOnDiscoveryRequestDedupeStore();
+
+        Assert.Equal(AlwaysOnSessionTargetKind.Origin, origin.Kind);
+        Assert.Null(origin.ParentSessionId);
+        Assert.Equal(AlwaysOnSessionTargetKind.Background, background.Kind);
+        Assert.Equal("session-1", background.ParentSessionId);
+        Assert.Equal("tasks/session-2.jsonl", background.RelativeTranscriptPath);
+        Assert.Equal("Demo", context.Workspace.ProjectName);
+        Assert.Equal("git:dirty", Assert.Single(context.Workspace.Signals));
+
+        Assert.False(dedupe.ShouldProcess(null));
+        Assert.True(dedupe.ShouldProcess(" request-1 "));
+        Assert.False(dedupe.ShouldProcess("request-1"));
+        Assert.True(dedupe.ShouldProcess("request-2", maxSize: 1));
+        Assert.DoesNotContain("request-1", dedupe.Seen);
+        Assert.Equal(["request-2"], dedupe.Order);
+    }
+
+    [Fact]
     public void WebV2UiSettingsNormalizeSidebarBoundsAndLists()
     {
         var tooSmall = new V2UiSettings(12, SidebarSection.General, null!, null!).Normalize();

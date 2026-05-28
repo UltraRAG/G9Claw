@@ -24,6 +24,9 @@ public sealed class AppState : INotifyPropertyChanged
     public List<MemoryRecord> MemoryRecords { get; } = [];
     public List<SkillRecord> Skills { get; } = [];
     public List<AlwaysOnPlan> AlwaysOnPlans { get; } = [];
+    public List<AlwaysOnCronJob> AlwaysOnCronJobs { get; } = [];
+    public List<AlwaysOnRunHistory> AlwaysOnRunHistory { get; } = [];
+    public List<AlwaysOnRunLog> AlwaysOnRunLogs { get; } = [];
     public List<RoutingUsageRecord> RoutingUsage { get; } = [];
     public List<FileAttachment> PendingAttachments { get; } = [];
 
