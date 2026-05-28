@@ -140,6 +140,94 @@ public static class AgentToolRegistry
 public sealed record NormalizationError(string Message);
 public sealed record NormalizedInvocation(AgentToolCall Call, AgentToolResult? RecoveryResult);
 
+public sealed class AgentRootGlobExecutionPolicy
+{
+    private string? _rootGlobCacheOutput;
+    private int _rootGlobCacheEntryCount;
+
+    public AgentToolResult? CachedResultIfAvailable(AgentToolCall call)
+    {
+        if (!IsRootWorkspaceGlob(call) || string.IsNullOrWhiteSpace(_rootGlobCacheOutput))
+        {
+            return null;
+        }
+
+        return new AgentToolResult(
+            call.Id,
+            "Glob",
+            CachedSummary(_rootGlobCacheOutput, _rootGlobCacheEntryCount),
+            false);
+    }
+
+    public AgentToolResult RecordIfRootGlob(AgentToolCall call, AgentToolResult result)
+    {
+        if (!IsRootWorkspaceGlob(call))
+        {
+            return result;
+        }
+
+        _rootGlobCacheOutput = result.Output;
+        _rootGlobCacheEntryCount = EntryCount(result.Output);
+        return result with { Output = CompactBootstrapOutput(result.Output) };
+    }
+
+    public static bool IsRootWorkspaceGlob(AgentToolCall call)
+    {
+        if (!string.Equals(AgentToolNameCanonicalizer.Canonical(call.Name), "Glob", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(call.InputJson) ? "{}" : call.InputJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return false;
+            var pattern = FirstString(doc.RootElement, "pattern") ?? FirstString(doc.RootElement, "glob") ?? "";
+            var path = FirstString(doc.RootElement, "path") ?? ".";
+            pattern = pattern.Trim();
+            path = path.Trim();
+            return pattern == "**/*" && (path.Length == 0 || path == "." || path == "./");
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static string CachedSummary(string output, int entryCount)
+    {
+        var count = entryCount > 0 ? entryCount : EntryCount(output);
+        return $"""
+        Cached workspace discovery from earlier Glob **/* ({count} entries). Use targeted Read/Grep/Glob for known paths instead of repeating full workspace discovery.
+        {CompactBootstrapOutput(output)}
+        """;
+    }
+
+    private static string CompactBootstrapOutput(string output)
+    {
+        var trimmed = output.Trim();
+        var lines = NonEmptyLines(trimmed).ToList();
+        if (lines.Count <= 160 && trimmed.Length <= 12_000)
+        {
+            return trimmed;
+        }
+
+        var preview = string.Join("\n", lines.Take(140));
+        return $"{preview}\n... workspace discovery truncated for display; {lines.Count} total entries ...";
+    }
+
+    private static int EntryCount(string output) => NonEmptyLines(output).Count();
+
+    private static IEnumerable<string> NonEmptyLines(string output) =>
+        output.Replace("\r\n", "\n").Split('\n').Where(line => !string.IsNullOrWhiteSpace(line));
+
+    private static string? FirstString(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var value)) return null;
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
+    }
+}
+
 public static class ToolArgumentNormalizer
 {
     internal static readonly JsonSerializerOptions JsonWriteOptions = new()

@@ -1789,6 +1789,55 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerCachesRepeatedRootGlobDiscoveryLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        Directory.CreateDirectory(Path.Combine(temp.Root, "src"));
+        for (var index = 0; index < 170; index++)
+        {
+            await File.WriteAllTextAsync(Path.Combine(temp.Root, "src", $"file-{index:000}.txt"), $"file {index}");
+        }
+
+        var provider = new RepeatedRootGlobProvider(temp.Root);
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "discover files twice",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        var globResults = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult && item.ToolResult?.ToolName == "Glob")
+            .Select(item => item.ToolResult!)
+            .ToList();
+
+        Assert.Equal(3, provider.RequestCount);
+        Assert.Equal(2, globResults.Count);
+        Assert.DoesNotContain("Cached workspace discovery", globResults[0].Output);
+        Assert.Contains("src/file-000.txt", globResults[0].Output);
+        Assert.Contains("workspace discovery truncated for display; 170 total entries", globResults[0].Output);
+        Assert.Contains("Cached workspace discovery from earlier Glob **/* (170 entries)", globResults[1].Output);
+        Assert.Contains("src/file-000.txt", globResults[1].Output);
+        Assert.False(File.Exists(Path.Combine(temp.Root, "src", "file-000.txt")));
+    }
+
+    [Fact]
     public void ContextBudgetPresenterComputesLevelAndCompactionState()
     {
         var unknown = ContextBudgetPresenter.FromBudget(null);
@@ -2278,6 +2327,38 @@ gateway:
                 yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
             }
         }
+    }
+
+    private sealed class RepeatedRootGlobProvider(string workspaceRoot) : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            if (request.ToolExchanges.Count == 0)
+            {
+                yield return RootGlob("glob-1");
+            }
+            else if (request.ToolExchanges.Count == 1)
+            {
+                File.Delete(Path.Combine(workspaceRoot, "src", "file-000.txt"));
+                yield return RootGlob("glob-2");
+            }
+            else
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done");
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+        }
+
+        private static ProviderStreamEvent RootGlob(string id) =>
+            new(
+                ProviderStreamEventKind.ToolCall,
+                ToolCall: new AgentToolCall(id, "Glob", """{"pattern":"**/*","path":"."}"""));
     }
 
     private sealed class TempWorkspace : IDisposable

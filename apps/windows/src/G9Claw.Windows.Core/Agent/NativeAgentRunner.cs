@@ -79,6 +79,7 @@ public sealed class NativeAgentRunner
         {
             var toolExchanges = new List<AgentToolExchange>();
             var currentRequest = request;
+            var rootGlobPolicy = new AgentRootGlobExecutionPolicy();
             var round = 0;
             while (true)
             {
@@ -105,7 +106,7 @@ public sealed class NativeAgentRunner
 
                     if (providerEvent.Kind == ProviderStreamEventKind.ToolCall && providerEvent.ToolCall is { } call)
                     {
-                        var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, cancellationToken);
+                        var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, cancellationToken);
                         await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
                         roundExchanges.Add(new AgentToolExchange(call, toolResult));
                     }
@@ -127,7 +128,7 @@ public sealed class NativeAgentRunner
                 foreach (var fallbackCall in fallbackCalls)
                 {
                     await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, fallbackCall), cancellationToken);
-                    var toolResult = await ExecuteToolAsync(request, turn, fallbackCall, options, cancellationToken);
+                    var toolResult = await ExecuteToolAsync(request, turn, fallbackCall, options, rootGlobPolicy, cancellationToken);
                     await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
                 }
             }
@@ -161,6 +162,7 @@ public sealed class NativeAgentRunner
         NativeTurnController turn,
         AgentToolCall rawCall,
         NativeAgentRunOptions options,
+        AgentRootGlobExecutionPolicy rootGlobPolicy,
         CancellationToken cancellationToken)
     {
         var normalized = ToolArgumentNormalizer.Normalize(rawCall);
@@ -172,6 +174,12 @@ public sealed class NativeAgentRunner
 
         var call = normalized.Call;
         turn.RecordToolCall(call);
+        if (rootGlobPolicy.CachedResultIfAvailable(call) is { } cached)
+        {
+            turn.RecordToolResult(cached);
+            return cached;
+        }
+
         if (call.Name == "AskQuestion")
         {
             var questionResult = await AskQuestionAsync(request, turn, call, options, cancellationToken);
@@ -215,6 +223,11 @@ public sealed class NativeAgentRunner
             request.ToolSettings,
             cancellationToken);
         var result = await _toolExecutor.ExecuteAsync(call, context);
+        if (!result.IsError)
+        {
+            result = rootGlobPolicy.RecordIfRootGlob(call, result);
+        }
+
         if (!result.IsError && call.Name == "SwitchMode")
         {
             turn.MarkPlanExited();
