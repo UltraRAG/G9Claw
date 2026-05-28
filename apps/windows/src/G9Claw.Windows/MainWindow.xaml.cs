@@ -2678,57 +2678,12 @@ public sealed partial class MainWindow : Window
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 8,
+            Spacing = 10,
         };
 
         foreach (var attachment in State.PendingAttachments.ToList())
         {
-            var remove = new Button
-            {
-                Width = 20,
-                Height = 20,
-                MinWidth = 0,
-                MinHeight = 0,
-                Padding = new Thickness(0),
-                CornerRadius = new CornerRadius(5),
-                Background = Transparent,
-                BorderBrush = Transparent,
-                Content = Icon("X", 12, Brush("V2MutedForegroundBrush")),
-            };
-            remove.Click += (_, _) =>
-            {
-                State.PendingAttachments.Remove(attachment);
-                RenderContent();
-                FocusComposerSoon();
-            };
-
-            row.Children.Add(new Border
-            {
-                CornerRadius = new CornerRadius(8),
-                BorderBrush = Brush("V2BorderBrush"),
-                BorderThickness = new Thickness(1),
-                Background = Brush("V2MutedBrush"),
-                Padding = new Thickness(8, 5, 5, 5),
-                Child = new StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    Spacing = 7,
-                    Children =
-                    {
-                        Icon(attachment.IsImage ? "Image" : "Paperclip", 14, Brush("V2MutedForegroundBrush")),
-                        new TextBlock
-                        {
-                            Text = attachment.FileName,
-                            FontSize = 12,
-                            Foreground = Brush("V2SecondaryForegroundBrush"),
-                            VerticalAlignment = VerticalAlignment.Center,
-                            MaxWidth = 180,
-                            TextTrimming = TextTrimming.CharacterEllipsis,
-                        },
-                        remove,
-                    },
-                },
-            });
+            row.Children.Add(ComposerPendingAttachmentPreview(attachment));
         }
 
         return new ScrollViewer
@@ -2737,6 +2692,168 @@ public sealed partial class MainWindow : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Content = row,
         };
+    }
+
+    private FrameworkElement ComposerPendingAttachmentPreview(FileAttachment attachment)
+    {
+        var model = ComposerAttachmentPreviewModel.Make(attachment);
+        var preview = model.IsImage ? ComposerImageAttachmentPreview(attachment) : null;
+        preview ??= ComposerFileAttachmentPreview(attachment, model);
+
+        var remove = new Button
+        {
+            Width = 24,
+            Height = 24,
+            MinWidth = 0,
+            MinHeight = 0,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(12),
+            Background = Brush("V2InverseBrush"),
+            BorderBrush = Transparent,
+            Content = Icon("X", 11, Brush("V2InverseForegroundBrush")),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, -7, -7, 0),
+        };
+        ToolTipService.SetToolTip(remove, "Remove attachment");
+        remove.Click += (_, _) =>
+        {
+            State.PendingAttachments.Remove(attachment);
+            RenderContent();
+            FocusComposerSoon();
+        };
+
+        var root = new Grid
+        {
+            Margin = new Thickness(0, 7, 7, 0),
+        };
+        root.Children.Add(preview);
+        root.Children.Add(remove);
+        return root;
+    }
+
+    private FrameworkElement? ComposerImageAttachmentPreview(FileAttachment attachment)
+    {
+        var imagePath = string.IsNullOrWhiteSpace(attachment.PreviewPath)
+            ? attachment.Path
+            : attachment.PreviewPath!;
+        if (!File.Exists(imagePath)) return null;
+
+        try
+        {
+            return new Border
+            {
+                Width = 104,
+                Height = 104,
+                CornerRadius = new CornerRadius(14),
+                BorderBrush = Brush("V2BorderBrush"),
+                BorderThickness = new Thickness(1),
+                Background = Brush("V2MutedBrush"),
+                Child = new Image
+                {
+                    Width = 104,
+                    Height = 104,
+                    Stretch = Stretch.UniformToFill,
+                    Source = new BitmapImage(new Uri(imagePath, UriKind.Absolute)),
+                },
+            };
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private FrameworkElement ComposerFileAttachmentPreview(FileAttachment attachment, ComposerAttachmentPreviewModel model)
+    {
+        return new Border
+        {
+            Width = 192,
+            Height = 64,
+            CornerRadius = new CornerRadius(14),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Background = Brush("V2CardBrush"),
+            Padding = new Thickness(10, 0, 10, 0),
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children =
+                {
+                    new Border
+                    {
+                        Width = 42,
+                        Height = 42,
+                        CornerRadius = new CornerRadius(10),
+                        Background = AttachmentAccentBackgroundBrush(model.AccentKind),
+                        Child = Icon(AttachmentPreviewIcon(model), 18, AttachmentAccentBrush(model.AccentKind)),
+                    },
+                    new StackPanel
+                    {
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Spacing = 3,
+                        MaxWidth = 116,
+                        Children =
+                        {
+                            new TextBlock
+                            {
+                                Text = attachment.FileName,
+                                FontSize = 12.5,
+                                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                                Foreground = Brush("V2ForegroundBrush"),
+                                TextTrimming = TextTrimming.CharacterEllipsis,
+                            },
+                            new TextBlock
+                            {
+                                Text = model.TypeLabel,
+                                FontSize = 10.5,
+                                FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+                                Foreground = Brush("V2MutedForegroundBrush"),
+                            },
+                        },
+                    },
+                },
+            },
+        };
+    }
+
+    private string AttachmentPreviewIcon(ComposerAttachmentPreviewModel model) => model.AccentKind switch
+    {
+        "image" => "Image",
+        "code" => "Code",
+        "spreadsheet" => "BarChart3",
+        "presentation" => "LayoutList",
+        "pdf" or "document" => "Document",
+        _ => "File",
+    };
+
+    private Brush AttachmentAccentBrush(string accentKind) => accentKind switch
+    {
+        "pdf" => Brush("V2RedBrush"),
+        "document" => Brush("V2BlueBrush"),
+        "spreadsheet" => Brush("V2GreenBrush"),
+        "presentation" => Brush("V2AmberBrush"),
+        "code" => Brush("V2ForegroundBrush"),
+        _ => Brush("V2MutedForegroundBrush"),
+    };
+
+    private Brush AttachmentAccentBackgroundBrush(string accentKind)
+    {
+        if (AttachmentAccentBrush(accentKind) is SolidColorBrush solid)
+        {
+            return new SolidColorBrush(solid.Color) { Opacity = 0.14 };
+        }
+
+        return Brush("V2MutedBrush");
+    }
+
+    private void AddPendingAttachments(IEnumerable<FileAttachment> attachments)
+    {
+        var merged = ComposerAttachmentDeduper.Merged(State.PendingAttachments, attachments);
+        State.PendingAttachments.Clear();
+        State.PendingAttachments.AddRange(merged);
     }
 
     private Button ComposerSendButton()
@@ -2787,13 +2904,15 @@ public sealed partial class MainWindow : Window
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
         picker.FileTypeFilter.Add("*");
         var files = await picker.PickMultipleFilesAsync();
+        var attachments = new List<FileAttachment>();
         foreach (var file in files)
         {
-            State.PendingAttachments.Add(await AttachmentFromStorageFileAsync(file, AttachmentSourceKind.Picker));
+            attachments.Add(await AttachmentFromStorageFileAsync(file, AttachmentSourceKind.Picker));
         }
 
         if (files.Count > 0)
         {
+            AddPendingAttachments(attachments);
             RenderContent();
             FocusComposerSoon();
         }
@@ -2805,7 +2924,7 @@ public sealed partial class MainWindow : Window
         if (attachments.Count == 0) return;
 
         args.Handled = true;
-        State.PendingAttachments.AddRange(attachments);
+        AddPendingAttachments(attachments);
         RenderContent();
         FocusComposerSoon();
     }

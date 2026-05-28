@@ -1425,6 +1425,47 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void ComposerAttachmentDeduperMatchesMacStablePathPolicy()
+    {
+        var existing = new[]
+        {
+            new FileAttachment(@"C:\repo\docs\..\notes.md", "notes.md", "text/markdown", 12),
+        };
+        var incoming = new[]
+        {
+            new FileAttachment(@"c:\repo\notes.md", "notes-copy.md", "text/markdown", 12),
+            new FileAttachment(@"C:\repo\image.png", "image.png", "image/png", 34),
+        };
+
+        var merged = ComposerAttachmentDeduper.Merged(existing, incoming);
+
+        Assert.Equal(2, merged.Count);
+        Assert.Equal("notes.md", merged[0].FileName);
+        Assert.Equal("image.png", merged[1].FileName);
+    }
+
+    [Fact]
+    public void ComposerAttachmentPreviewModelMatchesMacTypePolicy()
+    {
+        var pdf = ComposerAttachmentPreviewModel.Make(
+            new FileAttachment(@"C:\repo\proposal.PDF", "proposal.PDF", "application/pdf", 12));
+        var spreadsheet = ComposerAttachmentPreviewModel.Make(
+            new FileAttachment(@"C:\repo\budget.csv", "budget.csv", "text/csv", 12));
+        var code = ComposerAttachmentPreviewModel.Make(
+            new FileAttachment(@"C:\repo\view.tsx", "view.tsx", "text/plain", 12));
+        var image = ComposerAttachmentPreviewModel.Make(
+            new FileAttachment(@"C:\repo\diagram.png", "diagram.png", "image/png", 12));
+        var noExtension = ComposerAttachmentPreviewModel.Make(
+            new FileAttachment(@"C:\repo\LICENSE", "LICENSE", "text/plain", 12));
+
+        Assert.Equal(new ComposerAttachmentPreviewModel(false, "PDF", "doc.richtext", "pdf"), pdf);
+        Assert.Equal(new ComposerAttachmentPreviewModel(false, "CSV", "tablecells", "spreadsheet"), spreadsheet);
+        Assert.Equal(new ComposerAttachmentPreviewModel(false, "TSX", "chevron.left.forwardslash.chevron.right", "code"), code);
+        Assert.Equal(new ComposerAttachmentPreviewModel(true, "PNG", "photo", "image"), image);
+        Assert.Equal(new ComposerAttachmentPreviewModel(false, "PLAIN", "doc", "file"), noExtension);
+    }
+
+    [Fact]
     public async Task ProviderClientBuildsMacShapedAttachmentParts()
     {
         using var temp = new TempWorkspace();
