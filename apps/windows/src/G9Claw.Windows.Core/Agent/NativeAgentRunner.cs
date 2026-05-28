@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 
 namespace G9Claw.Windows.Core;
@@ -114,28 +115,56 @@ public sealed class NativeAgentRunner
                 var roundExchanges = new List<AgentToolExchange>();
                 var roundSkippedDuplicateTool = false;
                 var roundAssistantText = new StringBuilder();
+                var deferredPlanContent = new StringBuilder();
                 try
                 {
                     await foreach (var providerEvent in _providerClient.StreamAsync(currentRequest, cancellationToken))
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        foreach (var agentEvent in AgentEventNormalizer.FromProviderEvent(request.SessionId, providerEvent))
+
+                        if (providerEvent.Kind == ProviderStreamEventKind.ContentDelta && providerEvent.Text is { } text)
                         {
-                            if (agentEvent.Kind == AgentEventKind.ContentDelta && agentEvent.Text is { } text)
+                            roundAssistantText.Append(text);
+                            if (ShouldDeferVisiblePlanContent(request.RunMode, planModePolicy.PlanExited))
                             {
-                                assistantText.Append(text);
-                                roundAssistantText.Append(text);
+                                deferredPlanContent.Append(text);
                             }
-                            else if (agentEvent.Kind == AgentEventKind.TokenBudget)
+                            else
                             {
-                                lastBudget = agentEvent.TokenBudget;
+                                await FlushDeferredContentAsync(deferredPlanContent, assistantText, writer, request.SessionId, cancellationToken);
+                                assistantText.Append(text);
+                                await writer.WriteAsync(AgentEvent.ContentDelta(request.SessionId, text), cancellationToken);
                             }
 
-                            await writer.WriteAsync(agentEvent, cancellationToken);
+                            continue;
+                        }
+
+                        if (providerEvent.Kind == ProviderStreamEventKind.TokenBudget && providerEvent.TokenBudget is { } budget)
+                        {
+                            lastBudget = budget;
+                            await writer.WriteAsync(AgentEvent.Budget(request.SessionId, budget), cancellationToken);
+                            continue;
+                        }
+
+                        if (providerEvent.Kind == ProviderStreamEventKind.Done)
+                        {
+                            await writer.WriteAsync(AgentEvent.StreamEnd(request.SessionId), cancellationToken);
+                            await writer.WriteAsync(AgentEvent.Complete(request.SessionId), cancellationToken);
+                            continue;
                         }
 
                         if (providerEvent.Kind == ProviderStreamEventKind.ToolCall && providerEvent.ToolCall is { } call)
                         {
+                            if (ShouldShowDeferredPlanContentBeforeTool(deferredPlanContent.ToString(), call, request.RunMode, planModePolicy.PlanExited))
+                            {
+                                await FlushDeferredContentAsync(deferredPlanContent, assistantText, writer, request.SessionId, cancellationToken);
+                            }
+                            else
+                            {
+                                deferredPlanContent.Clear();
+                            }
+
+                            await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, call), cancellationToken);
                             var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
                             if (toolResult is null)
                             {
@@ -390,6 +419,107 @@ public sealed class NativeAgentRunner
             false,
             null));
         return messages;
+    }
+
+    private static bool ShouldDeferVisiblePlanContent(ChatRunMode runMode, bool planExited) =>
+        runMode == ChatRunMode.Plan && !planExited;
+
+    private static bool ShouldShowDeferredPlanContentBeforeTool(
+        string deferredContent,
+        AgentToolCall call,
+        ChatRunMode runMode,
+        bool planExited)
+    {
+        if (!ShouldDeferVisiblePlanContent(runMode, planExited))
+        {
+            return !string.IsNullOrWhiteSpace(deferredContent);
+        }
+
+        var trimmed = deferredContent.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            return false;
+        }
+
+        var toolName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        if (toolName is "AskQuestion" or "SwitchMode")
+        {
+            return false;
+        }
+
+        return !LooksLikeInteractiveProtocolText(trimmed) && !LooksLikePotentialPlanText(trimmed);
+    }
+
+    private static async Task FlushDeferredContentAsync(
+        StringBuilder deferredContent,
+        StringBuilder assistantText,
+        ChannelWriter<AgentEvent> writer,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        if (deferredContent.Length == 0)
+        {
+            return;
+        }
+
+        var text = deferredContent.ToString();
+        deferredContent.Clear();
+        assistantText.Append(text);
+        await writer.WriteAsync(AgentEvent.ContentDelta(sessionId, text), cancellationToken);
+    }
+
+    private static bool LooksLikeInteractiveProtocolText(string text)
+    {
+        var trimmed = text.Trim();
+        var lower = trimmed.ToLowerInvariant();
+        if (trimmed.StartsWith("{", StringComparison.Ordinal) &&
+            (lower.Contains("\"tool\"", StringComparison.Ordinal) ||
+             lower.Contains("\"name\"", StringComparison.Ordinal) ||
+             lower.Contains("switchmode", StringComparison.Ordinal) ||
+             lower.Contains("askquestion", StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        return trimmed.StartsWith("<", StringComparison.Ordinal) &&
+            (lower.Contains("call", StringComparison.Ordinal) ||
+             lower.Contains("tool", StringComparison.Ordinal) ||
+             lower.Contains("switchmode", StringComparison.Ordinal) ||
+             lower.Contains("askquestion", StringComparison.Ordinal));
+    }
+
+    private static bool LooksLikePotentialPlanText(string text)
+    {
+        var trimmed = text.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            return false;
+        }
+
+        var lower = trimmed.ToLowerInvariant();
+        if (lower.Contains("switchmode", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (lower.Contains("plan", StringComparison.Ordinal) &&
+            (lower.Contains("execute", StringComparison.Ordinal) ||
+             lower.Contains("implementation", StringComparison.Ordinal) ||
+             lower.Contains("step", StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        if (trimmed.StartsWith("#", StringComparison.Ordinal) &&
+            lower.Contains("plan", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return Regex.IsMatch(trimmed, @"(?m)^\s*\d+\.\s+.+") &&
+            (lower.Contains("implement", StringComparison.Ordinal) ||
+             lower.Contains("optimize", StringComparison.Ordinal) ||
+             lower.Contains("execute", StringComparison.Ordinal));
     }
 
     private async Task<AgentToolResult?> ExecuteToolAsync(

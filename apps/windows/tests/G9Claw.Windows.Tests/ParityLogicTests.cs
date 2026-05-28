@@ -3046,7 +3046,9 @@ router:
         Assert.Equal("inspect src first", askResult.Output);
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanTurnRecoveryClassifier.RecoveringStatus);
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanTurnRecoveryClassifier.GeneratingQuestionStatus);
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "Which files should I inspect first?");
         Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after direct switch");
+        AssertNoCompletedAssistantTurnTextContains(events, "Which files should I inspect first?");
         Assert.Equal([PermissionRequestKind.AskUserQuestion, PermissionRequestKind.ExitPlanMode], permissionRequests.Select(permission => permission.Kind));
         Assert.Contains("Which files should I inspect first?", permissionRequests[0].InteractivePayload!.Questions[0].Question);
     }
@@ -3099,7 +3101,9 @@ router:
         Assert.False(results[1].IsError);
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanTurnRecoveryClassifier.RecoveringStatus);
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanTurnRecoveryClassifier.GeneratingPlanStatus);
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.ContentDelta && (item.Text?.Contains("Read project files", StringComparison.Ordinal) ?? false));
         Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after recovered plan");
+        AssertNoCompletedAssistantTurnTextContains(events, "Read project files");
         Assert.Equal([PermissionRequestKind.AskUserQuestion, PermissionRequestKind.ExitPlanMode], permissionRequests.Select(permission => permission.Kind));
         using var doc = JsonDocument.Parse(events.Single(item => item.Kind == AgentEventKind.ToolUse && item.ToolCall?.Name == "SwitchMode").ToolCall!.InputJson);
         Assert.True(doc.RootElement.GetProperty("recoveredFromPlainText").GetBoolean());
@@ -4291,6 +4295,17 @@ gateway:
         date,
         date,
         state);
+
+    private static void AssertNoCompletedAssistantTurnTextContains(IReadOnlyList<AgentEvent> events, string text)
+    {
+        var completedAssistantText = events
+            .Where(item => item.Kind == AgentEventKind.TurnCompleted && item.Turn is not null)
+            .SelectMany(item => item.Turn!.Items)
+            .Where(item => item.Kind == AgentTurnItemKind.AgentMessage)
+            .Select(item => item.Text);
+
+        Assert.DoesNotContain(completedAssistantText, item => item.Contains(text, StringComparison.Ordinal));
+    }
 
     private sealed class CapturingProviderHandler(string responseBody) : HttpMessageHandler
     {
