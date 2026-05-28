@@ -2110,6 +2110,74 @@ gateway:
     }
 
     [Fact]
+    public async Task AgentToolExecutorSearchToolsMatchMacFallbackShape()
+    {
+        using var temp = new TempWorkspace();
+        Directory.CreateDirectory(Path.Combine(temp.Root, "src"));
+        Directory.CreateDirectory(Path.Combine(temp.Root, "obj"));
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "src", "a.txt"), "TODO first\nkeep\nTODO second\n");
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "src", "b.txt"), "notes\nTODO third\n");
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "obj", "skip.txt"), "TODO skipped\n");
+        var executor = new AgentToolExecutor();
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None);
+
+        var grepCount = await executor.ExecuteAsync(new AgentToolCall("grep-count", "Grep", JsonSerializer.Serialize(new
+        {
+            pattern = "TODO",
+            path = ".",
+            output_mode = "count",
+        })), context);
+        var grepContent = await executor.ExecuteAsync(new AgentToolCall("grep-content", "Grep", JsonSerializer.Serialize(new
+        {
+            pattern = "TODO",
+            path = ".",
+            output_mode = "content",
+            offset = 1,
+            head_limit = 1,
+        })), context);
+        var glob = await executor.ExecuteAsync(new AgentToolCall("glob", "Glob", JsonSerializer.Serialize(new
+        {
+            pattern = "**/*.txt",
+            path = ".",
+        })), context);
+        var semantic = await executor.ExecuteAsync(new AgentToolCall("semantic", "SemanticSearch", JsonSerializer.Serialize(new
+        {
+            query = "TODO third",
+            path = ".",
+            limit = 1,
+        })), context);
+        var emptySemantic = await executor.ExecuteAsync(new AgentToolCall("semantic-empty", "SemanticSearch", JsonSerializer.Serialize(new
+        {
+            query = "x",
+        })), context);
+
+        Assert.False(grepCount.IsError);
+        Assert.Equal(["src/a.txt:2", "src/b.txt:1"], OutputLines(grepCount.Output));
+        Assert.False(grepContent.IsError);
+        Assert.Equal("src/a.txt:3:TODO second", grepContent.Output);
+        Assert.False(glob.IsError);
+        Assert.Equal(["src/a.txt", "src/b.txt"], OutputLines(glob.Output));
+        Assert.False(semantic.IsError);
+        using var semanticJson = JsonDocument.Parse(semantic.Output);
+        var firstSemanticHit = semanticJson.RootElement.GetProperty("results")[0];
+        Assert.Equal("TODO third", semanticJson.RootElement.GetProperty("query").GetString());
+        Assert.Equal("src/b.txt", firstSemanticHit.GetProperty("path").GetString());
+        Assert.Equal(2, firstSemanticHit.GetProperty("line").GetInt32());
+        Assert.Equal(2, firstSemanticHit.GetProperty("score").GetInt32());
+        Assert.Equal("TODO third", firstSemanticHit.GetProperty("snippet").GetString());
+        Assert.True(emptySemantic.IsError);
+        Assert.Contains("SemanticSearch query did not contain searchable terms.", emptySemantic.Output);
+    }
+
+    private static string[] OutputLines(string output) =>
+        output.Replace("\r\n", "\n").Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+    [Fact]
     public async Task AgentToolExecutorPersistsTodosAndSharesTaskAwaitState()
     {
         using var temp = new TempWorkspace();

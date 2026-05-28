@@ -178,41 +178,51 @@ public sealed class AgentToolExecutor
         var basePath = OptionalString(root, "path") ?? context.WorkspaceRoot;
         var resolved = WorkspaceService.ResolveWorkspacePath(basePath, context.WorkspaceRoot);
         var glob = OptionalString(root, "glob") ?? OptionalString(root, "include");
+        var includeRegex = string.IsNullOrWhiteSpace(glob) ? null : GlobToRegex(glob);
         var outputMode = OptionalString(root, "output_mode") ?? "files_with_matches";
-        var headLimit = OptionalInt(root, "head_limit") ?? 100;
+        var headLimit = OptionalInt(root, "head_limit") ?? 250;
+        var offset = Math.Max(0, OptionalInt(root, "offset") ?? 0);
         var options = OptionalBool(root, "-i") == true ? RegexOptions.IgnoreCase : RegexOptions.None;
         var regex = new Regex(pattern, options | RegexOptions.Compiled);
-        var files = Directory.Exists(resolved) ? EnumerateSearchableFiles(resolved, glob) : [resolved];
+        var files = Directory.Exists(resolved) ? EnumerateSearchableFiles(resolved, null) : [resolved];
         var results = new List<string>();
+        var counts = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var file in files)
         {
             var lineNumber = 0;
-            var fileMatched = false;
+            var relative = RelativeWorkspacePath(context.WorkspaceRoot, file);
+            if (includeRegex is not null && !includeRegex.IsMatch(relative)) continue;
             foreach (var line in SafeReadLines(file))
             {
                 lineNumber++;
                 if (!regex.IsMatch(line)) continue;
-                fileMatched = true;
-                if (outputMode == "content")
+                counts[relative] = counts.GetValueOrDefault(relative) + 1;
+                switch (outputMode)
                 {
-                    results.Add($"{Path.GetRelativePath(context.WorkspaceRoot, file)}:{lineNumber}:{line}");
+                    case "content":
+                        results.Add($"{relative}:{lineNumber}:{line}");
+                        break;
+                    case "count":
+                        break;
+                    default:
+                        if (seenFiles.Add(relative))
+                        {
+                            results.Add(relative);
+                        }
+                        break;
                 }
-                if (results.Count >= headLimit) break;
             }
-
-            if (outputMode == "files_with_matches" && fileMatched)
-            {
-                results.Add(Path.GetRelativePath(context.WorkspaceRoot, file));
-            }
-            else if (outputMode == "count" && fileMatched)
-            {
-                results.Add(Path.GetRelativePath(context.WorkspaceRoot, file));
-            }
-            if (results.Count >= headLimit) break;
         }
 
-        return Ok(call, results.Count == 0 ? "No matches." : string.Join(Environment.NewLine, results));
+        if (outputMode == "count")
+        {
+            results = counts.Select(item => $"{item.Key}:{item.Value}").ToList();
+        }
+
+        var sliced = SliceToolOutput(results, offset, headLimit);
+        return Ok(call, sliced.Count == 0 ? $"No matches for {pattern}." : string.Join(Environment.NewLine, sliced));
     }
 
     private AgentToolResult Glob(AgentToolCall call, AgentToolExecutionContext context)
@@ -223,30 +233,42 @@ public sealed class AgentToolExecutor
         var resolved = WorkspaceService.ResolveWorkspacePath(basePath, context.WorkspaceRoot);
         var regex = GlobToRegex(pattern);
         var files = Directory.EnumerateFiles(resolved, "*", SearchOption.AllDirectories)
+            .Where(path => !Path.GetRelativePath(resolved, path).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(IsHiddenOrBuildDir))
             .Where(path => regex.IsMatch(Path.GetRelativePath(resolved, path).Replace('\\', '/')))
+            .Select(path => RelativeWorkspacePath(context.WorkspaceRoot, path))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .Take(500)
-            .Select(path => Path.GetRelativePath(context.WorkspaceRoot, path))
             .ToList();
-        return Ok(call, files.Count == 0 ? "No files found." : string.Join(Environment.NewLine, files));
+        return Ok(call, files.Count == 0 ? $"No files matched {pattern}." : string.Join(Environment.NewLine, files));
     }
 
     private AgentToolResult SemanticSearch(AgentToolCall call, AgentToolExecutionContext context)
     {
         using var doc = JsonDocument.Parse(call.InputJson);
+        var root = doc.RootElement;
         var query = RequiredString(doc.RootElement, "query");
-        var limit = OptionalInt(doc.RootElement, "limit") ?? 20;
-        var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(term => term.Length > 2)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+        var searchPath = OptionalString(root, "path") ?? ".";
+        var resolved = WorkspaceService.ResolveWorkspacePath(searchPath, context.WorkspaceRoot);
+        var limit = Math.Max(1, Math.Min(OptionalInt(doc.RootElement, "limit") ?? 20, 100));
+        var terms = Regex.Split(query.ToLowerInvariant(), @"[^\p{L}\p{Nd}]+")
+            .Where(term => term.Length >= 2)
+            .Distinct(StringComparer.Ordinal)
             .ToList();
-        var scored = EnumerateSearchableFiles(context.WorkspaceRoot, null)
-            .Select(path => new { Path = path, Score = ScoreFile(path, terms) })
-            .Where(item => item.Score > 0)
-            .OrderByDescending(item => item.Score)
-            .ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
+        if (terms.Count == 0) return Error(call, "SemanticSearch query did not contain searchable terms.");
+
+        var hits = EnumerateSearchableFiles(resolved, null)
+            .Select(path => SemanticHit(path, context.WorkspaceRoot, terms))
+            .OfType<Dictionary<string, object>>()
+            .OrderByDescending(hit => (int)hit["score"])
+            .ThenBy(hit => (string)hit["path"], StringComparer.OrdinalIgnoreCase)
             .Take(limit)
-            .Select(item => $"{Path.GetRelativePath(context.WorkspaceRoot, item.Path)} score={item.Score}");
-        return Ok(call, string.Join(Environment.NewLine, scored));
+            .ToList();
+        var output = JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["query"] = query,
+            ["results"] = hits,
+        }, new JsonSerializerOptions { WriteIndented = true });
+        return Ok(call, output);
     }
 
     private async Task<AgentToolResult> ShellAsync(AgentToolCall call, AgentToolExecutionContext context)
@@ -425,12 +447,70 @@ public sealed class AgentToolExecutor
         return index < 0 ? text : text[..index] + newString + text[(index + oldString.Length)..];
     }
 
+    private static IReadOnlyList<string> SliceToolOutput(IReadOnlyList<string> values, int offset, int headLimit)
+    {
+        var skipped = values.Skip(Math.Max(0, offset));
+        return headLimit == 0
+            ? skipped.ToList()
+            : skipped.Take(Math.Max(1, headLimit)).ToList();
+    }
+
+    private static string RelativeWorkspacePath(string workspaceRoot, string path) =>
+        Path.GetRelativePath(workspaceRoot, path).Replace('\\', '/');
+
+    private static Dictionary<string, object>? SemanticHit(string path, string workspaceRoot, IReadOnlyList<string> terms)
+    {
+        if (terms.Count == 0) return null;
+        string text;
+        try
+        {
+            if (new FileInfo(path).Length > 300_000) return null;
+            text = File.ReadAllText(path, Encoding.UTF8);
+        }
+        catch
+        {
+            return null;
+        }
+
+        var relative = RelativeWorkspacePath(workspaceRoot, path);
+        var bestScore = SemanticScore(relative.ToLowerInvariant(), terms) * 4;
+        var bestLine = 1;
+        var bestSnippet = "";
+        var lines = text.Split(["\r\n", "\n"], StringSplitOptions.None);
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var line = lines[index];
+            var lineScore = SemanticScore(line.ToLowerInvariant(), terms);
+            if (lineScore > bestScore)
+            {
+                bestScore = lineScore;
+                bestLine = index + 1;
+                bestSnippet = line.Trim();
+            }
+        }
+
+        if (bestScore <= 0) return null;
+        return new Dictionary<string, object>
+        {
+            ["path"] = relative,
+            ["line"] = bestLine,
+            ["score"] = bestScore,
+            ["snippet"] = string.IsNullOrWhiteSpace(bestSnippet)
+                ? relative
+                : bestSnippet[..Math.Min(bestSnippet.Length, 500)],
+        };
+    }
+
+    private static int SemanticScore(string text, IReadOnlyList<string> terms) =>
+        terms.Count(term => text.Contains(term, StringComparison.OrdinalIgnoreCase));
+
     private static IEnumerable<string> EnumerateSearchableFiles(string root, string? glob)
     {
         var regex = string.IsNullOrWhiteSpace(glob) ? null : GlobToRegex(glob);
         return Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
             .Where(path => !Path.GetRelativePath(root, path).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(IsHiddenOrBuildDir))
-            .Where(path => regex is null || regex.IsMatch(Path.GetFileName(path)) || regex.IsMatch(Path.GetRelativePath(root, path).Replace('\\', '/')));
+            .Where(path => regex is null || regex.IsMatch(Path.GetFileName(path)) || regex.IsMatch(Path.GetRelativePath(root, path).Replace('\\', '/')))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool IsHiddenOrBuildDir(string segment) =>
@@ -450,23 +530,6 @@ public sealed class AgentToolExecutor
         }
 
         foreach (var line in lines) yield return line;
-    }
-
-    private static int ScoreFile(string path, IReadOnlyList<string> terms)
-    {
-        if (terms.Count == 0) return 0;
-        string text;
-        try
-        {
-            if (new FileInfo(path).Length > 500_000) return 0;
-            text = File.ReadAllText(path, Encoding.UTF8);
-        }
-        catch
-        {
-            return 0;
-        }
-
-        return terms.Sum(term => Regex.Matches(text, Regex.Escape(term), RegexOptions.IgnoreCase).Count);
     }
 
     private static Regex GlobToRegex(string pattern)
