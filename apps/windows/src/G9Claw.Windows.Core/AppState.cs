@@ -27,6 +27,7 @@ public sealed class AppState : INotifyPropertyChanged
     public List<RoutingUsageRecord> RoutingUsage { get; } = [];
     public List<FileAttachment> PendingAttachments { get; } = [];
 
+    public NativeUIPreferences UiPreferences { get; set; } = new();
     public AppSettings Settings { get; set; }
 
     public Guid? SelectedProjectId

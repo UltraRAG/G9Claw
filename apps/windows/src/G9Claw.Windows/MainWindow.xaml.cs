@@ -144,6 +144,7 @@ public sealed partial class MainWindow : Window
     private string? _lastContextStage;
     private int _contextCompactCount;
     private readonly HashSet<string> _expandedToolRowIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _collapsedToolRowIds = new(StringComparer.OrdinalIgnoreCase);
 
     public AppState State { get; private set; }
     public ObservableCollection<ChatLine> ChatLines { get; } = [];
@@ -1174,15 +1175,13 @@ public sealed partial class MainWindow : Window
         attachmentButton.Click += async (_, _) => await AttachComposerFilesAsync();
         leftControls.Children.Add(attachmentButton);
         var modeButton = ComposerPillButton(
-            State.ComposerRunMode == ChatRunMode.Plan ? "ListChecks" : "Bot",
-            State.ComposerRunMode == ChatRunMode.Plan ? "Plan" : "Agent");
+            ComposerRunModeIcon(State.ComposerRunMode),
+            State.ComposerRunMode.Label());
         modeButton.Flyout = ComposerRunModeFlyout();
         leftControls.Children.Add(modeButton);
         var permissionButton = ComposerPillButton(
-            State.ComposerPermissionMode == ComposerPermissionMode.BypassPermissions ? "AlertCircle" : "Shield",
-            State.ComposerPermissionMode == ComposerPermissionMode.BypassPermissions
-                ? T("chat.composer.bypassPermissions")
-                : T("chat.composer.defaultPermissions"));
+            ComposerPermissionModeIcon(State.ComposerPermissionMode),
+            State.ComposerPermissionMode.Label());
         permissionButton.Flyout = ComposerPermissionFlyout();
         leftControls.Children.Add(permissionButton);
         controlsRow.Children.Add(leftControls);
@@ -1257,6 +1256,20 @@ public sealed partial class MainWindow : Window
         _ => ComposerKey.Other,
     };
 
+    private static string ComposerRunModeIcon(ChatRunMode mode) => mode.SystemImage() switch
+    {
+        "checklist" => "ListChecks",
+        "sparkles" => "Sparkles",
+        _ => "Bot",
+    };
+
+    private static string ComposerPermissionModeIcon(ComposerPermissionMode mode) => mode.SystemImage() switch
+    {
+        "hand.raised" => "Hand",
+        "shield.lefthalf.filled" => "Shield",
+        _ => "Shield",
+    };
+
     private bool IsImeComposing()
     {
         if (_hwnd == IntPtr.Zero)
@@ -1307,15 +1320,15 @@ public sealed partial class MainWindow : Window
     private MenuFlyout ComposerRunModeFlyout()
     {
         var flyout = new MenuFlyout();
-        foreach (var mode in new[] { ChatRunMode.Agent, ChatRunMode.Plan })
+        foreach (var descriptor in ChatRunModeCatalog.All)
         {
             var item = new MenuFlyoutItem
             {
-                Text = mode == ChatRunMode.Plan ? "Plan" : "Agent",
+                Text = descriptor.Label,
             };
             item.Click += (_, _) =>
             {
-                State.ComposerRunMode = mode;
+                State.ComposerRunMode = descriptor.Mode;
                 RenderContent();
                 FocusComposerSoon();
             };
@@ -1328,17 +1341,15 @@ public sealed partial class MainWindow : Window
     private MenuFlyout ComposerPermissionFlyout()
     {
         var flyout = new MenuFlyout();
-        foreach (var mode in new[] { ComposerPermissionMode.Default, ComposerPermissionMode.BypassPermissions })
+        foreach (var descriptor in ComposerPermissionModeCatalog.All)
         {
             var item = new MenuFlyoutItem
             {
-                Text = mode == ComposerPermissionMode.BypassPermissions
-                    ? T("chat.composer.bypassPermissions")
-                    : T("chat.composer.defaultPermissions"),
+                Text = descriptor.Label,
             };
             item.Click += (_, _) =>
             {
-                State.ComposerPermissionMode = mode;
+                State.ComposerPermissionMode = descriptor.Mode;
                 RenderContent();
                 FocusComposerSoon();
             };
@@ -1894,6 +1905,12 @@ public sealed partial class MainWindow : Window
         {
             switch (block.Kind)
             {
+                case ChatBlockKind.Reasoning
+                    when ChatBlockVisibilityPolicy.IsVisible(block, State.UiPreferences.ShowThinking) &&
+                         !string.IsNullOrWhiteSpace(block.Text):
+                    FlushToolGroup();
+                    panel.Children.Add(ReasoningBlock(block.Text));
+                    break;
                 case ChatBlockKind.Text when !string.IsNullOrWhiteSpace(block.Text):
                     FlushToolGroup();
                     panel.Children.Add(MarkdownContent(block.Text));
@@ -1951,6 +1968,52 @@ public sealed partial class MainWindow : Window
         }
 
         return panel;
+    }
+
+    private FrameworkElement ReasoningBlock(string text)
+    {
+        var body = new StackPanel
+        {
+            Spacing = 6,
+            Children =
+            {
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 6,
+                    Children =
+                    {
+                        Icon("Sparkles", 13, Brush("V2MutedForegroundBrush")),
+                        new TextBlock
+                        {
+                            Text = "Thinking",
+                            FontSize = 11,
+                            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                            Foreground = Brush("V2MutedForegroundBrush"),
+                        },
+                    },
+                },
+                new TextBlock
+                {
+                    Text = text,
+                    FontSize = 12,
+                    LineHeight = 18,
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    IsTextSelectionEnabled = true,
+                },
+            },
+        };
+
+        return new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Background = Brush("V2MutedBrush"),
+            Padding = new Thickness(10, 8, 10, 8),
+            Child = body,
+        };
     }
 
     private FrameworkElement AttachmentChip(FileAttachment attachment)
@@ -2229,7 +2292,7 @@ public sealed partial class MainWindow : Window
     private FrameworkElement ProviderErrorCard(ProviderErrorInfo error)
     {
         var key = $"provider-error:{error.RequestId}";
-        var expanded = _expandedToolRowIds.Contains(key);
+        var expanded = IsToolRowExpanded(key);
         FrameworkElement? detailElement = null;
         if (expanded)
         {
@@ -2299,7 +2362,7 @@ public sealed partial class MainWindow : Window
     private FrameworkElement ToolPairRow(AgentToolCall call, AgentToolResult? result)
     {
         var key = $"tool:{call.Id}";
-        var expanded = _expandedToolRowIds.Contains(key);
+        var expanded = IsToolRowExpanded(key);
         var presentation = ToolInvocationPresenter.Present(call, result, IsChineseUi());
         FrameworkElement? detail = null;
         if (expanded)
@@ -2320,7 +2383,7 @@ public sealed partial class MainWindow : Window
     private FrameworkElement ToolGroupRow(IReadOnlyList<(AgentToolCall Call, AgentToolResult? Result)> items)
     {
         var key = $"tool-group:{string.Join(",", items.Select(item => item.Call.Id))}";
-        var expanded = _expandedToolRowIds.Contains(key);
+        var expanded = IsToolRowExpanded(key);
         var presentation = ToolInvocationPresenter.PresentGroup(items, IsChineseUi());
         FrameworkElement? detail = null;
         if (expanded)
@@ -2405,11 +2468,7 @@ public sealed partial class MainWindow : Window
 
         button.Click += (_, _) =>
         {
-            if (!_expandedToolRowIds.Add(key))
-            {
-                _expandedToolRowIds.Remove(key);
-            }
-
+            ToggleToolRow(key);
             RenderContent();
         };
         stack.Children.Add(button);
@@ -2512,11 +2571,7 @@ public sealed partial class MainWindow : Window
 
         button.Click += (_, _) =>
         {
-            if (!_expandedToolRowIds.Add(key))
-            {
-                _expandedToolRowIds.Remove(key);
-            }
-
+            ToggleToolRow(key);
             RenderContent();
         };
         return button;
@@ -2562,6 +2617,20 @@ public sealed partial class MainWindow : Window
     {
         return ToolInvocationPresenter.IsBoundary(toolName);
     }
+
+    private bool IsToolRowExpanded(string key) =>
+        ToolRowExpansionPolicy.IsExpanded(
+            key,
+            _expandedToolRowIds,
+            _collapsedToolRowIds,
+            State.UiPreferences.AutoExpandTools);
+
+    private void ToggleToolRow(string key) =>
+        ToolRowExpansionPolicy.Toggle(
+            key,
+            _expandedToolRowIds,
+            _collapsedToolRowIds,
+            State.UiPreferences.AutoExpandTools);
 
     private FrameworkElement TurnTrace(AgentTurn turn)
     {

@@ -1487,7 +1487,7 @@ router:
         {
             "Bot", "Folder", "Sparkles", "BarChart3", "Database", "Radio",
             "PanelLeftClose", "PanelLeftOpen", "Settings", "MessageSquarePlus",
-            "Palette", "Shield", "FileCog", "LayoutList", "Code", "Save",
+            "Palette", "Shield", "Hand", "FileCog", "LayoutList", "Code", "Save",
             "Paperclip", "Copy",
         };
 

@@ -25,6 +25,7 @@ public static class LucideIconCatalog
         "Folder",
         "FolderPlus",
         "GitBranch",
+        "Hand",
         "LayoutList",
         "ListChecks",
         "MessageSquarePlus",
