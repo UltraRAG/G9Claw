@@ -485,7 +485,7 @@ public sealed class AgentToolExecutor
         if (OptionalBool(doc.RootElement, "run_in_background") == true)
         {
             var run = _runStore.StartShellTask(command, cwd, _terminalService, timeout, context.CancellationToken, environment);
-            return Ok(call, $"Started background shell task {run.Id}. Use Await with task_id={run.Id} to read output.", taskId: run.Id);
+            return Ok(call, BackgroundStartOutput(run.Id, command), taskId: run.Id);
         }
 
         var result = await _terminalService.RunAsync(command, cwd, timeout, context.CancellationToken, environment);
@@ -647,7 +647,7 @@ public sealed class AgentToolExecutor
         var cwd = OptionalString(root, "cwd") is { } requestedCwd
             ? ValidatedTaskWorkingDirectory(requestedCwd, context.WorkspaceRoot)
             : context.WorkspaceRoot;
-        var background = OptionalBool(root, "run_in_background") ?? true;
+        var background = OptionalBool(root, "run_in_background") ?? false;
         var timeout = ShellTimeoutMilliseconds(root);
         var normalizedType = NormalizeTaskType(type);
 
@@ -662,7 +662,7 @@ public sealed class AgentToolExecutor
             if (background)
             {
                 var run = _runStore.StartShellTask(prompt, cwd, _terminalService, timeout, context.CancellationToken, environment);
-                return Ok(call, $"Started shell task {run.Id}: {description}", taskId: run.Id);
+                return Ok(call, BackgroundStartOutput(run.Id, description), taskId: run.Id);
             }
 
             var result = await _terminalService.RunAsync(prompt, cwd, timeout, context.CancellationToken, environment);
@@ -676,7 +676,14 @@ public sealed class AgentToolExecutor
         }
 
         var output = $"Recorded {type} task: {description}\n\n{prompt}";
-        var task = _runStore.CreateRecordedTask(type, description, cwd, output);
+        var task = background
+            ? _runStore.StartRecordedTask(normalizedType, description, cwd, output, context.CancellationToken)
+            : _runStore.CreateRecordedTask(type, description, cwd, output);
+        if (background)
+        {
+            return Ok(call, BackgroundStartOutput(task.Id, description), taskId: task.Id);
+        }
+
         return Ok(call, output, taskId: task.Id);
     }
 
@@ -798,17 +805,35 @@ public sealed class AgentToolExecutor
     private static string PrettyJson(JsonNode node) =>
         node.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
 
-    private static string FormatRunOutput(NativeBackgroundRun run)
-    {
-        var builder = new StringBuilder()
-            .AppendLine($"{run.Kind} {run.Id}: {run.Status}")
-            .AppendLine($"cwd: {run.Cwd}");
-        if (run.ExitCode is not null) builder.AppendLine($"exit: {run.ExitCode}");
-        if (!string.IsNullOrWhiteSpace(run.Error)) builder.AppendLine($"error: {run.Error}");
-        builder.AppendLine()
-            .Append(string.IsNullOrWhiteSpace(run.Output) ? "(no output yet)" : run.Output);
-        return builder.ToString();
-    }
+    private static string BackgroundStartOutput(string taskId, string description) =>
+        PrettyJson(new JsonObject
+        {
+            ["task_id"] = taskId,
+            ["status"] = "running",
+            ["description"] = description,
+        });
+
+    private static string FormatRunOutput(NativeBackgroundRun run) =>
+        PrettyJson(new JsonObject
+        {
+            ["task_id"] = run.Id,
+            ["description"] = run.Description,
+            ["status"] = BackgroundStatus(run.Status),
+            ["exitCode"] = run.ExitCode,
+            ["stdout"] = run.Output,
+            ["stderr"] = run.Error ?? "",
+            ["output"] = run.Output,
+        });
+
+    private static string BackgroundStatus(TaskStatus status) =>
+        status switch
+        {
+            TaskStatus.Completed => "completed",
+            TaskStatus.Failed => "failed",
+            TaskStatus.Running => "running",
+            TaskStatus.Queued => "queued",
+            _ => status.ToString().ToLowerInvariant(),
+        };
 
     private static string ReadImage(string path, string workspaceRoot, string extension)
     {

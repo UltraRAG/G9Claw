@@ -1020,9 +1020,19 @@ public sealed class ParityLogicTests
         Assert.False(foreground.IsError);
         Assert.Equal(["1", "7"], OutputLines(foreground.Output));
         Assert.False(background.IsError);
+        using (var backgroundJson = JsonDocument.Parse(background.Output))
+        {
+            Assert.Equal(background.TaskId, backgroundJson.RootElement.GetProperty("task_id").GetString());
+            Assert.Equal("running", backgroundJson.RootElement.GetProperty("status").GetString());
+            Assert.Equal("Background env", backgroundJson.RootElement.GetProperty("description").GetString());
+        }
         Assert.False(awaited.IsError);
         Assert.Equal("Completed", awaited.Diagnostics?["status"]);
-        Assert.Contains("1", OutputLines(awaited.Output));
+        using (var awaitedJson = JsonDocument.Parse(awaited.Output))
+        {
+            Assert.Equal("completed", awaitedJson.RootElement.GetProperty("status").GetString());
+            Assert.Contains("1", awaitedJson.RootElement.GetProperty("output").GetString());
+        }
     }
 
     [Fact]
@@ -1166,6 +1176,11 @@ public sealed class ParityLogicTests
         Assert.False(awaitResult.IsError);
         Assert.Equal(taskResult.TaskId, awaitResult.TaskId);
         Assert.Equal("Running", awaitResult.Diagnostics?["status"]);
+        using (var runningJson = JsonDocument.Parse(awaitResult.Output))
+        {
+            Assert.Equal(taskResult.TaskId, runningJson.RootElement.GetProperty("task_id").GetString());
+            Assert.Equal("running", runningJson.RootElement.GetProperty("status").GetString());
+        }
 
         var completed = await executor.ExecuteAsync(new AgentToolCall("await-complete", "Await", JsonSerializer.Serialize(new
         {
@@ -1173,6 +1188,12 @@ public sealed class ParityLogicTests
             timeout = 5_000,
         })), context);
         Assert.False(completed.IsError);
+        using (var completedJson = JsonDocument.Parse(completed.Output))
+        {
+            Assert.Equal(taskResult.TaskId, completedJson.RootElement.GetProperty("task_id").GetString());
+            Assert.Equal("completed", completedJson.RootElement.GetProperty("status").GetString());
+            Assert.Contains("done", completedJson.RootElement.GetProperty("output").GetString());
+        }
     }
 
     [Fact]
@@ -2993,6 +3014,44 @@ gateway:
         Assert.StartsWith("task-", taskResult.TaskId);
         Assert.False(awaitResult.IsError);
         Assert.Contains("Explore services", awaitResult.Output);
+    }
+
+    [Fact]
+    public async Task AgentToolExecutorBackgroundTaskReturnsAwaitableJsonLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var runStore = new NativeRunStore(Path.Combine(temp.Root, "run-history"));
+        var executor = new AgentToolExecutor(runStore: runStore);
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None);
+
+        var started = await executor.ExecuteAsync(new AgentToolCall("background-task", "Task", """
+        {"type":"explore","prompt":"Inspect services","description":"Explore services","run_in_background":true}
+        """), context);
+        var awaited = await executor.ExecuteAsync(new AgentToolCall("background-task-await", "Await", JsonSerializer.Serialize(new
+        {
+            task_id = started.TaskId,
+            timeout = 5_000,
+        })), context);
+
+        Assert.False(started.IsError);
+        using (var startedJson = JsonDocument.Parse(started.Output))
+        {
+            Assert.Equal(started.TaskId, startedJson.RootElement.GetProperty("task_id").GetString());
+            Assert.Equal("running", startedJson.RootElement.GetProperty("status").GetString());
+            Assert.Equal("Explore services", startedJson.RootElement.GetProperty("description").GetString());
+        }
+
+        Assert.False(awaited.IsError);
+        using var awaitedJson = JsonDocument.Parse(awaited.Output);
+        Assert.Equal(started.TaskId, awaitedJson.RootElement.GetProperty("task_id").GetString());
+        Assert.Equal("completed", awaitedJson.RootElement.GetProperty("status").GetString());
+        Assert.Equal(0, awaitedJson.RootElement.GetProperty("exitCode").GetInt32());
+        Assert.Contains("Recorded explore task: Explore services", awaitedJson.RootElement.GetProperty("output").GetString());
     }
 
     [Fact]

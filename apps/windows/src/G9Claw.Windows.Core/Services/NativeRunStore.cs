@@ -102,6 +102,54 @@ public sealed class NativeRunStore
         return run;
     }
 
+    public NativeBackgroundRun StartRecordedTask(
+        string kind,
+        string description,
+        string cwd,
+        string output,
+        CancellationToken cancellationToken)
+    {
+        var id = $"task-{Guid.NewGuid():D}";
+        var started = new NativeBackgroundRun(
+            id,
+            kind,
+            string.IsNullOrWhiteSpace(description) ? kind : description.Trim(),
+            cwd,
+            "",
+            TaskStatus.Running,
+            null,
+            DateTimeOffset.UtcNow,
+            null,
+            null);
+        _runs[id] = started;
+
+        _ = Task.Run(() =>
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                _runs[id] = started with
+                {
+                    Output = "Task was cancelled.",
+                    Status = TaskStatus.Failed,
+                    ExitCode = -1,
+                    CompletedAt = DateTimeOffset.UtcNow,
+                    Error = "Cancelled.",
+                };
+                return;
+            }
+
+            _runs[id] = started with
+            {
+                Output = output,
+                Status = TaskStatus.Completed,
+                ExitCode = 0,
+                CompletedAt = DateTimeOffset.UtcNow,
+            };
+        }, CancellationToken.None);
+
+        return started;
+    }
+
     public NativeBackgroundRun StartShellTask(
         string command,
         string cwd,
