@@ -77,7 +77,7 @@ public sealed class NativeAgentRunner
 
         try
         {
-            var toolExchanges = new List<AgentToolExchange>();
+            var toolExchanges = request.ToolExchanges.ToList();
             var currentRequest = request;
             var rootGlobPolicy = new AgentRootGlobExecutionPolicy();
             var planModePolicy = new AgentPlanModePolicy(request.RunMode);
@@ -87,6 +87,7 @@ public sealed class NativeAgentRunner
             var round = 0;
             var duplicateOnlyRounds = 0;
             var partialStreamRecoveryCount = 0;
+            var didRecoverContextOverflow = false;
             while (true)
             {
                 await writer.WriteAsync(
@@ -146,6 +147,24 @@ public sealed class NativeAgentRunner
                     round++;
                     continue;
                 }
+                catch (ProviderClientException ex) when (!didRecoverContextOverflow && NativeAgentRuntime.IsPromptTooLongError(ex))
+                {
+                    didRecoverContextOverflow = true;
+                    toolExchanges.AddRange(roundExchanges);
+                    currentRequest = currentRequest with { ToolExchanges = toolExchanges.ToList() };
+                    var recovery = NativeAgentRuntime.ForceRecoverContext(currentRequest);
+                    toolExchanges = recovery.ToolExchanges.ToList();
+                    currentRequest = currentRequest with
+                    {
+                        PriorMessages = recovery.PriorMessages,
+                        ToolExchanges = recovery.ToolExchanges,
+                    };
+                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, recovery.Trigger), cancellationToken);
+                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, "context recovering"), cancellationToken);
+                    await writer.WriteAsync(AgentEvent.Budget(request.SessionId, new TokenBudget(recovery.PostTokens, request.ContextWindow)), cancellationToken);
+                    round++;
+                    continue;
+                }
 
                 if (roundExchanges.Count == 0)
                 {
@@ -179,7 +198,7 @@ public sealed class NativeAgentRunner
 
                 duplicateOnlyRounds = 0;
                 toolExchanges.AddRange(roundExchanges);
-                currentRequest = request with { ToolExchanges = toolExchanges.ToList() };
+                currentRequest = currentRequest with { ToolExchanges = toolExchanges.ToList() };
                 round++;
             }
 

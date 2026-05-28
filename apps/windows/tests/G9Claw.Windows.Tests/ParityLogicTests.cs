@@ -2632,6 +2632,90 @@ router:
     }
 
     [Fact]
+    public void NativeAgentRuntimeDetectsPromptTooLongErrorsLikeMac()
+    {
+        Assert.True(NativeAgentRuntime.IsPromptTooLongError(ProviderClientException.HttpError(400, "{\"error\":\"prompt_too_long\"}")));
+        Assert.True(NativeAgentRuntime.IsPromptTooLongError(ProviderClientException.HttpError(413, "maximum context exceeded")));
+        Assert.True(NativeAgentRuntime.IsPromptTooLongError(ProviderClientException.HttpError(400, "context length is too large")));
+        Assert.True(NativeAgentRuntime.IsPromptTooLongError(ProviderClientException.HttpError(400, "too many tokens in request")));
+        Assert.True(NativeAgentRuntime.IsPromptTooLongError(ProviderClientException.HttpError(400, "tokens exceed configured window")));
+        Assert.False(NativeAgentRuntime.IsPromptTooLongError(ProviderClientException.HttpError(429, "too many tokens")));
+        Assert.False(NativeAgentRuntime.IsPromptTooLongError(ProviderClientException.HttpError(400, "bad request")));
+        Assert.False(NativeAgentRuntime.IsPromptTooLongError(ProviderClientException.Transport("prompt_too_long")));
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerRecoversPromptTooLongLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var priorMessages = new List<ChatMessage>
+        {
+            new(
+                Guid.NewGuid(),
+                "session-1",
+                SessionProvider.G9Claw,
+                ChatRole.System,
+                [ChatBlock.FromText("system prompt")],
+                DateTimeOffset.UtcNow,
+                false,
+                null),
+        };
+        priorMessages.AddRange(Enumerable.Range(0, 10).Select(index => new ChatMessage(
+            Guid.NewGuid(),
+            "session-1",
+            SessionProvider.G9Claw,
+            index % 2 == 0 ? ChatRole.User : ChatRole.Assistant,
+            [ChatBlock.FromText($"older message {index}")],
+            DateTimeOffset.UtcNow,
+            false,
+            null)));
+
+        var provider = new PromptTooLongRecoveryProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "continue after context overflow",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            priorMessages,
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            [])
+        {
+            ToolExchanges =
+            [
+                new AgentToolExchange(new AgentToolCall("call-1", "Read", "{}"), new AgentToolResult("call-1", "Read", new string('a', 1000), false)),
+                new AgentToolExchange(new AgentToolCall("call-2", "Read", "{}"), new AgentToolResult("call-2", "Read", new string('b', 1000), false)),
+                new AgentToolExchange(new AgentToolCall("call-3", "Read", "{}"), new AgentToolResult("call-3", "Read", new string('c', 1000), false)),
+                new AgentToolExchange(new AgentToolCall("call-4", "Read", "{}"), new AgentToolResult("call-4", "Read", new string('d', 1000), false)),
+                new AgentToolExchange(new AgentToolCall("call-5", "Read", "{}"), new AgentToolResult("call-5", "Read", new string('e', 1000), false)),
+            ],
+        };
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        Assert.Equal(2, provider.RequestCount);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "recovered");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "prompt_too_long");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "context recovering");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.TokenBudget && item.TokenBudget?.Total == 160000);
+        Assert.Contains(provider.RecoveredPriorMessages, message => message.PlainText.Contains("[Context compacted]", StringComparison.Ordinal));
+        Assert.True(provider.RecoveredPriorMessages.Count < priorMessages.Count);
+        Assert.Equal(4, provider.RecoveredToolExchangeCount);
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Error);
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerPassesProviderContextToTaskSubagentsLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -3926,6 +4010,31 @@ gateway:
             }
 
             RecoveryPrompts.AddRange(request.PriorMessages.Select(message => message.PlainText));
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "recovered");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+        }
+    }
+
+    private sealed class PromptTooLongRecoveryProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+        public List<ChatMessage> RecoveredPriorMessages { get; private set; } = [];
+        public int RecoveredToolExchangeCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (RequestCount == 1)
+            {
+                throw ProviderClientException.HttpError(400, "{\"error\":\"prompt_too_long\"}");
+            }
+
+            RecoveredPriorMessages = request.PriorMessages.ToList();
+            RecoveredToolExchangeCount = request.ToolExchanges.Count;
             yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "recovered");
             yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
         }
