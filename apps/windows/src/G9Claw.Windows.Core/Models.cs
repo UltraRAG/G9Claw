@@ -307,7 +307,8 @@ public sealed record AgentToolResult(
     string? ArtifactPath = null,
     string? TaskId = null,
     Dictionary<string, string>? Diagnostics = null,
-    bool IsPolicyBlock = false);
+    bool IsPolicyBlock = false,
+    bool IsBenignVerification = false);
 
 public sealed record ProviderErrorInfo(
     string Summary,

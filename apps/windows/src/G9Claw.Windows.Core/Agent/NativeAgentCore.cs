@@ -298,6 +298,7 @@ public sealed class NativeTurnController
 
     public (AgentTurnItem? CallItem, AgentTurnItem ResultItem) RecordToolResult(AgentToolResult result)
     {
+        var displayAsError = result.IsError && !result.IsBenignVerification;
         AgentTurnItem? updatedCall = null;
         if (_itemIdByToolCallId.TryGetValue(result.CallId, out var itemId))
         {
@@ -307,13 +308,13 @@ public sealed class NativeTurnController
                 var original = _items[index];
                 updatedCall = original with
                 {
-                    Status = result.IsError ? AgentTurnItemStatus.Failed : AgentTurnItemStatus.Completed,
+                    Status = displayAsError ? AgentTurnItemStatus.Failed : AgentTurnItemStatus.Completed,
                     Text = result.Output,
                     UpdatedAt = DateTimeOffset.UtcNow,
                     CompletedAt = DateTimeOffset.UtcNow,
                     ToolInvocation = original.ToolInvocation is null
                         ? null
-                        : original.ToolInvocation with { Output = result.Output, IsError = result.IsError },
+                        : original.ToolInvocation with { Output = result.Output, IsError = displayAsError },
                 };
                 _items[index] = updatedCall;
             }
@@ -321,11 +322,11 @@ public sealed class NativeTurnController
 
         var resultItem = MakeItem(
             AgentTurnItemKind.ToolResult,
-            result.IsError ? AgentTurnItemStatus.Failed : AgentTurnItemStatus.Completed,
-            result.IsError ? $"{result.ToolName} failed" : $"{result.ToolName} result",
+            displayAsError ? AgentTurnItemStatus.Failed : AgentTurnItemStatus.Completed,
+            displayAsError ? $"{result.ToolName} failed" : $"{result.ToolName} result",
             result.Output,
             result.ToolName,
-            toolInvocation: new ToolInvocationPayload(result.CallId, result.ToolName, "", result.Output, result.IsError));
+            toolInvocation: new ToolInvocationPayload(result.CallId, result.ToolName, "", result.Output, displayAsError));
 
         return (updatedCall, resultItem);
     }

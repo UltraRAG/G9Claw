@@ -83,6 +83,7 @@ public sealed class NativeAgentRunner
             var planModePolicy = new AgentPlanModePolicy(request.RunMode);
             var planTodoGate = new AgentPlanTodoExecutionGate();
             var deduplicationPolicy = new AgentToolDeduplicationPolicy();
+            var deletionVerificationPolicy = new AgentDeletionVerificationPolicy();
             var round = 0;
             var duplicateOnlyRounds = 0;
             while (true)
@@ -111,7 +112,7 @@ public sealed class NativeAgentRunner
 
                     if (providerEvent.Kind == ProviderStreamEventKind.ToolCall && providerEvent.ToolCall is { } call)
                     {
-                        var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, cancellationToken);
+                        var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
                         if (toolResult is null)
                         {
                             roundSkippedDuplicateTool = true;
@@ -149,7 +150,7 @@ public sealed class NativeAgentRunner
                 foreach (var fallbackCall in fallbackCalls)
                 {
                     await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, fallbackCall), cancellationToken);
-                    var toolResult = await ExecuteToolAsync(request, turn, fallbackCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, cancellationToken);
+                    var toolResult = await ExecuteToolAsync(request, turn, fallbackCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
                     if (toolResult is null)
                     {
                         continue;
@@ -192,6 +193,7 @@ public sealed class NativeAgentRunner
         AgentPlanModePolicy planModePolicy,
         AgentPlanTodoExecutionGate planTodoGate,
         AgentToolDeduplicationPolicy deduplicationPolicy,
+        AgentDeletionVerificationPolicy deletionVerificationPolicy,
         CancellationToken cancellationToken)
     {
         var normalized = ToolArgumentNormalizer.Normalize(rawCall);
@@ -314,6 +316,7 @@ public sealed class NativeAgentRunner
         {
             result = rootGlobPolicy.RecordIfRootGlob(call, result);
         }
+        result = deletionVerificationPolicy.Record(call, result);
 
         if (!result.IsError && call.Name == "SwitchMode")
         {

@@ -2003,6 +2003,60 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerMarksDeletionVerificationErrorsBenignLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var target = Path.Combine(temp.Root, "gone.txt");
+        await File.WriteAllTextAsync(target, "delete me");
+        var provider = new DeleteThenReadMissingProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "delete and verify missing file",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.BypassPermissions,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) => Task.FromResult(new PermissionRecord(
+            permission,
+            PermissionDecision.Allowed,
+            permission.Scope,
+            DateTimeOffset.UtcNow,
+            null)));
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var results = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+        var readResult = Assert.Single(results, result => result.ToolName == "Read");
+        var completedTurn = events.Last(item => item.Kind == AgentEventKind.TurnCompleted).Turn!;
+        var readTurnItems = completedTurn.Items
+            .Where(item => item.ToolInvocation?.CallId == "read-missing")
+            .ToList();
+
+        Assert.Equal(2, results.Count);
+        Assert.True(readResult.IsError);
+        Assert.True(readResult.IsBenignVerification);
+        Assert.Equal(2, readTurnItems.Count);
+        Assert.All(readTurnItems, item => Assert.Equal(AgentTurnItemStatus.Completed, item.Status));
+        Assert.All(readTurnItems, item => Assert.False(item.ToolInvocation!.IsError));
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerDeduplicatesToolsWithMutationEpochLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -2674,6 +2728,29 @@ gateway:
                 yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
             }
         }
+    }
+
+    private sealed class DeleteThenReadMissingProvider : IProviderClient
+    {
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield return request.ToolExchanges.Count switch
+            {
+                0 => Tool("delete", "Delete", """{"path":"gone.txt"}"""),
+                1 => Tool("read-missing", "Read", """{"file_path":"gone.txt"}"""),
+                _ => new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done"),
+            };
+            if (request.ToolExchanges.Count > 1)
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+        }
+
+        private static ProviderStreamEvent Tool(string id, string name, string inputJson) =>
+            new(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall(id, name, inputJson));
     }
 
     private sealed class DuplicateToolProvider : IProviderClient

@@ -556,6 +556,57 @@ public static class AgentDestructiveToolClassifier
     }
 }
 
+public sealed class AgentDeletionVerificationPolicy
+{
+    private bool _hasSuccessfulDeletion;
+
+    public AgentToolResult Record(AgentToolCall call, AgentToolResult result)
+    {
+        if (result.IsPolicyBlock)
+        {
+            return result;
+        }
+
+        if (IsBenign(result, call))
+        {
+            return result with { IsBenignVerification = true };
+        }
+
+        if (!result.IsError && AgentDestructiveToolClassifier.IsDestructive(call))
+        {
+            _hasSuccessfulDeletion = true;
+        }
+
+        return result;
+    }
+
+    private bool IsBenign(AgentToolResult result, AgentToolCall call)
+    {
+        return _hasSuccessfulDeletion &&
+               result.IsError &&
+               IsVerificationTool(call.Name) &&
+               IsMissingPathOutput(result.Output);
+    }
+
+    private static bool IsVerificationTool(string toolName)
+    {
+        return AgentToolNameCanonicalizer.Canonical(toolName) is "Glob" or "Read" or "Grep";
+    }
+
+    private static bool IsMissingPathOutput(string output)
+    {
+        var lower = output.ToLowerInvariant();
+        return lower.Contains("path does not exist", StringComparison.Ordinal) ||
+               lower.Contains("no such file", StringComparison.Ordinal) ||
+               lower.Contains("directory not found", StringComparison.Ordinal) ||
+               lower.Contains("file not found", StringComparison.Ordinal) ||
+               lower.Contains("couldn't be opened", StringComparison.Ordinal) ||
+               lower.Contains("couldn\u2019t be opened", StringComparison.Ordinal) ||
+               lower.Contains("does not exist", StringComparison.Ordinal) ||
+               lower.Contains("could not find", StringComparison.Ordinal);
+    }
+}
+
 public sealed record AgentToolDeduplicationDecision(AgentToolResult? Result, bool Skip);
 
 public sealed class AgentToolDeduplicationPolicy
