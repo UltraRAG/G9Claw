@@ -675,7 +675,7 @@ public sealed class AgentToolExecutor
             });
         }
 
-        var output = $"Recorded {type} task: {description}\n\n{prompt}";
+        var output = await TaskOutputAsync(normalizedType, type, prompt, description, cwd, root, context.CancellationToken);
         var task = background
             ? _runStore.StartRecordedTask(normalizedType, description, cwd, output, context.CancellationToken)
             : _runStore.CreateRecordedTask(type, description, cwd, output);
@@ -711,6 +711,173 @@ public sealed class AgentToolExecutor
 
     private static int ClampTimeout(long timeoutMs, int minimum) =>
         (int)Math.Max(minimum, Math.Min(timeoutMs, 600_000));
+
+    private async Task<string> TaskOutputAsync(
+        string normalizedType,
+        string type,
+        string prompt,
+        string description,
+        string cwd,
+        JsonElement input,
+        CancellationToken cancellationToken)
+    {
+        if (normalizedType == "best-of-n-runner")
+        {
+            var n = Math.Max(1, Math.Min(OptionalInt(input, "n") ?? 3, 8));
+            var attempts = new JsonArray();
+            for (var index = 1; index <= n; index++)
+            {
+                var result = await WithIsolatedGitWorktreeAsync(cwd, worktreePath =>
+                    RecordedTaskOutput(
+                        type,
+                        $"best-of-n {index}",
+                        $"{prompt}\n\nAttempt {index} of {n}. Use this isolated git worktree and return the best concise result."),
+                    cancellationToken);
+                attempts.Add(new JsonObject
+                {
+                    ["attempt"] = index,
+                    ["worktree"] = result.WorktreePath,
+                    ["result"] = result.Output,
+                });
+            }
+
+            return PrettyJson(new JsonObject
+            {
+                ["type"] = type,
+                ["attempts"] = attempts,
+                ["selectedAttempt"] = 1,
+            });
+        }
+
+        if (string.Equals(OptionalString(input, "isolation")?.Trim(), "worktree", StringComparison.OrdinalIgnoreCase))
+        {
+            var result = await WithIsolatedGitWorktreeAsync(cwd, worktreePath =>
+                RecordedTaskOutput(type, description, prompt), cancellationToken);
+            return PrettyJson(new JsonObject
+            {
+                ["type"] = type,
+                ["worktree"] = result.WorktreePath,
+                ["result"] = result.Output,
+            });
+        }
+
+        return RecordedTaskOutput(type, description, prompt);
+    }
+
+    private static string RecordedTaskOutput(string type, string description, string prompt) =>
+        $"Recorded {type} task: {description}\n\n{prompt}";
+
+    private static async Task<(string WorktreePath, string Output)> WithIsolatedGitWorktreeAsync(
+        string workspacePath,
+        Func<string, string> operation,
+        CancellationToken cancellationToken)
+    {
+        var environment = SkillRuntimeEnvironment.Build(null);
+        var repoRoot = (await GitOutputAsync(
+            ["-C", workspacePath, "rev-parse", "--show-toplevel"],
+            workspacePath,
+            environment,
+            30_000,
+            cancellationToken)).Trim();
+        _ = await GitOutputAsync(
+            ["-C", repoRoot, "rev-parse", "--verify", "HEAD"],
+            repoRoot,
+            environment,
+            30_000,
+            cancellationToken);
+        var parent = Path.Combine(Path.GetTempPath(), "g9claw-worktrees");
+        Directory.CreateDirectory(parent);
+        var worktreePath = Path.Combine(parent, $"worktree-{Guid.NewGuid():D}");
+
+        try
+        {
+            _ = await GitOutputAsync(
+                ["-C", repoRoot, "worktree", "add", "--detach", worktreePath, "HEAD"],
+                repoRoot,
+                environment,
+                120_000,
+                cancellationToken);
+            return (worktreePath, operation(worktreePath));
+        }
+        finally
+        {
+            try
+            {
+                _ = await GitOutputAsync(
+                    ["-C", repoRoot, "worktree", "remove", "--force", worktreePath],
+                    repoRoot,
+                    environment,
+                    120_000,
+                    CancellationToken.None);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                if (Directory.Exists(worktreePath)) Directory.Delete(worktreePath, true);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private static async Task<string> GitOutputAsync(
+        IReadOnlyList<string> arguments,
+        string cwd,
+        IReadOnlyDictionary<string, string> environment,
+        int timeoutMs,
+        CancellationToken cancellationToken)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = cwd,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        foreach (var argument in arguments)
+        {
+            psi.ArgumentList.Add(argument);
+        }
+
+        foreach (var (key, value) in environment)
+        {
+            psi.Environment[key] = value;
+        }
+
+        using var process = new Process { StartInfo = psi };
+        process.Start();
+        var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var stderr = process.StandardError.ReadToEndAsync(cancellationToken);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(Math.Max(1_000, timeoutMs));
+        try
+        {
+            await process.WaitForExitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+            }
+
+            throw new TimeoutException($"git {string.Join(' ', arguments)} timed out after {timeoutMs} ms.");
+        }
+
+        var output = await stdout;
+        var error = await stderr;
+        if (process.ExitCode == 0) return output;
+        throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? output : error);
+    }
 
     internal static int MaxSubagentDepth(AgentToolExecutionContext context)
     {

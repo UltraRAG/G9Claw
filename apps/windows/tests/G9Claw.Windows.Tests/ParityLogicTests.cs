@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Runtime.CompilerServices;
@@ -3055,6 +3056,47 @@ gateway:
     }
 
     [Fact]
+    public async Task AgentToolExecutorTaskWorktreeIsolationMatchesMacRuntime()
+    {
+        using var temp = new TempWorkspace();
+        InitializeGitRepository(temp.Root);
+        var executor = new AgentToolExecutor(runStore: new NativeRunStore(Path.Combine(temp.Root, "run-history")));
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None);
+
+        var isolated = await executor.ExecuteAsync(new AgentToolCall("task-worktree", "Task", """
+        {"type":"explore","prompt":"Inspect services","description":"Explore services","isolation":"worktree"}
+        """), context);
+        var bestOfN = await executor.ExecuteAsync(new AgentToolCall("task-best-of-n", "Task", """
+        {"type":"best-of-n-runner","prompt":"Inspect services","n":2}
+        """), context);
+
+        Assert.False(isolated.IsError);
+        using (var isolatedJson = JsonDocument.Parse(isolated.Output))
+        {
+            var root = isolatedJson.RootElement;
+            var worktree = root.GetProperty("worktree").GetString();
+            Assert.Equal("explore", root.GetProperty("type").GetString());
+            Assert.Contains("g9claw-worktrees", worktree);
+            Assert.False(Directory.Exists(worktree));
+            Assert.Contains("Recorded explore task: Explore services", root.GetProperty("result").GetString());
+        }
+
+        Assert.False(bestOfN.IsError);
+        using var bestJson = JsonDocument.Parse(bestOfN.Output);
+        var attempts = bestJson.RootElement.GetProperty("attempts");
+        Assert.Equal("best-of-n-runner", bestJson.RootElement.GetProperty("type").GetString());
+        Assert.Equal(2, attempts.GetArrayLength());
+        Assert.Equal(1, bestJson.RootElement.GetProperty("selectedAttempt").GetInt32());
+        Assert.Equal(1, attempts[0].GetProperty("attempt").GetInt32());
+        Assert.Contains("Attempt 1 of 2", attempts[0].GetProperty("result").GetString());
+    }
+
+    [Fact]
     public async Task AgentToolExecutorTaskValidationMatchesMacRuntime()
     {
         using var temp = new TempWorkspace();
@@ -3398,6 +3440,54 @@ gateway:
     {
         using var doc = JsonDocument.Parse(inputJson);
         return AgentToolExecutor.AwaitTimeoutMilliseconds(doc.RootElement);
+    }
+
+    private static void InitializeGitRepository(string cwd)
+    {
+        File.WriteAllText(Path.Combine(cwd, "README.md"), "demo");
+        RunGit(cwd, "init");
+        RunGit(cwd, "config", "user.email", "tests@example.com");
+        RunGit(cwd, "config", "user.name", "G9Claw Tests");
+        RunGit(cwd, "add", "README.md");
+        RunGit(cwd, "commit", "-m", "initial");
+    }
+
+    private static void RunGit(string cwd, params string[] arguments)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = cwd,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        foreach (var argument in arguments)
+        {
+            psi.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start git.");
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+        if (!process.WaitForExit(30_000))
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+            }
+
+            throw new TimeoutException($"git {string.Join(' ', arguments)} timed out.");
+        }
+
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? stdout : stderr);
+        }
     }
 
     private sealed class TempWorkspace : IDisposable
