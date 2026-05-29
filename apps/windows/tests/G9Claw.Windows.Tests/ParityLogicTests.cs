@@ -3964,10 +3964,11 @@ router:
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "context compacting");
         Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Status && item.Text == "warning_threshold");
         var completedTurn = Assert.Single(events, item => item.Kind == AgentEventKind.TurnCompleted).Turn!;
-        Assert.Contains(completedTurn.Items, item =>
-            item.Kind == AgentTurnItemKind.Status &&
-            item.Title == "context compacting" &&
-            item.Text == "warning_threshold");
+        var compactionItem = Assert.Single(completedTurn.Items, item => item.Kind == AgentTurnItemKind.ContextCompaction);
+        Assert.Equal("Compacting context", compactionItem.Title);
+        Assert.Contains("trigger=warning_threshold", compactionItem.Text);
+        Assert.Contains("status=", compactionItem.Text);
+        Assert.Contains("tokens", compactionItem.Text);
         Assert.True(compactedBudget.Used < firstBudget.Used);
         Assert.Equal(6000, compactedBudget.Total);
         Assert.Contains(provider.SeenRequest!.ToolExchanges.Take(2), exchange =>

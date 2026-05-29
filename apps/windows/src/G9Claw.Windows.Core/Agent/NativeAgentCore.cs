@@ -279,6 +279,13 @@ public sealed class NativeTurnController
     public AgentTurnItem RecordStatus(string title, string text = "") =>
         MakeItem(AgentTurnItemKind.Status, AgentTurnItemStatus.InProgress, title, text);
 
+    public AgentTurnItem RecordContextCompaction(NativeContextRecoveryResult compaction) =>
+        MakeItem(
+            AgentTurnItemKind.ContextCompaction,
+            AgentTurnItemStatus.InProgress,
+            "Compacting context",
+            $"trigger={compaction.Trigger}, status={compaction.Status}, {compaction.PreTokens:N0} -> {compaction.PostTokens:N0} tokens");
+
     public AgentTurnItem? RecordAssistantText(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
