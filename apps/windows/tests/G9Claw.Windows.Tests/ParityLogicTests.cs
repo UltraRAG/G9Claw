@@ -2439,6 +2439,84 @@ router:
     }
 
     [Fact]
+    public void NativeAgentRuntimeParsesResponseXmlFallbackLikeMac()
+    {
+        const string text = """
+        <response>
+        {"tool":"Read","input":{"file_path":"README.md"}}
+        </response>
+        """;
+
+        var call = NativeAgentRuntime.FallbackToolCalls(text).Single();
+        var input = JsonDocument.Parse(call.InputJson).RootElement;
+
+        Assert.Equal("Read", call.Name);
+        Assert.Equal("README.md", input.GetProperty("file_path").GetString());
+    }
+
+    [Fact]
+    public void NativeAgentRuntimeParsesInlineJsonFallbackLikeMac()
+    {
+        const string text = """
+        I should inspect {"tool":"Read","input":{"file_path":"README.md"}} before continuing.
+        Then repeat {"tool":"Read","input":{"file_path":"README.md"}} to confirm.
+        """;
+
+        var call = NativeAgentRuntime.FallbackToolCalls(text).Single();
+        var input = JsonDocument.Parse(call.InputJson).RootElement;
+
+        Assert.Equal("Read", call.Name);
+        Assert.Equal("README.md", input.GetProperty("file_path").GetString());
+    }
+
+    [Fact]
+    public void NativeAgentRuntimeParsesCompactXmlFallbackLikeMac()
+    {
+        const string text = """
+        <call="readFile":{"path":"README.md"}}>
+        <call="executeBash":{"input_command":"ls -la"}}>
+        <call="bash":{"command":"pwd"}}>
+        <call="writeFile":{"path":"notes.md","content":"hi"}}>
+        <call="editFile":{"path":"notes.md","old_string":"hi","new_string":"bye"}}>
+        """;
+
+        var calls = NativeAgentRuntime.FallbackToolCalls(text);
+
+        Assert.Equal(5, calls.Count);
+        Assert.Equal("Read", calls[0].Name);
+        Assert.Equal("README.md", JsonDocument.Parse(calls[0].InputJson).RootElement.GetProperty("file_path").GetString());
+        Assert.Equal("Glob", calls[1].Name);
+        Assert.Equal("*", JsonDocument.Parse(calls[1].InputJson).RootElement.GetProperty("pattern").GetString());
+        Assert.Equal("Shell", calls[2].Name);
+        Assert.Equal("pwd", JsonDocument.Parse(calls[2].InputJson).RootElement.GetProperty("command").GetString());
+        Assert.Equal("Write", calls[3].Name);
+        Assert.Equal("hi", JsonDocument.Parse(calls[3].InputJson).RootElement.GetProperty("content").GetString());
+        Assert.Equal("StrReplace", calls[4].Name);
+        Assert.Equal("bye", JsonDocument.Parse(calls[4].InputJson).RootElement.GetProperty("new_string").GetString());
+    }
+
+    [Fact]
+    public void NativeAgentRuntimeParsesToolCallXmlFallbackLikeMac()
+    {
+        const string jsonBody = """
+        <tool_call name="Read">{"file_path":"README.md"}</tool_call>
+        """;
+        const string plainBody = """
+        <tool_call name="Shell">pwd</tool_call>
+        """;
+
+        var read = NativeAgentRuntime.FallbackToolCalls(jsonBody).Single();
+        var readInput = JsonDocument.Parse(read.InputJson).RootElement;
+        var shell = NativeAgentRuntime.FallbackToolCalls(plainBody).Single();
+        var shellInput = JsonDocument.Parse(shell.InputJson).RootElement;
+
+        Assert.Equal("Read", read.Name);
+        Assert.Equal("README.md", readInput.GetProperty("file_path").GetString());
+        Assert.Equal("Shell", shell.Name);
+        Assert.Equal("pwd", shellInput.GetProperty("input").GetString());
+    }
+
+    [Fact]
     public void NativeAgentRuntimeDoesNotParseMixedMarkdownFallbackToolCall()
     {
         const string text = """

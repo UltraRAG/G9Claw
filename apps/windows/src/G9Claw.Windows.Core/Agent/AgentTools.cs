@@ -1016,23 +1016,49 @@ public static class ToolArgumentNormalizer
 public static partial class NativeAgentRuntime
 {
     private static readonly Regex FencedJsonOnly = new(@"^\s*```(?:json)?\s*(?<json>\{[\s\S]*\})\s*```\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex TrailingJsonObject = new(@"(?s)(?<json>\{.*\})\s*$", RegexOptions.Compiled);
+    private static readonly Regex ResponseXmlEnvelope = new(@"(?is)^<response>\s*(?<json>\{.*\})\s*</response>$", RegexOptions.Compiled);
     private static readonly Regex InvokeBlock = new(@"(?is)<invoke\s+name=""(?<name>[^""]+)"">\s*(?<body>.*?)\s*</invoke>", RegexOptions.Compiled);
     private static readonly Regex ParameterBlock = new(@"(?is)<parameter\s+name=""(?<name>[^""]+)"">\s*(?<value>.*?)\s*</parameter>", RegexOptions.Compiled);
+    private static readonly Regex CompactXmlCall = new(@"<call=""(?<name>[^""]+)"":(?<input>\{[^<]*?\})\}", RegexOptions.Compiled);
+    private static readonly Regex ToolCallXmlBlock = new(@"(?s)<tool_call\s+name=[""'](?<name>[^""']+)[""']\s*>(?<body>.*?)</tool_call>", RegexOptions.Compiled);
 
     public static IReadOnlyList<AgentToolCall> FallbackToolCalls(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
         var trimmed = text.Trim();
 
-        if (LegacyCommandFallbackToolCall(trimmed) is { } legacyCommand)
+        var fenced = FencedJsonOnly.Match(trimmed);
+        if (fenced.Success) return ToolCallsFromJson(fenced.Groups["json"].Value);
+
+        if (trimmed.StartsWith('{') && trimmed.EndsWith('}')) return ToolCallsFromJson(trimmed);
+
+        var response = ResponseXmlEnvelope.Match(trimmed);
+        if (response.Success) return ToolCallsFromJson(response.Groups["json"].Value);
+
+        var invokeCalls = XmlInvokeFallbackToolCalls(trimmed);
+        if (invokeCalls.Count > 0) return invokeCalls;
+
+        var inlineJsonCalls = InlineJsonFallbackToolCalls(trimmed);
+        if (inlineJsonCalls.Count > 0) return inlineJsonCalls;
+
+        var compactCalls = CompactXmlFallbackToolCalls(trimmed);
+        if (compactCalls.Count > 0) return compactCalls;
+
+        if (trimmed.StartsWith("<tool_call", StringComparison.OrdinalIgnoreCase) &&
+            trimmed.EndsWith("</tool_call>", StringComparison.OrdinalIgnoreCase))
         {
-            return [legacyCommand];
+            return XmlToolCallFallbackToolCalls(trimmed);
         }
 
-        var invoke = InvokeBlock.Match(trimmed);
-        if (invoke.Success)
+        return LegacyCommandFallbackToolCall(trimmed) is { } legacyCommand ? [legacyCommand] : [];
+    }
+
+    private static IReadOnlyList<AgentToolCall> XmlInvokeFallbackToolCalls(string text)
+    {
+        var calls = new List<AgentToolCall>();
+        foreach (Match invoke in InvokeBlock.Matches(text))
         {
+            if (!invoke.Success) continue;
             var name = invoke.Groups["name"].Value.Trim();
             var args = new SortedDictionary<string, object?>(StringComparer.Ordinal);
             foreach (Match parameter in ParameterBlock.Matches(invoke.Groups["body"].Value))
@@ -1041,37 +1067,198 @@ public static partial class NativeAgentRuntime
                 if (key.Length == 0) continue;
                 args[key] = XmlUnescaped(parameter.Groups["value"].Value.Trim());
             }
-            if (args.Count == 0) return [];
+            if (args.Count == 0) continue;
 
-            return
-            [
+            calls.Add(
                 CanonicalFallbackToolCall(new AgentToolCall(
                     $"call-{Guid.NewGuid():D}",
                     name,
-                    JsonSerializer.Serialize(args, ToolArgumentNormalizer.JsonWriteOptions)))
-            ];
+                    JsonSerializer.Serialize(args, ToolArgumentNormalizer.JsonWriteOptions))));
         }
 
-        string? jsonText = null;
-        var fenced = FencedJsonOnly.Match(trimmed);
-        if (fenced.Success)
+        return calls;
+    }
+
+    private static IReadOnlyList<AgentToolCall> InlineJsonFallbackToolCalls(string text)
+    {
+        if (text.Contains("```", StringComparison.Ordinal)) return [];
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var calls = new List<AgentToolCall>();
+        foreach (var snippet in BalancedJsonObjectSnippets(text))
         {
-            jsonText = fenced.Groups["json"].Value;
-        }
-        else if (trimmed.StartsWith('{') && trimmed.EndsWith('}'))
-        {
-            jsonText = trimmed;
-        }
-        else
-        {
-            var trailing = TrailingJsonObject.Match(trimmed);
-            if (trailing.Success && !trimmed[..trailing.Index].Contains("```", StringComparison.Ordinal))
+            foreach (var call in ToolCallsFromJson(snippet))
             {
-                jsonText = trailing.Groups["json"].Value;
+                var signature = $"{call.Name}:{call.InputJson}";
+                if (seen.Add(signature)) calls.Add(call);
             }
         }
 
-        return jsonText is null ? [] : ToolCallsFromJson(jsonText);
+        return calls;
+    }
+
+    private static IReadOnlyList<string> BalancedJsonObjectSnippets(string text)
+    {
+        var snippets = new List<string>();
+        var depth = 0;
+        var start = -1;
+        var inString = false;
+        var escaped = false;
+        for (var index = 0; index < text.Length; index++)
+        {
+            var character = text[index];
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                }
+                else if (character == '\\')
+                {
+                    escaped = true;
+                }
+                else if (character == '"')
+                {
+                    inString = false;
+                }
+                continue;
+            }
+
+            if (character == '"')
+            {
+                inString = true;
+            }
+            else if (character == '{')
+            {
+                if (depth == 0) start = index;
+                depth++;
+            }
+            else if (character == '}' && depth > 0)
+            {
+                depth--;
+                if (depth == 0 && start >= 0)
+                {
+                    snippets.Add(text[start..(index + 1)]);
+                    start = -1;
+                }
+            }
+        }
+
+        return snippets;
+    }
+
+    private static IReadOnlyList<AgentToolCall> CompactXmlFallbackToolCalls(string text)
+    {
+        var calls = new List<AgentToolCall>();
+        foreach (Match match in CompactXmlCall.Matches(text))
+        {
+            var call = CompactXmlToolCall(match.Groups["name"].Value, match.Groups["input"].Value);
+            if (call is not null) calls.Add(call);
+        }
+
+        return calls;
+    }
+
+    private static AgentToolCall? CompactXmlToolCall(string rawName, string rawInput)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(rawInput);
+            var input = doc.RootElement.ValueKind == JsonValueKind.Object ? doc.RootElement : default;
+            var lowerName = rawName.ToLowerInvariant();
+            string toolName;
+            SortedDictionary<string, object?> normalizedInput;
+            switch (lowerName)
+            {
+                case "executebash":
+                case "bash":
+                case "shell":
+                case "runcommand":
+                    var command = FirstString(input, "command") ??
+                                  FirstString(input, "input_command") ??
+                                  FirstString(input, "input") ??
+                                  "";
+                    if (command.TrimStart().StartsWith("ls", StringComparison.Ordinal))
+                    {
+                        toolName = "Glob";
+                        normalizedInput = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            ["path"] = ".",
+                            ["pattern"] = "*",
+                        };
+                    }
+                    else
+                    {
+                        toolName = "Shell";
+                        normalizedInput = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            ["command"] = command,
+                        };
+                    }
+                    break;
+                case "readfile":
+                case "read":
+                    toolName = "Read";
+                    normalizedInput = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["file_path"] = FirstString(input, "file_path") ??
+                                        FirstString(input, "path") ??
+                                        FirstString(input, "input") ??
+                                        "",
+                    };
+                    break;
+                case "writefile":
+                case "write":
+                    toolName = "Write";
+                    normalizedInput = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["content"] = FirstString(input, "content") ?? "",
+                        ["file_path"] = FirstString(input, "file_path") ?? FirstString(input, "path") ?? "",
+                    };
+                    break;
+                case "editfile":
+                case "edit":
+                case "strreplace":
+                    toolName = "StrReplace";
+                    normalizedInput = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["file_path"] = FirstString(input, "file_path") ?? FirstString(input, "path") ?? "",
+                        ["new_string"] = FirstString(input, "new_string") ?? "",
+                        ["old_string"] = FirstString(input, "old_string") ?? "",
+                    };
+                    break;
+                default:
+                    return null;
+            }
+
+            return new AgentToolCall(
+                $"call-{Guid.NewGuid():D}",
+                toolName,
+                JsonSerializer.Serialize(normalizedInput, ToolArgumentNormalizer.JsonWriteOptions));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<AgentToolCall> XmlToolCallFallbackToolCalls(string text)
+    {
+        var calls = new List<AgentToolCall>();
+        foreach (Match match in ToolCallXmlBlock.Matches(text))
+        {
+            var name = match.Groups["name"].Value;
+            var body = match.Groups["body"].Value.Trim();
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            var inputJson = body.StartsWith('{')
+                ? body
+                : JsonSerializer.Serialize(new SortedDictionary<string, object?>
+                {
+                    ["input"] = body,
+                }, ToolArgumentNormalizer.JsonWriteOptions);
+            calls.Add(new AgentToolCall($"call-{Guid.NewGuid():D}", name, inputJson));
+        }
+
+        return calls;
     }
 
     private static AgentToolCall? LegacyCommandFallbackToolCall(string text)
