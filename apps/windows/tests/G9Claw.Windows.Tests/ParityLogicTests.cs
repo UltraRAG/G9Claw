@@ -395,6 +395,38 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void AgentStatusPresentationLocalizesPlanWorkflowStatesLikeMac()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var generatingPlan = new AgentActivity(
+            "plan",
+            "session-1",
+            "run-1",
+            PlanWorkflowPresentation.GeneratingPlanStatus,
+            "",
+            AgentActivityPhase.Status,
+            AgentActivityState.Running,
+            now,
+            now);
+        var recoveryNeeded = generatingPlan with
+        {
+            Id = "recovery",
+            Title = PlanWorkflowPresentation.RecoveryNeededStatus,
+        };
+
+        var planSummary = ProcessTraceSummary.Make([generatingPlan], chinese: false);
+        var recoverySummary = ProcessTraceSummary.Make([recoveryNeeded], chinese: false);
+        var chinesePlanSummary = ProcessTraceSummary.Make([generatingPlan], chinese: true);
+        var presentation = ProcessTracePresentation.Make([generatingPlan], chinese: false);
+
+        Assert.Equal("Generating plan", planSummary.Text);
+        Assert.Equal("Planning needs more input", recoverySummary.Text);
+        Assert.Equal("\u6b63\u5728\u751f\u6210\u8ba1\u5212", chinesePlanSummary.Text);
+        Assert.Equal("Generating plan", presentation.SummaryText);
+        Assert.Equal("Generating plan", Assert.Single(presentation.DetailRows).Title);
+    }
+
+    [Fact]
     public void ProcessTraceSummaryAggregatesCompletedToolsLikeMac()
     {
         var now = DateTimeOffset.UtcNow;

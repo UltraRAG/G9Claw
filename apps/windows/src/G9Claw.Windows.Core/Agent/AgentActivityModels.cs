@@ -76,6 +76,29 @@ public sealed record AgentActivity(
         ProcessTraceActivities(activities).Count > 0;
 }
 
+internal static class AgentStatusPresentationText
+{
+    public static string Title(string title, bool chinese)
+    {
+        var fallback = title.Trim();
+        var lower = fallback.ToLowerInvariant();
+        if (lower.Contains("connecting", StringComparison.Ordinal)) return chinese ? "\u6b63\u5728\u8fde\u63a5\u6a21\u578b" : "Connecting to model";
+        if (lower is "thinking" or "processing") return chinese ? "\u6b63\u5728\u5904\u7406" : "Working";
+        if (lower.Contains("continuing", StringComparison.Ordinal) || fallback.Contains("\u7ee7\u7eed", StringComparison.Ordinal)) return chinese ? "\u6b63\u5728\u7ee7\u7eed\u5904\u7406" : "Continuing";
+        if (lower == "needs continuation") return chinese ? "\u9700\u8981\u7ee7\u7eed" : "Needs continuation";
+        if (lower == "executing plan") return chinese ? "\u6b63\u5728\u6267\u884c\u8ba1\u5212" : "Executing plan";
+        if (lower == PlanWorkflowPresentation.GeneratingQuestionStatus) return chinese ? "\u6b63\u5728\u751f\u6210\u95ee\u9898" : "Generating questions";
+        if (lower == PlanWorkflowPresentation.CollectingContextStatus) return chinese ? "\u6b63\u5728\u6536\u96c6\u4e0a\u4e0b\u6587" : "Collecting context";
+        if (lower == PlanWorkflowPresentation.GeneratingPlanStatus) return chinese ? "\u6b63\u5728\u751f\u6210\u8ba1\u5212" : "Generating plan";
+        if (lower == PlanWorkflowPresentation.WaitingForAnswerStatus) return chinese ? "\u7b49\u5f85\u4f60\u7684\u56de\u7b54" : "Waiting for your answer";
+        if (lower == PlanWorkflowPresentation.WaitingForConfirmationStatus) return chinese ? "\u7b49\u5f85\u8ba1\u5212\u786e\u8ba4" : "Waiting for plan confirmation";
+        if (lower == PlanWorkflowPresentation.RecoveringStatus) return chinese ? "\u6b63\u5728\u6062\u590d\u8ba1\u5212\u6d41\u7a0b" : "Recovering planning flow";
+        if (lower == PlanWorkflowPresentation.RecoveryNeededStatus) return chinese ? "\u8ba1\u5212\u9700\u8981\u7ee7\u7eed\u5b8c\u5584" : "Planning needs more input";
+        if (lower == "waiting for permission") return chinese ? "\u9700\u8981\u6743\u9650" : "Permission required";
+        return string.IsNullOrWhiteSpace(fallback) ? (chinese ? "\u6b63\u5728\u601d\u8003" : "Thinking") : fallback;
+    }
+}
+
 public sealed record ProcessTraceSummary(
     string Text,
     bool ShouldShimmer,
@@ -95,7 +118,9 @@ public sealed record ProcessTraceSummary(
         var running = visible.LastOrDefault(activity => activity.State == AgentActivityState.Running);
         if (running is not null)
         {
-            var title = running.Title.Trim();
+            var title = running.Phase == AgentActivityPhase.Status
+                ? StatusText(running.Title, chinese)
+                : running.Title.Trim();
             return new ProcessTraceSummary(
                 string.IsNullOrWhiteSpace(title) ? (chinese ? "\u6b63\u5728\u5904\u7406" : "Processing") : title,
                 true,
@@ -146,11 +171,7 @@ public sealed record ProcessTraceSummary(
 
     private static string StatusText(string title, bool chinese)
     {
-        var fallback = title.Trim();
-        var lower = fallback.ToLowerInvariant();
-        if (lower.Contains("connecting", StringComparison.Ordinal)) return chinese ? "\u6b63\u5728\u8fde\u63a5\u6a21\u578b" : "Connecting to model";
-        if (lower.Contains("continuing", StringComparison.Ordinal) || fallback.Contains("\u7ee7\u7eed", StringComparison.Ordinal)) return chinese ? "\u6b63\u5728\u7ee7\u7eed\u5904\u7406" : "Continuing";
-        return string.IsNullOrWhiteSpace(fallback) ? (chinese ? "\u6b63\u5728\u601d\u8003" : "Thinking") : fallback;
+        return AgentStatusPresentationText.Title(title, chinese);
     }
 
     private static string FallbackText(string title, bool chinese)
@@ -404,6 +425,11 @@ public sealed record ProcessTracePresentation(
             return target is null
                 ? (chinese ? "\u6b63\u5728\u8fd0\u884c\u4efb\u52a1" : "Running task")
                 : (chinese ? $"\u6b63\u5728\u8fd0\u884c\u4efb\u52a1 {target}" : $"Running task {target}");
+        }
+
+        if (phase == AgentActivityPhase.Status)
+        {
+            return AgentStatusPresentationText.Title(activity.Title, chinese);
         }
 
         var fallback = activity.Title.Trim();
