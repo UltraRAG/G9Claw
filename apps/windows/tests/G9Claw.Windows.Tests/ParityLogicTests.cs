@@ -929,13 +929,20 @@ public sealed class ParityLogicTests
         var html = FileNode("index.html");
         var markdown = FileNode("README.md");
         var pdf = FileNode("manual.pdf");
+        var markdownPreview = Preview("README.md", WorkspacePreviewKind.Markdown);
+        var pdfPreview = Preview("manual.pdf", WorkspacePreviewKind.Pdf);
 
         Assert.Equal("globe", FilePreviewActionPolicy.TreePreviewIcon(html));
         Assert.False(FilePreviewActionPolicy.EditorShowsHtmlPreview(html));
         Assert.Equal("doc.richtext", FilePreviewActionPolicy.EditorPreviewToggleIcon(markdown, isPreviewing: false));
         Assert.Equal("pencil", FilePreviewActionPolicy.EditorPreviewToggleIcon(markdown, isPreviewing: true));
+        Assert.Equal("doc.richtext", FilePreviewActionPolicy.EditorPreviewToggleIcon(markdownPreview, isPreviewing: false));
         Assert.True(FilePreviewActionPolicy.UsesNativePdfPreview(pdf));
+        Assert.True(FilePreviewActionPolicy.UsesNativePdfPreview(pdfPreview));
         Assert.True(pdf.IsPdf);
+        Assert.True(LucideIconCatalog.HasIcon("globe"));
+        Assert.True(LucideIconCatalog.HasIcon("doc.richtext"));
+        Assert.True(LucideIconCatalog.HasIcon("pencil"));
     }
 
     [Fact]
@@ -5209,6 +5216,14 @@ gateway:
         false,
         null,
         null);
+
+    private static WorkspacePreview Preview(string fileName, WorkspacePreviewKind kind) => new(
+        $@"C:\Users\tester\project\{fileName}",
+        fileName,
+        kind,
+        kind is WorkspacePreviewKind.Markdown or WorkspacePreviewKind.Html or WorkspacePreviewKind.Text ? "" : null,
+        null,
+        0);
 
     private static ProjectSession Session(
         string id,

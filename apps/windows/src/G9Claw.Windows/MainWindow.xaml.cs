@@ -129,6 +129,7 @@ public sealed partial class MainWindow : Window
     private string? _selectedFilePath;
     private string _fileSearchText = "";
     private string? _previewDraftText;
+    private bool _isMarkdownPreviewing;
     private bool _isSidebarVisible = true;
     private bool _isDraggingSidebar;
     private double _dragStartX;
@@ -4479,6 +4480,7 @@ public sealed partial class MainWindow : Window
             {
                 _selectedFilePath = file.RelativePath;
                 _previewDraftText = null;
+                _isMarkdownPreviewing = false;
             }
 
             RenderContent();
@@ -4545,30 +4547,67 @@ public sealed partial class MainWindow : Window
                 Foreground = Brush("V2ForegroundBrush"),
                 TextTrimming = TextTrimming.CharacterEllipsis,
             });
+            var languageAlias = CodeSyntaxHighlightingService.LanguageAliasForFileName(preview.RelativePath);
+            var previewMeta = string.IsNullOrWhiteSpace(languageAlias)
+                ? $"{preview.Kind} / {FormatBytes(preview.ByteCount)}"
+                : $"{languageAlias} / {preview.Kind} / {FormatBytes(preview.ByteCount)}";
             labels.Children.Add(new TextBlock
             {
-                Text = $"{preview.Kind} / {FormatBytes(preview.ByteCount)}",
+                Text = previewMeta,
                 FontSize = 11,
                 Foreground = Brush("V2MutedForegroundBrush"),
             });
             header.Children.Add(labels);
 
+            var actionPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            if (FilePreviewActionPolicy.EditorPreviewToggleIcon(preview, _isMarkdownPreviewing) is { } toggleIcon)
+            {
+                var toggle = PreviewHeaderButton(toggleIcon, _isMarkdownPreviewing ? (IsChineseUi() ? "\u7f16\u8f91" : "Edit") : T("tabs.preview"));
+                toggle.Click += (_, _) =>
+                {
+                    _isMarkdownPreviewing = !_isMarkdownPreviewing;
+                    RenderContent();
+                };
+                actionPanel.Children.Add(toggle);
+            }
+
+            if (preview.Kind == WorkspacePreviewKind.Html && !FilePreviewActionPolicy.EditorShowsHtmlPreview(preview))
+            {
+                var openHtml = PreviewHeaderButton("globe", IsChineseUi() ? "\u6253\u5f00" : "Open");
+                openHtml.Click += async (_, _) => await OpenWorkspacePreviewAsync(preview.Path);
+                actionPanel.Children.Add(openHtml);
+            }
+
+            if (FilePreviewActionPolicy.UsesNativePdfPreview(preview))
+            {
+                var openPdf = PreviewHeaderButton("doc.richtext", IsChineseUi() ? "\u6253\u5f00" : "Open");
+                openPdf.Click += async (_, _) => await OpenWorkspacePreviewAsync(preview.Path);
+                actionPanel.Children.Add(openPdf);
+            }
+
             if (preview.Text is not null)
             {
-                var save = new Button
-                {
-                    Style = (Style)Application.Current.Resources["V2PrimaryButtonStyle"],
-                    Content = T("common.save"),
-                };
+                var save = PreviewHeaderButton("Save", T("common.save"));
                 save.Click += async (_, _) => await SavePreviewAsync();
-                Grid.SetColumn(save, 1);
-                header.Children.Add(save);
+                actionPanel.Children.Add(save);
+            }
+
+            if (actionPanel.Children.Count > 0)
+            {
+                Grid.SetColumn(actionPanel, 1);
+                header.Children.Add(actionPanel);
             }
 
             root.Children.Add(header);
 
             FrameworkElement content = preview.Kind switch
             {
+                WorkspacePreviewKind.Markdown when _isMarkdownPreviewing => MarkdownPreview(preview),
                 WorkspacePreviewKind.Text or WorkspacePreviewKind.Markdown or WorkspacePreviewKind.Html => TextPreview(preview),
                 WorkspacePreviewKind.Image => new ScrollViewer
                 {
@@ -4615,6 +4654,41 @@ public sealed partial class MainWindow : Window
         return editor;
     }
 
+    private FrameworkElement MarkdownPreview(WorkspacePreview preview)
+    {
+        _previewDraftText ??= preview.Text ?? "";
+        return new ScrollViewer
+        {
+            Content = new Border
+            {
+                Padding = new Thickness(20),
+                Child = MarkdownContent(_previewDraftText),
+            },
+        };
+    }
+
+    private Button PreviewHeaderButton(string iconKey, string label)
+    {
+        var button = new Button
+        {
+            Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
+            Height = 28,
+            MinWidth = 0,
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children =
+                {
+                    Icon(iconKey, 14, Brush("V2SecondaryForegroundBrush")),
+                    new TextBlock { Text = label, FontSize = 12, VerticalAlignment = VerticalAlignment.Center },
+                },
+            },
+        };
+        ToolTipService.SetToolTip(button, label);
+        return button;
+    }
+
     private async Task CreateWorkspaceItemAsync(bool isDirectory)
     {
         if (State.SelectedProject is null) return;
@@ -4634,6 +4708,7 @@ public sealed partial class MainWindow : Window
             {
                 _selectedFilePath = Path.GetRelativePath(State.SelectedProject.RootPath, created);
                 _previewDraftText = "";
+                _isMarkdownPreviewing = false;
             }
 
             RenderAll();
@@ -4660,6 +4735,7 @@ public sealed partial class MainWindow : Window
             var renamed = _workspaceService.Rename(_selectedFilePath, box.Text, State.SelectedProject.RootPath);
             _selectedFilePath = Path.GetRelativePath(State.SelectedProject.RootPath, renamed);
             _previewDraftText = null;
+            _isMarkdownPreviewing = false;
             RenderAll();
         }
         catch (Exception ex)
@@ -4682,6 +4758,7 @@ public sealed partial class MainWindow : Window
             _workspaceService.Delete(_selectedFilePath, State.SelectedProject.RootPath, recursive: true);
             _selectedFilePath = null;
             _previewDraftText = null;
+            _isMarkdownPreviewing = false;
             RenderAll();
         }
         catch (Exception ex)
@@ -4704,6 +4781,7 @@ public sealed partial class MainWindow : Window
             var uploaded = _workspaceService.UploadFile(file.Path, target, State.SelectedProject.RootPath, overwrite: true);
             _selectedFilePath = Path.GetRelativePath(State.SelectedProject.RootPath, uploaded);
             _previewDraftText = null;
+            _isMarkdownPreviewing = false;
             RenderAll();
         }
         catch (Exception ex)
@@ -5892,6 +5970,18 @@ public sealed partial class MainWindow : Window
                 SidebarSection = nextSection,
                 LastProjectId = lastProjectId,
             };
+        }
+    }
+
+    private async Task OpenWorkspacePreviewAsync(string path)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            await Dialog(T("common.failed"), new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap }, T("common.ok")).ShowAsync();
         }
     }
 
