@@ -62,6 +62,7 @@ public sealed class StringCatalog
         "sidebar.noSessions",
         "sidebar.settings",
         "chat.empty.title",
+        "chat.empty.projectTitle",
         "chat.empty.configureProvider",
         "chat.composer.placeholder",
         "chat.composer.defaultPermissions",
@@ -113,6 +114,7 @@ public sealed class StringCatalog
 
     private static readonly Dictionary<string, string> CleanChinese = new(StringComparer.Ordinal)
     {
+        ["chat.empty.projectTitle"] = "\u4ece\u300c{0}\u300d\u5f00\u59cb\uff0c\u4eca\u5929\u63a8\u8fdb\u54ea\u4e00\u5757\uff1f",
         ["common.home"] = "主页",
         ["common.cancel"] = "取消",
         ["common.save"] = "保存",
@@ -431,6 +433,7 @@ public sealed class StringCatalog
         [("en", "sidebar.show")] = "Show sidebar",
 
         [("en", "chat.empty.title")] = "What would you like to work on today?",
+        [("en", "chat.empty.projectTitle")] = "Where should we move {0} forward today?",
         [("en", "chat.empty.detail")] = "Ask G9Claw to inspect or edit this workspace.",
         [("en", "chat.empty.configureProvider")] = "Configure a provider in Settings to start a native agent run.",
         [("en", "chat.composer.placeholder")] = "Ask G9Claw to inspect or edit this workspace...",
@@ -728,6 +731,7 @@ public sealed class StringCatalog
         [("zh-CN", "sidebar.show")] = "显示侧边栏",
 
         [("zh-CN", "chat.empty.title")] = "今天想处理什么？",
+        [("zh-CN", "chat.empty.projectTitle")] = "\u4ece\u300c{0}\u300d\u5f00\u59cb\uff0c\u4eca\u5929\u63a8\u8fdb\u54ea\u4e00\u5757\uff1f",
         [("zh-CN", "chat.empty.detail")] = "让 G9Claw 检查或编辑当前工作区。",
         [("zh-CN", "chat.empty.configureProvider")] = "先在设置里配置 Provider，然后启动原生 Agent。",
         [("zh-CN", "chat.composer.placeholder")] = "让 G9Claw 检查或编辑当前工作区...",

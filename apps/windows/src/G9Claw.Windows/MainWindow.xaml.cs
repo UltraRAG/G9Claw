@@ -1103,9 +1103,10 @@ public sealed partial class MainWindow : Window
                 Spacing = 0,
             };
             TrackChatColumnWidth(welcomePanel);
-            welcomePanel.Children.Add(ChatEmptyPrompt(
-                isReadOnlyBackgroundSession ? T("chat.readOnlyBackground.title") : T("chat.empty.title"),
-                detail));
+            var title = isReadOnlyBackgroundSession
+                ? T("chat.readOnlyBackground.title")
+                : ChatEmptyStateTitle();
+            welcomePanel.Children.Add(ChatEmptyPrompt(title, detail));
             root.Children.Add(welcomePanel);
         }
         else
@@ -5718,9 +5719,16 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private string ChatEmptyStateTitle()
+    {
+        var titleKey = ChatEmptyStatePresentation.TitleKey(State.SelectedProject);
+        return titleKey == ChatEmptyStatePresentation.ProjectTitleKey && State.SelectedProject is { } project
+            ? Tf(titleKey, project.DisplayName)
+            : T(titleKey);
+    }
+
     private static bool IsGeneralProject(WorkspaceProject project) =>
-        string.Equals(project.Name, "general", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(project.DisplayName, "general", StringComparison.OrdinalIgnoreCase);
+        V2SidebarProjection.IsGeneralProject(project);
 
     private void ToggleOrSelectProject(WorkspaceProject project, bool flatSessions)
     {

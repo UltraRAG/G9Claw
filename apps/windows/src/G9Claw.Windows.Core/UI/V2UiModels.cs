@@ -89,10 +89,12 @@ public sealed record SidebarSessionRow(
 
 public static class V2SidebarProjection
 {
+    public static bool IsGeneralProject(WorkspaceProject project) =>
+        string.Equals(project.Name, "general", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(project.DisplayName, "general", StringComparison.OrdinalIgnoreCase);
+
     public static WorkspaceProject? GeneralProject(IEnumerable<WorkspaceProject> projects) =>
-        projects.FirstOrDefault(project =>
-            string.Equals(project.Name, "general", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(project.DisplayName, "general", StringComparison.OrdinalIgnoreCase));
+        projects.FirstOrDefault(IsGeneralProject);
 
     public static IReadOnlyList<WorkspaceProject> ProjectSection(
         IEnumerable<WorkspaceProject> projects,
@@ -116,4 +118,15 @@ public static class V2SidebarProjection
         if (unreadSessionIds.Contains(session.Id)) return SessionState.Unread;
         return session.State;
     }
+}
+
+public static class ChatEmptyStatePresentation
+{
+    public const string DefaultTitleKey = "chat.empty.title";
+    public const string ProjectTitleKey = "chat.empty.projectTitle";
+
+    public static string TitleKey(WorkspaceProject? selectedProject) =>
+        selectedProject is not null && !V2SidebarProjection.IsGeneralProject(selectedProject)
+            ? ProjectTitleKey
+            : DefaultTitleKey;
 }

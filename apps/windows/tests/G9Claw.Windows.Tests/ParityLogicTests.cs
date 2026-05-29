@@ -817,6 +817,24 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void ChatEmptyStateTitleMatchesMacProjectWelcomePrompt()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var general = Project("general", "general", now);
+        var project = Project("demo", "G9Claw", now);
+        var english = new StringCatalog(AppLanguage.English);
+        var chinese = new StringCatalog(AppLanguage.ChineseSimplified);
+
+        Assert.Equal(ChatEmptyStatePresentation.DefaultTitleKey, ChatEmptyStatePresentation.TitleKey(null));
+        Assert.Equal(ChatEmptyStatePresentation.DefaultTitleKey, ChatEmptyStatePresentation.TitleKey(general));
+        Assert.Equal(ChatEmptyStatePresentation.ProjectTitleKey, ChatEmptyStatePresentation.TitleKey(project));
+        Assert.Equal("Where should we move G9Claw forward today?", string.Format(english.T(ChatEmptyStatePresentation.ProjectTitleKey), "G9Claw"));
+        Assert.Equal(
+            "\u4ece\u300c\u539f\u795e\u300d\u5f00\u59cb\uff0c\u4eca\u5929\u63a8\u8fdb\u54ea\u4e00\u5757\uff1f",
+            string.Format(chinese.T(ChatEmptyStatePresentation.ProjectTitleKey), "\u539f\u795e"));
+    }
+
+    [Fact]
     public void WebV2SidebarSessionRowsFlattenProviderBucketsByActivity()
     {
         var now = DateTimeOffset.UtcNow;
