@@ -2393,6 +2393,80 @@ router:
     }
 
     [Fact]
+    public void NativeAgentRuntimeParsesFallbackToolCallsArrayLikeMac()
+    {
+        const string text = """
+        {
+          "tool_calls": [
+            {
+              "id": "read-call",
+              "function": {
+                "name": "Read",
+                "arguments": "{\"file_path\":\"README.md\"}"
+              }
+            },
+            {
+              "id": "plain-shell-call",
+              "function": {
+                "name": "Shell",
+                "arguments": "pwd"
+              }
+            }
+          ]
+        }
+        """;
+
+        var calls = NativeAgentRuntime.FallbackToolCalls(text);
+        var readInput = JsonDocument.Parse(calls[0].InputJson).RootElement;
+        var shellInput = JsonDocument.Parse(calls[1].InputJson).RootElement;
+
+        Assert.Equal(2, calls.Count);
+        Assert.Equal("read-call", calls[0].Id);
+        Assert.Equal("Read", calls[0].Name);
+        Assert.Equal("README.md", readInput.GetProperty("file_path").GetString());
+        Assert.Equal("plain-shell-call", calls[1].Id);
+        Assert.Equal("Shell", calls[1].Name);
+        Assert.Equal("pwd", shellInput.GetProperty("input").GetString());
+    }
+
+    [Fact]
+    public void NativeAgentRuntimeParsesFallbackToolsArrayAndLsGlobLikeMac()
+    {
+        const string text = """
+        {
+          "tools": [
+            {
+              "id": "glob-call",
+              "name": "bash",
+              "input": {
+                "command": "ls -la"
+              }
+            },
+            {
+              "id": "skill-call",
+              "skill": "g9claw-rag:rag-research",
+              "args": "native parity"
+            }
+          ]
+        }
+        """;
+
+        var calls = NativeAgentRuntime.FallbackToolCalls(text);
+        var globInput = JsonDocument.Parse(calls[0].InputJson).RootElement;
+        var skillInput = JsonDocument.Parse(calls[1].InputJson).RootElement;
+
+        Assert.Equal(2, calls.Count);
+        Assert.Equal("glob-call", calls[0].Id);
+        Assert.Equal("Glob", calls[0].Name);
+        Assert.Equal("*", globInput.GetProperty("pattern").GetString());
+        Assert.Equal(".", globInput.GetProperty("path").GetString());
+        Assert.Equal("skill-call", calls[1].Id);
+        Assert.Equal("Skill", calls[1].Name);
+        Assert.Equal("g9claw-rag:rag-research", skillInput.GetProperty("skill").GetString());
+        Assert.Equal("native parity", skillInput.GetProperty("args").GetString());
+    }
+
+    [Fact]
     public void NativeAgentRuntimeParsesLegacyCommandFallbackLikeMac()
     {
         var shell = NativeAgentRuntime.FallbackToolCalls("<command>pwd</command>");

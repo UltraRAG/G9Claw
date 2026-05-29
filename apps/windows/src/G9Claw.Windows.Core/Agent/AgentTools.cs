@@ -1329,50 +1329,136 @@ public static partial class NativeAgentRuntime
             if (doc.RootElement.ValueKind != JsonValueKind.Object) return [];
             var root = doc.RootElement;
 
-            if (root.TryGetProperty("skill", out var skill))
+            if (root.TryGetProperty("tool_calls", out var rawToolCalls) &&
+                rawToolCalls.ValueKind == JsonValueKind.Array)
             {
-                var args = root.TryGetProperty("args", out var argsElement) ? argsElement.ToString() : "";
-                var payload = JsonSerializer.Serialize(new SortedDictionary<string, object?>
-                {
-                    ["args"] = args,
-                    ["skill"] = skill.GetString() ?? "",
-                }, ToolArgumentNormalizer.JsonWriteOptions);
-                return [new AgentToolCall($"call-{Guid.NewGuid():D}", "Skill", payload)];
+                return ToolCallsFromJsonArray(rawToolCalls);
             }
 
-            var toolName = root.TryGetProperty("tool", out var tool)
-                ? tool.GetString()
-                : root.TryGetProperty("name", out var name)
-                    ? name.GetString()
-                    : null;
-            if (string.IsNullOrWhiteSpace(toolName)) return [];
-
-            if (toolName.StartsWith("g9claw-rag:", StringComparison.OrdinalIgnoreCase))
+            if (root.TryGetProperty("tools", out var rawTools) &&
+                rawTools.ValueKind == JsonValueKind.Array)
             {
-                var args = "";
-                if (root.TryGetProperty("input", out var directInput) && directInput.ValueKind == JsonValueKind.Object)
-                {
-                    args = directInput.TryGetProperty("query", out var query) ? query.ToString() : directInput.ToString();
-                }
-                var payload = JsonSerializer.Serialize(new SortedDictionary<string, object?>
-                {
-                    ["args"] = args,
-                    ["skill"] = toolName,
-                }, ToolArgumentNormalizer.JsonWriteOptions);
-                return [new AgentToolCall($"call-{Guid.NewGuid():D}", "Skill", payload)];
+                return ToolCallsFromJsonArray(rawTools);
             }
 
-            var inputJson = root.TryGetProperty("input", out var input)
-                ? JsonCanonicalizer.ToCanonicalJson(input)
-                : root.TryGetProperty("arguments", out var arguments)
-                    ? JsonCanonicalizer.ToCanonicalJson(arguments)
-                    : "{}";
-            return [new AgentToolCall($"call-{Guid.NewGuid():D}", toolName, inputJson)];
+            return ToolCallFromJsonObject(root) is { } call ? [call] : [];
         }
         catch (JsonException)
         {
             return [];
         }
+    }
+
+    private static IReadOnlyList<AgentToolCall> ToolCallsFromJsonArray(JsonElement rawCalls)
+    {
+        var calls = new List<AgentToolCall>();
+        foreach (var rawCall in rawCalls.EnumerateArray())
+        {
+            if (ToolCallFromJsonObject(rawCall) is { } call)
+            {
+                calls.Add(call);
+            }
+        }
+
+        return calls;
+    }
+
+    private static AgentToolCall? ToolCallFromJsonObject(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return null;
+        var callId = FallbackCallId(root);
+        var skill = FirstString(root, "skill");
+        if (!string.IsNullOrWhiteSpace(skill))
+        {
+            var payload = JsonSerializer.Serialize(new SortedDictionary<string, object?>
+            {
+                ["args"] = FirstString(root, "args") ?? "",
+                ["skill"] = skill,
+            }, ToolArgumentNormalizer.JsonWriteOptions);
+            return CanonicalFallbackToolCall(new AgentToolCall(callId, "Skill", payload));
+        }
+
+        var rawName = FirstString(root, "tool") ??
+                      FirstString(root, "name") ??
+                      FunctionString(root, "name");
+        if (string.IsNullOrWhiteSpace(rawName)) return null;
+
+        var toolName = AgentToolNameCanonicalizer.Canonical(rawName);
+        var hasInput = TryGetRawInput(root, out var rawInput);
+        if (toolName == "Shell" &&
+            hasInput &&
+            CommandString(rawInput) is { } command &&
+            command.TrimStart().StartsWith("ls", StringComparison.Ordinal))
+        {
+            return new AgentToolCall(
+                callId,
+                "Glob",
+                JsonSerializer.Serialize(new SortedDictionary<string, object?>
+                {
+                    ["path"] = ".",
+                    ["pattern"] = "*",
+                }, ToolArgumentNormalizer.JsonWriteOptions));
+        }
+
+        var inputJson = hasInput ? InputJsonFromRawInput(rawInput) : "{}";
+        return CanonicalFallbackToolCall(new AgentToolCall(callId, toolName, inputJson));
+    }
+
+    private static string FallbackCallId(JsonElement root) =>
+        FirstString(root, "id") is { } id && !string.IsNullOrWhiteSpace(id)
+            ? id
+            : $"call-{Guid.NewGuid():D}";
+
+    private static string? FunctionString(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty("function", out var function) ||
+            function.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return FirstString(function, key);
+    }
+
+    private static bool TryGetRawInput(JsonElement root, out JsonElement rawInput)
+    {
+        if (root.TryGetProperty("input", out rawInput)) return true;
+        if (root.TryGetProperty("arguments", out rawInput)) return true;
+        if (root.TryGetProperty("function", out var function) &&
+            function.ValueKind == JsonValueKind.Object &&
+            function.TryGetProperty("arguments", out rawInput))
+        {
+            return true;
+        }
+
+        rawInput = default;
+        return false;
+    }
+
+    private static string InputJsonFromRawInput(JsonElement rawInput)
+    {
+        if (rawInput.ValueKind == JsonValueKind.String)
+        {
+            var input = rawInput.GetString() ?? "";
+            var trimmed = input.Trim();
+            return trimmed.StartsWith('{')
+                ? trimmed
+                : JsonSerializer.Serialize(new SortedDictionary<string, object?>
+                {
+                    ["input"] = input,
+                }, ToolArgumentNormalizer.JsonWriteOptions);
+        }
+
+        return JsonCanonicalizer.ToCanonicalJson(rawInput);
+    }
+
+    private static string? CommandString(JsonElement rawInput)
+    {
+        if (rawInput.ValueKind == JsonValueKind.String) return rawInput.GetString();
+        if (rawInput.ValueKind != JsonValueKind.Object) return null;
+        return FirstString(rawInput, "command") ??
+               FirstString(rawInput, "input_command") ??
+               FirstString(rawInput, "input");
     }
 
     private static string? FirstString(JsonElement root, string key)
