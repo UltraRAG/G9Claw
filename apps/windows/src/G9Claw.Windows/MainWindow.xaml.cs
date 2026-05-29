@@ -6869,7 +6869,7 @@ public sealed partial class MainWindow : Window
         var wordWrap = Check(T("settings.appearance.wordWrap"), draft.EditorWordWrap);
         var minimap = Check(T("settings.appearance.showMinimap"), draft.EditorShowMinimap);
         var lineNumbers = Check(T("settings.appearance.lineNumbers"), draft.EditorLineNumbers);
-        var editorFont = Box(draft.EditorFontSize.ToString(), "13");
+        var editorFont = IntCombo(NativeAppearanceSettingsLayout.FontSizeOptions, draft.EditorFontSize, "px", 96);
         var autoExpandTools = Check(T("settings.preferences.autoExpandTools"), State.UiPreferences.AutoExpandTools);
         var showRawParameters = Check(T("settings.preferences.showRawParameters"), State.UiPreferences.ShowRawParameters);
         var showThinking = Check(T("settings.preferences.showThinking"), State.UiPreferences.ShowThinking);
@@ -7256,7 +7256,7 @@ public sealed partial class MainWindow : Window
                             wordWrap.IsChecked == true,
                             minimap.IsChecked == true,
                             lineNumbers.IsChecked == true,
-                            IntValue(editorFont.Text, State.Settings.EditorSettings.FontSize)).Normalize(),
+                            IntComboValue(editorFont, State.Settings.EditorSettings.FontSize)).Normalize(),
                         Permissions = new ToolPermissionSettings(Lines(allowedTools.Text), Lines(disallowedTools.Text), DateTimeOffset.UtcNow),
                     };
                 }
@@ -7277,7 +7277,7 @@ public sealed partial class MainWindow : Window
                         wordWrap.IsChecked == true,
                         minimap.IsChecked == true,
                         lineNumbers.IsChecked == true,
-                        IntValue(editorFont.Text, State.Settings.EditorSettings.FontSize),
+                        IntComboValue(editorFont, State.Settings.EditorSettings.FontSize),
                         Lines(allowedTools.Text),
                         Lines(disallowedTools.Text),
                         routerEnabled.IsChecked == true,
@@ -8168,6 +8168,30 @@ public sealed partial class MainWindow : Window
         return combo;
     }
 
+    private ComboBox IntCombo(IEnumerable<int> values, int selectedValue, string suffix, double width)
+    {
+        var options = values.ToList();
+        var combo = new ComboBox
+        {
+            Height = 34,
+            Width = width,
+            MinWidth = 0,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        foreach (var value in options)
+        {
+            combo.Items.Add(new ComboBoxItem
+            {
+                Content = string.IsNullOrWhiteSpace(suffix) ? value.ToString() : $"{value}{suffix}",
+                Tag = value,
+            });
+        }
+
+        var selectedIndex = options.IndexOf(selectedValue);
+        combo.SelectedIndex = selectedIndex >= 0 ? selectedIndex : Math.Max(0, options.IndexOf(NativeEditorSettings.Defaults.FontSize));
+        return combo;
+    }
+
     private string EnumLabel<TEnum>(TEnum value) where TEnum : struct, Enum
     {
         var name = value.ToString();
@@ -8354,6 +8378,12 @@ public sealed partial class MainWindow : Window
 
     private static int IntValue(string value, int fallback) =>
         int.TryParse(value, out var parsed) ? parsed : fallback;
+
+    private static int IntComboValue(ComboBox combo, int fallback)
+    {
+        if (combo.SelectedItem is ComboBoxItem { Tag: int value }) return value;
+        return fallback;
+    }
 
     private static decimal DecimalValue(string value) =>
         decimal.TryParse(value, out var parsed) ? parsed : 0;

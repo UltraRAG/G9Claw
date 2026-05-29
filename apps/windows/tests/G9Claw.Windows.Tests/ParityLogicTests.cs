@@ -777,6 +777,28 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void NativeAppearanceSettingsLayoutAndEditorDefaultsMatchMac()
+    {
+        Assert.Equal(
+            new[]
+            {
+                NativeAppearanceSection.ColorScheme,
+                NativeAppearanceSection.Language,
+                NativeAppearanceSection.ToolDisplay,
+                NativeAppearanceSection.ViewOptions,
+                NativeAppearanceSection.InputSettings,
+                NativeAppearanceSection.ProjectSorting,
+                NativeAppearanceSection.CodeEditor,
+            },
+            NativeAppearanceSettingsLayout.SectionOrder);
+        Assert.False(NativeAppearanceSettingsLayout.UsesDarkModeToggle);
+        Assert.True(NativeAppearanceSettingsLayout.UsesThemePicker);
+        Assert.Equal(160, NativeAppearanceSettingsLayout.ColorSchemePickerWidth);
+        Assert.Equal(new[] { 10, 11, 12, 13, 14, 15, 16, 18, 20 }, NativeAppearanceSettingsLayout.FontSizeOptions);
+        Assert.Equal(new NativeEditorSettings(false, true, true, 14), NativeEditorSettings.Defaults);
+    }
+
+    [Fact]
     public void WebV2UiSettingsNormalizeSidebarBoundsAndLists()
     {
         var tooSmall = new V2UiSettings(12, SidebarSection.General, null!, null!, null!).Normalize();

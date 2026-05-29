@@ -83,6 +83,38 @@ public static class AppTabCatalog
     public static bool IsPrimary(AppTab tab) => PrimaryTabs.Contains(tab);
 }
 
+public enum NativeAppearanceSection
+{
+    ColorScheme,
+    Language,
+    ToolDisplay,
+    ViewOptions,
+    InputSettings,
+    ProjectSorting,
+    CodeEditor,
+}
+
+public static class NativeAppearanceSettingsLayout
+{
+    public static readonly IReadOnlyList<NativeAppearanceSection> SectionOrder =
+    [
+        NativeAppearanceSection.ColorScheme,
+        NativeAppearanceSection.Language,
+        NativeAppearanceSection.ToolDisplay,
+        NativeAppearanceSection.ViewOptions,
+        NativeAppearanceSection.InputSettings,
+        NativeAppearanceSection.ProjectSorting,
+        NativeAppearanceSection.CodeEditor,
+    ];
+
+    public const bool UsesDarkModeToggle = false;
+    public const bool UsesThemePicker = true;
+    public const double ColorSchemePickerWidth = 160;
+    public const double LanguagePickerWidth = 160;
+    public const double ProjectSortingPickerWidth = 160;
+    public static readonly IReadOnlyList<int> FontSizeOptions = [10, 11, 12, 13, 14, 15, 16, 18, 20];
+}
+
 public sealed record SidebarSessionRow(
     WorkspaceProject Project,
     ProjectSession Session,

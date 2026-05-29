@@ -777,7 +777,7 @@ public sealed record NativeEditorSettings(
     bool LineNumbers,
     int FontSize)
 {
-    public static NativeEditorSettings Defaults => new(true, false, true, 13);
+    public static NativeEditorSettings Defaults => new(false, true, true, 14);
 
     public NativeEditorSettings Normalize() => this with
     {
