@@ -2411,6 +2411,34 @@ router:
     }
 
     [Fact]
+    public void NativeAgentRuntimeParsesG9ClawInvokeFallbackLikeMac()
+    {
+        const string skillInvoke = """
+        <invoke name="skill">
+        <parameter name="skill">g9claw-rag:rag-research</parameter>
+        <parameter name="args">DARPA &amp; autonomous &quot;systems&quot;</parameter>
+        </invoke>
+        """;
+        const string directRagInvoke = """
+        <invoke name="g9claw-rag:glm-web-search">
+        <parameter name="query">Beijing &lt;weather&gt;</parameter>
+        </invoke>
+        """;
+
+        var skill = NativeAgentRuntime.FallbackToolCalls(skillInvoke).Single();
+        var directRag = NativeAgentRuntime.FallbackToolCalls(directRagInvoke).Single();
+        var skillJson = JsonDocument.Parse(skill.InputJson).RootElement;
+        var directRagJson = JsonDocument.Parse(directRag.InputJson).RootElement;
+
+        Assert.Equal("Skill", skill.Name);
+        Assert.Equal("g9claw-rag:rag-research", skillJson.GetProperty("skill").GetString());
+        Assert.Equal("DARPA & autonomous \"systems\"", skillJson.GetProperty("args").GetString());
+        Assert.Equal("Skill", directRag.Name);
+        Assert.Equal("g9claw-rag:glm-web-search", directRagJson.GetProperty("skill").GetString());
+        Assert.Equal("Beijing <weather>", directRagJson.GetProperty("args").GetString());
+    }
+
+    [Fact]
     public void NativeAgentRuntimeDoesNotParseMixedMarkdownFallbackToolCall()
     {
         const string text = """

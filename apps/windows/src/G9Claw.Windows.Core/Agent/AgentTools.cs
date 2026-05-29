@@ -1037,9 +1037,19 @@ public static partial class NativeAgentRuntime
             var args = new SortedDictionary<string, object?>(StringComparer.Ordinal);
             foreach (Match parameter in ParameterBlock.Matches(invoke.Groups["body"].Value))
             {
-                args[parameter.Groups["name"].Value.Trim()] = parameter.Groups["value"].Value.Trim();
+                var key = parameter.Groups["name"].Value.Trim();
+                if (key.Length == 0) continue;
+                args[key] = XmlUnescaped(parameter.Groups["value"].Value.Trim());
             }
-            return [new AgentToolCall($"call-{Guid.NewGuid():D}", name, JsonSerializer.Serialize(args))];
+            if (args.Count == 0) return [];
+
+            return
+            [
+                CanonicalFallbackToolCall(new AgentToolCall(
+                    $"call-{Guid.NewGuid():D}",
+                    name,
+                    JsonSerializer.Serialize(args, ToolArgumentNormalizer.JsonWriteOptions)))
+            ];
         }
 
         string? jsonText = null;
@@ -1183,6 +1193,47 @@ public static partial class NativeAgentRuntime
         if (!root.TryGetProperty(key, out var value)) return null;
         return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
     }
+
+    private static AgentToolCall CanonicalFallbackToolCall(AgentToolCall call)
+    {
+        var canonicalName = AgentToolNameCanonicalizer.Canonical(call.Name);
+        if (!canonicalName.StartsWith("g9claw-rag:", StringComparison.OrdinalIgnoreCase))
+        {
+            return call with { Name = canonicalName };
+        }
+
+        var args = "";
+        try
+        {
+            using var doc = JsonDocument.Parse(call.InputJson);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                args = FirstString(doc.RootElement, "args") ??
+                       FirstString(doc.RootElement, "query") ??
+                       FirstString(doc.RootElement, "prompt") ??
+                       "";
+            }
+        }
+        catch (JsonException)
+        {
+            args = "";
+        }
+
+        var payload = JsonSerializer.Serialize(new SortedDictionary<string, object?>
+        {
+            ["args"] = args,
+            ["skill"] = canonicalName,
+        }, ToolArgumentNormalizer.JsonWriteOptions);
+        return new AgentToolCall(call.Id, "Skill", payload);
+    }
+
+    private static string XmlUnescaped(string value) =>
+        value
+            .Replace("&quot;", "\"", StringComparison.Ordinal)
+            .Replace("&apos;", "'", StringComparison.Ordinal)
+            .Replace("&lt;", "<", StringComparison.Ordinal)
+            .Replace("&gt;", ">", StringComparison.Ordinal)
+            .Replace("&amp;", "&", StringComparison.Ordinal);
 }
 
 internal static class JsonCanonicalizer
