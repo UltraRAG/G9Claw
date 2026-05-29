@@ -2218,6 +2218,34 @@ router:
     }
 
     [Fact]
+    public void PlanWorkflowPresentationStatusesMatchInteractiveStages()
+    {
+        var ask = new AgentToolCall("ask", "AskQuestion", "{}");
+        var read = new AgentToolCall("read", "Read", """{"file_path":"README.md"}""");
+        var shell = new AgentToolCall("shell", "Shell", """{"command":"ls -la"}""");
+        var switchMode = new AgentToolCall("switch", "SwitchMode", """{"mode":"agent","plan":"Do it"}""");
+
+        Assert.Equal(
+            PlanWorkflowPresentation.GeneratingQuestionStatus,
+            PlanWorkflowPresentation.GenerationStatus([ask], ChatRunMode.Plan));
+        Assert.Equal(
+            PlanWorkflowPresentation.CollectingContextStatus,
+            PlanWorkflowPresentation.GenerationStatus([read, shell], ChatRunMode.Plan));
+        Assert.Equal(
+            PlanWorkflowPresentation.GeneratingPlanStatus,
+            PlanWorkflowPresentation.GenerationStatus([switchMode], ChatRunMode.Plan));
+        Assert.Equal(
+            PlanWorkflowPresentation.WaitingForAnswerStatus,
+            PlanWorkflowPresentation.WaitingStatus("AskQuestion", ChatRunMode.Plan));
+        Assert.Equal(
+            PlanWorkflowPresentation.WaitingForConfirmationStatus,
+            PlanWorkflowPresentation.WaitingStatus("SwitchMode", ChatRunMode.Plan));
+        Assert.Null(PlanWorkflowPresentation.GenerationStatus([ask], ChatRunMode.Agent));
+        Assert.True(PlanWorkflowPresentation.IsInteractiveControl("AskUserQuestion"));
+        Assert.False(PlanWorkflowPresentation.IsInteractiveControl("Read"));
+    }
+
+    [Fact]
     public void ExitPlanModeInputCodecBuildsFeedbackPayloadAndExtractsPlanLikeMac()
     {
         var input = """
@@ -3838,6 +3866,11 @@ router:
         Assert.Equal("approved", results[3].Output);
         Assert.False(results[4].IsError);
         Assert.False(results[4].IsPolicyBlock);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanWorkflowPresentation.CollectingContextStatus);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanWorkflowPresentation.GeneratingQuestionStatus);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanWorkflowPresentation.WaitingForAnswerStatus);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanWorkflowPresentation.GeneratingPlanStatus);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanWorkflowPresentation.WaitingForConfirmationStatus);
         Assert.Equal([PermissionRequestKind.AskUserQuestion, PermissionRequestKind.ExitPlanMode], permissionRequests.Select(permission => permission.Kind));
         Assert.Equal("Plan approval is required before leaving Plan mode.", permissionRequests[1].Reason);
         Assert.False(File.Exists(Path.Combine(temp.Root, "blocked.txt")));

@@ -169,8 +169,9 @@ public sealed class NativeAgentRunner
                                         deferredPlanContent.Clear();
                                     }
 
+                                    await WritePlanGenerationStatusAsync(writer, request.SessionId, call, EffectiveWorkflowRunMode(request.RunMode, planModePolicy.PlanExited), cancellationToken);
                                     await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, call), cancellationToken);
-                                    var toolResult = await ExecuteToolAsync(currentRequest, turn, call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
+                                    var toolResult = await ExecuteToolAsync(currentRequest, turn, writer, call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
                                     if (toolResult is null)
                                     {
                                         roundSkippedDuplicateTool = true;
@@ -243,8 +244,9 @@ public sealed class NativeAgentRunner
                 {
                     foreach (var fallbackCall in NativeAgentRuntime.FallbackToolCalls(roundAssistantText.ToString()))
                     {
+                        await WritePlanGenerationStatusAsync(writer, request.SessionId, fallbackCall, EffectiveWorkflowRunMode(request.RunMode, planModePolicy.PlanExited), cancellationToken);
                         await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, fallbackCall), cancellationToken);
-                        var toolResult = await ExecuteToolAsync(currentRequest, turn, fallbackCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
+                        var toolResult = await ExecuteToolAsync(currentRequest, turn, writer, fallbackCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
                         if (toolResult is null)
                         {
                             roundSkippedDuplicateTool = true;
@@ -276,7 +278,7 @@ public sealed class NativeAgentRunner
                     turn.RecordStatus(planRecovery.GenerationStatus);
                     await writer.WriteAsync(AgentEvent.Status(request.SessionId, planRecovery.GenerationStatus), cancellationToken);
                     await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, planRecovery.Call), cancellationToken);
-                    var toolResult = await ExecuteToolAsync(currentRequest, turn, planRecovery.Call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
+                    var toolResult = await ExecuteToolAsync(currentRequest, turn, writer, planRecovery.Call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
                     if (toolResult is not null)
                     {
                         await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
@@ -298,8 +300,9 @@ public sealed class NativeAgentRunner
                     var bootstrapCall = WorkspaceBootstrapPolicy.ForcedWorkspaceBootstrapToolCall();
                     turn.RecordStatus("exploring workspace");
                     await writer.WriteAsync(AgentEvent.Status(request.SessionId, "exploring workspace"), cancellationToken);
+                    await WritePlanGenerationStatusAsync(writer, request.SessionId, bootstrapCall, EffectiveWorkflowRunMode(request.RunMode, planModePolicy.PlanExited), cancellationToken);
                     await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, bootstrapCall), cancellationToken);
-                    var toolResult = await ExecuteToolAsync(currentRequest, turn, bootstrapCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
+                    var toolResult = await ExecuteToolAsync(currentRequest, turn, writer, bootstrapCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
                     if (toolResult is not null)
                     {
                         await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
@@ -546,9 +549,39 @@ public sealed class NativeAgentRunner
              lower.Contains("execute", StringComparison.Ordinal));
     }
 
+    private static ChatRunMode EffectiveWorkflowRunMode(ChatRunMode runMode, bool planExited) =>
+        runMode == ChatRunMode.Plan && planExited ? ChatRunMode.Agent : runMode;
+
+    private static async Task WritePlanGenerationStatusAsync(
+        ChannelWriter<AgentEvent> writer,
+        string sessionId,
+        AgentToolCall call,
+        ChatRunMode runMode,
+        CancellationToken cancellationToken)
+    {
+        if (PlanWorkflowPresentation.GenerationStatus([call], runMode) is { } status)
+        {
+            await writer.WriteAsync(AgentEvent.Status(sessionId, status), cancellationToken);
+        }
+    }
+
+    private static async Task WritePlanWaitingStatusAsync(
+        ChannelWriter<AgentEvent> writer,
+        string sessionId,
+        string toolName,
+        ChatRunMode runMode,
+        CancellationToken cancellationToken)
+    {
+        if (PlanWorkflowPresentation.WaitingStatus(toolName, runMode) is { } status)
+        {
+            await writer.WriteAsync(AgentEvent.Status(sessionId, status), cancellationToken);
+        }
+    }
+
     private async Task<AgentToolResult?> ExecuteToolAsync(
         AgentRequest request,
         NativeTurnController turn,
+        ChannelWriter<AgentEvent> writer,
         AgentToolCall rawCall,
         NativeAgentRunOptions options,
         AgentRootGlobExecutionPolicy rootGlobPolicy,
@@ -598,6 +631,7 @@ public sealed class NativeAgentRunner
 
         if (call.Name == "AskQuestion")
         {
+            await WritePlanWaitingStatusAsync(writer, request.SessionId, call.Name, request.RunMode, cancellationToken);
             var questionResult = await AskQuestionAsync(request, turn, call, options, cancellationToken);
             turn.RecordToolResult(questionResult);
             planModePolicy.Record(call, questionResult);
@@ -616,6 +650,7 @@ public sealed class NativeAgentRunner
 
         if (planModePolicy.RequiresExitPlanApproval(call))
         {
+            await WritePlanWaitingStatusAsync(writer, request.SessionId, call.Name, request.RunMode, cancellationToken);
             var permission = await RequestPermissionRecordAsync(
                 request,
                 call,
