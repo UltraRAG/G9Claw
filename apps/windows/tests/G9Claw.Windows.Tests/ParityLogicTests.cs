@@ -3053,6 +3053,18 @@ router:
     }
 
     [Fact]
+    public void AppStateOpenSettingsStoresInitialTabWithoutShowingOverlayLikeMac()
+    {
+        var state = AppState.CreateDefault();
+        state.ShowSettings = false;
+
+        state.OpenSettings(SettingsMainTab.Config);
+
+        Assert.Equal(SettingsMainTab.Config, state.SettingsInitialTab);
+        Assert.False(state.ShowSettings);
+    }
+
+    [Fact]
     public void AppStateExposesMacParitySessionActivityAndUiState()
     {
         var state = AppState.CreateDefault();

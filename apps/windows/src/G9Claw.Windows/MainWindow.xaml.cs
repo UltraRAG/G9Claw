@@ -4997,7 +4997,7 @@ public sealed partial class MainWindow : Window
     {
         var page = ToolPage(T("routing.title"), State.Settings.RouterSettings.Enabled ? T("routing.enabled") : T("routing.disabled"), new[]
         {
-            ("Settings", T("common.configure"), (Action)(async () => await ShowSettingsAsync())),
+            ("Settings", T("common.configure"), (Action)(async () => await ShowSettingsAsync(SettingsMainTab.Config))),
         });
         var body = (Grid)page.Tag!;
         var panel = new StackPanel { Padding = new Thickness(24), Spacing = 14 };
@@ -6704,7 +6704,7 @@ public sealed partial class MainWindow : Window
         RenderAll();
     }
 
-    private async void OnSettingsClick(object sender, RoutedEventArgs e) => await ShowSettingsAsync();
+    private async void OnSettingsClick(object sender, RoutedEventArgs e) => await ShowSettingsAsync(SettingsMainTab.Appearance);
 
     private async void OnCreateProjectRequested() => await CreateProjectAsync();
 
@@ -6858,8 +6858,13 @@ public sealed partial class MainWindow : Window
         || Replace(project.GeminiSessions, oldSession, newSession);
     }
 
-    private async Task ShowSettingsAsync()
+    private async Task ShowSettingsAsync(SettingsMainTab? initialTab = null)
     {
+        if (initialTab is { } tab)
+        {
+            State.OpenSettings(tab);
+        }
+
         var existingSecret = await ReadProviderSecretAsync() ?? "";
         var draft = NativeSettingsDraft.From(State.Settings, existingSecret);
 
@@ -7170,6 +7175,7 @@ public sealed partial class MainWindow : Window
         var navButtons = new List<Button>();
         void SelectMainTab(SettingsMainTab tab)
         {
+            State.OpenSettings(tab);
             viewModel.ActiveTab = tab;
             content.Content = tab switch
             {
@@ -7388,7 +7394,7 @@ public sealed partial class MainWindow : Window
         }
 
         var modal = BuildSettingsOverlay(nav, content, errorText, saveStatus, completion, SaveAsync);
-        SelectMainTab(SettingsMainTab.Appearance);
+        SelectMainTab(State.SettingsInitialTab);
         SettingsOverlayHost.Content = modal;
         SettingsOverlayRoot.Visibility = Visibility.Visible;
         await completion.Task;

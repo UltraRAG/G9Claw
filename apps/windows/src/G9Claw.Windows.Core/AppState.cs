@@ -338,6 +338,11 @@ public sealed class AppState : INotifyPropertyChanged
         ActiveTab = AppTab.Chat;
     }
 
+    public void OpenSettings(SettingsMainTab tab = SettingsMainTab.Appearance)
+    {
+        SettingsInitialTab = tab;
+    }
+
     public void MarkSessionState(string sessionId, SessionState state)
     {
         foreach (var project in Projects)
