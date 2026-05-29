@@ -3539,31 +3539,82 @@ public sealed partial class MainWindow : Window
 
     private FrameworkElement AttachmentChip(FileAttachment attachment)
     {
-        var copy = CopyTextButton(attachment.Path, T("chat.copy.attachmentPath"), 22, 12);
+        var imagePath = string.IsNullOrWhiteSpace(attachment.PreviewPath)
+            ? attachment.Path
+            : attachment.PreviewPath!;
+        if (attachment.IsImage && File.Exists(imagePath))
+        {
+            try
+            {
+                return new Border
+                {
+                    MaxWidth = 280,
+                    MaxHeight = 180,
+                    CornerRadius = new CornerRadius(8),
+                    BorderBrush = Brush("V2BorderBrush"),
+                    BorderThickness = new Thickness(1),
+                    Background = Brush("V2MutedBrush"),
+                    Child = new Image
+                    {
+                        MaxWidth = 280,
+                        MaxHeight = 180,
+                        Stretch = Stretch.Uniform,
+                        Source = new BitmapImage(new Uri(imagePath, UriKind.Absolute)),
+                    },
+                };
+            }
+            catch
+            {
+                // Fall back to the file chip when WinUI cannot decode a copied image path.
+            }
+        }
+
+        var model = ComposerAttachmentPreviewModel.Make(attachment);
         return new Border
         {
-            CornerRadius = new CornerRadius(8),
-            BorderBrush = Brush("V2BorderBrush"),
-            BorderThickness = new Thickness(1),
-            Background = Brush("V2MutedBrush"),
-            Padding = new Thickness(8, 5, 5, 5),
+            MinWidth = 168,
+            MaxWidth = 320,
+            CornerRadius = new CornerRadius(12),
+            Background = Brush("V2CardBrush"),
+            Padding = new Thickness(8),
             Child = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Spacing = 7,
+                Spacing = 10,
                 Children =
                 {
-                    Icon(attachment.IsImage ? "Image" : "Paperclip", 14, Brush("V2MutedForegroundBrush")),
-                    new TextBlock
+                    new Border
                     {
-                        Text = attachment.FileName,
-                        FontSize = 12,
-                        Foreground = Brush("V2SecondaryForegroundBrush"),
-                        VerticalAlignment = VerticalAlignment.Center,
-                        MaxWidth = 240,
-                        TextTrimming = TextTrimming.CharacterEllipsis,
+                        Width = 40,
+                        Height = 40,
+                        CornerRadius = new CornerRadius(8),
+                        Background = AttachmentAccentBrush(model.AccentKind),
+                        Child = Icon(AttachmentPreviewIcon(model), 18, Brush("V2InverseForegroundBrush")),
                     },
-                    copy,
+                    new StackPanel
+                    {
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Spacing = 2,
+                        MaxWidth = 220,
+                        Children =
+                        {
+                            new TextBlock
+                            {
+                                Text = attachment.FileName,
+                                FontSize = 13,
+                                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                                Foreground = Brush("V2ForegroundBrush"),
+                                TextTrimming = TextTrimming.CharacterEllipsis,
+                            },
+                            new TextBlock
+                            {
+                                Text = model.TypeLabel,
+                                FontSize = 10,
+                                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                                Foreground = Brush("V2MutedForegroundBrush"),
+                            },
+                        },
+                    },
                 },
             },
         };

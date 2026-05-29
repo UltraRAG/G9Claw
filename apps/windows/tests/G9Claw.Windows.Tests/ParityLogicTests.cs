@@ -1451,6 +1451,10 @@ public sealed class ParityLogicTests
             new FileAttachment(@"C:\repo\proposal.PDF", "proposal.PDF", "application/pdf", 12));
         var spreadsheet = ComposerAttachmentPreviewModel.Make(
             new FileAttachment(@"C:\repo\budget.csv", "budget.csv", "text/csv", 12));
+        var document = ComposerAttachmentPreviewModel.Make(
+            new FileAttachment(@"C:\repo\brief.docx", "brief.docx", null, 12));
+        var presentation = ComposerAttachmentPreviewModel.Make(
+            new FileAttachment(@"C:\repo\deck.pptx", "deck.pptx", null, 12));
         var code = ComposerAttachmentPreviewModel.Make(
             new FileAttachment(@"C:\repo\view.tsx", "view.tsx", "text/plain", 12));
         var image = ComposerAttachmentPreviewModel.Make(
@@ -1460,6 +1464,8 @@ public sealed class ParityLogicTests
 
         Assert.Equal(new ComposerAttachmentPreviewModel(false, "PDF", "doc.richtext", "pdf"), pdf);
         Assert.Equal(new ComposerAttachmentPreviewModel(false, "CSV", "tablecells", "spreadsheet"), spreadsheet);
+        Assert.Equal(new ComposerAttachmentPreviewModel(false, "DOCX", "doc.text", "document"), document);
+        Assert.Equal(new ComposerAttachmentPreviewModel(false, "PPTX", "rectangle.on.rectangle", "presentation"), presentation);
         Assert.Equal(new ComposerAttachmentPreviewModel(false, "TSX", "chevron.left.forwardslash.chevron.right", "code"), code);
         Assert.Equal(new ComposerAttachmentPreviewModel(true, "PNG", "photo", "image"), image);
         Assert.Equal(new ComposerAttachmentPreviewModel(false, "PLAIN", "doc", "file"), noExtension);
