@@ -2295,6 +2295,28 @@ router:
         var toolResult = events.FindIndex(item => item.Kind == AgentEventKind.TurnItemCompleted && item.TurnItem?.ToolName == "TodoRead");
         var visibleResult = events.FindIndex(item => item.Kind == AgentEventKind.ToolResult && item.ToolResult?.ToolName == "TodoRead");
         Assert.True(toolStart >= 0 && toolUpdate > toolStart && toolResult > toolUpdate && visibleResult > toolResult);
+
+        var state = AppState.CreateDefault();
+        foreach (var agentEvent in events)
+        {
+            switch (agentEvent.Kind)
+            {
+                case AgentEventKind.TurnItemStarted:
+                case AgentEventKind.TurnItemUpdated:
+                case AgentEventKind.TurnItemCompleted:
+                    state.UpsertTurnItem(agentEvent.TurnItem!);
+                    break;
+                case AgentEventKind.TurnStarted:
+                case AgentEventKind.TurnCompleted:
+                    state.UpsertTurn(agentEvent.Turn!);
+                    break;
+            }
+        }
+
+        var replayedItems = state.TurnItemsBySession["session-1"];
+        Assert.Contains(replayedItems, item => item.Kind == AgentTurnItemKind.Status && item.Title == "connecting" && item.Status == AgentTurnItemStatus.Completed);
+        Assert.Contains(replayedItems, item => item.Kind == AgentTurnItemKind.ToolCall && item.ToolName == "TodoRead" && item.Status == AgentTurnItemStatus.Completed);
+        Assert.DoesNotContain(replayedItems, item => item.Status == AgentTurnItemStatus.InProgress);
     }
 
     [Fact]
@@ -3873,11 +3895,24 @@ router:
 
         state.UpsertTurnItem(started);
         state.UpsertTurnItem(completed);
+        state.UpsertTurn(new AgentTurn(
+            "turn-1",
+            sessionId,
+            Guid.NewGuid(),
+            @"C:\repo",
+            AgentTurnStatus.Completed,
+            ChatRunMode.Agent,
+            now,
+            now.AddSeconds(1),
+            now.AddSeconds(1),
+            [completed]));
 
         var item = Assert.Single(state.CurrentTurnItems);
+        Assert.Equal("turn-1", Assert.Single(state.TurnsBySession[sessionId]).Id);
         Assert.Equal("item-1", item.Id);
         Assert.Equal(AgentTurnItemStatus.Completed, item.Status);
         Assert.Equal("content", item.ToolInvocation!.Output);
+        Assert.True(state.StreamRenderRevision >= 3);
     }
 
     [Fact]

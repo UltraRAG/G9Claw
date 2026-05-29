@@ -6574,7 +6574,7 @@ public sealed partial class MainWindow : Window
                             ScheduleChatRender();
                             break;
                         case AgentEventKind.TurnStarted or AgentEventKind.TurnCompleted when agentEvent.Turn is { } turn:
-                            State.TurnsBySession[currentRequest.SessionId] = [turn];
+                            State.UpsertTurn(turn);
                             if (agentEvent.Kind == AgentEventKind.TurnStarted)
                             {
                                 State.AppendStreamingAssistantText(currentRequest.SessionId, assistantMessageId, "", lastBudget);

@@ -122,7 +122,11 @@ public sealed class AppState : INotifyPropertyChanged
 
     public IReadOnlyList<AgentTurnItem> CurrentTurnItems =>
         SelectedSessionId is { } sessionId && TurnItemsBySession.TryGetValue(sessionId, out var items)
-            ? items.OrderBy(item => item.Sequence).ToList()
+            ? items
+                .OrderBy(item => item.TurnId, StringComparer.Ordinal)
+                .ThenBy(item => item.Sequence)
+                .ThenBy(item => item.CreatedAt)
+                .ToList()
             : [];
 
     public bool IsCurrentSessionStreaming => CurrentMessages.Any(message => message.IsStreaming);
@@ -646,8 +650,40 @@ public sealed class AppState : INotifyPropertyChanged
         }
     }
 
+    public void UpsertTurn(AgentTurn turn)
+    {
+        if (!TurnsBySession.TryGetValue(turn.SessionId, out var turns))
+        {
+            turns = [];
+            TurnsBySession[turn.SessionId] = turns;
+        }
+
+        var index = turns.FindIndex(existing => string.Equals(existing.Id, turn.Id, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0)
+        {
+            turns[index] = turn;
+        }
+        else
+        {
+            turns.Add(turn);
+        }
+
+        turns.Sort((left, right) => left.StartedAt.CompareTo(right.StartedAt));
+        foreach (var item in turn.Items)
+        {
+            UpsertTurnItem(item);
+        }
+
+        StreamRenderRevision++;
+    }
+
     public void UpsertTurnItem(AgentTurnItem item)
     {
+        if (!item.IsRenderable)
+        {
+            return;
+        }
+
         var sessionId = string.IsNullOrWhiteSpace(item.SessionId) ? SelectedSessionId : item.SessionId;
         if (string.IsNullOrWhiteSpace(sessionId))
         {
@@ -669,6 +705,8 @@ public sealed class AppState : INotifyPropertyChanged
         {
             items.Add(item);
         }
+
+        StreamRenderRevision++;
     }
 
     public void AppendStreamingAssistantToolCall(string sessionId, AgentToolCall call)
