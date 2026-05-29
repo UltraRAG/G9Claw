@@ -2140,6 +2140,52 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerEmitsLifecycleStatusesLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new LifecycleStatusProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "inspect the workspace",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        Assert.Equal(2, provider.RequestCount);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.SessionCreated && item.SessionId == "session-1");
+        var lifecycleStatuses = events
+            .Where(item => item.Kind == AgentEventKind.Status)
+            .Select(item => item.Text)
+            .Where(text => text is "connecting" or "thinking" or "processing")
+            .ToList();
+        Assert.Equal(new[] { "connecting", "thinking", "processing" }, lifecycleStatuses.Take(3));
+
+        var completedTurn = Assert.Single(events, item => item.Kind == AgentEventKind.TurnCompleted).Turn!;
+        var turnStatuses = completedTurn.Items
+            .Where(item => item.Kind == AgentTurnItemKind.Status)
+            .Select(item => item.Title)
+            .Where(text => text is "connecting" or "thinking" or "processing")
+            .ToList();
+        Assert.Equal(new[] { "connecting", "thinking", "processing" }, turnStatuses.Take(3));
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerRetriesTransientProviderFailureLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -5926,6 +5972,30 @@ gateway:
                 prompt = request.Prompt,
                 result = $"subagent result for {request.Description}\n{request.ExtraContext}",
             }, new JsonSerializerOptions { WriteIndented = true }));
+        }
+    }
+
+    private sealed class LifecycleStatusProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (RequestCount == 1)
+            {
+                yield return new ProviderStreamEvent(
+                    ProviderStreamEventKind.ToolCall,
+                    ToolCall: new AgentToolCall("todo-read", "TodoRead", "{}"));
+                yield break;
+            }
+
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
         }
     }
 

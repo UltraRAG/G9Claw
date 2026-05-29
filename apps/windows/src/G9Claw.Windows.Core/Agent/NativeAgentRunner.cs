@@ -72,6 +72,9 @@ public sealed class NativeAgentRunner
         var turn = nativeSession.StartTurn(request);
         turn.RecordUserMessage(request.Prompt);
         await writer.WriteAsync(new AgentEvent(AgentEventKind.TurnStarted, request.SessionId, Turn: turn.Snapshot()), cancellationToken);
+        await writer.WriteAsync(AgentEvent.SessionCreated(request.SessionId), cancellationToken);
+        turn.RecordStatus("connecting");
+        await writer.WriteAsync(AgentEvent.Status(request.SessionId, "connecting"), cancellationToken);
 
         var assistantText = new StringBuilder();
         TokenBudget? lastBudget = null;
@@ -93,9 +96,9 @@ public sealed class NativeAgentRunner
             var didForceWorkspaceBootstrap = false;
             while (true)
             {
-                await writer.WriteAsync(
-                    AgentEvent.Status(request.SessionId, round == 0 ? "Connecting to provider..." : "Continuing with tool results..."),
-                    cancellationToken);
+                var roundStatus = round == 0 ? "thinking" : "processing";
+                turn.RecordStatus(roundStatus);
+                await writer.WriteAsync(AgentEvent.Status(request.SessionId, roundStatus), cancellationToken);
                 var contextBudget = NativeAgentRuntime.ContextBudgetSnapshot(currentRequest);
                 await writer.WriteAsync(AgentEvent.Budget(request.SessionId, contextBudget), cancellationToken);
                 if (NativeAgentRuntime.CompactContextIfNeeded(currentRequest) is { } compaction)
