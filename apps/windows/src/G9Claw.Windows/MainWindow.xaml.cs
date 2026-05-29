@@ -5732,12 +5732,9 @@ public sealed partial class MainWindow : Window
         State.SelectProject(project);
         SyncSidebarSectionWithProject(project);
         RefreshNativeStores();
-        var session = State.CreateSessionForSelectedProject(T("sidebar.newSession"));
-        if (session is not null)
-        {
-            _expandedProjectNames.Add(project.Name);
-            ChatLines.Clear();
-        }
+        State.StartDraftSession(project);
+        _expandedProjectNames.Add(project.Name);
+        ChatLines.Clear();
 
         PersistUiSettings();
         RenderAll();

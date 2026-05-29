@@ -2903,6 +2903,36 @@ router:
     }
 
     [Fact]
+    public void AppStateDraftSessionLifecycleMatchesMacNewChatPolicy()
+    {
+        var state = AppState.CreateDefault();
+        var project = state.Projects.First();
+        var initialCount = project.Sessions.Count;
+
+        state.SelectProject(project);
+        state.StartNewSession();
+
+        Assert.Equal(project.Id, state.SelectedProjectId);
+        Assert.Null(state.SelectedSessionId);
+        Assert.True(state.IsDraftSessionVisible);
+        Assert.Equal(AppTab.Chat, state.ActiveTab);
+        Assert.Equal(initialCount, project.Sessions.Count);
+
+        var session = state.CreateSessionForSelectedProject("Hello");
+        Assert.NotNull(session);
+        Assert.Equal(session.Id, state.SelectedSessionId);
+        Assert.False(state.IsDraftSessionVisible);
+        Assert.Equal(initialCount + 1, project.Sessions.Count);
+
+        state.StartDraftSession(project);
+        Assert.True(state.IsDraftSessionVisible);
+        state.SelectSession(session);
+        Assert.False(state.IsDraftSessionVisible);
+        state.SelectProject(project);
+        Assert.False(state.IsDraftSessionVisible);
+    }
+
+    [Fact]
     public void AppStateExposesMacParitySessionActivityAndUiState()
     {
         var state = AppState.CreateDefault();

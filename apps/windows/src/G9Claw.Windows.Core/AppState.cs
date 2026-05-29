@@ -288,12 +288,32 @@ public sealed class AppState : INotifyPropertyChanged
     {
         SelectedProjectId = project.Id;
         SelectedSessionId = null;
+        IsDraftSessionVisible = false;
         ActiveTab = AppTab.Chat;
     }
 
     public void SelectSession(ProjectSession session)
     {
         SelectedSessionId = session.Id;
+        IsDraftSessionVisible = false;
+        ActiveTab = AppTab.Chat;
+    }
+
+    public void StartNewSession() => StartDraftSession(SelectedProject);
+
+    public void StartDraftSession(WorkspaceProject? project)
+    {
+        if (project is not null)
+        {
+            SelectedProjectId = project.Id;
+        }
+        else if (SelectedProjectId is null)
+        {
+            SelectedProjectId = Projects.FirstOrDefault()?.Id;
+        }
+
+        SelectedSessionId = null;
+        IsDraftSessionVisible = true;
         ActiveTab = AppTab.Chat;
     }
 
@@ -330,6 +350,8 @@ public sealed class AppState : INotifyPropertyChanged
 
         project.Sessions.Insert(0, session);
         SelectedSessionId = session.Id;
+        IsDraftSessionVisible = false;
+        ActiveTab = AppTab.Chat;
         MessagesBySession[session.Id] = [];
         return session;
     }
