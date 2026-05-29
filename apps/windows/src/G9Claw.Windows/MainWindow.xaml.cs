@@ -149,6 +149,7 @@ public sealed partial class MainWindow : Window
     private bool _suppressComposerTextChanged;
     private bool _ignoreNextEnterKeyUp;
     private bool _headerMetricsPending;
+    private bool? _lastToolSwitcherIconOnly;
     private bool _chatRenderPending;
     private ScrollViewer? _chatScrollViewer;
     private bool _chatStickToBottom = true;
@@ -361,14 +362,15 @@ public sealed partial class MainWindow : Window
         HeaderRoot.Padding = new Thickness(24, 0, 0, 0);
         HeaderCaptionSpacer.Width = new GridLength(metrics.EffectiveRightPadding);
         ToolTabsScroll.Margin = new Thickness(0);
-        if (Math.Abs(ToolTabsScroll.Width - metrics.TabMaxWidth) > 0.5)
+
+        var layout = ResolveHeaderToolSwitcherLayout();
+        if (_lastToolSwitcherIconOnly != layout.IconOnly)
         {
-            ToolTabsScroll.Width = metrics.TabMaxWidth;
+            RenderHeader(metrics);
+            return;
         }
-        if (Math.Abs(ToolTabsScroll.MaxWidth - metrics.TabMaxWidth) > 0.5)
-        {
-            ToolTabsScroll.MaxWidth = metrics.TabMaxWidth;
-        }
+
+        ApplyToolSwitcherLayout(layout, metrics);
     }
 
     private async Task LoadSettingsAsync()
@@ -966,47 +968,85 @@ public sealed partial class MainWindow : Window
         return flyout;
     }
 
-    private void RenderHeader()
+    private void RenderHeader(HeaderLayoutMetrics? metrics = null)
     {
         BreadcrumbProjectText.Text = State.SelectedProject?.DisplayName ?? T("common.home");
         BreadcrumbTabText.Text = TabLabel(State.ActiveTab);
         BreadcrumbSessionText.Text = State.SelectedSession?.DisplayTitle ?? "";
 
         ToolTabsPanel.Children.Clear();
-        foreach (var tab in AppTabCatalog.PrimaryTabDescriptors)
+        var layout = ResolveHeaderToolSwitcherLayout();
+        _lastToolSwitcherIconOnly = layout.IconOnly;
+        ApplyToolSwitcherLayout(layout, metrics);
+
+        foreach (var visibleTab in layout.VisibleTabs)
         {
+            var tab = AppTabCatalog.PrimaryTabDescriptors.First(descriptor => descriptor.Tab == visibleTab);
             var isActive = State.ActiveTab == tab.Tab || (State.ActiveTab == AppTab.Preview && tab.Tab == AppTab.Files);
+            var foreground = isActive ? Brush("V2ForegroundBrush") : Brush("V2MutedForegroundBrush");
+            var content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+            };
+            content.Children.Add(Icon(tab.IconKey, 13, foreground));
+            if (!layout.IconOnly)
+            {
+                content.Children.Add(new TextBlock
+                {
+                    Text = TabLabel(tab.Tab),
+                    FontSize = 12.5,
+                    FontWeight = isActive ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Medium,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+            }
+
             var button = new Button
             {
-                Height = 32,
+                Width = MainHeaderToolSwitcherLayout.ButtonWidth(tab.Tab, layout.IconOnly),
+                Height = MainHeaderToolSwitcherLayout.ButtonHeight,
                 MinWidth = 0,
-                Padding = new Thickness(10, 0, 10, 0),
-                CornerRadius = new CornerRadius(6),
-                Background = isActive ? Brush("V2HoverBrush") : Transparent,
-                BorderBrush = Transparent,
-                Foreground = isActive ? Brush("V2ForegroundBrush") : Brush("V2MutedForegroundBrush"),
+                Padding = layout.IconOnly ? new Thickness(0) : new Thickness(6, 0, 6, 0),
+                CornerRadius = new CornerRadius(13),
+                Background = isActive ? Brush("V2CardBrush") : Transparent,
+                BorderBrush = isActive ? Brush("V2BorderBrush") : Transparent,
+                BorderThickness = isActive ? new Thickness(1) : new Thickness(0),
+                Foreground = foreground,
                 UseSystemFocusVisuals = false,
                 Tag = tab.Tab,
-                Content = new StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    Spacing = 6,
-                    Children =
-                    {
-                        Icon(tab.IconKey, 14, isActive ? Brush("V2ForegroundBrush") : Brush("V2MutedForegroundBrush")),
-                        new TextBlock
-                        {
-                            Text = TabLabel(tab.Tab),
-                            FontSize = 13,
-                            FontWeight = isActive ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
-                            VerticalAlignment = VerticalAlignment.Center,
-                        },
-                    },
-                },
+                Content = content,
             };
+            ToolTipService.SetToolTip(button, TabLabel(tab.Tab));
             button.Click += OnTabClick;
             ToolTabsPanel.Children.Add(button);
         }
+    }
+
+    private MainHeaderToolSwitcherLayout ResolveHeaderToolSwitcherLayout()
+    {
+        var availableWidth = HeaderRoot.ActualWidth > 0
+            ? HeaderRoot.ActualWidth
+            : V2LayoutMetrics.DefaultWindowWidth;
+        return MainHeaderToolSwitcherLayout.Resolve(availableWidth, State.ActiveTab);
+    }
+
+    private void ApplyToolSwitcherLayout(MainHeaderToolSwitcherLayout layout, HeaderLayoutMetrics? metrics)
+    {
+        var tabMaxWidth = metrics?.TabMaxWidth ?? layout.EstimatedWidth;
+        var targetWidth = Math.Min(layout.EstimatedWidth, Math.Max(0, tabMaxWidth));
+        ToolTabsScroll.Height = MainHeaderToolSwitcherLayout.ContainerHeight;
+        ToolTabsScroll.Width = targetWidth;
+        ToolTabsScroll.MaxWidth = tabMaxWidth;
+        ToolTabsChrome.Width = layout.EstimatedWidth;
+        ToolTabsChrome.Height = MainHeaderToolSwitcherLayout.ContainerHeight;
+        ToolTabsChrome.Padding = new Thickness(
+            MainHeaderToolSwitcherLayout.ContainerPadding,
+            MainHeaderToolSwitcherLayout.ContainerVerticalPadding,
+            MainHeaderToolSwitcherLayout.ContainerPadding,
+            MainHeaderToolSwitcherLayout.ContainerVerticalPadding);
+        ToolTabsChrome.CornerRadius = new CornerRadius(MainHeaderToolSwitcherLayout.ContainerCornerRadius);
+        ToolTabsPanel.Spacing = MainHeaderToolSwitcherLayout.ItemSpacing;
     }
 
     private string TabLabel(AppTab tab) => tab switch

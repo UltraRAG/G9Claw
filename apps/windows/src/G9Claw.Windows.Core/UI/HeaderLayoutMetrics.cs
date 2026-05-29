@@ -21,7 +21,10 @@ public sealed record HeaderLayoutMetrics(double HeaderWidth, double CaptionRight
             var compactMax = HeaderWidth < 900
                 ? Math.Max(webV2Max, available - 120)
                 : webV2Max;
-            var minimum = Math.Min(220, available);
+            var primaryTabsWidth = MainHeaderToolSwitcherLayout
+                .Resolve(HeaderWidth, AppTab.Chat)
+                .EstimatedWidth;
+            var minimum = Math.Min(Math.Max(220, primaryTabsWidth), available);
             return Math.Max(minimum, Math.Min(available, compactMax));
         }
     }

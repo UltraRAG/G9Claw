@@ -205,11 +205,20 @@
                     VerticalScrollBarVisibility="Disabled"
                     VerticalScrollMode="Disabled"
                     ZoomMode="Disabled">
-                    <StackPanel
-                        x:Name="ToolTabsPanel"
-                        Orientation="Horizontal"
-                        VerticalAlignment="Center"
-                        Spacing="4" />
+                    <Border
+                        x:Name="ToolTabsChrome"
+                        Height="36"
+                        Padding="3,2"
+                        Background="{ThemeResource V2MutedBrush}"
+                        BorderBrush="{ThemeResource V2BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="18">
+                        <StackPanel
+                            x:Name="ToolTabsPanel"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center"
+                            Spacing="2" />
+                    </Border>
                 </ScrollViewer>
             </Grid>
 

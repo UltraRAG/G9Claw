@@ -86,6 +86,32 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void MainHeaderToolSwitcherLayoutAlwaysShowsPrimaryTabsLikeMac()
+    {
+        foreach (var width in new[] { 1440d, 1100d, 760d })
+        {
+            var layout = MainHeaderToolSwitcherLayout.Resolve(width, AppTab.Memory);
+
+            Assert.Equal(AppTabCatalog.PrimaryTabs, layout.VisibleTabs);
+            Assert.Empty(layout.OverflowTabs);
+            Assert.False(layout.IconOnly);
+            Assert.Equal(544d, layout.EstimatedWidth);
+        }
+
+        Assert.Equal(82d, MainHeaderToolSwitcherLayout.ButtonWidth(AppTab.Chat, iconOnly: false));
+        Assert.Equal(118d, MainHeaderToolSwitcherLayout.ButtonWidth(AppTab.AlwaysOn, iconOnly: false));
+        Assert.Equal(36d, MainHeaderToolSwitcherLayout.ButtonWidth(AppTab.Chat, iconOnly: true));
+
+        var chatOnlyLayout = MainHeaderToolSwitcherLayout.Resolve(
+            760,
+            AppTab.Chat,
+            [AppTab.Chat]);
+
+        Assert.Equal([AppTab.Chat], chatOnlyLayout.VisibleTabs);
+        Assert.Equal(88d, chatOnlyLayout.EstimatedWidth);
+    }
+
+    [Fact]
     public void CoreDescriptorsMatchNativeMacAppModels()
     {
         Assert.Equal("g9claw", SessionProvider.G9Claw.Id());
@@ -4543,6 +4569,7 @@ router:
         Assert.True(narrow.TabMaxWidth >= 220);
         Assert.True(narrow.TabMaxWidth < metrics.TabMaxWidth);
         Assert.True(veryNarrow.TabMaxWidth <= 260 - veryNarrow.EffectiveRightPadding);
+        Assert.True(new HeaderLayoutMetrics(760, 138).TabMaxWidth >= MainHeaderToolSwitcherLayout.Resolve(760, AppTab.Memory).EstimatedWidth);
     }
 
     [Fact]

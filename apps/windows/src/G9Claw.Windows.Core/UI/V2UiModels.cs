@@ -83,6 +83,68 @@ public static class AppTabCatalog
     public static bool IsPrimary(AppTab tab) => PrimaryTabs.Contains(tab);
 }
 
+public sealed record MainHeaderToolSwitcherLayout(
+    IReadOnlyList<AppTab> VisibleTabs,
+    IReadOnlyList<AppTab> OverflowTabs,
+    bool IconOnly,
+    double EstimatedWidth)
+{
+    public const double ItemSpacing = 2;
+    public const double ContainerPadding = 3;
+    public const double ContainerVerticalPadding = 2;
+    public const double ContainerHeight = V2LayoutMetrics.HeaderTabsHeight;
+    public const double ContainerCornerRadius = ContainerHeight / 2;
+    public const double ButtonHeight = 28;
+    private const double RegularButtonWidth = 82;
+    private const double IconButtonWidth = 36;
+
+    public static MainHeaderToolSwitcherLayout Resolve(
+        double availableWidth,
+        AppTab activeTab,
+        IEnumerable<AppTab>? tabs = null)
+    {
+        _ = activeTab;
+        var allTabs = UniqueTabs(tabs ?? AppTabCatalog.PrimaryTabs);
+        if (allTabs.Count == 0)
+        {
+            return new MainHeaderToolSwitcherLayout([], [], false, 0);
+        }
+
+        var fullWidth = EstimatedWidthFor(allTabs, [], iconOnly: false);
+        var compactWidth = EstimatedWidthFor(allTabs, [], iconOnly: true);
+        var iconOnly = availableWidth < fullWidth + 160;
+
+        return new MainHeaderToolSwitcherLayout(
+            allTabs,
+            [],
+            iconOnly,
+            iconOnly ? compactWidth : fullWidth);
+    }
+
+    public static double ButtonWidth(AppTab tab, bool iconOnly)
+    {
+        if (iconOnly) return IconButtonWidth;
+        return tab == AppTab.AlwaysOn ? 118 : RegularButtonWidth;
+    }
+
+    private static double EstimatedWidthFor(IReadOnlyList<AppTab> visible, IReadOnlyList<AppTab> overflow, bool iconOnly)
+    {
+        var buttonWidth = visible.Sum(tab => ButtonWidth(tab, iconOnly));
+        var itemCount = visible.Count + (overflow.Count == 0 ? 0 : 1);
+        var spacing = Math.Max(0, itemCount - 1) * ItemSpacing;
+        const double overflowWidth = 0;
+        return ContainerPadding * 2 + buttonWidth + overflowWidth + spacing;
+    }
+
+    private static IReadOnlyList<AppTab> UniqueTabs(IEnumerable<AppTab> tabs)
+    {
+        var seen = new HashSet<AppTab>();
+        return tabs
+            .Where(tab => seen.Add(tab))
+            .ToList();
+    }
+}
+
 public enum NativeAppearanceSection
 {
     ColorScheme,
