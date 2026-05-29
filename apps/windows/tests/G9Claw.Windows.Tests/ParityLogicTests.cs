@@ -3795,8 +3795,13 @@ router:
         Assert.Equal(2, provider.RequestCount);
         Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "partial ");
         Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "recovered");
-        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "partial_stream_timeout_recovery");
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "waiting for model response");
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Status && item.Text == "partial_stream_timeout_recovery");
+        var partialRecoveryTurn = Assert.Single(events, item => item.Kind == AgentEventKind.TurnCompleted).Turn!;
+        Assert.Contains(partialRecoveryTurn.Items, item =>
+            item.Kind == AgentTurnItemKind.Status &&
+            item.Title == "waiting for model response" &&
+            item.Text == "partial_stream_timeout_recovery");
         Assert.Contains(provider.RecoveryPrompts, prompt => prompt.Contains("Continue the same task from the latest completed tool result", StringComparison.Ordinal));
         Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Error);
     }
@@ -3876,8 +3881,13 @@ router:
 
         Assert.Equal(2, provider.RequestCount);
         Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "recovered");
-        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "prompt_too_long");
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "context recovering");
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Status && item.Text == "prompt_too_long");
+        var contextRecoveryTurn = Assert.Single(events, item => item.Kind == AgentEventKind.TurnCompleted).Turn!;
+        Assert.Contains(contextRecoveryTurn.Items, item =>
+            item.Kind == AgentTurnItemKind.Status &&
+            item.Title == "context recovering" &&
+            item.Text == "prompt_too_long");
         Assert.Contains(events, item => item.Kind == AgentEventKind.TokenBudget && item.TokenBudget?.Total == 160000);
         Assert.Contains(provider.RecoveredPriorMessages, message => message.PlainText.Contains("[Context compacted]", StringComparison.Ordinal));
         Assert.True(provider.RecoveredPriorMessages.Count < priorMessages.Count);

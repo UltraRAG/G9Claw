@@ -231,7 +231,7 @@ public sealed class NativeAgentRunner
                         PriorMessages = RecoveryPriorMessages(currentRequest, ex.Message),
                         ToolExchanges = toolExchanges.ToList(),
                     };
-                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, "partial_stream_timeout_recovery"), cancellationToken);
+                    turn.RecordStatus("waiting for model response", "partial_stream_timeout_recovery");
                     await writer.WriteAsync(AgentEvent.Status(request.SessionId, "waiting for model response"), cancellationToken);
                     round++;
                     continue;
@@ -248,7 +248,7 @@ public sealed class NativeAgentRunner
                         PriorMessages = recovery.PriorMessages,
                         ToolExchanges = recovery.ToolExchanges,
                     };
-                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, recovery.Trigger), cancellationToken);
+                    turn.RecordStatus("context recovering", recovery.Trigger);
                     await writer.WriteAsync(AgentEvent.Status(request.SessionId, "context recovering"), cancellationToken);
                     await writer.WriteAsync(AgentEvent.Budget(request.SessionId, new TokenBudget(recovery.PostTokens, request.ContextWindow)), cancellationToken);
                     round++;
