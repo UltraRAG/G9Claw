@@ -6546,6 +6546,10 @@ public sealed partial class MainWindow : Window
                             State.AppendStreamingAssistantToolResult(currentRequest.SessionId, assistantMessageId, result);
                             ScheduleChatRender();
                             break;
+                        case AgentEventKind.SubagentStatus when agentEvent.SubagentStatus is { } subagentStatus:
+                            State.UpsertSubagentStatus(currentRequest.SessionId, assistantMessageId, subagentStatus);
+                            ScheduleChatRender();
+                            break;
                         case AgentEventKind.TurnStarted or AgentEventKind.TurnCompleted when agentEvent.Turn is { } turn:
                             State.TurnsBySession[currentRequest.SessionId] = [turn];
                             if (agentEvent.Kind == AgentEventKind.TurnStarted)

@@ -3629,6 +3629,39 @@ router:
     }
 
     [Fact]
+    public void AppStateUpsertsSubagentStatusActivityLikeMac()
+    {
+        var state = AppState.CreateDefault();
+        state.Settings = state.Settings with { Language = AppLanguage.English };
+        var project = state.Projects.First();
+        state.SelectProject(project);
+        var sessionId = state.CreateSessionForSelectedProject("Parity")!.Id;
+        var assistantMessageId = Guid.NewGuid();
+
+        state.UpsertSubagentStatus(
+            sessionId,
+            assistantMessageId,
+            new SubagentStatusPayload("task", "running", """{"prompt":"Inspect services"}"""));
+        var running = Assert.Single(state.CurrentActivities);
+        Assert.Equal("Subagent running", running.Title);
+        Assert.Equal(AgentActivityPhase.Subagent, running.Phase);
+        Assert.Equal(AgentActivityState.Running, running.State);
+        Assert.Equal("Task", running.ToolName);
+        Assert.Equal(assistantMessageId.ToString("D"), running.AnchorBlockId);
+
+        state.UpsertSubagentStatus(
+            sessionId,
+            assistantMessageId,
+            new SubagentStatusPayload("task", "completed", "subagent result"));
+        var completed = Assert.Single(state.CurrentActivities);
+        Assert.Equal("Subagent completed", completed.Title);
+        Assert.Equal("subagent result", completed.Detail);
+        Assert.Equal(AgentActivityState.Completed, completed.State);
+        Assert.Equal(["subagent result"], completed.DetailMessages);
+        Assert.NotNull(completed.EndedAt);
+    }
+
+    [Fact]
     public void AppStateBeginsNewAssistantMessageForEachTurnAndIgnoresLateEvents()
     {
         var state = AppState.CreateDefault();
@@ -4026,11 +4059,81 @@ router:
         Assert.Equal(providerConfig, subagentRequest.Context.ProviderConfig);
         Assert.Equal("test-key", subagentRequest.Context.ApiKey);
         Assert.Equal(1, subagentRequest.Context.SubagentDepth);
+        var subagentStatuses = events
+            .Where(item => item.Kind == AgentEventKind.SubagentStatus)
+            .Select(item => item.SubagentStatus!)
+            .ToList();
+        Assert.Collection(
+            subagentStatuses,
+            running =>
+            {
+                Assert.Equal("task", running.Id);
+                Assert.Equal("running", running.Status);
+                Assert.Contains("\"prompt\":\"Inspect services\"", running.Detail, StringComparison.Ordinal);
+            },
+            completed =>
+            {
+                Assert.Equal("task", completed.Id);
+                Assert.Equal("completed", completed.Status);
+                Assert.Contains("subagent result for Explore services", completed.Detail, StringComparison.Ordinal);
+            });
         Assert.Contains(events, item =>
             item.Kind == AgentEventKind.ToolResult &&
             item.ToolResult?.ToolName == "Task" &&
             item.ToolResult.Output.Contains("subagent result for Explore services", StringComparison.Ordinal));
+        var runningIndex = events.FindIndex(item =>
+            item.Kind == AgentEventKind.SubagentStatus &&
+            item.SubagentStatus?.Status == "running");
+        var resultIndex = events.FindIndex(item => item.Kind == AgentEventKind.ToolResult && item.ToolResult?.ToolName == "Task");
+        var completedIndex = events.FindIndex(item =>
+            item.Kind == AgentEventKind.SubagentStatus &&
+            item.SubagentStatus?.Status == "completed");
+        Assert.True(runningIndex >= 0 && resultIndex > runningIndex && completedIndex > resultIndex);
         Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done");
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerEmitsFailedSubagentStatusLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var toolExecutor = new AgentToolExecutor(
+            runStore: new NativeRunStore(Path.Combine(temp.Root, "run-history")),
+            subagentRunner: new FailingSubagentRunner());
+        var runner = new NativeAgentRunner(
+            providerClient: new SingleTaskProvider(),
+            toolExecutor: toolExecutor);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "delegate work",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.BypassPermissions,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            new Dictionary<string, string> { ["runtime.maxSubagentDepth"] = "2" });
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        var subagentStatuses = events
+            .Where(item => item.Kind == AgentEventKind.SubagentStatus)
+            .Select(item => item.SubagentStatus!)
+            .ToList();
+        Assert.Equal(["running", "failed"], subagentStatuses.Select(item => item.Status));
+        Assert.Contains("subagent failed", subagentStatuses.Last().Detail, StringComparison.Ordinal);
+        Assert.Contains(events, item =>
+            item.Kind == AgentEventKind.ToolResult &&
+            item.ToolResult is { ToolName: "Task", IsError: true } &&
+            item.ToolResult.Output.Contains("subagent failed", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -6032,6 +6135,17 @@ gateway:
                 prompt = request.Prompt,
                 result = $"subagent result for {request.Description}\n{request.ExtraContext}",
             }, new JsonSerializerOptions { WriteIndented = true }));
+        }
+    }
+
+    private sealed class FailingSubagentRunner : INativeSubagentRunner
+    {
+        public bool RequiresProviderConfig => false;
+
+        public Task<string> RunAsync(NativeSubagentRequest request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new InvalidOperationException("subagent failed");
         }
     }
 

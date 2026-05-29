@@ -7,6 +7,7 @@ public enum AgentEventKind
     ToolUse,
     ToolResult,
     PermissionRequest,
+    SubagentStatus,
     Status,
     TokenBudget,
     StreamEnd,
@@ -24,6 +25,7 @@ public sealed record AgentEvent(
     AgentToolCall? ToolCall = null,
     AgentToolResult? ToolResult = null,
     PermissionRequest? PermissionRequest = null,
+    SubagentStatusPayload? SubagentStatus = null,
     TokenBudget? TokenBudget = null,
     AgentTurn? Turn = null)
 {
@@ -32,6 +34,8 @@ public sealed record AgentEvent(
     public static AgentEvent ToolUse(string sessionId, AgentToolCall call) => new(AgentEventKind.ToolUse, sessionId, ToolCall: call);
     public static AgentEvent ToolResultEvent(string sessionId, AgentToolResult result) => new(AgentEventKind.ToolResult, sessionId, ToolResult: result);
     public static AgentEvent Permission(string sessionId, PermissionRequest request) => new(AgentEventKind.PermissionRequest, sessionId, PermissionRequest: request);
+    public static AgentEvent Subagent(string sessionId, string id, string status, string detail) =>
+        new(AgentEventKind.SubagentStatus, sessionId, SubagentStatus: new SubagentStatusPayload(id, status, detail));
     public static AgentEvent Status(string sessionId, string text) => new(AgentEventKind.Status, sessionId, Text: text);
     public static AgentEvent Budget(string sessionId, TokenBudget budget) => new(AgentEventKind.TokenBudget, sessionId, TokenBudget: budget);
     public static AgentEvent StreamEnd(string sessionId) => new(AgentEventKind.StreamEnd, sessionId);
@@ -39,6 +43,11 @@ public sealed record AgentEvent(
     public static AgentEvent Abort(string sessionId, string reason) => new(AgentEventKind.Abort, sessionId, Text: reason);
     public static AgentEvent Error(string sessionId, string message) => new(AgentEventKind.Error, sessionId, Text: message);
 }
+
+public sealed record SubagentStatusPayload(
+    string Id,
+    string Status,
+    string Detail);
 
 public static class AgentEventNormalizer
 {

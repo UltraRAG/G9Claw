@@ -199,7 +199,7 @@ public sealed class NativeAgentRunner
                                         continue;
                                     }
 
-                                    await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                                    await WriteToolResultEventsAsync(writer, request.SessionId, call, toolResult, cancellationToken);
                                     completionGate.RecordToolResult(call, toolResult);
                                     if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
                                     {
@@ -275,7 +275,7 @@ public sealed class NativeAgentRunner
                             continue;
                         }
 
-                        await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                        await WriteToolResultEventsAsync(writer, request.SessionId, fallbackCall, toolResult, cancellationToken);
                         completionGate.RecordToolResult(fallbackCall, toolResult);
                         if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
                         {
@@ -316,7 +316,7 @@ public sealed class NativeAgentRunner
                     var toolResult = await ExecuteToolAsync(currentRequest, turn, writer, planRecovery.Call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
                     if (toolResult is not null)
                     {
-                        await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                        await WriteToolResultEventsAsync(writer, request.SessionId, planRecovery.Call, toolResult, cancellationToken);
                         completionGate.RecordToolResult(planRecovery.Call, toolResult);
                         if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
                         {
@@ -340,7 +340,7 @@ public sealed class NativeAgentRunner
                     var toolResult = await ExecuteToolAsync(currentRequest, turn, writer, bootstrapCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
                     if (toolResult is not null)
                     {
-                        await writer.WriteAsync(AgentEvent.ToolResultEvent(request.SessionId, toolResult), cancellationToken);
+                        await WriteToolResultEventsAsync(writer, request.SessionId, bootstrapCall, toolResult, cancellationToken);
                         completionGate.RecordToolResult(bootstrapCall, toolResult);
                         if (loopWatchdog.RecordToolResult(toolResult) is { } watchdogMessage)
                         {
@@ -613,6 +613,22 @@ public sealed class NativeAgentRunner
         }
     }
 
+    private static async Task WriteToolResultEventsAsync(
+        ChannelWriter<AgentEvent> writer,
+        string sessionId,
+        AgentToolCall call,
+        AgentToolResult result,
+        CancellationToken cancellationToken)
+    {
+        await writer.WriteAsync(AgentEvent.ToolResultEvent(sessionId, result), cancellationToken);
+        if (AgentToolNameCanonicalizer.Canonical(call.Name) == "Task")
+        {
+            await writer.WriteAsync(
+                AgentEvent.Subagent(sessionId, call.Id, result.IsError ? "failed" : "completed", result.Output),
+                cancellationToken);
+        }
+    }
+
     private async Task<AgentToolResult?> ExecuteToolAsync(
         AgentRequest request,
         NativeTurnController turn,
@@ -635,6 +651,12 @@ public sealed class NativeAgentRunner
 
         var call = normalized.Call;
         turn.RecordToolCall(call);
+        var isSubagentTool = AgentToolNameCanonicalizer.Canonical(call.Name) == "Task";
+        if (isSubagentTool)
+        {
+            await writer.WriteAsync(AgentEvent.Subagent(request.SessionId, call.Id, "running", call.InputJson), cancellationToken);
+        }
+
         if (rootGlobPolicy.CachedResultIfAvailable(call) is { } cached)
         {
             turn.RecordToolResult(cached);

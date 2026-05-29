@@ -580,6 +580,70 @@ public sealed class AppState : INotifyPropertyChanged
         messages[index] = message with { Blocks = blocks };
     }
 
+    public void UpsertSubagentStatus(string sessionId, Guid assistantMessageId, SubagentStatusPayload status)
+    {
+        if (!ActivitiesBySession.TryGetValue(sessionId, out var activities))
+        {
+            activities = [];
+            ActivitiesBySession[sessionId] = activities;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var index = activities.FindIndex(activity => string.Equals(activity.Id, status.Id, StringComparison.OrdinalIgnoreCase));
+        var createdAt = index >= 0 ? activities[index].CreatedAt : now;
+        var state = SubagentActivityState(status.Status);
+        var detailMessages = string.IsNullOrWhiteSpace(status.Detail)
+            ? []
+            : new List<string> { status.Detail };
+        var isChinese = string.Equals(NativeI18nLanguageResolver.Resolve(Settings.Language), "zh-CN", StringComparison.OrdinalIgnoreCase);
+        var activity = new AgentActivity(
+            status.Id,
+            sessionId,
+            null,
+            SubagentStatusTitle(status.Status, isChinese),
+            status.Detail,
+            AgentActivityPhase.Subagent,
+            state,
+            createdAt,
+            now,
+            ToolName: "Task",
+            DetailMessages: detailMessages,
+            ExpandedDefault: false,
+            AnchorBlockId: assistantMessageId.ToString("D"),
+            EndedAt: state == AgentActivityState.Running ? null : now);
+
+        if (index >= 0)
+        {
+            activities[index] = activity;
+        }
+        else
+        {
+            activities.Add(activity);
+        }
+    }
+
+    private static string SubagentStatusTitle(string status, bool chinese)
+    {
+        return status.Trim().ToLowerInvariant() switch
+        {
+            "started" => chinese ? "\u5b50 Agent \u5df2\u542f\u52a8" : "Subagent started",
+            "running" => chinese ? "\u5b50 Agent \u8fd0\u884c\u4e2d" : "Subagent running",
+            "completed" => chinese ? "\u5b50 Agent \u5df2\u5b8c\u6210" : "Subagent completed",
+            "failed" => chinese ? "\u5b50 Agent \u5931\u8d25" : "Subagent failed",
+            _ => chinese ? $"\u5b50 Agent \u72b6\u6001: {status}" : $"Subagent {status}",
+        };
+    }
+
+    private static AgentActivityState SubagentActivityState(string status)
+    {
+        return status.Trim().ToLowerInvariant() switch
+        {
+            "completed" => AgentActivityState.Completed,
+            "failed" => AgentActivityState.Failed,
+            _ => AgentActivityState.Running,
+        };
+    }
+
     public void AppendStreamingAssistantProviderError(string sessionId, ProviderErrorInfo error)
     {
         var (messages, index) = StreamingAssistantSlot(sessionId, null);
