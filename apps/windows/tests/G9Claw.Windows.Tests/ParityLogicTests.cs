@@ -1461,6 +1461,8 @@ public sealed class ParityLogicTests
             new FileAttachment(@"C:\repo\diagram.png", "diagram.png", "image/png", 12));
         var noExtension = ComposerAttachmentPreviewModel.Make(
             new FileAttachment(@"C:\repo\LICENSE", "LICENSE", "text/plain", 12));
+        var directory = ComposerAttachmentPreviewModel.Make(
+            new FileAttachment(@"C:\repo\docs", "docs", "inode/directory", 0));
 
         Assert.Equal(new ComposerAttachmentPreviewModel(false, "PDF", "doc.richtext", "pdf"), pdf);
         Assert.Equal(new ComposerAttachmentPreviewModel(false, "CSV", "tablecells", "spreadsheet"), spreadsheet);
@@ -1469,6 +1471,7 @@ public sealed class ParityLogicTests
         Assert.Equal(new ComposerAttachmentPreviewModel(false, "TSX", "chevron.left.forwardslash.chevron.right", "code"), code);
         Assert.Equal(new ComposerAttachmentPreviewModel(true, "PNG", "photo", "image"), image);
         Assert.Equal(new ComposerAttachmentPreviewModel(false, "PLAIN", "doc", "file"), noExtension);
+        Assert.Equal(new ComposerAttachmentPreviewModel(false, "DIRECTORY", "doc", "file"), directory);
     }
 
     [Fact]

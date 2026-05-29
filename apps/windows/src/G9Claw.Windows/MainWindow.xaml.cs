@@ -1214,6 +1214,9 @@ public sealed partial class MainWindow : Window
         var attachmentButton = ComposerIconButton("Paperclip", T("chat.composer.attach"));
         attachmentButton.Click += async (_, _) => await AttachComposerFilesAsync();
         leftControls.Children.Add(attachmentButton);
+        var folderAttachmentButton = ComposerIconButton("Folder", IsChineseUi() ? "\u6dfb\u52a0\u6587\u4ef6\u5939" : "Attach folder");
+        folderAttachmentButton.Click += async (_, _) => await AttachComposerFolderAsync();
+        leftControls.Children.Add(folderAttachmentButton);
         var modeButton = ComposerPillButton(
             ComposerRunModeIcon(State.ComposerRunMode),
             State.ComposerRunMode.Label());
@@ -2932,6 +2935,19 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private async Task AttachComposerFolderAsync()
+    {
+        var picker = new FolderPicker();
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+        picker.FileTypeFilter.Add("*");
+        var folder = await picker.PickSingleFolderAsync();
+        if (folder is null) return;
+
+        AddPendingAttachments([AttachmentFromStorageFolder(folder, AttachmentSourceKind.Picker)]);
+        RenderContent();
+        FocusComposerSoon();
+    }
+
     private async void OnComposerPaste(object sender, TextControlPasteEventArgs args)
     {
         var (attachments, textPayload) = await ReadClipboardPasteAsync();
@@ -3133,6 +3149,17 @@ public sealed partial class MainWindow : Window
             (long)properties.Size,
             sourceKind,
             path);
+    }
+
+    private static FileAttachment AttachmentFromStorageFolder(StorageFolder folder, AttachmentSourceKind sourceKind)
+    {
+        var path = folder.Path;
+        return new FileAttachment(
+            path,
+            string.IsNullOrWhiteSpace(folder.Name) ? path : folder.Name,
+            "inode/directory",
+            0,
+            sourceKind);
     }
 
     private async Task<string> CopyStorageFileToAttachmentCacheAsync(StorageFile file)
