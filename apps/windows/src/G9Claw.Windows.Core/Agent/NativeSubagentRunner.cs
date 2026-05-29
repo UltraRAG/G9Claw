@@ -67,12 +67,13 @@ public sealed class ProviderNativeSubagentRunner : INativeSubagentRunner
         Subtask:
         {request.Prompt}
         """;
+        var chatProviderConfig = route.ProviderConfig with { ApiType = ProviderApiType.OpenAIChat };
         var subagentRequest = new AgentRequest(
             context.SessionId,
             request.WorkspaceRoot,
             content,
             [],
-            route.ProviderConfig,
+            chatProviderConfig,
             route.ApiKey,
             [
                 new ChatMessage(

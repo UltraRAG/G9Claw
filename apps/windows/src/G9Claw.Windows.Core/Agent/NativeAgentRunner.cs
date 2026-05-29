@@ -81,6 +81,7 @@ public sealed class NativeAgentRunner
 
         try
         {
+            ValidateNativeAgentRequest(request);
             var toolExchanges = request.ToolExchanges.ToList();
             var currentRequest = request;
             var rootGlobPolicy = new AgentRootGlobExecutionPolicy();
@@ -448,6 +449,29 @@ public sealed class NativeAgentRunner
             turn.Fail(ex.Message);
             await writer.WriteAsync(AgentEvent.Error(request.SessionId, ex.Message), CancellationToken.None);
             await writer.WriteAsync(new AgentEvent(AgentEventKind.TurnCompleted, request.SessionId, Turn: turn.Snapshot()), CancellationToken.None);
+        }
+    }
+
+    private static void ValidateNativeAgentRequest(AgentRequest request)
+    {
+        if (request.ProviderConfig.Provider != SessionProvider.G9Claw)
+        {
+            throw ProviderClientException.UnsupportedProvider(request.ProviderConfig.Provider);
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ProviderConfig.BaseUrl))
+        {
+            throw ProviderClientException.MissingBaseUrl();
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ProviderConfig.Model))
+        {
+            throw ProviderClientException.MissingModel();
+        }
+
+        if (request.ProviderConfig.ApiType != ProviderApiType.OpenAIChat)
+        {
+            throw ProviderClientException.UnsupportedApiType(request.ProviderConfig.ApiType);
         }
     }
 

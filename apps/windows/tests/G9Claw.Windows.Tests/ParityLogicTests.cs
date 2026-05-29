@@ -2155,7 +2155,7 @@ public sealed class ParityLogicTests
         var runner = new ProviderNativeSubagentRunner(new ProviderClient(new HttpClient(handler)));
         var providerConfig = new ProviderConfig(
             SessionProvider.G9Claw,
-            ProviderApiType.OpenAIChat,
+            ProviderApiType.OpenAIResponses,
             "http://provider.local/v1",
             "test-model",
             "secret",
@@ -2181,6 +2181,7 @@ public sealed class ParityLogicTests
         }
 
         Assert.Equal(HttpMethod.Post, handler.Request!.Method);
+        Assert.Equal("http://provider.local/v1/chat/completions", handler.Request.RequestUri?.ToString());
         Assert.Equal("Bearer", handler.Request.Headers.Authorization?.Scheme);
         Assert.Equal("test-key", handler.Request.Headers.Authorization?.Parameter);
         using var requestJson = JsonDocument.Parse(handler.Body!);
@@ -2329,6 +2330,49 @@ router:
             .Where(text => text is "connecting" or "thinking" or "processing")
             .ToList();
         Assert.Equal(new[] { "connecting", "thinking", "processing" }, turnStatuses.Take(3));
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerRejectsNonOpenAIChatApiTypesBeforeThinkingLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new LifecycleStatusProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "inspect the workspace",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIResponses, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        Assert.Equal(0, provider.RequestCount);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "connecting");
+        Assert.DoesNotContain(events, item =>
+            item.Kind == AgentEventKind.Status &&
+            item.Text is "thinking" or "processing" or "streaming");
+        var error = Assert.Single(events, item => item.Kind == AgentEventKind.Error);
+        Assert.Contains("OpenAIResponses", error.Text);
+        var completedTurn = Assert.Single(events, item => item.Kind == AgentEventKind.TurnCompleted).Turn!;
+        Assert.Equal(AgentTurnStatus.Failed, completedTurn.Status);
+        Assert.Contains(completedTurn.Items, item =>
+            item.Kind == AgentTurnItemKind.Status &&
+            item.Status == AgentTurnItemStatus.Failed &&
+            item.Text.Contains("OpenAIResponses", StringComparison.Ordinal));
     }
 
     [Fact]

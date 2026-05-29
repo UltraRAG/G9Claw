@@ -25,6 +25,7 @@ public sealed class ProviderClientException : Exception
         string.IsNullOrWhiteSpace(body) ? $"Provider request failed with HTTP {statusCode}." : $"Provider request failed with HTTP {statusCode}: {body}",
         statusCode);
     public static ProviderClientException UnsupportedProvider(SessionProvider provider) => new($"{provider.DisplayName()} is not implemented yet in native AgentCore.");
+    public static ProviderClientException UnsupportedApiType(ProviderApiType apiType) => new($"Provider API type {apiType} is not implemented yet in native AgentCore.");
     public static ProviderClientException InvalidResponse() => new("Provider returned an invalid response.");
     public static ProviderClientException Transport(string message, Exception? innerException = null) => new(message, innerException: innerException);
     public static ProviderClientException StreamInterruptedAfterPartialOutput(string message) => new(
