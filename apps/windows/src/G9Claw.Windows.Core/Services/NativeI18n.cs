@@ -63,6 +63,10 @@ public sealed class StringCatalog
         "sidebar.settings",
         "chat.empty.title",
         "chat.empty.projectTitle",
+        "chat.empty.enterProjectWork",
+        "chat.empty.searchProjects",
+        "chat.empty.noProjectsFound",
+        "chat.empty.addNewProject",
         "chat.empty.configureProvider",
         "chat.composer.placeholder",
         "chat.composer.defaultPermissions",
@@ -115,6 +119,10 @@ public sealed class StringCatalog
     private static readonly Dictionary<string, string> CleanChinese = new(StringComparer.Ordinal)
     {
         ["chat.empty.projectTitle"] = "\u4ece\u300c{0}\u300d\u5f00\u59cb\uff0c\u4eca\u5929\u63a8\u8fdb\u54ea\u4e00\u5757\uff1f",
+        ["chat.empty.enterProjectWork"] = "\u8fdb\u5165\u9879\u76ee\u5de5\u4f5c",
+        ["chat.empty.searchProjects"] = "\u641c\u7d22\u9879\u76ee",
+        ["chat.empty.noProjectsFound"] = "\u672a\u627e\u5230\u9879\u76ee",
+        ["chat.empty.addNewProject"] = "\u6dfb\u52a0\u65b0\u9879\u76ee",
         ["common.home"] = "主页",
         ["common.cancel"] = "取消",
         ["common.save"] = "保存",
@@ -434,6 +442,10 @@ public sealed class StringCatalog
 
         [("en", "chat.empty.title")] = "What would you like to work on today?",
         [("en", "chat.empty.projectTitle")] = "Where should we move {0} forward today?",
+        [("en", "chat.empty.enterProjectWork")] = "Enter Project Work",
+        [("en", "chat.empty.searchProjects")] = "Search projects",
+        [("en", "chat.empty.noProjectsFound")] = "No projects found",
+        [("en", "chat.empty.addNewProject")] = "Add new project",
         [("en", "chat.empty.detail")] = "Ask G9Claw to inspect or edit this workspace.",
         [("en", "chat.empty.configureProvider")] = "Configure a provider in Settings to start a native agent run.",
         [("en", "chat.composer.placeholder")] = "Ask G9Claw to inspect or edit this workspace...",
@@ -732,6 +744,10 @@ public sealed class StringCatalog
 
         [("zh-CN", "chat.empty.title")] = "今天想处理什么？",
         [("zh-CN", "chat.empty.projectTitle")] = "\u4ece\u300c{0}\u300d\u5f00\u59cb\uff0c\u4eca\u5929\u63a8\u8fdb\u54ea\u4e00\u5757\uff1f",
+        [("zh-CN", "chat.empty.enterProjectWork")] = "\u8fdb\u5165\u9879\u76ee\u5de5\u4f5c",
+        [("zh-CN", "chat.empty.searchProjects")] = "\u641c\u7d22\u9879\u76ee",
+        [("zh-CN", "chat.empty.noProjectsFound")] = "\u672a\u627e\u5230\u9879\u76ee",
+        [("zh-CN", "chat.empty.addNewProject")] = "\u6dfb\u52a0\u65b0\u9879\u76ee",
         [("zh-CN", "chat.empty.detail")] = "让 G9Claw 检查或编辑当前工作区。",
         [("zh-CN", "chat.empty.configureProvider")] = "先在设置里配置 Provider，然后启动原生 Agent。",
         [("zh-CN", "chat.composer.placeholder")] = "让 G9Claw 检查或编辑当前工作区...",

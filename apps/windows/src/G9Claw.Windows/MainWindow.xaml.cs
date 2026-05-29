@@ -1107,6 +1107,10 @@ public sealed partial class MainWindow : Window
                 ? T("chat.readOnlyBackground.title")
                 : ChatEmptyStateTitle();
             welcomePanel.Children.Add(ChatEmptyPrompt(title, detail));
+            if (!isReadOnlyBackgroundSession && GeneralProjectEntryPresentation.ShouldRender(State.SelectedProject))
+            {
+                welcomePanel.Children.Add(GeneralProjectEntryButton());
+            }
             root.Children.Add(welcomePanel);
         }
         else
@@ -5555,6 +5559,173 @@ public sealed partial class MainWindow : Window
             },
         },
     };
+
+    private FrameworkElement GeneralProjectEntryButton()
+    {
+        var button = new Button
+        {
+            Height = 30,
+            MinWidth = 0,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, -20, 0, 0),
+            Padding = new Thickness(10, 0, 10, 0),
+            CornerRadius = new CornerRadius(999),
+            Background = Brush("V2CardBrush"),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 7,
+                Children =
+                {
+                    Icon("FolderPlus", 13, Brush("V2MutedForegroundBrush")),
+                    new TextBlock
+                    {
+                        Text = T("chat.empty.enterProjectWork"),
+                        FontSize = 12.5,
+                        FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    Icon("ChevronDown", 11, Brush("V2MutedForegroundBrush")),
+                },
+            },
+        };
+        button.Flyout = GeneralProjectEntryFlyout();
+        return button;
+    }
+
+    private Flyout GeneralProjectEntryFlyout()
+    {
+        var flyout = new Flyout
+        {
+            Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Top,
+        };
+        var queryBox = new TextBox
+        {
+            PlaceholderText = T("chat.empty.searchProjects"),
+            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+        };
+        var projectList = new StackPanel { Spacing = 2 };
+
+        void RenderProjects()
+        {
+            projectList.Children.Clear();
+            var projects = GeneralProjectEntryPresentation.Projects(State.Projects, State.Settings.ProjectSortOrder);
+            var filtered = GeneralProjectEntryPresentation.FilteredProjects(projects, queryBox.Text);
+            if (filtered.Count == 0)
+            {
+                projectList.Children.Add(new TextBlock
+                {
+                    Text = T("chat.empty.noProjectsFound"),
+                    FontSize = 12,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    Padding = new Thickness(10, 8, 10, 8),
+                });
+                return;
+            }
+
+            foreach (var project in filtered)
+            {
+                var item = new Button
+                {
+                    Background = Transparent,
+                    BorderBrush = Transparent,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                    Padding = new Thickness(10, 0, 10, 0),
+                    Height = 32,
+                    CornerRadius = new CornerRadius(6),
+                    Content = new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 9,
+                        Children =
+                        {
+                            Icon("Folder", 13, Brush("V2MutedForegroundBrush")),
+                            new TextBlock
+                            {
+                                Text = project.DisplayName,
+                                FontSize = 13,
+                                Foreground = Brush("V2ForegroundBrush"),
+                                TextTrimming = TextTrimming.CharacterEllipsis,
+                                VerticalAlignment = VerticalAlignment.Center,
+                            },
+                        },
+                    },
+                };
+                item.Click += (_, _) =>
+                {
+                    flyout.Hide();
+                    StartSession(project);
+                };
+                projectList.Children.Add(item);
+            }
+        }
+
+        queryBox.TextChanged += (_, _) => RenderProjects();
+        RenderProjects();
+
+        var addProject = new Button
+        {
+            Background = Transparent,
+            BorderBrush = Transparent,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(10, 0, 10, 0),
+            Height = 32,
+            CornerRadius = new CornerRadius(6),
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 9,
+                Children =
+                {
+                    Icon("FolderPlus", 13, Brush("V2MutedForegroundBrush")),
+                    new TextBlock
+                    {
+                        Text = T("chat.empty.addNewProject"),
+                        FontSize = 13,
+                        FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                        Foreground = Brush("V2ForegroundBrush"),
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    Icon("ChevronRight", 11, Brush("V2MutedForegroundBrush")),
+                },
+            },
+        };
+        addProject.Click += async (_, _) =>
+        {
+            flyout.Hide();
+            await CreateProjectAsync();
+        };
+
+        flyout.Content = new StackPanel
+        {
+            Width = 300,
+            Padding = new Thickness(10),
+            Spacing = 8,
+            Children =
+            {
+                queryBox,
+                new ScrollViewer
+                {
+                    MaxHeight = 230,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                    Content = projectList,
+                },
+                new Border
+                {
+                    Height = 1,
+                    Background = Brush("V2BorderBrush"),
+                },
+                addProject,
+            },
+        };
+        return flyout;
+    }
 
     private FrameworkElement ReadOnlyBackgroundFooter() => new Border
     {

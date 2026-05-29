@@ -149,3 +149,28 @@ public static class ChatEmptyStatePresentation
             ? ProjectTitleKey
             : DefaultTitleKey;
 }
+
+public static class GeneralProjectEntryPresentation
+{
+    public static bool ShouldRender(WorkspaceProject? selectedProject) =>
+        selectedProject is not null && V2SidebarProjection.IsGeneralProject(selectedProject);
+
+    public static IReadOnlyList<WorkspaceProject> Projects(
+        IEnumerable<WorkspaceProject> projects,
+        ProjectSortOrder sortOrder) =>
+        V2SidebarProjection.ProjectSection(projects, sortOrder);
+
+    public static IReadOnlyList<WorkspaceProject> FilteredProjects(
+        IEnumerable<WorkspaceProject> projects,
+        string? query)
+    {
+        var projectList = projects.ToList();
+        var trimmed = query?.Trim() ?? "";
+        if (trimmed.Length == 0) return projectList;
+        return projectList
+            .Where(project =>
+                project.DisplayName.Contains(trimmed, StringComparison.OrdinalIgnoreCase) ||
+                project.RootPath.Contains(trimmed, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+}

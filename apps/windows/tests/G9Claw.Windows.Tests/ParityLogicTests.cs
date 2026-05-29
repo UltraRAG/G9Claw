@@ -852,6 +852,26 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void GeneralProjectEntryPresentationMatchesMacPickerPolicy()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var general = Project("general", "general", now);
+        var alpha = Project("alpha", "Alpha", now.AddMinutes(-10));
+        var beta = Project("beta", "Beta", now.AddMinutes(-20));
+        var english = new StringCatalog(AppLanguage.English);
+        var chinese = new StringCatalog(AppLanguage.ChineseSimplified);
+
+        Assert.True(GeneralProjectEntryPresentation.ShouldRender(general));
+        Assert.False(GeneralProjectEntryPresentation.ShouldRender(alpha));
+        Assert.Equal(["Alpha", "Beta"], GeneralProjectEntryPresentation.Projects([general, beta, alpha], ProjectSortOrder.Name).Select(project => project.DisplayName));
+        Assert.Equal(["Alpha"], GeneralProjectEntryPresentation.FilteredProjects([alpha, beta], "alp").Select(project => project.DisplayName));
+        Assert.Equal(["Beta"], GeneralProjectEntryPresentation.FilteredProjects([alpha, beta], "tester\\beta").Select(project => project.DisplayName));
+        Assert.Equal("Enter Project Work", english.T("chat.empty.enterProjectWork"));
+        Assert.Equal("\u8fdb\u5165\u9879\u76ee\u5de5\u4f5c", chinese.T("chat.empty.enterProjectWork"));
+        Assert.Equal("Search projects", english.T("chat.empty.searchProjects"));
+    }
+
+    [Fact]
     public void WebV2SidebarSessionRowsFlattenProviderBucketsByActivity()
     {
         var now = DateTimeOffset.UtcNow;
