@@ -652,6 +652,24 @@ public sealed class AgentToolDeduplicationPolicy
         return new AgentToolDeduplicationDecision(null, true);
     }
 
+    public bool WouldSkipWithoutResult(AgentToolCall call)
+    {
+        var normalized = ToolArgumentNormalizer.Normalize(call);
+        if (normalized.RecoveryResult is not null)
+        {
+            return false;
+        }
+
+        call = normalized.Call;
+        if (AgentToolNameCanonicalizer.Canonical(call.Name) == "TodoWrite")
+        {
+            return false;
+        }
+
+        return _executedToolSignatures.Contains(DeduplicationKey(call)) &&
+               !IsDuplicateSoftBlockTool(call);
+    }
+
     public void Record(AgentToolCall call, AgentToolResult result)
     {
         if (result.IsPolicyBlock) return;

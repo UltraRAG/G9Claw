@@ -292,6 +292,13 @@ public sealed class NativeAgentRunner
                         await writer.WriteAsync(AgentEvent.ContentDelta(request.SessionId, planRecovery.IntroText), cancellationToken);
                     }
 
+                    if (deduplicationPolicy.WouldSkipWithoutResult(planRecovery.Call))
+                    {
+                        turn.RecordStatus(PlanWorkflowPresentation.RecoveryNeededStatus);
+                        await writer.WriteAsync(AgentEvent.Status(request.SessionId, PlanWorkflowPresentation.RecoveryNeededStatus), cancellationToken);
+                        break;
+                    }
+
                     turn.RecordStatus(planRecovery.WorkflowStatus);
                     await writer.WriteAsync(AgentEvent.Status(request.SessionId, planRecovery.WorkflowStatus), cancellationToken);
                     turn.RecordStatus(planRecovery.GenerationStatus);

@@ -4360,6 +4360,59 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerStopsWhenPlanRecoveryRepeatsLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new EmptyPlanRecoveryProvider();
+        var permissionRequests = new List<PermissionRequest>();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "make a safe plan",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Plan,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) =>
+        {
+            permissionRequests.Add(permission);
+            return Task.FromResult(new PermissionRecord(
+                permission,
+                PermissionDecision.Denied,
+                permission.Scope,
+                DateTimeOffset.UtcNow,
+                null));
+        });
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var results = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+        Assert.Equal(2, provider.RequestCount);
+        var askResult = Assert.Single(results, result => result.ToolName == "AskQuestion");
+        Assert.True(askResult.IsError);
+        Assert.Equal("User declined to answer.", askResult.Output);
+        Assert.Single(events, item => item.Kind == AgentEventKind.ToolUse && item.ToolCall?.Name == "AskQuestion");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == PlanWorkflowPresentation.RecoveryNeededStatus);
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Error);
+        Assert.Single(permissionRequests);
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerRecoversPlainTextPlanSwitchModeLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -6263,6 +6316,21 @@ gateway:
             }
 
             yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after intro recovery");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+        }
+    }
+
+    private sealed class EmptyPlanRecoveryProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
             yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
         }
     }
