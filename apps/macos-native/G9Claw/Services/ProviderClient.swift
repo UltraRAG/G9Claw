@@ -3188,13 +3188,18 @@ struct NativeAgentRuntime: Sendable {
     }
 
     static func primaryUserPrompt(from prompt: String) -> String {
+        var primary = prompt
+        while let start = primary.range(of: "<memory-context>"),
+              let end = primary.range(of: "</memory-context>", range: start.upperBound..<primary.endIndex) {
+            primary.removeSubrange(start.lowerBound..<end.upperBound)
+            primary = primary.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         let separators = [
             "\n\nRelevant PilotDeck memory context:",
             "\n\nRelevant G9Claw memory context:",
             "\n\nAttached files:",
             "\n\n附件:",
         ]
-        var primary = prompt
         for separator in separators {
             if let range = primary.range(of: separator) {
                 primary = String(primary[..<range.lowerBound])

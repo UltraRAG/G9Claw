@@ -457,11 +457,16 @@ final class ParityLogicTests: XCTestCase {
     func testNativeMemoryConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeMemoryConfigFormFields.visiblePaths, [
             "memory.enabled",
+            "memory.autoIndexIntervalMinutes",
+            "memory.autoDreamIntervalMinutes",
+        ])
+        XCTAssertEqual(NativeMemoryConfigFormFields.scheduleFields.map(\.path), [
+            "memory.autoIndexIntervalMinutes",
+            "memory.autoDreamIntervalMinutes",
         ])
         XCTAssertTrue(NativeModelsConfigFormFields.assignmentPaths.contains("memory.model"))
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.includeAssistant"))
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.reasoningMode"))
-        XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.autoIndexIntervalMinutes"))
     }
 
     func testNativeAlwaysOnConfigFormFieldsMatchWebSettingsTab() {
@@ -1800,10 +1805,13 @@ final class ParityLogicTests: XCTestCase {
 
     func testWorkspaceMutationIgnoresInjectedMemoryContext() {
         let prompt = """
+        <memory-context>
         只回答一句：G9Claw smoke test ok。
 
-        Relevant G9Claw memory context:
         之前用户要求优化、创建、修改网页。
+        </memory-context>
+
+        只回答一句：G9Claw smoke test ok。
         """
 
         XCTAssertFalse(NativeAgentRuntime.isWorkspaceMutationRequest(prompt))
@@ -1811,10 +1819,11 @@ final class ParityLogicTests: XCTestCase {
 
     func testCompletionGateIgnoresInjectedMemoryContext() {
         let prompt = """
-        只回答一句：smoke ok。
-
-        Relevant G9Claw memory context:
+        <memory-context>
         之前用户要求优化、创建、修改网页。
+        </memory-context>
+
+        只回答一句：smoke ok。
         """
         let request = agentRequest(prompt: prompt, permissionMode: .default)
         let context = AgentRunContext(request: request)
@@ -2577,20 +2586,6 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(defaults.heartbeatBatchSize, 30)
     }
 
-    func testNativeMemoryDashboardSettingsMatchWebMemoryDrawer() {
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.visiblePaths, [
-            "memory.autoIndexIntervalMinutes",
-            "memory.autoDreamIntervalMinutes",
-        ])
-
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("45", fallback: 30), 45)
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("0", fallback: 30), 0)
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("-5", fallback: 30), 0)
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("20000", fallback: 30), 10_080)
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("bad", fallback: 30), 30)
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("42.8", fallback: 30), 42)
-    }
-
     func testMemoryDashboardSchedulerReflectsMemoryEnabledConfig() {
         let service = MemoryService()
         service.updateSettings(MemorySettingsSnapshot(enabled: false))
@@ -2601,6 +2596,11 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(snapshot.scheduler.enabled)
         XCTAssertEqual(snapshot.scheduler.status, "disabled")
         XCTAssertFalse(snapshot.overview.schedulerEnabled)
+
+        service.updateSettings(MemorySettingsSnapshot(autoIndexIntervalMinutes: 0, autoDreamIntervalMinutes: 0))
+        let noAutomation = service.dashboard(projectName: "Native")
+        XCTAssertTrue(noAutomation.settings.enabled)
+        XCTAssertFalse(noAutomation.scheduler.enabled)
     }
 
     func testProcessTraceHidesCompletedStatusOnlyActivity() {
@@ -2800,6 +2800,29 @@ final class ParityLogicTests: XCTestCase {
         """.write(to: feedbackMemoryRoot.appendingPathComponent("old-feedback.md"), atomically: true, encoding: .utf8)
         try """
         ---
+        name: Legacy Turn
+        description: Old raw captured turn.
+        type: project
+        scope: project
+        updated_at: 2026-05-23T07:00:00Z
+        ---
+
+        Raw turn artifacts should be ignored by the native loader.
+        """.write(to: projectMemoryRoot.appendingPathComponent("turn-20260529-120000-legacy.md"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: projectMemoryRoot.appendingPathComponent("Dream", isDirectory: true), withIntermediateDirectories: true)
+        try """
+        ---
+        name: Memory Dream Legacy
+        description: Old synthetic dream artifact.
+        type: project
+        scope: project
+        updated_at: 2026-05-23T07:30:00Z
+        ---
+
+        Legacy memory-dream artifacts should be ignored by the native loader.
+        """.write(to: projectMemoryRoot.appendingPathComponent("Dream/memory-dream-20260529-120000.md"), atomically: true, encoding: .utf8)
+        try """
+        ---
         name: User Profile
         description: User prefers concise engineering updates.
         type: user
@@ -2981,18 +3004,31 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testMemoryDreamRollbackAndBundleRoundTrip() throws {
-        let service = MemoryService()
-        _ = service.upsert(name: "session-summary", summary: "Created the Swift agent shell.", projectName: "Native")
+        let root = repoRootURL()
+            .appendingPathComponent("g9claw-memory-dream-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
+        let projectRoot = root.appendingPathComponent("Native", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
 
-        var snapshot = service.runDream(projectName: "Native", projectRoot: nil)
+        let service = MemoryService(memoryRoot: memoryRoot)
+        _ = service.upsert(name: "session-summary", summary: "Created the Swift agent shell.", projectName: "Native")
+        _ = service.upsert(name: "launch-summary", summary: "Prepared the native memory dashboard.", projectName: "Native")
+
+        var snapshot = service.runDream(projectName: "Native", projectRoot: projectRoot.path)
 
         XCTAssertEqual(snapshot.dreamTraceRecords.count, 1)
         XCTAssertEqual(snapshot.lastDreamSnapshot?.rollbackReady, true)
+        let dreamRecord = try XCTUnwrap(snapshot.records.first { $0.name.hasPrefix("Project Dream") })
+        XCTAssertTrue(dreamRecord.relativePath.hasPrefix("Project/Dream/"))
+        let files = try FileManager.default.subpathsOfDirectory(atPath: memoryRoot.path)
+        XCTAssertTrue(files.contains { $0.hasSuffix(dreamRecord.relativePath) })
 
-        snapshot = try service.rollbackLastDream(projectName: "Native", projectRoot: nil)
+        snapshot = try service.rollbackLastDream(projectName: "Native", projectRoot: projectRoot.path)
 
         XCTAssertEqual(snapshot.dreamTraceRecords.count, 2)
         XCTAssertEqual(snapshot.lastDreamSnapshot?.rollbackReady, false)
+        XCTAssertFalse(snapshot.records.contains { $0.relativePath == dreamRecord.relativePath })
 
         let exported = try service.exportBundle(projectName: "Native")
         let imported = MemoryService()
@@ -3008,13 +3044,172 @@ final class ParityLogicTests: XCTestCase {
         _ = service.upsert(name: "router-cost", summary: "Router cost baseline and saved price are shown in route details.", projectName: "Native")
         _ = service.upsert(name: "theme-note", summary: "Use compact spacing in the memory page.", projectName: "Native")
 
-        let context = service.recallForTurn(prompt: "How should router saved price display?", projectName: "Native", projectRoot: nil)
-        XCTAssertTrue(context.split(separator: "\n").first?.contains("router-cost") == true)
-        XCTAssertFalse(context.contains("theme-note"))
+        let result = service.retrieveContext(
+            query: "How should router saved price display?",
+            recentMessages: [],
+            sessionID: "recall-router",
+            projectName: "Native",
+            projectRoot: nil
+        )
+        XCTAssertTrue(result.systemContext.contains("router-cost"))
+        XCTAssertFalse(result.systemContext.contains("theme-note"))
+        let recallTrace = service.caseTraces(limit: 1).first
+        XCTAssertEqual(
+            recallTrace?.steps.map(\.id),
+            ["recall_start", "memory_gate", "user_base_loaded", "manifest_scanned", "manifest_selected", "files_loaded", "context_rendered"]
+        )
+        XCTAssertTrue(recallTrace?.steps.first(where: { $0.id == "memory_gate" })?.detail.contains("route=project") == true)
+        XCTAssertTrue(recallTrace?.steps.first(where: { $0.id == "user_base_loaded" })?.detail.contains("required=no") == true)
 
-        let empty = service.recallForTurn(prompt: "completely-unmatched-term", projectName: "Native", projectRoot: nil)
-        XCTAssertTrue(empty.isEmpty)
-        XCTAssertEqual(service.caseTraces(limit: 1).first?.reply, "No memory records matched this turn.")
+        let empty = service.retrieveContext(
+            query: "completely-unmatched-term",
+            recentMessages: [],
+            sessionID: "recall-empty",
+            projectName: "Native",
+            projectRoot: nil
+        )
+        XCTAssertFalse(empty.injected)
+        XCTAssertEqual(service.caseTraces(limit: 1).first?.reply, "EdgeClaw memory returned no relevant context.")
+    }
+
+    @MainActor
+    func testMemoryCaptureTurnIndexesProjectMemoryAndCompletesTrace() async throws {
+        let root = repoRootURL()
+            .appendingPathComponent("g9claw-memory-capture-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
+        let projectRoot = root.appendingPathComponent("Native", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let service = MemoryService(memoryRoot: memoryRoot)
+        let sessionID = "session-capture"
+        let user = ChatMessage(
+            id: UUID(),
+            sessionId: sessionID,
+            provider: .g9Claw,
+            role: .user,
+            blocks: [.text("Remember that router pricing should show saved price first.")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+        let assistant = ChatMessage(
+            id: UUID(),
+            sessionId: sessionID,
+            provider: .g9Claw,
+            role: .assistant,
+            blocks: [.text("Captured the router pricing display preference.")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+
+        _ = service.retrieveContext(
+            query: "router pricing",
+            recentMessages: [user],
+            sessionID: sessionID,
+            projectName: "Native",
+            projectRoot: projectRoot.path
+        )
+        let captured = service.captureTurn(
+            messages: [user, assistant],
+            sessionID: sessionID,
+            projectName: "Native",
+            projectRoot: projectRoot.path
+        )
+
+        XCTAssertNil(captured)
+        var files = try FileManager.default.subpathsOfDirectory(atPath: memoryRoot.path)
+        XCTAssertTrue(files.contains { $0.contains("l0_sessions") && $0.hasSuffix(".json") })
+        XCTAssertFalse(files.contains { $0.contains("Project/turn-") })
+        let trace = try XCTUnwrap(service.caseTraces(limit: 1).first)
+        XCTAssertEqual(trace.status, "completed")
+        XCTAssertTrue(trace.meta["capturedRecord"]?.hasPrefix("l0-") == true)
+        XCTAssertTrue(trace.steps.map(\.id).contains("capture_turn"))
+
+        let indexed = try await service.runIndexJob(projectRoot: projectRoot.path, projectName: "Native")
+        let record = try XCTUnwrap(indexed.records.first { $0.sourceSessionKey == sessionID && $0.type == .project })
+        XCTAssertTrue(record.relativePath.hasPrefix("Project/"))
+        XCTAssertTrue(record.content.contains("source_session_key: \(sessionID)"))
+        XCTAssertTrue(record.content.contains("router pricing should show saved price first"))
+        files = try FileManager.default.subpathsOfDirectory(atPath: memoryRoot.path)
+        XCTAssertTrue(files.contains { $0.hasSuffix(record.relativePath) })
+        XCTAssertEqual(indexed.indexTraceRecords.first?.reply, "Indexed 1 memory records.")
+    }
+
+    @MainActor
+    func testMemoryIndexAndDreamPromoteUserIdentityToGlobalProfile() async throws {
+        let root = repoRootURL()
+            .appendingPathComponent("g9claw-memory-identity-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
+        let projectRoot = root.appendingPathComponent("Native", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let service = MemoryService(memoryRoot: memoryRoot)
+        let sessionID = "session-identity"
+        let user = ChatMessage(
+            id: UUID(),
+            sessionId: sessionID,
+            provider: .g9Claw,
+            role: .user,
+            blocks: [.text("你好 我叫张三 是一个游戏开发工程师")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+        let assistant = ChatMessage(
+            id: UUID(),
+            sessionId: sessionID,
+            provider: .g9Claw,
+            role: .assistant,
+            blocks: [.text("你好，张三。")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+
+        XCTAssertNil(service.captureTurn(
+            messages: [user, assistant],
+            sessionID: sessionID,
+            projectName: "Native",
+            projectRoot: projectRoot.path
+        ))
+        let indexed = try await service.runIndexJob(projectRoot: projectRoot.path, projectName: "Native")
+        let userNote = try XCTUnwrap(indexed.records.first { $0.relativePath.hasPrefix("global/UserIdentityNotes/") })
+
+        XCTAssertEqual(userNote.type, .user)
+        XCTAssertNil(userNote.projectName)
+        XCTAssertTrue(userNote.content.contains("张三"))
+        XCTAssertTrue(userNote.content.contains("游戏开发工程师"))
+        XCTAssertFalse(indexed.records.contains { $0.relativePath.contains("Project/turn-") })
+
+        let dreamed = await service.runDreamJob(projectName: "Native", projectRoot: projectRoot.path)
+        XCTAssertTrue(dreamed.userSummary.contains("张三"))
+        XCTAssertTrue(dreamed.userSummary.contains("游戏开发工程师"))
+        XCTAssertTrue(dreamed.records.contains { $0.relativePath == "global/UserIdentity/user-profile.md" })
+        XCTAssertFalse(dreamed.records.contains { $0.relativePath == userNote.relativePath })
+        let dreamStepIDs = dreamed.dreamTraceRecords.first?.steps.map(\.id) ?? []
+        XCTAssertTrue(dreamStepIDs.contains("snapshot_loaded"))
+        XCTAssertTrue(dreamStepIDs.contains("project_header_scan"))
+        XCTAssertTrue(dreamStepIDs.contains("feedback_header_scan"))
+        XCTAssertTrue(dreamStepIDs.contains("user_profile_rewritten"))
+        XCTAssertTrue(dreamStepIDs.contains("manifests_repaired"))
+
+        let recalled = await service.retrieveContextForTurn(
+            query: "我叫什么名字？",
+            recentMessages: [],
+            sessionID: "recall-identity",
+            projectName: "Native",
+            projectRoot: projectRoot.path
+        )
+        XCTAssertTrue(recalled.injected)
+        XCTAssertTrue(recalled.systemContext.contains("张三"))
+        let identityTrace = try XCTUnwrap(service.caseTraces(limit: 1).first)
+        XCTAssertTrue(identityTrace.steps.first(where: { $0.id == "memory_gate" })?.detail.contains("route=user") == true)
+        XCTAssertTrue(identityTrace.steps.first(where: { $0.id == "user_base_loaded" })?.detail.contains("identityBackground=1") == true)
+        XCTAssertTrue(identityTrace.steps.first(where: { $0.id == "files_loaded" })?.detail.contains("loaded=1") == true)
+        XCTAssertTrue(identityTrace.steps.first(where: { $0.id == "context_rendered" })?.detail.contains("userBaseInjected=yes") == true)
     }
 
     @MainActor
@@ -3031,7 +3226,13 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(indexed.jobStates[.index]?.phase, .completed)
         XCTAssertEqual(indexed.jobStates[.index]?.traceID, indexed.indexTraceRecords.first?.id)
 
-        _ = service.recallForTurn(prompt: "What did we do?", projectName: "Native", projectRoot: root.path)
+        _ = service.retrieveContext(
+            query: "What did we do?",
+            recentMessages: [],
+            sessionID: "recall-job",
+            projectName: "Native",
+            projectRoot: root.path
+        )
         let recalled = service.dashboard(projectName: "Native", projectRoot: root.path)
         XCTAssertEqual(recalled.jobStates[.recall]?.phase, .completed)
         XCTAssertEqual(recalled.jobStates[.recall]?.traceID, recalled.caseTraceRecords.first?.id)
@@ -3039,6 +3240,64 @@ final class ParityLogicTests: XCTestCase {
         let dreamed = await service.runDreamJob(projectName: "Native", projectRoot: root.path)
         XCTAssertEqual(dreamed.jobStates[.dream]?.phase, .completed)
         XCTAssertEqual(dreamed.jobStates[.dream]?.traceID, dreamed.dreamTraceRecords.first?.id)
+    }
+
+    @MainActor
+    func testMemoryAutomaticJobsRunDueIndexAndDreamWithAutoTraces() async throws {
+        let root = repoRootURL()
+            .appendingPathComponent("g9claw-memory-auto-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "auto memory smoke".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+
+        let service = MemoryService(memoryRoot: memoryRoot)
+        service.updateSettings(MemorySettingsSnapshot(autoIndexIntervalMinutes: 1, autoDreamIntervalMinutes: 1))
+        for index in 1...2 {
+            let sessionID = "auto-\(index)"
+            let user = ChatMessage(
+                id: UUID(),
+                sessionId: sessionID,
+                provider: .g9Claw,
+                role: .user,
+                blocks: [.text("Remember project fact \(index): auto memory should persist.")],
+                createdAt: Date(),
+                isStreaming: false,
+                tokenBudget: nil
+            )
+            let assistant = ChatMessage(
+                id: UUID(),
+                sessionId: sessionID,
+                provider: .g9Claw,
+                role: .assistant,
+                blocks: [.text("Saved project fact \(index).")],
+                createdAt: Date(),
+                isStreaming: false,
+                tokenBudget: nil
+            )
+            XCTAssertNil(service.captureTurn(
+                messages: [user, assistant],
+                sessionID: sessionID,
+                projectName: "Native",
+                projectRoot: root.path
+            ))
+        }
+
+        XCTAssertEqual(service.automaticJobKindsDue(), [.index, .dream])
+
+        let first = await service.runAutomaticJobsIfDue(projectRoot: root.path, projectName: "Native")
+        XCTAssertEqual(first.jobStates[.index]?.phase, .completed)
+        XCTAssertEqual(first.jobStates[.dream]?.phase, .completed)
+        XCTAssertEqual(first.indexTraceRecords.first?.trigger, "auto")
+        XCTAssertEqual(first.dreamTraceRecords.first?.trigger, "auto")
+        XCTAssertTrue(first.records.contains { $0.name.hasPrefix("Project Dream") })
+
+        let second = await service.runAutomaticJobsIfDue(projectRoot: root.path, projectName: "Native")
+        XCTAssertEqual(second.indexTraceRecords.count, first.indexTraceRecords.count)
+        XCTAssertEqual(second.dreamTraceRecords.count, first.dreamTraceRecords.count)
+
+        service.updateSettings(MemorySettingsSnapshot(autoIndexIntervalMinutes: 0, autoDreamIntervalMinutes: 0))
+        XCTAssertEqual(service.automaticJobKindsDue(), [])
     }
 
     func testAlwaysOnServiceParsesWebCronAndRunHistoryShape() throws {

@@ -635,121 +635,174 @@ struct MemoryView: View {
     }
 
     private func memoryTopbar(_ snapshot: MemoryDashboardSnapshot) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                HStack(spacing: 4) {
-                    TabButton(NativeMemoryViewLayout.subtabLabel(.projectMemory, language: memoryLanguage), isActive: subtab == .projectMemory) {
+        let jobs = mergedJobStates(snapshot)
+        return VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                HStack(spacing: 2) {
+                    MemoryNavTabButton(title: projectTabTitle(snapshot), isActive: subtab == .projectMemory) {
                         selectedRecord = nil
                         subtab = .projectMemory
                     }
-                    TabButton(NativeMemoryViewLayout.subtabLabel(.profile, language: memoryLanguage), isActive: subtab == .profile) {
+                    MemoryNavTabButton(title: NativeMemoryViewLayout.subtabLabel(.profile, language: memoryLanguage), isActive: subtab == .profile) {
                         selectedRecord = nil
                         subtab = .profile
                     }
-                    TabButton(NativeMemoryViewLayout.subtabLabel(.trace, language: memoryLanguage), isActive: subtab == .trace) {
+                    MemoryNavTabButton(title: NativeMemoryViewLayout.subtabLabel(.trace, language: memoryLanguage), isActive: subtab == .trace) {
                         selectedRecord = nil
                         subtab = .trace
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 12)
+
+                memoryTopbarStatus(snapshot, jobs: jobs)
             }
-            .padding(.horizontal, 20)
-            .frame(height: 38)
+            .padding(.horizontal, 16)
+            .frame(height: 44)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    if subtab == .projectMemory {
-                        TextField(state.t(.searchMemory), text: $query)
-                            .textFieldStyle(WebFieldStyle())
-                            .frame(width: 220)
-                        Button(memory("Search", "搜索")) { state.bumpToolRefresh() }
-                            .buttonStyle(WebToolbarButtonStyle())
-                    }
+            if subtab == .projectMemory {
+                memoryProjectToolbar(snapshot, jobs: jobs)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+            }
+        }
+        .background(DesignTokens.card)
+        .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator).frame(height: 1) }
+    }
 
-                    Button(state.t(.refresh)) { refreshMemory() }
-                        .buttonStyle(WebToolbarButtonStyle())
-                    MemoryJobButton(title: memory("Index Sync", "索引同步"), state: job(.index), isProminent: true) { indexMemory() }
-                    MemoryJobButton(title: memory("Memory Dream", "记忆 Dream"), state: job(.dream), isProminent: true) { dreamMemory() }
-                    MemoryJobButton(title: memory("Rollback Last Dream", "回滚上一次 Dream"), state: job(.rollback), isProminent: false) { rollbackDream() }
-                        .disabled(snapshot.lastDreamSnapshot?.rollbackReady != true)
-
-                    Menu {
-                        Button(memory("Memory Settings", "记忆设置")) { openMemorySettings() }
-                        Divider()
-                        Button(memory("Export Current Project Memory", "导出当前项目记忆")) { exportMemory(allProjects: false) }
-                        Button(memory("Export All Memory", "导出全部记忆")) { exportMemory(allProjects: true) }
-                        Divider()
-                        Button(memory("Import Current Project Memory", "导入当前项目记忆")) { importMemory(allProjects: false) }
-                        Button(memory("Import All Memory", "导入全部记忆")) { importMemory(allProjects: true) }
-                        Divider()
-                        Button(memory("Clear Current Project Memory", "清空当前项目记忆"), role: .destructive) { clearMemory(allProjects: false) }
-                        Button(memory("Clear All Memory", "清空全部记忆"), role: .destructive) { clearMemory(allProjects: true) }
+    private func memoryProjectToolbar(_ snapshot: MemoryDashboardSnapshot, jobs: [MemoryJobKind: MemoryJobState]) -> some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                TextField(memory("Search current view", "搜索当前视图"), text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                if !query.isEmpty {
+                    Button {
+                        query = ""
+                        state.bumpToolRefresh()
                     } label: {
-                        Image(systemName: "gearshape")
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11, weight: .semibold))
                     }
-                    .menuStyle(.borderlessButton)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                    .help(memory("Clear search", "清空搜索"))
                 }
-                .padding(.horizontal, 20)
-                .frame(minWidth: 0, alignment: .leading)
             }
-            .frame(height: 38)
+            .padding(.horizontal, 9)
+            .frame(minWidth: 180, maxWidth: 360, minHeight: 30, maxHeight: 30)
+            .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous).stroke(DesignTokens.separator.opacity(0.82)))
 
-            HStack(spacing: 10) {
-                Text(state.selectedWorkspaceContext?.rootPath ?? state.t(.selectProject))
-                    .font(.system(size: 12))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-                    .lineLimit(1)
-                Spacer()
-                Text(snapshot.scheduler.enabled
-                    ? memory("Auto build: enabled", "自动构建：已启用")
-                    : memory("Auto build: disabled", "自动构建：已关闭"))
-                    .font(.system(size: 12))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-                Text(memory("Last indexed", "最近索引") + " \(snapshot.overview.lastIndexedAt.map(relativeDate) ?? state.t(.none))")
-                    .font(.system(size: 12))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-                if let running = memoryJobs.values.first(where: { $0.phase == .running }) {
-                    HStack(spacing: 5) {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.55)
-                        Text(running.message)
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-                }
-                Text(memory("Entries", "条目") + " \(snapshot.overview.totalEntries)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(DesignTokens.tertiaryText)
+            Button { state.bumpToolRefresh() } label: {
+                Label(memory("Search", "搜索"), systemImage: "magnifyingglass")
             }
-            .padding(.horizontal, 20)
-            .frame(height: 28)
-            .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator).frame(height: 1) }
+            .buttonStyle(MemoryToolbarButtonStyle())
+
+            Spacer(minLength: 12)
+
+            Button { refreshMemory() } label: {
+                Label(state.t(.refresh), systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(MemoryToolbarButtonStyle())
+
+            MemoryJobButton(title: memory("Index", "索引"), systemImage: "arrow.triangle.2.circlepath", state: jobs[.index] ?? .idle(.index), isProminent: false, minWidth: 70) { indexMemory() }
+            MemoryJobButton(title: "Dream", systemImage: "sparkles", state: jobs[.dream] ?? .idle(.dream), isProminent: false, minWidth: 76) { dreamMemory() }
+
+            Menu {
+                Button {
+                    rollbackDream()
+                } label: {
+                    Label(memory("Rollback Last Dream", "回滚上一次 Dream"), systemImage: "arrow.uturn.backward")
+                }
+                .disabled(snapshot.lastDreamSnapshot?.rollbackReady != true || (jobs[.rollback] ?? .idle(.rollback)).phase == .running)
+            } label: {
+                MemoryToolbarMenuLabel(title: memory("More", "更多"), systemImage: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .foregroundStyle(DesignTokens.secondaryText)
         }
     }
 
+    private func projectTabTitle(_ snapshot: MemoryDashboardSnapshot) -> String {
+        if snapshot.workspace.workspaceMode == "general" || state.selectedWorkspaceContext?.isGeneral == true {
+            return memory("General Memory", "通用记忆")
+        }
+        return NativeMemoryViewLayout.subtabLabel(.projectMemory, language: memoryLanguage)
+    }
+
+    private func memoryTopbarStatus(_ snapshot: MemoryDashboardSnapshot, jobs: [MemoryJobKind: MemoryJobState]) -> some View {
+        HStack(spacing: 6) {
+            if let running = jobs.values.first(where: { $0.phase == .running }) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.55)
+                Text(running.message.isEmpty ? running.kind.rawValue.capitalized : running.message)
+                    .foregroundStyle(DesignTokens.secondaryText)
+            } else {
+                MemoryStatusPill(text: memory("Ready", "就绪"), tone: .neutral)
+            }
+            MemoryStatusPill(
+                text: snapshot.scheduler.enabled ? memory("Auto", "自动") : memory("Manual", "手动"),
+                tone: snapshot.scheduler.enabled ? .success : .neutral
+            )
+            Text(snapshot.overview.lastIndexedAt.map { "\(memory("Indexed", "已索引")) \(relativeDate($0))" } ?? memory("Not indexed", "未索引"))
+        }
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(DesignTokens.tertiaryText)
+        .lineLimit(1)
+    }
+
     private func projectMemory(_ snapshot: MemoryDashboardSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let meta = snapshot.workspace.projectMeta {
+        let meta = snapshot.workspace.projectMeta
+        return VStack(alignment: .leading, spacing: 18) {
+            if snapshot.workspace.workspaceMode == "general" || state.selectedWorkspaceContext?.isGeneral == true {
+                MemoryGeneralTopicsSection(
+                    title: memory("General Topics", "通用主题"),
+                    empty: memory("No general topics have been formed yet.", "当前还没有形成通用主题。"),
+                    topics: snapshot.workspace.generalProjects,
+                    selectedID: snapshot.workspace.selectedProjectId
+                )
+            } else if let meta {
                 MemoryProjectContextCard(meta: meta)
+                    .environmentObject(state)
             }
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
-                RoutingStatCard(icon: "externaldrive", label: memory("Entries", "条目"), value: "\(snapshot.workspace.totalFiles)", detail: memory("active memory records", "活跃记忆记录"))
-                RoutingStatCard(icon: "folder", label: memory("Projects", "项目"), value: "\(snapshot.workspace.totalProjects)", detail: state.selectedWorkspaceContext?.displayName)
-                RoutingStatCard(icon: "bubble.left.and.bubble.right", label: memory("Feedback", "反馈"), value: "\(snapshot.workspace.totalFeedback)", detail: memory("collaboration feedback", "协作反馈"))
-                RoutingStatCard(icon: "clock", label: memory("Latest", "最新"), value: snapshot.latestMemoryAt.map(relativeDate) ?? state.t(.none), detail: memory("latest memory update", "最新记忆更新"))
+            MemoryRecordSection(
+                title: snapshot.workspace.workspaceMode == "general" ? memory("General Memory", "通用记忆") : memory("Project Memory", "项目记忆"),
+                subtitle: snapshot.workspace.workspaceMode == "general"
+                    ? memory("Facts, preferences, and context from general conversations.", "通用对话中的事实、偏好和上下文记录。")
+                    : memory("Progress, facts, and state records for the current project.", "当前 project 的进展、事实和状态记录。"),
+                records: snapshot.workspace.projectEntries,
+                empty: snapshot.workspace.workspaceMode == "general" ? memory("No general memory yet.", "当前没有通用记忆。") : memory("No project memory yet.", "当前没有项目记忆。")
+            ) { record in
+                selectedRecord = record
             }
 
-            MemoryRecordSection(title: memory("Project Memory", "项目记忆"), subtitle: memory("Progress, facts, and state records for the current project.", "当前 project 的进展、事实和状态记录"), records: snapshot.workspace.projectEntries, empty: snapshot.workspace.workspaceMode == "general" ? memory("No chat memory yet.", "当前没有对话记忆。") : memory("No project memory yet.", "当前没有项目记忆。")) { record in
-                selectedRecord = record
+            if !snapshot.workspace.feedbackEntries.isEmpty || !query.isEmpty {
+                MemoryRecordSection(
+                    title: memory("Collaboration Feedback", "协作反馈"),
+                    subtitle: snapshot.workspace.workspaceMode == "general"
+                        ? memory("Preferences, constraints, and delivery rules from general conversations.", "通用对话中的偏好、约束和交付规则。")
+                        : memory("User preferences, constraints, and delivery rules for the current project.", "用户对当前 project 的偏好、约束和交付规则。"),
+                    records: snapshot.workspace.feedbackEntries,
+                    empty: memory("No collaboration feedback yet.", "当前没有协作反馈。")
+                ) { record in
+                    selectedRecord = record
+                }
             }
-            MemoryRecordSection(title: memory("Collaboration Feedback", "协作反馈"), subtitle: memory("User preferences, constraints, and delivery rules for the current project.", "用户对当前 project 的偏好、约束和交付规则"), records: snapshot.workspace.feedbackEntries, empty: memory("No collaboration feedback yet.", "当前没有协作反馈。")) { record in
-                selectedRecord = record
-            }
-            if !snapshot.workspace.deprecatedProjectEntries.isEmpty || !snapshot.workspace.deprecatedFeedbackEntries.isEmpty {
-                MemoryRecordSection(title: memory("Deprecated Memory", "已弃用记忆"), subtitle: memory("Project memory and collaboration feedback marked deprecated.", "标记为 deprecated 的项目记忆和协作反馈"), records: snapshot.workspace.deprecatedProjectEntries + snapshot.workspace.deprecatedFeedbackEntries, empty: memory("No deprecated memory yet.", "当前没有已弃用记忆。")) { record in
+
+            let deprecated = snapshot.workspace.deprecatedProjectEntries + snapshot.workspace.deprecatedFeedbackEntries
+            if !deprecated.isEmpty {
+                MemoryRecordSection(
+                    title: memory("Deprecated", "已弃用"),
+                    subtitle: memory("Project memory and collaboration feedback marked as deprecated.", "已标记为弃用的项目记忆与协作反馈。"),
+                    records: deprecated,
+                    empty: memory("No deprecated memory yet.", "当前没有已弃用记忆。")
+                ) { record in
                     selectedRecord = record
                 }
             }
@@ -757,59 +810,77 @@ struct MemoryView: View {
     }
 
     private func profileMemory(_ snapshot: MemoryDashboardSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            MemorySummaryCard(title: memory("User Summary", "用户摘要"), text: snapshot.userSummary.isEmpty ? memory("No summarized user profile yet. User Notes are merged here after Dream runs.", "当前还没有汇总后的用户画像；User Notes 会在 Dream 后合并到这里。") : snapshot.userSummary, footnote: state.selectedWorkspaceContext?.rootPath)
-
-            MemoryRecordSection(title: "User Notes", subtitle: memory("Long-term user profile, preferences, and background.", "长期用户画像、偏好和背景信息"), records: snapshot.records.filter { $0.type == .user && !$0.deprecated }, empty: memory("No user profile records yet.", "暂无用户画像记录。")) { record in
-                selectedRecord = record
+        let userNotes = snapshot.records.filter { $0.type == .user && !$0.deprecated }
+        let feedbackProfile = snapshot.records.filter { $0.type == .feedback && !$0.deprecated }
+        return VStack(alignment: .leading, spacing: 16) {
+            MemoryBoardGroup(title: memory("User Profile", "用户画像"), subtitle: memory("Long-term identity background and preferences.", "长期身份背景和偏好。")) {
+                if snapshot.userSummary.isEmpty {
+                    MemoryEmptyDashedState(text: memory("No summarized user profile yet. User Notes are merged here after Dream runs.", "当前还没有汇总后的用户画像；User Notes 会在 Dream 后合并到这里。"))
+                } else {
+                    Text(snapshot.userSummary)
+                        .font(.system(size: 13))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
 
-            MemoryRecordSection(title: memory("Feedback Profile", "反馈画像"), subtitle: memory("User preferences extracted from collaboration feedback.", "从协作反馈中提取的用户偏好"), records: snapshot.records.filter { $0.type == .feedback && !$0.deprecated }, empty: memory("No feedback profile yet.", "暂无反馈画像。")) { record in
-                selectedRecord = record
+            if !userNotes.isEmpty {
+                MemoryRecordSection(title: "User Notes", subtitle: memory("Long-term user profile, preferences, and background.", "长期用户画像、偏好和背景信息。"), records: userNotes, empty: memory("No user profile records yet.", "暂无用户画像记录。")) { record in
+                    selectedRecord = record
+                }
+            }
+
+            if !feedbackProfile.isEmpty {
+                MemoryRecordSection(title: memory("Feedback Profile", "反馈画像"), subtitle: memory("User preferences extracted from collaboration feedback.", "从协作反馈中提取的用户偏好。"), records: feedbackProfile, empty: memory("No feedback profile yet.", "暂无反馈画像。")) { record in
+                    selectedRecord = record
+                }
             }
         }
     }
 
     private func memoryTrace(_ snapshot: MemoryDashboardSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 6) {
-                TabButton("Recall", isActive: traceSubtab == .recall) {
+            HStack(spacing: 4) {
+                MemoryTraceTabButton("Recall", isActive: traceSubtab == .recall) {
                     traceSubtab = .recall
                     selectedTraceID = nil
                 }
-                TabButton("Index", isActive: traceSubtab == .index) {
+                MemoryTraceTabButton("Index", isActive: traceSubtab == .index) {
                     traceSubtab = .index
                     selectedTraceID = nil
                 }
-                TabButton("Dream", isActive: traceSubtab == .dream) {
+                MemoryTraceTabButton("Dream", isActive: traceSubtab == .dream) {
                     traceSubtab = .dream
                     selectedTraceID = nil
                 }
             }
+            .padding(4)
+            .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
 
             let records = traceRecords(snapshot)
             if records.isEmpty {
-                ToolEmptyState(title: memory("No trace records", "暂无追踪记录"), detail: traceEmptyDetail, systemImage: "clock.arrow.circlepath")
-                    .frame(height: 360)
+                MemoryBoardGroup(title: traceSelectTitle, subtitle: nil) {
+                    MemoryEmptyDashedState(text: traceEmptyDetail)
+                }
             } else {
-                HStack(alignment: .top, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(traceSelectTitle)
-                            .font(.system(size: 14, weight: .semibold))
+                MemoryBoardGroup(title: traceSelectTitle, subtitle: nil) {
+                    Menu {
                         ForEach(records) { trace in
                             Button {
                                 selectedTraceID = trace.id
                             } label: {
-                                MemoryTraceListRow(trace: trace, selected: selectedTraceID == trace.id || (selectedTraceID == nil && records.first?.id == trace.id))
+                                Text("\(trace.title) · \(trace.trigger) · \(relativeDate(trace.createdAt))")
                             }
-                            .buttonStyle(.plain)
                         }
+                    } label: {
+                        MemoryTraceSelectLabel(trace: selectedTrace(records))
                     }
-                    .frame(width: 300, alignment: .topLeading)
-
-                    MemoryTraceDetail(trace: selectedTrace(records))
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
+
+                MemoryTraceDetail(trace: selectedTrace(records))
+                    .environmentObject(state)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
     }
@@ -845,8 +916,23 @@ struct MemoryView: View {
         return records.first
     }
 
+    private func mergedJobStates(_ snapshot: MemoryDashboardSnapshot) -> [MemoryJobKind: MemoryJobState] {
+        var states = snapshot.jobStates
+        for (kind, local) in memoryJobs {
+            guard let snapshotJob = states[kind] else {
+                states[kind] = local
+                continue
+            }
+            if local.phase == .running ||
+                ((local.endedAt ?? .distantPast) > (snapshotJob.endedAt ?? .distantPast)) {
+                states[kind] = local
+            }
+        }
+        return states
+    }
+
     private func job(_ kind: MemoryJobKind) -> MemoryJobState {
-        memoryJobs[kind] ?? .idle(kind)
+        mergedJobStates(currentSnapshot)[kind] ?? .idle(kind)
     }
 
     private func setJob(_ kind: MemoryJobKind, phase: MemoryJobPhase, message: String, traceID: String? = nil) {
@@ -938,126 +1024,6 @@ struct MemoryView: View {
         }
     }
 
-    private func clearMemory(allProjects: Bool) {
-        guard confirmMemoryAction(
-            title: allProjects ? memory("Clear All Memory", "清空全部记忆") : memory("Clear Current Project Memory", "清空当前项目记忆"),
-            detail: allProjects
-                ? memory("This deletes all project memory and the global user profile.", "此操作会删除所有项目记忆以及全局用户画像。")
-                : memory("This deletes current project memory and does not modify workspace code files.", "此操作会删除当前项目记忆，不会修改工作区代码文件。")
-        ) else { return }
-        state.memoryService.clear(
-            projectName: allProjects ? nil : state.selectedProject?.name,
-            projectRoot: allProjects ? nil : state.selectedWorkspaceContext?.rootPath
-        )
-        selectedRecord = nil
-        state.statusLine = allProjects ? "All memory cleared" : "Current project memory cleared"
-        state.bumpToolRefresh()
-    }
-
-    private func openMemorySettings() {
-        let current = state.memoryService.settingsSnapshot()
-        let alert = NSAlert()
-        alert.messageText = memory("Memory Settings", "记忆设置")
-        alert.informativeText = memory(
-            "Set automatic Memory Index and Dream intervals in minutes. Use 0 to disable automatic tasks.",
-            "设置自动 Memory Index 和 Dream 的间隔（分钟）。0 表示关闭自动任务。"
-        )
-        alert.addButton(withTitle: state.t(.save))
-        alert.addButton(withTitle: state.t(.cancel))
-
-        let indexField = NSTextField(string: "\(current.autoIndexIntervalMinutes)")
-        let dreamField = NSTextField(string: "\(current.autoDreamIntervalMinutes)")
-        indexField.alignment = .right
-        dreamField.alignment = .right
-
-        let grid = NSGridView(views: [
-            [
-                NSTextField(labelWithString: memory("Auto Index Interval", "自动索引间隔")),
-                indexField,
-                NSTextField(labelWithString: memory("Minutes", "分钟")),
-            ],
-            [
-                NSTextField(labelWithString: memory("Auto Dream Interval", "自动 Dream 间隔")),
-                dreamField,
-                NSTextField(labelWithString: memory("Minutes", "分钟")),
-            ],
-        ])
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 0).width = 190
-        grid.column(at: 1).width = 88
-        grid.column(at: 2).width = 54
-        grid.columnSpacing = 8
-        grid.rowSpacing = 8
-        grid.frame = NSRect(x: 0, y: 0, width: 360, height: 54)
-        alert.accessoryView = grid
-
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        let nextIndex = NativeMemoryDashboardSettingsFields.normalizedInterval(
-            indexField.stringValue,
-            fallback: current.autoIndexIntervalMinutes
-        )
-        let nextDream = NativeMemoryDashboardSettingsFields.normalizedInterval(
-            dreamField.stringValue,
-            fallback: current.autoDreamIntervalMinutes
-        )
-        state.g9ClawConfigText = YAMLScalarEditor.set(
-            path: NativeMemoryDashboardSettingsFields.autoIndexPath,
-            value: "\(nextIndex)",
-            in: state.g9ClawConfigText
-        )
-        state.g9ClawConfigText = YAMLScalarEditor.set(
-            path: NativeMemoryDashboardSettingsFields.autoDreamPath,
-            value: "\(nextDream)",
-            in: state.g9ClawConfigText
-        )
-        state.saveSettings()
-        state.statusLine = memory("Memory settings saved", "记忆设置已保存")
-        state.bumpToolRefresh()
-    }
-
-    private func exportMemory(allProjects: Bool) {
-        do {
-            let data = try state.memoryService.exportBundle(
-                projectName: allProjects ? nil : state.selectedProject?.name,
-                projectRoot: allProjects ? nil : state.selectedWorkspaceContext?.rootPath
-            )
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [.json]
-            panel.nameFieldStringValue = allProjects ? "g9claw-memory-all-projects.json" : "g9claw-memory-current-project.json"
-            guard panel.runModal() == .OK, let url = panel.url else { return }
-            try data.write(to: url, options: .atomic)
-            state.statusLine = allProjects ? "All-project memory exported" : "Current project memory exported"
-        } catch {
-            state.errorBanner = error.localizedDescription
-        }
-    }
-
-    private func importMemory(allProjects: Bool) {
-        guard confirmMemoryAction(
-            title: allProjects ? memory("Import All Memory", "导入全部项目记忆") : memory("Import Current Project Memory", "导入当前项目记忆"),
-            detail: allProjects
-                ? memory("Import overwrites all project memory and the global user profile, but does not modify workspace code files.", "导入会覆盖全部项目记忆和全局用户画像，但不会修改工作区代码文件。")
-                : memory("Import overwrites current project memory, but does not affect other projects or workspace code files.", "导入会覆盖当前项目记忆，但不会影响其他项目或工作区代码文件。")
-        ) else { return }
-        do {
-            let panel = NSOpenPanel()
-            panel.allowedContentTypes = [.json]
-            panel.allowsMultipleSelection = false
-            guard panel.runModal() == .OK, let url = panel.url else { return }
-            let data = try Data(contentsOf: url)
-            try state.memoryService.importBundle(
-                data,
-                projectName: allProjects ? nil : state.selectedProject?.name,
-                projectRoot: allProjects ? nil : state.selectedWorkspaceContext?.rootPath
-            )
-            state.statusLine = allProjects ? "All-project memory imported" : "Current project memory imported"
-            state.bumpToolRefresh()
-        } catch {
-            state.errorBanner = error.localizedDescription
-        }
-    }
-
     private func confirmMemoryAction(title: String, detail: String) -> Bool {
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -1136,21 +1102,6 @@ private enum MemoryTraceSubTab {
     case dream
 }
 
-enum NativeMemoryDashboardSettingsFields {
-    static let autoIndexPath = "memory.autoIndexIntervalMinutes"
-    static let autoDreamPath = "memory.autoDreamIntervalMinutes"
-    static let visiblePaths = [
-        autoIndexPath,
-        autoDreamPath,
-    ]
-
-    static func normalizedInterval(_ raw: String, fallback: Int) -> Int {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Double(trimmed), value.isFinite else { return fallback }
-        return min(10_080, max(0, Int(value)))
-    }
-}
-
 enum NativeMemoryViewLayout {
     static let subtabOrder: [MemorySubTab] = [
         .projectMemory,
@@ -1176,10 +1127,113 @@ enum NativeMemoryViewLayout {
     }
 }
 
-private struct MemoryJobButton: View {
+private struct MemoryNavTabButton: View {
     var title: String
+    var isActive: Bool
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: isActive ? .semibold : .medium))
+                .foregroundStyle(isActive ? DesignTokens.text : DesignTokens.secondaryText)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
+                .background(isActive ? DesignTokens.neutral100 : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct MemoryTraceTabButton: View {
+    var title: String
+    var isActive: Bool
+    var action: () -> Void
+
+    init(_ title: String, isActive: Bool, action: @escaping () -> Void) {
+        self.title = title
+        self.isActive = isActive
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: isActive ? .semibold : .medium))
+                .foregroundStyle(isActive ? DesignTokens.text : DesignTokens.secondaryText)
+                .padding(.horizontal, 16)
+                .frame(height: 30)
+                .background(isActive ? DesignTokens.card : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous)
+                        .stroke(isActive ? DesignTokens.separator.opacity(0.72) : Color.clear, lineWidth: 1)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct MemoryToolbarDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(DesignTokens.separator)
+            .frame(width: 1, height: 20)
+            .padding(.horizontal, 4)
+    }
+}
+
+private struct MemoryToolbarButtonStyle: ButtonStyle {
+    var isProminent: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(isProminent ? DesignTokens.text : DesignTokens.secondaryText)
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(background(isPressed: configuration.isPressed), in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous).stroke(isProminent ? Color.clear : DesignTokens.separator))
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+            .opacity(configuration.isPressed ? 0.72 : 1)
+    }
+
+    private func background(isPressed: Bool) -> Color {
+        if isProminent {
+            return isPressed ? DesignTokens.neutral200 : DesignTokens.neutral100
+        }
+        return isPressed ? DesignTokens.neutral100 : DesignTokens.card
+    }
+}
+
+private struct MemoryToolbarMenuLabel: View {
+    var title: String
+    var systemImage: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .semibold))
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+        }
+        .foregroundStyle(DesignTokens.secondaryText)
+        .padding(.horizontal, 10)
+        .frame(height: 28)
+        .background(DesignTokens.card, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous).stroke(DesignTokens.separator))
+    }
+}
+
+private struct MemoryJobButton: View {
+    @Environment(\.isEnabled) private var isEnabled
+    var title: String
+    var systemImage: String
     var state: MemoryJobState
     var isProminent: Bool
+    var minWidth: CGFloat = 78
     var action: () -> Void
 
     var body: some View {
@@ -1189,52 +1243,512 @@ private struct MemoryJobButton: View {
                     ProgressView()
                         .controlSize(.small)
                         .scaleEffect(0.55)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12, weight: .semibold))
                 }
                 Text(title)
                     .lineLimit(1)
             }
-            .frame(minWidth: title.count > 12 ? 126 : 76)
+            .frame(minWidth: minWidth)
         }
-        .buttonStyle(WebToolbarButtonStyle(isProminent: isProminent))
+        .buttonStyle(MemoryToolbarButtonStyle(isProminent: isProminent))
         .disabled(state.phase == .running)
         .help(state.message.isEmpty ? title : state.message)
+        .opacity(isEnabled ? 1 : 0.55)
+    }
+}
+
+private struct MemoryDashboardMetric: Identifiable, Hashable {
+    var id: String
+    var icon: String
+    var label: String
+    var value: String
+    var detail: String?
+}
+
+private struct MemoryBoardGroup<Content: View>: View {
+    var title: String
+    var subtitle: String?
+    var content: Content
+
+    init(title: String, subtitle: String?, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.subtitle = subtitle
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .lineLimit(2)
+                }
+            }
+            content
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(DesignTokens.card, in: RoundedRectangle(cornerRadius: DesignTokens.largeRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.largeRadius, style: .continuous).stroke(DesignTokens.separator))
+    }
+}
+
+private struct MemoryEmptyDashedState: View {
+    var text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 13))
+            .foregroundStyle(DesignTokens.tertiaryText)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity, minHeight: 78, alignment: .center)
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                    .stroke(DesignTokens.neutral300, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            )
+    }
+}
+
+private struct MemoryGeneralTopicsSection: View {
+    var title: String
+    var empty: String
+    var topics: [MemoryProjectMeta]
+    var selectedID: String?
+
+    var body: some View {
+        MemoryBoardGroup(title: title, subtitle: nil) {
+            if topics.isEmpty {
+                MemoryEmptyDashedState(text: empty)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 10)], spacing: 10) {
+                    ForEach(topics) { topic in
+                        MemoryGeneralTopicCard(topic: topic, isSelected: topic.projectId == selectedID)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct MemoryGeneralTopicCard: View {
+    @EnvironmentObject private var state: AppState
+    var topic: MemoryProjectMeta
+    var isSelected: Bool
+
+    private func memory(_ english: String, _ chinese: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(topic.projectName)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                    .lineLimit(2)
+                Spacer()
+                if isSelected {
+                    MemoryStatusPill(text: memory("Current", "当前"), tone: .neutral)
+                }
+            }
+            Text(topic.description.isEmpty ? memory("No summary yet.", "暂无摘要。") : topic.description)
+                .font(.system(size: 12))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .lineLimit(2)
+            HStack(spacing: 6) {
+                if let workspacePath = topic.workspacePath {
+                    MemoryChip(text: URL(fileURLWithPath: workspacePath).lastPathComponent)
+                }
+                MemoryChip(text: sourceLabel)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
+        .background(DesignTokens.card, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous).stroke(isSelected ? DesignTokens.text.opacity(0.40) : DesignTokens.separator))
+    }
+
+    private var sourceLabel: String {
+        switch topic.sourceType {
+        case "general_local", "workspace_external_mirror":
+            return memory("General Local", "通用本地")
+        case "workspace_external":
+            return memory("External Read-only", "外部只读")
+        default:
+            return topic.sourceType
+        }
+    }
+}
+
+private struct MemoryWorkspaceDashboardCard: View {
+    var title: String
+    var description: String
+    var path: String?
+    var status: String
+    var source: String
+    var schedulerEnabled: Bool
+    var metrics: [MemoryDashboardMetric]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(DesignTokens.accent.opacity(0.12))
+                    Image(systemName: "externaldrive.badge.checkmark")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(DesignTokens.accent)
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Text(title)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(DesignTokens.text)
+                            .lineLimit(1)
+                        MemoryStatusPill(text: status, tone: .neutral)
+                    }
+                    Text(description)
+                        .font(.system(size: 13))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .lineLimit(2)
+                    if let path {
+                        Label(path, systemImage: "folder")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 16)
+                VStack(alignment: .trailing, spacing: 8) {
+                    MemoryStatusPill(
+                        text: schedulerEnabled ? "Auto" : "Manual",
+                        tone: schedulerEnabled ? .success : .neutral
+                    )
+                    MemoryStatusPill(text: source, tone: .neutral)
+                }
+            }
+
+            HStack(spacing: 0) {
+                ForEach(Array(metrics.enumerated()), id: \.offset) { index, metric in
+                    MemoryMetricCell(metric: metric)
+                    if index < metrics.count - 1 {
+                        Rectangle()
+                            .fill(DesignTokens.separator.opacity(0.70))
+                            .frame(width: 1, height: 42)
+                            .padding(.horizontal, 4)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous).stroke(DesignTokens.separator.opacity(0.72)))
+        .shadow(color: .black.opacity(0.04), radius: 14, y: 8)
+    }
+}
+
+private struct MemoryMetricCell: View {
+    var metric: MemoryDashboardMetric
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(metric.label, systemImage: metric.icon)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(DesignTokens.tertiaryText)
+                .lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(metric.value)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                if let detail = metric.detail {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+    }
+}
+
+private struct MemoryRuntimePanel: View {
+    @EnvironmentObject private var state: AppState
+    var snapshot: MemoryDashboardSnapshot
+
+    private func memory(_ english: String, _ chinese: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(memory("Runtime", "运行状态"), systemImage: "waveform.path.ecg")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                Spacer()
+                MemoryStatusPill(
+                    text: snapshot.scheduler.enabled ? memory("Auto", "自动") : memory("Manual", "手动"),
+                    tone: snapshot.scheduler.enabled ? .success : .neutral
+                )
+            }
+
+            VStack(spacing: 0) {
+                MemoryRuntimeTraceRow(
+                    title: "Recall",
+                    icon: "text.magnifyingglass",
+                    trace: snapshot.caseTraceRecords.first,
+                    empty: memory("No recall yet", "暂无 Recall")
+                )
+                MemoryPanelDivider()
+                MemoryRuntimeTraceRow(
+                    title: "Index",
+                    icon: "arrow.triangle.2.circlepath",
+                    trace: snapshot.indexTraceRecords.first,
+                    empty: memory("No index yet", "暂无 Index")
+                )
+                MemoryPanelDivider()
+                MemoryRuntimeTraceRow(
+                    title: "Dream",
+                    icon: "sparkles",
+                    trace: snapshot.dreamTraceRecords.first,
+                    empty: memory("No dream yet", "暂无 Dream")
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(memory("Last indexed", "最近索引"))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                    Spacer()
+                    Text(snapshot.overview.lastIndexedAt.map(relativeDate) ?? state.t(.none))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .lineLimit(1)
+                }
+                HStack {
+                    Text(memory("Last dream", "最近 Dream"))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                    Spacer()
+                    Text(snapshot.overview.lastDreamAt.map(relativeDate) ?? state.t(.none))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .lineLimit(1)
+                }
+            }
+            .padding(10)
+            .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+        }
+        .padding(14)
+        .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous).stroke(DesignTokens.separator.opacity(0.72)))
+    }
+}
+
+private struct MemoryRuntimeTraceRow: View {
+    var title: String
+    var icon: String
+    var trace: MemoryTraceRecord?
+    var empty: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(trace == nil ? DesignTokens.tertiaryText : DesignTokens.accent)
+                .frame(width: 18, height: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(DesignTokens.text)
+                    if let trace {
+                        Text(trace.trigger)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                    }
+                }
+                Text(trace?.title ?? empty)
+                    .font(.system(size: 12))
+                    .foregroundStyle(trace == nil ? DesignTokens.tertiaryText : DesignTokens.secondaryText)
+                    .lineLimit(2)
+                if let trace {
+                    Text(relativeDate(trace.createdAt))
+                        .font(.system(size: 11))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 10)
+    }
+}
+
+private enum MemoryStatusTone {
+    case neutral
+    case success
+    case warning
+    case project
+    case feedback
+    case deprecated
+    case trace
+}
+
+private struct MemoryStatusPill: View {
+    var text: String
+    var tone: MemoryStatusTone
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(foreground)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(background, in: Capsule())
+    }
+
+    private var foreground: Color {
+        switch tone {
+        case .neutral: DesignTokens.secondaryText
+        case .success: DesignTokens.success
+        case .warning: DesignTokens.warning
+        case .project: DesignTokens.secondaryText
+        case .feedback: DesignTokens.secondaryText
+        case .deprecated: DesignTokens.tertiaryText
+        case .trace: DesignTokens.secondaryText
+        }
+    }
+
+    private var background: Color {
+        switch tone {
+        case .neutral: DesignTokens.cardSurfaceSubtle
+        case .success: DesignTokens.success.opacity(0.12)
+        case .warning: DesignTokens.warning.opacity(0.12)
+        case .project: DesignTokens.neutral100.opacity(0.74)
+        case .feedback: DesignTokens.neutral100.opacity(0.74)
+        case .deprecated: DesignTokens.neutral100
+        case .trace: DesignTokens.neutral100.opacity(0.74)
+        }
+    }
+}
+
+private struct MemoryPanelDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(DesignTokens.separator.opacity(0.58))
+            .frame(height: 1)
     }
 }
 
 private struct MemoryRecordCard: View {
+    @EnvironmentObject private var state: AppState
     var record: MemoryRecord
     var selected: Bool
 
+    private func memory(_ english: String, _ chinese: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(record.name)
                     .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
                     .lineLimit(2)
-                Spacer()
-                Text(record.type.label)
-                    .font(.system(size: 10, weight: .semibold))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(DesignTokens.accent.opacity(0.12), in: Capsule())
-                    .foregroundStyle(DesignTokens.accent)
+                Spacer(minLength: 8)
+                MemoryStatusPill(text: record.deprecated ? memory("Deprecated", "已弃用") : typeLabel, tone: badgeTone)
             }
-            Text(relativeDate(record.updatedAt))
+            Text(metaLine)
                 .font(.system(size: 11))
                 .foregroundStyle(DesignTokens.tertiaryText)
-            Text(record.summary)
-                .font(.system(size: 13))
+                .lineLimit(1)
+            Text(record.summary.isEmpty ? record.content : record.summary)
+                .font(.system(size: 12))
                 .foregroundStyle(DesignTokens.secondaryText)
-                .lineLimit(4)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 142, alignment: .topLeading)
-        .background(DesignTokens.background, in: RoundedRectangle(cornerRadius: DesignTokens.radius))
+        .padding(.leading, 14)
+        .padding(.trailing, 12)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+        .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill(tint)
+                .frame(width: selected ? 3 : 2)
+                .padding(.vertical, 10)
+                .padding(.leading, 1)
+        }
         .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.radius)
-                .stroke(selected ? DesignTokens.accent : DesignTokens.separator, lineWidth: selected ? 2 : 1)
+            RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                .stroke(selected ? DesignTokens.text.opacity(0.42) : DesignTokens.separator, lineWidth: selected ? 1.2 : 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+    }
+
+    private var metaLine: String {
+        [
+            relativeDate(record.updatedAt),
+            typeLabel,
+            record.relativePath,
+        ]
+        .filter { !$0.isEmpty }
+        .joined(separator: " · ")
+    }
+
+    private var typeLabel: String {
+        switch record.type {
+        case .project:
+            return memory("Project", "项目")
+        case .feedback:
+            return memory("Feedback", "反馈")
+        case .user:
+            return memory("User", "用户")
+        case .generalProjectMeta:
+            return memory("Chat Project", "通用主题")
+        }
+    }
+
+    private var badgeTone: MemoryStatusTone {
+        if record.deprecated {
+            return .deprecated
+        }
+        switch record.type {
+        case .project, .feedback, .user, .generalProjectMeta:
+            return .neutral
+        }
+    }
+
+    private var tint: Color {
+        if record.deprecated {
+            return DesignTokens.neutral300
+        }
+        switch record.type {
+        case .project, .generalProjectMeta:
+            return DesignTokens.neutral300
+        case .feedback:
+            return DesignTokens.neutral400
+        case .user:
+            return DesignTokens.neutral500
+        }
     }
 }
 
@@ -1246,23 +1760,11 @@ private struct MemoryRecordSection: View {
     var onSelect: (MemoryRecord) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 15, weight: .semibold))
-                Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-            }
+        MemoryBoardGroup(title: title, subtitle: subtitle) {
             if records.isEmpty {
-                Text(empty)
-                    .font(.system(size: 13))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-                    .frame(maxWidth: .infinity, minHeight: 96, alignment: .center)
-                    .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.radius))
-                    .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
+                MemoryEmptyDashedState(text: empty)
             } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 12)], spacing: 12) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 10)], spacing: 10) {
                     ForEach(records) { record in
                         Button { onSelect(record) } label: {
                             MemoryRecordCard(record: record, selected: false)
@@ -1284,32 +1786,73 @@ private struct MemoryProjectContextCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(meta.projectName)
-                        .font(.system(size: 18, weight: .semibold))
+                    Text(projectDisplayName)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(DesignTokens.text)
+                        .lineLimit(1)
                     Text(meta.description.isEmpty ? memory("The current workspace is the only top-level project.", "当前 workspace 就是唯一顶层 project。") : meta.description)
                         .font(.system(size: 13))
                         .foregroundStyle(DesignTokens.secondaryText)
+                        .lineLimit(2)
                 }
                 Spacer()
-                Text(meta.status)
-                    .font(.system(size: 11, weight: .semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(DesignTokens.neutral100, in: Capsule())
+                MemoryStatusPill(text: statusLabel, tone: .neutral)
             }
             HStack(spacing: 8) {
                 if let workspacePath = meta.workspacePath {
                     MemoryChip(text: "\(memory("Project path", "项目路径")) \(URL(fileURLWithPath: workspacePath).lastPathComponent)")
                 }
-                MemoryChip(text: meta.sourceType)
+                MemoryChip(text: sourceLabel)
             }
         }
-        .padding(18)
-        .background(DesignTokens.background, in: RoundedRectangle(cornerRadius: DesignTokens.radius))
-        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.largeRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.largeRadius, style: .continuous).stroke(DesignTokens.separator))
+    }
+
+    private var projectDisplayName: String {
+        if let workspacePath = meta.workspacePath, !workspacePath.isEmpty {
+            return URL(fileURLWithPath: workspacePath).lastPathComponent
+        }
+        let raw = meta.projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.contains("/") {
+            return URL(fileURLWithPath: raw).lastPathComponent
+        }
+        if raw.hasPrefix("-Users-") || raw.hasPrefix("Users-") {
+            return raw.split(separator: "-").last.map(String.init) ?? raw
+        }
+        return raw.isEmpty ? memory("Current Project", "当前项目") : raw
+    }
+
+    private var statusLabel: String {
+        switch meta.status.lowercased() {
+        case "in_progress", "active":
+            return memory("In progress", "进行中")
+        case "done", "completed":
+            return memory("Done", "已完成")
+        case "planned", "todo":
+            return memory("Planned", "计划中")
+        default:
+            return meta.status.isEmpty ? memory("Active", "进行中") : meta.status.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    private var sourceLabel: String {
+        switch meta.sourceType {
+        case "workspace":
+            return "workspace"
+        case "general_local", "workspace_external_mirror":
+            return memory("General Local", "通用本地")
+        case "workspace_external":
+            return memory("External Read-only", "外部只读")
+        default:
+            return meta.sourceType
+        }
     }
 }
 
@@ -1335,6 +1878,7 @@ private struct MemorySummaryCard: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
                 .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(DesignTokens.text)
             Text(text)
                 .font(.system(size: 13))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -1346,8 +1890,30 @@ private struct MemorySummaryCard: View {
             }
         }
         .padding(16)
-        .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.radius))
-        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
+        .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous).stroke(DesignTokens.separator.opacity(0.72)))
+    }
+}
+
+private struct MemoryTraceSelectLabel: View {
+    var trace: MemoryTraceRecord?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(trace.map { "\($0.title) · \($0.trigger) · \(relativeDate($0.createdAt))" } ?? "Select a trace…")
+                .font(.system(size: 13))
+                .foregroundStyle(trace == nil ? DesignTokens.tertiaryText : DesignTokens.text)
+                .lineLimit(1)
+            Spacer()
+            Image(systemName: "chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(DesignTokens.tertiaryText)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 34)
+        .frame(maxWidth: .infinity)
+        .background(DesignTokens.card, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous).stroke(DesignTokens.separator))
     }
 }
 
@@ -1420,13 +1986,18 @@ private struct MemoryTraceListRow: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(DesignTokens.success)
             }
-            Text(relativeDate(trace.createdAt))
-                .font(.system(size: 11))
-                .foregroundStyle(DesignTokens.tertiaryText)
+            HStack(spacing: 6) {
+                Text(trace.trigger)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                Text(relativeDate(trace.createdAt))
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+            }
         }
         .padding(12)
-        .background(selected ? DesignTokens.neutral100 : DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
-        .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(selected ? DesignTokens.accent : DesignTokens.separator))
+        .background(selected ? DesignTokens.cardSurface : DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous).stroke(selected ? DesignTokens.accent.opacity(0.60) : DesignTokens.separator.opacity(0.58)))
         .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
     }
 }
@@ -1442,49 +2013,91 @@ private struct MemoryTraceDetail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let trace {
-                MemorySummaryCard(title: trace.title, text: trace.reply.isEmpty ? memory("No output yet.", "暂无输出。") : trace.reply, footnote: "\(trace.trigger) · \(relativeDate(trace.createdAt))")
+                MemoryBoardGroup(title: trace.title, subtitle: "\(trace.trigger) · \(relativeDate(trace.createdAt))") {
+                    Text(trace.reply.isEmpty ? memory("No output yet.", "暂无输出。") : trace.reply)
+                        .font(.system(size: 13))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 traceBlock(title: "Meta", text: trace.meta.map { "\($0.key): \($0.value)" }.sorted().joined(separator: "\n"))
                 traceBlock(title: memory("Injected Context", "注入上下文"), text: trace.context)
                 traceBlock(title: memory("Tool Events", "工具事件"), text: trace.toolEvents)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Reasoning Timeline")
-                        .font(.system(size: 14, weight: .semibold))
-                    ForEach(trace.steps) { step in
-                        HStack(alignment: .top, spacing: 10) {
-                            Circle().fill(DesignTokens.accent).frame(width: 7, height: 7).padding(.top, 6)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(step.title)
-                                    .font(.system(size: 13, weight: .medium))
-                                Text(step.detail)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(DesignTokens.tertiaryText)
+                MemoryBoardGroup(title: memory("Reasoning Timeline", "推理过程"), subtitle: nil) {
+                    if trace.steps.isEmpty {
+                        MemoryEmptyDashedState(text: memory("No steps yet.", "暂无步骤。"))
+                    } else {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(trace.steps.enumerated()), id: \.element.id) { index, step in
+                                MemoryTimelineStep(index: index + 1, step: step)
                             }
                         }
                     }
                 }
-                .padding(16)
-                .background(DesignTokens.background, in: RoundedRectangle(cornerRadius: DesignTokens.radius))
-                .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
             } else {
-                ToolEmptyState(title: memory("No trace records", "暂无追踪记录"), detail: memory("Select a trace to inspect details.", "选择一条追踪查看详情。"), systemImage: "clock.arrow.circlepath")
-                    .frame(height: 260)
+                MemoryBoardGroup(title: memory("No trace records", "暂无追踪记录"), subtitle: nil) {
+                    MemoryEmptyDashedState(text: memory("Select a trace to inspect details.", "选择一条追踪查看详情。"))
+                }
             }
         }
     }
 
     private func traceBlock(title: String, text: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 14, weight: .semibold))
+        MemoryBoardGroup(title: title, subtitle: nil) {
             Text(text.isEmpty ? memory("No records.", "暂无记录。") : text)
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(DesignTokens.secondaryText)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(16)
-        .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.radius))
-        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
+    }
+}
+
+private struct MemoryTimelineStep: View {
+    var index: Int
+    var step: MemoryTraceStep
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(index)")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(DesignTokens.background)
+                .frame(width: 20, height: 20)
+                .background(tint, in: Circle())
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(step.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(DesignTokens.text)
+                    MemoryStatusPill(text: step.status, tone: tone)
+                }
+                Text(step.detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var tone: MemoryStatusTone {
+        switch step.status.lowercased() {
+        case "success", "completed": return .success
+        case "warning", "skipped": return .warning
+        case "error", "failed": return .deprecated
+        default: return .trace
+        }
+    }
+
+    private var tint: Color {
+        switch tone {
+        case .success: return DesignTokens.success
+        case .warning: return DesignTokens.warning
+        case .deprecated: return DesignTokens.danger
+        default: return DesignTokens.text
+        }
     }
 }
 

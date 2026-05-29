@@ -683,11 +683,26 @@ private struct SettingsContentView: View {
             }
         case .memory:
             VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: state.t(.memory)) {
+                SettingsSectionBlock(
+                    title: state.t(.memory),
+                    detail: local(
+                        chinese: "设置自动索引和 Dream 的间隔（分钟），0 表示关闭自动任务。",
+                        english: "Set automatic Index and Dream intervals in minutes. Use 0 to disable automatic tasks."
+                    )
+                ) {
                     SettingsCardBlock(divided: true) {
                         SettingsRowBlock(title: state.t(.enabled), detail: state.t(.memoryDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding(NativeMemoryConfigFormFields.enabledPath))
                         }
+                        ConfigGrid {
+                            ForEach(NativeMemoryConfigFormFields.scheduleFields) { field in
+                                SettingsTextField(
+                                    local(chinese: field.chineseLabel, english: field.englishLabel),
+                                    text: configBinding(field.path)
+                                )
+                            }
+                        }
+                        .padding(14)
                     }
                 }
             }
@@ -1897,9 +1912,33 @@ enum NativeConfigBoolValue {
 enum NativeMemoryConfigFormFields {
     static let enabledPath = "memory.enabled"
     static let modelPath = "memory.model"
+    static let autoIndexIntervalPath = "memory.autoIndexIntervalMinutes"
+    static let autoDreamIntervalPath = "memory.autoDreamIntervalMinutes"
+    static let scheduleFields: [NativeMemoryScheduleFieldSpec] = [
+        NativeMemoryScheduleFieldSpec(
+            path: autoIndexIntervalPath,
+            englishLabel: "Auto Index Interval (minutes)",
+            chineseLabel: "自动索引间隔（分钟）"
+        ),
+        NativeMemoryScheduleFieldSpec(
+            path: autoDreamIntervalPath,
+            englishLabel: "Auto Dream Interval (minutes)",
+            chineseLabel: "自动 Dream 间隔（分钟）"
+        ),
+    ]
     static let visiblePaths = [
         enabledPath,
+        autoIndexIntervalPath,
+        autoDreamIntervalPath,
     ]
+}
+
+struct NativeMemoryScheduleFieldSpec: Hashable, Identifiable {
+    let path: String
+    let englishLabel: String
+    let chineseLabel: String
+
+    var id: String { path }
 }
 
 enum NativeRouterConfigFormFields {
