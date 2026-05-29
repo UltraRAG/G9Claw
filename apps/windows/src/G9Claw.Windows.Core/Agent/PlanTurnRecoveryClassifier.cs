@@ -41,19 +41,9 @@ public static class PlanTurnRecoveryClassifier
 
     private static AgentToolCall AskQuestionCall(string text)
     {
-        var question = FallbackQuestion(text);
         var payload = new
         {
-            questions = new[]
-            {
-                new
-                {
-                    header = "Plan question",
-                    question,
-                    options = Array.Empty<object>(),
-                    multiSelect = false,
-                },
-            },
+            questions = ChoiceQuestions(text),
             recoveredFromPlainText = true,
         };
         return new AgentToolCall($"plan-recovery-ask-{Guid.NewGuid():D}", "AskQuestion", JsonSerializer.Serialize(payload, JsonOptions));
@@ -110,6 +100,142 @@ public static class PlanTurnRecoveryClassifier
             : $"Please confirm how I should proceed with this plan: {Compact(normalized, 260)}";
     }
 
+    private static IReadOnlyList<Dictionary<string, object?>> ChoiceQuestions(string text)
+    {
+        var normalized = NormalizeLines(text);
+        var lines = normalized
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToList();
+        var questions = new List<Dictionary<string, object?>>();
+
+        for (var index = 0; index < lines.Count && questions.Count < 4; index++)
+        {
+            var question = NormalizedQuestionLine(lines[index]);
+            if (question is null) continue;
+
+            var optionLabels = InlineOptions(lines[index]);
+            var scan = index + 1;
+            while (scan < lines.Count)
+            {
+                if (NormalizedQuestionLine(lines[scan]) is not null) break;
+                if (NormalizedOptionLine(lines[scan]) is { } option)
+                {
+                    optionLabels.Add(option);
+                }
+                scan++;
+            }
+
+            questions.Add(QuestionPayload(question, optionLabels, normalized));
+            index = Math.Max(index, scan - 1);
+        }
+
+        if (questions.Count == 0)
+        {
+            var question = FallbackQuestion(normalized);
+            questions.Add(QuestionPayload(question, [], normalized));
+        }
+
+        return questions;
+    }
+
+    private static Dictionary<string, object?> QuestionPayload(string question, IReadOnlyList<string> labels, string sourceText) =>
+        new()
+        {
+            ["header"] = "Plan question",
+            ["question"] = CleanQuestionText(question),
+            ["options"] = OptionDictionaries(labels, FallbackOptions(question, sourceText)),
+            ["multiSelect"] = ShouldAllowMultiple(question),
+        };
+
+    private static string? NormalizedQuestionLine(string line)
+    {
+        var cleaned = CleanQuestionText(StripListMarker(line));
+        if (string.IsNullOrWhiteSpace(cleaned)) return null;
+        if (LooksLikeQuestionTurn(cleaned)) return cleaned;
+        return null;
+    }
+
+    private static string? NormalizedOptionLine(string line)
+    {
+        var match = Regex.Match(line.Trim(), @"^\s*(?:[-*]|\d+[\.\)]|[A-Za-z][\.\)])\s*(?<option>.+?)\s*$");
+        if (!match.Success) return null;
+        var cleaned = CleanOptionText(match.Groups["option"].Value);
+        if (string.IsNullOrWhiteSpace(cleaned) || cleaned.Length > 80) return null;
+        return NormalizedQuestionLine(cleaned) is null ? cleaned : null;
+    }
+
+    private static List<string> InlineOptions(string line)
+    {
+        foreach (var marker in new[] { "options:", "such as", "choices:", "choose from:" })
+        {
+            var index = line.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (index < 0) continue;
+            var tail = line[(index + marker.Length)..];
+            return SplitOptionTail(tail);
+        }
+
+        return [];
+    }
+
+    private static List<string> SplitOptionTail(string tail) =>
+        Regex.Split(tail, @"\s*(?:,|;|/|\||\bor\b)\s*", RegexOptions.IgnoreCase)
+            .Select(CleanOptionText)
+            .Where(option => !string.IsNullOrWhiteSpace(option))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(6)
+            .ToList();
+
+    private static IReadOnlyList<Dictionary<string, string>> OptionDictionaries(
+        IReadOnlyList<string> labels,
+        IReadOnlyList<string> fallback)
+    {
+        var source = labels.Count > 0 ? labels : fallback;
+        return source
+            .Select(CleanOptionText)
+            .Where(option => !string.IsNullOrWhiteSpace(option))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(6)
+            .Select(option => new Dictionary<string, string> { ["label"] = option })
+            .ToList();
+    }
+
+    private static IReadOnlyList<string> FallbackOptions(string question, string sourceText)
+    {
+        var lower = $"{question} {sourceText}".ToLowerInvariant();
+        if (lower.Contains("feature", StringComparison.Ordinal) ||
+            lower.Contains("module", StringComparison.Ordinal) ||
+            lower.Contains("requirement", StringComparison.Ordinal))
+        {
+            return ["Basic features", "Complete feature set", "Visual demo first", "Let G9Claw decide"];
+        }
+
+        if (lower.Contains("style", StringComparison.Ordinal) ||
+            lower.Contains("design", StringComparison.Ordinal) ||
+            lower.Contains("visual", StringComparison.Ordinal))
+        {
+            return ["Clean modern", "Premium native", "Playful colorful", "System default"];
+        }
+
+        if (lower.Contains("storage", StringComparison.Ordinal) ||
+            lower.Contains("data", StringComparison.Ordinal) ||
+            lower.Contains("save", StringComparison.Ordinal))
+        {
+            return ["Static demo data", "Local persistence", "Import and export", "No data storage yet"];
+        }
+
+        return ["Recommended approach", "Simpler approach", "Complete approach", "Continue analysis first"];
+    }
+
+    private static bool ShouldAllowMultiple(string question)
+    {
+        var lower = question.ToLowerInvariant();
+        return lower.Contains("multiple", StringComparison.Ordinal) ||
+               lower.Contains("which", StringComparison.Ordinal) ||
+               lower.Contains("features", StringComparison.Ordinal) ||
+               lower.Contains("modules", StringComparison.Ordinal);
+    }
+
     private static string FallbackPlanMarkdown(string assistantContent, string userPrompt)
     {
         if (LooksLikeFinalPlan(assistantContent))
@@ -160,6 +286,15 @@ public static class PlanTurnRecoveryClassifier
 
     private static string StripListMarker(string text) =>
         Regex.Replace(text.Trim(), @"^\s*(?:[-*]|\d+[\.\)])\s*", "");
+
+    private static string CleanQuestionText(string text) =>
+        Regex.Replace(text, @"[*_`#]+", "")
+            .Trim();
+
+    private static string CleanOptionText(string text) =>
+        Regex.Replace(text, @"[*_`#]+", "")
+            .Trim()
+            .TrimEnd('.', ';', ',');
 
     private static string Compact(string value, int limit)
     {

@@ -4018,6 +4018,30 @@ router:
     }
 
     [Fact]
+    public void PlanTurnRecoveryExtractsPlainTextQuestionOptionsLikeMac()
+    {
+        const string text = """
+        Which features should I prioritize?
+        - Native shell integration
+        - RAG search
+        - Plan workflow parity
+        """;
+
+        var recovery = PlanTurnRecoveryClassifier.Recovery(text, "Build the app", planQuestionAnswered: false);
+        var call = Assert.IsType<AgentToolCall>(recovery?.Call);
+        using var doc = JsonDocument.Parse(call.InputJson);
+        var question = doc.RootElement.GetProperty("questions")[0];
+        var options = question.GetProperty("options").EnumerateArray().ToList();
+
+        Assert.Equal("AskQuestion", call.Name);
+        Assert.Equal("Which features should I prioritize?", question.GetProperty("question").GetString());
+        Assert.True(question.GetProperty("multiSelect").GetBoolean());
+        Assert.Equal(
+            ["Native shell integration", "RAG search", "Plan workflow parity"],
+            options.Select(option => option.GetProperty("label").GetString() ?? "").ToArray());
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerEnforcesPlanModeSafetyLikeMac()
     {
         using var temp = new TempWorkspace();
