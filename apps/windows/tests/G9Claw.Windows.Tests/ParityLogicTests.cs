@@ -894,6 +894,51 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void CodeSyntaxHighlightingMapsCommonEditorLanguages()
+    {
+        Assert.Equal("html", CodeSyntaxHighlightingService.LanguageAliasForFileName("index.html"));
+        Assert.Equal("python", CodeSyntaxHighlightingService.LanguageAliasForFileName("main.py"));
+        Assert.Equal("css", CodeSyntaxHighlightingService.LanguageAliasForFileName("style.css"));
+        Assert.Equal("typescript", CodeSyntaxHighlightingService.LanguageAliasForFileName("app.tsx"));
+        Assert.Equal("swift", CodeSyntaxHighlightingService.LanguageAliasForFileName("Package.swift"));
+        Assert.Equal("json", CodeSyntaxHighlightingService.LanguageAliasForFileName("config.json"));
+        Assert.Equal("markdown", CodeSyntaxHighlightingService.LanguageAliasForFileName("README.md"));
+        Assert.Equal("bash", CodeSyntaxHighlightingService.LanguageAliasForFileName("script.zsh"));
+        Assert.Equal("dockerfile", CodeSyntaxHighlightingService.LanguageAliasForFileName("Dockerfile"));
+        Assert.Equal("makefile", CodeSyntaxHighlightingService.LanguageAliasForFileName("Makefile"));
+        Assert.Null(CodeSyntaxHighlightingService.LanguageAliasForFileName("archive.unknown"));
+    }
+
+    [Fact]
+    public void CodeSyntaxHighlightingUsesDarkLightThemesAndLargeFileGuard()
+    {
+        Assert.Equal("xcode", CodeSyntaxHighlightingService.ThemeName(isDarkMode: false));
+        Assert.Equal("tokyoNight", CodeSyntaxHighlightingService.ThemeName(isDarkMode: true));
+        Assert.Equal(TimeSpan.FromMilliseconds(180), CodeSyntaxHighlightingService.HighlightDebounceInterval);
+        Assert.True(CodeSyntaxHighlightingService.ShouldHighlight("<main></main>", "html"));
+        Assert.False(CodeSyntaxHighlightingService.ShouldHighlight("", "html"));
+        Assert.False(CodeSyntaxHighlightingService.ShouldHighlight("let x = 1", null));
+        Assert.False(CodeSyntaxHighlightingService.ShouldHighlight(
+            new string('a', CodeSyntaxHighlightingService.MaxHighlightedCharacters + 1),
+            "python"));
+    }
+
+    [Fact]
+    public void FilePreviewActionPolicyMatchesRequestedPreviewSurface()
+    {
+        var html = FileNode("index.html");
+        var markdown = FileNode("README.md");
+        var pdf = FileNode("manual.pdf");
+
+        Assert.Equal("globe", FilePreviewActionPolicy.TreePreviewIcon(html));
+        Assert.False(FilePreviewActionPolicy.EditorShowsHtmlPreview(html));
+        Assert.Equal("doc.richtext", FilePreviewActionPolicy.EditorPreviewToggleIcon(markdown, isPreviewing: false));
+        Assert.Equal("pencil", FilePreviewActionPolicy.EditorPreviewToggleIcon(markdown, isPreviewing: true));
+        Assert.True(FilePreviewActionPolicy.UsesNativePdfPreview(pdf));
+        Assert.True(pdf.IsPdf);
+    }
+
+    [Fact]
     public void WebV2SidebarSessionRowsFlattenProviderBucketsByActivity()
     {
         var now = DateTimeOffset.UtcNow;
@@ -5153,6 +5198,17 @@ gateway:
         [],
         date,
         date);
+
+    private static WorkspaceFile FileNode(string fileName) => new(
+        fileName,
+        fileName,
+        $@"C:\Users\tester\project\{fileName}",
+        fileName,
+        0,
+        false,
+        false,
+        null,
+        null);
 
     private static ProjectSession Session(
         string id,
