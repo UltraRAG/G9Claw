@@ -273,6 +273,13 @@ public sealed class NativeAgentRunner
                         request.Prompt,
                         planModePolicy.PlanQuestionAnswered) is { } planRecovery)
                 {
+                    if (!string.IsNullOrWhiteSpace(planRecovery.IntroText))
+                    {
+                        deferredPlanContent.Clear();
+                        assistantText.Append(planRecovery.IntroText);
+                        await writer.WriteAsync(AgentEvent.ContentDelta(request.SessionId, planRecovery.IntroText), cancellationToken);
+                    }
+
                     turn.RecordStatus(planRecovery.WorkflowStatus);
                     await writer.WriteAsync(AgentEvent.Status(request.SessionId, planRecovery.WorkflowStatus), cancellationToken);
                     turn.RecordStatus(planRecovery.GenerationStatus);

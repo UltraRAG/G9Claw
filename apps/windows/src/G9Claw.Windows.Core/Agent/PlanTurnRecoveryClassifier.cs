@@ -3,10 +3,19 @@ using System.Text.RegularExpressions;
 
 namespace G9Claw.Windows.Core;
 
+public enum PlanTurnRecoveryKind
+{
+    AskQuestion,
+    SwitchMode,
+    Intro,
+}
+
 public sealed record PlanTurnRecovery(
+    PlanTurnRecoveryKind Kind,
     AgentToolCall Call,
     string WorkflowStatus,
-    string GenerationStatus);
+    string GenerationStatus,
+    string? IntroText = null);
 
 public static class PlanTurnRecoveryClassifier
 {
@@ -27,13 +36,38 @@ public static class PlanTurnRecoveryClassifier
 
         if (!planQuestionAnswered)
         {
+            var questionText = string.IsNullOrWhiteSpace(trimmed) ? userPrompt : trimmed;
+            if (!string.IsNullOrWhiteSpace(trimmed) &&
+                !LooksLikeQuestionTurn(trimmed) &&
+                !LooksLikeFinalPlan(trimmed))
+            {
+                return new PlanTurnRecovery(
+                    PlanTurnRecoveryKind.Intro,
+                    AskQuestionCall(questionText),
+                    RecoveringStatus,
+                    GeneratingQuestionStatus,
+                    ShortIntro(trimmed));
+            }
+
             return new PlanTurnRecovery(
-                AskQuestionCall(string.IsNullOrWhiteSpace(trimmed) ? userPrompt : trimmed),
+                PlanTurnRecoveryKind.AskQuestion,
+                AskQuestionCall(questionText),
                 RecoveringStatus,
                 GeneratingQuestionStatus);
         }
 
+        if (!string.IsNullOrWhiteSpace(trimmed) && !LooksLikeFinalPlan(trimmed))
+        {
+            return new PlanTurnRecovery(
+                PlanTurnRecoveryKind.Intro,
+                SwitchModeCall(FallbackPlanMarkdown(trimmed, userPrompt)),
+                RecoveringStatus,
+                GeneratingPlanStatus,
+                ShortIntro(trimmed));
+        }
+
         return new PlanTurnRecovery(
+            PlanTurnRecoveryKind.SwitchMode,
             SwitchModeCall(FallbackPlanMarkdown(trimmed, userPrompt)),
             RecoveringStatus,
             GeneratingPlanStatus);
@@ -158,7 +192,7 @@ public static class PlanTurnRecoveryClassifier
 
     private static string? NormalizedOptionLine(string line)
     {
-        var match = Regex.Match(line.Trim(), @"^\s*(?:[-*]|\d+[\.\)]|[A-Za-z][\.\)])\s*(?<option>.+?)\s*$");
+        var match = Regex.Match(line.Trim(), @"^\s*(?:[-*]|\d+[\.\)\u3001\uff09]|[A-Za-z][\.\)])\s*(?<option>.+?)\s*$");
         if (!match.Success) return null;
         var cleaned = CleanOptionText(match.Groups["option"].Value);
         if (string.IsNullOrWhiteSpace(cleaned) || cleaned.Length > 80) return null;
@@ -233,7 +267,8 @@ public static class PlanTurnRecoveryClassifier
         return lower.Contains("multiple", StringComparison.Ordinal) ||
                lower.Contains("which", StringComparison.Ordinal) ||
                lower.Contains("features", StringComparison.Ordinal) ||
-               lower.Contains("modules", StringComparison.Ordinal);
+               lower.Contains("modules", StringComparison.Ordinal) ||
+               lower.Contains("\u54ea\u4e9b", StringComparison.Ordinal);
     }
 
     private static string FallbackPlanMarkdown(string assistantContent, string userPrompt)
@@ -261,11 +296,19 @@ public static class PlanTurnRecoveryClassifier
     {
         var lower = text.ToLowerInvariant();
         return lower.Contains("?", StringComparison.Ordinal) ||
+            lower.Contains("\uff1f", StringComparison.Ordinal) ||
+            lower.Contains("\u8bf7\u544a\u8bc9", StringComparison.Ordinal) ||
+            lower.Contains("\u8bf7\u9009\u62e9", StringComparison.Ordinal) ||
+            lower.Contains("\u9700\u8981\u786e\u8ba4", StringComparison.Ordinal) ||
+            lower.Contains("\u51e0\u4e2a\u95ee\u9898", StringComparison.Ordinal) ||
+            lower.Contains("\u8865\u5145", StringComparison.Ordinal) ||
+            lower.Contains("\u504f\u597d", StringComparison.Ordinal) ||
             lower.Contains("what", StringComparison.Ordinal) ||
             lower.Contains("which", StringComparison.Ordinal) ||
             lower.Contains("choose", StringComparison.Ordinal) ||
             lower.Contains("question", StringComparison.Ordinal) ||
-            lower.Contains("confirm", StringComparison.Ordinal);
+            lower.Contains("confirm", StringComparison.Ordinal) ||
+            Regex.IsMatch(text, @"(?m)^\s*\d+[\.\u3001\uff09\)]\s*[^.\n]*[\?\uff1f]");
     }
 
     private static bool LooksLikeFinalPlan(string text)
@@ -277,15 +320,18 @@ public static class PlanTurnRecoveryClassifier
 
         var lower = text.ToLowerInvariant();
         var hasPlanWord = lower.Contains("plan", StringComparison.Ordinal) ||
-            lower.Contains("implementation", StringComparison.Ordinal);
-        return hasPlanWord && Regex.Matches(text, @"(?m)^\s*(?:\d+[\.\)]|-|\*)\s+\S+").Count >= 2;
+            lower.Contains("implementation", StringComparison.Ordinal) ||
+            lower.Contains("\u8ba1\u5212", StringComparison.Ordinal) ||
+            lower.Contains("\u65b9\u6848", StringComparison.Ordinal) ||
+            lower.Contains("\u5b9e\u65bd", StringComparison.Ordinal);
+        return hasPlanWord && Regex.Matches(text, @"(?m)^\s*(?:\d+[\.\)\u3001\uff09]|-|\*)\s+\S+").Count >= 2;
     }
 
     private static string NormalizeLines(string text) =>
         (text ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
 
     private static string StripListMarker(string text) =>
-        Regex.Replace(text.Trim(), @"^\s*(?:[-*]|\d+[\.\)])\s*", "");
+        Regex.Replace(text.Trim(), @"^\s*(?:[-*]|\d+[\.\)\u3001\uff09])\s*", "");
 
     private static string CleanQuestionText(string text) =>
         Regex.Replace(text, @"[*_`#]+", "")
@@ -300,6 +346,21 @@ public static class PlanTurnRecoveryClassifier
     {
         var normalized = value.Replace('\n', ' ').Replace('\t', ' ').Trim();
         return normalized.Length <= limit ? normalized : $"{normalized[..Math.Max(0, limit - 1)]}...";
+    }
+
+    private static string ShortIntro(string text)
+    {
+        var trimmed = (text ?? "").Trim();
+        if (trimmed.Length <= 180)
+        {
+            return trimmed;
+        }
+
+        var paragraph = trimmed
+            .Split(["\n\n"], StringSplitOptions.None)
+            .Select(item => item.Trim())
+            .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item)) ?? trimmed;
+        return paragraph.Length <= 180 ? paragraph : $"{paragraph[..160].Trim()}...";
     }
 
     private static JsonSerializerOptions JsonOptions { get; } = new() { WriteIndented = true };

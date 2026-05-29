@@ -4034,11 +4034,28 @@ router:
         var options = question.GetProperty("options").EnumerateArray().ToList();
 
         Assert.Equal("AskQuestion", call.Name);
+        Assert.Equal(PlanTurnRecoveryKind.AskQuestion, recovery.Kind);
         Assert.Equal("Which features should I prioritize?", question.GetProperty("question").GetString());
         Assert.True(question.GetProperty("multiSelect").GetBoolean());
         Assert.Equal(
             ["Native shell integration", "RAG search", "Plan workflow parity"],
             options.Select(option => option.GetProperty("label").GetString() ?? "").ToArray());
+    }
+
+    [Fact]
+    public void PlanTurnRecoveryKeepsPlainTextIntroVisibleLikeMac()
+    {
+        const string text = "I will inspect the project structure first so the plan is grounded in the existing app.";
+
+        var recovery = PlanTurnRecoveryClassifier.Recovery(text, "Build the app", planQuestionAnswered: false);
+
+        Assert.NotNull(recovery);
+        Assert.Equal(PlanTurnRecoveryKind.Intro, recovery.Kind);
+        Assert.Equal("AskQuestion", recovery.Call.Name);
+        Assert.Equal(text, recovery.IntroText);
+        using var doc = JsonDocument.Parse(recovery.Call.InputJson);
+        Assert.True(doc.RootElement.GetProperty("recoveredFromPlainText").GetBoolean());
+        Assert.Contains(text, doc.RootElement.GetProperty("questions")[0].GetProperty("question").GetString());
     }
 
     [Fact]
@@ -4223,6 +4240,58 @@ router:
         AssertNoCompletedAssistantTurnTextContains(events, "Which files should I inspect first?");
         Assert.Equal([PermissionRequestKind.AskUserQuestion, PermissionRequestKind.ExitPlanMode], permissionRequests.Select(permission => permission.Kind));
         Assert.Contains("Which files should I inspect first?", permissionRequests[0].InteractivePayload!.Questions[0].Question);
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerShowsPlainTextPlanIntroBeforeFallbackQuestionLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new PlainTextPlanIntroProvider();
+        var permissionRequests = new List<PermissionRequest>();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "make a safe plan",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Plan,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) =>
+        {
+            permissionRequests.Add(permission);
+            return Task.FromResult(new PermissionRecord(
+                permission,
+                PermissionDecision.Allowed,
+                permission.Scope,
+                DateTimeOffset.UtcNow,
+                permission.Kind == PermissionRequestKind.AskUserQuestion ? "inspect src first" : null));
+        });
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var results = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+        Assert.Equal(3, provider.RequestCount);
+        Assert.Equal(["AskQuestion", "SwitchMode"], results.Select(result => result.ToolName));
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == PlainTextPlanIntroProvider.Intro);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after intro recovery");
+        AssertCompletedAssistantTurnTextContains(events, PlainTextPlanIntroProvider.Intro);
+        Assert.Equal([PermissionRequestKind.AskUserQuestion, PermissionRequestKind.ExitPlanMode], permissionRequests.Select(permission => permission.Kind));
+        Assert.Contains(PlainTextPlanIntroProvider.Intro, permissionRequests[0].InteractivePayload!.Questions[0].Question);
     }
 
     [Fact]
@@ -5695,6 +5764,17 @@ gateway:
         Assert.DoesNotContain(completedAssistantText, item => item.Contains(text, StringComparison.Ordinal));
     }
 
+    private static void AssertCompletedAssistantTurnTextContains(IReadOnlyList<AgentEvent> events, string text)
+    {
+        var completedAssistantText = events
+            .Where(item => item.Kind == AgentEventKind.TurnCompleted && item.Turn is not null)
+            .SelectMany(item => item.Turn!.Items)
+            .Where(item => item.Kind == AgentTurnItemKind.AgentMessage)
+            .Select(item => item.Text);
+
+        Assert.Contains(completedAssistantText, item => item.Contains(text, StringComparison.Ordinal));
+    }
+
     private sealed class CapturingProviderHandler(string responseBody) : HttpMessageHandler
     {
         public HttpRequestMessage? Request { get; private set; }
@@ -6059,6 +6139,39 @@ gateway:
 
         private static ProviderStreamEvent Tool(string id, string name, string inputJson) =>
             new(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall(id, name, inputJson));
+    }
+
+    private sealed class PlainTextPlanIntroProvider : IProviderClient
+    {
+        public const string Intro = "I will inspect the project structure first so the plan is grounded in the existing app.";
+
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.ToolExchanges.Count == 0)
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: Intro);
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+                yield break;
+            }
+
+            if (request.ToolExchanges.Count == 1)
+            {
+                yield return new ProviderStreamEvent(
+                    ProviderStreamEventKind.ToolCall,
+                    ToolCall: new AgentToolCall("switch", "SwitchMode", """{"mode":"agent","plan":"Direct approved plan"}"""));
+                yield break;
+            }
+
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after intro recovery");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+        }
     }
 
     private sealed class PlainTextPlanQuestionProvider : IProviderClient
