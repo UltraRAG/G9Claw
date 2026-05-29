@@ -1528,6 +1528,25 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void ComposerPasteTextPolicyCreatesAttachmentsFromFileUrisLikeMac()
+    {
+        var attachments = ComposerPasteTextPolicy.AttachmentsFromFileUris(
+            [
+                new Uri("file:///C:/repo/notes.md"),
+                new Uri("https://example.com/not-local"),
+                new Uri("file:///C:/repo/notes.md"),
+            ],
+            path => path.EndsWith("notes.md", StringComparison.OrdinalIgnoreCase)
+                ? new ComposerPasteTextPolicy.PlainPathAttachmentInfo(path, false, 12, "text/markdown")
+                : null);
+
+        Assert.Single(attachments);
+        Assert.Equal("notes.md", attachments[0].FileName);
+        Assert.Equal("text/markdown", attachments[0].MimeType);
+        Assert.Null(ComposerPasteTextPolicy.TextPayload("file:///C:/repo/notes.md", attachments));
+    }
+
+    [Fact]
     public void FileAttachmentTypeDetectionUsesMacMimeAndExtensionPolicy()
     {
         Assert.True(new FileAttachment(@"C:\repo\image", "image", "image/png", 10).IsImage);

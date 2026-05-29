@@ -144,6 +144,30 @@ public static class ComposerPasteTextPolicy
         return ComposerAttachmentDeduper.Merged([], attachments);
     }
 
+    public static List<FileAttachment> AttachmentsFromFileUris(
+        IEnumerable<Uri> uris,
+        Func<string, PlainPathAttachmentInfo?> resolvePath)
+    {
+        var attachments = new List<FileAttachment>();
+        foreach (var uri in uris)
+        {
+            if (!uri.IsFile) continue;
+
+            var info = resolvePath(uri.LocalPath);
+            if (info is null) continue;
+
+            var fileName = Path.GetFileName(info.Path);
+            attachments.Add(new FileAttachment(
+                info.Path,
+                string.IsNullOrWhiteSpace(fileName) ? info.Path : fileName,
+                info.IsDirectory ? "inode/directory" : info.MimeType,
+                info.Bytes,
+                AttachmentSourceKind.ClipboardFile));
+        }
+
+        return ComposerAttachmentDeduper.Merged([], attachments);
+    }
+
     public static string AppendText(string existing, string text)
     {
         if (string.IsNullOrEmpty(text)) return existing;

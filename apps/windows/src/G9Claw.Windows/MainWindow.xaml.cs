@@ -2963,6 +2963,13 @@ public sealed partial class MainWindow : Window
         var text = await ReadClipboardTextAsync(data);
         if (attachments.Count == 0)
         {
+            attachments = ComposerPasteTextPolicy.AttachmentsFromFileUris(
+                await ReadClipboardFileUrisAsync(data),
+                ResolvePlainPathAttachment);
+        }
+
+        if (attachments.Count == 0)
+        {
             attachments = ComposerPasteTextPolicy.AttachmentsFromPlainFilePathText(
                 text,
                 ResolvePlainPathAttachment);
@@ -3005,6 +3012,27 @@ public sealed partial class MainWindow : Window
         }
 
         return result;
+    }
+
+    private static async Task<List<Uri>> ReadClipboardFileUrisAsync(DataPackageView data)
+    {
+        var uris = new List<Uri>();
+        if (!data.Contains(StandardDataFormats.Uri)) return uris;
+
+        try
+        {
+            var uri = await data.GetUriAsync();
+            if (uri is not null)
+            {
+                uris.Add(uri);
+            }
+        }
+        catch
+        {
+            // Ignore non-file URI payloads and malformed clipboard URI data.
+        }
+
+        return uris;
     }
 
     private static async Task<string?> ReadClipboardTextAsync(DataPackageView data)
