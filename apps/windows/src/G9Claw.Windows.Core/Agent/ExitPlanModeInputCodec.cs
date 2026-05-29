@@ -29,8 +29,8 @@ public static class ExitPlanModeInputCodec
     {
         return ExtractPlanMarkdownOrNull(inputJson) ??
             (chinese
-                ? "模型准备退出 Plan 模式并开始执行。"
-                : "The agent is ready to leave Plan mode and start implementation.");
+                ? PlanConfirmationCardMetrics.EmptyPlanFallbackZH
+                : PlanConfirmationCardMetrics.EmptyPlanFallbackEN);
     }
 
     public static string? ExtractPlanMarkdownOrNull(string inputJson)

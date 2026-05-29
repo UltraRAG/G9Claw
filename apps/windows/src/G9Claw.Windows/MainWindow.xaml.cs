@@ -2053,8 +2053,8 @@ public sealed partial class MainWindow : Window
         };
         planPanel.Children.Add(new Border
         {
-            MinHeight = 220,
-            MaxHeight = 460,
+            MinHeight = PlanConfirmationCardMetrics.PlanMinHeight,
+            MaxHeight = PlanConfirmationCardMetrics.PlanMaxHeight,
             CornerRadius = new CornerRadius(8),
             BorderThickness = new Thickness(1),
             BorderBrush = Brush("V2BorderBrush"),
@@ -2065,8 +2065,8 @@ public sealed partial class MainWindow : Window
                 {
                     new ScrollViewer
                     {
-                        MinHeight = 220,
-                        MaxHeight = 460,
+                        MinHeight = PlanConfirmationCardMetrics.PlanMinHeight,
+                        MaxHeight = PlanConfirmationCardMetrics.PlanMaxHeight,
                         VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                         Padding = new Thickness(14),
                         Content = MarkdownContent(ExitPlanModeInputCodec.ExtractPlanMarkdown(request.InputJson, isChinese)),
@@ -2133,7 +2133,7 @@ public sealed partial class MainWindow : Window
             Background = Brush("V2CardBrush"),
             FontSize = 12,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            MinHeight = 38,
+            MinHeight = PlanConfirmationCardMetrics.ActionRowHeight,
         };
         feedbackBox.TextChanged += (_, _) =>
         {
@@ -4865,19 +4865,14 @@ public sealed partial class MainWindow : Window
     {
         var button = new Button
         {
-            Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
-            Height = 28,
+            Style = (Style)Application.Current.Resources["V2IconButtonStyle"],
+            Width = EditorHeaderToolbarMetrics.IconButtonSize,
+            Height = EditorHeaderToolbarMetrics.IconButtonSize,
             MinWidth = 0,
-            Content = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 6,
-                Children =
-                {
-                    Icon(iconKey, 14, Brush("V2SecondaryForegroundBrush")),
-                    new TextBlock { Text = label, FontSize = 12, VerticalAlignment = VerticalAlignment.Center },
-                },
-            },
+            CornerRadius = new CornerRadius(7),
+            Background = Brush("V2CardBrush"),
+            BorderBrush = Brush("V2BorderBrush"),
+            Content = Icon(iconKey, EditorHeaderToolbarMetrics.IconFontSize, Brush("V2SecondaryForegroundBrush")),
         };
         ToolTipService.SetToolTip(button, label);
         return button;
@@ -6998,14 +6993,31 @@ public sealed partial class MainWindow : Window
 
     private async Task CreateProjectAsync()
     {
-        var nameBox = new TextBox { Header = T("project.displayName"), Style = (Style)Application.Current.Resources["V2TextBoxStyle"] };
+        var nameBox = new TextBox
+        {
+            Header = T("project.displayName"),
+            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+            MinHeight = ProjectCreationWizardMetrics.FieldHeight,
+        };
         var pathBox = new TextBox
         {
             Header = T("project.workspacePath"),
             Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
             Text = State.Settings.WorkspacesRoot,
+            MinHeight = ProjectCreationWizardMetrics.FieldHeight,
         };
-        var browse = new Button { Content = T("common.browse"), Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"], HorizontalAlignment = HorizontalAlignment.Left };
+        var browse = new Button
+        {
+            Style = (Style)Application.Current.Resources["V2IconButtonStyle"],
+            Width = ProjectCreationWizardMetrics.BrowseButtonWidth,
+            Height = ProjectCreationWizardMetrics.FieldHeight,
+            CornerRadius = new CornerRadius(6),
+            BorderBrush = Brush("V2BorderBrush"),
+            Background = Brush("V2CardBrush"),
+            Content = Icon("Folder", 13, Brush("V2SecondaryForegroundBrush")),
+            VerticalAlignment = VerticalAlignment.Bottom,
+        };
+        ToolTipService.SetToolTip(browse, T("common.browse"));
         browse.Click += async (_, _) =>
         {
             var picker = new FolderPicker();
@@ -7021,12 +7033,28 @@ public sealed partial class MainWindow : Window
                 }
             }
         };
-        var stack = new StackPanel { Spacing = 10 };
+        var pathRow = new Grid
+        {
+            ColumnSpacing = 8,
+        };
+        pathRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        pathRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        pathRow.Children.Add(pathBox);
+        Grid.SetColumn(browse, 1);
+        pathRow.Children.Add(browse);
+
+        var stack = new StackPanel
+        {
+            Spacing = 12,
+            MinHeight = ProjectCreationWizardMetrics.ContentMinHeight,
+            MaxWidth = ProjectCreationWizardMetrics.FormMaxWidth,
+            Padding = new Thickness(ProjectCreationWizardMetrics.ContentPadding),
+        };
         stack.Children.Add(nameBox);
-        stack.Children.Add(pathBox);
-        stack.Children.Add(browse);
+        stack.Children.Add(pathRow);
 
         var dialog = Dialog(T("project.createTitle"), stack, T("common.create"));
+        dialog.MaxWidth = ProjectCreationWizardMetrics.MaxWidth;
         var result = await dialog.ShowAsync();
         if (result != ContentDialogResult.Primary) return;
 

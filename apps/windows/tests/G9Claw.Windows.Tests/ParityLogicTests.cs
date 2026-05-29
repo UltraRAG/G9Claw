@@ -1001,6 +1001,41 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void ProjectCreationWizardUsesCompactMetricsLikeMac()
+    {
+        Assert.Equal(612, ProjectCreationWizardMetrics.MaxWidth);
+        Assert.Equal(520, ProjectCreationWizardMetrics.FormMaxWidth);
+        Assert.Equal(36, ProjectCreationWizardMetrics.FieldHeight);
+        Assert.Equal(44, ProjectCreationWizardMetrics.BrowseButtonWidth);
+        Assert.True(ProjectCreationWizardMetrics.MaxWidth < 720);
+        Assert.True(ProjectCreationWizardMetrics.FormMaxWidth < ProjectCreationWizardMetrics.MaxWidth);
+        Assert.True(ProjectCreationWizardMetrics.ContentMinHeight < 324);
+        Assert.True(ProjectCreationWizardMetrics.TypeCardMinHeight < 132);
+        Assert.Equal(54, ProjectCreationWizardMetrics.FooterHeight);
+    }
+
+    [Fact]
+    public void PlanConfirmationCardUsesBluePlanAreaAndVerticalChoicesLikeMac()
+    {
+        Assert.Equal(220, PlanConfirmationCardMetrics.PlanMinHeight);
+        Assert.Equal(460, PlanConfirmationCardMetrics.PlanMaxHeight);
+        Assert.Equal("execute-feedback-footer", PlanConfirmationCardMetrics.ActionLayout);
+        Assert.Equal(38, PlanConfirmationCardMetrics.ActionRowHeight);
+        Assert.Equal(2, PlanConfirmationCardMetrics.FooterButtonCount);
+        Assert.Contains("\u540c\u6b65", PlanConfirmationCardMetrics.EmptyPlanFallbackZH);
+        Assert.Equal(PlanConfirmationCardMetrics.EmptyPlanFallbackEN, ExitPlanModeInputCodec.ExtractPlanMarkdown("{}", chinese: false));
+        Assert.Equal(PlanConfirmationCardMetrics.EmptyPlanFallbackZH, ExitPlanModeInputCodec.ExtractPlanMarkdown("{}", chinese: true));
+    }
+
+    [Fact]
+    public void EditorHeaderToolbarUsesNeutralIconButtonsLikeMac()
+    {
+        Assert.Equal(28, EditorHeaderToolbarMetrics.IconButtonSize);
+        Assert.Equal(13.5, EditorHeaderToolbarMetrics.IconFontSize);
+        Assert.False(EditorHeaderToolbarMetrics.UsesProminentSaveButton);
+    }
+
+    [Fact]
     public void FilePreviewActionPolicyMatchesRequestedPreviewSurface()
     {
         var html = FileNode("index.html");
