@@ -2961,6 +2961,13 @@ public sealed partial class MainWindow : Window
 
         var attachments = await ReadClipboardAttachmentsAsync(data);
         var text = await ReadClipboardTextAsync(data);
+        if (attachments.Count == 0)
+        {
+            attachments = ComposerPasteTextPolicy.AttachmentsFromPlainFilePathText(
+                text,
+                ResolvePlainPathAttachment);
+        }
+
         return (attachments, ComposerPasteTextPolicy.TextPayload(text, attachments));
     }
 
@@ -3012,6 +3019,74 @@ public sealed partial class MainWindow : Window
         {
             return null;
         }
+    }
+
+    private static ComposerPasteTextPolicy.PlainPathAttachmentInfo? ResolvePlainPathAttachment(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+
+        var candidate = value.Trim();
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(candidate);
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (Directory.Exists(fullPath))
+        {
+            return new ComposerPasteTextPolicy.PlainPathAttachmentInfo(
+                fullPath,
+                true,
+                0,
+                "inode/directory");
+        }
+
+        if (!File.Exists(fullPath)) return null;
+
+        long bytes;
+        try
+        {
+            bytes = new FileInfo(fullPath).Length;
+        }
+        catch
+        {
+            bytes = 0;
+        }
+
+        return new ComposerPasteTextPolicy.PlainPathAttachmentInfo(
+            fullPath,
+            false,
+            bytes,
+            MimeTypeForPlainAttachmentPath(fullPath));
+    }
+
+    private static string? MimeTypeForPlainAttachmentPath(string path)
+    {
+        var extension = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+        return extension switch
+        {
+            "md" or "markdown" => "text/markdown",
+            "html" or "htm" => "text/html",
+            "json" or "jsonl" => "application/json",
+            "yaml" or "yml" => "application/yaml",
+            "toml" => "application/toml",
+            "xml" => "application/xml",
+            "csv" => "text/csv",
+            "txt" or "log" or "swift" or "js" or "ts" or "tsx" or "jsx" or "py" or "rb" or "go" or "rs" or "css" or "scss" or "sql" or "sh" or "ps1" => "text/plain",
+            "pdf" => "application/pdf",
+            "png" => "image/png",
+            "jpg" or "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "heic" => "image/heic",
+            "tiff" or "tif" => "image/tiff",
+            "bmp" => "image/bmp",
+            _ => null,
+        };
     }
 
     private async Task<FileAttachment> AttachmentFromStorageFileAsync(StorageFile file, AttachmentSourceKind sourceKind)

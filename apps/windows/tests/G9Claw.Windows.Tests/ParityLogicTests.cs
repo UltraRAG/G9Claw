@@ -1487,6 +1487,41 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void ComposerPasteTextPolicyCreatesAttachmentsFromPlainFilePathsLikeMac()
+    {
+        var attachments = ComposerPasteTextPolicy.AttachmentsFromPlainFilePathText(
+            "C:\\repo\\notes.md\r\nC:\\repo\\docs",
+            path => path.EndsWith("notes.md", StringComparison.OrdinalIgnoreCase)
+                ? new ComposerPasteTextPolicy.PlainPathAttachmentInfo(path, false, 12, "text/markdown")
+                : path.EndsWith("docs", StringComparison.OrdinalIgnoreCase)
+                    ? new ComposerPasteTextPolicy.PlainPathAttachmentInfo(path, true, 0, "inode/directory")
+                    : null);
+
+        Assert.Equal(2, attachments.Count);
+        Assert.Equal("notes.md", attachments[0].FileName);
+        Assert.Equal("text/markdown", attachments[0].MimeType);
+        Assert.Equal("docs", attachments[1].FileName);
+        Assert.Equal("inode/directory", attachments[1].MimeType);
+        Assert.Null(ComposerPasteTextPolicy.TextPayload("C:\\repo\\notes.md\r\nC:\\repo\\docs", attachments));
+    }
+
+    [Fact]
+    public void ComposerPasteTextPolicyRejectsPlainPathsWhenAnyLineIsNotAFilePathLikeMac()
+    {
+        var attachments = ComposerPasteTextPolicy.AttachmentsFromPlainFilePathText(
+            "C:\\repo\\notes.md\r\nnot a path",
+            path => path.EndsWith("notes.md", StringComparison.OrdinalIgnoreCase)
+                ? new ComposerPasteTextPolicy.PlainPathAttachmentInfo(path, false, 12, "text/markdown")
+                : null);
+        var urlAttachments = ComposerPasteTextPolicy.AttachmentsFromPlainFilePathText(
+            "file:///C:/repo/notes.md",
+            _ => new ComposerPasteTextPolicy.PlainPathAttachmentInfo(@"C:\repo\notes.md", false, 12, "text/markdown"));
+
+        Assert.Empty(attachments);
+        Assert.Empty(urlAttachments);
+    }
+
+    [Fact]
     public void FileAttachmentTypeDetectionUsesMacMimeAndExtensionPolicy()
     {
         Assert.True(new FileAttachment(@"C:\repo\image", "image", "image/png", 10).IsImage);

@@ -76,6 +76,12 @@ public sealed record ComposerAttachmentPreviewModel(
 
 public static class ComposerPasteTextPolicy
 {
+    public sealed record PlainPathAttachmentInfo(
+        string Path,
+        bool IsDirectory,
+        long Bytes,
+        string? MimeType);
+
     public static string? TextPayload(string? value, IReadOnlyList<FileAttachment> attachments)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
@@ -93,10 +99,7 @@ public static class ComposerPasteTextPolicy
             }
         }
 
-        var lines = value
-            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(line => !string.IsNullOrWhiteSpace(line))
-            .ToList();
+        var lines = SplitNonEmptyLines(value);
 
         if (attachmentValues.Count > 0 &&
             lines.Count > 0 &&
@@ -108,12 +111,51 @@ public static class ComposerPasteTextPolicy
         return value;
     }
 
+    public static List<FileAttachment> AttachmentsFromPlainFilePathText(
+        string? value,
+        Func<string, PlainPathAttachmentInfo?> resolvePath)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return [];
+
+        var lines = SplitNonEmptyLines(value);
+        if (lines.Count == 0 || lines.Any(line => line.Contains("://", StringComparison.Ordinal)))
+        {
+            return [];
+        }
+
+        var attachments = new List<FileAttachment>();
+        foreach (var line in lines)
+        {
+            var info = resolvePath(line);
+            if (info is null)
+            {
+                return [];
+            }
+
+            var fileName = Path.GetFileName(info.Path);
+            attachments.Add(new FileAttachment(
+                info.Path,
+                string.IsNullOrWhiteSpace(fileName) ? info.Path : fileName,
+                info.IsDirectory ? "inode/directory" : info.MimeType,
+                info.Bytes,
+                AttachmentSourceKind.ClipboardFile));
+        }
+
+        return ComposerAttachmentDeduper.Merged([], attachments);
+    }
+
     public static string AppendText(string existing, string text)
     {
         if (string.IsNullOrEmpty(text)) return existing;
         if (string.IsNullOrEmpty(existing)) return text;
         return char.IsWhiteSpace(existing[^1]) ? existing + text : existing + Environment.NewLine + text;
     }
+
+    private static List<string> SplitNonEmptyLines(string value) =>
+        value
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToList();
 
     private static IEnumerable<string> AttachmentTextValues(FileAttachment attachment)
     {
