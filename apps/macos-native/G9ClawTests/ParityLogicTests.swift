@@ -26,6 +26,51 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(WorkspaceService.projectName(for: "/Users/tester/My_Project"), "-Users-tester-My-Project")
     }
 
+    func testWorkspaceFileListingReportsHiddenOnlyRoots() throws {
+        let root = temporaryDirectory("g9claw-files")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".pilotdeck"), withIntermediateDirectories: true)
+
+        let service = WorkspaceService(workspaceRoot: root)
+        let hiddenOnly = try service.fileListing(rootPath: root.path)
+
+        XCTAssertTrue(hiddenOnly.files.isEmpty)
+        XCTAssertEqual(hiddenOnly.visibleRootItemCount, 0)
+        XCTAssertEqual(hiddenOnly.skippedRootItemCount, 1)
+        XCTAssertTrue(hiddenOnly.isRootHiddenOnly)
+
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+        let visible = try service.fileListing(rootPath: root.path)
+
+        XCTAssertEqual(visible.files.map(\.name), ["Sources"])
+        XCTAssertEqual(visible.visibleRootItemCount, 1)
+        XCTAssertFalse(visible.isRootHiddenOnly)
+    }
+
+    func testWorkspaceTextReadRejectsBinaryAndLargeFiles() throws {
+        let root = temporaryDirectory("g9claw-read")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = WorkspaceService(workspaceRoot: root)
+
+        let textURL = root.appendingPathComponent("note.txt")
+        try "hello".write(to: textURL, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try service.readTextFile(path: textURL.path).content, "hello")
+
+        let binaryURL = root.appendingPathComponent("asset.bin")
+        try Data([0, 1, 2, 3]).write(to: binaryURL)
+        XCTAssertThrowsError(try service.readTextFile(path: binaryURL.path)) { error in
+            XCTAssertEqual(error as? WorkspaceFileReadError, .binaryFile)
+        }
+
+        let largeURL = root.appendingPathComponent("large.txt")
+        try String(repeating: "x", count: 12).write(to: largeURL, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try service.readTextFile(path: largeURL.path, maxBytes: 8)) { error in
+            guard case .fileTooLarge(byteCount: 12, limit: 8) = error as? WorkspaceFileReadError else {
+                return XCTFail("Expected fileTooLarge, got \(error)")
+            }
+        }
+    }
+
     func testProjectSortingByNameMatchesSidebarPolicy() {
         let now = Date()
         let projects = [

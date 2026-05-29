@@ -6,6 +6,51 @@ struct WorkspaceValidationResult: Equatable {
     var error: String?
 }
 
+struct WorkspaceFileListing: Equatable {
+    var files: [WorkspaceFile]
+    var visibleRootItemCount: Int
+    var skippedRootItemCount: Int
+    var skippedItemCount: Int
+
+    var isRootHiddenOnly: Bool {
+        visibleRootItemCount == 0 && skippedRootItemCount > 0
+    }
+}
+
+struct WorkspaceTextFileRead: Equatable {
+    var content: String
+    var byteCount: Int
+}
+
+enum WorkspaceFileReadError: LocalizedError, Equatable {
+    case binaryFile
+    case fileTooLarge(byteCount: Int, limit: Int)
+    case unsupportedEncoding
+
+    var errorDescription: String? {
+        switch self {
+        case .binaryFile:
+            return "This file appears to be binary and cannot be edited as text."
+        case let .fileTooLarge(byteCount, limit):
+            return "This file is too large to edit safely (\(Self.formatBytes(byteCount)); limit \(Self.formatBytes(limit)))."
+        case .unsupportedEncoding:
+            return "This file is not valid UTF-8 text."
+        }
+    }
+
+    static func formatBytes(_ value: Int) -> String {
+        guard value >= 1_024 else { return "\(value) B" }
+        let units = ["KB", "MB", "GB"]
+        var size = Double(value)
+        var index = -1
+        repeat {
+            size /= 1_024
+            index += 1
+        } while size >= 1_024 && index < units.count - 1
+        return String(format: "%.1f %@", size, units[index])
+    }
+}
+
 final class WorkspaceService {
     static let forbiddenPaths: [String] = [
         "/",
@@ -84,23 +129,43 @@ final class WorkspaceService {
     }
 
     func listFiles(rootPath: String, expandedDirectories: Set<String> = []) throws -> [WorkspaceFile] {
+        try fileListing(rootPath: rootPath, expandedDirectories: expandedDirectories).files
+    }
+
+    func fileListing(rootPath: String, expandedDirectories: Set<String> = []) throws -> WorkspaceFileListing {
         let root = URL(fileURLWithPath: rootPath).standardizedFileURL
         var output: [WorkspaceFile] = []
+        var visibleRootItemCount = 0
+        var skippedRootItemCount = 0
+        var skippedItemCount = 0
 
         func walk(_ directory: URL, depth: Int) throws {
             let contents = try fileManager.contentsOfDirectory(
                 at: directory,
                 includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey, .fileSizeKey],
-                options: [.skipsHiddenFiles]
+                options: []
             )
             let visible = contents
-                .filter { !Self.hiddenNames.contains($0.lastPathComponent) }
+                .filter { url in
+                    let hidden = Self.shouldHideFile(url)
+                    if hidden {
+                        skippedItemCount += 1
+                        if depth == 0 {
+                            skippedRootItemCount += 1
+                        }
+                    }
+                    return !hidden
+                }
                 .sorted { left, right in
                     let leftDir = ((try? left.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false)
                     let rightDir = ((try? right.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false)
                     if leftDir != rightDir { return leftDir && !rightDir }
                     return left.lastPathComponent.localizedCaseInsensitiveCompare(right.lastPathComponent) == .orderedAscending
                 }
+
+            if depth == 0 {
+                visibleRootItemCount = visible.count
+            }
 
             for url in visible {
                 let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey, .fileSizeKey])
@@ -125,11 +190,43 @@ final class WorkspaceService {
         }
 
         try walk(root, depth: 0)
-        return output
+        return WorkspaceFileListing(
+            files: output,
+            visibleRootItemCount: visibleRootItemCount,
+            skippedRootItemCount: skippedRootItemCount,
+            skippedItemCount: skippedItemCount
+        )
     }
 
     func readFile(path: String) throws -> String {
-        try String(contentsOfFile: path, encoding: .utf8)
+        try readTextFile(path: path).content
+    }
+
+    func readTextFile(path: String, maxBytes: Int = 1_000_000) throws -> WorkspaceTextFileRead {
+        let url = URL(fileURLWithPath: path)
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+        if let byteCount = values?.fileSize, byteCount > maxBytes {
+            throw WorkspaceFileReadError.fileTooLarge(byteCount: byteCount, limit: maxBytes)
+        }
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        if data.prefix(4_096).contains(0) {
+            throw WorkspaceFileReadError.binaryFile
+        }
+        guard let content = String(data: data, encoding: .utf8) else {
+            throw WorkspaceFileReadError.unsupportedEncoding
+        }
+        return WorkspaceTextFileRead(content: content, byteCount: data.count)
+    }
+
+    static func isProbablyBinaryFile(path: String, sampleByteLimit: Int = 4_096) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
+            return false
+        }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: sampleByteLimit) else {
+            return false
+        }
+        return data.prefix(4_096).contains(0)
     }
 
     func writeFile(path: String, content: String) throws {
@@ -262,6 +359,11 @@ final class WorkspaceService {
     }
 
     private static let hiddenNames = Set(["node_modules", ".git", "dist", "build", ".DS_Store"])
+
+    private static func shouldHideFile(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        return hiddenNames.contains(name) || name.hasPrefix(".")
+    }
 
     private static func relativePath(for url: URL, root: URL) -> String {
         let relative = url.standardizedFileURL.path.replacingOccurrences(of: root.path + "/", with: "")

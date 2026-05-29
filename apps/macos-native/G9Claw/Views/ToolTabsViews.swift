@@ -6,10 +6,14 @@ import UniformTypeIdentifiers
 struct FilesView: View {
     @EnvironmentObject private var state: AppState
     @State private var files: [WorkspaceFile] = []
+    @State private var fileListing: WorkspaceFileListing?
+    @State private var isLoadingFiles = false
+    @State private var fileListError: String?
     @State private var expandedDirectories: Set<String> = []
     @State private var browserWidth = FileWorkspaceLayoutMetrics.browserDefaultWidth
     @State private var editorFile: WorkspaceFile?
     @State private var editorOriginalContent = ""
+    @State private var editorLoadState: FileEditorLoadState = .idle
     @State private var editorExpanded = false
     @State private var searchText = ""
     @State private var inlineEdit: FileInlineEdit?
@@ -42,6 +46,7 @@ struct FilesView: View {
                         onClose: {
                             self.editorFile = nil
                             editorOriginalContent = ""
+                            editorLoadState = .idle
                             state.selectedFile = nil
                             state.selectedFileContent = ""
                             editorExpanded = false
@@ -52,7 +57,8 @@ struct FilesView: View {
                         },
                         onSave: {
                             save(editorFile)
-                        }
+                        },
+                        loadState: editorLoadState
                     )
                     .environmentObject(state)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -74,11 +80,26 @@ struct FilesView: View {
             fileHeader
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: FileWorkspaceLayoutMetrics.treeSpacing) {
-                    if filteredFiles.isEmpty, inlineEdit == nil {
-                        ToolEmptyState(
-                            title: searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No files found" : "No matching files",
-                            detail: state.selectedWorkspaceContext == nil ? "Pick a workspace to browse files." : "Refresh after changing the workspace.",
-                            systemImage: "doc.text.magnifyingglass"
+                    if isLoadingFiles && files.isEmpty {
+                        FilePaneStatusView(
+                            title: filesText(english: "Loading files", chinese: "正在加载文件"),
+                            detail: state.selectedWorkspaceContext?.rootPath ?? state.t(.noProjectSelected),
+                            systemImage: "arrow.clockwise",
+                            isLoading: true
+                        )
+                        .padding(.top, 56)
+                    } else if let fileListError, files.isEmpty {
+                        FilePaneStatusView(
+                            title: filesText(english: "Could not load files", chinese: "无法加载文件"),
+                            detail: fileListError,
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .padding(.top, 56)
+                    } else if filteredFiles.isEmpty, inlineEdit == nil {
+                        FilePaneStatusView(
+                            title: emptyFilesTitle,
+                            detail: emptyFilesDetail,
+                            systemImage: emptyFilesIcon
                         )
                         .padding(.top, 56)
                     } else {
@@ -116,30 +137,33 @@ struct FilesView: View {
     }
 
     private var fileHeader: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(spacing: 9) {
+            HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(state.t(.files))
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(DesignTokens.text)
                     Text(state.selectedWorkspaceContext?.rootPath ?? state.t(.noProjectSelected))
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(DesignTokens.tertiaryText)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 Spacer(minLength: 8)
-                fileToolbarButton("doc.badge.plus", help: state.t(.newFile)) { beginCreateAtSelection(isDirectory: false) }
-                fileToolbarButton("folder.badge.plus", help: state.t(.newFolder)) { beginCreateAtSelection(isDirectory: true) }
-                fileToolbarButton("square.and.arrow.up", help: state.t(.uploadFiles)) { upload(allowDirectories: false) }
-                fileToolbarButton("arrow.clockwise", help: state.t(.refresh)) { loadFiles() }
+                HStack(spacing: 6) {
+                    fileToolbarButton("doc.badge.plus", help: state.t(.newFile), isDisabled: !hasWorkspace) { beginCreateAtSelection(isDirectory: false) }
+                    fileToolbarButton("folder.badge.plus", help: state.t(.newFolder), isDisabled: !hasWorkspace) { beginCreateAtSelection(isDirectory: true) }
+                    fileToolbarButton("square.and.arrow.up", help: state.t(.uploadFiles), isDisabled: !hasWorkspace) { upload(allowDirectories: false) }
+                    fileToolbarButton("arrow.clockwise", help: state.t(.refresh), isDisabled: !hasWorkspace || isLoadingFiles) { loadFiles() }
+                }
             }
 
             HStack(spacing: 7) {
-                HStack(spacing: 6) {
+                HStack(spacing: 7) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(DesignTokens.tertiaryText)
-                    TextField("Search files", text: $searchText)
+                    TextField(filesText(english: "Search files", chinese: "搜索文件"), text: $searchText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12.5))
                     if !searchText.isEmpty {
@@ -151,49 +175,86 @@ struct FilesView: View {
                         .foregroundStyle(DesignTokens.tertiaryText)
                     }
                 }
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .padding(.horizontal, 9)
+                .frame(height: 30)
+                .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(DesignTokens.separator.opacity(0.72), lineWidth: 1)
                 )
 
                 Menu {
                     Button(state.t(.newFile)) { beginCreateAtSelection(isDirectory: false) }
+                        .disabled(!hasWorkspace)
                     Button(state.t(.newFolder)) { beginCreateAtSelection(isDirectory: true) }
+                        .disabled(!hasWorkspace)
                     Divider()
                     Button(state.t(.uploadFiles)) { upload(allowDirectories: false) }
+                        .disabled(!hasWorkspace)
                     Button(state.t(.uploadFolder)) { upload(allowDirectories: true) }
+                        .disabled(!hasWorkspace)
                     Button(state.t(.download)) { downloadZip() }
+                        .disabled(!hasWorkspace)
+                    if let selected = selectedFileInListing {
+                        Divider()
+                        Button("\(state.t(.delete)) \(selected.name)", role: .destructive) { delete(selected) }
+                    }
                     Divider()
-                    Button("Collapse all") {
+                    Button(filesText(english: "Collapse all", chinese: "全部折叠")) {
                         expandedDirectories.removeAll()
                         loadFiles()
                     }
-                    Button("Close") { state.activeTab = .chat }
+                    .disabled(expandedDirectories.isEmpty)
+                    Button(filesText(english: "Close", chinese: "关闭")) { state.activeTab = .chat }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .frame(width: 28, height: 28)
+                        .frame(width: 30, height: 30)
                 }
                 .menuStyle(.borderlessButton)
                 .buttonStyle(WebToolbarButtonStyle())
             }
+
+            if let status = filePaneStatusLine {
+                HStack(spacing: 5) {
+                    Image(systemName: status.icon)
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(status.text)
+                        .font(.system(size: 10.5))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(status.color)
+            }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 11)
         .overlay(alignment: .bottom) {
             Rectangle().fill(DesignTokens.separator).frame(height: 1)
         }
     }
 
-    private func fileToolbarButton(_ systemImage: String, help: String, action: @escaping () -> Void) -> some View {
+    private func fileToolbarButton(
+        _ systemImage: String,
+        help: String,
+        isDisabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 12.5, weight: .medium))
-                .frame(width: 28, height: 28)
+            ZStack {
+                if systemImage == "arrow.clockwise", isLoadingFiles {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.58)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12.5, weight: .medium))
+                }
+            }
+            .frame(width: 30, height: 30)
         }
         .buttonStyle(WebToolbarButtonStyle())
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.45 : 1)
         .help(help)
     }
 
@@ -202,9 +263,13 @@ struct FilesView: View {
             Image(systemName: "sidebar.left")
                 .font(.system(size: 24, weight: .regular))
                 .foregroundStyle(DesignTokens.tertiaryText)
-            Text("Select a file to edit")
+            Text(filesText(english: "Select a file to edit", chinese: "选择文件开始编辑"))
                 .font(.system(size: 14, weight: .semibold))
-            Text("Browse the project tree, then open a source file, image, or Markdown preview.")
+                .foregroundStyle(DesignTokens.text)
+            Text(filesText(
+                english: "Browse the project tree, then open a source file, image, or Markdown preview.",
+                chinese: "在左侧浏览项目文件，打开源码、图片或 Markdown 预览。"
+            ))
                 .font(.system(size: 12))
                 .foregroundStyle(DesignTokens.secondaryText)
                 .multilineTextAlignment(.center)
@@ -212,6 +277,75 @@ struct FilesView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DesignTokens.contentSurface.opacity(0.30))
+    }
+
+    private var hasWorkspace: Bool {
+        state.selectedWorkspaceContext != nil
+    }
+
+    private var selectedFileInListing: WorkspaceFile? {
+        guard let selected = state.selectedFile else { return nil }
+        return files.first { $0.path == selected.path }
+    }
+
+    private var emptyFilesTitle: String {
+        if state.selectedWorkspaceContext == nil {
+            return filesText(english: "Pick a workspace", chinese: "请选择工作区")
+        }
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return filesText(english: "No matching files", chinese: "没有匹配的文件")
+        }
+        if fileListing?.isRootHiddenOnly == true {
+            return filesText(english: "Only hidden files here", chinese: "这里暂时只有隐藏文件")
+        }
+        return filesText(english: "No files found", chinese: "没有文件")
+    }
+
+    private var emptyFilesDetail: String {
+        if state.selectedWorkspaceContext == nil {
+            return filesText(english: "Choose or create a project before browsing files.", chinese: "先选择或创建项目，然后再浏览文件。")
+        }
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return filesText(english: "Try another filename or clear the search.", chinese: "换个文件名搜索，或者清空搜索条件。")
+        }
+        if let listing = fileListing, listing.isRootHiddenOnly {
+            return filesText(
+                english: "\(listing.skippedRootItemCount) hidden or generated item\(listing.skippedRootItemCount == 1 ? "" : "s") are omitted from the project browser.",
+                chinese: "已省略 \(listing.skippedRootItemCount) 个隐藏或生成项目，避免文件树被内部数据占满。"
+            )
+        }
+        return filesText(english: "Create a file, upload project assets, or refresh after changing the workspace.", chinese: "你可以新建文件、上传项目资源，或在外部修改后刷新。")
+    }
+
+    private var emptyFilesIcon: String {
+        if state.selectedWorkspaceContext == nil {
+            return "folder.badge.questionmark"
+        }
+        if fileListing?.isRootHiddenOnly == true {
+            return "eye.slash"
+        }
+        return "doc.text.magnifyingglass"
+    }
+
+    private var filePaneStatusLine: (icon: String, text: String, color: Color)? {
+        if let fileListError {
+            return ("exclamationmark.triangle", fileListError, DesignTokens.danger)
+        }
+        if let listing = fileListing, listing.skippedItemCount > 0 {
+            return (
+                "eye.slash",
+                filesText(
+                    english: "\(listing.skippedItemCount) hidden or generated item\(listing.skippedItemCount == 1 ? "" : "s") omitted",
+                    chinese: "已省略 \(listing.skippedItemCount) 个隐藏或生成项目"
+                ),
+                DesignTokens.tertiaryText
+            )
+        }
+        return nil
+    }
+
+    private func filesText(english: String, chinese: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
     }
 
     private var filteredFiles: [WorkspaceFile] {
@@ -225,9 +359,30 @@ struct FilesView: View {
     private func loadFiles() {
         guard let context = state.selectedWorkspaceContext else {
             files = []
+            fileListing = nil
+            fileListError = nil
+            isLoadingFiles = false
             return
         }
-        files = (try? state.workspaceService.listFiles(rootPath: context.rootPath, expandedDirectories: expandedDirectories)) ?? []
+        isLoadingFiles = true
+        fileListError = nil
+        do {
+            let listing = try state.workspaceService.fileListing(
+                rootPath: context.rootPath,
+                expandedDirectories: expandedDirectories
+            )
+            fileListing = listing
+            files = listing.files
+            if let editorFile, let updated = files.first(where: { $0.path == editorFile.path }) {
+                self.editorFile = updated
+                state.selectedFile = updated
+            }
+        } catch {
+            fileListing = nil
+            files = []
+            fileListError = error.localizedDescription
+        }
+        isLoadingFiles = false
     }
 
     private func open(_ file: WorkspaceFile) {
@@ -237,21 +392,39 @@ struct FilesView: View {
         }
         state.selectedFile = file
         editorFile = file
+        editorLoadState = .loading
         do {
-            let content = try state.workspaceService.readFile(path: file.path)
+            if file.isImage || file.isPDF || WorkspaceService.isProbablyBinaryFile(path: file.path) {
+                state.selectedFileContent = ""
+                editorOriginalContent = ""
+                editorLoadState = .loaded
+                return
+            }
+            let read = try state.workspaceService.readTextFile(path: file.path)
+            let content = read.content
             state.selectedFileContent = content
             editorOriginalContent = content
+            editorLoadState = .loaded
+        } catch let error as WorkspaceFileReadError {
+            state.selectedFileContent = ""
+            editorOriginalContent = ""
+            editorLoadState = .unsupported(fileReadErrorMessage(error))
         } catch {
             state.selectedFileContent = ""
             editorOriginalContent = ""
-            state.errorBanner = error.localizedDescription
+            editorLoadState = .failed(error.localizedDescription)
         }
     }
 
     private func save(_ file: WorkspaceFile) {
+        guard editorLoadState.canSave else {
+            state.errorBanner = filesText(english: "Reload the file before saving.", chinese: "请重新加载文件后再保存。")
+            return
+        }
         do {
             try state.workspaceService.writeFile(path: file.path, content: state.selectedFileContent)
             editorOriginalContent = state.selectedFileContent
+            editorLoadState = .loaded
             state.statusLine = "\(state.t(.saved)) \(file.name)"
             loadFiles()
             if let updated = files.first(where: { $0.path == file.path }) {
@@ -335,6 +508,7 @@ struct FilesView: View {
                         state.selectedFile = nil
                         state.selectedFileContent = ""
                         editorOriginalContent = ""
+                        editorLoadState = .idle
                     }
                 }
             case .createFile, .createFolder:
@@ -374,6 +548,7 @@ struct FilesView: View {
                 state.selectedFile = nil
                 state.selectedFileContent = ""
                 editorOriginalContent = ""
+                editorLoadState = .idle
             }
             loadFiles()
         } catch {
@@ -431,6 +606,26 @@ struct FilesView: View {
             state.errorBanner = error.localizedDescription
         }
     }
+
+    private func fileReadErrorMessage(_ error: WorkspaceFileReadError) -> String {
+        switch error {
+        case .binaryFile:
+            return filesText(
+                english: "This file appears to be binary and cannot be edited as text.",
+                chinese: "这个文件看起来是二进制文件，不能作为文本编辑。"
+            )
+        case let .fileTooLarge(byteCount, limit):
+            return filesText(
+                english: "This file is too large to edit safely (\(WorkspaceFileReadError.formatBytes(byteCount)); limit \(WorkspaceFileReadError.formatBytes(limit))).",
+                chinese: "这个文件太大，不能安全地直接编辑（\(WorkspaceFileReadError.formatBytes(byteCount))；上限 \(WorkspaceFileReadError.formatBytes(limit))）。"
+            )
+        case .unsupportedEncoding:
+            return filesText(
+                english: "This file is not valid UTF-8 text.",
+                chinese: "这个文件不是有效的 UTF-8 文本。"
+            )
+        }
+    }
 }
 
 enum FileWorkspaceLayoutMetrics {
@@ -460,6 +655,53 @@ enum FilePreviewActionPolicy {
 
     static func usesNativePDFPreview(for file: WorkspaceFile) -> Bool {
         file.isPDF
+    }
+}
+
+enum FileEditorLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+    case unsupported(String)
+
+    var canSave: Bool {
+        self == .loaded
+    }
+}
+
+private struct FilePaneStatusView: View {
+    var title: String
+    var detail: String
+    var systemImage: String
+    var isLoading = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.76)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 24, weight: .regular))
+                }
+            }
+            .frame(width: 36, height: 36)
+            .foregroundStyle(DesignTokens.tertiaryText)
+
+            Text(title)
+                .font(.system(size: 13.5, weight: .semibold))
+                .foregroundStyle(DesignTokens.text)
+            Text(detail)
+                .font(.system(size: 12))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 280)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 18)
     }
 }
 
@@ -3843,15 +4085,16 @@ private struct FileEditorPane: View {
     var onToggleExpand: () -> Void
     var onRevert: () -> Void
     var onSave: () -> Void
+    var loadState: FileEditorLoadState
     @State private var markdownPreview = false
     @State private var saveFlash = false
 
     private var isBinaryFile: Bool {
-        isProbablyBinary(file.path)
+        WorkspaceService.isProbablyBinaryFile(path: file.path)
     }
 
     private var canEditText: Bool {
-        !file.isImage && !file.isPDF && !isBinaryFile
+        loadState.canSave && !file.isImage && !file.isPDF && !isBinaryFile
     }
 
     private var isDirty: Bool {
@@ -3928,6 +4171,28 @@ private struct FileEditorPane: View {
                     .padding(24)
             } else if FilePreviewActionPolicy.usesNativePDFPreview(for: file) {
                 PDFDocumentPreview(url: URL(fileURLWithPath: file.path))
+            } else if case .loading = loadState {
+                FilePaneStatusView(
+                    title: editorText(english: "Loading file", chinese: "正在加载文件"),
+                    detail: file.relativePath,
+                    systemImage: "arrow.clockwise",
+                    isLoading: true
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if case let .failed(message) = loadState {
+                FilePaneStatusView(
+                    title: editorText(english: "Could not load file", chinese: "无法加载文件"),
+                    detail: message,
+                    systemImage: "exclamationmark.triangle"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if case let .unsupported(message) = loadState {
+                FilePaneStatusView(
+                    title: editorText(english: "Cannot edit this file", chinese: "无法编辑此文件"),
+                    detail: message,
+                    systemImage: "doc.badge.exclamationmark"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if file.isMarkdown && markdownPreview {
                 ScrollView {
                     MarkdownPreview(text: content)
@@ -3935,7 +4200,14 @@ private struct FileEditorPane: View {
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             } else if isBinaryFile {
-                ToolEmptyState(title: "Binary File", detail: "\(file.name) cannot be displayed in the text editor.", systemImage: "doc.zipper")
+                ToolEmptyState(
+                    title: editorText(english: "Binary File", chinese: "二进制文件"),
+                    detail: editorText(
+                        english: "\(file.name) cannot be displayed in the text editor.",
+                        chinese: "\(file.name) 不能在文本编辑器中显示。"
+                    ),
+                    systemImage: "doc.zipper"
+                )
             } else {
                 CodeEditorWithChrome(
                     text: $content,
@@ -3966,6 +4238,10 @@ private struct FileEditorPane: View {
         return "doc.text"
     }
 
+    private func editorText(english: String, chinese: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
+    }
+
     private func openHTMLPreview() {
         NSWorkspace.shared.open(URL(fileURLWithPath: file.path))
         state.statusLine = "\(state.t(.openHTML)) \(file.name)"
@@ -3986,7 +4262,7 @@ private struct FileEditorPane: View {
     }
 
     private func performSave() {
-        guard isDirty else { return }
+        guard isDirty, canEditText else { return }
         onSave()
         saveFlash = true
         Task { @MainActor in
@@ -4001,19 +4277,15 @@ private struct FileEditorPane: View {
             return
         }
         let alert = NSAlert()
-        alert.messageText = "Close without saving \(file.name)?"
-        alert.informativeText = "Unsaved changes will be lost."
-        alert.addButton(withTitle: "Close")
+        alert.messageText = editorText(english: "Close without saving \(file.name)?", chinese: "不保存并关闭 \(file.name)？")
+        alert.informativeText = editorText(english: "Unsaved changes will be lost.", chinese: "未保存的更改会丢失。")
+        alert.addButton(withTitle: editorText(english: "Close", chinese: "关闭"))
         alert.addButton(withTitle: state.t(.cancel))
         alert.alertStyle = .warning
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         onClose()
     }
 
-    private func isProbablyBinary(_ path: String) -> Bool {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe]) else { return false }
-        return data.prefix(1024).contains(0)
-    }
 }
 
 private struct PDFDocumentPreview: NSViewRepresentable {
@@ -4414,42 +4686,48 @@ private struct CodeEditorWithChrome: View {
     @State private var minimapSnapshot = CodeMinimapSnapshot.empty
 
     var body: some View {
-        HStack(spacing: 0) {
-            FileContentTextEditor(
-                text: $text,
-                minimapSeekLine: $minimapSeekLine,
-                syntaxLanguage: CodeSyntaxHighlightingService.languageAlias(forFileName: fileName),
-                isDarkMode: colorScheme == .dark,
-                fontSize: fontSize,
-                wordWrap: wordWrap,
-                lineNumbers: lineNumbers,
-                onVisibleLineRangeChange: { range in
-                    guard visibleLineRange != range else { return }
-                    var transaction = Transaction()
-                    transaction.animation = nil
-                    withTransaction(transaction) {
-                        visibleLineRange = range
-                    }
-                },
-                onSave: onSave
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        GeometryReader { proxy in
+            let minimapWidth = showMinimap ? CodeMinimapModel.width : 0
+            let editorWidth = max(0, proxy.size.width - minimapWidth)
 
-            if showMinimap {
-                CodeMinimapView(
-                    model: CodeMinimapModel(snapshot: minimapSnapshot, visibleLineRange: visibleLineRange),
-                    onSeekLine: { line in
-                        guard minimapSeekLine != line else { return }
+            HStack(spacing: 0) {
+                FileContentTextEditor(
+                    text: $text,
+                    minimapSeekLine: $minimapSeekLine,
+                    syntaxLanguage: CodeSyntaxHighlightingService.languageAlias(forFileName: fileName),
+                    isDarkMode: colorScheme == .dark,
+                    fontSize: fontSize,
+                    wordWrap: wordWrap,
+                    lineNumbers: lineNumbers,
+                    layoutWidth: editorWidth,
+                    onVisibleLineRangeChange: { range in
+                        guard visibleLineRange != range else { return }
                         var transaction = Transaction()
                         transaction.animation = nil
                         withTransaction(transaction) {
-                            minimapSeekLine = line
+                            visibleLineRange = range
                         }
-                    }
+                    },
+                    onSave: onSave
                 )
-                    .frame(width: CodeMinimapModel.width)
-                    .transition(.identity)
-                    .allowsHitTesting(CodeEditorScrollStabilityMetrics.minimapAllowsHitTesting)
+                .frame(width: editorWidth, height: proxy.size.height)
+
+                if showMinimap {
+                    CodeMinimapView(
+                        model: CodeMinimapModel(snapshot: minimapSnapshot, visibleLineRange: visibleLineRange),
+                        onSeekLine: { line in
+                            guard minimapSeekLine != line else { return }
+                            var transaction = Transaction()
+                            transaction.animation = nil
+                            withTransaction(transaction) {
+                                minimapSeekLine = line
+                            }
+                        }
+                    )
+                        .frame(width: minimapWidth, height: proxy.size.height)
+                        .transition(.identity)
+                        .allowsHitTesting(CodeEditorScrollStabilityMetrics.minimapAllowsHitTesting)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -4486,7 +4764,12 @@ private struct CodeMinimapView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            Canvas(opaque: false, rendersAsynchronously: true) { context, size in
+            Canvas(opaque: true, rendersAsynchronously: false) { context, size in
+                context.fill(
+                    Path(CGRect(origin: .zero, size: size)),
+                    with: .color(DesignTokens.background)
+                )
+
                 let count = max(1, model.lines.count)
                 let rowHeight = max(1, size.height / CGFloat(count))
 
@@ -4561,6 +4844,7 @@ private struct FileContentTextEditor: NSViewRepresentable {
     var fontSize: CGFloat
     var wordWrap: Bool
     var lineNumbers: Bool
+    var layoutWidth: CGFloat
     var onVisibleLineRangeChange: (Range<Int>) -> Void
     var onSave: () -> Void
 
@@ -4570,7 +4854,7 @@ private struct FileContentTextEditor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
-        scrollView.drawsBackground = false
+        scrollView.drawsBackground = true
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = !wordWrap
         scrollView.borderType = .noBorder
@@ -4582,7 +4866,7 @@ private struct FileContentTextEditor: NSViewRepresentable {
 
         let textView = FileTextView()
         textView.delegate = context.coordinator
-        textView.drawsBackground = false
+        configureRendering(in: scrollView, textView: textView)
         textView.isEditable = true
         textView.isSelectable = true
         textView.isRichText = true
@@ -4611,7 +4895,8 @@ private struct FileContentTextEditor: NSViewRepresentable {
         context.coordinator.lastFontSize = fontSize
         context.coordinator.lastWordWrap = wordWrap
         context.coordinator.lastLineNumbers = lineNumbers
-        context.coordinator.lastContentWidth = scrollView.contentSize.width
+        context.coordinator.lastContentWidth = effectiveContentWidth(in: scrollView)
+        context.coordinator.lastLayoutWidth = layoutWidth
         context.coordinator.lastSyntaxLanguage = syntaxLanguage
         context.coordinator.lastDarkMode = isDarkMode
         context.coordinator.refreshLineIndex()
@@ -4648,17 +4933,20 @@ private struct FileContentTextEditor: NSViewRepresentable {
             context.coordinator.lastDarkMode != isDarkMode {
             context.coordinator.lastSyntaxLanguage = syntaxLanguage
             context.coordinator.lastDarkMode = isDarkMode
+            configureRendering(in: scrollView, textView: textView)
             context.coordinator.applyBaseTypingAttributes(to: textView)
             context.coordinator.scheduleHighlight()
         }
         textView.onSave = { context.coordinator.save() }
-        let contentWidth = scrollView.contentSize.width
+        let contentWidth = effectiveContentWidth(in: scrollView)
         if context.coordinator.lastWordWrap != wordWrap ||
-            abs(context.coordinator.lastContentWidth - contentWidth) > 0.5 {
+            abs(context.coordinator.lastContentWidth - contentWidth) > 0.5 ||
+            abs(context.coordinator.lastLayoutWidth - layoutWidth) > 0.5 {
             scrollView.hasHorizontalScroller = !wordWrap
             applyWrap(wordWrap, to: textView, in: scrollView)
             context.coordinator.lastWordWrap = wordWrap
             context.coordinator.lastContentWidth = contentWidth
+            context.coordinator.lastLayoutWidth = layoutWidth
             if wordWrap {
                 originToRestore.x = 0
             }
@@ -4667,6 +4955,8 @@ private struct FileContentTextEditor: NSViewRepresentable {
         if context.coordinator.lastLineNumbers != lineNumbers {
             configureLineNumbers(lineNumbers, in: scrollView, textView: textView, coordinator: context.coordinator)
             context.coordinator.lastLineNumbers = lineNumbers
+            applyWrap(wordWrap, to: textView, in: scrollView)
+            context.coordinator.lastContentWidth = effectiveContentWidth(in: scrollView)
             originToRestore.x = 0
             shouldPublishVisibleRange = true
         }
@@ -4685,19 +4975,43 @@ private struct FileContentTextEditor: NSViewRepresentable {
     }
 
     private func applyWrap(_ enabled: Bool, to textView: NSTextView, in scrollView: NSScrollView) {
+        let contentWidth = effectiveContentWidth(in: scrollView)
         if enabled {
             textView.isHorizontallyResizable = false
             textView.autoresizingMask = [.width]
             textView.textContainer?.widthTracksTextView = true
-            textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+            textView.textContainer?.containerSize = NSSize(width: contentWidth, height: CGFloat.greatestFiniteMagnitude)
+            textView.minSize = NSSize(width: contentWidth, height: scrollView.contentSize.height)
+            textView.maxSize = NSSize(width: contentWidth, height: CGFloat.greatestFiniteMagnitude)
+            textView.setFrameSize(NSSize(width: contentWidth, height: max(textView.frame.height, scrollView.contentSize.height)))
         } else {
             textView.isHorizontallyResizable = true
             textView.autoresizingMask = [.width]
             textView.textContainer?.widthTracksTextView = false
             textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
             textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
         }
-        textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
+        textView.needsLayout = true
+    }
+
+    private func effectiveContentWidth(in scrollView: NSScrollView) -> CGFloat {
+        let contentWidth = scrollView.contentSize.width
+        if contentWidth > 1 {
+            return max(1, min(contentWidth, layoutWidth > 1 ? layoutWidth : contentWidth))
+        }
+        return max(1, layoutWidth)
+    }
+
+    private func configureRendering(in scrollView: NSScrollView, textView: FileTextView) {
+        let background = CodeEditorRenderingPalette.backgroundColor(isDarkMode: isDarkMode)
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = background
+        scrollView.contentView.drawsBackground = true
+        scrollView.contentView.backgroundColor = background
+        textView.drawsBackground = true
+        textView.backgroundColor = background
+        textView.enclosingScrollView?.backgroundColor = background
     }
 
     private func configureLineNumbers(
@@ -4739,6 +5053,7 @@ private struct FileContentTextEditor: NSViewRepresentable {
         var lastWordWrap = false
         var lastLineNumbers = false
         var lastContentWidth: CGFloat = 0
+        var lastLayoutWidth: CGFloat = 0
         var lastSyntaxLanguage: String?
         var lastDarkMode = false
         private var highlightGeneration = 0
@@ -4822,6 +5137,7 @@ private struct FileContentTextEditor: NSViewRepresentable {
 
         @objc @MainActor private func boundsDidChange(_ notification: Notification) {
             lineNumberRuler?.needsDisplay = true
+            invalidateVisibleEditorRegion()
             clampVisibleOriginIfNeeded()
             publishVisibleLineRangeAfterScroll()
         }
@@ -4840,6 +5156,14 @@ private struct FileContentTextEditor: NSViewRepresentable {
                 return
             }
             scheduleVisibleRangeCalculation(after: CodeEditorScrollStabilityMetrics.visibleRangePublishInterval - elapsed)
+        }
+
+        @MainActor
+        private func invalidateVisibleEditorRegion() {
+            guard let textView, let scrollView else { return }
+            let visibleRect = scrollView.contentView.documentVisibleRect
+            textView.setNeedsDisplay(visibleRect)
+            scrollView.contentView.setNeedsDisplay(scrollView.contentView.bounds)
         }
 
         @MainActor
@@ -5094,6 +5418,10 @@ private final class CodeLineNumberRulerView: NSRulerView {
     weak var textView: NSTextView?
     private var lineStarts: [Int] = [0]
 
+    override var isOpaque: Bool {
+        true
+    }
+
     init(scrollView: NSScrollView, textView: NSTextView) {
         self.textView = textView
         super.init(scrollView: scrollView, orientation: .verticalRuler)
@@ -5186,6 +5514,15 @@ private final class CodeLineNumberRulerView: NSRulerView {
         let x = max(4, bounds.width - size.width - 12)
         let drawPoint = NSPoint(x: x, y: y + 1)
         label.draw(at: drawPoint, withAttributes: attributes)
+    }
+}
+
+private enum CodeEditorRenderingPalette {
+    static func backgroundColor(isDarkMode: Bool) -> NSColor {
+        if isDarkMode {
+            return NSColor(srgbRed: 10 / 255, green: 10 / 255, blue: 10 / 255, alpha: 1)
+        }
+        return .white
     }
 }
 
