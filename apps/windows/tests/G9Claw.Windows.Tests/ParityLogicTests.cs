@@ -2886,6 +2886,23 @@ router:
     }
 
     [Fact]
+    public void AppStatePromptTitleMatchesMacSessionNamingPolicy()
+    {
+        var longPrompt = new string('a', 80);
+
+        Assert.Equal("New Chat", AppState.PromptTitleFromComposerPrompt(""));
+        Assert.Equal("新对话", AppState.PromptTitleFromComposerPrompt(" \r\n", "新对话"));
+        Assert.Equal("First line", AppState.PromptTitleFromComposerPrompt("  First line  \nSecond line"));
+        Assert.Equal(new string('a', 72), AppState.PromptTitleFromComposerPrompt(longPrompt));
+        Assert.DoesNotContain("...", AppState.PromptTitleFromComposerPrompt(longPrompt));
+
+        var state = AppState.CreateDefault();
+        state.SelectProject(state.Projects.First());
+        var blank = state.CreateSessionForSelectedProject("")!;
+        Assert.Equal("New Chat", blank.Title);
+    }
+
+    [Fact]
     public void AppStateExposesMacParitySessionActivityAndUiState()
     {
         var state = AppState.CreateDefault();

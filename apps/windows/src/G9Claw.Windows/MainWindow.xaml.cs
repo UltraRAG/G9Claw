@@ -5732,7 +5732,7 @@ public sealed partial class MainWindow : Window
         State.SelectProject(project);
         SyncSidebarSectionWithProject(project);
         RefreshNativeStores();
-        var session = State.CreateSessionForSelectedProject();
+        var session = State.CreateSessionForSelectedProject(T("sidebar.newSession"));
         if (session is not null)
         {
             _expandedProjectNames.Add(project.Name);
@@ -5763,8 +5763,8 @@ public sealed partial class MainWindow : Window
         var attachments = State.PendingAttachments.ToList();
         if (string.IsNullOrWhiteSpace(prompt) && attachments.Count == 0) return;
 
-        var titleSeed = string.IsNullOrWhiteSpace(prompt) ? attachments.FirstOrDefault()?.FileName ?? "Attachment" : prompt;
-        var session = State.SelectedSession ?? State.CreateSessionForSelectedProject(titleSeed.Length > 48 ? $"{titleSeed[..48]}..." : titleSeed);
+        var session = State.SelectedSession ?? State.CreateSessionForSelectedProject(
+            AppState.PromptTitleFromComposerPrompt(prompt, T("sidebar.newSession")));
         if (session is null)
         {
             AppendAssistantMessage(T("chat.status.selectProjectBeforeSend"));

@@ -5,6 +5,8 @@ namespace G9Claw.Windows.Core;
 
 public sealed class AppState : INotifyPropertyChanged
 {
+    public const string DefaultNewSessionTitle = "New Chat";
+
     private Guid? _selectedProjectId;
     private string? _selectedSessionId;
     private AppTab _activeTab = AppTab.Chat;
@@ -160,6 +162,17 @@ public sealed class AppState : INotifyPropertyChanged
         return Path.IsPathFullyQualified(expanded) ? Path.GetFullPath(expanded) : fallback;
     }
 
+    public static string PromptTitleFromComposerPrompt(string? prompt, string? newSessionTitle = null)
+    {
+        var line = (prompt ?? "").Split('\n', 2)[0].Trim();
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return string.IsNullOrWhiteSpace(newSessionTitle) ? DefaultNewSessionTitle : newSessionTitle.Trim();
+        }
+
+        return line.Length <= 72 ? line : line[..72];
+    }
+
     public static AppSettings NormalizeSettings(AppSettings settings)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -298,15 +311,16 @@ public sealed class AppState : INotifyPropertyChanged
         }
     }
 
-    public ProjectSession? CreateSessionForSelectedProject(string title = "New Session")
+    public ProjectSession? CreateSessionForSelectedProject(string title = "")
     {
         var project = SelectedProject;
         if (project is null) return null;
 
+        var trimmedTitle = title.Trim();
         var session = new ProjectSession(
             Guid.NewGuid().ToString("D"),
             SessionProvider.G9Claw,
-            string.IsNullOrWhiteSpace(title) ? "New Session" : title.Trim(),
+            string.IsNullOrWhiteSpace(trimmedTitle) ? DefaultNewSessionTitle : trimmedTitle,
             "",
             DateTimeOffset.UtcNow,
             null,
