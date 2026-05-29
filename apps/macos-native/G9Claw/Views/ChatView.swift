@@ -4572,7 +4572,7 @@ private enum JSONPayloadExtractor {
     }
 }
 
-private struct ParsedRAGToolResult {
+private struct ParsedSearchToolResult {
     enum SourceKind {
         case web
         case local
@@ -4600,17 +4600,18 @@ private struct ParsedRAGToolResult {
     var items: [Item]
     var rawJSON: String
 
-    static func parse(from values: [String]) -> ParsedRAGToolResult? {
+    static func parse(from values: [String]) -> ParsedSearchToolResult? {
         for value in values.reversed() {
             guard let object = JSONPayloadExtractor.object(from: value) else { continue }
-            guard isRAGLike(object) else { continue }
+            guard isSearchLike(object) else { continue }
             return parse(object: object, raw: JSONPayloadExtractor.firstJSONObjectString(in: value) ?? value)
         }
         return nil
     }
 
-    private static func parse(object: [String: Any], raw: String) -> ParsedRAGToolResult {
+    private static func parse(object: [String: Any], raw: String) -> ParsedSearchToolResult {
         let debug = object["debug"] as? [String: Any] ?? [:]
+        let metadata = object["metadata"] as? [String: Any] ?? [:]
         let query = stringValue(object["query"])
             ?? stringValue(object["q"])
             ?? stringValue(debug["query"])
@@ -4618,33 +4619,33 @@ private struct ParsedRAGToolResult {
         let ok = (object["ok"] as? Bool) ?? ((object["error"] as? String) == nil)
         let status = stringValue(object["status"])
             ?? (ok ? "ok" : "error")
-        let arrays = firstArray(object, keys: ["results", "citations", "items", "documents", "matches"])
+        let arrays = firstArray(object, keys: ["organic", "results", "citations", "items", "documents", "matches"])
         let sourceKind = inferSourceKind(object: object, debug: debug, items: arrays)
         let sourceLabel: String
         switch sourceKind {
         case .web:
-            sourceLabel = "Z.AI / GLM Web Search"
+            sourceLabel = providerSearchLabel(object: object, debug: debug, metadata: metadata)
         case .local:
-            sourceLabel = "Local Knowledge"
+            sourceLabel = "Workspace Search"
         case .unknown:
-            sourceLabel = "RAG Search"
+            sourceLabel = "Web Search"
         }
 
-        return ParsedRAGToolResult(
+        return ParsedSearchToolResult(
             sourceKind: sourceKind,
             sourceLabel: sourceLabel,
             query: query,
             status: status,
             ok: ok,
             endpoint: endpointHost(from: object, debug: debug),
-            topK: intValue(object["topK"]) ?? intValue(object["top_k"]) ?? intValue(debug["topK"]),
+            topK: intValue(object["organicLimit"]) ?? intValue(object["topK"]) ?? intValue(object["top_k"]) ?? intValue(debug["topK"]),
             elapsedMs: intValue(object["elapsedMs"]) ?? intValue(object["elapsed_ms"]) ?? intValue(debug["elapsedMs"]),
             error: stringValue(object["error"]) ?? stringValue(debug["error"]),
             items: arrays.enumerated().map { index, item in
-                ParsedRAGToolResult.Item(
+                ParsedSearchToolResult.Item(
                     id: index,
                     title: stringValue(item["title"]) ?? stringValue(item["name"]) ?? stringValue(item["url"]) ?? stringValue(item["id"]) ?? "Result \(index + 1)",
-                    url: stringValue(item["url"]) ?? stringValue(item["link"]),
+                    url: stringValue(item["url"]) ?? stringValue(item["link"]) ?? stringValue(item["href"]),
                     snippet: stringValue(item["snippet"]) ?? stringValue(item["content"]) ?? stringValue(item["text"]) ?? stringValue(item["summary"]) ?? "",
                     source: stringValue(item["source"]) ?? stringValue(item["url"]) ?? stringValue(item["id"]) ?? stringValue(item["path"]) ?? "",
                     score: stringValue(item["score"]) ?? stringValue(item["distance"])
@@ -4654,24 +4655,24 @@ private struct ParsedRAGToolResult {
         )
     }
 
-    private static func isRAGLike(_ object: [String: Any]) -> Bool {
-        if object["results"] != nil || object["citations"] != nil || object["items"] != nil {
+    private static func isSearchLike(_ object: [String: Any]) -> Bool {
+        if object["organic"] != nil || object["results"] != nil || object["citations"] != nil || object["items"] != nil {
             return object["query"] != nil || object["debug"] != nil || object["context"] != nil || object["source"] != nil
         }
         let raw = (prettyJSON(object) ?? "").lowercased()
-        return raw.contains("glm web search") ||
-            raw.contains("local knowledge") ||
-            raw.contains("rag") ||
-            raw.contains("milvus") ||
-            raw.contains("databaseurl")
+        return raw.contains("web search") ||
+            raw.contains("web_search") ||
+            raw.contains("search-prime") ||
+            raw.contains("tavily") ||
+            raw.contains("z.ai")
     }
 
     private static func inferSourceKind(object: [String: Any], debug: [String: Any], items: [[String: Any]]) -> SourceKind {
         let raw = (prettyJSON(object) ?? "").lowercased()
-        if raw.contains("glm web search") || raw.contains("z.ai") || raw.contains("web_search") || items.contains(where: { stringValue($0["url"]) != nil }) {
+        if raw.contains("web search") || raw.contains("tavily") || raw.contains("z.ai") || raw.contains("web_search") || items.contains(where: { stringValue($0["url"]) != nil || stringValue($0["link"]) != nil }) {
             return .web
         }
-        if raw.contains("local knowledge") || raw.contains("milvus") || raw.contains("databaseurl") || items.contains(where: { stringValue($0["path"]) != nil || stringValue($0["id"]) != nil }) {
+        if items.contains(where: { stringValue($0["path"]) != nil || stringValue($0["id"]) != nil }) {
             return .local
         }
         if stringValue(debug["provider"])?.lowercased().contains("zai") == true {
@@ -4680,14 +4681,30 @@ private struct ParsedRAGToolResult {
         return .unknown
     }
 
+    private static func providerSearchLabel(object: [String: Any], debug: [String: Any], metadata: [String: Any]) -> String {
+        let provider = stringValue(object["provider"])
+            ?? stringValue(metadata["provider"])
+            ?? stringValue(debug["provider"])
+        switch provider?.lowercased() {
+        case "glm":
+            return "GLM / Z.AI Web Search"
+        case "tavily":
+            return "Tavily Search"
+        case "custom":
+            return stringValue(object["providerName"])
+                ?? stringValue(metadata["providerName"])
+                ?? "Custom Web Search"
+        default:
+            return "Web Search"
+        }
+    }
+
     private static func endpointHost(from object: [String: Any], debug: [String: Any]) -> String? {
         for raw in [
             stringValue(object["endpoint"]),
             stringValue(object["baseUrl"]),
-            stringValue(object["databaseUrl"]),
             stringValue(debug["endpoint"]),
-            stringValue(debug["baseUrl"]),
-            stringValue(debug["databaseUrl"])
+            stringValue(debug["baseUrl"])
         ] {
             guard let raw, !raw.isEmpty else { continue }
             if let host = URL(string: raw)?.host {
@@ -4733,8 +4750,8 @@ private struct ParsedRAGToolResult {
     }
 }
 
-private struct RAGResultContentView: View {
-    var result: ParsedRAGToolResult
+private struct SearchResultContentView: View {
+    var result: ParsedSearchToolResult
     var isChinese: Bool
     @State private var showingRaw = false
 
@@ -4885,7 +4902,7 @@ private struct RAGResultContentView: View {
                 HStack(spacing: 5) {
                     Image(systemName: showingRaw ? "chevron.down" : "chevron.right")
                         .font(.system(size: 9, weight: .bold))
-                    Text("raw retrieval JSON")
+                    Text(isChinese ? "原始搜索 JSON" : "raw search JSON")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                 }
                 .foregroundStyle(DesignTokens.tertiaryText)
@@ -5457,7 +5474,7 @@ private struct ProcessLiveStatusRow: View {
     }
 
     private func compactDetail(for activity: AgentActivity) -> String {
-        if let parsed = parsedRAGSummary(from: [activity.detail] + activity.detailMessages) {
+        if let parsed = parsedSearchSummary(from: [activity.detail] + activity.detailMessages) {
             return parsed
         }
         let detail = compactPreview(activity.detail)
@@ -5518,8 +5535,8 @@ private struct ProcessLiveStatusRow: View {
         return ([activity.detail] + activity.detailMessages).contains { RootGlobExecutionPolicy.isRootWorkspaceGlob(inputJSON: $0) }
     }
 
-    private func parsedRAGSummary(from values: [String]) -> String? {
-        if let result = ParsedRAGToolResult.parse(from: values) {
+    private func parsedSearchSummary(from values: [String]) -> String? {
+        if let result = ParsedSearchToolResult.parse(from: values) {
             let query = result.query.isEmpty ? result.sourceLabel : result.query
             if result.items.isEmpty {
                 return result.ok
@@ -5607,7 +5624,7 @@ private struct ProcessTraceStepRow: View {
     var onToggle: () -> Void
 
     private var canExpand: Bool {
-        ragResult != nil || planMarkdown != nil || commandTrace != nil || !detailLines.isEmpty
+        searchResult != nil || planMarkdown != nil || commandTrace != nil || !detailLines.isEmpty
     }
 
     private var detailLines: [String] {
@@ -5622,11 +5639,11 @@ private struct ProcessTraceStepRow: View {
     }
 
     private var previewText: String? {
-        if let ragResult {
-            let query = ragResult.query.isEmpty ? ragResult.sourceLabel : ragResult.query
+        if let searchResult {
+            let query = searchResult.query.isEmpty ? searchResult.sourceLabel : searchResult.query
             return isChinese
-                ? "\(ragResult.sourceLabel) · \(query) · \(ragResult.items.count) 条结果"
-                : "\(ragResult.sourceLabel) · \(query) · \(ragResult.items.count) results"
+                ? "\(searchResult.sourceLabel) · \(query) · \(searchResult.items.count) 条结果"
+                : "\(searchResult.sourceLabel) · \(query) · \(searchResult.items.count) results"
         }
         if let commandTrace {
             return commandTrace.preview(isChinese: isChinese)
@@ -5639,8 +5656,8 @@ private struct ProcessTraceStepRow: View {
         return cleaned
     }
 
-    private var ragResult: ParsedRAGToolResult? {
-        ParsedRAGToolResult.parse(from: detailLines + [activity.detail])
+    private var searchResult: ParsedSearchToolResult? {
+        ParsedSearchToolResult.parse(from: detailLines + [activity.detail])
     }
 
     private var commandTrace: ParsedCommandTrace? {
@@ -5731,8 +5748,8 @@ private struct ProcessTraceStepRow: View {
 
             if isExpanded, canExpand {
                 VStack(alignment: .leading, spacing: 5) {
-                    if let ragResult {
-                        RAGResultContentView(result: ragResult, isChinese: isChinese)
+                    if let searchResult {
+                        SearchResultContentView(result: searchResult, isChinese: isChinese)
                     } else if let planMarkdown {
                         PlanTraceContentView(markdown: planMarkdown)
                     } else if let commandTrace {

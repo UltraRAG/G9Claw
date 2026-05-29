@@ -135,7 +135,7 @@ final class ParityLogicTests: XCTestCase {
         )
     }
 
-    func testNativeDefaultConfigUsesG9ClawProviderAndDisabledRouterRagDefaults() {
+    func testNativeDefaultConfigUsesG9ClawProviderAndSearchDefaults() {
         let yaml = G9ClawConfigDefaults.configText(homePath: "/Users/tester", userName: "tester")
         let values = NativeConfigService.scalarMap(from: yaml)
 
@@ -145,8 +145,10 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(values["memory.model"], "inherit")
         XCTAssertEqual(values["memory.autoIndexIntervalMinutes"], "30")
         XCTAssertEqual(values["memory.autoDreamIntervalMinutes"], "60")
-        XCTAssertEqual(values["rag.enabled"], "false")
-        XCTAssertEqual(values["rag.glmWebSearch.baseUrl"], "")
+        XCTAssertEqual(values["tools.webSearch.provider"], "glm")
+        XCTAssertEqual(values["tools.webSearch.endpoint"], "https://api.z.ai/api/paas/v4/web_search")
+        XCTAssertEqual(values["tools.webSearch.organicLimit"], "8")
+        XCTAssertEqual(values["tools.webSearch.customProvider.auth"], "bearer")
         XCTAssertEqual(values["router.enabled"], "false")
         XCTAssertEqual(values["router.tokenSaver.enabled"], "false")
         XCTAssertEqual(values["gateway.home"], "/Users/tester/.g9claw/gateway")
@@ -254,28 +256,6 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertNil(values["agents.alwaysOn.discovery.trigger.enabled"])
     }
 
-    func testNativeConfigScalarMapMigratesLegacyRagMilvusURIToDatabaseURLLikeWeb() {
-        let legacyOnly = """
-        rag:
-          localKnowledge:
-            milvusUri: http://127.0.0.1:52008/search
-        """
-        let explicitDatabaseURL = """
-        rag:
-          localKnowledge:
-            databaseUrl: http://database.example/search
-            milvusUri: http://legacy.example/search
-        """
-
-        let migrated = NativeConfigService.scalarMap(from: legacyOnly)
-        let preferred = NativeConfigService.scalarMap(from: explicitDatabaseURL)
-
-        XCTAssertEqual(migrated["rag.localKnowledge.databaseUrl"], "http://127.0.0.1:52008/search")
-        XCTAssertNil(migrated["rag.localKnowledge.milvusUri"])
-        XCTAssertEqual(preferred["rag.localKnowledge.databaseUrl"], "http://database.example/search")
-        XCTAssertNil(preferred["rag.localKnowledge.milvusUri"])
-    }
-
     func testNativeConfigFormLayoutMatchesWebSplitSectionNavigation() {
         XCTAssertTrue(NativeConfigFormLayout.usesSplitSectionNavigation)
         XCTAssertFalse(NativeConfigFormLayout.usesSectionDropdown)
@@ -294,7 +274,7 @@ final class ParityLogicTests: XCTestCase {
             .models,
             .alwaysOn,
             .memory,
-            .rag,
+            .search,
             .router,
             .gateway,
         ])
@@ -399,115 +379,79 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(NativeRuntimeConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))
     }
 
-    func testNativeRagConfigFormFieldsExposeBothWebEndpointApiKeys() {
-        let fields = NativeRagConfigFormFields.textFields
-        let paths = fields.map(\.path)
+    func testNativeSearchConfigFormFieldsExposeWebSearchProviders() {
+        let primaryFields = NativeSearchConfigFormFields.primaryFields
+        let customFields = NativeSearchConfigFormFields.customFields
 
         XCTAssertEqual(
-            paths,
+            NativeSearchConfigFormFields.visiblePaths,
             [
-                "rag.localKnowledge.baseUrl",
-                "rag.localKnowledge.apiKey",
-                "rag.localKnowledge.modelName",
-                "rag.localKnowledge.databaseUrl",
-                "rag.glmWebSearch.baseUrl",
-                "rag.glmWebSearch.apiKey",
-                "rag.glmWebSearch.defaultTopK",
+                "tools.webSearch.provider",
+                "tools.webSearch.apiKey",
+                "tools.webSearch.endpoint",
+                "tools.webSearch.organicLimit",
+                "tools.webSearch.timeoutMs",
+                "tools.webSearch.customProvider.name",
+                "tools.webSearch.customProvider.auth",
+                "tools.webSearch.customProvider.method",
+                "tools.webSearch.customProvider.queryParam",
+                "tools.webSearch.customProvider.apiKeyParam",
+                "tools.webSearch.customProvider.resultsPath",
+                "tools.webSearch.customProvider.titleField",
+                "tools.webSearch.customProvider.urlField",
+                "tools.webSearch.customProvider.snippetField",
+                "tools.webSearch.customProvider.sourceField",
+                "tools.webSearch.customProvider.publishedAtField",
             ]
         )
-        XCTAssertEqual(Set(fields.filter(\.isSecure).map(\.path)), [
-            "rag.localKnowledge.apiKey",
-            "rag.glmWebSearch.apiKey",
-        ])
-        XCTAssertEqual(NativeRagConfigFormFields.enabledPath, "rag.enabled")
-        XCTAssertEqual(NativeRagConfigFormFields.disableBuiltInWebToolsPath, "rag.disableBuiltInWebTools")
-        XCTAssertTrue(NativeRagConfigFormFields.disableBuiltInWebToolsDefault)
-        XCTAssertEqual(NativeRagConfigFormFields.booleanDefaults, [
-            "rag.enabled": false,
-            "rag.disableBuiltInWebTools": true,
-        ])
-
-        XCTAssertEqual(NativeRagConfigFormFields.endpointCards.map(\.id), [
-            "localKnowledge",
-            "glmWebSearch",
-        ])
-        XCTAssertEqual(NativeRagConfigFormFields.endpointCards.map(\.title), [
-            .ragLocalKnowledgeTitle,
-            .ragGlmWebSearchTitle,
-        ])
-        XCTAssertEqual(NativeRagConfigFormFields.endpointCards[0].fields.map(\.path), [
-            "rag.localKnowledge.baseUrl",
-            "rag.localKnowledge.apiKey",
-            "rag.localKnowledge.modelName",
-            "rag.localKnowledge.databaseUrl",
-        ])
-        XCTAssertFalse(NativeRagConfigFormFields.endpointCards[0].includesDefaultTopK)
-        XCTAssertEqual(NativeRagConfigFormFields.endpointCards[1].fields.map(\.path), [
-            "rag.glmWebSearch.baseUrl",
-            "rag.glmWebSearch.apiKey",
-            "rag.glmWebSearch.defaultTopK",
-        ])
-        XCTAssertTrue(NativeRagConfigFormFields.endpointCards[1].includesDefaultTopK)
-        XCTAssertEqual(NativeRagConfigFormFields.localKnowledgeFields.map(\.label), [
-            .localKnowledgeBaseURL,
+        XCTAssertEqual(NativeSearchConfigFormFields.providerOptions, ["glm", "tavily", "custom"])
+        XCTAssertEqual(Set(primaryFields.filter(\.isSecure).map(\.path)), ["tools.webSearch.apiKey"])
+        XCTAssertTrue(customFields.filter(\.isSecure).isEmpty)
+        XCTAssertEqual(primaryFields.map(\.label), [
             .apiKey,
-            .embeddingModel,
-            .databaseURL,
+            .endpointURL,
+            .organicLimit,
+            .timeoutMs,
         ])
-        XCTAssertEqual(NativeRagConfigFormFields.glmWebSearchFields.map(\.label), [
-            .glmWebSearchBaseURL,
-            .apiKey,
-            .glmDefaultTopK,
+        XCTAssertEqual(customFields.map(\.label), [
+            .customProviderName,
+            .customAuth,
+            .customMethod,
+            .queryParam,
+            .apiKeyParam,
+            .resultsPath,
+            .titleField,
+            .urlField,
+            .snippetField,
+            .sourceField,
+            .publishedAtField,
         ])
     }
 
-    func testNativeRagConfigLabelsMatchWebSettingsTabCopy() {
+    func testNativeSearchConfigLabelsMatchWebSettingsTabCopy() {
         let english = LocalizationService(language: .english)
         let chinese = LocalizationService(language: .chineseSimplified)
 
         XCTAssertEqual(
-            english.text(.ragSectionDetail),
-            "Local retriever and GLM web search APIs used by the bundled PilotDeck RAG skills."
+            english.text(.searchSectionDetail),
+            "Web search backing the agent's WebSearch tool. Select one provider; provider-specific request shapes stay behind the adapter."
         )
         XCTAssertEqual(
-            english.text(.ragDetail),
-            "When on, PilotDeck exports G9CLAW_RAG_* env vars so RAG skills can call these APIs."
+            english.text(.searchProviderDetail),
+            "Choose GLM/Z.AI, Tavily, or a custom JSON API."
         )
-        XCTAssertEqual(
-            english.text(.disableBuiltInWebToolsDetail),
-            "When RAG is enabled, hide WebFetch/WebSearch from model-visible tools so web search goes through PilotDeck RAG skills."
-        )
-        XCTAssertEqual(english.text(.ragLocalKnowledgeTitle), "Local knowledge / Retriever")
-        XCTAssertEqual(
-            english.text(.ragLocalKnowledgeDetail),
-            "Private or curated knowledge base retrieval endpoint, including Milvus-backed services."
-        )
-        XCTAssertEqual(english.text(.ragGlmWebSearchTitle), "Z.AI / GLM Web Search")
-        XCTAssertEqual(
-            english.text(.ragGlmWebSearchDetail),
-            "Public web search endpoint used for current information and URL-backed citations."
-        )
-        XCTAssertEqual(english.text(.localKnowledgeBaseURL), "Embedding / Model URL")
+        XCTAssertEqual(english.text(.search), "Search")
         XCTAssertEqual(english.text(.apiKey), "API key")
-        XCTAssertEqual(english.text(.embeddingModel), "Model name")
-        XCTAssertEqual(english.text(.databaseURL), "Search URL")
-        XCTAssertEqual(english.text(.glmWebSearchBaseURL), "Endpoint URL")
-        XCTAssertEqual(english.text(.glmDefaultTopK), "Default top K")
+        XCTAssertEqual(english.text(.endpointURL), "Endpoint URL")
+        XCTAssertEqual(english.text(.organicLimit), "Organic limit")
+        XCTAssertEqual(english.text(.customProvider), "Custom provider")
 
         XCTAssertEqual(
-            chinese.text(.ragSectionDetail),
-            "内置 PilotDeck RAG 技能使用的本地检索器和 GLM Web Search API。"
+            chinese.text(.searchSectionDetail),
+            "智能体 WebSearch 工具使用的网络搜索配置。只选择一个提供商，具体请求格式由适配器处理。"
         )
-        XCTAssertEqual(chinese.text(.ragLocalKnowledgeTitle), "本地知识库 / Retriever")
-        XCTAssertEqual(chinese.text(.glmWebSearchBaseURL), "Endpoint URL")
-    }
-
-    func testNativeRagDisableBuiltInWebToolsDefaultsOnLikeWebSettingsTab() {
-        XCTAssertTrue(NativeConfigBoolValue.resolve("", defaultValue: NativeRagConfigFormFields.disableBuiltInWebToolsDefault))
-        XCTAssertTrue(NativeConfigBoolValue.resolve("true", defaultValue: NativeRagConfigFormFields.disableBuiltInWebToolsDefault))
-        XCTAssertFalse(NativeConfigBoolValue.resolve("false", defaultValue: NativeRagConfigFormFields.disableBuiltInWebToolsDefault))
-
-        XCTAssertFalse(NativeConfigBoolValue.resolve("", defaultValue: false))
+        XCTAssertEqual(chinese.text(.search), "搜索")
+        XCTAssertEqual(chinese.text(.endpointURL), "Endpoint URL")
     }
 
     func testNativeMemoryConfigFormFieldsMatchWebSettingsTab() {
@@ -581,7 +525,6 @@ final class ParityLogicTests: XCTestCase {
                 "Bash(rm:*)",
                 "Bash(sudo:*)",
                 "WebFetch",
-                "WebSearch",
             ]
         )
     }
@@ -598,9 +541,9 @@ final class ParityLogicTests: XCTestCase {
 
     @MainActor
     func testPermissionsExportUsesG9ClawPayloadShape() throws {
-        let state = AppState()
+        let state = makeTestAppState()
         state.settings.permissions.allowedTools = ["Bash(git log:*)", "MultiEdit"]
-        state.settings.permissions.disallowedTools = ["Bash(rm:*)", "WebSearch"]
+        state.settings.permissions.disallowedTools = ["Bash(rm:*)"]
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("g9claw-permissions-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -613,20 +556,21 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(payload["source"] as? String, "g9claw")
         XCTAssertNotNil(payload["exportedAt"] as? String)
         XCTAssertEqual(payload["allowedTools"] as? [String], ["Bash(git log:*)", "MultiEdit"])
-        XCTAssertEqual(payload["disallowedTools"] as? [String], ["Bash(rm:*)", "WebSearch"])
+        XCTAssertEqual(payload["disallowedTools"] as? [String], ["Bash(rm:*)"])
     }
 
     @MainActor
-    func testPermissionsSettingsAddAndImportKeepAllowedBlockedListsIndependentLikeWeb() throws {
-        let state = AppState()
+    func testPermissionsSettingsAddAndImportKeepListsExclusiveAndIgnoreWebSearchBlocks() throws {
+        let state = makeTestAppState()
         state.settings.permissions.allowedTools = ["Read"]
         state.settings.permissions.disallowedTools = ["Write"]
 
         state.addAllowedTool("Write")
         state.addBlockedTool("Read")
+        state.addBlockedTool("WebSearch")
 
-        XCTAssertEqual(state.settings.permissions.allowedTools, ["Read", "Write"])
-        XCTAssertEqual(state.settings.permissions.disallowedTools, ["Write", "Read"])
+        XCTAssertEqual(state.settings.permissions.allowedTools, ["Write"])
+        XCTAssertEqual(state.settings.permissions.disallowedTools, ["Read"])
 
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("g9claw-permissions-import-\(UUID().uuidString).json")
@@ -641,22 +585,30 @@ final class ParityLogicTests: XCTestCase {
         try state.importPermissions(from: url)
 
         XCTAssertEqual(state.settings.permissions.allowedTools, [
-            "Read",
             "Write",
             "Bash(git log:*)",
             "WebSearch",
         ])
         XCTAssertEqual(state.settings.permissions.disallowedTools, [
-            "Write",
             "Read",
-            "WebSearch",
             "Bash(rm:*)",
         ])
     }
 
+    func testNormalizedSettingsDropsLegacyWebSearchBlock() {
+        var settings = AppSettings.defaults
+        settings.permissions.allowedTools = ["WebSearch"]
+        settings.permissions.disallowedTools = ["WebSearch", "web_search", "Bash(rm:*)"]
+
+        let normalized = AppState.normalizedSettings(settings)
+
+        XCTAssertEqual(normalized.permissions.allowedTools, ["WebSearch"])
+        XCTAssertEqual(normalized.permissions.disallowedTools, ["Bash(rm:*)"])
+    }
+
     @MainActor
     func testChatPermissionGrantStillClearsMatchingBlockedRuleLikeWebGrantButton() {
-        let state = AppState()
+        let state = makeTestAppState()
         state.settings.permissions.allowedTools = []
         state.settings.permissions.disallowedTools = ["Write", "Bash(rm:*)"]
 
@@ -1110,6 +1062,7 @@ final class ParityLogicTests: XCTestCase {
             "AskQuestion",
             "SwitchMode",
             "Task",
+            "WebSearch",
         ]
 
         XCTAssertEqual(Set(names), Set(AgentToolRegistry.toolNames))
@@ -1119,7 +1072,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(names.contains("Edit"))
         XCTAssertFalse(names.contains("ExitPlanMode"))
         XCTAssertFalse(names.contains("AskUserQuestion"))
-        XCTAssertFalse(names.contains("WebSearch"))
+        XCTAssertTrue(names.contains("WebSearch"))
         XCTAssertFalse(names.contains("WebFetch"))
         XCTAssertFalse(names.contains("Weather"))
     }
@@ -1168,8 +1121,8 @@ final class ParityLogicTests: XCTestCase {
 
     func testNativeAgentRuntimeParsesInlineSkillJSONFallback() throws {
         let text = """
-        I will use RAG.
-        {"skill":"g9claw-rag:rag-research","args":"DARPA autonomous systems research"}
+        I will load a skill.
+        {"skill":"code-review","args":"review this change"}
         """
 
         let calls = NativeAgentRuntime.fallbackToolCalls(in: text)
@@ -1177,24 +1130,23 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls.first?.name, "Skill")
-        XCTAssertEqual(object["skill"] as? String, "g9claw-rag:rag-research")
+        XCTAssertEqual(object["skill"] as? String, "code-review")
     }
 
-    func testNativeAgentRuntimeMapsDirectRAGToolJSONToSkill() throws {
+    func testNativeAgentRuntimeParsesWebSearchFallbackToolCall() throws {
         let text = """
-        {"tool":"g9claw-rag:glm-web-search","input":{"query":"Beijing weather"}}
+        {"tool":"web_search","input":{"query":"Beijing weather"}}
         """
 
         let calls = NativeAgentRuntime.fallbackToolCalls(in: text)
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data((calls.first?.inputJSON ?? "{}").utf8)) as? [String: Any])
 
         XCTAssertEqual(calls.count, 1)
-        XCTAssertEqual(calls.first?.name, "Skill")
-        XCTAssertEqual(object["skill"] as? String, "g9claw-rag:glm-web-search")
-        XCTAssertEqual(object["args"] as? String, "Beijing weather")
+        XCTAssertEqual(calls.first?.name, "WebSearch")
+        XCTAssertEqual(object["query"] as? String, "Beijing weather")
     }
 
-    func testLegacySearchAndWeatherCallsNormalizeToGLMSkill() throws {
+    func testLegacySearchAndWeatherCallsNormalizeToWebSearch() throws {
         let search = ToolArgumentNormalizer.normalize(AgentToolCall(
             id: "search",
             name: "WebSearch",
@@ -1211,20 +1163,18 @@ final class ParityLogicTests: XCTestCase {
             inputJSON: #"{"unit":"celsius"}"#
         ))
 
-        XCTAssertEqual(search.call.name, "Skill")
-        XCTAssertEqual(weather.call.name, "Skill")
+        XCTAssertEqual(search.call.name, "WebSearch")
+        XCTAssertEqual(weather.call.name, "WebSearch")
         XCTAssertNil(search.recoveryResult)
         XCTAssertNil(weather.recoveryResult)
 
         let searchObject = try jsonObject(from: search.call.inputJSON)
         let weatherObject = try jsonObject(from: weather.call.inputJSON)
-        XCTAssertEqual(searchObject["skill"] as? String, "g9claw-rag:glm-web-search")
-        XCTAssertEqual(searchObject["args"] as? String, "Beijing weather")
-        XCTAssertEqual(weatherObject["skill"] as? String, "g9claw-rag:glm-web-search")
-        XCTAssertEqual(weatherObject["args"] as? String, "北京 weather")
-        XCTAssertEqual(missing.call.name, "Skill")
+        XCTAssertEqual(searchObject["query"] as? String, "Beijing weather")
+        XCTAssertEqual(weatherObject["query"] as? String, "北京 weather")
+        XCTAssertEqual(missing.call.name, "WebSearch")
         XCTAssertTrue(missing.recoveryResult?.isError == true)
-        XCTAssertTrue(missing.recoveryResult?.output.contains("glm-web-search") == true)
+        XCTAssertTrue(missing.recoveryResult?.output.contains("non-empty query") == true)
     }
 
     func testNativeAgentRuntimeParsesLegacyCommandFallbackAsToolOnly() {
@@ -1238,8 +1188,8 @@ final class ParityLogicTests: XCTestCase {
     func testNativeAgentRuntimeParsesG9ClawInvokeFallbackToolCall() {
         let text = """
         <invoke name="Skill">
-        <parameter name="skill">g9claw-rag:rag-research</parameter>
-        <parameter name="args">DARPA autonomous systems research</parameter>
+        <parameter name="skill">code-review</parameter>
+        <parameter name="args">review this change</parameter>
         </invoke>
         """
 
@@ -1248,7 +1198,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls.first?.name, "Skill")
         let object = try? JSONSerialization.jsonObject(with: Data((calls.first?.inputJSON ?? "{}").utf8)) as? [String: Any]
-        XCTAssertEqual(object?["skill"] as? String, "g9claw-rag:rag-research")
+        XCTAssertEqual(object?["skill"] as? String, "code-review")
     }
 
     func testToolArgumentNormalizerCanonicalizesValidToolArguments() throws {
@@ -1525,6 +1475,30 @@ final class ParityLogicTests: XCTestCase {
             XCTAssertTrue(reason.lowercased().contains("blocked"))
         } else {
             XCTFail("Bash(...) block rules should deny matching native Shell calls.")
+        }
+    }
+
+    func testWebSearchBlockRulesAreIgnoredBecauseItIsTheUnifiedWebTool() {
+        var permissions = ToolPermissionSettings.defaults
+        permissions.disallowedTools = ["WebSearch", "web_search"]
+        let call = AgentToolCall(
+            id: "web-search",
+            name: "WebSearch",
+            inputJSON: #"{"query":"Beijing weather today"}"#
+        )
+
+        let bypassContext = AgentRunContext(
+            request: agentRequest(permissionMode: .bypassPermissions, toolSettings: permissions)
+        )
+        XCTAssertEqual(AgentPermissionPolicy.policy(for: call, context: bypassContext), .allow)
+
+        let defaultContext = AgentRunContext(
+            request: agentRequest(permissionMode: .default, toolSettings: permissions)
+        )
+        if case .ask(let reason) = AgentPermissionPolicy.policy(for: call, context: defaultContext) {
+            XCTAssertTrue(reason.contains("WebSearch"))
+        } else {
+            XCTFail("Default mode should still ask before network search, not deny WebSearch.")
         }
     }
 
@@ -2147,10 +2121,17 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(lints.output.contains("lint warning"))
     }
 
-    func testLegacySearchAndWeatherExecutionsNormalizeToGLMSkillWhileWebFetchIsDisabled() async throws {
+    func testLegacySearchAndWeatherExecutionsNormalizeToWebSearchWhileWebFetchIsDisabled() async throws {
         let root = try makeAgentWorkspace("g9claw-agent-disabled-search")
         defer { try? FileManager.default.removeItem(at: root) }
-        let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
+        let context = AgentRunContext(request: agentRequest(
+            projectPath: root.path,
+            permissionMode: .bypassPermissions,
+            nativeConfigValues: [
+                "tools.webSearch.provider": "custom",
+                "tools.webSearch.customProvider.auth": "none",
+            ]
+        ))
 
         let search = await NativeToolRouter.execute(
             call: AgentToolCall(id: "web-search", name: "WebSearch", inputJSON: #"{"query":"Beijing weather"}"#),
@@ -2165,15 +2146,14 @@ final class ParityLogicTests: XCTestCase {
             context: context
         )
 
-        XCTAssertFalse(search.isError, search.output)
-        XCTAssertFalse(weather.isError, weather.output)
-        XCTAssertEqual(search.toolName, "Skill")
-        XCTAssertEqual(weather.toolName, "Skill")
-        XCTAssertTrue(search.output.contains("g9claw-rag:glm-web-search"))
-        XCTAssertTrue(weather.output.contains("g9claw-rag:glm-web-search"))
-        XCTAssertTrue(context.invokedSkills.contains("g9claw-rag:glm-web-search"))
+        XCTAssertTrue(search.isError, search.output)
+        XCTAssertTrue(weather.isError, weather.output)
+        XCTAssertEqual(search.toolName, "WebSearch")
+        XCTAssertEqual(weather.toolName, "WebSearch")
+        XCTAssertTrue(search.output.contains("tools.webSearch.endpoint"))
+        XCTAssertTrue(weather.output.contains("tools.webSearch.endpoint"))
         XCTAssertFalse(fetch.isError)
-        XCTAssertTrue(fetch.output.contains("g9claw-rag:rag-research"))
+        XCTAssertTrue(fetch.output.contains("WebFetch is disabled"))
     }
 
     func testAgentToolExecutorInteractionModeTodoAndTaskTools() async throws {
@@ -3996,7 +3976,7 @@ final class ParityLogicTests: XCTestCase {
             createdAt: Date(),
             lastActivity: Date()
         )
-        let state = AppState()
+        let state = makeTestAppState()
         state.projects = [project]
         state.selectedProjectID = project.id
 
@@ -5529,7 +5509,7 @@ final class ParityLogicTests: XCTestCase {
 
     @MainActor
     func testSelectingProjectDoesNotShowDraftSession() {
-        let state = AppState()
+        let state = makeTestAppState()
         let project = state.projects[0]
         state.startDraftSession(project: project)
         XCTAssertTrue(state.isDraftSessionVisible)
@@ -5719,7 +5699,7 @@ final class ParityLogicTests: XCTestCase {
 
     @MainActor
     func testComposerRunModeStaysPlanAfterSendUntilPlanDecision() {
-        let state = AppState()
+        let state = makeTestAppState()
         state.composerRunMode = .plan
 
         let requested = state.consumeComposerRunModeForSend()
@@ -5773,39 +5753,48 @@ final class ParityLogicTests: XCTestCase {
         let call = AgentToolCall(
             id: "call-skill",
             name: "Skill",
-            inputJSON: #"{"skill":"g9claw-rag:glm-web-search","args":"weather"}"#
+            inputJSON: #"{"skill":"code-review","args":"review"}"#
         )
         XCTAssertEqual(NativeToolRouter.permissionPolicy(for: call, context: context), .allow)
     }
 
     func testLowercaseSkillToolNameIsCanonicalizedBeforeExecution() async throws {
-        let request = agentRequest(
-            nativeConfigValues: [
-                "rag.enabled": "true",
-                "rag.glmWebSearch.baseUrl": "https://api.z.ai/api/paas/v4/web_search",
-                "rag.glmWebSearch.apiKey": "test-rag-key",
-            ]
-        )
+        let root = try makeAgentWorkspace("g9claw-agent-lowercase-skill")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skillDir = root
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent("demo-skill", isDirectory: true)
+        try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)
+        try """
+        ---
+        name: demo-skill
+        description: Demo skill for native tests.
+        ---
+        Use this skill for tests.
+        """.write(to: skillDir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+
+        let request = agentRequest(projectPath: root.path)
         let context = AgentRunContext(request: request)
         let call = AgentToolCall(
             id: "call-lowercase-skill",
             name: "skill",
-            inputJSON: #"{"skill":"g9claw-rag:rag-research","args":"DARPA autonomous systems"}"#
+            inputJSON: #"{"skill":"demo-skill","args":"demo"}"#
         )
 
         let result = await NativeToolRouter.execute(call: call, context: context)
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(result.toolName, "Skill")
-        XCTAssertTrue(result.output.contains("g9claw-rag:rag-research"))
-        XCTAssertTrue(context.invokedSkills.contains("g9claw-rag:rag-research"))
+        XCTAssertTrue(result.output.contains("demo-skill"))
+        XCTAssertTrue(context.invokedSkills.contains("demo-skill"))
     }
 
     func testShellInputAliasIsCanonicalizedToCommand() {
         let call = AgentToolCall(
             id: "call-bash-input",
             name: "bash",
-            inputJSON: #"{"input":"python3 scripts/local_knowledge_search.py --query \"DARPA\"","timeout_seconds":30}"#
+            inputJSON: #"{"input":"python3 scripts/search.py --query \"DARPA\"","timeout_seconds":30}"#
         )
 
         let normalized = ToolArgumentNormalizer.normalize(call)
@@ -5813,7 +5802,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertNil(normalized.recoveryResult)
         XCTAssertEqual(normalized.call.name, "Shell")
         let object = try? JSONSerialization.jsonObject(with: Data(normalized.call.inputJSON.utf8)) as? [String: Any]
-        XCTAssertEqual(object?["command"] as? String, #"python3 scripts/local_knowledge_search.py --query "DARPA""#)
+        XCTAssertEqual(object?["command"] as? String, #"python3 scripts/search.py --query "DARPA""#)
         XCTAssertFalse(normalized.call.inputJSON.contains(#""input":"#))
     }
 
@@ -5821,7 +5810,7 @@ final class ParityLogicTests: XCTestCase {
         let call = AgentToolCall(
             id: "call-bash-xml",
             name: "Shell",
-            inputJSON: #"{"command":"<parameter>\npython3 ${G9CLAW_PLUGIN_ROOT}/scripts/local_knowledge_search.py --query \"DARPA autonomous systems research\""}"#
+            inputJSON: #"{"command":"<parameter>\npython3 scripts/search.py --query \"DARPA autonomous systems research\""}"#
         )
 
         let normalized = ToolArgumentNormalizer.normalize(call)
@@ -5830,66 +5819,48 @@ final class ParityLogicTests: XCTestCase {
         let object = try? JSONSerialization.jsonObject(with: Data(normalized.call.inputJSON.utf8)) as? [String: Any]
         XCTAssertEqual(
             object?["command"] as? String,
-            #"python3 ${G9CLAW_PLUGIN_ROOT}/scripts/local_knowledge_search.py --query "DARPA autonomous systems research""#
+            #"python3 scripts/search.py --query "DARPA autonomous systems research""#
         )
     }
 
-    func testSkillRuntimeLoadsBundledRAGSkillAndInjectsEnvironment() throws {
-        let request = agentRequest(
-            nativeConfigValues: [
-                "rag.enabled": "true",
-                "rag.disableBuiltInWebTools": "true",
-                "rag.localKnowledge.baseUrl": "https://local.example.com/",
-                "rag.localKnowledge.apiKey": "local-secret",
-                "rag.localKnowledge.modelName": "retriever-v1",
-                "rag.localKnowledge.milvusUri": "milvus://milvus.example.com:19530",
-                "rag.glmWebSearch.baseUrl": "https://api.z.ai/api/paas/v4/web_search/",
-                "rag.glmWebSearch.apiKey": "test-rag-key",
-            ]
-        )
+    func testSkillRuntimeLoadsProjectSkillWithoutPluginEnvironment() throws {
+        let root = try makeAgentWorkspace("g9claw-project-skill")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skillDir = root
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent("research", isDirectory: true)
+        try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)
+        try """
+        ---
+        name: research
+        description: Project research skill.
+        allowed-tools:
+          - Read
+          - WebSearch
+        ---
+        Use WebSearch for current web evidence when needed.
+        """.write(to: skillDir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+
+        let request = agentRequest(projectPath: root.path)
         let context = AgentRunContext(request: request)
         let output = try SkillRuntimeService.load(
-            inputJSON: #"{"skill":"g9claw-rag:glm-web-search","args":"Beijing weather"}"#,
+            inputJSON: #"{"skill":"research","args":"Beijing weather"}"#,
             context: context
         )
 
-        XCTAssertTrue(output.contains("g9claw-rag:glm-web-search"))
-        XCTAssertTrue(output.contains("glm_web_search.py"))
-        XCTAssertTrue(context.invokedSkills.contains("g9claw-rag:glm-web-search"))
+        XCTAssertTrue(output.contains("Project research skill"))
+        XCTAssertTrue(output.contains("WebSearch"))
+        XCTAssertTrue(context.invokedSkills.contains("research"))
 
         let environment = SkillRuntimeService.environment(configValues: request.nativeConfigValues)
-        XCTAssertEqual(environment["G9CLAW_RAG_ENABLED"], "1")
-        XCTAssertEqual(environment["G9CLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS"], "1")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"], "https://local.example.com")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_API_KEY"], "local-secret")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME"], "retriever-v1")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL"], "milvus://milvus.example.com:19530")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI"], "milvus://milvus.example.com:19530")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_TOP_K"], "8")
-        XCTAssertEqual(environment["G9CLAW_RAG_GLM_WEB_SEARCH_BASE_URL"], "https://api.z.ai/api/paas/v4/web_search")
-        XCTAssertEqual(environment["G9CLAW_RAG_GLM_WEB_SEARCH_API_KEY"], "test-rag-key")
-        XCTAssertEqual(environment["G9CLAW_RAG_GLM_WEB_SEARCH_TOP_K"], "8")
-        XCTAssertNotNil(environment["G9CLAW_PLUGIN_ROOT"])
-        XCTAssertNil(environment["EDGECLAW_PLUGIN_ROOT"])
         XCTAssertNil(environment["CLAU" + "DE_PLUGIN_ROOT"])
     }
 
-    func testBundledRAGPluginResourceIsPackaged() throws {
-        let resources = try XCTUnwrap(Bundle.main.resourceURL)
-        let skillFile = resources
-            .appendingPathComponent("g9claw-rag-plugin", isDirectory: true)
-            .appendingPathComponent("skills", isDirectory: true)
-            .appendingPathComponent("glm-web-search", isDirectory: true)
-            .appendingPathComponent("SKILL.md")
-
-        XCTAssertTrue(FileManager.default.fileExists(atPath: skillFile.path))
-    }
-
-    func testMacNativeAndBundledRAGPluginDoNotContainOldBrandNames() throws {
+    func testMacNativeCodeDoesNotContainOldBrandNames() throws {
         let root = repoRootURL()
         let scanRoots = [
             root.appendingPathComponent("apps/macos-native", isDirectory: true),
-            root.appendingPathComponent("apps/macos-native/G9Claw/Assets/g9claw-rag-plugin", isDirectory: true),
         ]
         let forbidden = [
             "9" + "GClaw",
@@ -6106,6 +6077,14 @@ final class ParityLogicTests: XCTestCase {
             NativeRouterRuntime.decision(forTier: "SIMPLE", values: values, signals: webSignals).scenario,
             "webSearch"
         )
+
+        let stableFunctionSignals = NativeRouterRuntime.requestSignals(
+            prompt: "Normal request with the built-in WebSearch adapter available",
+            priorMessages: [],
+            attachments: [],
+            tools: AgentToolRegistry.openAITools()
+        )
+        XCTAssertFalse(stableFunctionSignals.hasWebSearchTools)
     }
 
     func testRouterRuntimeRequestSignalTokenEstimateIncludesToolSchemasAndImageAttachments() throws {
@@ -6362,11 +6341,11 @@ final class ParityLogicTests: XCTestCase {
           },
           "byModel": {
             "qwen3.6-35b-a3b": { "count": 1, "requestCount": 1 },
-            "skill:g9claw-rag:glm-web-search": { "count": 1, "requestCount": 1 }
+            "tool:web_search": { "count": 1, "requestCount": 1 }
           },
           "byScenario": {
             "default": { "count": 1, "requestCount": 1 },
-            "skill": { "count": 1, "requestCount": 1 }
+            "tool": { "count": 1, "requestCount": 1 }
           },
           "byRole": {
             "main": { "count": 2, "requestCount": 2 }
@@ -6391,12 +6370,12 @@ final class ParityLogicTests: XCTestCase {
               "id": "skill-1",
               "ts": "2026-05-17T08:05:02Z",
               "role": "main",
-              "model": "skill:g9claw-rag:glm-web-search",
+              "model": "tool:web_search",
               "tokens": 0,
               "cost": 0,
-              "query": "Skill invoked",
-              "scenario": "skill",
-              "skill": "g9claw-rag:glm-web-search"
+              "query": "WebSearch invoked",
+              "scenario": "tool",
+              "skill": "web_search"
             }
           ]
         }
@@ -6407,8 +6386,8 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(structured.requestEntries.count, 2)
         XCTAssertEqual(structured.requestEntries.first?.tier, "MEDIUM")
         XCTAssertEqual(structured.requestEntries.first?.query, "Build a weather website")
-        XCTAssertEqual(structured.requestEntries.last?.skill, "g9claw-rag:glm-web-search")
-        XCTAssertEqual(structured.byScenario["skill"]?.requestCount, 1)
+        XCTAssertEqual(structured.requestEntries.last?.skill, "web_search")
+        XCTAssertEqual(structured.byScenario["tool"]?.requestCount, 1)
         XCTAssertEqual(structured.byRole["main"]?.requestCount, 2)
         XCTAssertEqual(structured.total.baselineCost, 0.012)
     }
@@ -6628,13 +6607,20 @@ final class ParityLogicTests: XCTestCase {
 
     @MainActor
     func testOpenSettingsStoresInitialTabWithoutShowingOverlay() {
-        let state = AppState()
+        let state = makeTestAppState()
 
         state.showSettings = false
         state.openSettings(.config)
 
         XCTAssertEqual(state.settingsInitialTab, .config)
         XCTAssertFalse(state.showSettings)
+    }
+
+    @MainActor
+    private func makeTestAppState() -> AppState {
+        let settingsURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("g9claw-test-settings-\(UUID().uuidString).json")
+        return AppState(settingsStore: AppSettingsStore(url: settingsURL))
     }
 
     private func project(name: String, displayName: String, date: Date) -> WorkspaceProject {

@@ -40,7 +40,7 @@ final class AppState: ObservableObject {
     @Published var tokenBudgetBySession: [String: TokenBudget] = [:]
 
     let keychain = KeychainStore()
-    let settingsStore = AppSettingsStore()
+    let settingsStore: AppSettingsStore
     let providerClient = NativeAgentRuntime()
     let workspaceService = WorkspaceService()
     let gitService = GitService()
@@ -64,7 +64,8 @@ final class AppState: ObservableObject {
     private var lastErrorBySession: [String: String] = [:]
     private var hasBootstrapped = false
 
-    init() {
+    init(settingsStore: AppSettingsStore = AppSettingsStore()) {
+        self.settingsStore = settingsStore
         settings.generalWorkspacePath = Self.normalizedGeneralWorkspacePath(settings.generalWorkspacePath)
         isSidebarVisible = uiPreferences.sidebarVisible
         selectedProjectID = projects.first?.id
@@ -105,7 +106,12 @@ final class AppState: ObservableObject {
     nonisolated static func normalizedSettings(_ settings: AppSettings) -> AppSettings {
         var normalized = settings
         normalized.generalWorkspacePath = normalizedGeneralWorkspacePath(settings.generalWorkspacePath)
+        normalized.permissions.disallowedTools.removeAll(where: isWebSearchPermissionRule)
         return normalized
+    }
+
+    nonisolated private static func isWebSearchPermissionRule(_ rule: String) -> Bool {
+        AgentToolNameCanonicalizer.canonical(rule) == "WebSearch"
     }
 
     var selectedProject: WorkspaceProject? {
@@ -143,7 +149,11 @@ final class AppState: ObservableObject {
         do {
             _ = try AppPaths.current()
             if let storedSettings = try settingsStore.load() {
-                settings = Self.normalizedSettings(storedSettings)
+                let normalizedSettings = Self.normalizedSettings(storedSettings)
+                settings = normalizedSettings
+                if normalizedSettings != storedSettings {
+                    try? settingsStore.save(normalizedSettings)
+                }
             }
             logBundleNetworkPolicy()
             try bootstrapLocalDebugConfigIfNeeded()
@@ -479,10 +489,12 @@ final class AppState: ObservableObject {
         }
         let nativeConfigValues = nativeConfig?.rawValues ?? [:]
         let routeTier = RoutingService.classifyTier(prompt: prompt, runMode: requestedRunMode)
+        let visibleTools = NativeToolRouter.openAITools(configValues: nativeConfigValues)
         let routeSignals = NativeRouterRuntime.requestSignals(
             prompt: promptWithMemory,
             priorMessages: historyBeforeSend,
-            attachments: attachments
+            attachments: attachments,
+            tools: visibleTools
         )
         let routeDecision = NativeRouterRuntime.decision(forTier: routeTier, values: nativeConfigValues, signals: routeSignals)
         let routeEntryID = routeDecision.entryID
@@ -880,6 +892,7 @@ final class AppState: ObservableObject {
     func addAllowedTool(_ tool: String) {
         let canonical = canonicalPermissionRule(tool)
         guard !canonical.isEmpty else { return }
+        removeMatchingPermissionRule(canonical, from: \.disallowedTools)
         addUnique(canonical, to: \.allowedTools)
         persistSettingsAfterPermissionChange()
     }
@@ -887,6 +900,8 @@ final class AppState: ObservableObject {
     func addBlockedTool(_ tool: String) {
         let canonical = canonicalPermissionRule(tool)
         guard !canonical.isEmpty else { return }
+        guard canonical != "WebSearch" else { return }
+        removeMatchingPermissionRule(canonical, from: \.allowedTools)
         addUnique(canonical, to: \.disallowedTools)
         persistSettingsAfterPermissionChange()
     }
@@ -930,6 +945,7 @@ final class AppState: ObservableObject {
         let blocked = payload["disallowedTools"] as? [String] ?? []
         let mergedAllowed = uniqueCanonicalRules(settings.permissions.allowedTools + allowed)
         let mergedBlocked = uniqueCanonicalRules(settings.permissions.disallowedTools + blocked)
+            .filter { !Self.isWebSearchPermissionRule($0) }
         settings.permissions.disallowedTools = mergedBlocked
         settings.permissions.allowedTools = mergedAllowed
         settings.permissions.lastUpdated = Date()
@@ -1175,6 +1191,14 @@ final class AppState: ObservableObject {
         guard !trimmed.isEmpty else { return }
         if !settings.permissions[keyPath: keyPath].contains(where: { permissionRuleEquals($0, trimmed) }) {
             settings.permissions[keyPath: keyPath].append(trimmed)
+            settings.permissions.lastUpdated = Date()
+        }
+    }
+
+    private func removeMatchingPermissionRule(_ tool: String, from keyPath: WritableKeyPath<ToolPermissionSettings, [String]>) {
+        let count = settings.permissions[keyPath: keyPath].count
+        settings.permissions[keyPath: keyPath].removeAll { permissionRuleEquals($0, tool) }
+        if settings.permissions[keyPath: keyPath].count != count {
             settings.permissions.lastUpdated = Date()
         }
     }
@@ -2138,19 +2162,25 @@ enum G9ClawConfigDefaults {
           includeAssistant: true
           maxMessageChars: 6000
           heartbeatBatchSize: 30
-        rag:
-          enabled: false
-          disableBuiltInWebTools: true
-          localKnowledge:
-            baseUrl: ""
+        tools:
+          webSearch:
+            provider: glm
             apiKey: ""
-            modelName: ""
-            databaseUrl: ""
-            defaultTopK: 8
-          glmWebSearch:
-            baseUrl: ""
-            apiKey: ""
-            defaultTopK: 8
+            endpoint: https://api.z.ai/api/paas/v4/web_search
+            timeoutMs: 30000
+            organicLimit: 8
+            customProvider:
+              name: custom
+              auth: bearer
+              method: POST
+              queryParam: query
+              apiKeyParam: api_key
+              resultsPath: ""
+              titleField: title
+              urlField: url
+              snippetField: snippet
+              sourceField: source
+              publishedAtField: publishedAt
         router:
           enabled: false
           log: true
@@ -2530,11 +2560,6 @@ enum NativeConfigService {
         }
         normalized = normalized.filter { !$0.key.hasPrefix("agents.alwaysOn.") }
 
-        if normalized["rag.localKnowledge.databaseUrl"]?.nilIfBlank == nil,
-           let milvusURI = normalized["rag.localKnowledge.milvusUri"]?.nilIfBlank {
-            normalized["rag.localKnowledge.databaseUrl"] = milvusURI
-        }
-        normalized.removeValue(forKey: "rag.localKnowledge.milvusUri")
         normalized = normalized.filter { $0.key != "compat" && !$0.key.hasPrefix("compat.") }
 
         return normalized

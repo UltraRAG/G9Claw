@@ -126,8 +126,8 @@ private struct SettingsContentView: View {
             return state.t(.alwaysOn)
         case .memory:
             return state.t(.memory)
-        case .rag:
-            return state.t(.rag)
+        case .search:
+            return state.t(.search)
         case .router:
             return state.t(.routing)
         case .gateway:
@@ -160,7 +160,7 @@ private struct SettingsContentView: View {
                     SettingsNavigationRow(
                         systemImage: "doc.badge.gearshape",
                         title: state.t(.config),
-                        detail: local(chinese: "模型、运行时、RAG、常驻等基础配置", english: "Models, runtime, RAG, Always-on, and essential config")
+                        detail: local(chinese: "模型、运行时、搜索、常驻等基础配置", english: "Models, runtime, Search, Always-on, and essential config")
                     ) {
                         currentPage = .config
                     }
@@ -691,27 +691,55 @@ private struct SettingsContentView: View {
                     }
                 }
             }
-        case .rag:
+        case .search:
             VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: state.t(.rag), detail: state.t(.ragSectionDetail)) {
+                SettingsSectionBlock(title: state.t(.search), detail: state.t(.searchSectionDetail)) {
                     VStack(alignment: .leading, spacing: 16) {
-                        SettingsCardBlock {
-                            SettingsRowBlock(title: state.t(.enabled), detail: state.t(.ragDetail)) {
-                                WebSettingsToggle(isOn: configBoolBinding(NativeRagConfigFormFields.enabledPath))
-                            }
-                        }
-                        SettingsCardBlock {
-                            SettingsRowBlock(title: state.t(.disableBuiltInWebTools), detail: state.t(.disableBuiltInWebToolsDetail)) {
-                                WebSettingsToggle(
-                                    isOn: configBoolBinding(
-                                        NativeRagConfigFormFields.disableBuiltInWebToolsPath,
-                                        defaultValue: NativeRagConfigFormFields.disableBuiltInWebToolsDefault
-                                    )
+                        SettingsCardBlock(divided: true) {
+                            SettingsRowBlock(title: state.t(.provider), detail: state.t(.searchProviderDetail)) {
+                                SettingsPickerField(
+                                    state.t(.provider),
+                                    selection: searchProviderBinding(),
+                                    options: NativeSearchConfigFormFields.providerOptions,
+                                    emptyLabel: "glm",
+                                    optionLabel: NativeSearchConfigFormFields.providerLabel
                                 )
                             }
+                            ConfigGrid {
+                                ForEach(NativeSearchConfigFormFields.primaryFields) { field in
+                                    SettingsTextField(
+                                        state.t(field.label),
+                                        text: configBinding(field.path),
+                                        isSecure: field.isSecure
+                                    )
+                                }
+                            }
+                            .padding(14)
                         }
-                        ForEach(NativeRagConfigFormFields.endpointCards) { endpoint in
-                            ragEndpointCard(endpoint)
+                        if configValue(NativeSearchConfigFormFields.providerPath) == "custom" {
+                            SettingsCardBlock(divided: true) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(state.t(.customProvider))
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(DesignTokens.text)
+                                    Text(state.t(.customProviderDetail))
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(DesignTokens.tertiaryText)
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+
+                                ConfigGrid {
+                                    ForEach(NativeSearchConfigFormFields.customFields) { field in
+                                        SettingsTextField(
+                                            state.t(field.label),
+                                            text: configBinding(field.path),
+                                            isSecure: field.isSecure
+                                        )
+                                    }
+                                }
+                                .padding(14)
+                            }
                         }
                     }
                 }
@@ -931,32 +959,6 @@ private struct SettingsContentView: View {
         }
     }
 
-    private func ragEndpointCard(_ endpoint: NativeRagEndpointConfigCardSpec) -> some View {
-        SettingsCardBlock(divided: true) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(state.t(endpoint.title))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(DesignTokens.text)
-                Text(state.t(endpoint.detail))
-                    .font(.system(size: 11))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-
-            ConfigGrid {
-                ForEach(endpoint.fields) { field in
-                    SettingsTextField(
-                        state.t(field.label),
-                        text: configBinding(field.path),
-                        isSecure: field.isSecure
-                    )
-                }
-            }
-            .padding(14)
-        }
-    }
-
     private var modelPoolEntryIDs: [String] {
         configChildIDs(parentPath: "models.entries")
     }
@@ -1057,6 +1059,28 @@ private struct SettingsContentView: View {
                 configBool(path, defaultValue: defaultValue)
             },
             set: { setConfigValue(path, $0 ? "true" : "false") }
+        )
+    }
+
+    private func searchProviderBinding() -> Binding<String> {
+        Binding(
+            get: {
+                let value = configValue(NativeSearchConfigFormFields.providerPath)
+                return NativeSearchConfigFormFields.providerOptions.contains(value) ? value : "glm"
+            },
+            set: { provider in
+                let selected = NativeSearchConfigFormFields.providerOptions.contains(provider) ? provider : "glm"
+                setConfigValue(NativeSearchConfigFormFields.providerPath, selected)
+                let endpoint = configValue("tools.webSearch.endpoint").trimmingCharacters(in: .whitespacesAndNewlines)
+                let defaultEndpoints = Set(NativeSearchConfigFormFields.defaultEndpoints.values)
+                if selected == "custom" {
+                    if defaultEndpoints.contains(endpoint) {
+                        setConfigValue("tools.webSearch.endpoint", "")
+                    }
+                } else if endpoint.isEmpty || defaultEndpoints.contains(endpoint) {
+                    setConfigValue("tools.webSearch.endpoint", NativeSearchConfigFormFields.defaultEndpoints[selected] ?? "")
+                }
+            }
         )
     }
 
@@ -1636,7 +1660,7 @@ enum NativeConfigFormLayout {
         .models,
         .alwaysOn,
         .memory,
-        .rag,
+        .search,
         .router,
         .gateway,
     ]
@@ -1793,14 +1817,6 @@ struct NativeConfigTextFieldSpec: Hashable, Identifiable {
     var id: String { path }
 }
 
-struct NativeRagEndpointConfigCardSpec: Hashable, Identifiable {
-    let id: String
-    let title: L10nKey
-    let detail: L10nKey
-    let fields: [NativeConfigTextFieldSpec]
-    let includesDefaultTopK: Bool
-}
-
 enum NativeRuntimeConfigFormFields {
     static let workspacesRootPath = "runtime.workspacesRoot"
     static let generalWorkspacePath = "gateway.runtimePaths.generalCwd"
@@ -1824,42 +1840,42 @@ enum NativeAlwaysOnConfigFormFields {
     static let visiblePaths = [enabledPath] + textFields.map(\.path)
 }
 
-enum NativeRagConfigFormFields {
-    static let enabledPath = "rag.enabled"
-    static let disableBuiltInWebToolsPath = "rag.disableBuiltInWebTools"
-    static let disableBuiltInWebToolsDefault = true
-    static let booleanDefaults = [
-        enabledPath: false,
-        disableBuiltInWebToolsPath: disableBuiltInWebToolsDefault,
+enum NativeSearchConfigFormFields {
+    static let providerPath = "tools.webSearch.provider"
+    static let providerOptions = ["glm", "tavily", "custom"]
+    static let defaultEndpoints = [
+        "glm": "https://api.z.ai/api/paas/v4/web_search",
+        "tavily": "https://api.tavily.com/search",
     ]
-    static let localKnowledgeFields: [NativeConfigTextFieldSpec] = [
-        NativeConfigTextFieldSpec(label: .localKnowledgeBaseURL, path: "rag.localKnowledge.baseUrl"),
-        NativeConfigTextFieldSpec(label: .apiKey, path: "rag.localKnowledge.apiKey", isSecure: true),
-        NativeConfigTextFieldSpec(label: .embeddingModel, path: "rag.localKnowledge.modelName"),
-        NativeConfigTextFieldSpec(label: .databaseURL, path: "rag.localKnowledge.databaseUrl"),
+    static let primaryFields: [NativeConfigTextFieldSpec] = [
+        NativeConfigTextFieldSpec(label: .apiKey, path: "tools.webSearch.apiKey", isSecure: true),
+        NativeConfigTextFieldSpec(label: .endpointURL, path: "tools.webSearch.endpoint"),
+        NativeConfigTextFieldSpec(label: .organicLimit, path: "tools.webSearch.organicLimit"),
+        NativeConfigTextFieldSpec(label: .timeoutMs, path: "tools.webSearch.timeoutMs"),
     ]
-    static let glmWebSearchFields: [NativeConfigTextFieldSpec] = [
-        NativeConfigTextFieldSpec(label: .glmWebSearchBaseURL, path: "rag.glmWebSearch.baseUrl"),
-        NativeConfigTextFieldSpec(label: .apiKey, path: "rag.glmWebSearch.apiKey", isSecure: true),
-        NativeConfigTextFieldSpec(label: .glmDefaultTopK, path: "rag.glmWebSearch.defaultTopK"),
+    static let customFields: [NativeConfigTextFieldSpec] = [
+        NativeConfigTextFieldSpec(label: .customProviderName, path: "tools.webSearch.customProvider.name"),
+        NativeConfigTextFieldSpec(label: .customAuth, path: "tools.webSearch.customProvider.auth"),
+        NativeConfigTextFieldSpec(label: .customMethod, path: "tools.webSearch.customProvider.method"),
+        NativeConfigTextFieldSpec(label: .queryParam, path: "tools.webSearch.customProvider.queryParam"),
+        NativeConfigTextFieldSpec(label: .apiKeyParam, path: "tools.webSearch.customProvider.apiKeyParam"),
+        NativeConfigTextFieldSpec(label: .resultsPath, path: "tools.webSearch.customProvider.resultsPath"),
+        NativeConfigTextFieldSpec(label: .titleField, path: "tools.webSearch.customProvider.titleField"),
+        NativeConfigTextFieldSpec(label: .urlField, path: "tools.webSearch.customProvider.urlField"),
+        NativeConfigTextFieldSpec(label: .snippetField, path: "tools.webSearch.customProvider.snippetField"),
+        NativeConfigTextFieldSpec(label: .sourceField, path: "tools.webSearch.customProvider.sourceField"),
+        NativeConfigTextFieldSpec(label: .publishedAtField, path: "tools.webSearch.customProvider.publishedAtField"),
     ]
-    static let endpointCards: [NativeRagEndpointConfigCardSpec] = [
-        NativeRagEndpointConfigCardSpec(
-            id: "localKnowledge",
-            title: .ragLocalKnowledgeTitle,
-            detail: .ragLocalKnowledgeDetail,
-            fields: localKnowledgeFields,
-            includesDefaultTopK: false
-        ),
-        NativeRagEndpointConfigCardSpec(
-            id: "glmWebSearch",
-            title: .ragGlmWebSearchTitle,
-            detail: .ragGlmWebSearchDetail,
-            fields: glmWebSearchFields,
-            includesDefaultTopK: true
-        ),
-    ]
-    static let textFields: [NativeConfigTextFieldSpec] = localKnowledgeFields + glmWebSearchFields
+    static let visiblePaths = [providerPath] + primaryFields.map(\.path) + customFields.map(\.path)
+
+    static func providerLabel(_ provider: String) -> String {
+        switch provider {
+        case "glm": return "GLM / Z.AI"
+        case "tavily": return "Tavily"
+        case "custom": return "Custom"
+        default: return provider
+        }
+    }
 }
 
 enum NativeConfigBoolValue {

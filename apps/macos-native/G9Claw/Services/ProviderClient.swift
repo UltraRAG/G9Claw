@@ -928,9 +928,6 @@ enum AgentToolNameCanonicalizer {
     static func canonical(_ rawName: String) -> String {
         let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
-        if lower.hasPrefix("g9claw-rag:") {
-            return trimmed
-        }
         switch lower {
         case "read": return "Read"
         case "write": return "Write"
@@ -1025,11 +1022,11 @@ struct ToolArgumentNormalizer {
             in: object
         ) else {
             return NormalizedInvocation(
-                call: AgentToolCall(id: callId, name: "Skill", inputJSON: "{}"),
+                call: AgentToolCall(id: callId, name: "WebSearch", inputJSON: "{}"),
                 recoveryResult: AgentToolResult(
                     callId: callId,
-                    toolName: "Skill",
-                    output: "\(toolName) is disabled. Use Skill with g9claw-rag:glm-web-search and provide a query.",
+                    toolName: "WebSearch",
+                    output: "\(toolName) requires a non-empty query.",
                     isError: true
                 )
             )
@@ -1042,10 +1039,9 @@ struct ToolArgumentNormalizer {
         return NormalizedInvocation(
             call: AgentToolCall(
                 id: callId,
-                name: "Skill",
+                name: "WebSearch",
                 inputJSON: jsonString([
-                    "skill": "g9claw-rag:glm-web-search",
-                    "args": args,
+                    "query": args,
                 ])
             ),
             recoveryResult: nil
@@ -1319,15 +1315,6 @@ final class AgentRunContext: @unchecked Sendable {
         let trimmed = skill.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !invokedSkills.contains(trimmed) else { return }
         invokedSkills.append(trimmed)
-    }
-
-    var hasInvokedRAGSkill: Bool {
-        invokedSkills.contains {
-            $0.contains("g9claw-rag:") ||
-                $0.contains("glm-web-search") ||
-                $0.contains("rag-research") ||
-                $0.contains("local-knowledge")
-        }
     }
 
     var hasIncompleteTodos: Bool {
@@ -2710,7 +2697,7 @@ struct NativeAgentRuntime: Sendable {
             "stream_options": [
                 "include_usage": true,
             ],
-            "tools": NativeToolRouter.openAITools(),
+            "tools": NativeToolRouter.openAITools(configValues: request.nativeConfigValues),
             "tool_choice": "auto",
         ])
 
@@ -3033,6 +3020,8 @@ struct NativeAgentRuntime: Sendable {
     }
 
     private static func nativeAgentSystemPrompt(request: AgentRequest) -> String {
+        let toolNames = AgentToolRegistry.visibleToolNames(configValues: request.nativeConfigValues).joined(separator: ", ")
+        let searchInstruction = nativeAgentSearchInstruction()
         let modeText = request.runMode == .plan
             ? """
             You are in plan mode. The user does not want implementation yet.
@@ -3050,15 +3039,19 @@ struct NativeAgentRuntime: Sendable {
         Never claim that you created, edited, deleted, or inspected a file unless the corresponding tool result confirms it.
         Prefer small, verifiable steps: inspect files, make precise edits, run focused checks, then summarize.
         Prefer targeted Read/Grep/Glob once paths are known. Use root Glob **/* only for the first workspace discovery; do not repeat full-workspace glob after you already have a file list.
-        Prefer the canonical tool names: Read, Write, StrReplace, Delete, EditNotebook, Grep, Glob, SemanticSearch, Shell, Await, ReadLints, Skill, TodoWrite, AskQuestion, SwitchMode, and Task.
+        Prefer the canonical tool names: \(toolNames).
         For shell commands, use Shell only when needed and keep commands scoped to the workspace. Use run_in_background plus Await for long-running commands.
-        For current public information, weather, or web evidence, call Skill with skill="g9claw-rag:glm-web-search" or skill="g9claw-rag:rag-research". Do not call separate weather, web search, or web fetch tools directly.
+        \(searchInstruction)
         \(nativeAgentSkillContext(workspacePath: request.projectPath))
         Use Task for delegated analysis or shell-focused background work.
         If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request and no other prose in that assistant turn.
         Example: {"tool":"Read","input":{"file_path":"README.md"}}
         Do not emit markdown fences, language labels such as "bash" or "json", or a prose explanation when requesting a tool.
         """
+    }
+
+    private static func nativeAgentSearchInstruction() -> String {
+        return "For current public information, weather, recent documentation, or URL-backed evidence, call WebSearch with a focused query."
     }
 
     static func nativeAgentSkillContext(workspacePath: String) -> String {
@@ -3221,27 +3214,7 @@ struct NativeAgentRuntime: Sendable {
 
     private static func canonicalToolCall(_ call: AgentToolCall) -> AgentToolCall {
         let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
-        guard canonicalName.lowercased().hasPrefix("g9claw-rag:") else {
-            return AgentToolCall(id: call.id, name: canonicalName, inputJSON: call.inputJSON)
-        }
-        let args: String
-        if let data = call.inputJSON.data(using: .utf8),
-           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            args = (object["args"] as? String)
-                ?? (object["query"] as? String)
-                ?? (object["prompt"] as? String)
-                ?? ""
-        } else {
-            args = ""
-        }
-        return AgentToolCall(
-            id: call.id,
-            name: "Skill",
-            inputJSON: jsonString([
-                "skill": canonicalName,
-                "args": args,
-            ])
-        )
+        return AgentToolCall(id: call.id, name: canonicalName, inputJSON: call.inputJSON)
     }
 
     private static func forcedWorkspaceBootstrapToolCall() -> AgentToolCall {
@@ -3885,7 +3858,7 @@ private struct OpenAIToolCallAccumulator {
 }
 
 enum AgentToolRegistry {
-    static let toolNames = [
+    static let baseToolNames = [
         "Read",
         "Write",
         "StrReplace",
@@ -3903,9 +3876,14 @@ enum AgentToolRegistry {
         "SwitchMode",
         "Task",
     ]
+    static let toolNames = baseToolNames + ["WebSearch"]
 
-    static func openAITools() -> [[String: Any]] {
-        [
+    static func visibleToolNames(configValues _: [String: String] = [:]) -> [String] {
+        toolNames
+    }
+
+    static func openAITools(configValues _: [String: String] = [:]) -> [[String: Any]] {
+        var tools: [[String: Any]] = [
             functionTool(
                 "Read",
                 "Read text, image, PDF, or Jupyter notebook content from the workspace.",
@@ -4025,6 +4003,20 @@ enum AgentToolRegistry {
                 required: ["query"]
             ),
             functionTool(
+                "WebSearch",
+                """
+                Search the public web for current information through the configured Search provider. Supports GLM/Z.AI, Tavily, or a custom JSON API.
+                Use it for current events, recent documentation, weather, or source-backed evidence beyond the workspace.
+                """,
+                [
+                    "query": stringProperty("Specific search query. Include versions, dates, product names, or locations when useful."),
+                    "gl": stringProperty("Optional country code for localized custom providers, such as us or cn."),
+                ],
+                required: ["query"]
+            ),
+        ]
+        tools.append(contentsOf: [
+            functionTool(
                 "Shell",
                 "Run a shell command in the workspace.",
                 [
@@ -4059,7 +4051,7 @@ enum AgentToolRegistry {
                 "Skill",
                 "Load a PilotDeck skill's instructions. This does not execute the skill; after loading, use Shell/Read/other tools according to the returned instructions and skillDir. Use exact names from the system prompt's Available skills list.",
                 [
-                    "skill": stringProperty("Exact skill name, for example g9claw-rag:glm-web-search."),
+                    "skill": stringProperty("Exact skill name from the Available skills list."),
                     "args": stringProperty("User query or task arguments for the skill."),
                 ],
                 required: ["skill"]
@@ -4150,7 +4142,8 @@ enum AgentToolRegistry {
                 ],
                 required: ["prompt"]
             ),
-        ]
+        ])
+        return tools
     }
 
     private static func functionTool(
@@ -4200,6 +4193,7 @@ enum AgentPermissionPolicy {
         "Glob",
         "Grep",
         "SemanticSearch",
+        "WebSearch",
         "ReadLints",
         "Skill",
         "TodoRead",
@@ -4217,7 +4211,7 @@ enum AgentPermissionPolicy {
         if context.runMode == .plan, !context.planExited, !isPlanModeSafe(toolName: toolName, call: call) {
             return .block(planModePolicyBlockMessage(for: toolName))
         }
-        if matchesAny(ruleSet: context.toolSettings.disallowedTools, call: call) {
+        if toolName != "WebSearch", matchesAny(ruleSet: context.toolSettings.disallowedTools, call: call) {
             return .deny("\(toolName) is blocked by permissions settings.")
         }
         if context.runMode == .plan,
@@ -4331,6 +4325,9 @@ enum AgentPermissionPolicy {
     }
 
     private static func toolRequiresPrompt(toolName: String, call: AgentToolCall) -> Bool {
+        if toolName == "WebSearch" {
+            return true
+        }
         if toolName == "Shell" {
             return true
         }
@@ -4391,14 +4388,8 @@ enum SkillRuntimeService {
         }
 
         var candidates: [URL] = []
-        if let rag = ragSkillDirectory(for: requested) {
-            candidates.append(rag)
-        }
         candidates.append(Self.userSkillsRoot().appendingPathComponent(slugCandidate(requested), isDirectory: true))
         candidates.append(Self.projectSkillsRoot(workspacePath).appendingPathComponent(slugCandidate(requested), isDirectory: true))
-        if let pluginRoot = ragPluginRoot() {
-            candidates.append(pluginRoot.appendingPathComponent("skills", isDirectory: true).appendingPathComponent(slugCandidate(requested), isDirectory: true))
-        }
 
         for candidate in candidates {
             if let resolved = readSkill(at: candidate, requested: requested) {
@@ -4422,9 +4413,6 @@ enum SkillRuntimeService {
             scopedRoots.append((projectSkillsRoot(trimmedWorkspace), "project"))
         }
         scopedRoots.append((userSkillsRoot(), "user"))
-        if let pluginRoot = ragPluginRoot() {
-            scopedRoots.append((pluginRoot.appendingPathComponent("skills", isDirectory: true), "bundled"))
-        }
 
         var entries: [AgentSkillCatalogEntry] = []
         var seen: Set<String> = []
@@ -4455,29 +4443,6 @@ enum SkillRuntimeService {
     static func environment(configValues: [String: String]) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment.removeValue(forKey: "CLAU" + "DE_PLUGIN_ROOT")
-        if let pluginRoot = ragPluginRoot() {
-            environment["G9CLAW_PLUGIN_ROOT"] = pluginRoot.path
-        }
-        let ragValues: [String: String] = [
-            "RAG_ENABLED": boolEnvironmentValue(configValues["rag.enabled"], defaultValue: false),
-            "RAG_DISABLE_BUILTIN_WEB_TOOLS": boolEnvironmentValue(configValues["rag.disableBuiltInWebTools"], defaultValue: true),
-            "RAG_LOCAL_KNOWLEDGE_BASE_URL": stripTrailingSlash(configValues["rag.localKnowledge.baseUrl"]),
-            "RAG_LOCAL_KNOWLEDGE_API_KEY": configValues["rag.localKnowledge.apiKey"] ?? "",
-            "RAG_LOCAL_KNOWLEDGE_MODEL_NAME": configValues["rag.localKnowledge.modelName"] ?? "",
-            "RAG_LOCAL_KNOWLEDGE_DATABASE_URL": configValues["rag.localKnowledge.databaseUrl"]?.nilIfBlank
-                ?? configValues["rag.localKnowledge.milvusUri"]?.nilIfBlank
-                ?? "",
-            "RAG_LOCAL_KNOWLEDGE_MILVUS_URI": configValues["rag.localKnowledge.databaseUrl"]?.nilIfBlank
-                ?? configValues["rag.localKnowledge.milvusUri"]?.nilIfBlank
-                ?? "",
-            "RAG_LOCAL_KNOWLEDGE_TOP_K": configValues["rag.localKnowledge.defaultTopK"]?.nilIfBlank ?? "8",
-            "RAG_GLM_WEB_SEARCH_BASE_URL": stripTrailingSlash(configValues["rag.glmWebSearch.baseUrl"]),
-            "RAG_GLM_WEB_SEARCH_API_KEY": configValues["rag.glmWebSearch.apiKey"] ?? "",
-            "RAG_GLM_WEB_SEARCH_TOP_K": configValues["rag.glmWebSearch.defaultTopK"]?.nilIfBlank ?? "8",
-        ]
-        for (key, value) in ragValues {
-            environment["G9CLAW_\(key)"] = value
-        }
         let prefix = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         environment["PATH"] = [prefix, environment["PATH"]].compactMap { $0 }.joined(separator: ":")
         return environment.compactMapValues { value in
@@ -4486,37 +4451,11 @@ enum SkillRuntimeService {
         }
     }
 
-    private static func boolEnvironmentValue(_ rawValue: String?, defaultValue: Bool) -> String {
-        guard let rawValue = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines), !rawValue.isEmpty else {
-            return defaultValue ? "1" : "0"
-        }
-        switch rawValue.lowercased() {
-        case "true", "1", "yes", "on":
-            return "1"
-        case "false", "0", "no", "off":
-            return "0"
-        default:
-            return defaultValue ? "1" : "0"
-        }
-    }
-
-    private static func stripTrailingSlash(_ rawValue: String?) -> String {
-        guard var value = rawValue?.nilIfBlank else { return "" }
-        while value.count > 1, value.hasSuffix("/") {
-            value.removeLast()
-        }
-        return value
-    }
-
     private static func searchableSkillRoots(workspacePath: String) -> [URL] {
-        var roots = [
+        [
             userSkillsRoot(),
             projectSkillsRoot(workspacePath),
         ]
-        if let pluginRoot = ragPluginRoot() {
-            roots.append(pluginRoot.appendingPathComponent("skills", isDirectory: true))
-        }
-        return roots
     }
 
     private static func readSkill(at directory: URL, requested: String) -> ResolvedAgentSkill? {
@@ -4529,7 +4468,7 @@ enum SkillRuntimeService {
             canonicalName: canonical,
             skillDir: directory.path,
             skillFile: file.path,
-            pluginRoot: pluginRoot(forSkillFile: file)?.path,
+            pluginRoot: nil,
             summary: summary(from: content, frontmatter: frontmatter),
             allowedTools: parseAllowedTools(content),
             content: content
@@ -4553,69 +4492,6 @@ enum SkillRuntimeService {
         return nil
     }
 
-    private static func ragSkillDirectory(for requested: String) -> URL? {
-        guard let pluginRoot = ragPluginRoot() else { return nil }
-        let normalized = requested.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        let slug: String?
-        switch normalized {
-        case "g9claw-rag:glm-web-search", "g9claw-glm-web-search", "glm-web-search":
-            slug = "glm-web-search"
-        case "g9claw-rag:rag-research", "g9claw-rag-research", "rag-research":
-            slug = "rag-research"
-        case "g9claw-rag:local-knowledge", "g9claw-local-knowledge", "local-knowledge":
-            slug = "local-knowledge"
-        default:
-            slug = nil
-        }
-        return slug.map { pluginRoot.appendingPathComponent("skills", isDirectory: true).appendingPathComponent($0, isDirectory: true) }
-    }
-
-    private static func ragPluginRoot() -> URL? {
-        let manager = FileManager.default
-        let envRoot = ProcessInfo.processInfo.environment["G9CLAW_REPO_ROOT"].map {
-            URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath)
-                .appendingPathComponent("apps/macos-native/G9Claw/Assets/g9claw-rag-plugin", isDirectory: true)
-        }
-        let bundleRoot = Bundle.main.resourceURL?.appendingPathComponent("g9claw-rag-plugin", isDirectory: true)
-        let sourceRoot = ragPluginRootFromSourceFile()
-        for candidate in [bundleRoot, envRoot, sourceRoot].compactMap({ $0 }) {
-            if manager.fileExists(atPath: candidate.appendingPathComponent("skills", isDirectory: true).path) {
-                return candidate
-            }
-        }
-        return nil
-    }
-
-    private static func ragPluginRootFromSourceFile() -> URL? {
-        var current = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        let relativePaths = [
-            "Assets/g9claw-rag-plugin",
-            "G9Claw/Assets/g9claw-rag-plugin",
-            "apps/macos-native/G9Claw/Assets/g9claw-rag-plugin",
-        ]
-        for _ in 0..<10 {
-            for relativePath in relativePaths {
-                let candidate = current.appendingPathComponent(relativePath, isDirectory: true)
-                if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("skills", isDirectory: true).path) {
-                    return candidate
-                }
-            }
-            current.deleteLastPathComponent()
-        }
-        return nil
-    }
-
-    private static func pluginRoot(forSkillFile file: URL) -> URL? {
-        var current = file.deletingLastPathComponent()
-        for _ in 0..<6 {
-            if current.lastPathComponent == "g9claw-rag-plugin" {
-                return current
-            }
-            current.deleteLastPathComponent()
-        }
-        return nil
-    }
-
     private static func userSkillsRoot() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".g9claw", isDirectory: true)
@@ -4635,17 +4511,6 @@ enum SkillRuntimeService {
 
     private static func canonicalName(requested: String, directory: URL, frontmatter: [String: String]) -> String {
         let slug = directory.lastPathComponent
-        if requested.hasPrefix("g9claw-rag:") {
-            return requested
-        }
-        if let name = frontmatter["name"], name.hasPrefix("g9claw-") {
-            switch slug {
-            case "glm-web-search": return "g9claw-rag:glm-web-search"
-            case "rag-research": return "g9claw-rag:rag-research"
-            case "local-knowledge": return "g9claw-rag:local-knowledge"
-            default: return name
-            }
-        }
         return frontmatter["name"]?.nilIfBlank ?? slug
     }
 
@@ -4750,9 +4615,9 @@ enum AgentToolExecutor {
             case "Await":
                 output = try await awaitTask(inputJSON: executionCall.inputJSON)
             case "WebSearch":
-                output = "WebSearch is disabled. Use Skill with g9claw-rag:glm-web-search."
+                output = try await webSearch(inputJSON: executionCall.inputJSON, context: context)
             case "WebFetch":
-                output = "WebFetch is disabled. Use Skill with g9claw-rag:rag-research for source-grounded web evidence."
+                output = "WebFetch is disabled. Use WebSearch for source-grounded web evidence."
             case "ReadLints":
                 output = try await readLints(inputJSON: executionCall.inputJSON, context: context)
             case "Skill":
@@ -5153,11 +5018,368 @@ enum AgentToolExecutor {
     }
 
     private static func webSearch(inputJSON: String, context: AgentRunContext) async throws -> String {
-        throw ProviderClientError.toolExecution("WebSearch is disabled. Use Skill with g9claw-rag:glm-web-search.")
+        let input = try inputObject(from: inputJSON)
+        let query = try requiredString("query", input: input)
+        let gl = (input["gl"] as? String).nilIfBlank
+        let config = WebSearchRuntimeConfig(values: context.nativeConfigValues)
+        guard config.apiKey != nil || (config.provider == "custom" && config.customAuth == "none") else {
+            throw ProviderClientError.toolExecution("WebSearch is not configured. Set tools.webSearch.apiKey or the provider-specific environment variable.")
+        }
+
+        switch config.provider {
+        case "tavily":
+            return try await performTavilyWebSearch(query: query, config: config)
+        case "custom":
+            return try await performCustomWebSearch(query: query, gl: gl, config: config)
+        default:
+            return try await performGlmWebSearch(query: query, config: config)
+        }
     }
 
     private static func webFetch(inputJSON: String, context: AgentRunContext) async throws -> String {
-        throw ProviderClientError.toolExecution("WebFetch is disabled. Use Skill with g9claw-rag:rag-research for source-grounded web evidence.")
+        throw ProviderClientError.toolExecution("WebFetch is disabled. Use WebSearch for source-grounded web evidence.")
+    }
+
+    private struct WebSearchRuntimeConfig {
+        static let defaultGlmEndpoint = "https://api.z.ai/api/paas/v4/web_search"
+        static let defaultTavilyEndpoint = "https://api.tavily.com/search"
+
+        var provider: String
+        var endpoint: String
+        var apiKey: String?
+        var timeoutMs: Int
+        var organicLimit: Int
+        var customName: String
+        var customAuth: String
+        var customMethod: String
+        var customQueryParam: String
+        var customAPIKeyParam: String
+        var customResultsPath: String
+        var customTitleField: String
+        var customURLField: String
+        var customSnippetField: String
+        var customSourceField: String
+        var customPublishedAtField: String
+
+        init(values: [String: String], environment: [String: String] = ProcessInfo.processInfo.environment) {
+            let rawProvider = values["tools.webSearch.provider"]?.nilIfBlank?.lowercased() ?? "glm"
+            provider = ["glm", "tavily", "custom"].contains(rawProvider) ? rawProvider : "glm"
+            timeoutMs = Self.clampedInt(values["tools.webSearch.timeoutMs"], defaultValue: 30_000, min: 1_000, max: 120_000)
+            organicLimit = Self.clampedInt(values["tools.webSearch.organicLimit"], defaultValue: 8, min: 1, max: 50)
+            customName = values["tools.webSearch.customProvider.name"]?.nilIfBlank ?? "custom"
+            customAuth = values["tools.webSearch.customProvider.auth"]?.nilIfBlank ?? "bearer"
+            customMethod = (values["tools.webSearch.customProvider.method"]?.nilIfBlank ?? "POST").uppercased()
+            customQueryParam = values["tools.webSearch.customProvider.queryParam"]?.nilIfBlank ?? "query"
+            customAPIKeyParam = values["tools.webSearch.customProvider.apiKeyParam"]?.nilIfBlank ?? "api_key"
+            customResultsPath = values["tools.webSearch.customProvider.resultsPath"]?.nilIfBlank ?? ""
+            customTitleField = values["tools.webSearch.customProvider.titleField"]?.nilIfBlank ?? "title"
+            customURLField = values["tools.webSearch.customProvider.urlField"]?.nilIfBlank ?? "url"
+            customSnippetField = values["tools.webSearch.customProvider.snippetField"]?.nilIfBlank ?? "snippet"
+            customSourceField = values["tools.webSearch.customProvider.sourceField"]?.nilIfBlank ?? "source"
+            customPublishedAtField = values["tools.webSearch.customProvider.publishedAtField"]?.nilIfBlank ?? "publishedAt"
+
+            let configuredEndpoint = values["tools.webSearch.endpoint"]?.nilIfBlank
+            if provider == "tavily" {
+                endpoint = configuredEndpoint == Self.defaultGlmEndpoint ? Self.defaultTavilyEndpoint : (configuredEndpoint ?? Self.defaultTavilyEndpoint)
+            } else if provider == "custom" {
+                let defaultEndpoints = [Self.defaultGlmEndpoint, Self.defaultTavilyEndpoint]
+                endpoint = configuredEndpoint.flatMap { defaultEndpoints.contains($0) ? nil : $0 } ?? ""
+            } else if let configuredEndpoint {
+                endpoint = configuredEndpoint
+            } else {
+                endpoint = environment["GLM_WEB_SEARCH_ENDPOINT"]?.nilIfBlank ?? Self.defaultGlmEndpoint
+            }
+
+            let configuredKey = values["tools.webSearch.apiKey"]?.nilIfBlank
+            switch provider {
+            case "tavily":
+                apiKey = configuredKey ?? environment["TAVILY_API_KEY"]?.nilIfBlank
+            case "custom":
+                apiKey = configuredKey ?? environment["CUSTOM_WEB_SEARCH_API_KEY"]?.nilIfBlank
+            default:
+                apiKey = configuredKey
+                    ?? environment["GLM_WEB_SEARCH_API_KEY"]?.nilIfBlank
+                    ?? environment["ZAI_API_KEY"]?.nilIfBlank
+            }
+        }
+
+        private static func clampedInt(_ rawValue: String?, defaultValue: Int, min: Int, max: Int) -> Int {
+            guard let value = rawValue.flatMap(Int.init) else { return defaultValue }
+            return Swift.max(min, Swift.min(max, value))
+        }
+    }
+
+    private static func performGlmWebSearch(query: String, config: WebSearchRuntimeConfig) async throws -> String {
+        guard let apiKey = config.apiKey else {
+            throw ProviderClientError.toolExecution("GLM web search requires tools.webSearch.apiKey or GLM_WEB_SEARCH_API_KEY/ZAI_API_KEY.")
+        }
+        let payload: [String: Any] = [
+            "search_engine": "search-prime",
+            "search_query": query,
+            "count": config.organicLimit,
+            "search_recency_filter": "noLimit",
+        ]
+        let raw = try await performJSONRequest(
+            endpoint: config.endpoint,
+            method: "POST",
+            headers: [
+                "Authorization": "Bearer \(apiKey)",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            ],
+            body: payload,
+            timeoutMs: config.timeoutMs,
+            providerName: "glm"
+        )
+        try throwIfSearchError(raw, providerName: "GLM web search")
+        let organic = mappedResults(
+            extractResultItems(raw),
+            limit: config.organicLimit,
+            titleFields: ["title", "name"],
+            urlFields: ["url", "link", "href"],
+            snippetFields: ["snippet", "summary", "content", "text"],
+            sourceFields: ["source", "site", "media"],
+            publishedAtFields: ["publishedAt", "published_at", "publish_date", "date"]
+        )
+        return webSearchOutput(query: query, provider: "glm", endpoint: config.endpoint, organic: organic)
+    }
+
+    private static func performTavilyWebSearch(query: String, config: WebSearchRuntimeConfig) async throws -> String {
+        guard let apiKey = config.apiKey else {
+            throw ProviderClientError.toolExecution("Tavily search requires tools.webSearch.apiKey or TAVILY_API_KEY.")
+        }
+        let raw = try await performJSONRequest(
+            endpoint: config.endpoint,
+            method: "POST",
+            headers: [
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            ],
+            body: [
+                "api_key": apiKey,
+                "query": query,
+                "max_results": config.organicLimit,
+                "include_answer": true,
+                "search_depth": "basic",
+            ],
+            timeoutMs: config.timeoutMs,
+            providerName: "tavily"
+        )
+        try throwIfSearchError(raw, providerName: "Tavily search")
+        let rawResults = raw["results"] as? [[String: Any]] ?? []
+        let organic = rawResults.prefix(config.organicLimit).map { entry in
+            [
+                "title": stringValue(entry["title"]) ?? "",
+                "link": stringValue(entry["url"]) ?? "",
+                "snippet": stringValue(entry["content"]) ?? "",
+                "source": stringValue(entry["url"]) ?? "",
+            ]
+        }
+        var extra: [String: Any] = [:]
+        if let answer = stringValue(raw["answer"]), !answer.isEmpty {
+            extra["answerBox"] = ["answer": answer]
+        }
+        return webSearchOutput(query: query, provider: "tavily", endpoint: config.endpoint, organic: Array(organic), extra: extra)
+    }
+
+    private static func performCustomWebSearch(query: String, gl: String?, config: WebSearchRuntimeConfig) async throws -> String {
+        guard !config.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ProviderClientError.toolExecution("Custom web search requires tools.webSearch.endpoint.")
+        }
+        guard var url = URL(string: config.endpoint) else {
+            throw ProviderClientError.toolExecution("Invalid custom web search endpoint: \(config.endpoint)")
+        }
+        var headers = ["Accept": "application/json"]
+        var body: [String: Any] = [:]
+        let method = config.customMethod == "GET" ? "GET" : "POST"
+
+        if method == "GET" {
+            url.appendQueryItem(name: config.customQueryParam, value: query)
+            if let gl { url.appendQueryItem(name: "gl", value: gl) }
+        } else {
+            headers["Content-Type"] = "application/json"
+            body[config.customQueryParam] = query
+            if let gl { body["gl"] = gl }
+        }
+
+        if config.customAuth == "bearer", let apiKey = config.apiKey {
+            headers["Authorization"] = "Bearer \(apiKey)"
+        } else if config.customAuth == "queryApiKey", let apiKey = config.apiKey {
+            url.appendQueryItem(name: config.customAPIKeyParam, value: apiKey)
+        } else if config.customAuth == "bodyApiKey", let apiKey = config.apiKey {
+            if method == "GET" {
+                url.appendQueryItem(name: config.customAPIKeyParam, value: apiKey)
+            } else {
+                body[config.customAPIKeyParam] = apiKey
+            }
+        }
+
+        let raw = try await performJSONRequest(
+            endpoint: url.absoluteString,
+            method: method,
+            headers: headers,
+            body: method == "POST" ? body : nil,
+            timeoutMs: config.timeoutMs,
+            providerName: config.customName
+        )
+        try throwIfSearchError(raw, providerName: config.customName)
+        let resultValue: Any? = config.customResultsPath.isEmpty ? extractResultItems(raw) : readPath(raw, path: config.customResultsPath)
+        let organic = mappedResults(
+            resultValue as? [[String: Any]] ?? extractResultItems(resultValue),
+            limit: config.organicLimit,
+            titleFields: [config.customTitleField],
+            urlFields: [config.customURLField],
+            snippetFields: [config.customSnippetField],
+            sourceFields: [config.customSourceField],
+            publishedAtFields: [config.customPublishedAtField]
+        )
+        return webSearchOutput(query: query, provider: "custom", endpoint: config.endpoint, organic: organic, extra: ["providerName": config.customName])
+    }
+
+    private static func performJSONRequest(
+        endpoint: String,
+        method: String,
+        headers: [String: String],
+        body: [String: Any]?,
+        timeoutMs: Int,
+        providerName: String
+    ) async throws -> [String: Any] {
+        guard let url = URL(string: endpoint) else {
+            throw ProviderClientError.toolExecution("Invalid \(providerName) web search endpoint: \(endpoint)")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = TimeInterval(timeoutMs) / 1000
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        if let body {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
+        }
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw ProviderClientError.transport("web_search (\(providerName)) request failed: \(error.localizedDescription)")
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ProviderClientError.invalidResponse
+        }
+        guard 200..<300 ~= http.statusCode else {
+            let detail = String(data: data, encoding: .utf8) ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+            throw ProviderClientError.toolExecution("\(providerName) web search error (\(http.statusCode)): \(String(detail.prefix(500)))")
+        }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ProviderClientError.toolExecution("\(providerName) web search returned non-object JSON.")
+        }
+        return object
+    }
+
+    private static func throwIfSearchError(_ raw: [String: Any], providerName: String) throws {
+        if let error = stringValue(raw["error"]), !error.isEmpty {
+            throw ProviderClientError.toolExecution("\(providerName) error: \(error)")
+        }
+        if let code = raw["code"] as? NSNumber, code.intValue != 0 {
+            let message = stringValue(raw["msg"]) ?? stringValue(raw["message"]) ?? "search provider error"
+            throw ProviderClientError.toolExecution("\(providerName) error code=\(code): \(message)")
+        }
+    }
+
+    private static func webSearchOutput(
+        query: String,
+        provider: String,
+        endpoint: String,
+        organic: [[String: Any]],
+        extra: [String: Any] = [:]
+    ) -> String {
+        var output: [String: Any] = [
+            "ok": true,
+            "status": "ok",
+            "query": query,
+            "provider": provider,
+            "endpoint": endpoint,
+            "organic": organic,
+            "results": organic,
+        ]
+        for (key, value) in extra {
+            output[key] = value
+        }
+        return jsonString(output, pretty: true)
+    }
+
+    private static func extractResultItems(_ value: Any?) -> [[String: Any]] {
+        if let array = value as? [[String: Any]] {
+            return array
+        }
+        guard let object = value as? [String: Any] else {
+            return []
+        }
+        for key in ["search_result", "results", "items", "webPages", "data"] {
+            if let array = object[key] as? [[String: Any]] {
+                return array
+            }
+            if let nested = object[key] as? [String: Any] {
+                let child = extractResultItems(nested)
+                if !child.isEmpty {
+                    return child
+                }
+            }
+        }
+        return []
+    }
+
+    private static func mappedResults(
+        _ entries: [[String: Any]],
+        limit: Int,
+        titleFields: [String],
+        urlFields: [String],
+        snippetFields: [String],
+        sourceFields: [String],
+        publishedAtFields: [String]
+    ) -> [[String: Any]] {
+        entries.prefix(limit).map { entry in
+            var result: [String: Any] = [
+                "title": firstMappedString(entry, fields: titleFields) ?? "",
+                "link": firstMappedString(entry, fields: urlFields) ?? "",
+                "snippet": firstMappedString(entry, fields: snippetFields) ?? "",
+                "source": firstMappedString(entry, fields: sourceFields) ?? "",
+            ]
+            if let publishedAt = firstMappedString(entry, fields: publishedAtFields) {
+                result["publishedAt"] = publishedAt
+            }
+            return result
+        }
+    }
+
+    private static func firstMappedString(_ object: [String: Any], fields: [String]) -> String? {
+        for field in fields {
+            if let value = stringValue(readPath(object, path: field)) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func readPath(_ value: Any?, path: String) -> Any? {
+        let parts = path.split(separator: ".").map(String.init)
+        guard !parts.isEmpty else { return nil }
+        var current = value
+        for part in parts {
+            guard let object = current as? [String: Any] else { return nil }
+            current = object[part]
+        }
+        return current
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        if let string = value as? String {
+            return string.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        return nil
     }
 
     private static func readLints(inputJSON: String, context: AgentRunContext) async throws -> String {
@@ -5993,6 +6215,19 @@ private extension String {
     var nilIfBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+private extension URL {
+    mutating func appendQueryItem(name: String, value: String) {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false) else { return }
+        var items = components.queryItems ?? []
+        items.removeAll { $0.name == name }
+        items.append(URLQueryItem(name: name, value: value))
+        components.queryItems = items
+        if let url = components.url {
+            self = url
+        }
     }
 }
 
