@@ -419,12 +419,6 @@ public sealed partial class MainWindow : Window
         _permissionModeValues = await _permissionModeStore.LoadAsync();
         _isSidebarVisible = State.UiPreferences.SidebarVisible;
         State.IsSidebarVisible = _isSidebarVisible;
-        SyncSidebarSectionWithProject(State.SelectedProject);
-        if (!Equals(_uiSettings, State.Settings.UiSettings))
-        {
-            State.Settings = State.Settings with { UiSettings = _uiSettings };
-            await _settingsStore.SaveAsync(State.Settings);
-        }
         _strings = new StringCatalog(State.Settings.Language);
         _expandedProjectNames.Clear();
         foreach (var name in _uiSettings.ExpandedProjectNames)
@@ -439,6 +433,12 @@ public sealed partial class MainWindow : Window
         }
 
         _workspaceService = new WorkspaceService(State.Settings.WorkspacesRoot);
+        ApplyStartupSidebarSelection();
+        if (!Equals(_uiSettings, State.Settings.UiSettings))
+        {
+            State.Settings = State.Settings with { UiSettings = _uiSettings };
+            await _settingsStore.SaveAsync(State.Settings);
+        }
         RefreshNativeStores();
         RestoreComposerPermissionMode(State.SelectedSessionId);
         await RefreshProviderPreflightAsync();
@@ -5713,10 +5713,46 @@ public sealed partial class MainWindow : Window
     {
         if (project is null) return;
         var nextSection = IsGeneralProject(project) ? SidebarSection.General : SidebarSection.Projects;
-        if (_uiSettings.SidebarSection != nextSection)
+        var lastProjectId = IsGeneralProject(project) ? _uiSettings.LastProjectId : project.Id.ToString();
+        if (_uiSettings.SidebarSection != nextSection || _uiSettings.LastProjectId != lastProjectId)
         {
-            _uiSettings = _uiSettings with { SidebarSection = nextSection };
+            _uiSettings = _uiSettings with
+            {
+                SidebarSection = nextSection,
+                LastProjectId = lastProjectId,
+            };
         }
+    }
+
+    private void ApplyStartupSidebarSelection()
+    {
+        if (_uiSettings.SidebarSection == SidebarSection.General)
+        {
+            if (V2SidebarProjection.GeneralProject(State.Projects) is { } general)
+            {
+                State.SelectProject(general);
+            }
+            return;
+        }
+
+        if (!RestoreLastProjectSelection())
+        {
+            SyncSidebarSectionWithProject(State.SelectedProject);
+        }
+    }
+
+    private bool RestoreLastProjectSelection()
+    {
+        if (State.SelectedProject is { } selected && !IsGeneralProject(selected)) return false;
+        var projects = V2SidebarProjection.ProjectSection(State.Projects, State.Settings.ProjectSortOrder);
+        var project = SidebarProjectRestorationPolicy.PreferredProject(projects, _uiSettings.LastProjectId);
+        if (project is null) return false;
+
+        State.SelectProject(project);
+        RestoreComposerPermissionMode(null);
+        _expandedProjectNames.Add(project.Name);
+        SyncSidebarSectionWithProject(project);
+        return true;
     }
 
     private string ChatEmptyStateTitle()
@@ -6476,6 +6512,10 @@ public sealed partial class MainWindow : Window
     private void OnProjectsSectionClick(object sender, RoutedEventArgs e)
     {
         _uiSettings = _uiSettings with { SidebarSection = SidebarSection.Projects };
+        if (RestoreLastProjectSelection())
+        {
+            RefreshNativeStores();
+        }
         PersistUiSettings();
         RenderAll();
     }

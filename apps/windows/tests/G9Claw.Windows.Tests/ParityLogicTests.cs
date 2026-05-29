@@ -779,7 +779,7 @@ public sealed class ParityLogicTests
     [Fact]
     public void WebV2UiSettingsNormalizeSidebarBoundsAndLists()
     {
-        var tooSmall = new V2UiSettings(12, SidebarSection.General, null!, null!).Normalize();
+        var tooSmall = new V2UiSettings(12, SidebarSection.General, null!, null!, null!).Normalize();
         var tooLarge = (tooSmall with { SidebarWidth = 999 }).Normalize();
 
         Assert.Equal(V2UiSettings.SidebarMinWidth, tooSmall.SidebarWidth);
@@ -787,6 +787,7 @@ public sealed class ParityLogicTests
         Assert.Empty(tooSmall.ExpandedProjectNames);
         Assert.Empty(tooSmall.CollapsedSessionProjectNames);
         Assert.Equal(SidebarSection.General, tooSmall.SidebarSection);
+        Assert.Equal("", tooSmall.LastProjectId);
     }
 
     [Fact]
@@ -814,6 +815,22 @@ public sealed class ParityLogicTests
         Assert.Equal(["alpha", "zeta"], byDate.Select(project => project.Name));
         Assert.DoesNotContain(byName, project => project.Name == "general");
         Assert.Same(general, V2SidebarProjection.GeneralProject([zeta, general, alpha]));
+    }
+
+    [Fact]
+    public void SidebarProjectRestorationPrefersRememberedProjectLikeMac()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var first = Project("first", "First", now);
+        var remembered = Project("remembered", "Remembered", now);
+
+        Assert.Same(
+            remembered,
+            SidebarProjectRestorationPolicy.PreferredProject([first, remembered], remembered.Id.ToString()));
+        Assert.Same(
+            first,
+            SidebarProjectRestorationPolicy.PreferredProject([first, remembered], ""));
+        Assert.Null(SidebarProjectRestorationPolicy.PreferredProject([], remembered.Id.ToString()));
     }
 
     [Fact]

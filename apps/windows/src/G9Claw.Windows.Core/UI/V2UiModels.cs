@@ -10,7 +10,8 @@ public sealed record V2UiSettings(
     double SidebarWidth,
     SidebarSection SidebarSection,
     List<string> ExpandedProjectNames,
-    List<string> CollapsedSessionProjectNames)
+    List<string> CollapsedSessionProjectNames,
+    string LastProjectId = "")
 {
     public const double SidebarMinWidth = V2LayoutMetrics.SidebarMinWidth;
     public const double SidebarDefaultWidth = V2LayoutMetrics.SidebarWidth;
@@ -28,6 +29,7 @@ public sealed record V2UiSettings(
         SidebarWidth = Math.Clamp(SidebarWidth, SidebarMinWidth, SidebarMaxWidth),
         ExpandedProjectNames = ExpandedProjectNames ?? [],
         CollapsedSessionProjectNames = CollapsedSessionProjectNames ?? [],
+        LastProjectId = LastProjectId ?? "",
     };
 
     public V2UiSettings NormalizeForStartup()
@@ -117,6 +119,23 @@ public static class V2SidebarProjection
         if (processingSessionIds.Contains(session.Id)) return SessionState.Processing;
         if (unreadSessionIds.Contains(session.Id)) return SessionState.Unread;
         return session.State;
+    }
+}
+
+public static class SidebarProjectRestorationPolicy
+{
+    public static WorkspaceProject? PreferredProject(
+        IEnumerable<WorkspaceProject> projects,
+        string? lastProjectIdRaw)
+    {
+        var projectList = projects.ToList();
+        if (Guid.TryParse(lastProjectIdRaw, out var lastProjectId))
+        {
+            var remembered = projectList.FirstOrDefault(project => project.Id == lastProjectId);
+            if (remembered is not null) return remembered;
+        }
+
+        return projectList.FirstOrDefault();
     }
 }
 
