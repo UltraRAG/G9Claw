@@ -3890,6 +3890,10 @@ router:
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "context recovering");
         Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Status && item.Text == "prompt_too_long");
         var contextRecoveryTurn = Assert.Single(events, item => item.Kind == AgentEventKind.TurnCompleted).Turn!;
+        var recoveryCompaction = Assert.Single(contextRecoveryTurn.Items, item => item.Kind == AgentTurnItemKind.ContextCompaction);
+        Assert.Equal("Compacting context", recoveryCompaction.Title);
+        Assert.Contains("trigger=prompt_too_long", recoveryCompaction.Text);
+        Assert.Contains("status=recovering", recoveryCompaction.Text);
         Assert.Contains(contextRecoveryTurn.Items, item =>
             item.Kind == AgentTurnItemKind.Status &&
             item.Title == "context recovering" &&

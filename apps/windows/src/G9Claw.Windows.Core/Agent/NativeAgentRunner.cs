@@ -253,6 +253,7 @@ public sealed class NativeAgentRunner
                         PriorMessages = recovery.PriorMessages,
                         ToolExchanges = recovery.ToolExchanges,
                     };
+                    turn.RecordContextCompaction(recovery);
                     turn.RecordStatus("context recovering", recovery.Trigger);
                     await writer.WriteAsync(AgentEvent.Status(request.SessionId, "context recovering"), cancellationToken);
                     await writer.WriteAsync(AgentEvent.Budget(request.SessionId, new TokenBudget(recovery.PostTokens, request.ContextWindow)), cancellationToken);
