@@ -101,8 +101,12 @@ public sealed class NativeAgentRunner
                 await writer.WriteAsync(AgentEvent.Status(request.SessionId, roundStatus), cancellationToken);
                 var contextBudget = NativeAgentRuntime.ContextBudgetSnapshot(currentRequest);
                 await writer.WriteAsync(AgentEvent.Budget(request.SessionId, contextBudget), cancellationToken);
+                await writer.WriteAsync(
+                    AgentEvent.Context(request.SessionId, contextBudget.Used, contextBudget.Total, NativeAgentRuntime.ContextBudgetLevelFor(contextBudget)),
+                    cancellationToken);
                 if (NativeAgentRuntime.CompactContextIfNeeded(currentRequest) is { } compaction)
                 {
+                    await writer.WriteAsync(AgentEvent.CompactStart(request.SessionId, compaction.Trigger, compaction.PreTokens), cancellationToken);
                     currentRequest = currentRequest with
                     {
                         PriorMessages = compaction.PriorMessages,
@@ -111,7 +115,17 @@ public sealed class NativeAgentRunner
                     toolExchanges = compaction.ToolExchanges.ToList();
                     turn.RecordContextCompaction(compaction);
                     await writer.WriteAsync(AgentEvent.Status(request.SessionId, "context compacting"), cancellationToken);
+                    await writer.WriteAsync(
+                        AgentEvent.CompactComplete(request.SessionId, compaction.Status, compaction.PreTokens, compaction.PostTokens),
+                        cancellationToken);
                     await writer.WriteAsync(AgentEvent.Budget(request.SessionId, new TokenBudget(compaction.PostTokens, request.ContextWindow)), cancellationToken);
+                    await writer.WriteAsync(
+                        AgentEvent.Context(
+                            request.SessionId,
+                            compaction.PostTokens,
+                            request.ContextWindow,
+                            NativeAgentRuntime.ContextBudgetLevelFor(new TokenBudget(compaction.PostTokens, request.ContextWindow))),
+                        cancellationToken);
                 }
 
                 var roundExchanges = new List<AgentToolExchange>();
@@ -253,6 +267,7 @@ public sealed class NativeAgentRunner
                     toolExchanges.AddRange(roundExchanges);
                     currentRequest = currentRequest with { ToolExchanges = toolExchanges.ToList() };
                     var recovery = NativeAgentRuntime.ForceRecoverContext(currentRequest);
+                    await writer.WriteAsync(AgentEvent.CompactStart(request.SessionId, recovery.Trigger, recovery.PreTokens), cancellationToken);
                     toolExchanges = recovery.ToolExchanges.ToList();
                     currentRequest = currentRequest with
                     {
@@ -262,7 +277,13 @@ public sealed class NativeAgentRunner
                     turn.RecordContextCompaction(recovery);
                     turn.RecordStatus("context recovering", recovery.Trigger);
                     await writer.WriteAsync(AgentEvent.Status(request.SessionId, "context recovering"), cancellationToken);
+                    await writer.WriteAsync(
+                        AgentEvent.CompactComplete(request.SessionId, recovery.Status, recovery.PreTokens, recovery.PostTokens),
+                        cancellationToken);
                     await writer.WriteAsync(AgentEvent.Budget(request.SessionId, new TokenBudget(recovery.PostTokens, request.ContextWindow)), cancellationToken);
+                    await writer.WriteAsync(
+                        AgentEvent.Context(request.SessionId, recovery.PostTokens, request.ContextWindow, ContextBudgetLevel.Recovering),
+                        cancellationToken);
                     round++;
                     continue;
                 }

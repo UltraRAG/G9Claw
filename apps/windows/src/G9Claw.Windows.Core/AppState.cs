@@ -566,6 +566,86 @@ public sealed class AppState : INotifyPropertyChanged
         messages[index] = message with { Blocks = blocks };
     }
 
+    public void UpsertContextBudget(string sessionId, Guid assistantMessageId, ContextBudgetPayload budget)
+    {
+        TokenBudgetBySession[sessionId] = new TokenBudget(budget.Used, budget.Total);
+        var level = budget.Level;
+        var activity = ContextActivity(
+            $"context-{assistantMessageId:D}",
+            sessionId,
+            assistantMessageId,
+            ContextBudgetPresenter.LevelLabel(level),
+            $"{ContextBudgetPresenter.LevelLabel(level)}: {Math.Max(0, budget.Used):N0} / {Math.Max(budget.Total, 1):N0} tokens ({Math.Clamp((int)Math.Round((double)Math.Max(0, budget.Used) / Math.Max(budget.Total, 1) * 100), 0, 999)}%)",
+            level is ContextBudgetLevel.Compacting or ContextBudgetLevel.Recovering ? AgentActivityState.Running : AgentActivityState.Completed);
+        UpsertActivity(sessionId, activity);
+    }
+
+    public void UpsertContextCompactionStarted(string sessionId, Guid assistantMessageId, CompactStartedPayload compact)
+    {
+        var activity = ContextActivity(
+            $"compact-{assistantMessageId:D}",
+            sessionId,
+            assistantMessageId,
+            "Compacting context",
+            $"trigger={compact.Trigger}, tokens={Math.Max(0, compact.PreTokens):N0}",
+            AgentActivityState.Running);
+        UpsertActivity(sessionId, activity);
+    }
+
+    public void CompleteContextCompaction(string sessionId, Guid assistantMessageId, CompactCompletedPayload compact)
+    {
+        var activity = ContextActivity(
+            $"compact-{assistantMessageId:D}",
+            sessionId,
+            assistantMessageId,
+            "Compacting context",
+            $"status={compact.Status}, {Math.Max(0, compact.PreTokens):N0} -> {Math.Max(0, compact.PostTokens):N0} tokens",
+            AgentActivityState.Completed);
+        UpsertActivity(sessionId, activity);
+    }
+
+    private static AgentActivity ContextActivity(
+        string id,
+        string sessionId,
+        Guid assistantMessageId,
+        string title,
+        string detail,
+        AgentActivityState state)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new AgentActivity(
+            id,
+            sessionId,
+            null,
+            title,
+            detail,
+            AgentActivityPhase.Status,
+            state,
+            now,
+            now,
+            AnchorBlockId: assistantMessageId.ToString("D"),
+            EndedAt: state == AgentActivityState.Running ? null : now);
+    }
+
+    private void UpsertActivity(string sessionId, AgentActivity activity)
+    {
+        if (!ActivitiesBySession.TryGetValue(sessionId, out var activities))
+        {
+            activities = [];
+            ActivitiesBySession[sessionId] = activities;
+        }
+
+        var index = activities.FindIndex(item => string.Equals(item.Id, activity.Id, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0)
+        {
+            activities[index] = activity with { CreatedAt = activities[index].CreatedAt };
+        }
+        else
+        {
+            activities.Add(activity);
+        }
+    }
+
     public void AppendStreamingAssistantToolCall(string sessionId, AgentToolCall call)
     {
         var (messages, index) = StreamingAssistantSlot(sessionId, null);

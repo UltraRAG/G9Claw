@@ -3749,6 +3749,45 @@ router:
     }
 
     [Fact]
+    public void AppStateUpsertsContextBudgetAndCompactionActivitiesLikeMac()
+    {
+        var state = AppState.CreateDefault();
+        var project = state.Projects.First();
+        state.SelectProject(project);
+        var sessionId = state.CreateSessionForSelectedProject("Parity")!.Id;
+        var assistantMessageId = Guid.NewGuid();
+
+        state.UpsertContextBudget(
+            sessionId,
+            assistantMessageId,
+            new ContextBudgetPayload(81, 100, ContextBudgetLevel.Warning));
+        var context = Assert.Single(state.CurrentActivities);
+        Assert.Equal($"context-{assistantMessageId:D}", context.Id);
+        Assert.Equal("Context warning", context.Title);
+        Assert.Equal("Context warning: 81 / 100 tokens (81%)", context.Detail);
+        Assert.Equal(AgentActivityState.Completed, context.State);
+        Assert.Equal(new TokenBudget(81, 100), state.TokenBudgetBySession[sessionId]);
+
+        state.UpsertContextCompactionStarted(
+            sessionId,
+            assistantMessageId,
+            new CompactStartedPayload("warning_threshold", 12000));
+        var compacting = Assert.Single(state.CurrentActivities, activity => activity.Id == $"compact-{assistantMessageId:D}");
+        Assert.Equal("Compacting context", compacting.Title);
+        Assert.Equal("trigger=warning_threshold, tokens=12,000", compacting.Detail);
+        Assert.Equal(AgentActivityState.Running, compacting.State);
+
+        state.CompleteContextCompaction(
+            sessionId,
+            assistantMessageId,
+            new CompactCompletedPayload("micro", 12000, 4800));
+        var completed = Assert.Single(state.CurrentActivities, activity => activity.Id == $"compact-{assistantMessageId:D}");
+        Assert.Equal("status=micro, 12,000 -> 4,800 tokens", completed.Detail);
+        Assert.Equal(AgentActivityState.Completed, completed.State);
+        Assert.NotNull(completed.EndedAt);
+    }
+
+    [Fact]
     public void AppStateBeginsNewAssistantMessageForEachTurnAndIgnoresLateEvents()
     {
         var state = AppState.CreateDefault();
@@ -4008,6 +4047,14 @@ router:
         Assert.Equal(2, provider.RequestCount);
         Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "recovered");
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "context recovering");
+        var recoveryStarted = Assert.Single(events, item => item.Kind == AgentEventKind.CompactStarted).CompactStarted!;
+        var recoveryCompleted = Assert.Single(events, item => item.Kind == AgentEventKind.CompactCompleted).CompactCompleted!;
+        Assert.Equal("prompt_too_long", recoveryStarted.Trigger);
+        Assert.True(recoveryStarted.PreTokens > recoveryCompleted.PostTokens);
+        Assert.Equal("recovering", recoveryCompleted.Status);
+        Assert.Contains(events, item =>
+            item.Kind == AgentEventKind.ContextBudget &&
+            item.ContextBudget is { Level: ContextBudgetLevel.Recovering, Total: 160000 });
         Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Status && item.Text == "prompt_too_long");
         var contextRecoveryTurn = Assert.Single(events, item => item.Kind == AgentEventKind.TurnCompleted).Turn!;
         var recoveryCompaction = Assert.Single(contextRecoveryTurn.Items, item => item.Kind == AgentTurnItemKind.ContextCompaction);
@@ -4084,6 +4131,10 @@ router:
 
         var firstBudget = events.First(item => item.Kind == AgentEventKind.TokenBudget).TokenBudget!;
         var compactedBudget = events.Last(item => item.Kind == AgentEventKind.TokenBudget).TokenBudget!;
+        var firstContext = events.First(item => item.Kind == AgentEventKind.ContextBudget).ContextBudget!;
+        var compactedContext = events.Last(item => item.Kind == AgentEventKind.ContextBudget).ContextBudget!;
+        var compactStarted = Assert.Single(events, item => item.Kind == AgentEventKind.CompactStarted).CompactStarted!;
+        var compactCompleted = Assert.Single(events, item => item.Kind == AgentEventKind.CompactCompleted).CompactCompleted!;
         Assert.Equal(1, provider.RequestCount);
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "context compacting");
         Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Status && item.Text == "warning_threshold");
@@ -4093,6 +4144,14 @@ router:
         Assert.Contains("trigger=warning_threshold", compactionItem.Text);
         Assert.Contains("status=", compactionItem.Text);
         Assert.Contains("tokens", compactionItem.Text);
+        Assert.Equal("warning_threshold", compactStarted.Trigger);
+        Assert.Equal(firstBudget.Used, compactStarted.PreTokens);
+        Assert.False(string.IsNullOrWhiteSpace(compactCompleted.Status));
+        Assert.Contains($"status={compactCompleted.Status}", compactionItem.Text);
+        Assert.Equal(firstBudget.Used, compactCompleted.PreTokens);
+        Assert.Equal(compactedBudget.Used, compactCompleted.PostTokens);
+        Assert.Equal(firstBudget.Used, firstContext.Used);
+        Assert.Equal(compactedBudget.Used, compactedContext.Used);
         Assert.True(compactedBudget.Used < firstBudget.Used);
         Assert.Equal(6000, compactedBudget.Total);
         Assert.Contains(provider.SeenRequest!.ToolExchanges.Take(2), exchange =>

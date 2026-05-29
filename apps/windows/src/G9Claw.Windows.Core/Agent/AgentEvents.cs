@@ -5,6 +5,9 @@ public enum AgentEventKind
     SessionCreated,
     ContentDelta,
     ReasoningDelta,
+    ContextBudget,
+    CompactStarted,
+    CompactCompleted,
     ToolUse,
     ToolResult,
     PermissionRequest,
@@ -27,12 +30,21 @@ public sealed record AgentEvent(
     AgentToolResult? ToolResult = null,
     PermissionRequest? PermissionRequest = null,
     SubagentStatusPayload? SubagentStatus = null,
+    ContextBudgetPayload? ContextBudget = null,
+    CompactStartedPayload? CompactStarted = null,
+    CompactCompletedPayload? CompactCompleted = null,
     TokenBudget? TokenBudget = null,
     AgentTurn? Turn = null)
 {
     public static AgentEvent SessionCreated(string sessionId) => new(AgentEventKind.SessionCreated, sessionId);
     public static AgentEvent ContentDelta(string sessionId, string text) => new(AgentEventKind.ContentDelta, sessionId, Text: text);
     public static AgentEvent ReasoningDelta(string sessionId, string text) => new(AgentEventKind.ReasoningDelta, sessionId, Text: text);
+    public static AgentEvent Context(string sessionId, int used, int total, ContextBudgetLevel level) =>
+        new(AgentEventKind.ContextBudget, sessionId, ContextBudget: new ContextBudgetPayload(used, total, level));
+    public static AgentEvent CompactStart(string sessionId, string trigger, int preTokens) =>
+        new(AgentEventKind.CompactStarted, sessionId, CompactStarted: new CompactStartedPayload(trigger, preTokens));
+    public static AgentEvent CompactComplete(string sessionId, string status, int preTokens, int postTokens) =>
+        new(AgentEventKind.CompactCompleted, sessionId, CompactCompleted: new CompactCompletedPayload(status, preTokens, postTokens));
     public static AgentEvent ToolUse(string sessionId, AgentToolCall call) => new(AgentEventKind.ToolUse, sessionId, ToolCall: call);
     public static AgentEvent ToolResultEvent(string sessionId, AgentToolResult result) => new(AgentEventKind.ToolResult, sessionId, ToolResult: result);
     public static AgentEvent Permission(string sessionId, PermissionRequest request) => new(AgentEventKind.PermissionRequest, sessionId, PermissionRequest: request);
@@ -50,6 +62,20 @@ public sealed record SubagentStatusPayload(
     string Id,
     string Status,
     string Detail);
+
+public sealed record ContextBudgetPayload(
+    int Used,
+    int Total,
+    ContextBudgetLevel Level);
+
+public sealed record CompactStartedPayload(
+    string Trigger,
+    int PreTokens);
+
+public sealed record CompactCompletedPayload(
+    string Status,
+    int PreTokens,
+    int PostTokens);
 
 public static class AgentEventNormalizer
 {

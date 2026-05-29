@@ -6525,6 +6525,20 @@ public sealed partial class MainWindow : Window
                             State.AppendStreamingAssistantReasoning(currentRequest.SessionId, assistantMessageId, reasoning);
                             ScheduleChatRender();
                             break;
+                        case AgentEventKind.ContextBudget when agentEvent.ContextBudget is { } contextBudget:
+                            lastBudget = new TokenBudget(contextBudget.Used, contextBudget.Total);
+                            State.UpsertContextBudget(currentRequest.SessionId, assistantMessageId, contextBudget);
+                            State.AppendStreamingAssistantText(currentRequest.SessionId, assistantMessageId, "", lastBudget);
+                            ScheduleChatRender();
+                            break;
+                        case AgentEventKind.CompactStarted when agentEvent.CompactStarted is { } compactStarted:
+                            State.UpsertContextCompactionStarted(currentRequest.SessionId, assistantMessageId, compactStarted);
+                            ScheduleChatRender();
+                            break;
+                        case AgentEventKind.CompactCompleted when agentEvent.CompactCompleted is { } compactCompleted:
+                            State.CompleteContextCompaction(currentRequest.SessionId, assistantMessageId, compactCompleted);
+                            ScheduleChatRender();
+                            break;
                         case AgentEventKind.TokenBudget when agentEvent.TokenBudget is { } budget:
                             lastBudget = budget;
                             State.TokenBudgetBySession[currentRequest.SessionId] = budget;
