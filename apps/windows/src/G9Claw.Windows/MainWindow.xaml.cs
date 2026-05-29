@@ -4351,7 +4351,15 @@ public sealed partial class MainWindow : Window
     private FrameworkElement TurnTrace(AgentTurn turn)
     {
         var items = turn.Items
-            .Where(item => item.Kind is AgentTurnItemKind.ContextCompaction or AgentTurnItemKind.Status or AgentTurnItemKind.ToolCall or AgentTurnItemKind.ToolResult)
+            .Where(item => item.Kind is
+                AgentTurnItemKind.ContextCompaction or
+                AgentTurnItemKind.Status or
+                AgentTurnItemKind.Plan or
+                AgentTurnItemKind.CommandExecution or
+                AgentTurnItemKind.FileChange or
+                AgentTurnItemKind.WebSearch or
+                AgentTurnItemKind.ToolCall or
+                AgentTurnItemKind.ToolResult)
             .TakeLast(10)
             .ToList();
         if (items.Count == 0)

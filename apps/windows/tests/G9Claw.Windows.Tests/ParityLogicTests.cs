@@ -235,6 +235,21 @@ public sealed class ParityLogicTests
         Assert.Contains(AgentTurnItemKind.ContextCompaction, Enum.GetValues<AgentTurnItemKind>());
         Assert.Contains(AgentTurnItemStatus.Pending, Enum.GetValues<AgentTurnItemStatus>());
         Assert.Contains(AgentTurnItemStatus.Declined, Enum.GetValues<AgentTurnItemStatus>());
+        Assert.Equal(
+            [
+                "UserMessage",
+                "AgentMessage",
+                "Reasoning",
+                "Plan",
+                "CommandExecution",
+                "FileChange",
+                "ToolCall",
+                "ToolResult",
+                "WebSearch",
+                "ContextCompaction",
+                "Status",
+            ],
+            Enum.GetNames<AgentTurnItemKind>());
 
         var command = new CommandExecutionPayload("git status", @"C:\repo", "clean", "", 0, 12);
         var fileChange = new FileChangePayload("README.md", "modify", Additions: 2, Deletions: 1);
@@ -275,6 +290,38 @@ public sealed class ParityLogicTests
         Assert.Equal(2, fileChange.Additions);
         Assert.Equal(5, webSearch.ResultCount);
         Assert.True(turn.HasPendingWork);
+    }
+
+    [Fact]
+    public void NativeTurnControllerUsesMacStableItemIdsAndToolKindClassification()
+    {
+        var turn = new NativeTurnController("session-1", @"C:\repo", ChatRunMode.Plan);
+
+        var user = turn.RecordUserMessage("inspect");
+        var bash = turn.RecordToolCall(new AgentToolCall("call-bash", "Bash", "{}"));
+        var write = turn.RecordToolCall(new AgentToolCall("call-write", "Write", "{}"));
+        var glob = turn.RecordToolCall(new AgentToolCall("call-glob", "Glob", "{}"));
+        var switchMode = turn.RecordToolCall(new AgentToolCall("call-switch", "SwitchMode", "{}"));
+        var task = turn.RecordToolCall(new AgentToolCall("call-task", "Task", "{}"));
+
+        Assert.Equal($"{turn.TurnId}-1", user.Id);
+        Assert.Equal($"{turn.TurnId}-2", bash.Id);
+        Assert.Equal(AgentTurnItemKind.CommandExecution, bash.Kind);
+        Assert.Equal(AgentTurnItemKind.FileChange, write.Kind);
+        Assert.Equal(AgentTurnItemKind.WebSearch, glob.Kind);
+        Assert.Equal(AgentTurnItemKind.Plan, switchMode.Kind);
+        Assert.Equal(AgentTurnItemKind.ToolCall, task.Kind);
+
+        Assert.Equal(
+            [
+                AgentTurnItemKind.UserMessage,
+                AgentTurnItemKind.CommandExecution,
+                AgentTurnItemKind.FileChange,
+                AgentTurnItemKind.WebSearch,
+                AgentTurnItemKind.Plan,
+                AgentTurnItemKind.ToolCall,
+            ],
+            turn.Snapshot().Items.Select(item => item.Kind));
     }
 
     [Fact]

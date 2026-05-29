@@ -34,9 +34,6 @@ public enum AgentTurnItemKind
     WebSearch,
     ContextCompaction,
     Status,
-    Command,
-    Search,
-    Question,
 }
 
 public enum AgentTurnItemStatus
@@ -295,7 +292,7 @@ public sealed class NativeTurnController
     public AgentTurnItem RecordToolCall(AgentToolCall call)
     {
         var item = MakeItem(
-            AgentTurnItemKind.ToolCall,
+            ItemKindForTool(call.Name),
             AgentTurnItemStatus.InProgress,
             call.Name,
             "",
@@ -381,9 +378,10 @@ public sealed class NativeTurnController
         ToolInvocationPayload? toolInvocation = null)
     {
         var now = DateTimeOffset.UtcNow;
+        var sequence = ++_nextSequence;
         var item = new AgentTurnItem(
-            $"item-{Guid.NewGuid():D}",
-            ++_nextSequence,
+            $"{TurnId}-{sequence}",
+            sequence,
             kind,
             status,
             title,
@@ -400,6 +398,39 @@ public sealed class NativeTurnController
         _items.Add(item);
         UpdatedAt = now;
         return item;
+    }
+
+    private static AgentTurnItemKind ItemKindForTool(string toolName)
+    {
+        var lower = AgentToolNameCanonicalizer.Canonical(toolName).ToLowerInvariant();
+        if (lower == "bash" || lower.Contains("shell", StringComparison.Ordinal))
+        {
+            return AgentTurnItemKind.CommandExecution;
+        }
+
+        if (lower is "write" or "strreplace" or "delete" or "editnotebook")
+        {
+            return AgentTurnItemKind.FileChange;
+        }
+
+        if (lower is "grep" or "glob" or "semanticsearch" or "websearch" or "webfetch" or "readlints")
+        {
+            return AgentTurnItemKind.WebSearch;
+        }
+
+        if (lower is "skill" or "task" or "await")
+        {
+            return AgentTurnItemKind.ToolCall;
+        }
+
+        if (lower.Contains("switchmode", StringComparison.Ordinal) ||
+            lower.Contains("exitplan", StringComparison.Ordinal) ||
+            lower.Contains("plan", StringComparison.Ordinal))
+        {
+            return AgentTurnItemKind.Plan;
+        }
+
+        return AgentTurnItemKind.ToolCall;
     }
 
     private void CompleteOpenItems(AgentTurnItemStatus status)
