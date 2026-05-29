@@ -58,6 +58,7 @@ public enum ProviderStreamEventKind
 {
     Status,
     ContentDelta,
+    ReasoningDelta,
     ToolCall,
     TokenBudget,
     Done,
@@ -100,6 +101,11 @@ public static partial class NativeAgentRuntime
             var choice = choices[0];
             if (choice.TryGetProperty("delta", out var delta))
             {
+                foreach (var reasoning in ReasoningDeltas(delta))
+                {
+                    events.Add(new ProviderStreamEvent(ProviderStreamEventKind.ReasoningDelta, Text: reasoning));
+                }
+
                 if (delta.TryGetProperty("content", out var content) &&
                     content.ValueKind == JsonValueKind.String &&
                     !string.IsNullOrEmpty(content.GetString()))
@@ -118,6 +124,11 @@ public static partial class NativeAgentRuntime
             }
             else if (choice.TryGetProperty("message", out var message))
             {
+                foreach (var reasoning in ReasoningDeltas(message))
+                {
+                    events.Add(new ProviderStreamEvent(ProviderStreamEventKind.ReasoningDelta, Text: reasoning));
+                }
+
                 if (message.TryGetProperty("content", out var content) &&
                     content.ValueKind == JsonValueKind.String &&
                     !string.IsNullOrEmpty(content.GetString()))
@@ -142,6 +153,47 @@ public static partial class NativeAgentRuntime
         }
 
         return events;
+    }
+
+    private static IReadOnlyList<string> ReasoningDeltas(JsonElement root)
+    {
+        var values = new List<string>();
+        foreach (var key in new[] { "reasoning_content", "reasoning", "thinking", "redacted_thinking", "reasoning_summary" })
+        {
+            if (root.TryGetProperty(key, out var value))
+            {
+                AppendReasoningText(value, values);
+            }
+        }
+
+        return values;
+    }
+
+    private static void AppendReasoningText(JsonElement value, List<string> values)
+    {
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var text = value.GetString();
+            if (!string.IsNullOrEmpty(text))
+            {
+                values.Add(text);
+            }
+
+            return;
+        }
+
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        foreach (var key in new[] { "content", "thinking", "text", "reasoning", "summary" })
+        {
+            if (value.TryGetProperty(key, out var nested))
+            {
+                AppendReasoningText(nested, values);
+            }
+        }
     }
 
     public static IReadOnlyList<ProviderStreamEvent> OpenAIResponsesEvents(JsonElement root, int contextWindow)
@@ -463,7 +515,7 @@ public sealed class ProviderClient : IProviderClient
 
             foreach (var providerEvent in events)
             {
-                sawVisibleOutput |= providerEvent.Kind is ProviderStreamEventKind.ContentDelta or ProviderStreamEventKind.ToolCall;
+                sawVisibleOutput |= providerEvent.Kind is ProviderStreamEventKind.ContentDelta or ProviderStreamEventKind.ReasoningDelta or ProviderStreamEventKind.ToolCall;
                 yield return providerEvent;
             }
         }
@@ -472,7 +524,7 @@ public sealed class ProviderClient : IProviderClient
         {
             foreach (var providerEvent in ParseNonSseResponse(nonSseBody.ToString(), request))
             {
-                sawVisibleOutput |= providerEvent.Kind is ProviderStreamEventKind.ContentDelta or ProviderStreamEventKind.ToolCall;
+                sawVisibleOutput |= providerEvent.Kind is ProviderStreamEventKind.ContentDelta or ProviderStreamEventKind.ReasoningDelta or ProviderStreamEventKind.ToolCall;
                 yield return providerEvent;
             }
 

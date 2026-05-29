@@ -6521,6 +6521,10 @@ public sealed partial class MainWindow : Window
                             State.AppendStreamingAssistantText(currentRequest.SessionId, assistantMessageId, text, lastBudget);
                             ScheduleChatRender();
                             break;
+                        case AgentEventKind.ReasoningDelta when agentEvent.Text is { } reasoning:
+                            State.AppendStreamingAssistantReasoning(currentRequest.SessionId, assistantMessageId, reasoning);
+                            ScheduleChatRender();
+                            break;
                         case AgentEventKind.TokenBudget when agentEvent.TokenBudget is { } budget:
                             lastBudget = budget;
                             State.TokenBudgetBySession[currentRequest.SessionId] = budget;

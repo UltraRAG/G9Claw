@@ -1745,6 +1745,32 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void NativeAgentRuntimeNormalizesOpenAIChatReasoningLikeMac()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "choices": [
+            {
+              "delta": {
+                "reasoning_content": "thinking ",
+                "reasoning": { "summary": "summary" },
+                "content": "answer"
+              }
+            }
+          ]
+        }
+        """);
+
+        var events = NativeAgentRuntime.OpenAIChatEvents(doc.RootElement, 160_000);
+
+        Assert.Equal(
+            [ProviderStreamEventKind.ReasoningDelta, ProviderStreamEventKind.ReasoningDelta, ProviderStreamEventKind.ContentDelta],
+            events.Select(item => item.Kind));
+        Assert.Equal(["thinking ", "summary"], events.Where(item => item.Kind == ProviderStreamEventKind.ReasoningDelta).Select(item => item.Text));
+        Assert.Equal("answer", events.Single(item => item.Kind == ProviderStreamEventKind.ContentDelta).Text);
+    }
+
+    [Fact]
     public void NativeAgentRuntimeNormalizesOpenAIChatNonStreamingMessage()
     {
         using var doc = JsonDocument.Parse("""
@@ -2218,6 +2244,40 @@ router:
             .Where(text => text is "connecting" or "thinking" or "processing")
             .ToList();
         Assert.Equal(new[] { "connecting", "thinking", "processing" }, turnStatuses.Take(3));
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerStreamsReasoningDeltaLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var runner = new NativeAgentRunner(providerClient: new ReasoningDeltaProvider());
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "show reasoning",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ReasoningDelta && item.Text == "think ");
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "answer");
+        Assert.True(
+            events.FindIndex(item => item.Kind == AgentEventKind.ReasoningDelta) <
+            events.FindIndex(item => item.Kind == AgentEventKind.ContentDelta));
     }
 
     [Fact]
@@ -2905,6 +2965,7 @@ router:
     {
         var status = AgentEventNormalizer.FromProviderEvent("s1", new ProviderStreamEvent(ProviderStreamEventKind.Status, Text: "streaming"));
         var content = AgentEventNormalizer.FromProviderEvent("s1", new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "hello"));
+        var reasoning = AgentEventNormalizer.FromProviderEvent("s1", new ProviderStreamEvent(ProviderStreamEventKind.ReasoningDelta, Text: "thinking"));
         var tool = AgentEventNormalizer.FromProviderEvent("s1", new ProviderStreamEvent(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall("c1", "Read", "{}")));
         var budget = AgentEventNormalizer.FromProviderEvent("s1", new ProviderStreamEvent(ProviderStreamEventKind.TokenBudget, TokenBudget: new TokenBudget(3, 10)));
         var done = AgentEventNormalizer.FromProviderEvent("s1", new ProviderStreamEvent(ProviderStreamEventKind.Done));
@@ -2912,6 +2973,8 @@ router:
         Assert.Equal(AgentEventKind.Status, Assert.Single(status).Kind);
         Assert.Equal("streaming", status[0].Text);
         Assert.Equal(AgentEventKind.ContentDelta, Assert.Single(content).Kind);
+        Assert.Equal(AgentEventKind.ReasoningDelta, Assert.Single(reasoning).Kind);
+        Assert.Equal("thinking", reasoning[0].Text);
         Assert.Equal(AgentEventKind.ToolUse, Assert.Single(tool).Kind);
         Assert.Equal(new TokenBudget(3, 10), Assert.Single(budget).TokenBudget);
         Assert.Equal([AgentEventKind.StreamEnd, AgentEventKind.Complete], done.Select(item => item.Kind));
@@ -3498,6 +3561,30 @@ router:
             message.Blocks.Select(block => block.Kind));
         Assert.Equal("Before after.", message.PlainText);
         Assert.Equal(80, message.TokenBudget!.Used);
+    }
+
+    [Fact]
+    public void AppStateAppendsReasoningBlocksLikeMac()
+    {
+        var state = AppState.CreateDefault();
+        var project = state.Projects.First();
+        state.SelectProject(project);
+        state.CreateSessionForSelectedProject("test");
+        var sessionId = state.SelectedSessionId!;
+
+        var assistantId = state.BeginStreamingAssistantMessage(sessionId);
+        state.AppendStreamingAssistantReasoning(sessionId, assistantId, "think ");
+        state.AppendStreamingAssistantReasoning(sessionId, assistantId, "more");
+        state.AppendStreamingAssistantText(sessionId, assistantId, "answer", null);
+        state.AppendStreamingAssistantReasoning(sessionId, assistantId, "later");
+
+        var message = Assert.Single(state.CurrentMessages, message => message.Role == ChatRole.Assistant);
+        Assert.Equal(
+            [ChatBlockKind.Reasoning, ChatBlockKind.Text, ChatBlockKind.Reasoning],
+            message.Blocks.Select(block => block.Kind));
+        Assert.Equal("think more", message.Blocks[0].Text);
+        Assert.Equal("answer", message.PlainText);
+        Assert.Equal("later", message.Blocks[2].Text);
     }
 
     [Fact]
@@ -6170,6 +6257,20 @@ gateway:
             }
 
             yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+        }
+    }
+
+    private sealed class ReasoningDeltaProvider : IProviderClient
+    {
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ReasoningDelta, Text: "think ");
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "answer");
             yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
         }
     }

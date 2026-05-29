@@ -4,6 +4,7 @@ public enum AgentEventKind
 {
     SessionCreated,
     ContentDelta,
+    ReasoningDelta,
     ToolUse,
     ToolResult,
     PermissionRequest,
@@ -31,6 +32,7 @@ public sealed record AgentEvent(
 {
     public static AgentEvent SessionCreated(string sessionId) => new(AgentEventKind.SessionCreated, sessionId);
     public static AgentEvent ContentDelta(string sessionId, string text) => new(AgentEventKind.ContentDelta, sessionId, Text: text);
+    public static AgentEvent ReasoningDelta(string sessionId, string text) => new(AgentEventKind.ReasoningDelta, sessionId, Text: text);
     public static AgentEvent ToolUse(string sessionId, AgentToolCall call) => new(AgentEventKind.ToolUse, sessionId, ToolCall: call);
     public static AgentEvent ToolResultEvent(string sessionId, AgentToolResult result) => new(AgentEventKind.ToolResult, sessionId, ToolResult: result);
     public static AgentEvent Permission(string sessionId, PermissionRequest request) => new(AgentEventKind.PermissionRequest, sessionId, PermissionRequest: request);
@@ -59,6 +61,8 @@ public static class AgentEventNormalizer
                 [AgentEvent.Status(sessionId, providerEvent.Text)],
             ProviderStreamEventKind.ContentDelta when providerEvent.Text is not null =>
                 [AgentEvent.ContentDelta(sessionId, providerEvent.Text)],
+            ProviderStreamEventKind.ReasoningDelta when providerEvent.Text is not null =>
+                [AgentEvent.ReasoningDelta(sessionId, providerEvent.Text)],
             ProviderStreamEventKind.ToolCall when providerEvent.ToolCall is not null =>
                 [AgentEvent.ToolUse(sessionId, providerEvent.ToolCall)],
             ProviderStreamEventKind.TokenBudget when providerEvent.TokenBudget is not null =>

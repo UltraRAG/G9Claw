@@ -532,6 +532,40 @@ public sealed class AppState : INotifyPropertyChanged
         messages[index] = message with { Blocks = blocks, TokenBudget = budget };
     }
 
+    public void AppendStreamingAssistantReasoning(string sessionId, Guid assistantMessageId, string text)
+    {
+        if (!TryStreamingAssistantSlot(sessionId, assistantMessageId, out var messages, out var index) ||
+            string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        AppendStreamingAssistantReasoning(messages, index, text);
+    }
+
+    private static void AppendStreamingAssistantReasoning(List<ChatMessage> messages, int index, string text)
+    {
+        var message = messages[index];
+        var blocks = message.Blocks.ToList();
+        var lastIndex = blocks.Count - 1;
+        if (lastIndex >= 0 && blocks[lastIndex].Kind == ChatBlockKind.Reasoning)
+        {
+            blocks[lastIndex] = blocks[lastIndex] with { Text = (blocks[lastIndex].Text ?? "") + text };
+        }
+        else if (lastIndex >= 0 &&
+                 blocks[lastIndex].Kind == ChatBlockKind.Text &&
+                 string.IsNullOrEmpty(blocks[lastIndex].Text))
+        {
+            blocks[lastIndex] = ChatBlock.FromReasoning(text);
+        }
+        else
+        {
+            blocks.Add(ChatBlock.FromReasoning(text));
+        }
+
+        messages[index] = message with { Blocks = blocks };
+    }
+
     public void AppendStreamingAssistantToolCall(string sessionId, AgentToolCall call)
     {
         var (messages, index) = StreamingAssistantSlot(sessionId, null);

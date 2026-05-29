@@ -153,6 +153,12 @@ public sealed class NativeAgentRunner
                                     continue;
                                 }
 
+                                if (providerEvent.Kind == ProviderStreamEventKind.ReasoningDelta && providerEvent.Text is { } reasoning)
+                                {
+                                    await writer.WriteAsync(AgentEvent.ReasoningDelta(request.SessionId, reasoning), cancellationToken);
+                                    continue;
+                                }
+
                                 if (providerEvent.Kind == ProviderStreamEventKind.TokenBudget && providerEvent.TokenBudget is { } budget)
                                 {
                                     lastBudget = budget;
