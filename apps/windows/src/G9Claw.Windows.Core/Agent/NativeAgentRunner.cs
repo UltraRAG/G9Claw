@@ -116,6 +116,7 @@ public sealed class NativeAgentRunner
                 var roundSkippedDuplicateTool = false;
                 var roundAssistantText = new StringBuilder();
                 var deferredPlanContent = new StringBuilder();
+                var roundSynthesizedPlanIntro = false;
                 try
                 {
                     var providerFailedAttempts = 0;
@@ -167,6 +168,17 @@ public sealed class NativeAgentRunner
                                     else
                                     {
                                         deferredPlanContent.Clear();
+                                    }
+
+                                    if (!roundSynthesizedPlanIntro &&
+                                        request.RunMode == ChatRunMode.Plan &&
+                                        !planModePolicy.PlanExited &&
+                                        roundAssistantText.Length == 0 &&
+                                        PlanModeIntroSynthesizer.Intro([call], ChatRunMode.Plan) is { } planIntro)
+                                    {
+                                        roundSynthesizedPlanIntro = true;
+                                        assistantText.Append(planIntro);
+                                        await writer.WriteAsync(AgentEvent.ContentDelta(request.SessionId, planIntro), cancellationToken);
                                     }
 
                                     await WritePlanGenerationStatusAsync(writer, request.SessionId, call, EffectiveWorkflowRunMode(request.RunMode, planModePolicy.PlanExited), cancellationToken);

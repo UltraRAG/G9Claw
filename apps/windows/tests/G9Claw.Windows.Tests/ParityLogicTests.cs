@@ -2248,8 +2248,11 @@ router:
     {
         var ask = new AgentToolCall("ask", "AskQuestion", "{}");
         var read = new AgentToolCall("read", "Read", """{"file_path":"README.md"}""");
+        var grep = new AgentToolCall("grep", "Grep", """{"pattern":"TODO"}""");
         var shell = new AgentToolCall("shell", "Shell", """{"command":"ls -la"}""");
+        var todo = new AgentToolCall("todo", "TodoWrite", """{"todos":[{"content":"inspect","status":"pending"}]}""");
         var switchMode = new AgentToolCall("switch", "SwitchMode", """{"mode":"agent","plan":"Do it"}""");
+        var write = new AgentToolCall("write", "Write", """{"file_path":"README.md","content":"x"}""");
 
         Assert.Equal(
             PlanWorkflowPresentation.GeneratingQuestionStatus,
@@ -2257,6 +2260,9 @@ router:
         Assert.Equal(
             PlanWorkflowPresentation.CollectingContextStatus,
             PlanWorkflowPresentation.GenerationStatus([read, shell], ChatRunMode.Plan));
+        Assert.Equal(
+            PlanWorkflowPresentation.CollectingContextStatus,
+            PlanWorkflowPresentation.GenerationStatus([todo], ChatRunMode.Plan));
         Assert.Equal(
             PlanWorkflowPresentation.GeneratingPlanStatus,
             PlanWorkflowPresentation.GenerationStatus([switchMode], ChatRunMode.Plan));
@@ -2267,6 +2273,13 @@ router:
             PlanWorkflowPresentation.WaitingForConfirmationStatus,
             PlanWorkflowPresentation.WaitingStatus("SwitchMode", ChatRunMode.Plan));
         Assert.Null(PlanWorkflowPresentation.GenerationStatus([ask], ChatRunMode.Agent));
+        Assert.Null(PlanWorkflowPresentation.GenerationStatus([write], ChatRunMode.Plan));
+        Assert.Equal(PlanModeIntroSynthesizer.ReadIntro, PlanModeIntroSynthesizer.Intro([read, grep], ChatRunMode.Plan));
+        Assert.Equal(PlanModeIntroSynthesizer.SearchIntro, PlanModeIntroSynthesizer.Intro([grep], ChatRunMode.Plan));
+        Assert.Equal(PlanModeIntroSynthesizer.CommandIntro, PlanModeIntroSynthesizer.Intro([shell], ChatRunMode.Plan));
+        Assert.Equal(PlanModeIntroSynthesizer.TodoIntro, PlanModeIntroSynthesizer.Intro([todo], ChatRunMode.Plan));
+        Assert.Null(PlanModeIntroSynthesizer.Intro([read], ChatRunMode.Agent));
+        Assert.Null(PlanModeIntroSynthesizer.Intro([write], ChatRunMode.Plan));
         Assert.True(PlanWorkflowPresentation.IsInteractiveControl("AskUserQuestion"));
         Assert.False(PlanWorkflowPresentation.IsInteractiveControl("Read"));
     }
@@ -4185,6 +4198,58 @@ router:
         Assert.Contains("Plan v2", results[2].Output);
         Assert.Equal(2, exitPlanRequests);
         Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after revised plan");
+    }
+
+    [Fact]
+    public async Task NativeAgentRunnerSynthesizesPlanExplorationIntroLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "README.md"), "project notes");
+        var provider = new PlanExplorationIntroProvider();
+        var permissionRequests = new List<PermissionRequest>();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "inspect before planning",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Plan,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+        var options = new NativeAgentRunOptions((permission, _) =>
+        {
+            permissionRequests.Add(permission);
+            return Task.FromResult(new PermissionRecord(
+                permission,
+                PermissionDecision.Allowed,
+                permission.Scope,
+                DateTimeOffset.UtcNow,
+                permission.Kind == PermissionRequestKind.AskUserQuestion ? "approved" : null));
+        });
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request, options))
+        {
+            events.Add(agentEvent);
+        }
+
+        var results = events
+            .Where(item => item.Kind == AgentEventKind.ToolResult)
+            .Select(item => item.ToolResult!)
+            .ToList();
+        Assert.Equal(4, provider.RequestCount);
+        Assert.Equal(["Read", "AskQuestion", "SwitchMode"], results.Select(result => result.ToolName));
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == PlanModeIntroSynthesizer.ReadIntro);
+        Assert.Contains(events, item => item.Kind == AgentEventKind.ContentDelta && item.Text == "done after exploration");
+        AssertCompletedAssistantTurnTextContains(events, PlanModeIntroSynthesizer.ReadIntro);
+        Assert.Equal([PermissionRequestKind.AskUserQuestion, PermissionRequestKind.ExitPlanMode], permissionRequests.Select(permission => permission.Kind));
     }
 
     [Fact]
@@ -6132,6 +6197,34 @@ gateway:
                 _ => new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after revised plan"),
             };
             if (request.ToolExchanges.Count > 2)
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+            }
+        }
+
+        private static ProviderStreamEvent Tool(string id, string name, string inputJson) =>
+            new(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall(id, name, inputJson));
+    }
+
+    private sealed class PlanExplorationIntroProvider : IProviderClient
+    {
+        public int RequestCount { get; private set; }
+
+        public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+            AgentRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            RequestCount++;
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return RequestCount switch
+            {
+                1 => Tool("read", "Read", """{"file_path":"README.md"}"""),
+                2 => Tool("question", "AskQuestion", """{"question":"Approve this direction?","options":["Yes"]}"""),
+                3 => Tool("switch", "SwitchMode", """{"mode":"agent","plan":"Approved plan"}"""),
+                _ => new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "done after exploration"),
+            };
+            if (RequestCount > 3)
             {
                 yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
             }
