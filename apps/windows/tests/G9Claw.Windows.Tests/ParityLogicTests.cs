@@ -946,6 +946,61 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void CodeLineNumberMetricsGrowWithDigitCount()
+    {
+        var singleDigit = CodeLineNumberMetrics.RulerWidth(9);
+        var doubleDigit = CodeLineNumberMetrics.RulerWidth(99);
+        var tripleDigit = CodeLineNumberMetrics.RulerWidth(999);
+
+        Assert.Equal(1, CodeLineNumberMetrics.LineCount(""));
+        Assert.Equal(3, CodeLineNumberMetrics.LineCount("one\ntwo\n"));
+        Assert.Equal(singleDigit, doubleDigit);
+        Assert.True(tripleDigit > doubleDigit);
+        Assert.Equal(1, CodeLineNumberMetrics.LineNumber(0, [0, 4, 8]));
+        Assert.Equal(2, CodeLineNumberMetrics.LineNumber(5, [0, 4, 8]));
+    }
+
+    [Fact]
+    public void CodeLineNumberModeAddsEditorTextInset()
+    {
+        var plainInset = CodeLineNumberMetrics.TextInset(lineNumbersVisible: false);
+        var lineNumberInset = CodeLineNumberMetrics.TextInset(lineNumbersVisible: true, lineCount: 687);
+
+        Assert.True(lineNumberInset.Width > plainInset.Width);
+        Assert.True(lineNumberInset.Width > CodeLineNumberMetrics.RulerWidth(687));
+        Assert.Equal(lineNumberInset.Height, plainInset.Height);
+    }
+
+    [Fact]
+    public void CodeMinimapModelSamplesLargeFilesAndTracksViewport()
+    {
+        var text = string.Join('\n', Enumerable.Range(1, 2400).Select(index =>
+            index % 2 == 0 ? $"    let value{index} = {index}" : ""));
+        var model = CodeMinimapModel.FromText(text, 120..180, maxLines: 600);
+
+        Assert.Equal(2400, model.TotalLines);
+        Assert.Equal(4, model.SampleStride);
+        Assert.True(model.Lines.Count <= 600);
+        Assert.InRange(model.ViewportStartFraction, 0.04, 0.06);
+        Assert.True(model.ViewportHeightFraction > 0.02);
+        Assert.Contains(model.Lines, line => !line.IsBlank && line.IndentLevel > 0);
+    }
+
+    [Fact]
+    public void CodeEditorScrollStabilityMetricsEnableMinimapDraggingAndThrottleViewport()
+    {
+        Assert.True(CodeEditorScrollStabilityMetrics.MinimapAllowsHitTesting);
+        Assert.True(CodeEditorScrollStabilityMetrics.PreservesScrollOriginOnUpdate);
+        Assert.True(CodeEditorScrollStabilityMetrics.EditorBodyClipsRulerToContent);
+        Assert.True(CodeEditorScrollStabilityMetrics.VisibleRangePublishInterval >= TimeSpan.FromMilliseconds(60));
+        Assert.Equal(18, CodeEditorScrollStabilityMetrics.MinimapViewportMinHeight);
+        Assert.Equal(0, CodeEditorScrollStabilityMetrics.HorizontalOrigin(42, wordWrap: true, maxX: 300));
+        Assert.Equal(0, CodeEditorScrollStabilityMetrics.HorizontalOrigin(-8, wordWrap: false, maxX: 300));
+        Assert.Equal(300, CodeEditorScrollStabilityMetrics.HorizontalOrigin(420, wordWrap: false, maxX: 300));
+        Assert.Equal(120, CodeEditorScrollStabilityMetrics.HorizontalOrigin(120, wordWrap: false, maxX: 300));
+    }
+
+    [Fact]
     public void FilePreviewActionPolicyMatchesRequestedPreviewSurface()
     {
         var html = FileNode("index.html");

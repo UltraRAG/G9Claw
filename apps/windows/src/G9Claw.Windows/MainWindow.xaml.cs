@@ -4689,12 +4689,20 @@ public sealed partial class MainWindow : Window
     private FrameworkElement CodeHighlightedPreview(WorkspacePreview preview, string? languageAlias)
     {
         _previewDraftText ??= preview.Text ?? "";
+        var lineCount = CodeLineNumberMetrics.LineCount(_previewDraftText);
         var rich = new RichTextBlock
         {
             FontFamily = new FontFamily("Cascadia Mono, Consolas"),
             FontSize = State.Settings.EditorSettings.FontSize,
             TextWrapping = State.Settings.EditorSettings.WordWrap ? TextWrapping.Wrap : TextWrapping.NoWrap,
             IsTextSelectionEnabled = true,
+            Padding = new Thickness(
+                State.Settings.EditorSettings.LineNumbers
+                    ? CodeLineNumberMetrics.EditorTextInsetAfterLineNumberGutter
+                    : CodeLineNumberMetrics.EditorTextInset.Width,
+                CodeLineNumberMetrics.EditorTextInset.Height,
+                CodeLineNumberMetrics.EditorTextInset.Width,
+                CodeLineNumberMetrics.EditorTextInset.Height),
         };
         var paragraph = new Microsoft.UI.Xaml.Documents.Paragraph();
         foreach (var span in CodeSyntaxHighlightingService.HighlightedSpans(_previewDraftText, languageAlias))
@@ -4707,15 +4715,131 @@ public sealed partial class MainWindow : Window
         }
         rich.Blocks.Add(paragraph);
 
-        return new ScrollViewer
+        var codeContent = new Grid
+        {
+            ColumnSpacing = 0,
+        };
+        if (State.Settings.EditorSettings.LineNumbers)
+        {
+            codeContent.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(CodeLineNumberMetrics.RulerWidth(lineCount)) });
+        }
+        codeContent.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        if (State.Settings.EditorSettings.LineNumbers)
+        {
+            var lineNumbers = CodeLineNumberGutter(lineCount);
+            Grid.SetColumn(lineNumbers, 0);
+            codeContent.Children.Add(lineNumbers);
+            Grid.SetColumn(rich, 1);
+        }
+        codeContent.Children.Add(rich);
+
+        var scroll = new ScrollViewer
         {
             HorizontalScrollBarVisibility = State.Settings.EditorSettings.WordWrap ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = new Border
+            Content = codeContent,
+        };
+
+        if (!State.Settings.EditorSettings.ShowMinimap)
+        {
+            return scroll;
+        }
+
+        var root = new Grid();
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(CodeMinimapModel.Width) });
+        root.Children.Add(scroll);
+        var minimap = CodeMinimap(CodeMinimapModel.FromText(_previewDraftText));
+        Grid.SetColumn(minimap, 1);
+        root.Children.Add(minimap);
+        return root;
+    }
+
+    private FrameworkElement CodeLineNumberGutter(int lineCount)
+    {
+        var panel = new StackPanel
+        {
+            Background = Brush("V2BackgroundBrush"),
+            Padding = new Thickness(0, CodeLineNumberMetrics.EditorTextInset.Height + 2, 10, CodeLineNumberMetrics.EditorTextInset.Height),
+        };
+        for (var line = 1; line <= lineCount; line++)
+        {
+            panel.Children.Add(new TextBlock
             {
-                Padding = new Thickness(12),
-                Child = rich,
-            },
+                Text = line.ToString(),
+                FontFamily = new FontFamily("Cascadia Mono, Consolas"),
+                FontSize = 11,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                TextAlignment = TextAlignment.Right,
+                LineHeight = State.Settings.EditorSettings.FontSize + 4,
+            });
+        }
+
+        return new Border
+        {
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(0, 0, 1, 0),
+            Child = panel,
+        };
+    }
+
+    private FrameworkElement CodeMinimap(CodeMinimapModel model)
+    {
+        var height = Math.Max(120, Math.Min(720, model.Lines.Count * 2.0));
+        var canvas = new Canvas
+        {
+            Width = CodeMinimapModel.Width,
+            Height = height,
+            Background = Brush("V2BackgroundBrush"),
+        };
+        var count = Math.Max(1, model.Lines.Count);
+        var rowHeight = Math.Max(1, height / count);
+        for (var index = 0; index < model.Lines.Count; index++)
+        {
+            var line = model.Lines[index];
+            var y = index * height / count;
+            var x = Math.Min(CodeMinimapModel.Width - 12, 6 + line.IndentLevel * 0.65);
+            var availableWidth = Math.Max(5, CodeMinimapModel.Width - x - 7);
+            var width = Math.Max(4, availableWidth * line.WidthFraction);
+            var rectangle = new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = width,
+                Height = Math.Max(1, rowHeight * (line.IsBlank ? 0.20 : 0.42)),
+                RadiusX = 0.8,
+                RadiusY = 0.8,
+                Fill = Brush("V2MutedForegroundBrush"),
+                Opacity = line.Intensity,
+            };
+            Canvas.SetLeft(rectangle, x);
+            Canvas.SetTop(rectangle, y + (rowHeight - rectangle.Height) / 2);
+            canvas.Children.Add(rectangle);
+        }
+
+        var viewportHeight = Math.Max(
+            CodeEditorScrollStabilityMetrics.MinimapViewportMinHeight,
+            model.ViewportHeightFraction * height);
+        var viewport = new Microsoft.UI.Xaml.Shapes.Rectangle
+        {
+            Width = Math.Max(0, CodeMinimapModel.Width - 8),
+            Height = viewportHeight,
+            RadiusX = 4,
+            RadiusY = 4,
+            Fill = Brush("V2MutedForegroundBrush"),
+            Stroke = Brush("V2SecondaryForegroundBrush"),
+            StrokeThickness = 1,
+            Opacity = 0.22,
+        };
+        Canvas.SetLeft(viewport, 4);
+        Canvas.SetTop(viewport, Math.Min(height - viewportHeight, model.ViewportStartFraction * height));
+        canvas.Children.Add(viewport);
+
+        return new Border
+        {
+            Width = CodeMinimapModel.Width,
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1, 0, 0, 0),
+            Child = canvas,
         };
     }
 
