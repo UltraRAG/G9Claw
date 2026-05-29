@@ -626,8 +626,133 @@ public sealed class ProviderClient : IProviderClient
             });
         }
 
-        return messages;
+        return PreserveOpenAIToolPairIntegrity(messages).ToList();
     }
+
+    public static IReadOnlyList<Dictionary<string, object?>> PreserveOpenAIToolPairIntegrity(IReadOnlyList<Dictionary<string, object?>> messages)
+    {
+        var assistantCallIds = messages
+            .SelectMany(ToolCallIds)
+            .ToHashSet(StringComparer.Ordinal);
+        var toolResultIds = messages
+            .Select(ToolResultId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id!)
+            .ToHashSet(StringComparer.Ordinal);
+        assistantCallIds.IntersectWith(toolResultIds);
+
+        var preserved = new List<Dictionary<string, object?>>();
+        foreach (var message in messages)
+        {
+            var role = ValueAsString(message.GetValueOrDefault("role"));
+            if (string.Equals(role, "tool", StringComparison.Ordinal))
+            {
+                var id = ToolResultId(message);
+                if (!string.IsNullOrWhiteSpace(id) && assistantCallIds.Contains(id))
+                {
+                    preserved.Add(new Dictionary<string, object?>(message));
+                }
+                continue;
+            }
+
+            if (string.Equals(role, "assistant", StringComparison.Ordinal) &&
+                FilteredToolCalls(message.GetValueOrDefault("tool_calls"), assistantCallIds) is { } filteredCalls)
+            {
+                var next = new Dictionary<string, object?>(message);
+                if (filteredCalls.Count == 0)
+                {
+                    next.Remove("tool_calls");
+                    if (ContentIsEmpty(next.GetValueOrDefault("content")))
+                    {
+                        continue;
+                    }
+                }
+                else
+                {
+                    next["tool_calls"] = filteredCalls;
+                }
+
+                preserved.Add(next);
+                continue;
+            }
+
+            preserved.Add(new Dictionary<string, object?>(message));
+        }
+
+        return preserved;
+    }
+
+    private static IEnumerable<string> ToolCallIds(IReadOnlyDictionary<string, object?> message)
+    {
+        if (!string.Equals(ValueAsString(message.GetValueOrDefault("role")), "assistant", StringComparison.Ordinal))
+        {
+            yield break;
+        }
+
+        foreach (var call in ToolCallDictionaries(message.GetValueOrDefault("tool_calls")))
+        {
+            if (ValueAsString(call.GetValueOrDefault("id")) is { Length: > 0 } id)
+            {
+                yield return id;
+            }
+        }
+    }
+
+    private static string? ToolResultId(IReadOnlyDictionary<string, object?> message)
+    {
+        if (!string.Equals(ValueAsString(message.GetValueOrDefault("role")), "tool", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return ValueAsString(message.GetValueOrDefault("tool_call_id"));
+    }
+
+    private static List<Dictionary<string, object?>>? FilteredToolCalls(object? rawCalls, IReadOnlySet<string> pairedIds)
+    {
+        if (rawCalls is null)
+        {
+            return null;
+        }
+
+        var filtered = ToolCallDictionaries(rawCalls)
+            .Where(call => ValueAsString(call.GetValueOrDefault("id")) is { } id && pairedIds.Contains(id))
+            .Select(call => new Dictionary<string, object?>(call))
+            .ToList();
+        return filtered;
+    }
+
+    private static IEnumerable<IReadOnlyDictionary<string, object?>> ToolCallDictionaries(object? rawCalls)
+    {
+        if (rawCalls is IEnumerable<Dictionary<string, object?>> dictionaries)
+        {
+            foreach (var call in dictionaries)
+            {
+                yield return call;
+            }
+        }
+        else if (rawCalls is IEnumerable<object?> objects)
+        {
+            foreach (var item in objects)
+            {
+                if (item is IReadOnlyDictionary<string, object?> call)
+                {
+                    yield return call;
+                }
+            }
+        }
+    }
+
+    private static bool ContentIsEmpty(object? value) =>
+        value is null ||
+        value is string text && string.IsNullOrWhiteSpace(text);
+
+    private static string? ValueAsString(object? value) => value switch
+    {
+        null => null,
+        string text => text,
+        _ => value.ToString(),
+    };
 
     private static object BuildOpenAIUserContent(AgentRequest request)
     {

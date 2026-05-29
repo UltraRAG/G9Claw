@@ -4421,6 +4421,62 @@ router:
     }
 
     [Fact]
+    public void NativeContextBudgetPreservesToolPairIntegrity()
+    {
+        var messages = new List<Dictionary<string, object?>>
+        {
+            new()
+            {
+                ["role"] = "assistant",
+                ["content"] = null,
+                ["tool_calls"] = new object[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = "paired",
+                        ["type"] = "function",
+                        ["function"] = new Dictionary<string, object?>
+                        {
+                            ["name"] = "Read",
+                            ["arguments"] = "{}",
+                        },
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = "dangling-call",
+                        ["type"] = "function",
+                        ["function"] = new Dictionary<string, object?>
+                        {
+                            ["name"] = "Read",
+                            ["arguments"] = "{}",
+                        },
+                    },
+                },
+            },
+            new()
+            {
+                ["role"] = "tool",
+                ["tool_call_id"] = "paired",
+                ["content"] = "ok",
+            },
+            new()
+            {
+                ["role"] = "tool",
+                ["tool_call_id"] = "dangling-result",
+                ["content"] = "orphan",
+            },
+        };
+
+        var preserved = ProviderClient.PreserveOpenAIToolPairIntegrity(messages);
+        var serialized = JsonSerializer.Serialize(preserved);
+
+        Assert.Contains("paired", serialized);
+        Assert.DoesNotContain("dangling-call", serialized);
+        Assert.DoesNotContain("dangling-result", serialized);
+        Assert.Equal(2, preserved.Count);
+    }
+
+    [Fact]
     public void NativeI18nResolvesLanguageAndFallsBack()
     {
         Assert.Equal("zh-CN", NativeI18nLanguageResolver.Resolve(AppLanguage.Auto, new System.Globalization.CultureInfo("zh-CN")));
