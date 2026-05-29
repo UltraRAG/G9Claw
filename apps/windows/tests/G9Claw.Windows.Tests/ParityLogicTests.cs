@@ -758,6 +758,25 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public async Task ComposerPermissionModeStoreRoundTripsMacDefaultAndSessionKeys()
+    {
+        using var temp = new TempWorkspace();
+        var file = Path.Combine(temp.Root, "permission-modes.json");
+        var store = new ComposerPermissionModeStore(file);
+        var values = ComposerPermissionModeStorage.Save(ComposerPermissionMode.Default, "session-1");
+        values = ComposerPermissionModeStorage.Save(ComposerPermissionMode.BypassPermissions, null, values);
+
+        await store.SaveAsync(values);
+        var loaded = await store.LoadAsync();
+
+        Assert.Equal(ComposerPermissionMode.BypassPermissions, ComposerPermissionModeStorage.StoredMode("missing", loaded));
+        Assert.Equal(ComposerPermissionMode.Default, ComposerPermissionModeStorage.StoredMode("session-1", loaded));
+        Assert.Equal("bypassPermissions", loaded[ComposerPermissionModeStorage.DefaultKey]);
+        Assert.Equal("default", loaded[$"{ComposerPermissionModeStorage.SessionKeyPrefix}session-1"]);
+        Assert.Contains("permissionMode-default", await File.ReadAllTextAsync(file));
+    }
+
+    [Fact]
     public void WebV2UiSettingsNormalizeSidebarBoundsAndLists()
     {
         var tooSmall = new V2UiSettings(12, SidebarSection.General, null!, null!).Normalize();

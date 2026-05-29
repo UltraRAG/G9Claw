@@ -64,3 +64,44 @@ public sealed class NativeUIPreferencesStore
         await File.WriteAllTextAsync(_preferencesFile, NativeUIPreferencesStorage.Save(preferences), cancellationToken);
     }
 }
+
+public sealed class ComposerPermissionModeStore
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+    };
+
+    private readonly string _permissionModeFile;
+
+    public ComposerPermissionModeStore(string? permissionModeFile = null)
+    {
+        _permissionModeFile = permissionModeFile ?? AppPaths.Current().PermissionModeFile;
+    }
+
+    public async Task<Dictionary<string, string>> LoadAsync(CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(_permissionModeFile)) return new Dictionary<string, string>(StringComparer.Ordinal);
+        try
+        {
+            await using var stream = File.OpenRead(_permissionModeFile);
+            var values = await JsonSerializer.DeserializeAsync<Dictionary<string, string>>(stream, JsonOptions, cancellationToken)
+                ?? new Dictionary<string, string>(StringComparer.Ordinal);
+            return new Dictionary<string, string>(values, StringComparer.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+    }
+
+    public async Task SaveAsync(IReadOnlyDictionary<string, string> values, CancellationToken cancellationToken = default)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_permissionModeFile)!);
+        await using var stream = File.Create(_permissionModeFile);
+        var sorted = values
+            .OrderBy(item => item.Key, StringComparer.Ordinal)
+            .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
+        await JsonSerializer.SerializeAsync(stream, sorted, JsonOptions, cancellationToken);
+    }
+}

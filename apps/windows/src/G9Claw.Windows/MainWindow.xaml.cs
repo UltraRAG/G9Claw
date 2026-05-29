@@ -117,6 +117,7 @@ public sealed partial class MainWindow : Window
     private readonly TaskPlanStore _taskPlanStore;
     private readonly TaskMasterService _taskMasterService;
     private readonly NativeUIPreferencesStore _uiPreferencesStore;
+    private readonly ComposerPermissionModeStore _permissionModeStore;
 
     private WorkspaceService _workspaceService;
     private V2UiSettings _uiSettings;
@@ -153,6 +154,7 @@ public sealed partial class MainWindow : Window
     private bool _suppressChatScrollTracking;
     private string? _lastContextStage;
     private int _contextCompactCount;
+    private Dictionary<string, string> _permissionModeValues = new(StringComparer.Ordinal);
     public AppState State { get; private set; }
     public ObservableCollection<ChatLine> ChatLines { get; } = [];
 
@@ -178,6 +180,7 @@ public sealed partial class MainWindow : Window
         _taskPlanStore = new TaskPlanStore();
         _taskMasterService = new TaskMasterService();
         _uiPreferencesStore = new NativeUIPreferencesStore();
+        _permissionModeStore = new ComposerPermissionModeStore();
         State = AppState.CreateDefault();
         _uiSettings = State.Settings.UiSettings.Normalize();
         _strings = new StringCatalog(State.Settings.Language);
@@ -413,6 +416,7 @@ public sealed partial class MainWindow : Window
 
         _uiSettings = State.Settings.UiSettings.NormalizeForStartup();
         State.UiPreferences = await _uiPreferencesStore.LoadAsync() ?? State.UiPreferences;
+        _permissionModeValues = await _permissionModeStore.LoadAsync();
         _isSidebarVisible = State.UiPreferences.SidebarVisible;
         State.IsSidebarVisible = _isSidebarVisible;
         SyncSidebarSectionWithProject(State.SelectedProject);
@@ -436,6 +440,7 @@ public sealed partial class MainWindow : Window
 
         _workspaceService = new WorkspaceService(State.Settings.WorkspacesRoot);
         RefreshNativeStores();
+        RestoreComposerPermissionMode(State.SelectedSessionId);
         await RefreshProviderPreflightAsync();
         ApplyUiSettings();
         RenderAll();
@@ -875,6 +880,7 @@ public sealed partial class MainWindow : Window
             State.SelectProject(project);
             SyncSidebarSectionWithProject(project);
             State.SelectSession(session);
+            RestoreComposerPermissionMode(session.Id);
             _unreadSessionIds.Remove(session.Id);
             RenderAll();
         };
@@ -2649,7 +2655,7 @@ public sealed partial class MainWindow : Window
             };
             item.Click += (_, _) =>
             {
-                State.ComposerPermissionMode = descriptor.Mode;
+                SetComposerPermissionMode(descriptor.Mode);
                 RenderContent();
                 FocusComposerSoon();
             };
@@ -5721,6 +5727,7 @@ public sealed partial class MainWindow : Window
         if (State.SelectedProjectId != project.Id)
         {
             State.SelectProject(project);
+            RestoreComposerPermissionMode(null);
             SyncSidebarSectionWithProject(project);
             RefreshNativeStores();
         }
@@ -5767,6 +5774,7 @@ public sealed partial class MainWindow : Window
         SyncSidebarSectionWithProject(project);
         RefreshNativeStores();
         State.StartDraftSession(project);
+        RestoreComposerPermissionMode(null);
         _expandedProjectNames.Add(project.Name);
         ChatLines.Clear();
 
@@ -6431,6 +6439,7 @@ public sealed partial class MainWindow : Window
         if (V2SidebarProjection.GeneralProject(State.Projects) is { } general)
         {
             State.SelectProject(general);
+            RestoreComposerPermissionMode(null);
             _uiSettings = _uiSettings with { SidebarSection = SidebarSection.General };
         }
         else
@@ -6469,6 +6478,7 @@ public sealed partial class MainWindow : Window
         if (V2SidebarProjection.GeneralProject(State.Projects) is { } general)
         {
             State.SelectProject(general);
+            RestoreComposerPermissionMode(null);
         }
 
         PersistUiSettings();
@@ -6537,6 +6547,7 @@ public sealed partial class MainWindow : Window
             DateTimeOffset.UtcNow);
         State.Projects.Add(project);
         State.SelectProject(project);
+        RestoreComposerPermissionMode(null);
         SyncSidebarSectionWithProject(project);
         _expandedProjectNames.Add(project.Name);
         _uiSettings = _uiSettings with { SidebarSection = SidebarSection.Projects };
@@ -6571,6 +6582,7 @@ public sealed partial class MainWindow : Window
         {
             State.SelectedProjectId = State.Projects.FirstOrDefault()?.Id;
             State.SelectedSessionId = null;
+            RestoreComposerPermissionMode(null);
             SyncSidebarSectionWithProject(State.SelectedProject);
         }
 
@@ -6604,6 +6616,7 @@ public sealed partial class MainWindow : Window
         if (State.SelectedSessionId == session.Id)
         {
             State.SelectedSessionId = null;
+            RestoreComposerPermissionMode(null);
         }
 
         ChatLines.Clear();
@@ -8153,6 +8166,18 @@ public sealed partial class MainWindow : Window
         State.UiPreferences = State.UiPreferences with { SidebarVisible = _isSidebarVisible };
         State.IsSidebarVisible = _isSidebarVisible;
         _ = _uiPreferencesStore.SaveAsync(State.UiPreferences);
+    }
+
+    private void RestoreComposerPermissionMode(string? sessionId)
+    {
+        State.ComposerPermissionMode = ComposerPermissionModeStorage.StoredMode(sessionId, _permissionModeValues);
+    }
+
+    private void SetComposerPermissionMode(ComposerPermissionMode mode)
+    {
+        State.ComposerPermissionMode = mode;
+        _permissionModeValues = ComposerPermissionModeStorage.Save(mode, State.SelectedSessionId, _permissionModeValues);
+        _ = _permissionModeStore.SaveAsync(_permissionModeValues);
     }
 
     private void OnSidebarDividerPointerPressed(object sender, PointerRoutedEventArgs e)
