@@ -65,15 +65,27 @@ public static class NativeAttachmentResolver
 
     private static (List<Dictionary<string, object?>> Blocks, List<AttachmentDiagnostic> Diagnostics) Resolve(FileAttachment attachment)
     {
-        if (!File.Exists(attachment.Path))
+        var fileExists = File.Exists(attachment.Path);
+        var directoryExists = Directory.Exists(attachment.Path);
+        if (!fileExists && !directoryExists)
         {
             return ([], [new AttachmentDiagnostic(AttachmentDiagnosticSeverity.Warning, $"Attachment not found: {attachment.Path}.")]);
+        }
+
+        if (directoryExists && !fileExists)
+        {
+            return UnsupportedAttachment(attachment);
         }
 
         if (attachment.IsImage) return ResolveImage(attachment);
         if (attachment.IsPdf) return ResolvePdf(attachment);
         if (attachment.IsTextLike) return ResolveText(attachment);
 
+        return UnsupportedAttachment(attachment);
+    }
+
+    private static (List<Dictionary<string, object?>> Blocks, List<AttachmentDiagnostic> Diagnostics) UnsupportedAttachment(FileAttachment attachment)
+    {
         var extension = string.IsNullOrWhiteSpace(attachment.Extension) ? "(none)" : attachment.Extension;
         return ([], [new AttachmentDiagnostic(AttachmentDiagnosticSeverity.Info, $"Attachment {attachment.FileName} has unsupported extension {extension}; skipped.")]);
     }

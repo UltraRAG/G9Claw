@@ -1559,6 +1559,22 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void NativeAttachmentResolverTreatsDirectoryAttachmentsAsUnsupportedLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var directory = Path.Combine(temp.Root, "docs");
+        Directory.CreateDirectory(directory);
+
+        var result = NativeAttachmentResolver.OpenAIContentParts(
+            [new FileAttachment(directory, "docs", "inode/directory", 0)]);
+
+        Assert.Empty(result.Parts);
+        var diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal(AttachmentDiagnosticSeverity.Info, diagnostic.Severity);
+        Assert.Equal("Attachment docs has unsupported extension (none); skipped.", diagnostic.Message);
+    }
+
+    [Fact]
     public async Task ProviderClientBuildsMacShapedAttachmentParts()
     {
         using var temp = new TempWorkspace();
