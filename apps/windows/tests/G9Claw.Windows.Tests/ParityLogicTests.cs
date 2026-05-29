@@ -1466,6 +1466,27 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void ComposerPasteTextPolicyKeepsRealTextAndDropsAttachmentOnlyPathsLikeMac()
+    {
+        var attachment = new FileAttachment(@"C:\repo\notes.md", "notes.md", "text/markdown", 12);
+
+        Assert.Null(ComposerPasteTextPolicy.TextPayload("notes.md", [attachment]));
+        Assert.Null(ComposerPasteTextPolicy.TextPayload("C:\\repo\\notes.md", [attachment]));
+        Assert.Null(ComposerPasteTextPolicy.TextPayload("file:///C:/repo/notes.md", [attachment]));
+        Assert.Equal(
+            "Please summarize this file\nC:\\repo\\notes.md",
+            ComposerPasteTextPolicy.TextPayload("Please summarize this file\nC:\\repo\\notes.md", [attachment]));
+    }
+
+    [Fact]
+    public void ComposerPasteTextPolicyAppendsTextLikeMacFallbackPaste()
+    {
+        Assert.Equal("hello", ComposerPasteTextPolicy.AppendText("", "hello"));
+        Assert.Equal("hello world", ComposerPasteTextPolicy.AppendText("hello ", "world"));
+        Assert.Equal("hello" + Environment.NewLine + "world", ComposerPasteTextPolicy.AppendText("hello", "world"));
+    }
+
+    [Fact]
     public async Task ProviderClientBuildsMacShapedAttachmentParts()
     {
         using var temp = new TempWorkspace();

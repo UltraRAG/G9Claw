@@ -73,3 +73,59 @@ public sealed record ComposerAttachmentPreviewModel(
         return mimeType[(slash + 1)..].ToUpperInvariant();
     }
 }
+
+public static class ComposerPasteTextPolicy
+{
+    public static string? TextPayload(string? value, IReadOnlyList<FileAttachment> attachments)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+
+        var attachmentValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var attachment in attachments)
+        {
+            foreach (var candidate in AttachmentTextValues(attachment))
+            {
+                var trimmed = candidate.Trim();
+                if (!string.IsNullOrWhiteSpace(trimmed))
+                {
+                    attachmentValues.Add(trimmed);
+                }
+            }
+        }
+
+        var lines = value
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToList();
+
+        if (attachmentValues.Count > 0 &&
+            lines.Count > 0 &&
+            lines.All(line => attachmentValues.Contains(line)))
+        {
+            return null;
+        }
+
+        return value;
+    }
+
+    public static string AppendText(string existing, string text)
+    {
+        if (string.IsNullOrEmpty(text)) return existing;
+        if (string.IsNullOrEmpty(existing)) return text;
+        return char.IsWhiteSpace(existing[^1]) ? existing + text : existing + Environment.NewLine + text;
+    }
+
+    private static IEnumerable<string> AttachmentTextValues(FileAttachment attachment)
+    {
+        yield return attachment.Path;
+        yield return ComposerAttachmentDeduper.StablePathKey(attachment);
+        yield return attachment.FileName;
+        yield return Path.GetFileName(attachment.Path);
+
+        var fullPath = ComposerAttachmentDeduper.StablePathKey(attachment);
+        if (Path.IsPathFullyQualified(fullPath))
+        {
+            yield return new Uri(fullPath, UriKind.Absolute).AbsoluteUri;
+        }
+    }
+}

@@ -2856,6 +2856,20 @@ public sealed partial class MainWindow : Window
         State.PendingAttachments.AddRange(merged);
     }
 
+    private void AppendPastedComposerText(string text, TextBox? composer)
+    {
+        composer ??= _composerTextBox;
+        var existing = composer?.Text ?? State.ComposerText;
+        var next = ComposerPasteTextPolicy.AppendText(existing, text);
+        State.ComposerText = next;
+        if (composer is not null)
+        {
+            composer.Text = next;
+            composer.SelectionStart = next.Length;
+            composer.SelectionLength = 0;
+        }
+    }
+
     private Button ComposerSendButton()
     {
         var canSubmit = ComposerCanSubmit();
@@ -2920,18 +2934,21 @@ public sealed partial class MainWindow : Window
 
     private async void OnComposerPaste(object sender, TextControlPasteEventArgs args)
     {
-        var attachments = await ReadClipboardAttachmentsAsync();
+        var (attachments, textPayload) = await ReadClipboardPasteAsync();
         if (attachments.Count == 0) return;
 
         args.Handled = true;
+        if (!string.IsNullOrEmpty(textPayload))
+        {
+            AppendPastedComposerText(textPayload, sender as TextBox);
+        }
         AddPendingAttachments(attachments);
         RenderContent();
         FocusComposerSoon();
     }
 
-    private async Task<List<FileAttachment>> ReadClipboardAttachmentsAsync()
+    private async Task<(List<FileAttachment> Attachments, string? TextPayload)> ReadClipboardPasteAsync()
     {
-        var result = new List<FileAttachment>();
         DataPackageView data;
         try
         {
@@ -2939,8 +2956,17 @@ public sealed partial class MainWindow : Window
         }
         catch
         {
-            return result;
+            return ([], null);
         }
+
+        var attachments = await ReadClipboardAttachmentsAsync(data);
+        var text = await ReadClipboardTextAsync(data);
+        return (attachments, ComposerPasteTextPolicy.TextPayload(text, attachments));
+    }
+
+    private async Task<List<FileAttachment>> ReadClipboardAttachmentsAsync(DataPackageView data)
+    {
+        var result = new List<FileAttachment>();
 
         if (data.Contains(StandardDataFormats.StorageItems))
         {
@@ -2972,6 +2998,20 @@ public sealed partial class MainWindow : Window
         }
 
         return result;
+    }
+
+    private static async Task<string?> ReadClipboardTextAsync(DataPackageView data)
+    {
+        if (!data.Contains(StandardDataFormats.Text)) return null;
+
+        try
+        {
+            return await data.GetTextAsync();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private async Task<FileAttachment> AttachmentFromStorageFileAsync(StorageFile file, AttachmentSourceKind sourceKind)
