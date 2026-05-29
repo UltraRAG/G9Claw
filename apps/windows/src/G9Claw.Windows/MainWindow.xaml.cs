@@ -6568,6 +6568,11 @@ public sealed partial class MainWindow : Window
                             State.UpsertSubagentStatus(currentRequest.SessionId, assistantMessageId, subagentStatus);
                             ScheduleChatRender();
                             break;
+                        case AgentEventKind.TurnItemStarted or AgentEventKind.TurnItemUpdated or AgentEventKind.TurnItemCompleted
+                            when agentEvent.TurnItem is { } turnItem:
+                            State.UpsertTurnItem(turnItem);
+                            ScheduleChatRender();
+                            break;
                         case AgentEventKind.TurnStarted or AgentEventKind.TurnCompleted when agentEvent.Turn is { } turn:
                             State.TurnsBySession[currentRequest.SessionId] = [turn];
                             if (agentEvent.Kind == AgentEventKind.TurnStarted)

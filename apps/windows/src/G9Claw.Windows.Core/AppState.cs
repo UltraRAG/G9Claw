@@ -646,6 +646,31 @@ public sealed class AppState : INotifyPropertyChanged
         }
     }
 
+    public void UpsertTurnItem(AgentTurnItem item)
+    {
+        var sessionId = string.IsNullOrWhiteSpace(item.SessionId) ? SelectedSessionId : item.SessionId;
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return;
+        }
+
+        if (!TurnItemsBySession.TryGetValue(sessionId, out var items))
+        {
+            items = [];
+            TurnItemsBySession[sessionId] = items;
+        }
+
+        var index = items.FindIndex(existing => string.Equals(existing.Id, item.Id, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0)
+        {
+            items[index] = item;
+        }
+        else
+        {
+            items.Add(item);
+        }
+    }
+
     public void AppendStreamingAssistantToolCall(string sessionId, AgentToolCall call)
     {
         var (messages, index) = StreamingAssistantSlot(sessionId, null);

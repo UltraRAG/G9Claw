@@ -19,6 +19,9 @@ public enum AgentEventKind
     Abort,
     Error,
     TurnStarted,
+    TurnItemStarted,
+    TurnItemUpdated,
+    TurnItemCompleted,
     TurnCompleted,
 }
 
@@ -34,6 +37,7 @@ public sealed record AgentEvent(
     CompactStartedPayload? CompactStarted = null,
     CompactCompletedPayload? CompactCompleted = null,
     TokenBudget? TokenBudget = null,
+    AgentTurnItem? TurnItem = null,
     AgentTurn? Turn = null)
 {
     public static AgentEvent SessionCreated(string sessionId) => new(AgentEventKind.SessionCreated, sessionId);
@@ -52,6 +56,12 @@ public sealed record AgentEvent(
         new(AgentEventKind.SubagentStatus, sessionId, SubagentStatus: new SubagentStatusPayload(id, status, detail));
     public static AgentEvent Status(string sessionId, string text) => new(AgentEventKind.Status, sessionId, Text: text);
     public static AgentEvent Budget(string sessionId, TokenBudget budget) => new(AgentEventKind.TokenBudget, sessionId, TokenBudget: budget);
+    public static AgentEvent TurnItemStarted(string sessionId, AgentTurnItem item) =>
+        new(AgentEventKind.TurnItemStarted, sessionId, TurnItem: item);
+    public static AgentEvent TurnItemUpdated(string sessionId, AgentTurnItem item) =>
+        new(AgentEventKind.TurnItemUpdated, sessionId, TurnItem: item);
+    public static AgentEvent TurnItemCompleted(string sessionId, AgentTurnItem item) =>
+        new(AgentEventKind.TurnItemCompleted, sessionId, TurnItem: item);
     public static AgentEvent StreamEnd(string sessionId) => new(AgentEventKind.StreamEnd, sessionId);
     public static AgentEvent Complete(string sessionId) => new(AgentEventKind.Complete, sessionId);
     public static AgentEvent Abort(string sessionId, string reason) => new(AgentEventKind.Abort, sessionId, Text: reason);

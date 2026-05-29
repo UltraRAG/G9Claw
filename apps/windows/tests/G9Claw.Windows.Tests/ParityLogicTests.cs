@@ -2247,6 +2247,57 @@ router:
     }
 
     [Fact]
+    public async Task NativeAgentRunnerStreamsTurnItemsLikeMac()
+    {
+        using var temp = new TempWorkspace();
+        var provider = new LifecycleStatusProvider();
+        var runner = new NativeAgentRunner(providerClient: provider);
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "inspect the workspace",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var events = new List<AgentEvent>();
+        await foreach (var agentEvent in runner.RunAsync(request))
+        {
+            events.Add(agentEvent);
+        }
+
+        Assert.Contains(events, item =>
+            item.Kind == AgentEventKind.TurnItemCompleted &&
+            item.TurnItem is { Kind: AgentTurnItemKind.UserMessage, Status: AgentTurnItemStatus.Completed });
+        Assert.Contains(events, item =>
+            item.Kind == AgentEventKind.TurnItemStarted &&
+            item.TurnItem is { Kind: AgentTurnItemKind.Status, Title: "connecting" });
+        Assert.Contains(events, item =>
+            item.Kind == AgentEventKind.TurnItemStarted &&
+            item.TurnItem is { Kind: AgentTurnItemKind.ToolCall, ToolName: "TodoRead" });
+        Assert.Contains(events, item =>
+            item.Kind == AgentEventKind.TurnItemUpdated &&
+            item.TurnItem is { Kind: AgentTurnItemKind.ToolCall, ToolName: "TodoRead", Status: AgentTurnItemStatus.Completed });
+        Assert.Contains(events, item =>
+            item.Kind == AgentEventKind.TurnItemCompleted &&
+            item.TurnItem is { Kind: AgentTurnItemKind.ToolResult, ToolName: "TodoRead", Status: AgentTurnItemStatus.Completed });
+
+        var toolStart = events.FindIndex(item => item.Kind == AgentEventKind.TurnItemStarted && item.TurnItem?.ToolName == "TodoRead");
+        var toolUpdate = events.FindIndex(item => item.Kind == AgentEventKind.TurnItemUpdated && item.TurnItem?.ToolName == "TodoRead");
+        var toolResult = events.FindIndex(item => item.Kind == AgentEventKind.TurnItemCompleted && item.TurnItem?.ToolName == "TodoRead");
+        var visibleResult = events.FindIndex(item => item.Kind == AgentEventKind.ToolResult && item.ToolResult?.ToolName == "TodoRead");
+        Assert.True(toolStart >= 0 && toolUpdate > toolStart && toolResult > toolUpdate && visibleResult > toolResult);
+    }
+
+    [Fact]
     public async Task NativeAgentRunnerStreamsReasoningDeltaLikeMac()
     {
         using var temp = new TempWorkspace();
@@ -3785,6 +3836,48 @@ router:
         Assert.Equal("status=micro, 12,000 -> 4,800 tokens", completed.Detail);
         Assert.Equal(AgentActivityState.Completed, completed.State);
         Assert.NotNull(completed.EndedAt);
+    }
+
+    [Fact]
+    public void AppStateUpsertsTurnItemsLikeMac()
+    {
+        var state = AppState.CreateDefault();
+        var project = state.Projects.First();
+        state.SelectProject(project);
+        var sessionId = state.CreateSessionForSelectedProject("Parity")!.Id;
+        var now = DateTimeOffset.UtcNow;
+        var started = new AgentTurnItem(
+            "item-1",
+            1,
+            AgentTurnItemKind.ToolCall,
+            AgentTurnItemStatus.InProgress,
+            "Read",
+            "",
+            "Read",
+            now,
+            now,
+            null,
+            null,
+            null,
+            new ToolInvocationPayload("call-1", "Read", "{}", null, false),
+            sessionId,
+            "turn-1");
+        var completed = started with
+        {
+            Status = AgentTurnItemStatus.Completed,
+            Text = "content",
+            UpdatedAt = now.AddSeconds(1),
+            CompletedAt = now.AddSeconds(1),
+            ToolInvocation = started.ToolInvocation! with { Output = "content" },
+        };
+
+        state.UpsertTurnItem(started);
+        state.UpsertTurnItem(completed);
+
+        var item = Assert.Single(state.CurrentTurnItems);
+        Assert.Equal("item-1", item.Id);
+        Assert.Equal(AgentTurnItemStatus.Completed, item.Status);
+        Assert.Equal("content", item.ToolInvocation!.Output);
     }
 
     [Fact]

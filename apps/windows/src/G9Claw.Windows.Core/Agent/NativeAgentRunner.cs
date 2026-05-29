@@ -70,11 +70,11 @@ public sealed class NativeAgentRunner
     {
         var nativeSession = _threadManager.SessionFor(request);
         var turn = nativeSession.StartTurn(request);
-        turn.RecordUserMessage(request.Prompt);
         await writer.WriteAsync(new AgentEvent(AgentEventKind.TurnStarted, request.SessionId, Turn: turn.Snapshot()), cancellationToken);
+        var userItem = turn.RecordUserMessage(request.Prompt);
+        await writer.WriteAsync(AgentEvent.TurnItemCompleted(request.SessionId, userItem), cancellationToken);
         await writer.WriteAsync(AgentEvent.SessionCreated(request.SessionId), cancellationToken);
-        turn.RecordStatus("connecting");
-        await writer.WriteAsync(AgentEvent.Status(request.SessionId, "connecting"), cancellationToken);
+        await WriteStatusStartedAsync(turn, writer, request.SessionId, "connecting", "", cancellationToken);
 
         var assistantText = new StringBuilder();
         TokenBudget? lastBudget = null;
@@ -97,8 +97,7 @@ public sealed class NativeAgentRunner
             while (true)
             {
                 var roundStatus = round == 0 ? "thinking" : "processing";
-                turn.RecordStatus(roundStatus);
-                await writer.WriteAsync(AgentEvent.Status(request.SessionId, roundStatus), cancellationToken);
+                await WriteStatusStartedAsync(turn, writer, request.SessionId, roundStatus, "", cancellationToken);
                 var contextBudget = NativeAgentRuntime.ContextBudgetSnapshot(currentRequest);
                 await writer.WriteAsync(AgentEvent.Budget(request.SessionId, contextBudget), cancellationToken);
                 await writer.WriteAsync(
@@ -113,7 +112,8 @@ public sealed class NativeAgentRunner
                         ToolExchanges = compaction.ToolExchanges,
                     };
                     toolExchanges = compaction.ToolExchanges.ToList();
-                    turn.RecordContextCompaction(compaction);
+                    var compactItem = turn.RecordContextCompaction(compaction);
+                    await writer.WriteAsync(AgentEvent.TurnItemStarted(request.SessionId, compactItem), cancellationToken);
                     await writer.WriteAsync(AgentEvent.Status(request.SessionId, "context compacting"), cancellationToken);
                     await writer.WriteAsync(
                         AgentEvent.CompactComplete(request.SessionId, compaction.Status, compaction.PreTokens, compaction.PostTokens),
@@ -256,8 +256,7 @@ public sealed class NativeAgentRunner
                         PriorMessages = RecoveryPriorMessages(currentRequest, ex.Message),
                         ToolExchanges = toolExchanges.ToList(),
                     };
-                    turn.RecordStatus("waiting for model response", "partial_stream_timeout_recovery");
-                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, "waiting for model response"), cancellationToken);
+                    await WriteStatusStartedAsync(turn, writer, request.SessionId, "waiting for model response", "partial_stream_timeout_recovery", cancellationToken);
                     round++;
                     continue;
                 }
@@ -274,9 +273,9 @@ public sealed class NativeAgentRunner
                         PriorMessages = recovery.PriorMessages,
                         ToolExchanges = recovery.ToolExchanges,
                     };
-                    turn.RecordContextCompaction(recovery);
-                    turn.RecordStatus("context recovering", recovery.Trigger);
-                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, "context recovering"), cancellationToken);
+                    var recoveryCompaction = turn.RecordContextCompaction(recovery);
+                    await writer.WriteAsync(AgentEvent.TurnItemStarted(request.SessionId, recoveryCompaction), cancellationToken);
+                    await WriteStatusStartedAsync(turn, writer, request.SessionId, "context recovering", recovery.Trigger, cancellationToken);
                     await writer.WriteAsync(
                         AgentEvent.CompactComplete(request.SessionId, recovery.Status, recovery.PreTokens, recovery.PostTokens),
                         cancellationToken);
@@ -330,15 +329,12 @@ public sealed class NativeAgentRunner
 
                     if (deduplicationPolicy.WouldSkipWithoutResult(planRecovery.Call))
                     {
-                        turn.RecordStatus(PlanWorkflowPresentation.RecoveryNeededStatus);
-                        await writer.WriteAsync(AgentEvent.Status(request.SessionId, PlanWorkflowPresentation.RecoveryNeededStatus), cancellationToken);
+                        await WriteStatusStartedAsync(turn, writer, request.SessionId, PlanWorkflowPresentation.RecoveryNeededStatus, "", cancellationToken);
                         break;
                     }
 
-                    turn.RecordStatus(planRecovery.WorkflowStatus);
-                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, planRecovery.WorkflowStatus), cancellationToken);
-                    turn.RecordStatus(planRecovery.GenerationStatus);
-                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, planRecovery.GenerationStatus), cancellationToken);
+                    await WriteStatusStartedAsync(turn, writer, request.SessionId, planRecovery.WorkflowStatus, "", cancellationToken);
+                    await WriteStatusStartedAsync(turn, writer, request.SessionId, planRecovery.GenerationStatus, "", cancellationToken);
                     await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, planRecovery.Call), cancellationToken);
                     var toolResult = await ExecuteToolAsync(currentRequest, turn, writer, planRecovery.Call, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
                     if (toolResult is not null)
@@ -360,8 +356,7 @@ public sealed class NativeAgentRunner
                 {
                     didForceWorkspaceBootstrap = true;
                     var bootstrapCall = WorkspaceBootstrapPolicy.ForcedWorkspaceBootstrapToolCall();
-                    turn.RecordStatus("exploring workspace");
-                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, "exploring workspace"), cancellationToken);
+                    await WriteStatusStartedAsync(turn, writer, request.SessionId, "exploring workspace", "", cancellationToken);
                     await WritePlanGenerationStatusAsync(writer, request.SessionId, bootstrapCall, EffectiveWorkflowRunMode(request.RunMode, planModePolicy.PlanExited), cancellationToken);
                     await writer.WriteAsync(AgentEvent.ToolUse(request.SessionId, bootstrapCall), cancellationToken);
                     var toolResult = await ExecuteToolAsync(currentRequest, turn, writer, bootstrapCall, options, rootGlobPolicy, planModePolicy, planTodoGate, deduplicationPolicy, deletionVerificationPolicy, cancellationToken);
@@ -390,14 +385,12 @@ public sealed class NativeAgentRunner
                                 PriorMessages = NudgePriorMessages(currentRequest, roundAssistantText.ToString(), decision.Message),
                                 ToolExchanges = toolExchanges.ToList(),
                             };
-                            turn.RecordStatus("continuing", decision.Message);
-                            await writer.WriteAsync(AgentEvent.Status(request.SessionId, "continuing"), cancellationToken);
+                            await WriteStatusStartedAsync(turn, writer, request.SessionId, "continuing", decision.Message, cancellationToken);
                             round++;
                             continue;
                         }
 
-                        turn.RecordStatus("needs continuation", decision.Message);
-                        await writer.WriteAsync(AgentEvent.Status(request.SessionId, "needs continuation"), cancellationToken);
+                        await WriteStatusStartedAsync(turn, writer, request.SessionId, "needs continuation", decision.Message, cancellationToken);
                         break;
                     }
 
@@ -409,16 +402,14 @@ public sealed class NativeAgentRunner
                             PriorMessages = NudgePriorMessages(currentRequest, roundAssistantText.ToString(), completionDecision.Message),
                             ToolExchanges = toolExchanges.ToList(),
                         };
-                        turn.RecordStatus("continuing", completionDecision.Message);
-                        await writer.WriteAsync(AgentEvent.Status(request.SessionId, "continuing"), cancellationToken);
+                        await WriteStatusStartedAsync(turn, writer, request.SessionId, "continuing", completionDecision.Message, cancellationToken);
                         round++;
                         continue;
                     }
 
                     if (completionDecision.Kind == AgentCompletionDecisionKind.PauseNeedsUser)
                     {
-                        turn.RecordStatus("needs continuation", completionDecision.Message);
-                        await writer.WriteAsync(AgentEvent.Status(request.SessionId, "needs continuation"), cancellationToken);
+                        await WriteStatusStartedAsync(turn, writer, request.SessionId, "needs continuation", completionDecision.Message, cancellationToken);
                         break;
                     }
 
@@ -640,6 +631,20 @@ public sealed class NativeAgentRunner
         }
     }
 
+    private static async Task<AgentTurnItem> WriteStatusStartedAsync(
+        NativeTurnController turn,
+        ChannelWriter<AgentEvent> writer,
+        string sessionId,
+        string title,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var item = turn.RecordStatus(title, text);
+        await writer.WriteAsync(AgentEvent.TurnItemStarted(sessionId, item), cancellationToken);
+        await writer.WriteAsync(AgentEvent.Status(sessionId, title), cancellationToken);
+        return item;
+    }
+
     private static async Task WriteToolResultEventsAsync(
         ChannelWriter<AgentEvent> writer,
         string sessionId,
@@ -654,6 +659,34 @@ public sealed class NativeAgentRunner
                 AgentEvent.Subagent(sessionId, call.Id, result.IsError ? "failed" : "completed", result.Output),
                 cancellationToken);
         }
+    }
+
+    private static async Task<AgentTurnItem> WriteToolCallStartedAsync(
+        NativeTurnController turn,
+        ChannelWriter<AgentEvent> writer,
+        string sessionId,
+        AgentToolCall call,
+        CancellationToken cancellationToken)
+    {
+        var item = turn.RecordToolCall(call);
+        await writer.WriteAsync(AgentEvent.TurnItemStarted(sessionId, item), cancellationToken);
+        return item;
+    }
+
+    private static async Task RecordToolResultAsync(
+        NativeTurnController turn,
+        ChannelWriter<AgentEvent> writer,
+        string sessionId,
+        AgentToolResult result,
+        CancellationToken cancellationToken)
+    {
+        var recorded = turn.RecordToolResult(result);
+        if (recorded.CallItem is not null)
+        {
+            await writer.WriteAsync(AgentEvent.TurnItemUpdated(sessionId, recorded.CallItem), cancellationToken);
+        }
+
+        await writer.WriteAsync(AgentEvent.TurnItemCompleted(sessionId, recorded.ResultItem), cancellationToken);
     }
 
     private async Task<AgentToolResult?> ExecuteToolAsync(
@@ -672,12 +705,12 @@ public sealed class NativeAgentRunner
         var normalized = ToolArgumentNormalizer.Normalize(rawCall);
         if (normalized.RecoveryResult is not null)
         {
-            turn.RecordToolResult(normalized.RecoveryResult);
+            await RecordToolResultAsync(turn, writer, request.SessionId, normalized.RecoveryResult, cancellationToken);
             return normalized.RecoveryResult;
         }
 
         var call = normalized.Call;
-        turn.RecordToolCall(call);
+        await WriteToolCallStartedAsync(turn, writer, request.SessionId, call, cancellationToken);
         var isSubagentTool = AgentToolNameCanonicalizer.Canonical(call.Name) == "Task";
         if (isSubagentTool)
         {
@@ -686,19 +719,19 @@ public sealed class NativeAgentRunner
 
         if (rootGlobPolicy.CachedResultIfAvailable(call) is { } cached)
         {
-            turn.RecordToolResult(cached);
+            await RecordToolResultAsync(turn, writer, request.SessionId, cached, cancellationToken);
             return cached;
         }
 
         if (planModePolicy.BlockingResult(call) is { } planBlock)
         {
-            turn.RecordToolResult(planBlock);
+            await RecordToolResultAsync(turn, writer, request.SessionId, planBlock, cancellationToken);
             return planBlock;
         }
 
         if (planTodoGate.BlockingResult(call) is { } todoBlock)
         {
-            turn.RecordToolResult(todoBlock);
+            await RecordToolResultAsync(turn, writer, request.SessionId, todoBlock, cancellationToken);
             return todoBlock;
         }
 
@@ -709,7 +742,7 @@ public sealed class NativeAgentRunner
                 return null;
             }
 
-            turn.RecordToolResult(duplicate.Result!);
+            await RecordToolResultAsync(turn, writer, request.SessionId, duplicate.Result!, cancellationToken);
             return duplicate.Result;
         }
 
@@ -717,7 +750,7 @@ public sealed class NativeAgentRunner
         {
             await WritePlanWaitingStatusAsync(writer, request.SessionId, call.Name, request.RunMode, cancellationToken);
             var questionResult = await AskQuestionAsync(request, turn, call, options, cancellationToken);
-            turn.RecordToolResult(questionResult);
+            await RecordToolResultAsync(turn, writer, request.SessionId, questionResult, cancellationToken);
             planModePolicy.Record(call, questionResult);
             planTodoGate.Record(call, questionResult);
             deduplicationPolicy.Record(call, questionResult);
@@ -728,7 +761,7 @@ public sealed class NativeAgentRunner
         if (decision == ToolPermissionDecision.Denied)
         {
             var denied = new AgentToolResult(call.Id, call.Name, "Tool is denied by Settings permissions.", true);
-            turn.RecordToolResult(denied);
+            await RecordToolResultAsync(turn, writer, request.SessionId, denied, cancellationToken);
             return denied;
         }
 
@@ -745,7 +778,7 @@ public sealed class NativeAgentRunner
             if (permission.Decision != PermissionDecision.Allowed)
             {
                 var denied = new AgentToolResult(call.Id, call.Name, "Tool execution was denied.", true);
-                turn.RecordToolResult(denied);
+                await RecordToolResultAsync(turn, writer, request.SessionId, denied, cancellationToken);
                 return denied;
             }
 
@@ -768,7 +801,7 @@ public sealed class NativeAgentRunner
             if (!approved)
             {
                 var denied = new AgentToolResult(call.Id, call.Name, "Tool execution was denied.", true);
-                turn.RecordToolResult(denied);
+                await RecordToolResultAsync(turn, writer, request.SessionId, denied, cancellationToken);
                 return denied;
             }
         }
@@ -786,7 +819,7 @@ public sealed class NativeAgentRunner
                 if (!approved)
                 {
                     var denied = new AgentToolResult(call.Id, call.Name, "Tool execution was denied.", true);
-                    turn.RecordToolResult(denied);
+                    await RecordToolResultAsync(turn, writer, request.SessionId, denied, cancellationToken);
                     return denied;
                 }
             }
@@ -819,7 +852,7 @@ public sealed class NativeAgentRunner
         planModePolicy.Record(call, result);
         planTodoGate.Record(call, result);
         deduplicationPolicy.Record(call, result);
-        turn.RecordToolResult(result);
+        await RecordToolResultAsync(turn, writer, request.SessionId, result, cancellationToken);
         return result;
     }
 
