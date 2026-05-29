@@ -46,21 +46,54 @@ public static class NativeAttachmentResolver
 
     public static string PromptWithAttachments(string prompt, IReadOnlyList<FileAttachment> attachments)
     {
-        if (attachments.Count == 0) return prompt;
-
-        var resolved = OpenAIContentParts(attachments);
-        var textParts = resolved.Parts
-            .Where(part => string.Equals(part.GetValueOrDefault("type")?.ToString(), "text", StringComparison.Ordinal))
-            .Select(part => part.GetValueOrDefault("text")?.ToString())
-            .Where(text => !string.IsNullOrWhiteSpace(text));
-        var builder = new StringBuilder(prompt ?? "");
-        foreach (var text in textParts)
+        var trimmedPrompt = (prompt ?? "").Trim();
+        if (attachments.Count == 0)
         {
-            if (builder.Length > 0) builder.AppendLine().AppendLine();
-            builder.Append(text);
+            return string.IsNullOrWhiteSpace(trimmedPrompt) ? "Review the attached files." : trimmedPrompt;
         }
 
-        return builder.ToString();
+        var lines = new List<string>
+        {
+            string.IsNullOrWhiteSpace(trimmedPrompt) ? "Review the attached files." : trimmedPrompt,
+            "",
+            "Attached files:",
+        };
+
+        foreach (var attachment in attachments)
+        {
+            var mime = string.IsNullOrWhiteSpace(attachment.MimeType) ? "unknown" : attachment.MimeType!;
+            lines.Add($"- {attachment.FileName} ({mime}): {attachment.Path}");
+            if (attachment.IsImage)
+            {
+                lines.Add("  Image attachment is included as model input when the provider supports vision.");
+            }
+            else if (AttachmentTextExcerpt(attachment) is { } excerpt)
+            {
+                lines.Add("  Excerpt:");
+                lines.Add(string.Join('\n', excerpt.Split('\n').Select(line => $"    {line}")));
+            }
+        }
+
+        return string.Join('\n', lines);
+    }
+
+    private static string? AttachmentTextExcerpt(FileAttachment attachment)
+    {
+        if (!attachment.IsTextLike || !File.Exists(attachment.Path)) return null;
+
+        try
+        {
+            var size = new FileInfo(attachment.Path).Length;
+            if (size > 512_000) return null;
+
+            var text = File.ReadAllText(attachment.Path, new UTF8Encoding(false, true)).Trim();
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            return text[..Math.Min(text.Length, 8_000)];
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static (List<Dictionary<string, object?>> Blocks, List<AttachmentDiagnostic> Diagnostics) Resolve(FileAttachment attachment)

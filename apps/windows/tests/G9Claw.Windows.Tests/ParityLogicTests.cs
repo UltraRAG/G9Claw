@@ -1578,6 +1578,29 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void NativeAttachmentResolverBuildsMacStylePromptSummary()
+    {
+        using var temp = new TempWorkspace();
+        var notesPath = Path.Combine(temp.Root, "notes.md");
+        var imagePath = Path.Combine(temp.Root, "diagram.png");
+        File.WriteAllText(notesPath, "alpha\nbeta");
+        File.WriteAllBytes(imagePath, [0x89, 0x50, 0x4E, 0x47]);
+
+        var summary = NativeAttachmentResolver.PromptWithAttachments(
+            "Analyze these",
+            [
+                new FileAttachment(notesPath, "notes.md", "text/markdown", new FileInfo(notesPath).Length),
+                new FileAttachment(imagePath, "diagram.png", "image/png", new FileInfo(imagePath).Length),
+            ]);
+
+        Assert.StartsWith("Analyze these\n\nAttached files:", summary);
+        Assert.Contains($"- notes.md (text/markdown): {notesPath}", summary);
+        Assert.Contains("  Excerpt:\n    alpha\n    beta", summary);
+        Assert.Contains($"- diagram.png (image/png): {imagePath}", summary);
+        Assert.Contains("Image attachment is included as model input when the provider supports vision.", summary);
+    }
+
+    [Fact]
     public async Task ProviderClientBuildsMacShapedAttachmentParts()
     {
         using var temp = new TempWorkspace();
@@ -1627,7 +1650,8 @@ public sealed class ParityLogicTests
             .GetProperty("content");
 
         Assert.Equal(JsonValueKind.Array, content.ValueKind);
-        Assert.Equal("Analyze attachments", content[0].GetProperty("text").GetString());
+        Assert.Contains("Analyze attachments\n\nAttached files:", content[0].GetProperty("text").GetString());
+        Assert.Contains($"- notes.md (text/markdown): {notesPath}", content[0].GetProperty("text").GetString());
         Assert.Contains($"<attachment path=\"{notesPath}\">", content[1].GetProperty("text").GetString());
         Assert.Contains("alpha\nbeta", content[1].GetProperty("text").GetString());
         Assert.Contains($"<attachment path=\"{pdfPath}\">", content[2].GetProperty("text").GetString());

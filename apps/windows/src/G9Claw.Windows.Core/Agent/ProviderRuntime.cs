@@ -639,16 +639,17 @@ public sealed class ProviderClient : IProviderClient
         var attachmentParts = NativeAttachmentResolver.OpenAIContentParts(request.Attachments).Parts;
         if (attachmentParts.Count == 0)
         {
-            return request.Prompt;
+            return PromptWithAttachmentSummary(request);
         }
 
+        var summary = PromptWithAttachmentSummary(request);
         var parts = new List<Dictionary<string, object?>>();
-        if (!string.IsNullOrWhiteSpace(request.Prompt))
+        if (!string.IsNullOrWhiteSpace(summary))
         {
             parts.Add(new Dictionary<string, object?>
             {
                 ["type"] = "text",
-                ["text"] = request.Prompt,
+                ["text"] = summary,
             });
         }
 
