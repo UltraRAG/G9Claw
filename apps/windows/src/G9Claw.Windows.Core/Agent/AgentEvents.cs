@@ -46,6 +46,8 @@ public static class AgentEventNormalizer
     {
         return providerEvent.Kind switch
         {
+            ProviderStreamEventKind.Status when providerEvent.Text is not null =>
+                [AgentEvent.Status(sessionId, providerEvent.Text)],
             ProviderStreamEventKind.ContentDelta when providerEvent.Text is not null =>
                 [AgentEvent.ContentDelta(sessionId, providerEvent.Text)],
             ProviderStreamEventKind.ToolCall when providerEvent.ToolCall is not null =>

@@ -131,6 +131,12 @@ public sealed class NativeAgentRunner
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
 
+                                if (providerEvent.Kind == ProviderStreamEventKind.Status && providerEvent.Text is { } status)
+                                {
+                                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, status), cancellationToken);
+                                    continue;
+                                }
+
                                 if (providerEvent.Kind == ProviderStreamEventKind.ContentDelta && providerEvent.Text is { } text)
                                 {
                                     roundAssistantText.Append(text);

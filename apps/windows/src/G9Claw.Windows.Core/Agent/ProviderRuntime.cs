@@ -56,6 +56,7 @@ public sealed record ProviderRetryDecision(bool ShouldRetry, TimeSpan Delay, str
 
 public enum ProviderStreamEventKind
 {
+    Status,
     ContentDelta,
     ToolCall,
     TokenBudget,
@@ -399,6 +400,11 @@ public sealed class ProviderClient : IProviderClient
         {
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             throw ProviderClientException.HttpError((int)response.StatusCode, body);
+        }
+
+        if (request.Stream)
+        {
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Status, Text: "streaming");
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);

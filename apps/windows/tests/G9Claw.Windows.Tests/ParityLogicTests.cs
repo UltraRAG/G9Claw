@@ -1985,6 +1985,8 @@ public sealed class ParityLogicTests
             events.Add(providerEvent);
         }
 
+        Assert.Equal(ProviderStreamEventKind.Status, events[0].Kind);
+        Assert.Equal("streaming", events[0].Text);
         Assert.Contains(events, item => item.Kind == ProviderStreamEventKind.ContentDelta && item.Text == "ok");
         using var requestJson = JsonDocument.Parse(handler.Body!);
         var content = requestJson.RootElement
@@ -2207,6 +2209,7 @@ router:
             .Where(text => text is "connecting" or "thinking" or "processing")
             .ToList();
         Assert.Equal(new[] { "connecting", "thinking", "processing" }, lifecycleStatuses.Take(3));
+        Assert.Equal(2, events.Count(item => item.Kind == AgentEventKind.Status && item.Text == "streaming"));
 
         var completedTurn = Assert.Single(events, item => item.Kind == AgentEventKind.TurnCompleted).Turn!;
         var turnStatuses = completedTurn.Items
@@ -2900,11 +2903,14 @@ router:
     [Fact]
     public void AgentEventNormalizerCoversProviderEvents()
     {
+        var status = AgentEventNormalizer.FromProviderEvent("s1", new ProviderStreamEvent(ProviderStreamEventKind.Status, Text: "streaming"));
         var content = AgentEventNormalizer.FromProviderEvent("s1", new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: "hello"));
         var tool = AgentEventNormalizer.FromProviderEvent("s1", new ProviderStreamEvent(ProviderStreamEventKind.ToolCall, ToolCall: new AgentToolCall("c1", "Read", "{}")));
         var budget = AgentEventNormalizer.FromProviderEvent("s1", new ProviderStreamEvent(ProviderStreamEventKind.TokenBudget, TokenBudget: new TokenBudget(3, 10)));
         var done = AgentEventNormalizer.FromProviderEvent("s1", new ProviderStreamEvent(ProviderStreamEventKind.Done));
 
+        Assert.Equal(AgentEventKind.Status, Assert.Single(status).Kind);
+        Assert.Equal("streaming", status[0].Text);
         Assert.Equal(AgentEventKind.ContentDelta, Assert.Single(content).Kind);
         Assert.Equal(AgentEventKind.ToolUse, Assert.Single(tool).Kind);
         Assert.Equal(new TokenBudget(3, 10), Assert.Single(budget).TokenBudget);
@@ -6028,6 +6034,7 @@ gateway:
             RequestCount++;
             await Task.CompletedTask;
             cancellationToken.ThrowIfCancellationRequested();
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Status, Text: "streaming");
             if (RequestCount == 1)
             {
                 yield return new ProviderStreamEvent(
