@@ -1487,6 +1487,18 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void FileAttachmentTypeDetectionUsesMacMimeAndExtensionPolicy()
+    {
+        Assert.True(new FileAttachment(@"C:\repo\image", "image", "image/png", 10).IsImage);
+        Assert.True(new FileAttachment(@"C:\repo\scan", "scan", "application/pdf", 10).IsPdf);
+        Assert.True(new FileAttachment(@"C:\repo\snippet", "snippet", "text/plain", 10).IsTextLike);
+
+        Assert.True(new FileAttachment(@"C:\repo\script.rb", "script.rb", null, 10).IsTextLike);
+        Assert.True(new FileAttachment(@"C:\repo\data.csv", "data.csv", null, 10).IsTextLike);
+        Assert.True(new FileAttachment(@"C:\repo\debug.log", "debug.log", null, 10).IsTextLike);
+    }
+
+    [Fact]
     public async Task ProviderClientBuildsMacShapedAttachmentParts()
     {
         using var temp = new TempWorkspace();

@@ -333,16 +333,22 @@ public sealed record FileAttachment(
 {
     public string Extension => System.IO.Path.GetExtension(Path).TrimStart('.').ToLowerInvariant();
 
-    public bool IsImage => new[] { "png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "tif", "bmp" }.Contains(Extension);
+    public bool IsImage =>
+        MimeType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true ||
+        new[] { "png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "tif", "bmp" }.Contains(Extension);
 
-    public bool IsPdf => Extension == "pdf";
+    public bool IsPdf =>
+        string.Equals(MimeType, "application/pdf", StringComparison.OrdinalIgnoreCase) ||
+        Extension == "pdf";
 
-    public bool IsTextLike => new[]
-    {
-        "txt", "md", "markdown", "json", "jsonl", "yaml", "yml", "toml", "xml",
-        "cs", "swift", "ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "kt",
-        "cpp", "c", "h", "hpp", "html", "css", "scss", "sql", "sh", "ps1"
-    }.Contains(Extension);
+    public bool IsTextLike =>
+        MimeType?.StartsWith("text/", StringComparison.OrdinalIgnoreCase) == true ||
+        new[]
+        {
+            "txt", "md", "markdown", "json", "jsonl", "yaml", "yml", "toml", "xml",
+            "cs", "swift", "ts", "tsx", "js", "jsx", "py", "rs", "rb", "go", "java", "kt",
+            "cpp", "c", "h", "hpp", "html", "css", "scss", "csv", "sql", "sh", "ps1", "log"
+        }.Contains(Extension);
 }
 
 public enum ContextBudgetLevel
