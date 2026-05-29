@@ -127,6 +127,9 @@ public sealed class AppState : INotifyPropertyChanged
 
     public bool IsCurrentSessionStreaming => CurrentMessages.Any(message => message.IsStreaming);
 
+    public bool IsSelectedSessionReadOnlyBackground =>
+        IsReadOnlyBackgroundSession(SelectedSession);
+
     public static AppState CreateDefault()
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -171,6 +174,24 @@ public sealed class AppState : INotifyPropertyChanged
         }
 
         return line.Length <= 72 ? line : line[..72];
+    }
+
+    public static bool IsReadOnlyBackgroundSession(ProjectSession? session) =>
+        session?.IsReadOnly == true || session?.IsBackgroundTaskSession == true;
+
+    public static bool CanSendComposerMessage(
+        ProjectSession? selectedSession,
+        bool hasSelectedProject,
+        string? composerText,
+        int attachmentCount,
+        bool isAgentBusy,
+        bool isAgentModelConfigured)
+    {
+        return !isAgentBusy &&
+            !IsReadOnlyBackgroundSession(selectedSession) &&
+            (!string.IsNullOrWhiteSpace(composerText) || attachmentCount > 0) &&
+            hasSelectedProject &&
+            isAgentModelConfigured;
     }
 
     public static AppSettings NormalizeSettings(AppSettings settings)

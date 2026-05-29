@@ -1077,12 +1077,15 @@ public sealed partial class MainWindow : Window
             (State.SelectedSessionId is { } currentSessionId &&
              State.TurnsBySession.TryGetValue(currentSessionId, out var currentTurns) &&
              currentTurns.Count > 0);
+        var isReadOnlyBackgroundSession = State.IsSelectedSessionReadOnlyBackground;
 
         StackPanel? welcomePanel = null;
         if (!hasMessages)
         {
             _chatScrollViewer = null;
-            var detail = !IsAgentModelConfigured()
+            var detail = isReadOnlyBackgroundSession
+                ? T("chat.readOnlyBackground.description")
+                : !IsAgentModelConfigured()
                 ? T("chat.empty.configureProvider")
                 : "";
             welcomePanel = new StackPanel
@@ -1094,7 +1097,9 @@ public sealed partial class MainWindow : Window
                 Spacing = 0,
             };
             TrackChatColumnWidth(welcomePanel);
-            welcomePanel.Children.Add(ChatEmptyPrompt(T("chat.empty.title"), detail));
+            welcomePanel.Children.Add(ChatEmptyPrompt(
+                isReadOnlyBackgroundSession ? T("chat.readOnlyBackground.title") : T("chat.empty.title"),
+                detail));
             root.Children.Add(welcomePanel);
         }
         else
@@ -1146,6 +1151,17 @@ public sealed partial class MainWindow : Window
         if (inlinePermissionRequests.Count > 0)
         {
             composerFooter.Children.Add(PermissionBanner(inlinePermissionRequests));
+        }
+
+        if (isReadOnlyBackgroundSession)
+        {
+            if (hasMessages)
+            {
+                composerFooter.Children.Add(ReadOnlyBackgroundFooter());
+                root.Children.Add(composerFooter);
+            }
+
+            return root;
         }
 
         var composerShell = new Border
@@ -3198,11 +3214,13 @@ public sealed partial class MainWindow : Window
     }
 
     private bool ComposerCanSubmit() =>
-        !_isAgentRunning &&
-        !_isAgentSubmitting &&
-        (!string.IsNullOrWhiteSpace(State.ComposerText) || State.PendingAttachments.Count > 0) &&
-        State.SelectedProject is not null &&
-        IsAgentModelConfigured();
+        AppState.CanSendComposerMessage(
+            State.SelectedSession,
+            State.SelectedProject is not null,
+            State.ComposerText,
+            State.PendingAttachments.Count,
+            _isAgentRunning || _isAgentSubmitting,
+            IsAgentModelConfigured());
 
     private Button ContextGaugeButton()
     {
@@ -5531,6 +5549,22 @@ public sealed partial class MainWindow : Window
         },
     };
 
+    private FrameworkElement ReadOnlyBackgroundFooter() => new Border
+    {
+        HorizontalAlignment = HorizontalAlignment.Center,
+        BorderBrush = Brush("V2BorderBrush"),
+        BorderThickness = new Thickness(1),
+        CornerRadius = new CornerRadius(999),
+        Background = Brush("V2CardBrush"),
+        Padding = new Thickness(12, 7, 12, 7),
+        Child = new TextBlock
+        {
+            Text = T("chat.readOnlyBackground.footer"),
+            FontSize = 12,
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+        },
+    };
+
     private FrameworkElement ErrorState(string message) => new Border
     {
         CornerRadius = new CornerRadius(8),
@@ -5759,6 +5793,7 @@ public sealed partial class MainWindow : Window
         var prompt = State.ComposerText.Trim();
         var attachments = State.PendingAttachments.ToList();
         if (string.IsNullOrWhiteSpace(prompt) && attachments.Count == 0) return;
+        if (State.IsSelectedSessionReadOnlyBackground) return;
 
         var session = State.SelectedSession ?? State.CreateSessionForSelectedProject(
             AppState.PromptTitleFromComposerPrompt(prompt, T("sidebar.newSession")));

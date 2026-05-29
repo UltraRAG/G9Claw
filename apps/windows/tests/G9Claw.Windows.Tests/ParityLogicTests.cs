@@ -167,6 +167,30 @@ public sealed class ParityLogicTests
         Assert.Equal(3, session.MessageCount);
         Assert.Equal("task-1", session.TaskId);
         Assert.True(session.IsReadOnly);
+        Assert.True(AppState.IsReadOnlyBackgroundSession(session));
+        Assert.False(AppState.CanSendComposerMessage(
+            session,
+            hasSelectedProject: true,
+            composerText: "continue",
+            attachmentCount: 0,
+            isAgentBusy: false,
+            isAgentModelConfigured: true));
+
+        var writable = session with
+        {
+            IsReadOnly = false,
+            SessionKind = null,
+            ParentSessionId = null,
+            RelativeTranscriptPath = null,
+        };
+        Assert.False(AppState.IsReadOnlyBackgroundSession(writable));
+        Assert.True(AppState.CanSendComposerMessage(
+            writable,
+            hasSelectedProject: true,
+            composerText: "",
+            attachmentCount: 1,
+            isAgentBusy: false,
+            isAgentModelConfigured: true));
 
         var reasoning = ChatBlock.FromReasoning("thinking");
         var text = ChatBlock.FromText("answer");
@@ -4130,6 +4154,8 @@ router:
         Assert.Equal("zh-CN", NativeI18nLanguageResolver.Resolve(AppLanguage.Auto, new System.Globalization.CultureInfo("zh-CN")));
         Assert.Equal("en", NativeI18nLanguageResolver.Resolve(AppLanguage.Auto, new System.Globalization.CultureInfo("fr-FR")));
         Assert.Equal("设置", new StringCatalog(AppLanguage.ChineseSimplified).T("settings.title"));
+        Assert.Equal("Read-only background task transcript", new StringCatalog(AppLanguage.English).T("chat.readOnlyBackground.footer"));
+        Assert.Equal("只读后台任务 transcript", new StringCatalog(AppLanguage.ChineseSimplified).T("chat.readOnlyBackground.footer"));
         Assert.Equal("settings.missing", new StringCatalog(AppLanguage.ChineseSimplified).T("settings.missing"));
     }
 
