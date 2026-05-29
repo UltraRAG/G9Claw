@@ -110,7 +110,6 @@ public sealed class NativeAgentRunner
                     };
                     toolExchanges = compaction.ToolExchanges.ToList();
                     turn.RecordStatus("context compacting", compaction.Trigger);
-                    await writer.WriteAsync(AgentEvent.Status(request.SessionId, compaction.Trigger), cancellationToken);
                     await writer.WriteAsync(AgentEvent.Status(request.SessionId, "context compacting"), cancellationToken);
                     await writer.WriteAsync(AgentEvent.Budget(request.SessionId, new TokenBudget(compaction.PostTokens, request.ContextWindow)), cancellationToken);
                 }

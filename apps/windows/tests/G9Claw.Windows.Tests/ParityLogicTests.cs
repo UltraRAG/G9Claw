@@ -3961,8 +3961,13 @@ router:
         var firstBudget = events.First(item => item.Kind == AgentEventKind.TokenBudget).TokenBudget!;
         var compactedBudget = events.Last(item => item.Kind == AgentEventKind.TokenBudget).TokenBudget!;
         Assert.Equal(1, provider.RequestCount);
-        Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "warning_threshold");
         Assert.Contains(events, item => item.Kind == AgentEventKind.Status && item.Text == "context compacting");
+        Assert.DoesNotContain(events, item => item.Kind == AgentEventKind.Status && item.Text == "warning_threshold");
+        var completedTurn = Assert.Single(events, item => item.Kind == AgentEventKind.TurnCompleted).Turn!;
+        Assert.Contains(completedTurn.Items, item =>
+            item.Kind == AgentTurnItemKind.Status &&
+            item.Title == "context compacting" &&
+            item.Text == "warning_threshold");
         Assert.True(compactedBudget.Used < firstBudget.Used);
         Assert.Equal(6000, compactedBudget.Total);
         Assert.Contains(provider.SeenRequest!.ToolExchanges.Take(2), exchange =>
