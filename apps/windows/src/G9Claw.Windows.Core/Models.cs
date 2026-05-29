@@ -398,7 +398,7 @@ public static class ContextBudgetPresenter
                         : percent >= 60
                             ? ContextBudgetLevel.Attention
                             : ContextBudgetLevel.Normal;
-        var detail = $"{LevelLabel(level)}: Used {budget.Used:N0} tokens of {budget.Total:N0}.";
+        var detail = $"{LevelLabel(level)}: {Math.Max(0, budget.Used):N0} / {budget.Total:N0} tokens ({percent}%)";
         return new ContextBudgetSnapshot(
             Math.Max(0, budget.Used),
             budget.Total,
@@ -411,11 +411,11 @@ public static class ContextBudgetPresenter
 
     public static string LevelLabel(ContextBudgetLevel? level) => level switch
     {
-        ContextBudgetLevel.Attention => "Attention",
-        ContextBudgetLevel.Warning => "Warning",
-        ContextBudgetLevel.Compacting => "Compacting",
-        ContextBudgetLevel.Recovering => "Recovering",
-        ContextBudgetLevel.Normal => "Normal",
+        ContextBudgetLevel.Attention => "Context attention",
+        ContextBudgetLevel.Warning => "Context warning",
+        ContextBudgetLevel.Compacting => "Context compacting",
+        ContextBudgetLevel.Recovering => "Context recovering",
+        ContextBudgetLevel.Normal => "Context normal",
         _ => "Unknown",
     };
 }

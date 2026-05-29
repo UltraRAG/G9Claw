@@ -4968,6 +4968,8 @@ router:
         Assert.Equal(ContextBudgetLevel.Attention, attention.Level);
         Assert.Equal(61, attention.Percent);
         Assert.Equal(ContextBudgetLevel.Warning, warning.Level);
+        Assert.Equal("Context warning", ContextBudgetPresenter.LevelLabel(warning.Level));
+        Assert.Equal("Context warning: 81 / 100 tokens (81%)", warning.Detail);
         Assert.Equal(ContextBudgetLevel.Recovering, recovering.Level);
         Assert.Equal(ContextBudgetLevel.Compacting, compacting.Level);
         Assert.Equal("compact stage 2", compacting.CompactStage);
