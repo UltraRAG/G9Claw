@@ -72,6 +72,70 @@ public sealed record ProviderStreamEvent(
 
 public static partial class NativeAgentRuntime
 {
+    public static string NativeAgentSystemPrompt(AgentRequest request)
+    {
+        var modeText = request.RunMode == ChatRunMode.Plan
+            ? """
+            You are in plan mode. The user does not want implementation yet.
+            Only read/search/todo/question tools are allowed before approval. Do not edit files or run mutating shell commands until SwitchMode is called with mode="agent" and a concrete plan, and the user approves it.
+            A plan-mode turn must end only by calling AskQuestion to gather user input or SwitchMode mode="agent" with the final plan. Do not ask questions, request approval, or present the final plan as ordinary prose.
+            Ask the user at least one blocking question with AskQuestion before requesting execution. AskQuestion must use the questions array shape. Include concrete options when useful, with no fixed minimum or maximum; do not include an "Other" option because the UI adds it automatically.
+            """
+            : "You are in agent mode. Use tools to inspect and modify the workspace.";
+        var fallbackExample = "{\"tool\":\"Read\",\"input\":{\"file_path\":\"README.md\"}}";
+
+        return $"""
+        You are PilotDeck, a native Windows coding agent with a PilotDeck style workflow.
+        Workspace root: {request.ProjectPath}
+        {modeText}
+
+        Use the provided tools for all file reads, file writes, edits, searches, todos, and shell commands.
+        Never claim that you created, edited, deleted, or inspected a file unless the corresponding tool result confirms it.
+        Prefer small, verifiable steps: inspect files, make precise edits, run focused checks, then summarize.
+        Prefer targeted Read/Grep/Glob once paths are known. Use root Glob **/* only for the first workspace discovery; do not repeat full-workspace glob after you already have a file list.
+        Prefer the canonical tool names: Read, Write, StrReplace, Delete, EditNotebook, Grep, Glob, SemanticSearch, Shell, Await, ReadLints, Skill, TodoWrite, AskQuestion, SwitchMode, and Task.
+        For shell commands, use Shell only when needed and keep commands scoped to the workspace. Use run_in_background plus Await for long-running commands.
+        For current public information, weather, or web evidence, call Skill with skill="g9claw-rag:glm-web-search" or skill="g9claw-rag:rag-research". Do not call separate weather, web search, or web fetch tools directly.
+        {NativeAgentSkillContext(request.ProjectPath)}
+        Use Task for delegated analysis or shell-focused background work.
+        If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request and no other prose in that assistant turn.
+        Example: {fallbackExample}
+        Do not emit markdown fences, language labels such as "bash" or "json", or a prose explanation when requesting a tool.
+        """;
+    }
+
+    public static string NativeAgentSkillContext(string workspacePath)
+    {
+        IReadOnlyList<SkillRecord> skills;
+        try
+        {
+            skills = new SkillService().Load(workspacePath);
+        }
+        catch
+        {
+            skills = [];
+        }
+
+        var skillLines = skills.Count == 0
+            ? "- No project or user skills are installed for this workspace."
+            : string.Join("\n", skills.Select(skill =>
+            {
+                var summary = (skill.Description ?? "")
+                    .Replace("\r", " ", StringComparison.Ordinal)
+                    .Replace("\n", " ", StringComparison.Ordinal)
+                    .Trim();
+                var clipped = summary.Length > 220 ? $"{summary[..220]}..." : summary;
+                var scope = skill.Scope.ToString().ToLowerInvariant();
+                return $"- {skill.Name} ({scope}): {clipped}";
+            }));
+
+        return $"""
+        Available skills for this workspace:
+        {skillLines}
+        To use one, call Skill with the exact skill name above. Skill loads instructions; it does not execute subcommands. After loading a skill, follow its returned instructions using Shell/Read/other tools. If the skill refers to relative paths such as scripts/foo, run them from the returned skillDir or use absolute paths. Do not invent sub-skill names like skill:action unless that exact skill name is listed.
+        """;
+    }
+
     public static Uri EndpointUrl(string baseUrl, string suffix)
     {
         if (string.IsNullOrWhiteSpace(baseUrl)) throw ProviderClientException.MissingBaseUrl();
@@ -647,14 +711,24 @@ public sealed class ProviderClient : IProviderClient
 
     private static List<Dictionary<string, object?>> BuildOpenAIMessages(AgentRequest request)
     {
-        var messages = request.PriorMessages
+        var messages = new List<Dictionary<string, object?>>();
+        if (request.IncludeNativeSystemPrompt)
+        {
+            messages.Add(new Dictionary<string, object?>
+            {
+                ["role"] = "system",
+                ["content"] = NativeAgentRuntime.NativeAgentSystemPrompt(request),
+            });
+        }
+
+        messages.AddRange(request.PriorMessages
             .Where(message => message.Role is ChatRole.User or ChatRole.Assistant or ChatRole.System)
             .Select(message => new Dictionary<string, object?>
             {
                 ["role"] = message.Role.ToString().ToLowerInvariant(),
                 ["content"] = message.PlainText,
             })
-            .ToList();
+            .ToList());
         messages.Add(new Dictionary<string, object?> { ["role"] = "user", ["content"] = BuildOpenAIUserContent(request) });
         foreach (var exchange in request.ToolExchanges)
         {

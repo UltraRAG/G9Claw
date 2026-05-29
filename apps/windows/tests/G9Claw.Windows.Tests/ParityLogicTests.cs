@@ -2062,9 +2062,15 @@ public sealed class ParityLogicTests
         Assert.Equal("streaming", events[0].Text);
         Assert.Contains(events, item => item.Kind == ProviderStreamEventKind.ContentDelta && item.Text == "ok");
         using var requestJson = JsonDocument.Parse(handler.Body!);
-        var content = requestJson.RootElement
-            .GetProperty("messages")[0]
-            .GetProperty("content");
+        var messages = requestJson.RootElement.GetProperty("messages");
+        Assert.Equal("system", messages[0].GetProperty("role").GetString());
+        var systemPrompt = messages[0].GetProperty("content").GetString();
+        Assert.Contains("You are PilotDeck, a native Windows coding agent", systemPrompt);
+        Assert.Contains($"Workspace root: {temp.Root}", systemPrompt);
+        Assert.Contains("You are in agent mode. Use tools to inspect and modify the workspace.", systemPrompt);
+        Assert.Contains("Prefer the canonical tool names: Read, Write, StrReplace", systemPrompt);
+        Assert.Contains("Available skills for this workspace:", systemPrompt);
+        var content = messages[1].GetProperty("content");
 
         Assert.Equal(JsonValueKind.Array, content.ValueKind);
         Assert.Contains("Analyze attachments\n\nAttached files:", content[0].GetProperty("text").GetString());
@@ -2078,6 +2084,37 @@ public sealed class ParityLogicTests
         Assert.Equal("data:image/png;base64,iVBORw==", content[3].GetProperty("image_url").GetProperty("url").GetString());
         Assert.Contains("[Attachment diagnostics]", content[4].GetProperty("text").GetString());
         Assert.Contains($"Attachment not found: {missingPath}.", content[4].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public void NativeAgentSystemPromptMatchesMacModeAndToolPolicy()
+    {
+        using var temp = new TempWorkspace();
+        var request = new AgentRequest(
+            "session-1",
+            temp.Root,
+            "plan the change",
+            [],
+            new ProviderConfig(SessionProvider.G9Claw, ProviderApiType.OpenAIChat, "http://provider.local/v1", "test-model", "secret", []),
+            "test-key",
+            [],
+            120000,
+            160000,
+            ComposerPermissionMode.Default,
+            ChatRunMode.Plan,
+            ToolPermissionSettings.Defaults,
+            "default",
+            []);
+
+        var prompt = NativeAgentRuntime.NativeAgentSystemPrompt(request);
+
+        Assert.Contains($"Workspace root: {temp.Root}", prompt);
+        Assert.Contains("You are in plan mode. The user does not want implementation yet.", prompt);
+        Assert.Contains("Only read/search/todo/question tools are allowed before approval.", prompt);
+        Assert.Contains("\"Other\" option", prompt);
+        Assert.Contains("the UI adds it automatically", prompt);
+        Assert.Contains("For current public information, weather, or web evidence, call Skill", prompt);
+        Assert.Contains("If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request", prompt);
     }
 
     [Fact]
@@ -2154,6 +2191,7 @@ public sealed class ParityLogicTests
         Assert.False(root.TryGetProperty("tools", out _));
         Assert.False(root.TryGetProperty("tool_choice", out _));
         var messages = root.GetProperty("messages");
+        Assert.Equal(2, messages.GetArrayLength());
         Assert.Equal("system", messages[0].GetProperty("role").GetString());
         Assert.Contains("read-only subagent", messages[0].GetProperty("content").GetString());
         Assert.Equal("user", messages[1].GetProperty("role").GetString());

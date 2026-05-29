@@ -140,6 +140,7 @@ public sealed record AgentRequest(
     public List<AgentToolExchange> ToolExchanges { get; init; } = [];
     public bool EnableTools { get; init; } = true;
     public bool Stream { get; init; } = true;
+    public bool IncludeNativeSystemPrompt { get; init; } = true;
 }
 
 public sealed record AgentToolExchange(

@@ -95,6 +95,7 @@ public sealed class ProviderNativeSubagentRunner : INativeSubagentRunner
         {
             EnableTools = false,
             Stream = false,
+            IncludeNativeSystemPrompt = false,
         };
 
         var output = new StringBuilder();
