@@ -924,6 +924,28 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void CodeSyntaxHighlightingProducesVisibleEditorColors()
+    {
+        const string source = "<!DOCTYPE html>\n<html><style>body { color: #fff; }</style></html>";
+        var spans = CodeSyntaxHighlightingService.HighlightedSpans(source, "html");
+        var rendered = string.Concat(spans.Select(span => span.Text));
+        var lightColors = spans
+            .Select(span => CodeSyntaxHighlightingService.ColorHex(span.Kind, isDarkMode: false))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var darkColors = spans
+            .Select(span => CodeSyntaxHighlightingService.ColorHex(span.Kind, isDarkMode: true))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Equal(source, rendered);
+        Assert.Contains(spans, span => span.Kind == CodeHighlightTokenKind.Keyword);
+        Assert.Contains(spans, span => span.Kind == CodeHighlightTokenKind.Punctuation);
+        Assert.True(lightColors.Count > 1);
+        Assert.True(darkColors.Count > 1);
+    }
+
+    [Fact]
     public void FilePreviewActionPolicyMatchesRequestedPreviewSurface()
     {
         var html = FileNode("index.html");

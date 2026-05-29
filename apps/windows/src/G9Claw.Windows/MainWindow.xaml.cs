@@ -130,6 +130,7 @@ public sealed partial class MainWindow : Window
     private string _fileSearchText = "";
     private string? _previewDraftText;
     private bool _isMarkdownPreviewing;
+    private bool _isCodePreviewing;
     private bool _isSidebarVisible = true;
     private bool _isDraggingSidebar;
     private double _dragStartX;
@@ -4481,6 +4482,7 @@ public sealed partial class MainWindow : Window
                 _selectedFilePath = file.RelativePath;
                 _previewDraftText = null;
                 _isMarkdownPreviewing = false;
+                _isCodePreviewing = false;
             }
 
             RenderContent();
@@ -4576,6 +4578,22 @@ public sealed partial class MainWindow : Window
                 actionPanel.Children.Add(toggle);
             }
 
+            var canHighlight = CodeSyntaxHighlightingService.ShouldHighlight(
+                _previewDraftText ?? preview.Text ?? "",
+                languageAlias);
+            if (canHighlight && preview.Kind is WorkspacePreviewKind.Text or WorkspacePreviewKind.Html)
+            {
+                var codeToggle = PreviewHeaderButton(
+                    _isCodePreviewing ? "Edit" : "Code",
+                    _isCodePreviewing ? (IsChineseUi() ? "\u7f16\u8f91" : "Edit") : T("tabs.preview"));
+                codeToggle.Click += (_, _) =>
+                {
+                    _isCodePreviewing = !_isCodePreviewing;
+                    RenderContent();
+                };
+                actionPanel.Children.Add(codeToggle);
+            }
+
             if (preview.Kind == WorkspacePreviewKind.Html && !FilePreviewActionPolicy.EditorShowsHtmlPreview(preview))
             {
                 var openHtml = PreviewHeaderButton("globe", IsChineseUi() ? "\u6253\u5f00" : "Open");
@@ -4608,6 +4626,7 @@ public sealed partial class MainWindow : Window
             FrameworkElement content = preview.Kind switch
             {
                 WorkspacePreviewKind.Markdown when _isMarkdownPreviewing => MarkdownPreview(preview),
+                WorkspacePreviewKind.Text or WorkspacePreviewKind.Html when _isCodePreviewing => CodeHighlightedPreview(preview, languageAlias),
                 WorkspacePreviewKind.Text or WorkspacePreviewKind.Markdown or WorkspacePreviewKind.Html => TextPreview(preview),
                 WorkspacePreviewKind.Image => new ScrollViewer
                 {
@@ -4667,6 +4686,57 @@ public sealed partial class MainWindow : Window
         };
     }
 
+    private FrameworkElement CodeHighlightedPreview(WorkspacePreview preview, string? languageAlias)
+    {
+        _previewDraftText ??= preview.Text ?? "";
+        var rich = new RichTextBlock
+        {
+            FontFamily = new FontFamily("Cascadia Mono, Consolas"),
+            FontSize = State.Settings.EditorSettings.FontSize,
+            TextWrapping = State.Settings.EditorSettings.WordWrap ? TextWrapping.Wrap : TextWrapping.NoWrap,
+            IsTextSelectionEnabled = true,
+        };
+        var paragraph = new Microsoft.UI.Xaml.Documents.Paragraph();
+        foreach (var span in CodeSyntaxHighlightingService.HighlightedSpans(_previewDraftText, languageAlias))
+        {
+            paragraph.Inlines.Add(new Run
+            {
+                Text = span.Text,
+                Foreground = SyntaxBrush(span.Kind),
+            });
+        }
+        rich.Blocks.Add(paragraph);
+
+        return new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = State.Settings.EditorSettings.WordWrap ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Content = new Border
+            {
+                Padding = new Thickness(12),
+                Child = rich,
+            },
+        };
+    }
+
+    private Brush SyntaxBrush(CodeHighlightTokenKind kind)
+    {
+        var hex = CodeSyntaxHighlightingService.ColorHex(kind, RootGrid.ActualTheme == ElementTheme.Dark);
+        return new SolidColorBrush(ColorFromHex(hex));
+    }
+
+    private static global::Windows.UI.Color ColorFromHex(string hex)
+    {
+        var value = hex.TrimStart('#');
+        var offset = value.Length == 8 ? 2 : 0;
+        var alpha = value.Length == 8 ? Convert.ToByte(value[..2], 16) : (byte)255;
+        return global::Windows.UI.Color.FromArgb(
+            alpha,
+            Convert.ToByte(value.Substring(offset, 2), 16),
+            Convert.ToByte(value.Substring(offset + 2, 2), 16),
+            Convert.ToByte(value.Substring(offset + 4, 2), 16));
+    }
+
     private Button PreviewHeaderButton(string iconKey, string label)
     {
         var button = new Button
@@ -4709,6 +4779,7 @@ public sealed partial class MainWindow : Window
                 _selectedFilePath = Path.GetRelativePath(State.SelectedProject.RootPath, created);
                 _previewDraftText = "";
                 _isMarkdownPreviewing = false;
+                _isCodePreviewing = false;
             }
 
             RenderAll();
@@ -4736,6 +4807,7 @@ public sealed partial class MainWindow : Window
             _selectedFilePath = Path.GetRelativePath(State.SelectedProject.RootPath, renamed);
             _previewDraftText = null;
             _isMarkdownPreviewing = false;
+            _isCodePreviewing = false;
             RenderAll();
         }
         catch (Exception ex)
@@ -4759,6 +4831,7 @@ public sealed partial class MainWindow : Window
             _selectedFilePath = null;
             _previewDraftText = null;
             _isMarkdownPreviewing = false;
+            _isCodePreviewing = false;
             RenderAll();
         }
         catch (Exception ex)
@@ -4782,6 +4855,7 @@ public sealed partial class MainWindow : Window
             _selectedFilePath = Path.GetRelativePath(State.SelectedProject.RootPath, uploaded);
             _previewDraftText = null;
             _isMarkdownPreviewing = false;
+            _isCodePreviewing = false;
             RenderAll();
         }
         catch (Exception ex)
