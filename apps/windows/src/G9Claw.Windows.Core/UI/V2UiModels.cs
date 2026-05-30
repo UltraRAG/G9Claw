@@ -65,6 +65,20 @@ public static class AppTabCatalog
         new(AppTab.AlwaysOn, "always-on", "Always-on", "Radio"),
     ];
 
+    public static V2TabDescriptor Descriptor(AppTab tab) => tab switch
+    {
+        AppTab.Chat => PrimaryTabDescriptors.First(descriptor => descriptor.Tab == AppTab.Chat),
+        AppTab.Files => PrimaryTabDescriptors.First(descriptor => descriptor.Tab == AppTab.Files),
+        AppTab.Skills => PrimaryTabDescriptors.First(descriptor => descriptor.Tab == AppTab.Skills),
+        AppTab.Dashboard => PrimaryTabDescriptors.First(descriptor => descriptor.Tab == AppTab.Dashboard),
+        AppTab.Memory => PrimaryTabDescriptors.First(descriptor => descriptor.Tab == AppTab.Memory),
+        AppTab.AlwaysOn => PrimaryTabDescriptors.First(descriptor => descriptor.Tab == AppTab.AlwaysOn),
+        _ => new V2TabDescriptor(tab, tab.ToString(), Label(tab), "Sparkles"),
+    };
+
+    public static V2TabDescriptor Descriptor(PluginManifest plugin) =>
+        new(AppTab.Preview, plugin.Id, plugin.Name, "Sparkles");
+
     public static string Label(AppTab tab) => tab switch
     {
         AppTab.Chat => "Agent",
@@ -84,8 +98,8 @@ public static class AppTabCatalog
 }
 
 public sealed record MainHeaderToolSwitcherLayout(
-    IReadOnlyList<AppTab> VisibleTabs,
-    IReadOnlyList<AppTab> OverflowTabs,
+    IReadOnlyList<V2TabDescriptor> VisibleTabs,
+    IReadOnlyList<V2TabDescriptor> OverflowTabs,
     bool IconOnly,
     double EstimatedWidth)
 {
@@ -98,13 +112,26 @@ public sealed record MainHeaderToolSwitcherLayout(
     private const double RegularButtonWidth = 82;
     private const double IconButtonWidth = 36;
 
+    public static MainHeaderToolSwitcherLayout Resolve(double availableWidth, AppTab activeTab)
+        => Resolve(availableWidth, activeTab, (IEnumerable<V2TabDescriptor>?)null);
+
     public static MainHeaderToolSwitcherLayout Resolve(
         double availableWidth,
         AppTab activeTab,
         IEnumerable<AppTab>? tabs = null)
     {
+        return Resolve(availableWidth, activeTab, tabs?.Select(Descriptor));
+    }
+
+    public static MainHeaderToolSwitcherLayout Resolve(
+        double availableWidth,
+        AppTab activeTab,
+        IEnumerable<V2TabDescriptor>? tabs,
+        string? activePluginTabId = null)
+    {
         _ = activeTab;
-        var allTabs = UniqueTabs(tabs ?? AppTabCatalog.PrimaryTabs);
+        _ = activePluginTabId;
+        var allTabs = UniqueTabs(tabs ?? AppTabCatalog.PrimaryTabDescriptors);
         if (allTabs.Count == 0)
         {
             return new MainHeaderToolSwitcherLayout([], [], false, 0);
@@ -121,13 +148,15 @@ public sealed record MainHeaderToolSwitcherLayout(
             iconOnly ? compactWidth : fullWidth);
     }
 
-    public static double ButtonWidth(AppTab tab, bool iconOnly)
+    public static double ButtonWidth(V2TabDescriptor tab, bool iconOnly)
     {
         if (iconOnly) return IconButtonWidth;
-        return tab == AppTab.AlwaysOn ? 118 : RegularButtonWidth;
+        return tab.Tab == AppTab.AlwaysOn ? 118 : RegularButtonWidth;
     }
 
-    private static double EstimatedWidthFor(IReadOnlyList<AppTab> visible, IReadOnlyList<AppTab> overflow, bool iconOnly)
+    public static double ButtonWidth(AppTab tab, bool iconOnly) => ButtonWidth(Descriptor(tab), iconOnly);
+
+    public static double EstimatedWidthFor(IReadOnlyList<V2TabDescriptor> visible, IReadOnlyList<V2TabDescriptor> overflow, bool iconOnly)
     {
         var buttonWidth = visible.Sum(tab => ButtonWidth(tab, iconOnly));
         var itemCount = visible.Count + (overflow.Count == 0 ? 0 : 1);
@@ -136,11 +165,11 @@ public sealed record MainHeaderToolSwitcherLayout(
         return ContainerPadding * 2 + buttonWidth + overflowWidth + spacing;
     }
 
-    private static IReadOnlyList<AppTab> UniqueTabs(IEnumerable<AppTab> tabs)
+    private static IReadOnlyList<V2TabDescriptor> UniqueTabs(IEnumerable<V2TabDescriptor> tabs)
     {
-        var seen = new HashSet<AppTab>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         return tabs
-            .Where(tab => seen.Add(tab))
+            .Where(tab => seen.Add($"{tab.Tab}:{tab.Id}"))
             .ToList();
     }
 }

@@ -23,7 +23,7 @@ public static class AppPaths
             localAppData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "Local");
         }
 
-        var root = Path.Combine(localAppData, "G9Claw");
+        var root = Path.Combine(localAppData, "PilotDeck");
         return new AppPathSet(
             root,
             Path.Combine(root, "settings.json"),

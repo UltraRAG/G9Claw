@@ -113,6 +113,7 @@ public sealed partial class MainWindow : Window
     private readonly TerminalService _terminalService;
     private readonly MemoryService _memoryService;
     private readonly SkillService _skillService;
+    private readonly PluginService _pluginService;
     private readonly AlwaysOnStore _alwaysOnStore;
     private readonly TaskPlanStore _taskPlanStore;
     private readonly TaskMasterService _taskMasterService;
@@ -179,6 +180,7 @@ public sealed partial class MainWindow : Window
         _gitService = new GitService();
         _memoryService = new MemoryService();
         _skillService = new SkillService();
+        _pluginService = new PluginService();
         _alwaysOnStore = new AlwaysOnStore();
         _taskPlanStore = new TaskPlanStore();
         _taskMasterService = new TaskMasterService();
@@ -464,6 +466,9 @@ public sealed partial class MainWindow : Window
 
         State.Skills.Clear();
         State.Skills.AddRange(_skillService.Load(State.SelectedProject?.RootPath));
+
+        State.PluginManifests.Clear();
+        State.PluginManifests.AddRange(_pluginService.Load());
 
         State.TaskPlans.Clear();
         State.TaskPlans.AddRange(_taskPlanStore.Load());
@@ -971,7 +976,7 @@ public sealed partial class MainWindow : Window
     private void RenderHeader(HeaderLayoutMetrics? metrics = null)
     {
         BreadcrumbProjectText.Text = State.SelectedProject?.DisplayName ?? T("common.home");
-        BreadcrumbTabText.Text = TabLabel(State.ActiveTab);
+        BreadcrumbTabText.Text = ActiveTabLabel();
         BreadcrumbSessionText.Text = State.SelectedSession?.DisplayTitle ?? "";
 
         ToolTabsPanel.Children.Clear();
@@ -981,30 +986,29 @@ public sealed partial class MainWindow : Window
 
         foreach (var visibleTab in layout.VisibleTabs)
         {
-            var tab = AppTabCatalog.PrimaryTabDescriptors.First(descriptor => descriptor.Tab == visibleTab);
-            var isActive = State.ActiveTab == tab.Tab || (State.ActiveTab == AppTab.Preview && tab.Tab == AppTab.Files);
+            var isActive = IsActiveHeaderTab(visibleTab);
             var foreground = isActive ? Brush("V2ForegroundBrush") : Brush("V2MutedForegroundBrush");
             var content = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 Spacing = 6,
             };
-            content.Children.Add(Icon(tab.IconKey, 13, foreground));
+            content.Children.Add(Icon(visibleTab.IconKey, 13, foreground));
             if (!layout.IconOnly)
             {
                 content.Children.Add(new TextBlock
-                {
-                    Text = TabLabel(tab.Tab),
-                    FontSize = 12.5,
-                    FontWeight = isActive ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Medium,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    VerticalAlignment = VerticalAlignment.Center,
-                });
+            {
+                Text = TabLabel(visibleTab),
+                FontSize = 12.5,
+                FontWeight = isActive ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Medium,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
             }
 
             var button = new Button
             {
-                Width = MainHeaderToolSwitcherLayout.ButtonWidth(tab.Tab, layout.IconOnly),
+                Width = MainHeaderToolSwitcherLayout.ButtonWidth(visibleTab, layout.IconOnly),
                 Height = MainHeaderToolSwitcherLayout.ButtonHeight,
                 MinWidth = 0,
                 Padding = layout.IconOnly ? new Thickness(0) : new Thickness(6, 0, 6, 0),
@@ -1014,10 +1018,10 @@ public sealed partial class MainWindow : Window
                 BorderThickness = isActive ? new Thickness(1) : new Thickness(0),
                 Foreground = foreground,
                 UseSystemFocusVisuals = false,
-                Tag = tab.Tab,
+                Tag = visibleTab,
                 Content = content,
             };
-            ToolTipService.SetToolTip(button, TabLabel(tab.Tab));
+            ToolTipService.SetToolTip(button, TabLabel(visibleTab));
             button.Click += OnTabClick;
             ToolTabsPanel.Children.Add(button);
         }
@@ -1028,7 +1032,42 @@ public sealed partial class MainWindow : Window
         var availableWidth = HeaderRoot.ActualWidth > 0
             ? HeaderRoot.ActualWidth
             : V2LayoutMetrics.DefaultWindowWidth;
-        return MainHeaderToolSwitcherLayout.Resolve(availableWidth, State.ActiveTab);
+        var tabs = ResolveHeaderToolSwitcherTabs();
+        return MainHeaderToolSwitcherLayout.Resolve(availableWidth, State.ActiveTab, tabs, State.ActivePluginTabId);
+    }
+
+    private IReadOnlyList<V2TabDescriptor> ResolveHeaderToolSwitcherTabs()
+    {
+        if (State.SelectedProject is null)
+        {
+            return [AppTabCatalog.Descriptor(AppTab.Chat)];
+        }
+
+        if (State.SelectedProject is { } selected && IsGeneralProject(selected))
+        {
+            return
+            [
+                AppTabCatalog.Descriptor(AppTab.Chat),
+                AppTabCatalog.Descriptor(AppTab.Skills),
+            ];
+        }
+
+        var tabs = new List<V2TabDescriptor>(AppTabCatalog.PrimaryTabDescriptors);
+        tabs.AddRange(
+            State.PluginManifests
+                .Where(plugin => plugin.Enabled)
+                .Select(AppTabCatalog.Descriptor));
+        return tabs;
+    }
+
+    private bool IsActiveHeaderTab(V2TabDescriptor tab)
+    {
+        if (tab.Tab == AppTab.Preview && State.ActiveTab == AppTab.Preview)
+        {
+            return string.Equals(tab.Id, State.ActivePluginTabId, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return State.ActiveTab == tab.Tab;
     }
 
     private void ApplyToolSwitcherLayout(MainHeaderToolSwitcherLayout layout, HeaderLayoutMetrics? metrics)
@@ -1049,6 +1088,18 @@ public sealed partial class MainWindow : Window
         ToolTabsPanel.Spacing = MainHeaderToolSwitcherLayout.ItemSpacing;
     }
 
+    private string ActiveTabLabel()
+    {
+        if (State.ActiveTab == AppTab.Preview &&
+            State.ActivePluginTabId is { } pluginId &&
+            State.PluginManifests.FirstOrDefault(plugin => string.Equals(plugin.Id, pluginId, StringComparison.OrdinalIgnoreCase)) is { } plugin)
+        {
+            return plugin.Name;
+        }
+
+        return TabLabel(State.ActiveTab);
+    }
+
     private string TabLabel(AppTab tab) => tab switch
     {
         AppTab.Chat => T("tabs.chat"),
@@ -1060,12 +1111,33 @@ public sealed partial class MainWindow : Window
         _ => AppTabCatalog.Label(tab),
     };
 
+    private string TabLabel(V2TabDescriptor tab) => tab.Tab == AppTab.Preview ? tab.Label : TabLabel(tab.Tab);
+
     private void RenderContent()
     {
         CaptureChatScrollState();
+        var shouldRefreshHeader = false;
         if (!AppTabCatalog.IsPrimary(State.ActiveTab) && State.ActiveTab != AppTab.Preview)
         {
             State.ActiveTab = AppTab.Chat;
+            State.ActivePluginTabId = null;
+            shouldRefreshHeader = true;
+        }
+
+        var activePlugin = State.ActiveTab == AppTab.Preview
+            ? State.PluginManifests.FirstOrDefault(plugin => string.Equals(plugin.Id, State.ActivePluginTabId, StringComparison.OrdinalIgnoreCase))
+            : null;
+        if (State.ActiveTab == AppTab.Preview && activePlugin is null)
+        {
+            State.ActiveTab = AppTab.Chat;
+            State.ActivePluginTabId = null;
+            activePlugin = null;
+            shouldRefreshHeader = true;
+        }
+
+        if (shouldRefreshHeader)
+        {
+            RenderHeader();
         }
 
         ContentHost.Children.Clear();
@@ -1077,6 +1149,7 @@ public sealed partial class MainWindow : Window
             AppTab.Dashboard => RoutingPage(),
             AppTab.Memory => MemoryPage(),
             AppTab.AlwaysOn => AlwaysOnPage(),
+            AppTab.Preview when activePlugin is not null => PluginPlaceholder(activePlugin),
             _ => ToolPlaceholder(T("tabs.preview"), T("preview.detail"), "eye"),
         };
         if (State.ActiveTab != AppTab.Chat)
@@ -5722,6 +5795,14 @@ public sealed partial class MainWindow : Window
         return page;
     }
 
+    private FrameworkElement PluginPlaceholder(PluginManifest plugin)
+    {
+        var subtitle = $"{plugin.Version} - {plugin.Id}";
+        var page = ToolPage(plugin.Name, subtitle, Array.Empty<(string, string, Action)>());
+        ((Grid)page.Tag!).Children.Add(EmptyState(plugin.Name, T("preview.detail"), "Sparkles"));
+        return page;
+    }
+
     private Grid ToolPage(string title, string subtitle, IReadOnlyList<(string Icon, string Label, Action Action)> actions)
     {
         var root = new Grid { Background = Brush("V2BackgroundBrush") };
@@ -6330,9 +6411,27 @@ public sealed partial class MainWindow : Window
 
     private void OnTabClick(object sender, RoutedEventArgs e)
     {
+        if (sender is Button { Tag: V2TabDescriptor tab })
+        {
+            if (tab.Tab == AppTab.Preview)
+            {
+                State.ActiveTab = AppTab.Preview;
+                State.ActivePluginTabId = tab.Id;
+            }
+            else
+            {
+                State.ActiveTab = tab.Tab;
+                State.ActivePluginTabId = null;
+            }
+
+            RenderAll();
+            return;
+        }
+
         if (sender is Button { Tag: AppTab tab })
         {
             State.ActiveTab = tab;
+            State.ActivePluginTabId = null;
             RenderAll();
         }
     }

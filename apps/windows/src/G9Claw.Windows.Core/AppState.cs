@@ -10,6 +10,7 @@ public sealed class AppState : INotifyPropertyChanged
     private Guid? _selectedProjectId;
     private string? _selectedSessionId;
     private AppTab _activeTab = AppTab.Chat;
+    private string? _activePluginTabId;
     private string _composerText = "";
     private string _statusLine = "Ready";
     private string? _errorBanner;
@@ -46,6 +47,7 @@ public sealed class AppState : INotifyPropertyChanged
     public List<FileAttachment> PendingAttachments { get; } = [];
     public HashSet<string> ExpandedToolRowIds { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> CollapsedToolRowIds { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public List<PluginManifest> PluginManifests { get; } = [];
 
     public NativeUIPreferences UiPreferences { get; set; } = new();
     public AppSettings Settings { get; set; }
@@ -79,6 +81,12 @@ public sealed class AppState : INotifyPropertyChanged
     {
         get => _activeTab;
         set => SetField(ref _activeTab, value);
+    }
+
+    public string? ActivePluginTabId
+    {
+        get => _activePluginTabId;
+        set => SetField(ref _activePluginTabId, value);
     }
 
     public string ComposerText
@@ -158,7 +166,7 @@ public sealed class AppState : INotifyPropertyChanged
         var home = string.IsNullOrWhiteSpace(homePath)
             ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
             : homePath;
-        return Path.GetFullPath(Path.Combine(home, "G9Claw", "general"));
+        return Path.GetFullPath(Path.Combine(home, "PilotDeck", "general"));
     }
 
     public static string NormalizeGeneralWorkspacePath(string rawPath, string? homePath = null)
@@ -315,6 +323,7 @@ public sealed class AppState : INotifyPropertyChanged
         SelectedSessionId = null;
         IsDraftSessionVisible = false;
         ActiveTab = AppTab.Chat;
+        ActivePluginTabId = null;
     }
 
     public void SelectSession(ProjectSession session)
@@ -322,6 +331,7 @@ public sealed class AppState : INotifyPropertyChanged
         SelectedSessionId = session.Id;
         IsDraftSessionVisible = false;
         ActiveTab = AppTab.Chat;
+        ActivePluginTabId = null;
     }
 
     public void StartNewSession() => StartDraftSession(SelectedProject);
@@ -340,6 +350,7 @@ public sealed class AppState : INotifyPropertyChanged
         SelectedSessionId = null;
         IsDraftSessionVisible = true;
         ActiveTab = AppTab.Chat;
+        ActivePluginTabId = null;
     }
 
     public void OpenSettings(SettingsMainTab tab = SettingsMainTab.Appearance)
@@ -382,6 +393,7 @@ public sealed class AppState : INotifyPropertyChanged
         SelectedSessionId = session.Id;
         IsDraftSessionVisible = false;
         ActiveTab = AppTab.Chat;
+        ActivePluginTabId = null;
         MessagesBySession[session.Id] = [];
         return session;
     }

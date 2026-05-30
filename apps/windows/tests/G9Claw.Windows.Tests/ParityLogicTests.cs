@@ -137,7 +137,10 @@ public sealed class ParityLogicTests
         {
             var layout = MainHeaderToolSwitcherLayout.Resolve(width, AppTab.Memory);
 
-            Assert.Equal(AppTabCatalog.PrimaryTabs, layout.VisibleTabs);
+            var expectedTabs = new[] { AppTab.Chat, AppTab.Files, AppTab.Skills, AppTab.Dashboard, AppTab.Memory, AppTab.AlwaysOn };
+            Assert.Equal(
+                expectedTabs.Select(AppTabCatalog.Descriptor).ToList(),
+                layout.VisibleTabs.ToList());
             Assert.Empty(layout.OverflowTabs);
             Assert.False(layout.IconOnly);
             Assert.Equal(544d, layout.EstimatedWidth);
@@ -152,8 +155,29 @@ public sealed class ParityLogicTests
             AppTab.Chat,
             [AppTab.Chat]);
 
-        Assert.Equal([AppTab.Chat], chatOnlyLayout.VisibleTabs);
+        Assert.Equal([AppTabCatalog.Descriptor(AppTab.Chat)], chatOnlyLayout.VisibleTabs);
         Assert.Equal(88d, chatOnlyLayout.EstimatedWidth);
+    }
+
+    [Fact]
+    public void MainHeaderToolSwitcherLayoutIncludesPluginTabs()
+    {
+        var pluginTabs = new[]
+        {
+            new PluginManifest("plugin-1", "Plugin One", "1.0.0", "plugin/path", true, [], []),
+            new PluginManifest("plugin-2", "Plugin Two", "1.1.0", "plugin/path", true, [], []),
+            new PluginManifest("plugin-1", "Duplicate", "2.0.0", "plugin/path", true, [], []),
+        };
+        var tabs = AppTabCatalog.PrimaryTabDescriptors.Concat(pluginTabs.Select(AppTabCatalog.Descriptor));
+        var layout = MainHeaderToolSwitcherLayout.Resolve(1200, AppTab.Chat, tabs, "plugin-2");
+
+        var pluginDescriptors = layout.VisibleTabs.Where(tab => tab.Tab == AppTab.Preview).ToList();
+        Assert.Equal(2, pluginDescriptors.Count);
+        Assert.Equal("plugin-1", pluginDescriptors[0].Id);
+        Assert.Equal("plugin-2", pluginDescriptors[1].Id);
+        var active = MainHeaderToolSwitcherLayout.Resolve(1200, AppTab.Preview, tabs, "plugin-2");
+        Assert.Equal(AppTabCatalog.Descriptor(AppTab.Chat).Label, layout.VisibleTabs.First().Label);
+        Assert.Equal("plugin-2", active.VisibleTabs.Single(tab => tab.Tab == AppTab.Preview && tab.Id == "plugin-2").Id);
     }
 
     [Fact]
@@ -4100,6 +4124,40 @@ router:
         Assert.False(state.IsDraftSessionVisible);
         state.SelectProject(project);
         Assert.False(state.IsDraftSessionVisible);
+    }
+
+    [Fact]
+    public void AppStatePluginTabIdResetsWhenSwitchingBackToPrimaryContext()
+    {
+        var state = AppState.CreateDefault();
+        var project = state.Projects.First();
+
+        state.ActiveTab = AppTab.Preview;
+        state.ActivePluginTabId = "plug-a";
+        state.SelectProject(project);
+        Assert.Equal(AppTab.Chat, state.ActiveTab);
+        Assert.Null(state.ActivePluginTabId);
+
+        state.ActiveTab = AppTab.Preview;
+        state.ActivePluginTabId = "plug-a";
+        var session = state.CreateSessionForSelectedProject("Parity");
+        Assert.Equal(AppTab.Chat, state.ActiveTab);
+        Assert.Null(state.ActivePluginTabId);
+
+        state.ActiveTab = AppTab.Preview;
+        state.ActivePluginTabId = "plug-a";
+        state.StartDraftSession(project);
+        Assert.Equal(AppTab.Chat, state.ActiveTab);
+        Assert.Null(state.ActivePluginTabId);
+
+        state.ActiveTab = AppTab.Preview;
+        state.ActivePluginTabId = "plug-a";
+        if (session is not null)
+        {
+            state.SelectSession(session);
+            Assert.Equal(AppTab.Chat, state.ActiveTab);
+            Assert.Null(state.ActivePluginTabId);
+        }
     }
 
     [Fact]
