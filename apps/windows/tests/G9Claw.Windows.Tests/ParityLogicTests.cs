@@ -3109,6 +3109,29 @@ router:
     }
 
     [Fact]
+    public async Task AgentToolExecutorReadRejectsBinaryAndTooLargeFiles()
+    {
+        using var temp = new TempWorkspace();
+        await File.WriteAllBytesAsync(Path.Combine(temp.Root, "binary.bin"), [0, 1, 2, 3]);
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "too-large.txt"), new string('a', 1_000_001));
+        var executor = new AgentToolExecutor();
+        var context = new AgentToolExecutionContext(
+            "session-1",
+            temp.Root,
+            ChatRunMode.Agent,
+            ToolPermissionSettings.Defaults,
+            CancellationToken.None);
+
+        var binary = await executor.ExecuteAsync(new AgentToolCall("read-binary", "Read", """{"file_path":"binary.bin"}"""), context);
+        var tooLarge = await executor.ExecuteAsync(new AgentToolCall("read-large-file", "Read", """{"file_path":"too-large.txt"}"""), context);
+
+        Assert.True(binary.IsError);
+        Assert.Equal("This file appears to be binary and cannot be edited as text.", binary.Output);
+        Assert.True(tooLarge.IsError);
+        Assert.Contains("This file is too large to edit safely", tooLarge.Output);
+    }
+
+    [Fact]
     public void ToolArgumentNormalizerTurnsMalformedArgumentsIntoRecoverableToolResult()
     {
         var invocation = ToolArgumentNormalizer.Normalize(new AgentToolCall("call-bad", "Edit", """{file_path:"index.html"}"""));

@@ -112,10 +112,26 @@ public sealed class AgentToolExecutor
         }
 
         var offset = OptionalInt(doc.RootElement, "offset") ?? 1;
-        var allLines = File.ReadLines(resolved, Encoding.UTF8).ToList();
+        WorkspaceTextFileRead fileContent;
+        try
+        {
+            fileContent = _workspaceService.ReadTextFile(filePath);
+        }
+        catch (WorkspaceFileReadException exception)
+        {
+            return Error(call, exception.Message);
+        }
+
+        using var reader = new StringReader(fileContent.Content);
+        var allLines = new List<string>();
+        while (reader.ReadLine() is { } line)
+        {
+            allLines.Add(line);
+        }
+
         var lineOffset = Math.Max(0, offset - 1);
         var limit = OptionalInt(doc.RootElement, "limit") ?? Math.Min(allLines.Count, 2_000);
-        var lines = File.ReadLines(resolved, Encoding.UTF8)
+        var lines = allLines
             .Skip(lineOffset)
             .Take(Math.Max(1, limit))
             .Select((line, index) => $"{lineOffset + index + 1}: {line}")
