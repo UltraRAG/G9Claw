@@ -51,6 +51,7 @@ public static class NativeConfigService
         var values = ScalarMap(yaml);
         var defaultEntry = Values.TryGetNonBlank(values, "agents.main.model") ??
                            Values.TryGetNonBlank(values, "router.routes.default.model") ??
+                           Values.TryGetNonBlank(values, "router.default") ??
                            "default";
         var entryId = values.ContainsKey($"models.entries.{defaultEntry}.provider") ? defaultEntry : "default";
         var providerConfig = ProviderConfigFor(entryId, values);
@@ -99,7 +100,30 @@ public static class NativeConfigService
             result[path] = NormalizeScalar(rawValue);
         }
 
-        return result;
+        return NormalizeScalarMap(result);
+    }
+
+    private static Dictionary<string, string> NormalizeScalarMap(Dictionary<string, string> values)
+    {
+        var normalized = new Dictionary<string, string>(values, StringComparer.Ordinal);
+        const string legacyAlwaysOnPrefix = "agents.alwaysOn.discovery.trigger.";
+        const string topLevelAlwaysOnPrefix = "alwaysOn.discovery.trigger.";
+
+        var hasTopLevelAlwaysOn = normalized.Keys.Any(key => key.StartsWith(topLevelAlwaysOnPrefix, StringComparison.Ordinal));
+        if (!hasTopLevelAlwaysOn)
+        {
+            foreach (var (key, value) in values.Where(pair => pair.Key.StartsWith(legacyAlwaysOnPrefix, StringComparison.Ordinal)))
+            {
+                normalized[$"{topLevelAlwaysOnPrefix}{key[legacyAlwaysOnPrefix.Length..]}"] = value;
+            }
+        }
+
+        normalized = normalized
+            .Where(pair => !pair.Key.StartsWith("agents.alwaysOn.", StringComparison.Ordinal))
+            .Where(pair => !pair.Key.StartsWith("compat.", StringComparison.Ordinal) && pair.Key != "compat")
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
+
+        return normalized;
     }
 
     public static ProviderConfig? ProviderConfigFor(string entryId, Dictionary<string, string> values)
@@ -120,12 +144,15 @@ public static class NativeConfigService
             .Where(pair => pair.Key.StartsWith(headersPrefix, StringComparison.Ordinal))
             .ToDictionary(pair => pair.Key[headersPrefix.Length..], pair => pair.Value);
 
+        var secretAccount = providerId is "g9claw" or "edgeclaw"
+            ? ProviderConfig.Empty.SecretAccount
+            : $"g9claw-provider-{providerId}";
         return new ProviderConfig(
             SessionProvider.G9Claw,
             apiType,
             baseUrl,
             model,
-            $"g9claw-provider-{providerId}",
+            secretAccount,
             headers);
     }
 

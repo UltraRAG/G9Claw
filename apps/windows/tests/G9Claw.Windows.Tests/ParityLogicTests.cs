@@ -1329,6 +1329,181 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void NativeConfigServiceResolvesRouterDefaultFallbackEntry()
+    {
+        const string yaml = """
+        models:
+          providers:
+            edgeclaw:
+              type: openai-chat
+              baseUrl: http://default.local/v1
+              apiKey: default-secret
+          entries:
+            default:
+              provider: edgeclaw
+              name: qwen3.6-27b
+            router_default:
+              provider: edgeclaw
+              name: qwen3.6-8b
+        router:
+          default: router_default
+        agents:
+          main:
+            model: missing
+        """;
+
+        var snapshot = NativeConfigService.Snapshot(yaml);
+
+        Assert.NotNull(snapshot);
+        Assert.Equal("router_default", snapshot!.DefaultEntryId);
+        Assert.Equal("http://default.local/v1", snapshot.ProviderConfig.BaseUrl);
+        Assert.Equal("qwen3.6-8b", snapshot.ProviderConfig.Model);
+        Assert.Equal("default-secret", snapshot.ApiKey);
+        Assert.Equal(160_000, snapshot.ContextWindow);
+    }
+
+    [Fact]
+    public void NativeConfigServicePrefersMainContextWindowButFallsBackToRuntimeContextWindow()
+    {
+        const string yaml = """
+        runtime:
+          contextWindow: 130000
+        models:
+          providers:
+            main:
+              type: openai-chat
+              baseUrl: http://main.local/v1
+              apiKey: main-secret
+          entries:
+            default:
+              provider: main
+              name: qwen3.6-27b
+              contextWindow: 90000
+            router_model:
+              provider: main
+              name: qwen3.6-8b
+        agents:
+          main:
+            model: router_model
+        """;
+
+        var snapshot = NativeConfigService.Snapshot(yaml);
+
+        Assert.NotNull(snapshot);
+        Assert.Equal("router_model", snapshot!.DefaultEntryId);
+        Assert.Equal(90_000, snapshot.ContextWindow);
+
+        const string yamlWithoutModelContext = """
+        runtime:
+          contextWindow: 130000
+        models:
+          providers:
+            main:
+              type: openai-chat
+              baseUrl: http://main.local/v1
+              apiKey: main-secret
+          entries:
+            default:
+              provider: main
+              name: qwen3.6-27b
+            router_model:
+              provider: main
+              name: qwen3.6-8b
+        agents:
+          main:
+            model: router_model
+        """;
+
+        var snapshotByFallback = NativeConfigService.Snapshot(yamlWithoutModelContext);
+
+        Assert.NotNull(snapshotByFallback);
+        Assert.Equal("router_model", snapshotByFallback!.DefaultEntryId);
+        Assert.Equal(130_000, snapshotByFallback.ContextWindow);
+    }
+
+    [Fact]
+    public void NativeConfigServiceScalarMapMigratesLegacyAlwaysOnAndDropsCompat()
+    {
+        const string yaml = """
+        agents:
+          alwaysOn:
+            discovery:
+              trigger:
+                enabled: true
+                tickIntervalMinutes: 15
+                cooldownMinutes: 45
+        compat:
+          enabled: true
+        compat.some:
+          value: true
+        """;
+
+        var values = NativeConfigService.ScalarMap(yaml);
+
+        Assert.Equal("true", values["alwaysOn.discovery.trigger.enabled"]);
+        Assert.Equal("15", values["alwaysOn.discovery.trigger.tickIntervalMinutes"]);
+        Assert.Equal("45", values["alwaysOn.discovery.trigger.cooldownMinutes"]);
+        Assert.False(values.ContainsKey("agents.alwaysOn.discovery.trigger.enabled"));
+        Assert.False(values.ContainsKey("compat"));
+        Assert.False(values.ContainsKey("compat.some"));
+        Assert.False(values.ContainsKey("compat.some.value"));
+    }
+
+    [Fact]
+    public void NativeConfigServiceUsesDefaultSecretAccountForBuiltInProviders()
+    {
+        const string g9clawYaml = """
+        models:
+          providers:
+            g9claw:
+              type: openai-chat
+              baseUrl: http://g9claw.local/v1
+          entries:
+            default:
+              provider: g9claw
+              name: qwen3.6-27b
+        """;
+        var g9clawValues = NativeConfigService.ScalarMap(g9clawYaml);
+
+        var g9clawProvider = NativeConfigService.ProviderConfigFor("default", g9clawValues);
+        Assert.NotNull(g9clawProvider);
+        Assert.Equal(ProviderConfig.Empty.SecretAccount, g9clawProvider!.SecretAccount);
+
+        const string edgeclawYaml = """
+        models:
+          providers:
+            edgeclaw:
+              type: openai-chat
+              baseUrl: http://edgeclaw.local/v1
+          entries:
+            default:
+              provider: edgeclaw
+              name: qwen3.6-27b
+        """;
+        var edgeValues = NativeConfigService.ScalarMap(edgeclawYaml);
+        var edgeProvider = NativeConfigService.ProviderConfigFor("default", edgeValues);
+
+        Assert.NotNull(edgeProvider);
+        Assert.Equal(ProviderConfig.Empty.SecretAccount, edgeProvider!.SecretAccount);
+
+        const string customYaml = """
+        models:
+          providers:
+            custom:
+              type: openai-chat
+              baseUrl: http://custom.local/v1
+          entries:
+            default:
+              provider: custom
+              name: qwen3.6-27b
+        """;
+        var customValues = NativeConfigService.ScalarMap(customYaml);
+        var customProvider = NativeConfigService.ProviderConfigFor("default", customValues);
+        Assert.NotNull(customProvider);
+        Assert.Equal("g9claw-provider-custom", customProvider!.SecretAccount);
+    }
+
+    [Fact]
     public void NativeConfigServicePrefersAgentMainModelOverRouterDefault()
     {
         const string yaml = """
@@ -1477,8 +1652,31 @@ public sealed class ParityLogicTests
         var snapshot = NativeConfigService.Snapshot(yaml);
 
         Assert.NotNull(snapshot);
-        Assert.Equal("g9claw-provider-g9claw", snapshot!.ProviderConfig.SecretAccount);
+        Assert.Equal(ProviderConfig.Empty.SecretAccount, snapshot!.ProviderConfig.SecretAccount);
         Assert.Equal("dpapi-secret", NativeConfigService.ResolveApiKey("default", snapshot, "dpapi-secret", ""));
+        Assert.Equal("draft-secret", NativeConfigService.ResolveApiKey("default", snapshot, null, "draft-secret"));
+    }
+
+    [Fact]
+    public void NativeConfigServiceResolveApiKeyFallsBackToDraftWhenYamlAndCredentialAreBlank()
+    {
+        const string yaml = """
+        models:
+          providers:
+            g9claw:
+              type: openai-chat
+              baseUrl: http://example.local/v1
+              apiKey: ""
+          entries:
+            default:
+              provider: g9claw
+              name: qwen3.6-27b
+        """;
+
+        var snapshot = NativeConfigService.Snapshot(yaml);
+
+        Assert.NotNull(snapshot);
+        Assert.Equal("draft-secret", NativeConfigService.ResolveApiKey("default", snapshot, "   ", "draft-secret"));
         Assert.Equal("draft-secret", NativeConfigService.ResolveApiKey("default", snapshot, null, "draft-secret"));
     }
 
