@@ -204,9 +204,10 @@ public sealed class WorkspaceService
         return new WorkspaceFileListing(output, visibleRootItemCount, skippedRootItemCount, skippedItemCount);
     }
 
-    public WorkspaceTextFileRead ReadTextFile(string path, int maxBytes = 1_000_000)
+    public WorkspaceTextFileRead ReadTextFile(string path, int maxBytes = 1_000_000, string? workspaceRoot = null)
     {
-        var resolved = ResolveWorkspacePath(path, WorkspaceRoot);
+        var root = PathHelpers.NormalizeFullPath(workspaceRoot ?? WorkspaceRoot);
+        var resolved = ResolveWorkspacePath(path, root);
         var info = new FileInfo(resolved);
         if (info.Length > maxBytes)
         {

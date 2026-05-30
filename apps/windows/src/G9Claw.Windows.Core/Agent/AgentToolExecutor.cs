@@ -115,7 +115,7 @@ public sealed class AgentToolExecutor
         WorkspaceTextFileRead fileContent;
         try
         {
-            fileContent = _workspaceService.ReadTextFile(filePath);
+            fileContent = _workspaceService.ReadTextFile(filePath, workspaceRoot: context.WorkspaceRoot);
         }
         catch (WorkspaceFileReadException exception)
         {
