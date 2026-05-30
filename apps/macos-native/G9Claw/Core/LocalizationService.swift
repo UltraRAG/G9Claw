@@ -212,8 +212,6 @@ enum L10nKey: String, CaseIterable {
     case configSummaryHelp
     case configValid
     case cost
-    case disableBuiltInWebTools
-    case disableBuiltInWebToolsDetail
     case discover
     case discoveryTrigger
     case discoveryTriggerDetail
@@ -271,13 +269,12 @@ enum L10nKey: String, CaseIterable {
     case providers
     case providersDetail
     case quickAdd
-    case rag
-    case ragDetail
-    case ragSectionDetail
-    case ragLocalKnowledgeTitle
-    case ragLocalKnowledgeDetail
-    case ragGlmWebSearchTitle
-    case ragGlmWebSearchDetail
+    case search
+    case searchDetail
+    case searchSectionDetail
+    case searchProviderDetail
+    case customProvider
+    case customProviderDetail
     case rawYAML
     case recentRoutes
     case recurring
@@ -311,13 +308,20 @@ enum L10nKey: String, CaseIterable {
     case captureStrategy
     case maxMessageChars
     case heartbeatBatchSize
-    case localKnowledgeBaseURL
-    case embeddingModel
-    case databaseURL
-    case defaultTopK
-    case glmWebSearchBaseURL
-    case glmWebSearchAPIKey
-    case glmDefaultTopK
+    case endpointURL
+    case organicLimit
+    case timeoutMs
+    case customProviderName
+    case customAuth
+    case customMethod
+    case queryParam
+    case apiKeyParam
+    case resultsPath
+    case titleField
+    case urlField
+    case snippetField
+    case sourceField
+    case publishedAtField
     case port
     case defaultRouteModel
     case backgroundRouteModel
@@ -633,8 +637,6 @@ struct LocalizationService {
         .configSummaryHelp: "This file is the same portable config used by the main project. Raw YAML and form edits both persist to ~/.g9claw/config.yaml.",
         .configValid: "Config is valid",
         .cost: "Cost",
-        .disableBuiltInWebTools: "Disable built-in web tools",
-        .disableBuiltInWebToolsDetail: "When RAG is enabled, hide WebFetch/WebSearch from model-visible tools so web search goes through PilotDeck RAG skills.",
         .discover: "Discover",
         .discoveryTrigger: "Discovery Trigger",
         .discoveryTriggerDetail: "Run the discovery trigger in the background.",
@@ -692,13 +694,12 @@ struct LocalizationService {
         .providers: "Providers",
         .providersDetail: "Provider definitions used by model entries.",
         .quickAdd: "Quick add:",
-        .rag: "RAG",
-        .ragDetail: "When on, PilotDeck exports G9CLAW_RAG_* env vars so RAG skills can call these APIs.",
-        .ragSectionDetail: "Local retriever and GLM web search APIs used by the bundled PilotDeck RAG skills.",
-        .ragLocalKnowledgeTitle: "Local knowledge / Retriever",
-        .ragLocalKnowledgeDetail: "Private or curated knowledge base retrieval endpoint, including Milvus-backed services.",
-        .ragGlmWebSearchTitle: "Z.AI / GLM Web Search",
-        .ragGlmWebSearchDetail: "Public web search endpoint used for current information and URL-backed citations.",
+        .search: "Search",
+        .searchDetail: "Configure the provider behind the built-in WebSearch tool.",
+        .searchSectionDetail: "Web search backing the agent's WebSearch tool. Select one provider; provider-specific request shapes stay behind the adapter.",
+        .searchProviderDetail: "Choose GLM/Z.AI, Tavily, or a custom JSON API.",
+        .customProvider: "Custom provider",
+        .customProviderDetail: "Map your JSON search API to WebSearch's organic result fields.",
         .rawYAML: "Raw YAML",
         .recentRoutes: "Recent routes",
         .recurring: "recurring",
@@ -732,13 +733,20 @@ struct LocalizationService {
         .captureStrategy: "Capture Strategy",
         .maxMessageChars: "Max Message Chars",
         .heartbeatBatchSize: "Heartbeat Batch Size",
-        .localKnowledgeBaseURL: "Embedding / Model URL",
-        .embeddingModel: "Model name",
-        .databaseURL: "Search URL",
-        .defaultTopK: "Default Top K",
-        .glmWebSearchBaseURL: "Endpoint URL",
-        .glmWebSearchAPIKey: "GLM Web Search API Key",
-        .glmDefaultTopK: "Default top K",
+        .endpointURL: "Endpoint URL",
+        .organicLimit: "Organic limit",
+        .timeoutMs: "Timeout ms",
+        .customProviderName: "Provider name",
+        .customAuth: "Auth",
+        .customMethod: "Method",
+        .queryParam: "Query param",
+        .apiKeyParam: "API key param",
+        .resultsPath: "Results path",
+        .titleField: "Title field",
+        .urlField: "URL field",
+        .snippetField: "Snippet field",
+        .sourceField: "Source field",
+        .publishedAtField: "Published-at field",
         .port: "Port",
         .defaultRouteModel: "Default Route Model",
         .backgroundRouteModel: "Background Route Model",
@@ -1023,8 +1031,6 @@ struct LocalizationService {
         .configSummaryHelp: "这里就是主项目同款可移植配置文件；Raw YAML 和表单修改都会持久化到 ~/.g9claw/config.yaml。",
         .configValid: "配置有效",
         .cost: "成本",
-        .disableBuiltInWebTools: "禁用内置 Web 工具",
-        .disableBuiltInWebToolsDetail: "启用 RAG 后，从模型可见工具中隐藏 WebFetch/WebSearch，让网络搜索走 PilotDeck RAG 技能。",
         .discover: "扫描",
         .discoveryTrigger: "发现触发器",
         .discoveryTriggerDetail: "在后台运行发现触发器。",
@@ -1082,13 +1088,12 @@ struct LocalizationService {
         .providers: "Providers",
         .providersDetail: "模型条目使用的 Provider 定义。",
         .quickAdd: "快速添加：",
-        .rag: "RAG",
-        .ragDetail: "启用后，PilotDeck 会导出 G9CLAW_RAG_* 环境变量，供 RAG 技能调用这些 API。",
-        .ragSectionDetail: "内置 PilotDeck RAG 技能使用的本地检索器和 GLM Web Search API。",
-        .ragLocalKnowledgeTitle: "本地知识库 / Retriever",
-        .ragLocalKnowledgeDetail: "私有或精选知识库检索接口，包括基于 Milvus 的服务。",
-        .ragGlmWebSearchTitle: "Z.AI / GLM Web Search",
-        .ragGlmWebSearchDetail: "用于实时信息和带 URL 引用的公开 Web Search 接口。",
+        .search: "搜索",
+        .searchDetail: "配置内建 WebSearch 工具背后的搜索提供商。",
+        .searchSectionDetail: "智能体 WebSearch 工具使用的网络搜索配置。只选择一个提供商，具体请求格式由适配器处理。",
+        .searchProviderDetail: "选择 GLM/Z.AI、Tavily 或自定义 JSON API。",
+        .customProvider: "自定义提供商",
+        .customProviderDetail: "把你的 JSON 搜索 API 映射到 WebSearch 的自然搜索结果字段。",
         .rawYAML: "Raw YAML",
         .recentRoutes: "最近路由",
         .recurring: "重复",
@@ -1122,13 +1127,20 @@ struct LocalizationService {
         .captureStrategy: "捕获策略",
         .maxMessageChars: "最大消息字符数",
         .heartbeatBatchSize: "心跳批量大小",
-        .localKnowledgeBaseURL: "Embedding / Model URL",
-        .embeddingModel: "模型名称",
-        .databaseURL: "Search URL",
-        .defaultTopK: "默认 Top K",
-        .glmWebSearchBaseURL: "Endpoint URL",
-        .glmWebSearchAPIKey: "GLM Web 搜索 API Key",
-        .glmDefaultTopK: "默认 top K",
+        .endpointURL: "Endpoint URL",
+        .organicLimit: "结果数量上限",
+        .timeoutMs: "超时（毫秒）",
+        .customProviderName: "提供商名称",
+        .customAuth: "认证方式",
+        .customMethod: "请求方法",
+        .queryParam: "查询参数名",
+        .apiKeyParam: "API Key 参数名",
+        .resultsPath: "结果路径",
+        .titleField: "标题字段",
+        .urlField: "URL 字段",
+        .snippetField: "摘要字段",
+        .sourceField: "来源字段",
+        .publishedAtField: "发布时间字段",
         .port: "端口",
         .defaultRouteModel: "默认路由模型",
         .backgroundRouteModel: "后台路由模型",

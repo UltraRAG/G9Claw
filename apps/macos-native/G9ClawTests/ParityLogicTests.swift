@@ -26,6 +26,51 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(WorkspaceService.projectName(for: "/Users/tester/My_Project"), "-Users-tester-My-Project")
     }
 
+    func testWorkspaceFileListingReportsHiddenOnlyRoots() throws {
+        let root = temporaryDirectory("g9claw-files")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".pilotdeck"), withIntermediateDirectories: true)
+
+        let service = WorkspaceService(workspaceRoot: root)
+        let hiddenOnly = try service.fileListing(rootPath: root.path)
+
+        XCTAssertTrue(hiddenOnly.files.isEmpty)
+        XCTAssertEqual(hiddenOnly.visibleRootItemCount, 0)
+        XCTAssertEqual(hiddenOnly.skippedRootItemCount, 1)
+        XCTAssertTrue(hiddenOnly.isRootHiddenOnly)
+
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+        let visible = try service.fileListing(rootPath: root.path)
+
+        XCTAssertEqual(visible.files.map(\.name), ["Sources"])
+        XCTAssertEqual(visible.visibleRootItemCount, 1)
+        XCTAssertFalse(visible.isRootHiddenOnly)
+    }
+
+    func testWorkspaceTextReadRejectsBinaryAndLargeFiles() throws {
+        let root = temporaryDirectory("g9claw-read")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = WorkspaceService(workspaceRoot: root)
+
+        let textURL = root.appendingPathComponent("note.txt")
+        try "hello".write(to: textURL, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try service.readTextFile(path: textURL.path).content, "hello")
+
+        let binaryURL = root.appendingPathComponent("asset.bin")
+        try Data([0, 1, 2, 3]).write(to: binaryURL)
+        XCTAssertThrowsError(try service.readTextFile(path: binaryURL.path)) { error in
+            XCTAssertEqual(error as? WorkspaceFileReadError, .binaryFile)
+        }
+
+        let largeURL = root.appendingPathComponent("large.txt")
+        try String(repeating: "x", count: 12).write(to: largeURL, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try service.readTextFile(path: largeURL.path, maxBytes: 8)) { error in
+            guard case .fileTooLarge(byteCount: 12, limit: 8) = error as? WorkspaceFileReadError else {
+                return XCTFail("Expected fileTooLarge, got \(error)")
+            }
+        }
+    }
+
     func testProjectSortingByNameMatchesSidebarPolicy() {
         let now = Date()
         let projects = [
@@ -135,7 +180,7 @@ final class ParityLogicTests: XCTestCase {
         )
     }
 
-    func testNativeDefaultConfigUsesG9ClawProviderAndDisabledRouterRagDefaults() {
+    func testNativeDefaultConfigUsesG9ClawProviderAndSearchDefaults() {
         let yaml = G9ClawConfigDefaults.configText(homePath: "/Users/tester", userName: "tester")
         let values = NativeConfigService.scalarMap(from: yaml)
 
@@ -145,8 +190,10 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(values["memory.model"], "inherit")
         XCTAssertEqual(values["memory.autoIndexIntervalMinutes"], "30")
         XCTAssertEqual(values["memory.autoDreamIntervalMinutes"], "60")
-        XCTAssertEqual(values["rag.enabled"], "false")
-        XCTAssertEqual(values["rag.glmWebSearch.baseUrl"], "")
+        XCTAssertEqual(values["tools.webSearch.provider"], "glm")
+        XCTAssertEqual(values["tools.webSearch.endpoint"], "https://api.z.ai/api/paas/v4/web_search")
+        XCTAssertEqual(values["tools.webSearch.organicLimit"], "8")
+        XCTAssertEqual(values["tools.webSearch.customProvider.auth"], "bearer")
         XCTAssertEqual(values["router.enabled"], "false")
         XCTAssertEqual(values["router.tokenSaver.enabled"], "false")
         XCTAssertEqual(values["gateway.home"], "/Users/tester/.g9claw/gateway")
@@ -254,28 +301,6 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertNil(values["agents.alwaysOn.discovery.trigger.enabled"])
     }
 
-    func testNativeConfigScalarMapMigratesLegacyRagMilvusURIToDatabaseURLLikeWeb() {
-        let legacyOnly = """
-        rag:
-          localKnowledge:
-            milvusUri: http://127.0.0.1:52008/search
-        """
-        let explicitDatabaseURL = """
-        rag:
-          localKnowledge:
-            databaseUrl: http://database.example/search
-            milvusUri: http://legacy.example/search
-        """
-
-        let migrated = NativeConfigService.scalarMap(from: legacyOnly)
-        let preferred = NativeConfigService.scalarMap(from: explicitDatabaseURL)
-
-        XCTAssertEqual(migrated["rag.localKnowledge.databaseUrl"], "http://127.0.0.1:52008/search")
-        XCTAssertNil(migrated["rag.localKnowledge.milvusUri"])
-        XCTAssertEqual(preferred["rag.localKnowledge.databaseUrl"], "http://database.example/search")
-        XCTAssertNil(preferred["rag.localKnowledge.milvusUri"])
-    }
-
     func testNativeConfigFormLayoutMatchesWebSplitSectionNavigation() {
         XCTAssertTrue(NativeConfigFormLayout.usesSplitSectionNavigation)
         XCTAssertFalse(NativeConfigFormLayout.usesSectionDropdown)
@@ -294,7 +319,7 @@ final class ParityLogicTests: XCTestCase {
             .models,
             .alwaysOn,
             .memory,
-            .rag,
+            .search,
             .router,
             .gateway,
         ])
@@ -399,125 +424,94 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(NativeRuntimeConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))
     }
 
-    func testNativeRagConfigFormFieldsExposeBothWebEndpointApiKeys() {
-        let fields = NativeRagConfigFormFields.textFields
-        let paths = fields.map(\.path)
+    func testNativeSearchConfigFormFieldsExposeWebSearchProviders() {
+        let primaryFields = NativeSearchConfigFormFields.primaryFields
+        let customFields = NativeSearchConfigFormFields.customFields
 
         XCTAssertEqual(
-            paths,
+            NativeSearchConfigFormFields.visiblePaths,
             [
-                "rag.localKnowledge.baseUrl",
-                "rag.localKnowledge.apiKey",
-                "rag.localKnowledge.modelName",
-                "rag.localKnowledge.databaseUrl",
-                "rag.glmWebSearch.baseUrl",
-                "rag.glmWebSearch.apiKey",
-                "rag.glmWebSearch.defaultTopK",
+                "tools.webSearch.provider",
+                "tools.webSearch.apiKey",
+                "tools.webSearch.endpoint",
+                "tools.webSearch.organicLimit",
+                "tools.webSearch.timeoutMs",
+                "tools.webSearch.customProvider.name",
+                "tools.webSearch.customProvider.auth",
+                "tools.webSearch.customProvider.method",
+                "tools.webSearch.customProvider.queryParam",
+                "tools.webSearch.customProvider.apiKeyParam",
+                "tools.webSearch.customProvider.resultsPath",
+                "tools.webSearch.customProvider.titleField",
+                "tools.webSearch.customProvider.urlField",
+                "tools.webSearch.customProvider.snippetField",
+                "tools.webSearch.customProvider.sourceField",
+                "tools.webSearch.customProvider.publishedAtField",
             ]
         )
-        XCTAssertEqual(Set(fields.filter(\.isSecure).map(\.path)), [
-            "rag.localKnowledge.apiKey",
-            "rag.glmWebSearch.apiKey",
-        ])
-        XCTAssertEqual(NativeRagConfigFormFields.enabledPath, "rag.enabled")
-        XCTAssertEqual(NativeRagConfigFormFields.disableBuiltInWebToolsPath, "rag.disableBuiltInWebTools")
-        XCTAssertTrue(NativeRagConfigFormFields.disableBuiltInWebToolsDefault)
-        XCTAssertEqual(NativeRagConfigFormFields.booleanDefaults, [
-            "rag.enabled": false,
-            "rag.disableBuiltInWebTools": true,
-        ])
-
-        XCTAssertEqual(NativeRagConfigFormFields.endpointCards.map(\.id), [
-            "localKnowledge",
-            "glmWebSearch",
-        ])
-        XCTAssertEqual(NativeRagConfigFormFields.endpointCards.map(\.title), [
-            .ragLocalKnowledgeTitle,
-            .ragGlmWebSearchTitle,
-        ])
-        XCTAssertEqual(NativeRagConfigFormFields.endpointCards[0].fields.map(\.path), [
-            "rag.localKnowledge.baseUrl",
-            "rag.localKnowledge.apiKey",
-            "rag.localKnowledge.modelName",
-            "rag.localKnowledge.databaseUrl",
-        ])
-        XCTAssertFalse(NativeRagConfigFormFields.endpointCards[0].includesDefaultTopK)
-        XCTAssertEqual(NativeRagConfigFormFields.endpointCards[1].fields.map(\.path), [
-            "rag.glmWebSearch.baseUrl",
-            "rag.glmWebSearch.apiKey",
-            "rag.glmWebSearch.defaultTopK",
-        ])
-        XCTAssertTrue(NativeRagConfigFormFields.endpointCards[1].includesDefaultTopK)
-        XCTAssertEqual(NativeRagConfigFormFields.localKnowledgeFields.map(\.label), [
-            .localKnowledgeBaseURL,
+        XCTAssertEqual(NativeSearchConfigFormFields.providerOptions, ["glm", "tavily", "custom"])
+        XCTAssertEqual(Set(primaryFields.filter(\.isSecure).map(\.path)), ["tools.webSearch.apiKey"])
+        XCTAssertTrue(customFields.filter(\.isSecure).isEmpty)
+        XCTAssertEqual(primaryFields.map(\.label), [
             .apiKey,
-            .embeddingModel,
-            .databaseURL,
+            .endpointURL,
+            .organicLimit,
+            .timeoutMs,
         ])
-        XCTAssertEqual(NativeRagConfigFormFields.glmWebSearchFields.map(\.label), [
-            .glmWebSearchBaseURL,
-            .apiKey,
-            .glmDefaultTopK,
+        XCTAssertEqual(customFields.map(\.label), [
+            .customProviderName,
+            .customAuth,
+            .customMethod,
+            .queryParam,
+            .apiKeyParam,
+            .resultsPath,
+            .titleField,
+            .urlField,
+            .snippetField,
+            .sourceField,
+            .publishedAtField,
         ])
     }
 
-    func testNativeRagConfigLabelsMatchWebSettingsTabCopy() {
+    func testNativeSearchConfigLabelsMatchWebSettingsTabCopy() {
         let english = LocalizationService(language: .english)
         let chinese = LocalizationService(language: .chineseSimplified)
 
         XCTAssertEqual(
-            english.text(.ragSectionDetail),
-            "Local retriever and GLM web search APIs used by the bundled PilotDeck RAG skills."
+            english.text(.searchSectionDetail),
+            "Web search backing the agent's WebSearch tool. Select one provider; provider-specific request shapes stay behind the adapter."
         )
         XCTAssertEqual(
-            english.text(.ragDetail),
-            "When on, PilotDeck exports G9CLAW_RAG_* env vars so RAG skills can call these APIs."
+            english.text(.searchProviderDetail),
+            "Choose GLM/Z.AI, Tavily, or a custom JSON API."
         )
-        XCTAssertEqual(
-            english.text(.disableBuiltInWebToolsDetail),
-            "When RAG is enabled, hide WebFetch/WebSearch from model-visible tools so web search goes through PilotDeck RAG skills."
-        )
-        XCTAssertEqual(english.text(.ragLocalKnowledgeTitle), "Local knowledge / Retriever")
-        XCTAssertEqual(
-            english.text(.ragLocalKnowledgeDetail),
-            "Private or curated knowledge base retrieval endpoint, including Milvus-backed services."
-        )
-        XCTAssertEqual(english.text(.ragGlmWebSearchTitle), "Z.AI / GLM Web Search")
-        XCTAssertEqual(
-            english.text(.ragGlmWebSearchDetail),
-            "Public web search endpoint used for current information and URL-backed citations."
-        )
-        XCTAssertEqual(english.text(.localKnowledgeBaseURL), "Embedding / Model URL")
+        XCTAssertEqual(english.text(.search), "Search")
         XCTAssertEqual(english.text(.apiKey), "API key")
-        XCTAssertEqual(english.text(.embeddingModel), "Model name")
-        XCTAssertEqual(english.text(.databaseURL), "Search URL")
-        XCTAssertEqual(english.text(.glmWebSearchBaseURL), "Endpoint URL")
-        XCTAssertEqual(english.text(.glmDefaultTopK), "Default top K")
+        XCTAssertEqual(english.text(.endpointURL), "Endpoint URL")
+        XCTAssertEqual(english.text(.organicLimit), "Organic limit")
+        XCTAssertEqual(english.text(.customProvider), "Custom provider")
 
         XCTAssertEqual(
-            chinese.text(.ragSectionDetail),
-            "内置 PilotDeck RAG 技能使用的本地检索器和 GLM Web Search API。"
+            chinese.text(.searchSectionDetail),
+            "智能体 WebSearch 工具使用的网络搜索配置。只选择一个提供商，具体请求格式由适配器处理。"
         )
-        XCTAssertEqual(chinese.text(.ragLocalKnowledgeTitle), "本地知识库 / Retriever")
-        XCTAssertEqual(chinese.text(.glmWebSearchBaseURL), "Endpoint URL")
-    }
-
-    func testNativeRagDisableBuiltInWebToolsDefaultsOnLikeWebSettingsTab() {
-        XCTAssertTrue(NativeConfigBoolValue.resolve("", defaultValue: NativeRagConfigFormFields.disableBuiltInWebToolsDefault))
-        XCTAssertTrue(NativeConfigBoolValue.resolve("true", defaultValue: NativeRagConfigFormFields.disableBuiltInWebToolsDefault))
-        XCTAssertFalse(NativeConfigBoolValue.resolve("false", defaultValue: NativeRagConfigFormFields.disableBuiltInWebToolsDefault))
-
-        XCTAssertFalse(NativeConfigBoolValue.resolve("", defaultValue: false))
+        XCTAssertEqual(chinese.text(.search), "搜索")
+        XCTAssertEqual(chinese.text(.endpointURL), "Endpoint URL")
     }
 
     func testNativeMemoryConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeMemoryConfigFormFields.visiblePaths, [
             "memory.enabled",
+            "memory.autoIndexIntervalMinutes",
+            "memory.autoDreamIntervalMinutes",
+        ])
+        XCTAssertEqual(NativeMemoryConfigFormFields.scheduleFields.map(\.path), [
+            "memory.autoIndexIntervalMinutes",
+            "memory.autoDreamIntervalMinutes",
         ])
         XCTAssertTrue(NativeModelsConfigFormFields.assignmentPaths.contains("memory.model"))
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.includeAssistant"))
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.reasoningMode"))
-        XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.autoIndexIntervalMinutes"))
     }
 
     func testNativeAlwaysOnConfigFormFieldsMatchWebSettingsTab() {
@@ -581,7 +575,6 @@ final class ParityLogicTests: XCTestCase {
                 "Bash(rm:*)",
                 "Bash(sudo:*)",
                 "WebFetch",
-                "WebSearch",
             ]
         )
     }
@@ -598,9 +591,9 @@ final class ParityLogicTests: XCTestCase {
 
     @MainActor
     func testPermissionsExportUsesG9ClawPayloadShape() throws {
-        let state = AppState()
+        let state = makeTestAppState()
         state.settings.permissions.allowedTools = ["Bash(git log:*)", "MultiEdit"]
-        state.settings.permissions.disallowedTools = ["Bash(rm:*)", "WebSearch"]
+        state.settings.permissions.disallowedTools = ["Bash(rm:*)"]
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("g9claw-permissions-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -613,20 +606,21 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(payload["source"] as? String, "g9claw")
         XCTAssertNotNil(payload["exportedAt"] as? String)
         XCTAssertEqual(payload["allowedTools"] as? [String], ["Bash(git log:*)", "MultiEdit"])
-        XCTAssertEqual(payload["disallowedTools"] as? [String], ["Bash(rm:*)", "WebSearch"])
+        XCTAssertEqual(payload["disallowedTools"] as? [String], ["Bash(rm:*)"])
     }
 
     @MainActor
-    func testPermissionsSettingsAddAndImportKeepAllowedBlockedListsIndependentLikeWeb() throws {
-        let state = AppState()
+    func testPermissionsSettingsAddAndImportKeepListsExclusiveAndIgnoreWebSearchBlocks() throws {
+        let state = makeTestAppState()
         state.settings.permissions.allowedTools = ["Read"]
         state.settings.permissions.disallowedTools = ["Write"]
 
         state.addAllowedTool("Write")
         state.addBlockedTool("Read")
+        state.addBlockedTool("WebSearch")
 
-        XCTAssertEqual(state.settings.permissions.allowedTools, ["Read", "Write"])
-        XCTAssertEqual(state.settings.permissions.disallowedTools, ["Write", "Read"])
+        XCTAssertEqual(state.settings.permissions.allowedTools, ["Write"])
+        XCTAssertEqual(state.settings.permissions.disallowedTools, ["Read"])
 
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("g9claw-permissions-import-\(UUID().uuidString).json")
@@ -641,22 +635,30 @@ final class ParityLogicTests: XCTestCase {
         try state.importPermissions(from: url)
 
         XCTAssertEqual(state.settings.permissions.allowedTools, [
-            "Read",
             "Write",
             "Bash(git log:*)",
             "WebSearch",
         ])
         XCTAssertEqual(state.settings.permissions.disallowedTools, [
-            "Write",
             "Read",
-            "WebSearch",
             "Bash(rm:*)",
         ])
     }
 
+    func testNormalizedSettingsDropsLegacyWebSearchBlock() {
+        var settings = AppSettings.defaults
+        settings.permissions.allowedTools = ["WebSearch"]
+        settings.permissions.disallowedTools = ["WebSearch", "web_search", "Bash(rm:*)"]
+
+        let normalized = AppState.normalizedSettings(settings)
+
+        XCTAssertEqual(normalized.permissions.allowedTools, ["WebSearch"])
+        XCTAssertEqual(normalized.permissions.disallowedTools, ["Bash(rm:*)"])
+    }
+
     @MainActor
     func testChatPermissionGrantStillClearsMatchingBlockedRuleLikeWebGrantButton() {
-        let state = AppState()
+        let state = makeTestAppState()
         state.settings.permissions.allowedTools = []
         state.settings.permissions.disallowedTools = ["Write", "Bash(rm:*)"]
 
@@ -1110,6 +1112,7 @@ final class ParityLogicTests: XCTestCase {
             "AskQuestion",
             "SwitchMode",
             "Task",
+            "WebSearch",
         ]
 
         XCTAssertEqual(Set(names), Set(AgentToolRegistry.toolNames))
@@ -1119,7 +1122,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(names.contains("Edit"))
         XCTAssertFalse(names.contains("ExitPlanMode"))
         XCTAssertFalse(names.contains("AskUserQuestion"))
-        XCTAssertFalse(names.contains("WebSearch"))
+        XCTAssertTrue(names.contains("WebSearch"))
         XCTAssertFalse(names.contains("WebFetch"))
         XCTAssertFalse(names.contains("Weather"))
     }
@@ -1168,8 +1171,8 @@ final class ParityLogicTests: XCTestCase {
 
     func testNativeAgentRuntimeParsesInlineSkillJSONFallback() throws {
         let text = """
-        I will use RAG.
-        {"skill":"g9claw-rag:rag-research","args":"DARPA autonomous systems research"}
+        I will load a skill.
+        {"skill":"code-review","args":"review this change"}
         """
 
         let calls = NativeAgentRuntime.fallbackToolCalls(in: text)
@@ -1177,24 +1180,23 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls.first?.name, "Skill")
-        XCTAssertEqual(object["skill"] as? String, "g9claw-rag:rag-research")
+        XCTAssertEqual(object["skill"] as? String, "code-review")
     }
 
-    func testNativeAgentRuntimeMapsDirectRAGToolJSONToSkill() throws {
+    func testNativeAgentRuntimeParsesWebSearchFallbackToolCall() throws {
         let text = """
-        {"tool":"g9claw-rag:glm-web-search","input":{"query":"Beijing weather"}}
+        {"tool":"web_search","input":{"query":"Beijing weather"}}
         """
 
         let calls = NativeAgentRuntime.fallbackToolCalls(in: text)
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data((calls.first?.inputJSON ?? "{}").utf8)) as? [String: Any])
 
         XCTAssertEqual(calls.count, 1)
-        XCTAssertEqual(calls.first?.name, "Skill")
-        XCTAssertEqual(object["skill"] as? String, "g9claw-rag:glm-web-search")
-        XCTAssertEqual(object["args"] as? String, "Beijing weather")
+        XCTAssertEqual(calls.first?.name, "WebSearch")
+        XCTAssertEqual(object["query"] as? String, "Beijing weather")
     }
 
-    func testLegacySearchAndWeatherCallsNormalizeToGLMSkill() throws {
+    func testLegacySearchAndWeatherCallsNormalizeToWebSearch() throws {
         let search = ToolArgumentNormalizer.normalize(AgentToolCall(
             id: "search",
             name: "WebSearch",
@@ -1211,20 +1213,18 @@ final class ParityLogicTests: XCTestCase {
             inputJSON: #"{"unit":"celsius"}"#
         ))
 
-        XCTAssertEqual(search.call.name, "Skill")
-        XCTAssertEqual(weather.call.name, "Skill")
+        XCTAssertEqual(search.call.name, "WebSearch")
+        XCTAssertEqual(weather.call.name, "WebSearch")
         XCTAssertNil(search.recoveryResult)
         XCTAssertNil(weather.recoveryResult)
 
         let searchObject = try jsonObject(from: search.call.inputJSON)
         let weatherObject = try jsonObject(from: weather.call.inputJSON)
-        XCTAssertEqual(searchObject["skill"] as? String, "g9claw-rag:glm-web-search")
-        XCTAssertEqual(searchObject["args"] as? String, "Beijing weather")
-        XCTAssertEqual(weatherObject["skill"] as? String, "g9claw-rag:glm-web-search")
-        XCTAssertEqual(weatherObject["args"] as? String, "北京 weather")
-        XCTAssertEqual(missing.call.name, "Skill")
+        XCTAssertEqual(searchObject["query"] as? String, "Beijing weather")
+        XCTAssertEqual(weatherObject["query"] as? String, "北京 weather")
+        XCTAssertEqual(missing.call.name, "WebSearch")
         XCTAssertTrue(missing.recoveryResult?.isError == true)
-        XCTAssertTrue(missing.recoveryResult?.output.contains("glm-web-search") == true)
+        XCTAssertTrue(missing.recoveryResult?.output.contains("non-empty query") == true)
     }
 
     func testNativeAgentRuntimeParsesLegacyCommandFallbackAsToolOnly() {
@@ -1238,8 +1238,8 @@ final class ParityLogicTests: XCTestCase {
     func testNativeAgentRuntimeParsesG9ClawInvokeFallbackToolCall() {
         let text = """
         <invoke name="Skill">
-        <parameter name="skill">g9claw-rag:rag-research</parameter>
-        <parameter name="args">DARPA autonomous systems research</parameter>
+        <parameter name="skill">code-review</parameter>
+        <parameter name="args">review this change</parameter>
         </invoke>
         """
 
@@ -1248,7 +1248,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls.first?.name, "Skill")
         let object = try? JSONSerialization.jsonObject(with: Data((calls.first?.inputJSON ?? "{}").utf8)) as? [String: Any]
-        XCTAssertEqual(object?["skill"] as? String, "g9claw-rag:rag-research")
+        XCTAssertEqual(object?["skill"] as? String, "code-review")
     }
 
     func testToolArgumentNormalizerCanonicalizesValidToolArguments() throws {
@@ -1525,6 +1525,30 @@ final class ParityLogicTests: XCTestCase {
             XCTAssertTrue(reason.lowercased().contains("blocked"))
         } else {
             XCTFail("Bash(...) block rules should deny matching native Shell calls.")
+        }
+    }
+
+    func testWebSearchBlockRulesAreIgnoredBecauseItIsTheUnifiedWebTool() {
+        var permissions = ToolPermissionSettings.defaults
+        permissions.disallowedTools = ["WebSearch", "web_search"]
+        let call = AgentToolCall(
+            id: "web-search",
+            name: "WebSearch",
+            inputJSON: #"{"query":"Beijing weather today"}"#
+        )
+
+        let bypassContext = AgentRunContext(
+            request: agentRequest(permissionMode: .bypassPermissions, toolSettings: permissions)
+        )
+        XCTAssertEqual(AgentPermissionPolicy.policy(for: call, context: bypassContext), .allow)
+
+        let defaultContext = AgentRunContext(
+            request: agentRequest(permissionMode: .default, toolSettings: permissions)
+        )
+        if case .ask(let reason) = AgentPermissionPolicy.policy(for: call, context: defaultContext) {
+            XCTAssertTrue(reason.contains("WebSearch"))
+        } else {
+            XCTFail("Default mode should still ask before network search, not deny WebSearch.")
         }
     }
 
@@ -1826,10 +1850,13 @@ final class ParityLogicTests: XCTestCase {
 
     func testWorkspaceMutationIgnoresInjectedMemoryContext() {
         let prompt = """
+        <memory-context>
         只回答一句：G9Claw smoke test ok。
 
-        Relevant G9Claw memory context:
         之前用户要求优化、创建、修改网页。
+        </memory-context>
+
+        只回答一句：G9Claw smoke test ok。
         """
 
         XCTAssertFalse(NativeAgentRuntime.isWorkspaceMutationRequest(prompt))
@@ -1837,10 +1864,11 @@ final class ParityLogicTests: XCTestCase {
 
     func testCompletionGateIgnoresInjectedMemoryContext() {
         let prompt = """
-        只回答一句：smoke ok。
-
-        Relevant G9Claw memory context:
+        <memory-context>
         之前用户要求优化、创建、修改网页。
+        </memory-context>
+
+        只回答一句：smoke ok。
         """
         let request = agentRequest(prompt: prompt, permissionMode: .default)
         let context = AgentRunContext(request: request)
@@ -2147,10 +2175,17 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(lints.output.contains("lint warning"))
     }
 
-    func testLegacySearchAndWeatherExecutionsNormalizeToGLMSkillWhileWebFetchIsDisabled() async throws {
+    func testLegacySearchAndWeatherExecutionsNormalizeToWebSearchWhileWebFetchIsDisabled() async throws {
         let root = try makeAgentWorkspace("g9claw-agent-disabled-search")
         defer { try? FileManager.default.removeItem(at: root) }
-        let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
+        let context = AgentRunContext(request: agentRequest(
+            projectPath: root.path,
+            permissionMode: .bypassPermissions,
+            nativeConfigValues: [
+                "tools.webSearch.provider": "custom",
+                "tools.webSearch.customProvider.auth": "none",
+            ]
+        ))
 
         let search = await NativeToolRouter.execute(
             call: AgentToolCall(id: "web-search", name: "WebSearch", inputJSON: #"{"query":"Beijing weather"}"#),
@@ -2165,15 +2200,14 @@ final class ParityLogicTests: XCTestCase {
             context: context
         )
 
-        XCTAssertFalse(search.isError, search.output)
-        XCTAssertFalse(weather.isError, weather.output)
-        XCTAssertEqual(search.toolName, "Skill")
-        XCTAssertEqual(weather.toolName, "Skill")
-        XCTAssertTrue(search.output.contains("g9claw-rag:glm-web-search"))
-        XCTAssertTrue(weather.output.contains("g9claw-rag:glm-web-search"))
-        XCTAssertTrue(context.invokedSkills.contains("g9claw-rag:glm-web-search"))
+        XCTAssertTrue(search.isError, search.output)
+        XCTAssertTrue(weather.isError, weather.output)
+        XCTAssertEqual(search.toolName, "WebSearch")
+        XCTAssertEqual(weather.toolName, "WebSearch")
+        XCTAssertTrue(search.output.contains("tools.webSearch.endpoint"))
+        XCTAssertTrue(weather.output.contains("tools.webSearch.endpoint"))
         XCTAssertFalse(fetch.isError)
-        XCTAssertTrue(fetch.output.contains("g9claw-rag:rag-research"))
+        XCTAssertTrue(fetch.output.contains("WebFetch is disabled"))
     }
 
     func testAgentToolExecutorInteractionModeTodoAndTaskTools() async throws {
@@ -2597,20 +2631,6 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(defaults.heartbeatBatchSize, 30)
     }
 
-    func testNativeMemoryDashboardSettingsMatchWebMemoryDrawer() {
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.visiblePaths, [
-            "memory.autoIndexIntervalMinutes",
-            "memory.autoDreamIntervalMinutes",
-        ])
-
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("45", fallback: 30), 45)
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("0", fallback: 30), 0)
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("-5", fallback: 30), 0)
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("20000", fallback: 30), 10_080)
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("bad", fallback: 30), 30)
-        XCTAssertEqual(NativeMemoryDashboardSettingsFields.normalizedInterval("42.8", fallback: 30), 42)
-    }
-
     func testMemoryDashboardSchedulerReflectsMemoryEnabledConfig() {
         let service = MemoryService()
         service.updateSettings(MemorySettingsSnapshot(enabled: false))
@@ -2621,6 +2641,11 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(snapshot.scheduler.enabled)
         XCTAssertEqual(snapshot.scheduler.status, "disabled")
         XCTAssertFalse(snapshot.overview.schedulerEnabled)
+
+        service.updateSettings(MemorySettingsSnapshot(autoIndexIntervalMinutes: 0, autoDreamIntervalMinutes: 0))
+        let noAutomation = service.dashboard(projectName: "Native")
+        XCTAssertTrue(noAutomation.settings.enabled)
+        XCTAssertFalse(noAutomation.scheduler.enabled)
     }
 
     func testProcessTraceHidesCompletedStatusOnlyActivity() {
@@ -2820,6 +2845,29 @@ final class ParityLogicTests: XCTestCase {
         """.write(to: feedbackMemoryRoot.appendingPathComponent("old-feedback.md"), atomically: true, encoding: .utf8)
         try """
         ---
+        name: Legacy Turn
+        description: Old raw captured turn.
+        type: project
+        scope: project
+        updated_at: 2026-05-23T07:00:00Z
+        ---
+
+        Raw turn artifacts should be ignored by the native loader.
+        """.write(to: projectMemoryRoot.appendingPathComponent("turn-20260529-120000-legacy.md"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: projectMemoryRoot.appendingPathComponent("Dream", isDirectory: true), withIntermediateDirectories: true)
+        try """
+        ---
+        name: Memory Dream Legacy
+        description: Old synthetic dream artifact.
+        type: project
+        scope: project
+        updated_at: 2026-05-23T07:30:00Z
+        ---
+
+        Legacy memory-dream artifacts should be ignored by the native loader.
+        """.write(to: projectMemoryRoot.appendingPathComponent("Dream/memory-dream-20260529-120000.md"), atomically: true, encoding: .utf8)
+        try """
+        ---
         name: User Profile
         description: User prefers concise engineering updates.
         type: user
@@ -3001,18 +3049,31 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testMemoryDreamRollbackAndBundleRoundTrip() throws {
-        let service = MemoryService()
-        _ = service.upsert(name: "session-summary", summary: "Created the Swift agent shell.", projectName: "Native")
+        let root = repoRootURL()
+            .appendingPathComponent("g9claw-memory-dream-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
+        let projectRoot = root.appendingPathComponent("Native", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
 
-        var snapshot = service.runDream(projectName: "Native", projectRoot: nil)
+        let service = MemoryService(memoryRoot: memoryRoot)
+        _ = service.upsert(name: "session-summary", summary: "Created the Swift agent shell.", projectName: "Native")
+        _ = service.upsert(name: "launch-summary", summary: "Prepared the native memory dashboard.", projectName: "Native")
+
+        var snapshot = service.runDream(projectName: "Native", projectRoot: projectRoot.path)
 
         XCTAssertEqual(snapshot.dreamTraceRecords.count, 1)
         XCTAssertEqual(snapshot.lastDreamSnapshot?.rollbackReady, true)
+        let dreamRecord = try XCTUnwrap(snapshot.records.first { $0.name.hasPrefix("Project Dream") })
+        XCTAssertTrue(dreamRecord.relativePath.hasPrefix("Project/Dream/"))
+        let files = try FileManager.default.subpathsOfDirectory(atPath: memoryRoot.path)
+        XCTAssertTrue(files.contains { $0.hasSuffix(dreamRecord.relativePath) })
 
-        snapshot = try service.rollbackLastDream(projectName: "Native", projectRoot: nil)
+        snapshot = try service.rollbackLastDream(projectName: "Native", projectRoot: projectRoot.path)
 
         XCTAssertEqual(snapshot.dreamTraceRecords.count, 2)
         XCTAssertEqual(snapshot.lastDreamSnapshot?.rollbackReady, false)
+        XCTAssertFalse(snapshot.records.contains { $0.relativePath == dreamRecord.relativePath })
 
         let exported = try service.exportBundle(projectName: "Native")
         let imported = MemoryService()
@@ -3028,13 +3089,172 @@ final class ParityLogicTests: XCTestCase {
         _ = service.upsert(name: "router-cost", summary: "Router cost baseline and saved price are shown in route details.", projectName: "Native")
         _ = service.upsert(name: "theme-note", summary: "Use compact spacing in the memory page.", projectName: "Native")
 
-        let context = service.recallForTurn(prompt: "How should router saved price display?", projectName: "Native", projectRoot: nil)
-        XCTAssertTrue(context.split(separator: "\n").first?.contains("router-cost") == true)
-        XCTAssertFalse(context.contains("theme-note"))
+        let result = service.retrieveContext(
+            query: "How should router saved price display?",
+            recentMessages: [],
+            sessionID: "recall-router",
+            projectName: "Native",
+            projectRoot: nil
+        )
+        XCTAssertTrue(result.systemContext.contains("router-cost"))
+        XCTAssertFalse(result.systemContext.contains("theme-note"))
+        let recallTrace = service.caseTraces(limit: 1).first
+        XCTAssertEqual(
+            recallTrace?.steps.map(\.id),
+            ["recall_start", "memory_gate", "user_base_loaded", "manifest_scanned", "manifest_selected", "files_loaded", "context_rendered"]
+        )
+        XCTAssertTrue(recallTrace?.steps.first(where: { $0.id == "memory_gate" })?.detail.contains("route=project") == true)
+        XCTAssertTrue(recallTrace?.steps.first(where: { $0.id == "user_base_loaded" })?.detail.contains("required=no") == true)
 
-        let empty = service.recallForTurn(prompt: "completely-unmatched-term", projectName: "Native", projectRoot: nil)
-        XCTAssertTrue(empty.isEmpty)
-        XCTAssertEqual(service.caseTraces(limit: 1).first?.reply, "No memory records matched this turn.")
+        let empty = service.retrieveContext(
+            query: "completely-unmatched-term",
+            recentMessages: [],
+            sessionID: "recall-empty",
+            projectName: "Native",
+            projectRoot: nil
+        )
+        XCTAssertFalse(empty.injected)
+        XCTAssertEqual(service.caseTraces(limit: 1).first?.reply, "EdgeClaw memory returned no relevant context.")
+    }
+
+    @MainActor
+    func testMemoryCaptureTurnIndexesProjectMemoryAndCompletesTrace() async throws {
+        let root = repoRootURL()
+            .appendingPathComponent("g9claw-memory-capture-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
+        let projectRoot = root.appendingPathComponent("Native", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let service = MemoryService(memoryRoot: memoryRoot)
+        let sessionID = "session-capture"
+        let user = ChatMessage(
+            id: UUID(),
+            sessionId: sessionID,
+            provider: .g9Claw,
+            role: .user,
+            blocks: [.text("Remember that router pricing should show saved price first.")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+        let assistant = ChatMessage(
+            id: UUID(),
+            sessionId: sessionID,
+            provider: .g9Claw,
+            role: .assistant,
+            blocks: [.text("Captured the router pricing display preference.")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+
+        _ = service.retrieveContext(
+            query: "router pricing",
+            recentMessages: [user],
+            sessionID: sessionID,
+            projectName: "Native",
+            projectRoot: projectRoot.path
+        )
+        let captured = service.captureTurn(
+            messages: [user, assistant],
+            sessionID: sessionID,
+            projectName: "Native",
+            projectRoot: projectRoot.path
+        )
+
+        XCTAssertNil(captured)
+        var files = try FileManager.default.subpathsOfDirectory(atPath: memoryRoot.path)
+        XCTAssertTrue(files.contains { $0.contains("l0_sessions") && $0.hasSuffix(".json") })
+        XCTAssertFalse(files.contains { $0.contains("Project/turn-") })
+        let trace = try XCTUnwrap(service.caseTraces(limit: 1).first)
+        XCTAssertEqual(trace.status, "completed")
+        XCTAssertTrue(trace.meta["capturedRecord"]?.hasPrefix("l0-") == true)
+        XCTAssertTrue(trace.steps.map(\.id).contains("capture_turn"))
+
+        let indexed = try await service.runIndexJob(projectRoot: projectRoot.path, projectName: "Native")
+        let record = try XCTUnwrap(indexed.records.first { $0.sourceSessionKey == sessionID && $0.type == .project })
+        XCTAssertTrue(record.relativePath.hasPrefix("Project/"))
+        XCTAssertTrue(record.content.contains("source_session_key: \(sessionID)"))
+        XCTAssertTrue(record.content.contains("router pricing should show saved price first"))
+        files = try FileManager.default.subpathsOfDirectory(atPath: memoryRoot.path)
+        XCTAssertTrue(files.contains { $0.hasSuffix(record.relativePath) })
+        XCTAssertEqual(indexed.indexTraceRecords.first?.reply, "Indexed 1 memory records.")
+    }
+
+    @MainActor
+    func testMemoryIndexAndDreamPromoteUserIdentityToGlobalProfile() async throws {
+        let root = repoRootURL()
+            .appendingPathComponent("g9claw-memory-identity-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
+        let projectRoot = root.appendingPathComponent("Native", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let service = MemoryService(memoryRoot: memoryRoot)
+        let sessionID = "session-identity"
+        let user = ChatMessage(
+            id: UUID(),
+            sessionId: sessionID,
+            provider: .g9Claw,
+            role: .user,
+            blocks: [.text("你好 我叫张三 是一个游戏开发工程师")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+        let assistant = ChatMessage(
+            id: UUID(),
+            sessionId: sessionID,
+            provider: .g9Claw,
+            role: .assistant,
+            blocks: [.text("你好，张三。")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+
+        XCTAssertNil(service.captureTurn(
+            messages: [user, assistant],
+            sessionID: sessionID,
+            projectName: "Native",
+            projectRoot: projectRoot.path
+        ))
+        let indexed = try await service.runIndexJob(projectRoot: projectRoot.path, projectName: "Native")
+        let userNote = try XCTUnwrap(indexed.records.first { $0.relativePath.hasPrefix("global/UserIdentityNotes/") })
+
+        XCTAssertEqual(userNote.type, .user)
+        XCTAssertNil(userNote.projectName)
+        XCTAssertTrue(userNote.content.contains("张三"))
+        XCTAssertTrue(userNote.content.contains("游戏开发工程师"))
+        XCTAssertFalse(indexed.records.contains { $0.relativePath.contains("Project/turn-") })
+
+        let dreamed = await service.runDreamJob(projectName: "Native", projectRoot: projectRoot.path)
+        XCTAssertTrue(dreamed.userSummary.contains("张三"))
+        XCTAssertTrue(dreamed.userSummary.contains("游戏开发工程师"))
+        XCTAssertTrue(dreamed.records.contains { $0.relativePath == "global/UserIdentity/user-profile.md" })
+        XCTAssertFalse(dreamed.records.contains { $0.relativePath == userNote.relativePath })
+        let dreamStepIDs = dreamed.dreamTraceRecords.first?.steps.map(\.id) ?? []
+        XCTAssertTrue(dreamStepIDs.contains("snapshot_loaded"))
+        XCTAssertTrue(dreamStepIDs.contains("project_header_scan"))
+        XCTAssertTrue(dreamStepIDs.contains("feedback_header_scan"))
+        XCTAssertTrue(dreamStepIDs.contains("user_profile_rewritten"))
+        XCTAssertTrue(dreamStepIDs.contains("manifests_repaired"))
+
+        let recalled = await service.retrieveContextForTurn(
+            query: "我叫什么名字？",
+            recentMessages: [],
+            sessionID: "recall-identity",
+            projectName: "Native",
+            projectRoot: projectRoot.path
+        )
+        XCTAssertTrue(recalled.injected)
+        XCTAssertTrue(recalled.systemContext.contains("张三"))
+        let identityTrace = try XCTUnwrap(service.caseTraces(limit: 1).first)
+        XCTAssertTrue(identityTrace.steps.first(where: { $0.id == "memory_gate" })?.detail.contains("route=user") == true)
+        XCTAssertTrue(identityTrace.steps.first(where: { $0.id == "user_base_loaded" })?.detail.contains("identityBackground=1") == true)
+        XCTAssertTrue(identityTrace.steps.first(where: { $0.id == "files_loaded" })?.detail.contains("loaded=1") == true)
+        XCTAssertTrue(identityTrace.steps.first(where: { $0.id == "context_rendered" })?.detail.contains("userBaseInjected=yes") == true)
     }
 
     @MainActor
@@ -3051,7 +3271,13 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(indexed.jobStates[.index]?.phase, .completed)
         XCTAssertEqual(indexed.jobStates[.index]?.traceID, indexed.indexTraceRecords.first?.id)
 
-        _ = service.recallForTurn(prompt: "What did we do?", projectName: "Native", projectRoot: root.path)
+        _ = service.retrieveContext(
+            query: "What did we do?",
+            recentMessages: [],
+            sessionID: "recall-job",
+            projectName: "Native",
+            projectRoot: root.path
+        )
         let recalled = service.dashboard(projectName: "Native", projectRoot: root.path)
         XCTAssertEqual(recalled.jobStates[.recall]?.phase, .completed)
         XCTAssertEqual(recalled.jobStates[.recall]?.traceID, recalled.caseTraceRecords.first?.id)
@@ -3059,6 +3285,64 @@ final class ParityLogicTests: XCTestCase {
         let dreamed = await service.runDreamJob(projectName: "Native", projectRoot: root.path)
         XCTAssertEqual(dreamed.jobStates[.dream]?.phase, .completed)
         XCTAssertEqual(dreamed.jobStates[.dream]?.traceID, dreamed.dreamTraceRecords.first?.id)
+    }
+
+    @MainActor
+    func testMemoryAutomaticJobsRunDueIndexAndDreamWithAutoTraces() async throws {
+        let root = repoRootURL()
+            .appendingPathComponent("g9claw-memory-auto-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "auto memory smoke".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+
+        let service = MemoryService(memoryRoot: memoryRoot)
+        service.updateSettings(MemorySettingsSnapshot(autoIndexIntervalMinutes: 1, autoDreamIntervalMinutes: 1))
+        for index in 1...2 {
+            let sessionID = "auto-\(index)"
+            let user = ChatMessage(
+                id: UUID(),
+                sessionId: sessionID,
+                provider: .g9Claw,
+                role: .user,
+                blocks: [.text("Remember project fact \(index): auto memory should persist.")],
+                createdAt: Date(),
+                isStreaming: false,
+                tokenBudget: nil
+            )
+            let assistant = ChatMessage(
+                id: UUID(),
+                sessionId: sessionID,
+                provider: .g9Claw,
+                role: .assistant,
+                blocks: [.text("Saved project fact \(index).")],
+                createdAt: Date(),
+                isStreaming: false,
+                tokenBudget: nil
+            )
+            XCTAssertNil(service.captureTurn(
+                messages: [user, assistant],
+                sessionID: sessionID,
+                projectName: "Native",
+                projectRoot: root.path
+            ))
+        }
+
+        XCTAssertEqual(service.automaticJobKindsDue(), [.index, .dream])
+
+        let first = await service.runAutomaticJobsIfDue(projectRoot: root.path, projectName: "Native")
+        XCTAssertEqual(first.jobStates[.index]?.phase, .completed)
+        XCTAssertEqual(first.jobStates[.dream]?.phase, .completed)
+        XCTAssertEqual(first.indexTraceRecords.first?.trigger, "auto")
+        XCTAssertEqual(first.dreamTraceRecords.first?.trigger, "auto")
+        XCTAssertTrue(first.records.contains { $0.name.hasPrefix("Project Dream") })
+
+        let second = await service.runAutomaticJobsIfDue(projectRoot: root.path, projectName: "Native")
+        XCTAssertEqual(second.indexTraceRecords.count, first.indexTraceRecords.count)
+        XCTAssertEqual(second.dreamTraceRecords.count, first.dreamTraceRecords.count)
+
+        service.updateSettings(MemorySettingsSnapshot(autoIndexIntervalMinutes: 0, autoDreamIntervalMinutes: 0))
+        XCTAssertEqual(service.automaticJobKindsDue(), [])
     }
 
     func testAlwaysOnServiceParsesWebCronAndRunHistoryShape() throws {
@@ -3996,7 +4280,7 @@ final class ParityLogicTests: XCTestCase {
             createdAt: Date(),
             lastActivity: Date()
         )
-        let state = AppState()
+        let state = makeTestAppState()
         state.projects = [project]
         state.selectedProjectID = project.id
 
@@ -5529,7 +5813,7 @@ final class ParityLogicTests: XCTestCase {
 
     @MainActor
     func testSelectingProjectDoesNotShowDraftSession() {
-        let state = AppState()
+        let state = makeTestAppState()
         let project = state.projects[0]
         state.startDraftSession(project: project)
         XCTAssertTrue(state.isDraftSessionVisible)
@@ -5719,7 +6003,7 @@ final class ParityLogicTests: XCTestCase {
 
     @MainActor
     func testComposerRunModeStaysPlanAfterSendUntilPlanDecision() {
-        let state = AppState()
+        let state = makeTestAppState()
         state.composerRunMode = .plan
 
         let requested = state.consumeComposerRunModeForSend()
@@ -5773,39 +6057,48 @@ final class ParityLogicTests: XCTestCase {
         let call = AgentToolCall(
             id: "call-skill",
             name: "Skill",
-            inputJSON: #"{"skill":"g9claw-rag:glm-web-search","args":"weather"}"#
+            inputJSON: #"{"skill":"code-review","args":"review"}"#
         )
         XCTAssertEqual(NativeToolRouter.permissionPolicy(for: call, context: context), .allow)
     }
 
     func testLowercaseSkillToolNameIsCanonicalizedBeforeExecution() async throws {
-        let request = agentRequest(
-            nativeConfigValues: [
-                "rag.enabled": "true",
-                "rag.glmWebSearch.baseUrl": "https://api.z.ai/api/paas/v4/web_search",
-                "rag.glmWebSearch.apiKey": "test-rag-key",
-            ]
-        )
+        let root = try makeAgentWorkspace("g9claw-agent-lowercase-skill")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skillDir = root
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent("demo-skill", isDirectory: true)
+        try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)
+        try """
+        ---
+        name: demo-skill
+        description: Demo skill for native tests.
+        ---
+        Use this skill for tests.
+        """.write(to: skillDir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+
+        let request = agentRequest(projectPath: root.path)
         let context = AgentRunContext(request: request)
         let call = AgentToolCall(
             id: "call-lowercase-skill",
             name: "skill",
-            inputJSON: #"{"skill":"g9claw-rag:rag-research","args":"DARPA autonomous systems"}"#
+            inputJSON: #"{"skill":"demo-skill","args":"demo"}"#
         )
 
         let result = await NativeToolRouter.execute(call: call, context: context)
 
         XCTAssertFalse(result.isError)
         XCTAssertEqual(result.toolName, "Skill")
-        XCTAssertTrue(result.output.contains("g9claw-rag:rag-research"))
-        XCTAssertTrue(context.invokedSkills.contains("g9claw-rag:rag-research"))
+        XCTAssertTrue(result.output.contains("demo-skill"))
+        XCTAssertTrue(context.invokedSkills.contains("demo-skill"))
     }
 
     func testShellInputAliasIsCanonicalizedToCommand() {
         let call = AgentToolCall(
             id: "call-bash-input",
             name: "bash",
-            inputJSON: #"{"input":"python3 scripts/local_knowledge_search.py --query \"DARPA\"","timeout_seconds":30}"#
+            inputJSON: #"{"input":"python3 scripts/search.py --query \"DARPA\"","timeout_seconds":30}"#
         )
 
         let normalized = ToolArgumentNormalizer.normalize(call)
@@ -5813,7 +6106,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertNil(normalized.recoveryResult)
         XCTAssertEqual(normalized.call.name, "Shell")
         let object = try? JSONSerialization.jsonObject(with: Data(normalized.call.inputJSON.utf8)) as? [String: Any]
-        XCTAssertEqual(object?["command"] as? String, #"python3 scripts/local_knowledge_search.py --query "DARPA""#)
+        XCTAssertEqual(object?["command"] as? String, #"python3 scripts/search.py --query "DARPA""#)
         XCTAssertFalse(normalized.call.inputJSON.contains(#""input":"#))
     }
 
@@ -5821,7 +6114,7 @@ final class ParityLogicTests: XCTestCase {
         let call = AgentToolCall(
             id: "call-bash-xml",
             name: "Shell",
-            inputJSON: #"{"command":"<parameter>\npython3 ${G9CLAW_PLUGIN_ROOT}/scripts/local_knowledge_search.py --query \"DARPA autonomous systems research\""}"#
+            inputJSON: #"{"command":"<parameter>\npython3 scripts/search.py --query \"DARPA autonomous systems research\""}"#
         )
 
         let normalized = ToolArgumentNormalizer.normalize(call)
@@ -5830,66 +6123,48 @@ final class ParityLogicTests: XCTestCase {
         let object = try? JSONSerialization.jsonObject(with: Data(normalized.call.inputJSON.utf8)) as? [String: Any]
         XCTAssertEqual(
             object?["command"] as? String,
-            #"python3 ${G9CLAW_PLUGIN_ROOT}/scripts/local_knowledge_search.py --query "DARPA autonomous systems research""#
+            #"python3 scripts/search.py --query "DARPA autonomous systems research""#
         )
     }
 
-    func testSkillRuntimeLoadsBundledRAGSkillAndInjectsEnvironment() throws {
-        let request = agentRequest(
-            nativeConfigValues: [
-                "rag.enabled": "true",
-                "rag.disableBuiltInWebTools": "true",
-                "rag.localKnowledge.baseUrl": "https://local.example.com/",
-                "rag.localKnowledge.apiKey": "local-secret",
-                "rag.localKnowledge.modelName": "retriever-v1",
-                "rag.localKnowledge.milvusUri": "milvus://milvus.example.com:19530",
-                "rag.glmWebSearch.baseUrl": "https://api.z.ai/api/paas/v4/web_search/",
-                "rag.glmWebSearch.apiKey": "test-rag-key",
-            ]
-        )
+    func testSkillRuntimeLoadsProjectSkillWithoutPluginEnvironment() throws {
+        let root = try makeAgentWorkspace("g9claw-project-skill")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skillDir = root
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent("research", isDirectory: true)
+        try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)
+        try """
+        ---
+        name: research
+        description: Project research skill.
+        allowed-tools:
+          - Read
+          - WebSearch
+        ---
+        Use WebSearch for current web evidence when needed.
+        """.write(to: skillDir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+
+        let request = agentRequest(projectPath: root.path)
         let context = AgentRunContext(request: request)
         let output = try SkillRuntimeService.load(
-            inputJSON: #"{"skill":"g9claw-rag:glm-web-search","args":"Beijing weather"}"#,
+            inputJSON: #"{"skill":"research","args":"Beijing weather"}"#,
             context: context
         )
 
-        XCTAssertTrue(output.contains("g9claw-rag:glm-web-search"))
-        XCTAssertTrue(output.contains("glm_web_search.py"))
-        XCTAssertTrue(context.invokedSkills.contains("g9claw-rag:glm-web-search"))
+        XCTAssertTrue(output.contains("Project research skill"))
+        XCTAssertTrue(output.contains("WebSearch"))
+        XCTAssertTrue(context.invokedSkills.contains("research"))
 
         let environment = SkillRuntimeService.environment(configValues: request.nativeConfigValues)
-        XCTAssertEqual(environment["G9CLAW_RAG_ENABLED"], "1")
-        XCTAssertEqual(environment["G9CLAW_RAG_DISABLE_BUILTIN_WEB_TOOLS"], "1")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_BASE_URL"], "https://local.example.com")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_API_KEY"], "local-secret")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_MODEL_NAME"], "retriever-v1")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_DATABASE_URL"], "milvus://milvus.example.com:19530")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_MILVUS_URI"], "milvus://milvus.example.com:19530")
-        XCTAssertEqual(environment["G9CLAW_RAG_LOCAL_KNOWLEDGE_TOP_K"], "8")
-        XCTAssertEqual(environment["G9CLAW_RAG_GLM_WEB_SEARCH_BASE_URL"], "https://api.z.ai/api/paas/v4/web_search")
-        XCTAssertEqual(environment["G9CLAW_RAG_GLM_WEB_SEARCH_API_KEY"], "test-rag-key")
-        XCTAssertEqual(environment["G9CLAW_RAG_GLM_WEB_SEARCH_TOP_K"], "8")
-        XCTAssertNotNil(environment["G9CLAW_PLUGIN_ROOT"])
-        XCTAssertNil(environment["EDGECLAW_PLUGIN_ROOT"])
         XCTAssertNil(environment["CLAU" + "DE_PLUGIN_ROOT"])
     }
 
-    func testBundledRAGPluginResourceIsPackaged() throws {
-        let resources = try XCTUnwrap(Bundle.main.resourceURL)
-        let skillFile = resources
-            .appendingPathComponent("g9claw-rag-plugin", isDirectory: true)
-            .appendingPathComponent("skills", isDirectory: true)
-            .appendingPathComponent("glm-web-search", isDirectory: true)
-            .appendingPathComponent("SKILL.md")
-
-        XCTAssertTrue(FileManager.default.fileExists(atPath: skillFile.path))
-    }
-
-    func testMacNativeAndBundledRAGPluginDoNotContainOldBrandNames() throws {
+    func testMacNativeCodeDoesNotContainOldBrandNames() throws {
         let root = repoRootURL()
         let scanRoots = [
             root.appendingPathComponent("apps/macos-native", isDirectory: true),
-            root.appendingPathComponent("apps/macos-native/G9Claw/Assets/g9claw-rag-plugin", isDirectory: true),
         ]
         let forbidden = [
             "9" + "GClaw",
@@ -6106,6 +6381,14 @@ final class ParityLogicTests: XCTestCase {
             NativeRouterRuntime.decision(forTier: "SIMPLE", values: values, signals: webSignals).scenario,
             "webSearch"
         )
+
+        let stableFunctionSignals = NativeRouterRuntime.requestSignals(
+            prompt: "Normal request with the built-in WebSearch adapter available",
+            priorMessages: [],
+            attachments: [],
+            tools: AgentToolRegistry.openAITools()
+        )
+        XCTAssertFalse(stableFunctionSignals.hasWebSearchTools)
     }
 
     func testRouterRuntimeRequestSignalTokenEstimateIncludesToolSchemasAndImageAttachments() throws {
@@ -6362,11 +6645,11 @@ final class ParityLogicTests: XCTestCase {
           },
           "byModel": {
             "qwen3.6-35b-a3b": { "count": 1, "requestCount": 1 },
-            "skill:g9claw-rag:glm-web-search": { "count": 1, "requestCount": 1 }
+            "tool:web_search": { "count": 1, "requestCount": 1 }
           },
           "byScenario": {
             "default": { "count": 1, "requestCount": 1 },
-            "skill": { "count": 1, "requestCount": 1 }
+            "tool": { "count": 1, "requestCount": 1 }
           },
           "byRole": {
             "main": { "count": 2, "requestCount": 2 }
@@ -6391,12 +6674,12 @@ final class ParityLogicTests: XCTestCase {
               "id": "skill-1",
               "ts": "2026-05-17T08:05:02Z",
               "role": "main",
-              "model": "skill:g9claw-rag:glm-web-search",
+              "model": "tool:web_search",
               "tokens": 0,
               "cost": 0,
-              "query": "Skill invoked",
-              "scenario": "skill",
-              "skill": "g9claw-rag:glm-web-search"
+              "query": "WebSearch invoked",
+              "scenario": "tool",
+              "skill": "web_search"
             }
           ]
         }
@@ -6407,8 +6690,8 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(structured.requestEntries.count, 2)
         XCTAssertEqual(structured.requestEntries.first?.tier, "MEDIUM")
         XCTAssertEqual(structured.requestEntries.first?.query, "Build a weather website")
-        XCTAssertEqual(structured.requestEntries.last?.skill, "g9claw-rag:glm-web-search")
-        XCTAssertEqual(structured.byScenario["skill"]?.requestCount, 1)
+        XCTAssertEqual(structured.requestEntries.last?.skill, "web_search")
+        XCTAssertEqual(structured.byScenario["tool"]?.requestCount, 1)
         XCTAssertEqual(structured.byRole["main"]?.requestCount, 2)
         XCTAssertEqual(structured.total.baselineCost, 0.012)
     }
@@ -6628,13 +6911,20 @@ final class ParityLogicTests: XCTestCase {
 
     @MainActor
     func testOpenSettingsStoresInitialTabWithoutShowingOverlay() {
-        let state = AppState()
+        let state = makeTestAppState()
 
         state.showSettings = false
         state.openSettings(.config)
 
         XCTAssertEqual(state.settingsInitialTab, .config)
         XCTAssertFalse(state.showSettings)
+    }
+
+    @MainActor
+    private func makeTestAppState() -> AppState {
+        let settingsURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("g9claw-test-settings-\(UUID().uuidString).json")
+        return AppState(settingsStore: AppSettingsStore(url: settingsURL))
     }
 
     private func project(name: String, displayName: String, date: Date) -> WorkspaceProject {

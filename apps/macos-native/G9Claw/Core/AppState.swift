@@ -40,7 +40,7 @@ final class AppState: ObservableObject {
     @Published var tokenBudgetBySession: [String: TokenBudget] = [:]
 
     let keychain = KeychainStore()
-    let settingsStore = AppSettingsStore()
+    let settingsStore: AppSettingsStore
     let providerClient = NativeAgentRuntime()
     let workspaceService = WorkspaceService()
     let gitService = GitService()
@@ -61,10 +61,14 @@ final class AppState: ObservableObject {
     private var routingModelBySession: [String: String] = [:]
     private var routingTierBySession: [String: String] = [:]
     private var routingProjectNameBySession: [String: String] = [:]
+    private var memoryProjectNameBySession: [String: String] = [:]
+    private var memoryProjectRootBySession: [String: String] = [:]
+    private var memoryAutomationTask: Task<Void, Never>?
     private var lastErrorBySession: [String: String] = [:]
     private var hasBootstrapped = false
 
-    init() {
+    init(settingsStore: AppSettingsStore = AppSettingsStore()) {
+        self.settingsStore = settingsStore
         settings.generalWorkspacePath = Self.normalizedGeneralWorkspacePath(settings.generalWorkspacePath)
         isSidebarVisible = uiPreferences.sidebarVisible
         selectedProjectID = projects.first?.id
@@ -105,7 +109,12 @@ final class AppState: ObservableObject {
     nonisolated static func normalizedSettings(_ settings: AppSettings) -> AppSettings {
         var normalized = settings
         normalized.generalWorkspacePath = normalizedGeneralWorkspacePath(settings.generalWorkspacePath)
+        normalized.permissions.disallowedTools.removeAll(where: isWebSearchPermissionRule)
         return normalized
+    }
+
+    nonisolated private static func isWebSearchPermissionRule(_ rule: String) -> Bool {
+        AgentToolNameCanonicalizer.canonical(rule) == "WebSearch"
     }
 
     var selectedProject: WorkspaceProject? {
@@ -143,7 +152,11 @@ final class AppState: ObservableObject {
         do {
             _ = try AppPaths.current()
             if let storedSettings = try settingsStore.load() {
-                settings = Self.normalizedSettings(storedSettings)
+                let normalizedSettings = Self.normalizedSettings(storedSettings)
+                settings = normalizedSettings
+                if normalizedSettings != storedSettings {
+                    try? settingsStore.save(normalizedSettings)
+                }
             }
             logBundleNetworkPolicy()
             try bootstrapLocalDebugConfigIfNeeded()
@@ -153,6 +166,7 @@ final class AppState: ObservableObject {
             apiKeyDraft = try keychain.readSecret(account: settings.providerConfig.secretAccount) ?? apiKeyDraft
             loadManualProjectsFromG9ClawConfig()
             refreshNativeToolData()
+            restartMemoryAutomationLoop()
             statusLine = t(.nativeInitialized)
         } catch {
             errorBanner = error.localizedDescription
@@ -175,6 +189,7 @@ final class AppState: ObservableObject {
         isDraftSessionVisible = false
         activeTab = .chat
         refreshNativeToolData()
+        kickMemoryAutomationCheck()
     }
 
     func selectSession(_ session: ProjectSession) {
@@ -416,13 +431,6 @@ final class AppState: ObservableObject {
         )
         append(userMessage)
         touchSessionConversation(sessionID)
-        if let selectedProject, !prompt.isEmpty {
-            _ = memoryService.upsert(
-                name: "session-\(String(sessionID.prefix(8)))",
-                summary: prompt,
-                projectName: selectedProject.name
-            )
-        }
         activitiesBySession[sessionID] = [
             AgentActivity(
                 id: "run-\(assistantID.uuidString)",
@@ -458,31 +466,19 @@ final class AppState: ObservableObject {
             handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID)
             return
         }
+        memoryProjectNameBySession[sessionID] = selectedProject?.name
+        memoryProjectRootBySession[sessionID] = workspacePath
         let nativeConfig = currentNativeConfigSnapshot()
         let apiKey: String
         let basePrompt = agentPrompt(prompt: prompt, attachments: attachments)
-        let memoryContext = memoryService.recallForTurn(
-            prompt: basePrompt,
-            projectName: selectedProject?.name,
-            projectRoot: workspacePath
-        )
-        let promptWithMemory: String
-        if memoryContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            promptWithMemory = basePrompt
-        } else {
-            promptWithMemory = """
-            \(basePrompt)
-
-            Relevant PilotDeck memory context:
-            \(memoryContext)
-            """
-        }
         let nativeConfigValues = nativeConfig?.rawValues ?? [:]
         let routeTier = RoutingService.classifyTier(prompt: prompt, runMode: requestedRunMode)
+        let visibleTools = NativeToolRouter.openAITools(configValues: nativeConfigValues)
         let routeSignals = NativeRouterRuntime.requestSignals(
-            prompt: promptWithMemory,
+            prompt: basePrompt,
             priorMessages: historyBeforeSend,
-            attachments: attachments
+            attachments: attachments,
+            tools: visibleTools
         )
         let routeDecision = NativeRouterRuntime.decision(forTier: routeTier, values: nativeConfigValues, signals: routeSignals)
         let routeEntryID = routeDecision.entryID
@@ -504,28 +500,12 @@ final class AppState: ObservableObject {
             handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID)
             return
         }
-
-        let request = AgentRequest(
-            sessionId: sessionID,
-            projectPath: workspacePath,
-            prompt: promptWithMemory,
-            attachments: attachments,
+        memoryService.updateExtractionRuntime(
             providerConfig: providerConfig,
             apiKey: apiKey,
-            priorMessages: historyBeforeSend,
-            timeoutMs: nativeConfig?.apiTimeoutMs ?? settings.apiTimeoutMs,
-            contextWindow: requestContextWindow,
-            permissionMode: composerPermissionMode,
-            runMode: requestedRunMode,
-            workspaceContext: selectedWorkspaceContext,
-            toolSettings: settings.permissions,
-            routerRoute: routeDecision.scenario,
-            nativeConfigValues: nativeConfigValues,
-            permissionHandler: { [weak self] permission in
-                guard let self else { return .deny }
-                return await self.requestAgentPermission(permission)
-            }
+            timeoutMs: nativeConfig?.apiTimeoutMs ?? settings.apiTimeoutMs
         )
+
         let routingProjectName = selectedProject?.displayName ?? "general"
         routingModelBySession[sessionID] = providerConfig.model
         routingTierBySession[sessionID] = routeTier
@@ -535,7 +515,7 @@ final class AppState: ObservableObject {
             title: selectedSession?.displayTitle ?? promptTitle(from: prompt),
             projectName: routingProjectName,
             model: providerConfig.model,
-            route: request.routerRoute,
+            route: routeDecision.scenario,
             tier: routeDecision.tier ?? routeTier,
             query: prompt
         )
@@ -544,9 +524,49 @@ final class AppState: ObservableObject {
         activeRunToken = runToken
         activeAgentTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            let memoryResult = await self.memoryService.retrieveContextForTurn(
+                query: basePrompt,
+                recentMessages: historyBeforeSend + [userMessage],
+                sessionID: sessionID,
+                projectName: self.memoryProjectNameBySession[sessionID],
+                projectRoot: workspacePath
+            )
+            let promptWithMemory: String
+            if memoryResult.injected {
+                promptWithMemory = """
+                <memory-context>
+                \(memoryResult.systemContext)
+                </memory-context>
+
+                \(basePrompt)
+                """
+            } else {
+                promptWithMemory = basePrompt
+            }
+            let request = AgentRequest(
+                sessionId: sessionID,
+                projectPath: workspacePath,
+                prompt: promptWithMemory,
+                attachments: attachments,
+                providerConfig: providerConfig,
+                apiKey: apiKey,
+                priorMessages: historyBeforeSend,
+                timeoutMs: nativeConfig?.apiTimeoutMs ?? self.settings.apiTimeoutMs,
+                contextWindow: requestContextWindow,
+                permissionMode: self.composerPermissionMode,
+                runMode: requestedRunMode,
+                workspaceContext: self.selectedWorkspaceContext,
+                toolSettings: self.settings.permissions,
+                routerRoute: routeDecision.scenario,
+                nativeConfigValues: nativeConfigValues,
+                permissionHandler: { [weak self] permission in
+                    guard let self else { return .deny }
+                    return await self.requestAgentPermission(permission)
+                }
+            )
             var sawTerminalEvent = false
             do {
-                for try await event in providerClient.stream(request: request) {
+                for try await event in self.providerClient.stream(request: request) {
                     if event.isTerminal {
                         sawTerminalEvent = true
                     }
@@ -615,6 +635,7 @@ final class AppState: ObservableObject {
             markSession(selectedSessionID, state: .idle)
             finishStreamingMessage(sessionID: selectedSessionID)
             cancelRunningActivities(sessionID: selectedSessionID)
+            captureMemoryTurn(sessionID: selectedSessionID, errored: false, interrupted: true)
         }
         statusLine = t(.stopGeneration)
     }
@@ -632,6 +653,7 @@ final class AppState: ObservableObject {
             finishStreamingMessage(sessionID: selectedSessionID)
             cancelRunningActivities(sessionID: selectedSessionID)
             markSession(selectedSessionID, state: .idle)
+            captureMemoryTurn(sessionID: selectedSessionID, errored: false, interrupted: true)
         }
     }
 
@@ -762,6 +784,7 @@ final class AppState: ObservableObject {
             applyNativeConfigFromCurrentText()
             try settingsStore.save(settings)
             refreshNativeToolData()
+            restartMemoryAutomationLoop()
             settingsSaveNotice = t(.saved)
             statusLine = t(.settingsSaved)
         } catch {
@@ -877,9 +900,43 @@ final class AppState: ObservableObject {
         memoryService.loadWorkspaceRecords(projectRoot: workspacePath, projectName: selectedProject.name)
     }
 
+    private func restartMemoryAutomationLoop() {
+        memoryAutomationTask?.cancel()
+        memoryAutomationTask = nil
+        guard memoryService.settingsSnapshot().enabled else { return }
+        memoryAutomationTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                await self?.runDueMemoryAutomation()
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+            }
+        }
+    }
+
+    private func kickMemoryAutomationCheck() {
+        Task { @MainActor [weak self] in
+            await self?.runDueMemoryAutomation()
+        }
+    }
+
+    private func runDueMemoryAutomation() async {
+        guard let selectedProject else { return }
+        let projectRoot = effectiveWorkspacePath(for: selectedProject)
+        let before = memoryService.automaticJobKindsDue(projectRoot: projectRoot, projectName: selectedProject.name)
+        guard !before.isEmpty else { return }
+        let snapshot = await memoryService.runAutomaticJobsIfDue(
+            projectRoot: projectRoot,
+            projectName: selectedProject.name
+        )
+        if !snapshot.indexTraceRecords.isEmpty || !snapshot.dreamTraceRecords.isEmpty {
+            statusLine = t(.memory)
+            bumpToolRefresh()
+        }
+    }
+
     func addAllowedTool(_ tool: String) {
         let canonical = canonicalPermissionRule(tool)
         guard !canonical.isEmpty else { return }
+        removeMatchingPermissionRule(canonical, from: \.disallowedTools)
         addUnique(canonical, to: \.allowedTools)
         persistSettingsAfterPermissionChange()
     }
@@ -887,6 +944,8 @@ final class AppState: ObservableObject {
     func addBlockedTool(_ tool: String) {
         let canonical = canonicalPermissionRule(tool)
         guard !canonical.isEmpty else { return }
+        guard canonical != "WebSearch" else { return }
+        removeMatchingPermissionRule(canonical, from: \.allowedTools)
         addUnique(canonical, to: \.disallowedTools)
         persistSettingsAfterPermissionChange()
     }
@@ -930,6 +989,7 @@ final class AppState: ObservableObject {
         let blocked = payload["disallowedTools"] as? [String] ?? []
         let mergedAllowed = uniqueCanonicalRules(settings.permissions.allowedTools + allowed)
         let mergedBlocked = uniqueCanonicalRules(settings.permissions.disallowedTools + blocked)
+            .filter { !Self.isWebSearchPermissionRule($0) }
         settings.permissions.disallowedTools = mergedBlocked
         settings.permissions.allowedTools = mergedAllowed
         settings.permissions.lastUpdated = Date()
@@ -1179,6 +1239,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func removeMatchingPermissionRule(_ tool: String, from keyPath: WritableKeyPath<ToolPermissionSettings, [String]>) {
+        let count = settings.permissions[keyPath: keyPath].count
+        settings.permissions[keyPath: keyPath].removeAll { permissionRuleEquals($0, tool) }
+        if settings.permissions[keyPath: keyPath].count != count {
+            settings.permissions.lastUpdated = Date()
+        }
+    }
+
     private func canonicalPermissionRule(_ tool: String) -> String {
         let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
@@ -1253,6 +1321,8 @@ final class AppState: ObservableObject {
         turnsBySession.removeValue(forKey: sessionID)
         turnItemsBySession.removeValue(forKey: sessionID)
         lastErrorBySession.removeValue(forKey: sessionID)
+        memoryProjectNameBySession.removeValue(forKey: sessionID)
+        memoryProjectRootBySession.removeValue(forKey: sessionID)
         guard let paths = try? AppPaths.current() else { return }
         try? FileManager.default.removeItem(at: paths.sessions.appendingPathComponent("\(sessionID).json"))
     }
@@ -1414,6 +1484,7 @@ final class AppState: ObservableObject {
             markSession(sessionId, state: .idle)
             touchSessionConversation(sessionId)
             completeRunningActivities(sessionID: sessionId, anchorBlockID: assistantID.uuidString)
+            captureMemoryTurn(sessionID: sessionId, errored: false, interrupted: false)
             statusLine = t(.complete)
             finalizeAgentRun(runToken: runToken)
         case .aborted(let sessionId):
@@ -1421,6 +1492,7 @@ final class AppState: ObservableObject {
             finishStreamingMessage(sessionID: sessionId)
             markSession(sessionId, state: .idle)
             cancelRunningActivities(sessionID: sessionId, anchorBlockID: assistantID.uuidString)
+            captureMemoryTurn(sessionID: sessionId, errored: false, interrupted: true)
             statusLine = t(.aborted)
             finalizeAgentRun(runToken: runToken)
         case .error(let message):
@@ -1432,10 +1504,24 @@ final class AppState: ObservableObject {
                 touchSessionConversation(targetSessionID)
                 finishStreamingMessage(sessionID: targetSessionID)
                 failRunningActivities(sessionID: targetSessionID, message: message, anchorBlockID: assistantID.uuidString)
+                captureMemoryTurn(sessionID: targetSessionID, errored: true, interrupted: false)
             }
             errorBanner = message
             finalizeAgentRun(runToken: runToken)
         }
+    }
+
+    private func captureMemoryTurn(sessionID: String, errored: Bool, interrupted: Bool) {
+        let projectName = memoryProjectNameBySession[sessionID] ?? projectName(forSessionID: sessionID)
+        let projectRoot = memoryProjectRootBySession[sessionID] ?? projectRoot(forSessionID: sessionID)
+        _ = memoryService.captureTurn(
+            messages: messagesBySession[sessionID] ?? [],
+            sessionID: sessionID,
+            projectName: projectName,
+            projectRoot: projectRoot,
+            errored: errored,
+            interrupted: interrupted
+        )
     }
 
     private func upsertTurn(_ turn: AgentTurn) {
@@ -1840,6 +1926,20 @@ final class AppState: ObservableObject {
         return t(.newSession)
     }
 
+    private func projectName(forSessionID sessionID: String) -> String? {
+        for project in projects where project.allSessions.contains(where: { $0.id == sessionID }) {
+            return project.name
+        }
+        return selectedProject?.name
+    }
+
+    private func projectRoot(forSessionID sessionID: String) -> String? {
+        for project in projects where project.allSessions.contains(where: { $0.id == sessionID }) {
+            return effectiveWorkspacePath(for: project)
+        }
+        return selectedProject.map { effectiveWorkspacePath(for: $0) }
+    }
+
     private func contextBudgetTitle(_ level: ContextBudgetLevel) -> String {
         let zh = settings.language.resolved() == .chineseSimplified
         switch level {
@@ -2138,19 +2238,25 @@ enum G9ClawConfigDefaults {
           includeAssistant: true
           maxMessageChars: 6000
           heartbeatBatchSize: 30
-        rag:
-          enabled: false
-          disableBuiltInWebTools: true
-          localKnowledge:
-            baseUrl: ""
+        tools:
+          webSearch:
+            provider: glm
             apiKey: ""
-            modelName: ""
-            databaseUrl: ""
-            defaultTopK: 8
-          glmWebSearch:
-            baseUrl: ""
-            apiKey: ""
-            defaultTopK: 8
+            endpoint: https://api.z.ai/api/paas/v4/web_search
+            timeoutMs: 30000
+            organicLimit: 8
+            customProvider:
+              name: custom
+              auth: bearer
+              method: POST
+              queryParam: query
+              apiKeyParam: api_key
+              resultsPath: ""
+              titleField: title
+              urlField: url
+              snippetField: snippet
+              sourceField: source
+              publishedAtField: publishedAt
         router:
           enabled: false
           log: true
@@ -2530,11 +2636,6 @@ enum NativeConfigService {
         }
         normalized = normalized.filter { !$0.key.hasPrefix("agents.alwaysOn.") }
 
-        if normalized["rag.localKnowledge.databaseUrl"]?.nilIfBlank == nil,
-           let milvusURI = normalized["rag.localKnowledge.milvusUri"]?.nilIfBlank {
-            normalized["rag.localKnowledge.databaseUrl"] = milvusURI
-        }
-        normalized.removeValue(forKey: "rag.localKnowledge.milvusUri")
         normalized = normalized.filter { $0.key != "compat" && !$0.key.hasPrefix("compat.") }
 
         return normalized

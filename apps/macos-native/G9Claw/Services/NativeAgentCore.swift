@@ -303,8 +303,8 @@ actor NativeTurnController {
 }
 
 enum NativeToolRouter {
-    static func openAITools() -> [[String: Any]] {
-        AgentToolRegistry.openAITools()
+    static func openAITools(configValues: [String: String] = [:]) -> [[String: Any]] {
+        AgentToolRegistry.openAITools(configValues: configValues)
     }
 
     static func permissionPolicy(for call: AgentToolCall, context: AgentRunContext) -> AgentPermissionPolicy.Result {

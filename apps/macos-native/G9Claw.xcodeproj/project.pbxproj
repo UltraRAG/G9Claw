@@ -33,7 +33,6 @@
 		B040 /* g9claw-logo.png in Resources */ = {isa = PBXBuildFile; fileRef = F040 /* g9claw-logo.png */; };
 		B041 /* g9claw-logo-white.png in Resources */ = {isa = PBXBuildFile; fileRef = F041 /* g9claw-logo-white.png */; };
 		B042 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F042 /* Assets.xcassets */; };
-		B043 /* g9claw-rag-plugin in Resources */ = {isa = PBXBuildFile; fileRef = F043 /* g9claw-rag-plugin */; };
 		B100 /* ParityLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100 /* ParityLogicTests.swift */; };
 		BF900 /* HighlightSwift in Frameworks */ = {isa = PBXBuildFile; productRef = PD900 /* HighlightSwift */; };
 		BF901 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FW901 /* AppIntents.framework */; };
@@ -78,7 +77,6 @@
 		F040 /* g9claw-logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "g9claw-logo.png"; sourceTree = "<group>"; };
 		F041 /* g9claw-logo-white.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "g9claw-logo-white.png"; sourceTree = "<group>"; };
 		F042 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		F043 /* g9claw-rag-plugin */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "g9claw-rag-plugin"; sourceTree = "<group>"; };
 		F100 /* ParityLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityLogicTests.swift; sourceTree = "<group>"; };
 		FW901 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 		TEST01 /* G9ClawTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = G9ClawTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -184,7 +182,6 @@
 				F042 /* Assets.xcassets */,
 				F040 /* g9claw-logo.png */,
 				F041 /* g9claw-logo-white.png */,
-				F043 /* g9claw-rag-plugin */,
 			);
 			path = Assets;
 			sourceTree = "<group>";
@@ -304,7 +301,6 @@
 				B042 /* Assets.xcassets in Resources */,
 				B040 /* g9claw-logo.png in Resources */,
 				B041 /* g9claw-logo-white.png in Resources */,
-				B043 /* g9claw-rag-plugin in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

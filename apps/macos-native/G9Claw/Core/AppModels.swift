@@ -982,7 +982,6 @@ struct ToolPermissionSettings: Hashable, Codable {
         "Bash(rm:*)",
         "Bash(sudo:*)",
         "WebFetch",
-        "WebSearch",
     ]
 
     static let defaults = ToolPermissionSettings(
@@ -1034,7 +1033,7 @@ enum G9ClawConfigSection: String, CaseIterable, Identifiable {
     case models
     case alwaysOn
     case memory
-    case rag
+    case search
     case router
     case gateway
     case raw
@@ -1047,7 +1046,7 @@ enum G9ClawConfigSection: String, CaseIterable, Identifiable {
         case .models: "Models"
         case .alwaysOn: "Always-On"
         case .memory: "Memory"
-        case .rag: "RAG"
+        case .search: "Search"
         case .router: "Router"
         case .gateway: "Gateway"
         case .raw: "Raw YAML"

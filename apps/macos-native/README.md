@@ -58,5 +58,5 @@ warning on a new Mac.
   settings, tasks, memory, and skills.
 - Native service boundaries for provider streaming, workspace/files, git,
   shell, tasks, memory, skills, Keychain, logs, and app paths.
-- Bundled RAG plugin resources under `G9Claw/Assets/g9claw-rag-plugin`.
+- Built-in WebSearch provider adapter for GLM/Z.AI, Tavily, and custom APIs.
 - Unit tests for the native app runtime and UI logic.
