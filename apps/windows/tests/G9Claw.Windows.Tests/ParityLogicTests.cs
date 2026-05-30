@@ -41,6 +41,51 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void WorkspaceFileListingReportsHiddenOnlyRoots()
+    {
+        using var temp = new TempWorkspace();
+        var service = new WorkspaceService(temp.Root);
+
+        Directory.CreateDirectory(Path.Combine(temp.Root, ".pilotdeck"));
+        var hiddenOnly = service.FileListing(temp.Root);
+
+        Assert.Empty(hiddenOnly.Files);
+        Assert.Equal(0, hiddenOnly.VisibleRootItemCount);
+        Assert.Equal(1, hiddenOnly.SkippedRootItemCount);
+        Assert.True(hiddenOnly.IsRootHiddenOnly);
+
+        Directory.CreateDirectory(Path.Combine(temp.Root, "Sources"));
+        var visible = service.FileListing(temp.Root);
+
+        Assert.Equal(["Sources"], visible.Files.Select(file => file.Name));
+        Assert.Equal(1, visible.VisibleRootItemCount);
+        Assert.False(visible.IsRootHiddenOnly);
+    }
+
+    [Fact]
+    public void WorkspaceTextReadRejectsBinaryAndLargeFiles()
+    {
+        using var temp = new TempWorkspace();
+        var service = new WorkspaceService(temp.Root);
+
+        var textPath = Path.Combine(temp.Root, "note.txt");
+        File.WriteAllText(textPath, "hello");
+        Assert.Equal("hello", service.ReadTextFile(textPath).Content);
+
+        var binaryPath = Path.Combine(temp.Root, "asset.bin");
+        File.WriteAllBytes(binaryPath, [0, 1, 2, 3]);
+        var binaryRead = Assert.Throws<WorkspaceFileReadException>(() => service.ReadTextFile(binaryPath));
+        Assert.Equal(WorkspaceFileReadError.BinaryFile, binaryRead.Error);
+
+        var largePath = Path.Combine(temp.Root, "large.txt");
+        File.WriteAllText(largePath, new string('x', 12));
+        var largeRead = Assert.Throws<WorkspaceFileReadException>(() => service.ReadTextFile(largePath, 8));
+        Assert.Equal(WorkspaceFileReadError.FileTooLarge, largeRead.Error);
+        Assert.Equal(12, largeRead.ByteCount);
+        Assert.Equal(8, largeRead.Limit);
+    }
+
+    [Fact]
     public void ProjectSortingByNameMatchesSidebarPolicy()
     {
         var now = DateTimeOffset.UtcNow;

@@ -2,7 +2,24 @@ using System.Text;
 
 namespace G9Claw.Windows.Core;
 
+public enum WorkspaceFileReadError
+{
+    BinaryFile,
+    FileTooLarge,
+    UnsupportedEncoding,
+}
+
 public sealed record WorkspaceValidationResult(bool Valid, string? ResolvedPath, string? Error);
+public sealed record WorkspaceTextFileRead(string Content, int ByteCount);
+public sealed record WorkspaceFileListing(
+    IReadOnlyList<WorkspaceFile> Files,
+    int VisibleRootItemCount,
+    int SkippedRootItemCount,
+    int SkippedItemCount)
+{
+    public bool IsRootHiddenOnly => VisibleRootItemCount == 0 && SkippedRootItemCount > 0;
+}
+
 public sealed record WorkspacePreview(
     string Path,
     string RelativePath,
@@ -19,6 +36,45 @@ public enum WorkspacePreviewKind
     Pdf,
     Image,
     Binary,
+}
+
+public sealed class WorkspaceFileReadException : Exception
+{
+    public WorkspaceFileReadError Error { get; }
+    public long? ByteCount { get; }
+    public long? Limit { get; }
+
+    public WorkspaceFileReadException(WorkspaceFileReadError error, long? byteCount = null, long? limit = null)
+        : base(Message(error, byteCount, limit))
+    {
+        Error = error;
+        ByteCount = byteCount;
+        Limit = limit;
+    }
+
+    private static string Message(WorkspaceFileReadError error, long? byteCount, long? limit) => error switch
+    {
+        WorkspaceFileReadError.BinaryFile => "This file appears to be binary and cannot be edited as text.",
+        WorkspaceFileReadError.FileTooLarge => $"This file is too large to edit safely ({FormatBytes(byteCount ?? 0)}; limit {FormatBytes(limit ?? 0)}).",
+        WorkspaceFileReadError.UnsupportedEncoding => "This file is not valid UTF-8 text.",
+        _ => "Unable to read file.",
+    };
+
+    private static string FormatBytes(long value)
+    {
+        if (value < 1_024) return $"{value} B";
+        var units = new[] { "KB", "MB", "GB" };
+        var scaled = (double)value;
+        var index = -1;
+        do
+        {
+            scaled /= 1_024;
+            index++;
+        }
+        while (scaled >= 1_024 && index < units.Length - 1);
+
+        return $"{scaled:F1} {units[index]}";
+    }
 }
 
 public sealed class WorkspaceService
@@ -131,11 +187,83 @@ public sealed class WorkspaceService
 
     public IReadOnlyList<WorkspaceFile> ListFiles(string rootPath, ISet<string>? expandedDirectories = null)
     {
+        return FileListing(rootPath, expandedDirectories).Files;
+    }
+
+    public WorkspaceFileListing FileListing(string rootPath, ISet<string>? expandedDirectories = null)
+    {
         var root = PathHelpers.NormalizeFullPath(rootPath);
         EnsureInsideWorkspace(rootPath, root);
         var output = new List<WorkspaceFile>();
-        Walk(root, root, 0, expandedDirectories ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase), output);
-        return output;
+        var expanded = expandedDirectories ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var visibleRootItemCount = 0;
+        var skippedRootItemCount = 0;
+        var skippedItemCount = 0;
+
+        Walk(root, root, 0, expanded, output, ref visibleRootItemCount, ref skippedRootItemCount, ref skippedItemCount);
+        return new WorkspaceFileListing(output, visibleRootItemCount, skippedRootItemCount, skippedItemCount);
+    }
+
+    public WorkspaceTextFileRead ReadTextFile(string path, int maxBytes = 1_000_000)
+    {
+        var resolved = ResolveWorkspacePath(path, WorkspaceRoot);
+        var info = new FileInfo(resolved);
+        if (info.Length > maxBytes)
+        {
+            throw new WorkspaceFileReadException(WorkspaceFileReadError.FileTooLarge, info.Length, maxBytes);
+        }
+
+        var bytes = File.ReadAllBytes(resolved);
+        if (IsProbablyBinaryFile(bytes))
+        {
+            throw new WorkspaceFileReadException(WorkspaceFileReadError.BinaryFile);
+        }
+
+        try
+        {
+            return new WorkspaceTextFileRead(Encoding.UTF8.GetString(bytes), bytes.Length);
+        }
+        catch (DecoderFallbackException)
+        {
+            throw new WorkspaceFileReadException(WorkspaceFileReadError.UnsupportedEncoding);
+        }
+    }
+
+    public static bool IsProbablyBinaryFile(string path, int sampleByteLimit = 4_096)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var sample = new byte[Math.Min(sampleByteLimit, stream.Length)];
+            var read = stream.Read(sample, 0, sample.Length);
+            for (var i = 0; i < read; i++)
+            {
+                if (sample[i] == 0)
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static bool IsProbablyBinaryFile(byte[] data, int sampleByteLimit = 4_096)
+    {
+        var sampleLength = Math.Min(sampleByteLimit, data.Length);
+        for (var i = 0; i < sampleLength; i++)
+        {
+            if (data[i] == 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public string ReadFile(string path, string workspaceRoot)
@@ -265,12 +393,41 @@ public sealed class WorkspaceService
         return resolved;
     }
 
-    private static void Walk(string root, string directory, int depth, ISet<string> expandedDirectories, List<WorkspaceFile> output)
+    private static void Walk(
+        string root,
+        string directory,
+        int depth,
+        ISet<string> expandedDirectories,
+        List<WorkspaceFile> output,
+        ref int visibleRootItemCount,
+        ref int skippedRootItemCount,
+        ref int skippedItemCount)
     {
-        foreach (var path in Directory.EnumerateFileSystemEntries(directory)
-                     .Where(path => !HiddenNames.Contains(Path.GetFileName(path)))
+        var visible = new List<string>();
+        var skipped = new List<string>();
+        foreach (var path in Directory.EnumerateFileSystemEntries(directory))
+        {
+            if (ShouldHideFile(path))
+            {
+                skipped.Add(path);
+            }
+            else
+            {
+                visible.Add(path);
+            }
+        }
+
+        if (depth == 0)
+        {
+            visibleRootItemCount = visible.Count;
+            skippedRootItemCount = skipped.Count;
+        }
+
+        skippedItemCount += skipped.Count;
+
+        foreach (var path in visible
                      .OrderByDescending(Directory.Exists)
-                     .ThenBy(Path.GetFileName, StringComparer.CurrentCultureIgnoreCase))
+                     .ThenBy(path => Path.GetFileName(path), StringComparer.CurrentCultureIgnoreCase))
         {
             var info = new FileInfo(path);
             var isDirectory = Directory.Exists(path);
@@ -288,9 +445,15 @@ public sealed class WorkspaceService
 
             if (isDirectory && expandedDirectories.Contains(path))
             {
-                Walk(root, path, depth + 1, expandedDirectories, output);
+                Walk(root, path, depth + 1, expandedDirectories, output, ref visibleRootItemCount, ref skippedRootItemCount, ref skippedItemCount);
             }
         }
+    }
+
+    private static bool ShouldHideFile(string path)
+    {
+        var name = Path.GetFileName(path);
+        return HiddenNames.Contains(name) || name.StartsWith(".", StringComparison.Ordinal);
     }
 
     private static string SafeChildName(string value)
