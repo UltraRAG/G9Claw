@@ -49,24 +49,35 @@ public static class NativeConfigService
     public static NativeConfigSnapshot? Snapshot(string yaml)
     {
         var values = ScalarMap(yaml);
-        var defaultEntry = Values.TryGetNonBlank(values, "agents.main.model") ??
-                           Values.TryGetNonBlank(values, "router.routes.default.model") ??
-                           Values.TryGetNonBlank(values, "router.default") ??
-                           "default";
-        var entryId = values.ContainsKey($"models.entries.{defaultEntry}.provider") ? defaultEntry : "default";
-        var providerConfig = ProviderConfigFor(entryId, values);
+        var defaultEntry = PickFirstConfiguredEntry(values,
+            "agents.main.model",
+            "router.routes.default.model",
+            "router.default");
+        var providerConfig = ProviderConfigFor(defaultEntry, values);
         if (providerConfig is null) return null;
 
-        var providerId = ProviderId(entryId, values);
+        var providerId = ProviderId(defaultEntry, values);
         return new NativeConfigSnapshot(
             providerConfig,
             Values.TryGetNonBlank(values, $"models.providers.{providerId}.apiKey"),
             Values.TryGetNonBlank(values, "runtime.workspacesRoot"),
             Values.TryGetNonBlank(values, "gateway.runtimePaths.generalCwd"),
             Values.TryGetInt(values, "runtime.apiTimeoutMs") ?? Values.TryGetInt(values, "router.apiTimeoutMs") ?? 120_000,
-            Values.TryGetInt(values, $"models.entries.{entryId}.contextWindow") ?? Values.TryGetInt(values, "runtime.contextWindow") ?? 160_000,
-            entryId,
+            Values.TryGetInt(values, $"models.entries.{defaultEntry}.contextWindow") ?? Values.TryGetInt(values, "runtime.contextWindow") ?? 160_000,
+            defaultEntry,
             values);
+    }
+
+    private static string PickFirstConfiguredEntry(Dictionary<string, string> values, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            var candidate = Values.TryGetNonBlank(values, key);
+            if (!HasModelEntry(values, candidate)) continue;
+            return candidate!;
+        }
+
+        return "default";
     }
 
     public static Dictionary<string, string> ScalarMap(string yaml)
