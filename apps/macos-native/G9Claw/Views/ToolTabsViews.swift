@@ -2345,7 +2345,8 @@ private struct MemoryTimelineStep: View {
 
 struct SkillsView: View {
     @EnvironmentObject private var state: AppState
-    @State private var selectedSkillID: UUID?
+    @State private var selectedSkillKey: String?
+    @State private var skillFilter = ""
     @State private var editorContent = ""
     @State private var originalContent = ""
     @State private var showNew = false
@@ -2361,32 +2362,79 @@ struct SkillsView: View {
     @State private var hubInstallingSlug: String?
     @State private var forceInstallSlugs: Set<String> = []
     @State private var modalNotice: String?
+    @State private var modalError: String?
     @State private var importSource: URL?
+    @State private var importSourceText = ""
     @State private var importSlug = ""
+    @State private var importOverwrite = false
+    @State private var transferOverwrite = false
+    @State private var pendingDelete: SkillRecord?
 
     private var selectedSkill: SkillRecord? {
-        state.skillsService.skills.first { $0.id == selectedSkillID }
+        state.skillsService.skills.first { skillKey($0) == selectedSkillKey }
+    }
+
+    private var isGeneralContext: Bool {
+        guard let selectedProject = state.selectedProject else { return true }
+        return state.isGeneralProject(selectedProject)
+    }
+
+    private var currentProjectPath: String? {
+        guard let selectedProject = state.selectedProject, !state.isGeneralProject(selectedProject) else {
+            return nil
+        }
+        return state.effectiveWorkspacePath(for: selectedProject)
+    }
+
+    private var projectSkills: [SkillRecord] {
+        filteredSkills(scope: .project)
+    }
+
+    private var userSkills: [SkillRecord] {
+        filteredSkills(scope: .user)
+    }
+
+    private var hasAnySkills: Bool {
+        !state.skillsService.skills.isEmpty
+    }
+
+    private var selectedDestinationScope: SkillScope {
+        isGeneralContext ? .user : newScope
+    }
+
+    private var currentTargetRoot: String {
+        destinationPath(for: selectedDestinationScope)
+    }
+
+    private var importURLFromText: URL? {
+        let trimmed = importSourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return importSource }
+        return URL(fileURLWithPath: NSString(string: trimmed).expandingTildeInPath)
     }
 
     var body: some View {
         VStack(spacing: 0) {
             ToolToolbar(
                 title: state.t(.skills),
-                subtitle: state.selectedWorkspaceContext?.isGeneral == true
-                    ? state.t(.generalSkillsOnly)
-                    : (state.selectedWorkspaceContext?.rootPath ?? state.t(.noProjectSelected))
+                subtitle: toolbarSubtitle
             ) {
                 Button(state.t(.refresh)) { refresh() }.buttonStyle(WebToolbarButtonStyle())
-                Button(state.t(.importAction)) { importSkill() }.buttonStyle(WebToolbarButtonStyle())
-                Button(state.t(.newAction)) {
-                    newScope = state.selectedWorkspaceContext?.isGeneral == true ? .user : .project
-                    showNew = true
+                Button {
+                    openNew(tab: .importFolder)
+                } label: {
+                    Label(state.t(.importAction), systemImage: "folder.badge.plus")
+                }
+                .buttonStyle(WebToolbarButtonStyle())
+                Button {
+                    openNew(tab: .install)
+                } label: {
+                    Label(state.t(.newAction), systemImage: "plus")
                 }
                 .buttonStyle(WebToolbarButtonStyle(isProminent: true))
             }
             HStack(spacing: 0) {
                 skillsList
-                    .frame(width: 288)
+                    .frame(width: 304)
                 Rectangle().fill(DesignTokens.separator).frame(width: 1)
                 skillDetail
             }
@@ -2394,35 +2442,109 @@ struct SkillsView: View {
         .background(DesignTokens.background)
         .sheet(isPresented: $showNew) {
             newSkillSheet
-                .frame(width: 760, height: 560)
+                .frame(width: 780, height: 590)
+        }
+        .confirmationDialog(
+            localized("Delete skill?", "删除这个技能？"),
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingDelete = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let skill = pendingDelete {
+                Button(state.t(.delete), role: .destructive) { delete(skill) }
+            }
+            Button(state.t(.cancel), role: .cancel) { pendingDelete = nil }
+        } message: {
+            if let skill = pendingDelete {
+                Text(localized("This removes \(skill.name) from \(scopeTitle(skill.scope).lowercased()).", "这会从\(scopeTitle(skill.scope))中移除 \(skill.name)。"))
+            }
         }
         .task { refresh() }
     }
 
     private var skillsList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 10) {
-                SkillScopeSection(
-                    title: state.t(.projectSkills),
-                    skills: state.skillsService.skills.filter { $0.scope == .project },
-                    selectedSkillID: selectedSkillID,
-                    onSelect: select
-                )
-                .opacity(state.selectedWorkspaceContext?.isGeneral == true ? 0 : 1)
-                SkillScopeSection(
-                    title: state.t(.userSkills),
-                    skills: state.skillsService.skills.filter { $0.scope == .user },
-                    selectedSkillID: selectedSkillID,
-                    onSelect: select
-                )
-                if state.skillsService.skills.isEmpty {
-                    Text(state.t(.noSkillsYet))
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                scopeIntro
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
                         .font(.system(size: 12))
                         .foregroundStyle(DesignTokens.tertiaryText)
-                        .padding(16)
+                    TextField(localized("Search skills", "搜索技能"), text: $skillFilter)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                    if !skillFilter.isEmpty {
+                        Button {
+                            skillFilter = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator.opacity(0.58)))
             }
-            .padding(.vertical, 10)
+            .padding(12)
+            .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator.opacity(0.72)).frame(height: 1) }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if !isGeneralContext {
+                        SkillScopeSection(
+                            title: scopeTitle(.project),
+                            detail: localized("Only active in this project. Project skills win on name conflicts.", "仅当前项目生效。同名时项目技能优先。"),
+                            emptyTitle: localized("No project skills", "暂无项目技能"),
+                            skills: projectSkills,
+                            selectedSkillKey: selectedSkillKey,
+                            keyForSkill: skillKey,
+                            onSelect: select
+                        )
+                    }
+                    SkillScopeSection(
+                        title: scopeTitle(.user),
+                        detail: isGeneralContext
+                            ? localized("Available to General chat and every project.", "会在通用对话和所有项目里生效。")
+                            : localized("Shared across General chat and every project.", "通用对话和所有项目共享。"),
+                        emptyTitle: localized("No global skills", "暂无全局技能"),
+                        skills: userSkills,
+                        selectedSkillKey: selectedSkillKey,
+                        keyForSkill: skillKey,
+                        onSelect: select
+                    )
+                    if !hasAnySkills || (projectSkills.isEmpty && userSkills.isEmpty) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(
+                                skillFilter.isEmpty ? localized("No skills yet", "暂无技能") : localized("No matching skills", "没有匹配的技能"),
+                                systemImage: "sparkles"
+                            )
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(DesignTokens.text)
+                            Text(skillFilter.isEmpty
+                                 ? localized("Install from ClawHub, import a folder, or write one from scratch.", "可以从 ClawHub 安装、导入文件夹，或自己写一个。")
+                                 : localized("Try a different name, description, slug, or scope.", "换个名称、描述、slug 或作用域再试。"))
+                                .font(.system(size: 12))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                                .lineLimit(3)
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.radius))
+                        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator.opacity(0.58)))
+                        .padding(.horizontal, 10)
+                    }
+                }
+                .padding(.vertical, 12)
+            }
         }
     }
 
@@ -2430,40 +2552,84 @@ struct SkillsView: View {
     private var skillDetail: some View {
         if let skill = selectedSkill {
             VStack(spacing: 0) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 8) {
-                            Text(skill.name)
-                                .font(.system(size: 14, weight: .semibold))
-                            Text(skill.scope.rawValue)
-                                .font(.system(size: 10, weight: .semibold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background((skill.scope == .project ? DesignTokens.accent : DesignTokens.warning).opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: 12) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(scopeTint(skill.scope).opacity(0.12))
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundStyle(scopeTint(skill.scope))
                         }
-                        Text(skill.description.isEmpty ? skill.slug : skill.description)
-                            .font(.system(size: 11))
-                            .foregroundStyle(DesignTokens.tertiaryText)
-                        Text(skill.skillDir)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(DesignTokens.tertiaryText)
+                        .frame(width: 42, height: 42)
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(spacing: 8) {
+                                Text(skill.name)
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .lineLimit(1)
+                                ScopeBadge(title: scopeTitle(skill.scope), tint: scopeTint(skill.scope))
+                                if let version = skill.version {
+                                    ScopeBadge(title: "v\(version)", tint: DesignTokens.tertiaryText)
+                                }
+                                if editorContent != originalContent {
+                                    ScopeBadge(title: localized("Unsaved", "未保存"), tint: DesignTokens.warning)
+                                }
+                            }
+                            Text(skill.description.isEmpty ? skill.slug : skill.description)
+                                .font(.system(size: 12))
+                                .foregroundStyle(DesignTokens.secondaryText)
+                                .lineLimit(2)
+                            HStack(spacing: 14) {
+                                metaLabel(localized("Saved at", "保存位置"), value: skill.skillDir)
+                                metaLabel(localized("Effective in", "生效范围"), value: effectiveRange(for: skill.scope))
+                            }
+                        }
+                        Spacer(minLength: 16)
+                        HStack(spacing: 8) {
+                            Button {
+                                reveal(skill)
+                            } label: {
+                                Label(localized("Finder", "访达"), systemImage: "magnifyingglass")
+                            }
+                            .buttonStyle(WebToolbarButtonStyle())
+                            transferMenu(for: skill)
+                            Button(role: .destructive) {
+                                pendingDelete = skill
+                            } label: {
+                                Label(state.t(.delete), systemImage: "trash")
+                            }
+                            .buttonStyle(WebToolbarButtonStyle())
+                        }
                     }
-                    Spacer()
+                    if skill.scope == .user && !isGeneralContext {
+                        inlineNotice(
+                            icon: "globe",
+                            text: localized("This is a global skill. It remains available when you switch to other projects.", "这是全局技能，切换到其他项目后仍然可用。"),
+                            tint: DesignTokens.tertiaryText
+                        )
+                    } else if skill.scope == .project {
+                        inlineNotice(
+                            icon: "folder",
+                            text: localized("If a global skill has the same name, this project skill is the one the agent will load here.", "如果存在同名全局技能，当前项目会优先加载这个项目技能。"),
+                            tint: DesignTokens.accent
+                        )
+                    }
                 }
                 .padding(.horizontal, 18)
-                .frame(height: 74)
+                .padding(.vertical, 14)
                 .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator).frame(height: 1) }
 
                 TextEditor(text: $editorContent)
                     .font(.system(size: 13, design: .monospaced))
                     .scrollContentBackground(.hidden)
                     .padding(12)
+                    .background(DesignTokens.background)
 
                 HStack {
-                    Button(role: .destructive) { delete(skill) } label: {
-                        Label(state.t(.delete), systemImage: "trash")
-                    }
-                    .buttonStyle(WebToolbarButtonStyle())
+                    Text(editorContent == originalContent ? localized("No unsaved changes", "没有未保存更改") : localized("Edited SKILL.md", "SKILL.md 已编辑"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(editorContent == originalContent ? DesignTokens.tertiaryText : DesignTokens.warning)
                     Spacer()
                     if editorContent != originalContent {
                         Button(state.t(.revert)) { editorContent = originalContent }
@@ -2482,7 +2648,13 @@ struct SkillsView: View {
                 .overlay(alignment: .top) { Rectangle().fill(DesignTokens.separator).frame(height: 1) }
             }
         } else {
-            ToolEmptyState(title: state.t(.pickSkill), detail: state.t(.pickSkillDetail), systemImage: "sparkles")
+            ToolEmptyState(
+                title: state.t(.pickSkill),
+                detail: isGeneralContext
+                    ? localized("Global skills added here are available in General chat and projects.", "这里添加的是全局技能，会在通用对话和项目中生效。")
+                    : localized("Choose a project or global skill to inspect, edit, or move.", "选择一个当前项目技能或全局技能来查看、编辑或移动。"),
+                systemImage: "sparkles"
+            )
         }
     }
 
@@ -2504,9 +2676,9 @@ struct SkillsView: View {
             .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator).frame(height: 1) }
 
             HStack(spacing: 0) {
-                newSkillTab(.install, title: "从 ClawHub 安装", icon: "square.and.arrow.down")
-                newSkillTab(.importFolder, title: "从文件夹导入", icon: "folder.badge.plus")
-                newSkillTab(.create, title: "自己写一个", icon: "pencil")
+                newSkillTab(.install, title: localized("Install from ClawHub", "从 ClawHub 安装"), icon: "square.and.arrow.down")
+                newSkillTab(.importFolder, title: localized("Import folder", "从文件夹导入"), icon: "folder.badge.plus")
+                newSkillTab(.create, title: localized("Write my own", "自己写一个"), icon: "pencil")
                 Spacer()
             }
             .padding(.horizontal, 18)
@@ -2514,13 +2686,12 @@ struct SkillsView: View {
             .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator).frame(height: 1) }
 
             VStack(spacing: 0) {
+                destinationSummary
                 if let modalNotice {
-                    Text(modalNotice)
-                        .font(.system(size: 12))
-                        .foregroundStyle(DesignTokens.tertiaryText)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    sheetNotice(modalNotice, tint: DesignTokens.success, icon: "checkmark.circle")
+                }
+                if let modalError {
+                    sheetNotice(modalError, tint: DesignTokens.danger, icon: "exclamationmark.triangle")
                 }
                 switch newTab {
                 case .install:
@@ -2532,12 +2703,23 @@ struct SkillsView: View {
                 }
             }
         }
+        .onAppear {
+            if isGeneralContext {
+                newScope = .user
+            } else if currentProjectPath != nil, newScope == .user {
+                newScope = .project
+            }
+        }
     }
 
     private func newSkillTab(_ tab: SkillNewTab, title: String, icon: String) -> some View {
         Button {
             newTab = tab
             modalNotice = nil
+            modalError = nil
+            if tab == .create, newBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                newBody = localized("Describe when this skill should be used, prerequisites, and steps to follow.", "描述这个技能适合什么时候使用、前置条件，以及应该遵循的步骤。")
+            }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: icon)
@@ -2559,21 +2741,28 @@ struct SkillsView: View {
     }
 
     private var scopePicker: some View {
-        HStack(spacing: 8) {
-            Text(state.t(.scope))
-                .font(.system(size: 12))
-                .foregroundStyle(DesignTokens.tertiaryText)
-            Picker(state.t(.scope), selection: $newScope) {
-                Text(state.t(.user)).tag(SkillScope.user)
-                Text(state.t(.projects)).tag(SkillScope.project)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(localized("Destination", "保存到"))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                Picker(state.t(.scope), selection: $newScope) {
+                    Text(scopeTitle(.user)).tag(SkillScope.user)
+                    Text(scopeTitle(.project)).tag(SkillScope.project)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+                .disabled(isGeneralContext)
             }
-            .pickerStyle(.segmented)
-            .frame(width: 140)
-            .disabled(state.selectedWorkspaceContext?.isGeneral == true)
+            Text(isGeneralContext
+                 ? localized("General chat can only add global skills.", "通用对话只能添加全局技能。")
+                 : scopeDetail(newScope))
+                .font(.system(size: 11))
+                .foregroundStyle(DesignTokens.tertiaryText)
+                .lineLimit(2)
         }
-        .fixedSize(horizontal: true, vertical: false)
         .onAppear {
-            if state.selectedWorkspaceContext?.isGeneral == true {
+            if isGeneralContext {
                 newScope = .user
             }
         }
@@ -2584,14 +2773,15 @@ struct SkillsView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(DesignTokens.tertiaryText)
-                TextField("在 clawhub.com 搜索...", text: $hubQuery)
+                TextField(localized("Search clawhub.com...", "在 clawhub.com 搜索..."), text: $hubQuery)
                     .textFieldStyle(.plain)
                     .onSubmit { searchClawHub() }
                 if hubSearching {
                     ProgressView().controlSize(.small)
                 }
                 Spacer(minLength: 8)
-                scopePicker
+                Button(localized("Search", "搜索")) { searchClawHub() }
+                    .buttonStyle(WebToolbarButtonStyle())
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
@@ -2599,10 +2789,22 @@ struct SkillsView: View {
             .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator))
             .padding(.horizontal, 18)
 
+            HStack {
+                scopePicker
+                Spacer()
+            }
+            .padding(.horizontal, 18)
+
             ScrollView {
                 LazyVStack(spacing: 8) {
                     if hubResults.isEmpty {
-                        ToolEmptyState(title: hubQuery.isEmpty ? "输入关键词搜索 clawhub.com。" : "没有搜索结果", detail: hubQuery.isEmpty ? "" : "换一个关键词再试。", systemImage: "sparkles")
+                        ToolEmptyState(
+                            title: hubQuery.isEmpty ? localized("Search ClawHub", "搜索 ClawHub") : localized("No results", "没有搜索结果"),
+                            detail: hubQuery.isEmpty
+                                ? localized("Find a skill, choose the destination, then install it into this app.", "找到技能后选择保存位置，再安装到当前客户端。")
+                                : localized("Try another keyword, or check the network and ClawHub service.", "换一个关键词，或检查网络和 ClawHub 服务。"),
+                            systemImage: "sparkles"
+                        )
                             .frame(height: 260)
                     } else {
                         ForEach(hubResults) { result in
@@ -2629,7 +2831,7 @@ struct SkillsView: View {
                                                 .controlSize(.small)
                                                 .scaleEffect(0.7)
                                         }
-                                        Text(forceInstallSlugs.contains(result.slug) ? "强制安装" : "安装")
+                                        Text(forceInstallSlugs.contains(result.slug) ? localized("Install anyway", "强制安装") : localized("Install", "安装"))
                                     }
                                 }
                                 .buttonStyle(WebToolbarButtonStyle(isProminent: true))
@@ -2637,7 +2839,8 @@ struct SkillsView: View {
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 10)
-                            .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                            .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                            .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator.opacity(0.58)))
                         }
                     }
                 }
@@ -2649,24 +2852,48 @@ struct SkillsView: View {
 
     private var importSkillPane: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Button {
-                    chooseImportFolder()
-                } label: {
-                    Label("选择文件夹", systemImage: "folder")
-                }
-                .buttonStyle(WebToolbarButtonStyle(isProminent: true))
-                Text(importSource?.path ?? "请选择包含 SKILL.md 的文件夹")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-                    .lineLimit(1)
-            }
-            if let importSource {
-                let validation = state.skillsService.validate(source: importSource)
-                SkillValidationSummary(validation: validation)
-                Button("导入") { importChosenSkill(validation: validation) }
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button {
+                        chooseImportFolder()
+                    } label: {
+                        Label(localized("Choose folder", "选择文件夹"), systemImage: "folder")
+                    }
                     .buttonStyle(WebToolbarButtonStyle(isProminent: true))
-                    .disabled(!validation.ok)
+                    TextField(localized("~/code/my-skill", "~/code/my-skill"), text: $importSourceText)
+                        .textFieldStyle(WebFieldStyle())
+                    Text(localized("Pick a folder with SKILL.md, or paste an absolute path. ~ is supported.", "选择包含 SKILL.md 的文件夹，或粘贴绝对路径。支持 ~。"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 10) {
+                    SettingsTextFieldCompat(state.t(.slug), text: $importSlug)
+                    Toggle(localized("Overwrite existing skill", "覆盖已有同名技能"), isOn: $importOverwrite)
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 12))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                    scopePicker
+                }
+                .frame(width: 280, alignment: .leading)
+            }
+
+            if let source = importURLFromText {
+                let validation = state.skillsService.validate(source: source)
+                SkillValidationSummary(validation: validation)
+                HStack {
+                    Spacer()
+                    Button(localized("Import skill", "导入技能")) { importChosenSkill(validation: validation, source: source) }
+                        .buttonStyle(WebToolbarButtonStyle(isProminent: true))
+                        .disabled(!validation.ok)
+                }
+            } else {
+                ToolEmptyState(
+                    title: localized("Choose a folder", "选择一个文件夹"),
+                    detail: localized("The import check will appear here before anything is copied.", "导入校验会先显示在这里，确认后才会复制。"),
+                    systemImage: "folder.badge.plus"
+                )
+                .frame(height: 220)
             }
             Spacer()
         }
@@ -2676,7 +2903,8 @@ struct SkillsView: View {
 
     private var createSkillPane: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                SettingsTextFieldCompat(state.t(.slug), text: $newSlug)
                 SettingsTextFieldCompat(state.t(.name), text: $newName)
                 SettingsTextFieldCompat(state.t(.description), text: $newDescription)
             }
@@ -2684,12 +2912,17 @@ struct SkillsView: View {
                 .font(.system(size: 13, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .padding(8)
-                .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
                 .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator))
+            HStack(alignment: .top) {
+                scopePicker
+                Spacer()
+            }
             HStack {
                 Spacer()
                 Button(state.t(.cancel)) { showNew = false }.buttonStyle(WebToolbarButtonStyle())
                 Button(state.t(.create)) { createSkill() }.buttonStyle(WebToolbarButtonStyle(isProminent: true))
+                    .disabled(!canCreateSkill)
             }
         }
         .padding(.horizontal, 18)
@@ -2698,7 +2931,9 @@ struct SkillsView: View {
 
     private func refresh() {
         state.refreshNativeToolData()
-        if selectedSkillID == nil {
+        if let selectedSkillKey, state.skillsService.skills.contains(where: { skillKey($0) == selectedSkillKey }) {
+            select(state.skillsService.skills.first { skillKey($0) == selectedSkillKey })
+        } else {
             select(state.skillsService.skills.first)
         }
         state.bumpToolRefresh()
@@ -2706,7 +2941,7 @@ struct SkillsView: View {
 
     private func select(_ skill: SkillRecord?) {
         guard let skill else { return }
-        selectedSkillID = skill.id
+        selectedSkillKey = skillKey(skill)
         editorContent = (try? state.skillsService.read(skill)) ?? ""
         originalContent = editorContent
     }
@@ -2715,7 +2950,9 @@ struct SkillsView: View {
         do {
             _ = try state.skillsService.write(skill, content: editorContent)
             originalContent = editorContent
+            let key = skillKey(skill)
             refresh()
+            select(state.skillsService.skills.first { skillKey($0) == key })
         } catch {
             state.errorBanner = error.localizedDescription
         }
@@ -2724,7 +2961,8 @@ struct SkillsView: View {
     private func delete(_ skill: SkillRecord) {
         do {
             try state.skillsService.delete(skill)
-            selectedSkillID = nil
+            selectedSkillKey = nil
+            pendingDelete = nil
             refresh()
         } catch {
             state.errorBanner = error.localizedDescription
@@ -2733,10 +2971,13 @@ struct SkillsView: View {
 
     private func createSkill() {
         do {
-            let slug = derivedSkillSlug(name: newName, fallback: newDescription)
+            let scope = selectedDestinationScope
+            let slug = newSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? derivedSkillSlug(name: newName, fallback: newDescription)
+                : newSlug.trimmingCharacters(in: .whitespacesAndNewlines)
             let skill = try state.skillsService.create(
-                scope: newScope,
-                projectPath: state.selectedWorkspaceContext?.isGeneral == true ? nil : state.selectedWorkspaceContext?.rootPath,
+                scope: scope,
+                projectPath: scope == .project ? currentProjectPath : nil,
                 slug: slug,
                 name: newName,
                 description: newDescription
@@ -2759,38 +3000,21 @@ struct SkillsView: View {
             newDescription = ""
             newBody = ""
             refresh()
-            select(skill)
+            select(state.skillsService.skills.first { $0.slug == skill.slug && $0.scope == skill.scope } ?? skill)
         } catch {
-            state.errorBanner = error.localizedDescription
+            modalError = error.localizedDescription
         }
     }
 
     private func importSkill() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let scope: SkillScope = state.selectedWorkspaceContext?.isGeneral == true ? .user : .project
-            let skill = try state.skillsService.importFolder(
-                source: url,
-                scope: scope,
-                projectPath: scope == .project ? state.selectedWorkspaceContext?.rootPath : nil,
-                slug: nil,
-                overwrite: false
-            )
-            refresh()
-            select(skill)
-        } catch {
-            state.errorBanner = error.localizedDescription
-        }
+        openNew(tab: .importFolder)
     }
 
     private func searchClawHub() {
         guard !hubSearching else { return }
         hubSearching = true
         modalNotice = nil
+        modalError = nil
         let query = hubQuery
         let service = state.skillsService
         Task.detached(priority: .userInitiated) {
@@ -2802,7 +3026,7 @@ struct SkillsView: View {
                 }
             } catch {
                 await MainActor.run {
-                    modalNotice = error.localizedDescription
+                    modalError = error.localizedDescription
                     hubResults = []
                     hubSearching = false
                 }
@@ -2814,9 +3038,10 @@ struct SkillsView: View {
         guard hubInstallingSlug == nil else { return }
         hubInstallingSlug = result.slug
         modalNotice = nil
+        modalError = nil
         let force = forceInstallSlugs.contains(result.slug)
-        let scope = state.selectedWorkspaceContext?.isGeneral == true ? SkillScope.user : newScope
-        let projectPath = scope == .project ? state.selectedWorkspaceContext?.rootPath : nil
+        let scope = selectedDestinationScope
+        let projectPath = scope == .project ? currentProjectPath : nil
         let service = state.skillsService
         Task.detached(priority: .userInitiated) {
             do {
@@ -2830,10 +3055,12 @@ struct SkillsView: View {
                     if installed.installed, let skill = installed.skill {
                         showNew = false
                         refresh()
-                        select(skill)
+                        select(state.skillsService.skills.first { $0.slug == skill.slug && $0.scope == skill.scope } ?? skill)
                     } else if installed.needsForce {
                         forceInstallSlugs.insert(result.slug)
-                        modalNotice = "该 skill 被标记为需要确认。再次点击强制安装。"
+                        modalError = installed.stderr.isEmpty
+                            ? localized("This skill requires confirmation. Click install again to continue.", "该技能需要二次确认。再次点击安装以继续。")
+                            : installed.stderr
                     } else {
                         modalNotice = installed.stderr.isEmpty ? installed.stdout : installed.stderr
                     }
@@ -2841,7 +3068,7 @@ struct SkillsView: View {
                 }
             } catch {
                 await MainActor.run {
-                    modalNotice = error.localizedDescription
+                    modalError = error.localizedDescription
                     hubInstallingSlug = nil
                 }
             }
@@ -2855,25 +3082,255 @@ struct SkillsView: View {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         importSource = url
+        importSourceText = url.path
     }
 
-    private func importChosenSkill(validation: SkillValidationResult) {
-        guard validation.ok, let importSource else { return }
+    private func importChosenSkill(validation: SkillValidationResult, source: URL) {
+        guard validation.ok else { return }
         do {
-            let scope = state.selectedWorkspaceContext?.isGeneral == true ? SkillScope.user : newScope
+            let scope = selectedDestinationScope
             let skill = try state.skillsService.importFolder(
-                source: importSource,
+                source: source,
                 scope: scope,
-                projectPath: scope == .project ? state.selectedWorkspaceContext?.rootPath : nil,
-                slug: nil,
-                overwrite: false
+                projectPath: scope == .project ? currentProjectPath : nil,
+                slug: trimmedImportSlug(),
+                overwrite: importOverwrite
             )
             showNew = false
             refresh()
-            select(skill)
+            let importedSlug = skill.slug
+            let importedScope = skill.scope
+            let refreshedSkill = state.skillsService.skills.first { candidate in
+                candidate.slug == importedSlug && candidate.scope == importedScope
+            } ?? skill
+            select(refreshedSkill)
         } catch {
-            modalNotice = error.localizedDescription
+            modalError = error.localizedDescription
         }
+    }
+
+    private func trimmedImportSlug() -> String? {
+        let trimmed = importSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private var canCreateSkill: Bool {
+        let hasIdentity = !newSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            !newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasDescription = !newDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return hasIdentity && hasDescription
+    }
+
+    private func openNew(tab: SkillNewTab) {
+        newTab = tab
+        newScope = isGeneralContext ? .user : .project
+        modalNotice = nil
+        modalError = nil
+        if tab == .create, newBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            newBody = localized("Describe when this skill should be used, prerequisites, and steps to follow.", "描述这个技能适合什么时候使用、前置条件，以及应该遵循的步骤。")
+        }
+        showNew = true
+    }
+
+    private func filteredSkills(scope: SkillScope) -> [SkillRecord] {
+        let query = skillFilter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return state.skillsService.skills
+            .filter { $0.scope == scope }
+            .filter { skill in
+                guard !query.isEmpty else { return true }
+                return [
+                    skill.name,
+                    skill.slug,
+                    skill.description,
+                    scopeTitle(skill.scope),
+                    skill.skillDir,
+                ].joined(separator: " ").lowercased().contains(query)
+            }
+    }
+
+    private func copy(_ skill: SkillRecord, to scope: SkillScope) {
+        do {
+            let copied = try state.skillsService.copySkill(skill, to: scope, projectPath: scope == .project ? currentProjectPath : nil, overwrite: transferOverwrite)
+            refresh()
+            select(state.skillsService.skills.first { $0.slug == copied.slug && $0.scope == copied.scope } ?? copied)
+        } catch {
+            state.errorBanner = error.localizedDescription
+        }
+    }
+
+    private func move(_ skill: SkillRecord, to scope: SkillScope) {
+        do {
+            let moved = try state.skillsService.moveSkill(skill, to: scope, projectPath: scope == .project ? currentProjectPath : nil, overwrite: transferOverwrite)
+            refresh()
+            select(state.skillsService.skills.first { $0.slug == moved.slug && $0.scope == moved.scope } ?? moved)
+        } catch {
+            state.errorBanner = error.localizedDescription
+        }
+    }
+
+    private func reveal(_ skill: SkillRecord) {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: skill.skillFile)])
+    }
+
+    private func skillKey(_ skill: SkillRecord) -> String {
+        "\(skill.scope.rawValue):\(skill.slug)"
+    }
+
+    private var toolbarSubtitle: String {
+        if isGeneralContext {
+            return localized("General chat uses global skills. New skills here apply everywhere.", "通用对话使用全局技能。这里新增的技能会在所有地方生效。")
+        }
+        let name = state.selectedWorkspaceContext?.displayName ?? state.t(.projects)
+        return localized("\(name) uses project skills first, then global skills.", "\(name) 会优先使用当前项目技能，然后使用全局技能。")
+    }
+
+    private var scopeIntro: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(isGeneralContext ? scopeTitle(.user) : localized("Project + Global", "项目 + 全局"), systemImage: isGeneralContext ? "globe" : "folder")
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(DesignTokens.text)
+            Text(isGeneralContext
+                 ? localized("Skills added from General are global by design.", "从通用对话添加的技能默认就是全局技能。")
+                 : localized("Current project skills override global skills with the same name.", "当前项目技能会覆盖同名全局技能。"))
+                .font(.system(size: 11.5))
+                .foregroundStyle(DesignTokens.tertiaryText)
+                .lineLimit(3)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator.opacity(0.58)))
+    }
+
+    private var destinationSummary: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: selectedDestinationScope == .project ? "folder" : "globe")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(scopeTint(selectedDestinationScope))
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(localized("Destination: \(scopeTitle(selectedDestinationScope))", "保存到：\(scopeTitle(selectedDestinationScope))"))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                Text("\(effectiveRange(for: selectedDestinationScope)) · \(currentTargetRoot)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(DesignTokens.cardSurfaceSubtle)
+        .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator.opacity(0.58)).frame(height: 1) }
+    }
+
+    private func sheetNotice(_ text: String, tint: Color, icon: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+            Text(text)
+                .lineLimit(2)
+            Spacer()
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(tint)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
+    }
+
+    private func transferMenu(for skill: SkillRecord) -> some View {
+        Menu {
+            Toggle(localized("Overwrite destination", "覆盖目标同名技能"), isOn: $transferOverwrite)
+            Divider()
+            if !isGeneralContext && skill.scope == .user {
+                Button(localized("Copy to current project", "复制到当前项目")) { copy(skill, to: .project) }
+                Button(localized("Move to current project", "移动到当前项目")) { move(skill, to: .project) }
+            }
+            if skill.scope == .project {
+                Button(localized("Copy to global", "复制到全局")) { copy(skill, to: .user) }
+                Button(localized("Move to global", "移动到全局")) { move(skill, to: .user) }
+            }
+        } label: {
+            Label(localized("Scope", "作用域"), systemImage: "arrow.left.arrow.right")
+        }
+        .buttonStyle(WebToolbarButtonStyle())
+        .disabled(isGeneralContext || (skill.scope == .user && currentProjectPath == nil))
+    }
+
+    private func metaLabel(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 10.5))
+                .foregroundStyle(DesignTokens.tertiaryText)
+            Text(value)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: 260, alignment: .leading)
+    }
+
+    private func inlineNotice(icon: String, text: String, tint: Color) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+            Text(text)
+                .font(.system(size: 11.5))
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+    }
+
+    private func scopeTitle(_ scope: SkillScope) -> String {
+        switch scope {
+        case .user:
+            return localized("Global Skills", "全局技能")
+        case .project:
+            return localized("Current Project Skills", "当前项目技能")
+        }
+    }
+
+    private func scopeDetail(_ scope: SkillScope) -> String {
+        switch scope {
+        case .user:
+            return localized("Available to General chat and every project.", "在通用对话和所有项目中生效。")
+        case .project:
+            return localized("Only available to the current project. Wins over global skills with the same name.", "仅当前项目生效。同名时优先于全局技能。")
+        }
+    }
+
+    private func effectiveRange(for scope: SkillScope) -> String {
+        switch scope {
+        case .user:
+            return localized("General chat and every project", "通用对话和所有项目")
+        case .project:
+            return localized("Only the current project", "仅当前项目")
+        }
+    }
+
+    private func destinationPath(for scope: SkillScope) -> String {
+        switch scope {
+        case .user:
+            return SkillsService.userSkillsRoot().path
+        case .project:
+            if let currentProjectPath {
+                return SkillsService.projectSkillsRoot(currentProjectPath).path
+            }
+            return SkillsService.userSkillsRoot().path
+        }
+    }
+
+    private func scopeTint(_ scope: SkillScope) -> Color {
+        scope == .project ? DesignTokens.accent : DesignTokens.success
+    }
+
+    private func localized(_ english: String, _ chinese: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
     }
 
     private func derivedSkillSlug(name: String, fallback: String) -> String {
@@ -2901,14 +3358,23 @@ private enum SkillNewTab {
 }
 
 private struct SkillValidationSummary: View {
+    @EnvironmentObject private var state: AppState
     var validation: SkillValidationResult
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label(validation.ok ? "校验通过" : "校验失败", systemImage: validation.ok ? "checkmark.circle" : "exclamationmark.triangle")
+            Label(
+                validation.ok
+                    ? localized("Validation passed", "校验通过")
+                    : localized("Validation failed", "校验失败"),
+                systemImage: validation.ok ? "checkmark.circle" : "exclamationmark.triangle"
+            )
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(validation.ok ? DesignTokens.success : DesignTokens.danger)
-            Text("\(validation.fileCount) files · \(ByteCountFormatter.string(fromByteCount: Int64(validation.totalBytes), countStyle: .file))")
+            Text(localized(
+                "\(validation.fileCount) files · \(ByteCountFormatter.string(fromByteCount: Int64(validation.totalBytes), countStyle: .file))",
+                "\(validation.fileCount) 个文件 · \(ByteCountFormatter.string(fromByteCount: Int64(validation.totalBytes), countStyle: .file))"
+            ))
                 .font(.system(size: 11))
                 .foregroundStyle(DesignTokens.tertiaryText)
             ForEach(validation.hardFails + validation.warnings) { issue in
@@ -2919,8 +3385,12 @@ private struct SkillValidationSummary: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+        .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator))
+    }
+
+    private func localized(_ english: String, _ chinese: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
     }
 }
 
@@ -5544,28 +6014,49 @@ private final class FileTextView: NSTextView {
 
 private struct SkillScopeSection: View {
     var title: String
+    var detail: String
+    var emptyTitle: String
     var skills: [SkillRecord]
-    var selectedSkillID: UUID?
+    var selectedSkillKey: String?
+    var keyForSkill: (SkillRecord) -> String
     var onSelect: (SkillRecord) -> Void
 
     var body: some View {
-        if !skills.isEmpty {
-            VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("\(title.uppercased()) · \(skills.count)")
-                    .font(.system(size: 10.5, weight: .medium))
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .tracking(0.36)
                     .foregroundStyle(DesignTokens.neutral400)
+                Text(detail)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                    .lineLimit(2)
+            }
+            .padding(.horizontal, 14)
+            if skills.isEmpty {
+                Text(emptyTitle)
+                    .font(.system(size: 12))
+                    .foregroundStyle(DesignTokens.tertiaryText)
                     .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+            } else {
                 ForEach(skills) { skill in
+                    let isSelected = selectedSkillKey == keyForSkill(skill)
                     Button { onSelect(skill) } label: {
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 6) {
                                 Text(skill.name)
-                                    .font(.system(size: 13, weight: .medium))
+                                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
                                     .lineLimit(1)
+                                Spacer(minLength: 6)
                                 if let version = skill.version {
                                     Text("v\(version)")
-                                        .font(.system(size: 10))
+                                        .font(.system(size: 10, weight: .medium))
                                         .foregroundStyle(DesignTokens.tertiaryText)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(DesignTokens.cardSurfaceSubtle, in: Capsule())
                                 }
                             }
                             if !skill.description.isEmpty {
@@ -5574,18 +6065,37 @@ private struct SkillScopeSection: View {
                                     .lineLimit(1)
                                     .foregroundStyle(DesignTokens.tertiaryText)
                             }
+                            Text(skill.slug)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(DesignTokens.neutral400)
+                                .lineLimit(1)
                         }
                         .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
+                        .padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(selectedSkillID == skill.id ? DesignTokens.selectedRowFill() : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                        .background(isSelected ? DesignTokens.selectedRowFill() : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
                         .contentShape(RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 8)
         }
+        .padding(.horizontal, 8)
+    }
+}
+
+private struct ScopeBadge: View {
+    var title: String
+    var tint: Color
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.10), in: Capsule())
+            .overlay(Capsule().stroke(tint.opacity(0.18), lineWidth: 0.8))
     }
 }
 

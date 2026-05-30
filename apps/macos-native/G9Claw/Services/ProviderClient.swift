@@ -1250,8 +1250,10 @@ final class AgentRunContext: @unchecked Sendable {
     var apiKey: String
     var timeoutMs: Int
     var contextWindow: Int
+    var workspaceContext: WorkspaceContext?
     var nativeConfigValues: [String: String]
     var invokedSkills: [String]
+    var isGeneralWorkspace: Bool
     var planQuestionAnswered: Bool
     var subagentDepth: Int
     var maxSubagentDepth: Int
@@ -1292,8 +1294,10 @@ final class AgentRunContext: @unchecked Sendable {
         apiKey = request.apiKey
         timeoutMs = request.timeoutMs
         contextWindow = request.contextWindow
+        workspaceContext = request.workspaceContext
         nativeConfigValues = request.nativeConfigValues
         invokedSkills = []
+        isGeneralWorkspace = request.workspaceContext?.isGeneral ?? false
         planQuestionAnswered = request.runMode == .agent
         subagentDepth = 0
         maxSubagentDepth = max(0, Int(request.nativeConfigValues["runtime.maxSubagentDepth"] ?? "") ?? 1)
@@ -3042,7 +3046,7 @@ struct NativeAgentRuntime: Sendable {
         Prefer the canonical tool names: \(toolNames).
         For shell commands, use Shell only when needed and keep commands scoped to the workspace. Use run_in_background plus Await for long-running commands.
         \(searchInstruction)
-        \(nativeAgentSkillContext(workspacePath: request.projectPath))
+        \(nativeAgentSkillContext(workspacePath: request.projectPath, isGeneral: request.workspaceContext?.isGeneral ?? false))
         Use Task for delegated analysis or shell-focused background work.
         If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request and no other prose in that assistant turn.
         Example: {"tool":"Read","input":{"file_path":"README.md"}}
@@ -3054,11 +3058,13 @@ struct NativeAgentRuntime: Sendable {
         return "For current public information, weather, recent documentation, or URL-backed evidence, call WebSearch with a focused query."
     }
 
-    static func nativeAgentSkillContext(workspacePath: String) -> String {
-        let skills = SkillRuntimeService.availableSkills(workspacePath: workspacePath)
+    static func nativeAgentSkillContext(workspacePath: String, isGeneral: Bool = false) -> String {
+        let skills = SkillRuntimeService.availableSkills(workspacePath: workspacePath, isGeneral: isGeneral)
         let skillLines: String
         if skills.isEmpty {
-            skillLines = "- No project or user skills are installed for this workspace."
+            skillLines = isGeneral
+                ? "- No global skills are installed for general chat."
+                : "- No project or global skills are installed for this workspace."
         } else {
             skillLines = skills.map { skill in
                 let summary = skill.summary
@@ -4368,7 +4374,8 @@ enum SkillRuntimeService {
         let args = (input["args"] as? String).nilIfBlank ?? ""
         let resolved = try resolve(
             requestedSkill,
-            workspacePath: context.workspacePath
+            workspacePath: context.workspacePath,
+            isGeneral: context.isGeneralWorkspace
         )
         context.recordInvokedSkill(resolved.canonicalName)
         let payload: [String: Any] = [
@@ -4386,15 +4393,17 @@ enum SkillRuntimeService {
         return jsonString(payload, pretty: true)
     }
 
-    static func resolve(_ skill: String, workspacePath: String) throws -> ResolvedAgentSkill {
+    static func resolve(_ skill: String, workspacePath: String, isGeneral: Bool = false) throws -> ResolvedAgentSkill {
         let requested = skill.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !requested.isEmpty else {
             throw ProviderClientError.toolExecution("Skill name is required.")
         }
 
         var candidates: [URL] = []
+        if !isGeneral {
+            candidates.append(Self.projectSkillsRoot(workspacePath).appendingPathComponent(slugCandidate(requested), isDirectory: true))
+        }
         candidates.append(Self.userSkillsRoot().appendingPathComponent(slugCandidate(requested), isDirectory: true))
-        candidates.append(Self.projectSkillsRoot(workspacePath).appendingPathComponent(slugCandidate(requested), isDirectory: true))
 
         for candidate in candidates {
             if let resolved = readSkill(at: candidate, requested: requested) {
@@ -4402,7 +4411,7 @@ enum SkillRuntimeService {
             }
         }
 
-        for root in searchableSkillRoots(workspacePath: workspacePath) {
+        for root in searchableSkillRoots(workspacePath: workspacePath, isGeneral: isGeneral) {
             if let match = scan(root: root, requested: requested) {
                 return match
             }
@@ -4411,10 +4420,10 @@ enum SkillRuntimeService {
         throw ProviderClientError.toolExecution("Skill not found: \(requested)")
     }
 
-    static func availableSkills(workspacePath: String, limit: Int = 24) -> [AgentSkillCatalogEntry] {
+    static func availableSkills(workspacePath: String, isGeneral: Bool = false, limit: Int = 24) -> [AgentSkillCatalogEntry] {
         var scopedRoots: [(root: URL, scope: String)] = []
         let trimmedWorkspace = workspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedWorkspace.isEmpty {
+        if !isGeneral && !trimmedWorkspace.isEmpty {
             scopedRoots.append((projectSkillsRoot(trimmedWorkspace), "project"))
         }
         scopedRoots.append((userSkillsRoot(), "user"))
@@ -4456,10 +4465,13 @@ enum SkillRuntimeService {
         }
     }
 
-    private static func searchableSkillRoots(workspacePath: String) -> [URL] {
-        [
-            userSkillsRoot(),
+    private static func searchableSkillRoots(workspacePath: String, isGeneral: Bool) -> [URL] {
+        if isGeneral {
+            return [userSkillsRoot()]
+        }
+        return [
             projectSkillsRoot(workspacePath),
+            userSkillsRoot(),
         ]
     }
 
@@ -5849,7 +5861,7 @@ enum AgentToolExecutor {
             contextWindow: context.contextWindow,
             permissionMode: context.permissionMode,
             runMode: context.runMode,
-            workspaceContext: nil,
+            workspaceContext: context.workspaceContext,
             toolSettings: context.toolSettings,
             routerRoute: "task",
             nativeConfigValues: context.nativeConfigValues,

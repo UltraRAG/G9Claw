@@ -4878,6 +4878,25 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(result.hardFails.isEmpty)
     }
 
+    func testSkillValidationRejectsSymlinks() throws {
+        let root = temporaryDirectory("g9claw-skill-symlink")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try """
+        ---
+        name: Symlink Check
+        description: Validates that native skill imports reject symbolic links.
+        ---
+
+        # Symlink Check
+        """.write(to: root.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        let link = root.appendingPathComponent("outside-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: URL(fileURLWithPath: "/tmp"))
+
+        let result = SkillsService().validate(source: root)
+        XCTAssertFalse(result.ok)
+        XCTAssertTrue(result.hardFails.contains { $0.code == "symlink_not_supported" })
+    }
+
     func testNativeAgentPromptListsWorkspaceSkillsBeforeInvocation() throws {
         let projectRoot = temporaryDirectory("g9claw-project")
         defer { try? FileManager.default.removeItem(at: projectRoot) }
@@ -4907,6 +4926,79 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(payload["skill"] as? String, "sushiro")
         XCTAssertEqual(payload["skillDir"] as? String, skillDir.path)
         XCTAssertTrue((payload["executionHint"] as? String)?.contains("skillDir") == true)
+    }
+
+    func testGeneralSkillContextExcludesProjectScopedSkills() throws {
+        let projectRoot = temporaryDirectory("g9claw-general-skill-scope")
+        defer { try? FileManager.default.removeItem(at: projectRoot) }
+        _ = try writeProjectSkill(
+            projectRoot: projectRoot,
+            slug: "project-only-\(UUID().uuidString.prefix(8))",
+            name: "project-only-skill",
+            description: "Project-only skill should not be visible from General chat."
+        )
+
+        let generalSkills = SkillRuntimeService.availableSkills(workspacePath: projectRoot.path, isGeneral: true)
+        XCTAssertFalse(generalSkills.contains { $0.scope == "project" })
+
+        let context = NativeAgentRuntime.nativeAgentSkillContext(workspacePath: projectRoot.path, isGeneral: true)
+        XCTAssertTrue(context.contains("global skills"))
+        XCTAssertFalse(context.contains("project-only-skill"))
+    }
+
+    func testProjectScopedSkillOverridesGlobalSkillWithSameName() throws {
+        let projectRoot = temporaryDirectory("g9claw-skill-priority")
+        defer { try? FileManager.default.removeItem(at: projectRoot) }
+        let slug = "priority-\(UUID().uuidString.prefix(8)).skill"
+        let userSkillDir = try writeUserSkill(
+            slug: slug,
+            name: "priority-skill",
+            description: "Global version should lose to the project version."
+        )
+        defer { try? FileManager.default.removeItem(at: userSkillDir) }
+        let projectSkillDir = try writeProjectSkill(
+            projectRoot: projectRoot,
+            slug: slug,
+            name: "priority-skill",
+            description: "Project version should be loaded before the global version."
+        )
+
+        let skills = SkillRuntimeService.availableSkills(workspacePath: projectRoot.path)
+        let listed = try XCTUnwrap(skills.first { $0.name == "priority-skill" })
+        XCTAssertEqual(listed.scope, "project")
+
+        let request = agentRequest(projectPath: projectRoot.path)
+        let context = AgentRunContext(request: request)
+        let output = try SkillRuntimeService.load(
+            inputJSON: #"{"skill":"priority-skill","args":"demo"}"#,
+            context: context
+        )
+        let payload = try jsonObject(from: output)
+        XCTAssertEqual(
+            URL(fileURLWithPath: payload["skillDir"] as? String ?? "").standardizedFileURL.path,
+            projectSkillDir.standardizedFileURL.path
+        )
+    }
+
+    func testSkillsServiceCanCopyAndMoveBetweenScopes() throws {
+        let projectRoot = temporaryDirectory("g9claw-skill-transfer")
+        defer { try? FileManager.default.removeItem(at: projectRoot) }
+        let service = SkillsService()
+        let userSkillDir = try writeUserSkill(
+            slug: "transfer-\(UUID().uuidString.prefix(8))",
+            name: "transfer-skill",
+            description: "Skill used to verify native copy and move between scopes."
+        )
+        defer { try? FileManager.default.removeItem(at: userSkillDir) }
+        let userSkill = try XCTUnwrap(serviceRecord(for: userSkillDir, scope: .user))
+
+        let copied = try service.copySkill(userSkill, to: .project, projectPath: projectRoot.path, overwrite: false)
+        XCTAssertEqual(copied.scope, .project)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: projectRoot.appendingPathComponent(".g9claw/skills/\(userSkill.slug)/SKILL.md").path))
+
+        let moved = try service.moveSkill(copied, to: .user, projectPath: nil, overwrite: true)
+        XCTAssertEqual(moved.scope, .user)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copied.skillDir))
     }
 
     func testNativeClawHubInstallImportsDownloadedArchive() async throws {
@@ -7058,6 +7150,41 @@ final class ParityLogicTests: XCTestCase {
         The CLI is at `scripts/\(slug)`. Invoke it from this skill directory.
         """.write(to: skillDir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
         return skillDir
+    }
+
+    private func writeUserSkill(slug: String, name: String, description: String) throws -> URL {
+        let skillDir = SkillsService.userSkillsRoot()
+            .appendingPathComponent(slug, isDirectory: true)
+        try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)
+        try """
+        ---
+        name: \(name)
+        description: \(description)
+        ---
+
+        # \(name)
+
+        This is a test user skill.
+        """.write(to: skillDir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        return skillDir
+    }
+
+    private func serviceRecord(for skillDir: URL, scope: SkillScope) -> SkillRecord? {
+        let skillFile = skillDir.appendingPathComponent("SKILL.md")
+        guard let content = try? String(contentsOf: skillFile, encoding: .utf8) else { return nil }
+        let fm = SkillsService.frontmatter(from: content)
+        return SkillRecord(
+            id: UUID(),
+            slug: skillDir.lastPathComponent,
+            name: fm["name"] ?? skillDir.lastPathComponent,
+            description: fm["description"] ?? "",
+            version: fm["version"],
+            skillDir: skillDir.path,
+            skillFile: skillFile.path,
+            scope: scope,
+            mtime: nil,
+            enabled: true
+        )
     }
 
     private func runTestProcess(executable: String, args: [String]) throws {

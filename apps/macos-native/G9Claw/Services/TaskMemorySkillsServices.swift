@@ -3416,6 +3416,14 @@ final class SkillsService: @unchecked Sendable {
         return readSkillMeta(skillDir: target, scope: scope)!
     }
 
+    func copySkill(_ skill: SkillRecord, to scope: SkillScope, projectPath: String?, overwrite: Bool) throws -> SkillRecord {
+        try transferSkill(skill, to: scope, projectPath: projectPath, overwrite: overwrite, removeOriginal: false)
+    }
+
+    func moveSkill(_ skill: SkillRecord, to scope: SkillScope, projectPath: String?, overwrite: Bool) throws -> SkillRecord {
+        try transferSkill(skill, to: scope, projectPath: projectPath, overwrite: overwrite, removeOriginal: true)
+    }
+
     func clawHubSearch(query: String, registry: String? = nil) async throws -> [SkillHubSearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
@@ -3519,9 +3527,12 @@ final class SkillsService: @unchecked Sendable {
             }
         }
         let risky = Set(["sh", "bash", "zsh", "fish", "exe", "bat", "cmd", "dll", "so", "dylib"])
-        if let enumerator = FileManager.default.enumerator(at: source, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) {
+        if let enumerator = FileManager.default.enumerator(at: source, includingPropertiesForKeys: [.fileSizeKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]) {
             for case let url as URL in enumerator {
-                let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+                let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey])
+                if values?.isSymbolicLink == true {
+                    hardFails.append(.init(code: "symlink_not_supported", message: "Symbolic links are not supported: \(url.lastPathComponent)"))
+                }
                 if let size = values?.fileSize {
                     fileCount += 1
                     totalBytes += size
@@ -3577,6 +3588,45 @@ final class SkillsService: @unchecked Sendable {
             mtime: values?.contentModificationDate,
             enabled: true
         )
+    }
+
+    private func transferSkill(
+        _ skill: SkillRecord,
+        to scope: SkillScope,
+        projectPath: String?,
+        overwrite: Bool,
+        removeOriginal: Bool
+    ) throws -> SkillRecord {
+        let source = URL(fileURLWithPath: skill.skillDir).standardizedFileURL
+        let root = try root(for: scope, projectPath: projectPath).standardizedFileURL
+        let target = root.appendingPathComponent(skill.slug, isDirectory: true).standardizedFileURL
+        guard source.path != target.path else {
+            throw NSError(domain: "SkillsService", code: 409, userInfo: [NSLocalizedDescriptionKey: "Skill is already in that scope."])
+        }
+        guard FileManager.default.fileExists(atPath: source.appendingPathComponent("SKILL.md").path) else {
+            throw NSError(domain: "SkillsService", code: 404, userInfo: [NSLocalizedDescriptionKey: "Source skill is missing SKILL.md."])
+        }
+        let validation = validate(source: source)
+        guard validation.ok else {
+            throw NSError(
+                domain: "SkillsService",
+                code: 422,
+                userInfo: [NSLocalizedDescriptionKey: validation.hardFails.first?.message ?? "Validation failed"]
+            )
+        }
+        if FileManager.default.fileExists(atPath: target.path) {
+            if overwrite {
+                try FileManager.default.removeItem(at: target)
+            } else {
+                throw NSError(domain: "SkillsService", code: 409, userInfo: [NSLocalizedDescriptionKey: "Skill already exists in the destination scope."])
+            }
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: source, to: target)
+        if removeOriginal {
+            try FileManager.default.removeItem(at: source)
+        }
+        return readSkillMeta(skillDir: target, scope: scope)!
     }
 
     private func root(for scope: SkillScope, projectPath: String?) throws -> URL {

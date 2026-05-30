@@ -37,7 +37,8 @@ struct MainAreaView: View {
             let showsToolSwitcher = showsHeaderToolSwitcher
             let switcherLayout = MainHeaderToolSwitcherLayout.resolve(
                 availableWidth: innerWidth,
-                activeTab: state.activeTab
+                activeTab: state.activeTab,
+                tabs: availableToolTabs
             )
 
             HStack(spacing: 0) {
@@ -120,14 +121,17 @@ struct MainAreaView: View {
     }
 
     private var showsHeaderToolSwitcher: Bool {
-        guard let selectedProject = state.selectedProject else {
-            return false
-        }
-        return !state.isGeneralProject(selectedProject)
+        state.selectedProject != nil
     }
 
     private var availableToolTabs: [AppTab] {
-        showsHeaderToolSwitcher ? AppTab.primaryTabs : [.chat]
+        guard let selectedProject = state.selectedProject else {
+            return [.chat]
+        }
+        if state.isGeneralProject(selectedProject) {
+            return [.chat, .skills]
+        }
+        return AppTab.primaryTabs
     }
 
     private func clampActiveTabToAvailableTabs() {
