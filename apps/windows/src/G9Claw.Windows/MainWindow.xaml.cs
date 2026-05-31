@@ -5380,7 +5380,7 @@ public sealed partial class MainWindow : Window
             Children =
             {
                 commandInput,
-                ToolbarButton("Play", L("Run", "运行"), (Action)(async () => await RunShellCommandAsync(commandInput.Text)), isProminent: true),
+                ToolbarTextButton(L("Run", "运行"), (Action)(async () => await RunShellCommandAsync(commandInput.Text)), isProminent: true),
             },
         });
         var body = (Grid)page.Tag!;
@@ -5471,8 +5471,8 @@ public sealed partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Children =
             {
-                ToolbarButton("GitBranch", "Status", (Action)(() => { _gitDiffText = null; _toolStatus = null; RenderAll(); }), isProminent: true),
-                ToolbarButton("Code", "Diff", (Action)(() =>
+                ToolbarTextButton("Status", (Action)(() => { _gitDiffText = null; _toolStatus = null; RenderAll(); }), isProminent: true),
+                ToolbarTextButton("Diff", (Action)(() =>
                 {
                     try
                     {
@@ -5486,9 +5486,9 @@ public sealed partial class MainWindow : Window
 
                     RenderAll();
                 })),
-                ToolbarButton("Download", "Fetch", (Action)(async () => await GitActionAsync(() => { _gitService.Fetch(State.SelectedProject.RootPath); return "Fetched origin."; }))),
-                ToolbarButton("Download", "Pull", (Action)(async () => await GitActionAsync(() => { _gitService.Pull(State.SelectedProject.RootPath, "G9Claw", "g9claw@example.local"); return "Pulled current branch."; }))),
-                ToolbarButton("ArrowUp", "Push", (Action)(async () => await GitActionAsync(() => { _gitService.PushCurrentBranch(State.SelectedProject.RootPath); return "Pushed current branch."; }))),
+                ToolbarTextButton("Fetch", (Action)(async () => await GitActionAsync(() => { _gitService.Fetch(State.SelectedProject.RootPath); return "Fetched origin."; }))),
+                ToolbarTextButton("Pull", (Action)(async () => await GitActionAsync(() => { _gitService.Pull(State.SelectedProject.RootPath, "G9Claw", "g9claw@example.local"); return "Pulled current branch."; }))),
+                ToolbarTextButton("Push", (Action)(async () => await GitActionAsync(() => { _gitService.PushCurrentBranch(State.SelectedProject.RootPath); return "Pushed current branch."; }))),
             },
         });
         var body = (Grid)page.Tag!;
@@ -6191,7 +6191,7 @@ public sealed partial class MainWindow : Window
             {
                 titleInput,
                 promptInput,
-                ToolbarButton("Plus", L("Queue", "入队"), (Action)(async () => await QueueTaskAsync()), isProminent: true),
+                ToolbarTextButton(L("Queue", "入队"), (Action)(async () => await QueueTaskAsync()), isProminent: true),
             },
         });
         var panel = new StackPanel { Spacing = 2 };
@@ -7754,6 +7754,27 @@ public sealed partial class MainWindow : Window
                     Icon(iconKey, 14, Brush(isProminent ? "V2InverseForegroundBrush" : "V2SecondaryForegroundBrush")),
                     new TextBlock { Text = label, FontSize = 12, Foreground = Brush(isProminent ? "V2InverseForegroundBrush" : "V2SecondaryForegroundBrush"), VerticalAlignment = VerticalAlignment.Center },
                 },
+            },
+        };
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    private Button ToolbarTextButton(string label, Action action, bool isProminent = false)
+    {
+        var button = new Button
+        {
+            Style = (Style)Application.Current.Resources[isProminent ? "V2PrimaryButtonStyle" : "V2ToolbarButtonStyle"],
+            Height = 32,
+            MinWidth = isProminent ? 56 : 0,
+            Content = new TextBlock
+            {
+                Text = label,
+                FontSize = 12,
+                FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                Foreground = Brush(isProminent ? "V2InverseForegroundBrush" : "V2SecondaryForegroundBrush"),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
             },
         };
         button.Click += (_, _) => action();
