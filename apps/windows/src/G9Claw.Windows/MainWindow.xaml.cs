@@ -165,11 +165,12 @@ public sealed partial class MainWindow : Window
     private WindowSubclassProc? _windowSubclassProc;
     private IntPtr _hwnd;
     private InteractiveTerminalSession? _shellSession;
-    private string _shellInputText = "";
+    private string _shellInputText = "pwd";
     private string? _shellStatus;
-    private string? _gitSelectedPath;
     private string? _gitDiffText;
     private string? _toolStatus;
+    private string _taskTitleText = "";
+    private string _taskPromptText = "";
     private MemoryToolTab _memoryToolTab = MemoryToolTab.ProjectMemory;
     private AlwaysOnToolTab _alwaysOnToolTab = AlwaysOnToolTab.Dashboard;
     private string? _selectedSkillKey;
@@ -5331,75 +5332,57 @@ public sealed partial class MainWindow : Window
             return EmptyFullPage(T("tabs.shell"), T("chat.status.selectProject"), "terminal");
         }
 
-        var page = ToolPage(T("tabs.shell"), State.SelectedProject.RootPath, new[]
-        {
-            ("Play", _shellSession is null || _shellSession.HasExited ? "Start" : "Restart", (Action)(async () => await StartShellSessionAsync())),
-            ("Stop", "Stop", (Action)(async () => await DisposeShellSessionAsync())),
-            ("Refresh", T("common.refresh"), RenderAll),
-        });
-        var body = (Grid)page.Tag!;
-        var root = new Grid { RowSpacing = 10, Padding = new Thickness(16) };
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-        var output = new TextBox
-        {
-            Text = _shellSession?.Output ?? _shellStatus ?? "Start a PowerShell session for this workspace.",
-            AcceptsReturn = true,
-            IsReadOnly = true,
-            TextWrapping = TextWrapping.NoWrap,
-            FontFamily = new FontFamily("Consolas"),
-            FontSize = 12,
-            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
-        };
-        root.Children.Add(output);
-
-        if (!string.IsNullOrWhiteSpace(_shellStatus))
-        {
-            var status = new TextBlock { Text = _shellStatus, FontSize = 12, Foreground = Brush("V2MutedForegroundBrush") };
-            Grid.SetRow(status, 1);
-            root.Children.Add(status);
-        }
-
-        var inputGrid = new Grid { ColumnSpacing = 8 };
-        inputGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        inputGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var input = new TextBox
-        {
-            Text = _shellInputText,
-            PlaceholderText = "PowerShell command",
-            MinWidth = 0,
-            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
-        };
-        input.TextChanged += (_, _) => _shellInputText = input.Text;
-        input.KeyDown += async (_, args) =>
+        var commandInput = ToolToolbarTextBox(_shellInputText, L("Command", "命令"), 360, isMonospaced: true);
+        commandInput.TextChanged += (_, _) => _shellInputText = commandInput.Text;
+        commandInput.KeyDown += async (_, args) =>
         {
             if (args.Key == global::Windows.System.VirtualKey.Enter)
             {
                 args.Handled = true;
-                await SendShellInputAsync(input.Text);
-                input.Text = "";
+                await RunShellCommandAsync(commandInput.Text);
             }
         };
-        inputGrid.Children.Add(input);
-        var send = new Button
+
+        var page = ToolPage(T("tabs.shell"), State.SelectedProject.RootPath, new StackPanel
         {
-            Content = IconText("ArrowUp", "Send", 14),
-            Height = 32,
-            Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
-        };
-        send.Click += async (_, _) =>
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                commandInput,
+                ToolbarButton("Play", L("Run", "运行"), (Action)(async () => await RunShellCommandAsync(commandInput.Text)), isProminent: true),
+            },
+        });
+        var body = (Grid)page.Tag!;
+        var list = new StackPanel { Spacing = 2 };
+        if (_runStore.Runs
+            .Where(run => string.Equals(run.Kind, "shell", StringComparison.OrdinalIgnoreCase))
+            .Take(24)
+            .ToList() is { Count: > 0 } runs)
         {
-            await SendShellInputAsync(input.Text);
-            input.Text = "";
-        };
-        Grid.SetColumn(send, 1);
-        inputGrid.Children.Add(send);
-        Grid.SetRow(inputGrid, 2);
-        root.Children.Add(inputGrid);
-        body.Children.Add(root);
+            foreach (var run in runs)
+            {
+                list.Children.Add(TerminalRunRow(run));
+            }
+        }
+        else
+        {
+            list.Children.Add(EmptyState(L("No shell output", "暂无 Shell 输出"), L("Run a command to create a terminal transcript.", "运行命令后这里会显示终端记录。"), "terminal"));
+        }
+
+        body.Children.Add(ToolList(list));
         return page;
+    }
+
+    private async Task RunShellCommandAsync(string command)
+    {
+        if (State.SelectedProject is null || string.IsNullOrWhiteSpace(command)) return;
+        _shellInputText = command.Trim();
+        _shellStatus = $"Running: {_shellInputText}";
+        _runStore.StartShellTask(_shellInputText, State.SelectedProject.RootPath, _terminalService, 120_000, CancellationToken.None);
+        await Task.CompletedTask;
+        RenderAll();
     }
 
     private async Task StartShellSessionAsync()
@@ -5452,106 +5435,70 @@ public sealed partial class MainWindow : Window
             return EmptyFullPage(T("git.title"), T("git.pickProject"), "GitBranch");
         }
 
-        var page = ToolPage(T("git.title"), State.SelectedProject.DisplayName, new[]
+        var page = ToolPage(T("git.title"), State.SelectedProject.RootPath, new[]
         {
-            ("Refresh", T("common.refresh"), (Action)(() => { _gitDiffText = null; RenderAll(); })),
-            ("GitBranch", "Init", (Action)(async () => await GitActionAsync(() => _gitService.Init(State.SelectedProject.RootPath)))),
+            ("GitBranch", "Status", (Action)(() => { _gitDiffText = null; _toolStatus = null; RenderAll(); })),
+            ("Code", "Diff", (Action)(() =>
+            {
+                try
+                {
+                    _gitDiffText = _gitService.Diff(State.SelectedProject.RootPath);
+                    _toolStatus = null;
+                }
+                catch (Exception ex)
+                {
+                    _gitDiffText = ex.Message;
+                }
+
+                RenderAll();
+            })),
             ("Download", "Fetch", (Action)(async () => await GitActionAsync(() => { _gitService.Fetch(State.SelectedProject.RootPath); return "Fetched origin."; }))),
             ("Download", "Pull", (Action)(async () => await GitActionAsync(() => { _gitService.Pull(State.SelectedProject.RootPath, "G9Claw", "g9claw@example.local"); return "Pulled current branch."; }))),
             ("ArrowUp", "Push", (Action)(async () => await GitActionAsync(() => { _gitService.PushCurrentBranch(State.SelectedProject.RootPath); return "Pushed current branch."; }))),
-            ("CheckCircle", "Commit", (Action)(async () => await CommitGitAsync())),
         });
         var body = (Grid)page.Tag!;
-        var panel = new Grid { ColumnSpacing = 12, Padding = new Thickness(16) };
-        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(360) });
-        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         try
         {
             var status = _gitService.Status(State.SelectedProject.RootPath);
-            var branches = _gitService.Branches(State.SelectedProject.RootPath);
-            var left = new StackPanel { Spacing = 8 };
-            left.Children.Add(new TextBlock { Text = $"Branch: {branches.CurrentBranch}", FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Brush("V2ForegroundBrush") });
+            var output = _gitDiffText ?? GitStatusOutput(status);
             if (!string.IsNullOrWhiteSpace(_toolStatus))
             {
-                left.Children.Add(new TextBlock { Text = _toolStatus, FontSize = 12, Foreground = Brush("V2MutedForegroundBrush"), TextWrapping = TextWrapping.Wrap });
+                output = $"{_toolStatus}{Environment.NewLine}{Environment.NewLine}{output}";
             }
 
-            if (status.Entries.Count == 0)
-            {
-                left.Children.Add(EmptyState(T("git.clean"), T("git.cleanDetail"), "GitBranch"));
-            }
-            else
-            {
-                foreach (var entry in status.Entries)
-                {
-                    var row = new Button
-                    {
-                        HorizontalAlignment = HorizontalAlignment.Stretch,
-                        HorizontalContentAlignment = HorizontalAlignment.Left,
-                        Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
-                        Content = new StackPanel
-                        {
-                            Spacing = 2,
-                            Children =
-                            {
-                                new TextBlock { Text = entry.Path, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis },
-                                new TextBlock { Text = entry.State, FontSize = 11, Foreground = Brush("V2MutedForegroundBrush") },
-                            },
-                        },
-                    };
-                    row.Click += (_, _) =>
-                    {
-                        _gitSelectedPath = entry.Path;
-                        _gitDiffText = _gitService.FileDiff(State.SelectedProject.RootPath, entry.Path);
-                        RenderAll();
-                    };
-                    left.Children.Add(row);
-                }
-            }
-
-            panel.Children.Add(new ScrollViewer { Content = left });
-            var right = new StackPanel { Spacing = 8 };
-            var actionRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            var discard = new Button { Content = "Discard selected", Height = 32, Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"] };
-            discard.Click += async (_, _) => await GitActionAsync(() =>
-            {
-                if (string.IsNullOrWhiteSpace(_gitSelectedPath)) return "No file selected.";
-                _gitService.Discard(State.SelectedProject.RootPath, [_gitSelectedPath]);
-                _gitDiffText = null;
-                return $"Discarded {_gitSelectedPath}.";
-            });
-            var deleteUntracked = new Button { Content = "Delete untracked", Height = 32, Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"] };
-            deleteUntracked.Click += async (_, _) => await GitActionAsync(() =>
-            {
-                _gitService.DeleteUntracked(State.SelectedProject.RootPath);
-                _gitDiffText = null;
-                return "Deleted untracked files.";
-            });
-            actionRow.Children.Add(discard);
-            actionRow.Children.Add(deleteUntracked);
-            right.Children.Add(actionRow);
-            right.Children.Add(new TextBox
-            {
-                Text = _gitDiffText ?? _gitService.Diff(State.SelectedProject.RootPath),
-                IsReadOnly = true,
-                AcceptsReturn = true,
-                TextWrapping = TextWrapping.NoWrap,
-                FontFamily = new FontFamily("Consolas"),
-                FontSize = 12,
-                MinHeight = 420,
-                Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
-            });
-            Grid.SetColumn(right, 1);
-            panel.Children.Add(right);
+            body.Children.Add(MonospaceOutput(output));
         }
         catch (Exception ex)
         {
-            panel.Children.Add(EmptyState("Git is not initialized", ex.Message, "GitBranch"));
+            body.Children.Add(MonospaceOutput($"Git is not initialized{Environment.NewLine}{Environment.NewLine}{ex.Message}"));
         }
 
-        body.Children.Add(panel);
         return page;
+    }
+
+    private string GitStatusOutput(GitStatusSnapshot status)
+    {
+        var lines = new List<string>
+        {
+            $"On branch {status.Branch}",
+            "",
+        };
+        if (status.Entries.Count == 0)
+        {
+            lines.Add(T("git.clean"));
+            lines.Add(T("git.cleanDetail"));
+        }
+        else
+        {
+            lines.Add("Changes:");
+            foreach (var entry in status.Entries)
+            {
+                lines.Add($"  {entry.State,-24} {entry.Path}");
+            }
+        }
+
+        return string.Join(Environment.NewLine, lines);
     }
 
     private async Task GitActionAsync(Func<string> action)
@@ -5951,37 +5898,69 @@ public sealed partial class MainWindow : Window
 
     private FrameworkElement TasksPage()
     {
-        var subtitle = State.SelectedProject?.DisplayName ?? T("chat.status.selectProject");
-        var page = ToolPage(T("tabs.tasks"), subtitle, new[]
+        var subtitle = State.SelectedProject?.RootPath ?? L("Task plans and execution queue", "任务计划和执行队列");
+        var titleInput = ToolToolbarTextBox(_taskTitleText, "Task title", 180);
+        titleInput.TextChanged += (_, _) => _taskTitleText = titleInput.Text;
+        var promptInput = ToolToolbarTextBox(_taskPromptText, "Prompt", 280);
+        promptInput.TextChanged += (_, _) => _taskPromptText = promptInput.Text;
+        promptInput.KeyDown += async (_, args) =>
         {
-            ("Plus", "New task", (Action)(async () => await CreateTaskAsync())),
-            ("CheckCircle", "Init TaskMaster", (Action)(async () => await InitTaskMasterAsync())),
-            ("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
+            if (args.Key == global::Windows.System.VirtualKey.Enter)
+            {
+                args.Handled = true;
+                await QueueTaskAsync();
+            }
+        };
+
+        var page = ToolPage(T("tabs.tasks"), subtitle, new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                titleInput,
+                promptInput,
+                ToolbarButton("Plus", L("Queue", "入队"), (Action)(async () => await QueueTaskAsync()), isProminent: true),
+            },
         });
-        var panel = new StackPanel { Padding = new Thickness(16), Spacing = 8 };
-        if (!string.IsNullOrWhiteSpace(_toolStatus)) panel.Children.Add(StatusText(_toolStatus));
+        var panel = new StackPanel { Spacing = 2 };
 
-        foreach (var run in _runStore.Runs.Take(20))
+        if (State.TaskPlans.Count == 0)
         {
-            panel.Children.Add(ActionCard("terminal", $"{run.Description} ({run.Status})", $"{run.Kind} / {run.Cwd}",
-                ("Output", async () => await ShowTextDialogAsync(run.Description, run.Output)),
-                ("Refresh", async () => { await Task.CompletedTask; RenderAll(); })));
-        }
-
-        if (State.TaskPlans.Count == 0 && !_runStore.Runs.Any())
-        {
-            panel.Children.Add(EmptyState(T("tabs.tasks"), T("tasks.subtitle"), "checklist"));
+            panel.Children.Add(EmptyState(L("No tasks queued", "暂无任务"), L("Create a task plan from the toolbar.", "从顶部工具栏创建任务计划。"), "checklist"));
         }
         else
         {
             foreach (var plan in State.TaskPlans)
             {
-                panel.Children.Add(ListCard("checklist", $"{plan.Title} ({plan.Status})", plan.Prompt));
+                panel.Children.Add(ToolListRow("checklist", plan.Title, plan.Prompt, plan.Status.ToString()));
             }
         }
 
-        ((Grid)page.Tag!).Children.Add(new ScrollViewer { Content = panel });
+        ((Grid)page.Tag!).Children.Add(ToolList(panel));
         return page;
+    }
+
+    private async Task QueueTaskAsync()
+    {
+        if (State.SelectedProject is null)
+        {
+            _toolStatus = T("chat.status.selectProject");
+            RenderAll();
+            return;
+        }
+
+        var title = string.IsNullOrWhiteSpace(_taskTitleText) ? "Untitled task" : _taskTitleText.Trim();
+        var prompt = _taskPromptText.Trim();
+        var task = _taskMasterService.AddTask(State.SelectedProject.RootPath, title, prompt);
+        _taskPlanStore.Save(task);
+        _taskTitleText = "";
+        _taskPromptText = "";
+        _toolStatus = $"Queued: {task.Title}";
+        RefreshNativeStores();
+        await Task.CompletedTask;
+        RenderAll();
     }
 
     private FrameworkElement ToolTabbedTopbar(IReadOnlyList<(string Label, bool IsActive, Action Action)> tabs, params FrameworkElement[] statusItems)
@@ -7432,6 +7411,11 @@ public sealed partial class MainWindow : Window
 
     private Grid ToolPage(string title, string subtitle, IReadOnlyList<(string Icon, string Label, Action Action)> actions)
     {
+        return ToolPage(title, subtitle, ToolActionPanel(actions));
+    }
+
+    private Grid ToolPage(string title, string subtitle, FrameworkElement actions)
+    {
         var root = new Grid { Background = Brush("V2BackgroundBrush") };
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(V2LayoutMetrics.ToolbarHeight) });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -7452,30 +7436,10 @@ public sealed partial class MainWindow : Window
         label.Children.Add(new TextBlock { Text = title, FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Brush("V2ForegroundBrush") });
         label.Children.Add(new TextBlock { Text = subtitle, FontSize = 11, Foreground = Brush("V2MutedForegroundBrush"), TextTrimming = TextTrimming.CharacterEllipsis, Visibility = string.IsNullOrWhiteSpace(subtitle) ? Visibility.Collapsed : Visibility.Visible });
         toolbar.Children.Add(label);
-        var actionPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        foreach (var action in actions)
-        {
-            var button = new Button
-            {
-                Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
-                Height = 32,
-                Content = new StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    Spacing = 6,
-                    Children =
-                    {
-                        Icon(action.Icon, 14, Brush("V2SecondaryForegroundBrush")),
-                        new TextBlock { Text = action.Label, FontSize = 12, VerticalAlignment = VerticalAlignment.Center },
-                    },
-                },
-            };
-            button.Click += (_, _) => action.Action();
-            actionPanel.Children.Add(button);
-        }
-
-        Grid.SetColumn(actionPanel, 1);
-        toolbar.Children.Add(actionPanel);
+        actions.VerticalAlignment = VerticalAlignment.Center;
+        actions.HorizontalAlignment = HorizontalAlignment.Right;
+        Grid.SetColumn(actions, 1);
+        toolbar.Children.Add(actions);
         root.Children.Add(toolbarHost);
 
         var body = new Grid();
@@ -7483,6 +7447,53 @@ public sealed partial class MainWindow : Window
         root.Children.Add(body);
         root.Tag = body;
         return root;
+    }
+
+    private StackPanel ToolActionPanel(IReadOnlyList<(string Icon, string Label, Action Action)> actions)
+    {
+        var actionPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        foreach (var action in actions)
+        {
+            actionPanel.Children.Add(ToolbarButton(action.Icon, action.Label, action.Action));
+        }
+
+        return actionPanel;
+    }
+
+    private Button ToolbarButton(string iconKey, string label, Action action, bool isProminent = false)
+    {
+        var button = new Button
+        {
+            Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
+            Height = 32,
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children =
+                {
+                    Icon(iconKey, 14, Brush(isProminent ? "V2ForegroundBrush" : "V2SecondaryForegroundBrush")),
+                    new TextBlock { Text = label, FontSize = 12, VerticalAlignment = VerticalAlignment.Center },
+                },
+            },
+        };
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    private TextBox ToolToolbarTextBox(string text, string placeholder, double width, bool isMonospaced = false)
+    {
+        return new TextBox
+        {
+            Text = text,
+            PlaceholderText = placeholder,
+            Width = width,
+            Height = 32,
+            MinWidth = 0,
+            FontSize = 13,
+            FontFamily = isMonospaced ? new FontFamily("Consolas") : null,
+            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+        };
     }
 
     private FrameworkElement MetricRow(string iconKey, string label, string value, string detail, string? hint = null) => new Border
@@ -7591,6 +7602,125 @@ public sealed partial class MainWindow : Window
                     Background = Brush("V2CardBrush"),
                     Padding = new Thickness(16),
                     Child = content,
+                },
+            },
+        };
+    }
+
+    private FrameworkElement ToolList(StackPanel content) => new ScrollViewer
+    {
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        Content = new Border
+        {
+            Padding = new Thickness(16),
+            Child = content,
+        },
+    };
+
+    private static T Column<T>(int column, T element) where T : FrameworkElement
+    {
+        Grid.SetColumn(element, column);
+        return element;
+    }
+
+    private FrameworkElement ToolListRow(string iconKey, string title, string detail, string trailing) => new Grid
+    {
+        Padding = new Thickness(10, 9, 10, 9),
+        ColumnSpacing = 10,
+        ColumnDefinitions =
+        {
+            new ColumnDefinition { Width = new GridLength(20) },
+            new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+            new ColumnDefinition { Width = GridLength.Auto },
+        },
+        Children =
+        {
+            Icon(iconKey, 14, Brush("V2MutedForegroundBrush")),
+            Column(1, new StackPanel
+            {
+                Spacing = 2,
+                Children =
+                {
+                    new TextBlock { Text = title, FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Brush("V2ForegroundBrush"), TextTrimming = TextTrimming.CharacterEllipsis },
+                    new TextBlock { Text = string.IsNullOrWhiteSpace(detail) ? " " : detail, FontSize = 12, Foreground = Brush("V2MutedForegroundBrush"), TextWrapping = TextWrapping.Wrap, MaxLines = 2 },
+                },
+            }),
+            Column(2, new TextBlock
+            {
+                Text = trailing,
+                FontSize = 11,
+                FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                VerticalAlignment = VerticalAlignment.Center,
+            }),
+        },
+    };
+
+    private FrameworkElement MonospaceOutput(string text) => new ScrollViewer
+    {
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+        Content = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(text) ? " " : text,
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
+            Foreground = Brush("V2ForegroundBrush"),
+            TextWrapping = TextWrapping.NoWrap,
+            Padding = new Thickness(16),
+        },
+    };
+
+    private FrameworkElement TerminalRunRow(NativeBackgroundRun run)
+    {
+        var header = new Grid { ColumnSpacing = 12 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock
+        {
+            Text = $"$ {run.Description}",
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        var statusBrush = run.ExitCode is 0 ? Brush("V2GreenBrush") : Brush("V2RedBrush");
+        var exitText = run.Status == G9Claw.Windows.Core.TaskStatus.Running ? "running" : $"exit {run.ExitCode ?? -1}";
+        var exit = new TextBlock
+        {
+            Text = exitText,
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 11,
+            Foreground = statusBrush,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(exit, 1);
+        header.Children.Add(exit);
+
+        return new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Background = Brush("V2ControlSurfaceBrush"),
+            Padding = new Thickness(12),
+            Margin = new Thickness(0, 0, 0, 2),
+            Child = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    header,
+                    new TextBlock
+                    {
+                        Text = string.IsNullOrWhiteSpace(run.Output) ? " " : run.Output,
+                        FontFamily = new FontFamily("Consolas"),
+                        FontSize = 11,
+                        Foreground = Brush("V2SecondaryForegroundBrush"),
+                        TextWrapping = TextWrapping.Wrap,
+                    },
                 },
             },
         };
