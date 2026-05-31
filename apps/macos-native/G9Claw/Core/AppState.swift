@@ -19,7 +19,6 @@ final class AppState: ObservableObject {
     @Published var composerPermissionMode: ComposerPermissionMode = .default
     @Published var pendingAttachments: [FileAttachment] = []
     @Published var settings = AppSettings.defaults
-    @Published var apiKeyDraft = ""
     @Published var pendingPermissions: [PermissionRequest] = []
     @Published var terminalRuns: [TerminalRun] = []
     @Published var gitOutput = ""
@@ -39,7 +38,6 @@ final class AppState: ObservableObject {
     @Published var collapsedToolRowIDs: Set<String> = []
     @Published var tokenBudgetBySession: [String: TokenBudget] = [:]
 
-    let keychain = KeychainStore()
     let settingsStore: AppSettingsStore
     let providerClient = NativeAgentRuntime()
     let workspaceService = WorkspaceService()
@@ -166,8 +164,6 @@ final class AppState: ObservableObject {
             try bootstrapLocalDebugConfigIfNeeded()
             loadG9ClawConfigText()
             applyNativeConfigFromCurrentText()
-            try seedDebugKeyFromEnvironmentIfPresent()
-            apiKeyDraft = try keychain.readSecret(account: settings.providerConfig.secretAccount) ?? apiKeyDraft
             loadManualProjectsFromG9ClawConfig()
             refreshNativeToolData()
             restartMemoryAutomationLoop()
@@ -513,19 +509,10 @@ final class AppState: ObservableObject {
             let requestContextWindow = nativeConfig.map {
                 NativeConfigService.contextWindow(entryID: routeEntryID, values: $0.rawValues) ?? $0.contextWindow
             } ?? self.settings.contextWindow
-            let apiKey: String
-            do {
-                let keychainValue = try self.keychain.readSecret(account: providerConfig.secretAccount)
-                apiKey = NativeConfigService.resolvedAPIKey(
-                    routeEntryID: routeEntryID,
-                    nativeConfig: nativeConfig,
-                    keychainValue: keychainValue,
-                    apiKeyDraft: self.apiKeyDraft
-                )
-            } catch {
-                self.handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID, runToken: runToken)
-                return
-            }
+            let apiKey = NativeConfigService.resolvedAPIKey(
+                routeEntryID: routeEntryID,
+                nativeConfig: nativeConfig
+            )
             self.memoryService.updateExtractionRuntime(
                 providerConfig: providerConfig,
                 apiKey: apiKey,
@@ -642,18 +629,10 @@ final class AppState: ObservableObject {
         guard let providerConfig = NativeConfigService.providerConfig(entryID: judgeEntryID, values: values) ?? nativeConfig?.providerConfig else {
             return nil
         }
-        let apiKey: String
-        do {
-            let keychainValue = try keychain.readSecret(account: providerConfig.secretAccount)
-            apiKey = NativeConfigService.resolvedAPIKey(
-                routeEntryID: judgeEntryID,
-                nativeConfig: nativeConfig,
-                keychainValue: keychainValue,
-                apiKeyDraft: apiKeyDraft
-            )
-        } catch {
-            return nil
-        }
+        let apiKey = NativeConfigService.resolvedAPIKey(
+            routeEntryID: judgeEntryID,
+            nativeConfig: nativeConfig
+        )
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
         do {
@@ -783,12 +762,9 @@ final class AppState: ObservableObject {
                   let providerConfig = NativeConfigService.providerConfig(entryID: entryID, values: values) else {
                 return nil
             }
-            let keychainValue = try? keychain.readSecret(account: providerConfig.secretAccount)
             let apiKey = NativeConfigService.resolvedAPIKey(
                 routeEntryID: entryID,
-                nativeConfig: nativeConfig,
-                keychainValue: keychainValue,
-                apiKeyDraft: apiKeyDraft
+                nativeConfig: nativeConfig
             )
             guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
@@ -1006,9 +982,6 @@ final class AppState: ObservableObject {
 
     func saveSettings() {
         do {
-            if !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                try keychain.saveSecret(apiKeyDraft, account: settings.providerConfig.secretAccount)
-            }
             try saveG9ClawConfigTextIfChanged()
             applyNativeConfigFromCurrentText()
             try settingsStore.save(settings)
@@ -1554,18 +1527,10 @@ final class AppState: ObservableObject {
             ?? nativeConfig.defaultEntryID
         let providerConfig = NativeConfigService.providerConfig(entryID: entryID, values: nativeConfig.rawValues)
             ?? nativeConfig.providerConfig
-        let apiKey: String
-        do {
-            let keychainValue = try keychain.readSecret(account: providerConfig.secretAccount)
-            apiKey = NativeConfigService.resolvedAPIKey(
-                routeEntryID: entryID,
-                nativeConfig: nativeConfig,
-                keychainValue: keychainValue,
-                apiKeyDraft: apiKeyDraft
-            )
-        } catch {
-            return AlwaysOnTurnResult(succeeded: false, sessionID: "", summary: error.localizedDescription)
-        }
+        let apiKey = NativeConfigService.resolvedAPIKey(
+            routeEntryID: entryID,
+            nativeConfig: nativeConfig
+        )
 
         let session = existingSession ?? createAlwaysOnBackgroundSession(projectRoot: project.rootPath, title: title, runID: runID)
         let sessionID = session.id
@@ -2015,13 +1980,6 @@ final class AppState: ObservableObject {
         }
         settings = Self.normalizedSettings(updated)
         memoryService.updateSettings(MemorySettingsSnapshot.fromConfigValues(native.rawValues))
-
-        if apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let apiKey = native.apiKey,
-           !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            apiKeyDraft = apiKey
-            try? keychain.saveSecret(apiKey, account: settings.providerConfig.secretAccount)
-        }
     }
 
     private func loadG9ClawConfigText() {
@@ -2064,13 +2022,6 @@ final class AppState: ObservableObject {
         }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Self.defaultG9ClawConfigText().write(to: url, atomically: true, encoding: .utf8)
-    }
-
-    private func seedDebugKeyFromEnvironmentIfPresent() throws {
-        let env = ProcessInfo.processInfo.environment
-        guard let key = env["G9CLAW_DEBUG_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !key.isEmpty else { return }
-        try keychain.saveSecret(key, account: settings.providerConfig.secretAccount)
     }
 
     private func logBundleNetworkPolicy() {
@@ -3694,7 +3645,7 @@ enum NativeConfigService {
             apiType: apiType,
             baseURL: baseURL,
             model: model,
-            secretAccount: (providerID == "g9claw" || providerID == "edgeclaw") ? ProviderConfig.empty.secretAccount : "g9claw-provider-\(providerID)-api-key",
+            secretAccount: (providerID == "g9claw" || providerID == "edgeclaw") ? ProviderConfig.empty.secretAccount : "pilotdeck-provider-\(providerID)-api-key",
             headers: headers
         )
     }
@@ -3705,18 +3656,15 @@ enum NativeConfigService {
 
     static func resolvedAPIKey(
         routeEntryID: String,
-        nativeConfig: NativeConfigSnapshot?,
-        keychainValue: String?,
-        apiKeyDraft: String
+        nativeConfig: NativeConfigSnapshot?
     ) -> String {
         guard let nativeConfig else {
-            return keychainValue?.nilIfBlank ?? apiKeyDraft
+            return ""
         }
         let providerID = providerID(entryID: routeEntryID, values: nativeConfig.rawValues)
         return nativeConfig.rawValues["models.providers.\(providerID).apiKey"]?.nilIfBlank
             ?? nativeConfig.apiKey?.nilIfBlank
-            ?? keychainValue?.nilIfBlank
-            ?? apiKeyDraft
+            ?? ""
     }
 
     private static func normalizeScalar(_ rawValue: String) -> String {

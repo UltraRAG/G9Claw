@@ -4923,7 +4923,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(updated.contains("app:\n"))
     }
 
-    func testConfigYAMLAPIKeyResolutionPrefersYAMLAndFallsBackToKeychainWhenBlank() {
+    func testConfigYAMLAPIKeyResolutionUsesOnlyYAML() {
         let yamlWithKey = """
         models:
           providers:
@@ -4940,9 +4940,7 @@ final class ParityLogicTests: XCTestCase {
 
         let resolvedYAMLKey = NativeConfigService.resolvedAPIKey(
             routeEntryID: "default",
-            nativeConfig: snapshotWithKey,
-            keychainValue: "keychain-secret",
-            apiKeyDraft: "draft-secret"
+            nativeConfig: snapshotWithKey
         )
 
         XCTAssertEqual(resolvedYAMLKey, "yaml-secret")
@@ -4961,14 +4959,12 @@ final class ParityLogicTests: XCTestCase {
         """
         let snapshotBlankKey = NativeConfigService.snapshot(from: yamlBlankKey)
 
-        let resolvedFallbackKey = NativeConfigService.resolvedAPIKey(
+        let resolvedBlankKey = NativeConfigService.resolvedAPIKey(
             routeEntryID: "default",
-            nativeConfig: snapshotBlankKey,
-            keychainValue: "keychain-secret",
-            apiKeyDraft: "draft-secret"
+            nativeConfig: snapshotBlankKey
         )
 
-        XCTAssertEqual(resolvedFallbackKey, "keychain-secret")
+        XCTAssertEqual(resolvedBlankKey, "")
     }
 
     func testSkillsSlugValidationRejectsTraversal() {

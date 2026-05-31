@@ -861,7 +861,7 @@ struct ProviderConfig: Hashable, Codable {
         apiType: .openAIChat,
         baseURL: "",
         model: "",
-        secretAccount: "g9claw-provider-api-key",
+        secretAccount: "pilotdeck-provider-api-key",
         headers: [:]
     )
 }

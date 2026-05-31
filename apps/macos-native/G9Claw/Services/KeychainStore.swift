@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 enum KeychainStoreError: Error {
@@ -7,7 +8,11 @@ enum KeychainStoreError: Error {
 }
 
 final class KeychainStore {
-    private let service = "com.hx.g9claw"
+    private let service: String
+
+    init(service: String = "com.hx.pilotdeck") {
+        self.service = service
+    }
 
     func saveSecret(_ secret: String, account: String) throws {
         guard let data = secret.data(using: .utf8) else {
@@ -41,18 +46,26 @@ final class KeychainStore {
         }
     }
 
-    func readSecret(account: String) throws -> String? {
-        let query: [String: Any] = [
+    func readSecret(account: String, allowUserInteraction: Bool = false) throws -> String? {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+        if !allowUserInteraction {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound {
+            return nil
+        }
+        if status == errSecInteractionNotAllowed || status == errSecUserCanceled {
             return nil
         }
         guard status == errSecSuccess else {

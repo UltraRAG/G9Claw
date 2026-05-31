@@ -1428,7 +1428,7 @@ private struct SettingsContentView: View {
                     SettingsTextField(state.t(.contextWindow), text: configBinding("models.entries.\(entry).contextWindow"))
                 }
 
-                Text(state.t(.keychainHelp))
+                Text(state.t(.apiKeyConfigHelp))
                     .font(.system(size: 11))
                     .foregroundStyle(DesignTokens.tertiaryText)
             }
