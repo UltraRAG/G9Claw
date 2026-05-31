@@ -26,6 +26,26 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(WorkspaceService.projectName(for: "/Users/tester/My_Project"), "-Users-tester-My-Project")
     }
 
+    func testNativeAgentRuntimeContextUsesLocalDateInsteadOfUTCDate() {
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = utcCalendar.date(from: DateComponents(
+            year: 2026,
+            month: 5,
+            day: 31,
+            hour: 16,
+            minute: 30
+        ))!
+        let shanghai = TimeZone(identifier: "Asia/Shanghai")!
+
+        let context = NativeAgentRuntime.nativeAgentRuntimeContext(now: now, timeZone: shanghai)
+
+        XCTAssertTrue(context.contains("current_date: 2026-06-01"))
+        XCTAssertTrue(context.contains("current_weekday: Monday"))
+        XCTAssertTrue(context.contains("timezone: Asia/Shanghai (UTC+08:00)"))
+        XCTAssertFalse(context.contains("current_date: 2026-05-31"))
+    }
+
     func testWorkspaceFileListingReportsHiddenOnlyRoots() throws {
         let root = temporaryDirectory("g9claw-files")
         defer { try? FileManager.default.removeItem(at: root) }

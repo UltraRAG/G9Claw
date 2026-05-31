@@ -3162,11 +3162,59 @@ struct NativeAgentRuntime: Sendable {
         For shell commands, use Shell only when needed and keep commands scoped to the workspace. Use run_in_background plus Await for long-running commands.
         \(searchInstruction)
         \(nativeAgentSkillContext(workspacePath: request.projectPath, isGeneral: request.workspaceContext?.isGeneral ?? false))
+        \(nativeAgentRuntimeContext())
         Use Task for delegated analysis or shell-focused background work.
         If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request and no other prose in that assistant turn.
         Example: {"tool":"Read","input":{"file_path":"README.md"}}
         Do not emit markdown fences, language labels such as "bash" or "json", or a prose explanation when requesting a tool.
         """
+    }
+
+    static func nativeAgentRuntimeContext(
+        now: Date = Date(),
+        calendar inputCalendar: Calendar = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
+        var calendar = inputCalendar
+        calendar.timeZone = timeZone
+        let components = calendar.dateComponents([.year, .month, .day, .weekday], from: now)
+        let year = components.year ?? 1970
+        let month = components.month ?? 1
+        let day = components.day ?? 1
+        let weekday = weekdayName(components.weekday)
+        let dateText = String(format: "%04d-%02d-%02d", year, month, day)
+        let timezoneText = "\(timeZone.identifier) (\(timezoneOffsetDescription(timeZone: timeZone, at: now)))"
+        return """
+        Runtime context:
+        <environment>
+        current_date: \(dateText)
+        current_weekday: \(weekday)
+        timezone: \(timezoneText)
+        </environment>
+        Use current_date for relative date questions such as today, tomorrow, and yesterday. Do not infer the current date from model pretraining.
+        """
+    }
+
+    private static func weekdayName(_ weekday: Int?) -> String {
+        switch weekday {
+        case 1: "Sunday"
+        case 2: "Monday"
+        case 3: "Tuesday"
+        case 4: "Wednesday"
+        case 5: "Thursday"
+        case 6: "Friday"
+        case 7: "Saturday"
+        default: "Unknown"
+        }
+    }
+
+    private static func timezoneOffsetDescription(timeZone: TimeZone, at date: Date) -> String {
+        let seconds = timeZone.secondsFromGMT(for: date)
+        let sign = seconds >= 0 ? "+" : "-"
+        let absoluteSeconds = abs(seconds)
+        let hours = absoluteSeconds / 3_600
+        let minutes = (absoluteSeconds % 3_600) / 60
+        return String(format: "UTC%@%02d:%02d", sign, hours, minutes)
     }
 
     private static func nativeAgentSearchInstruction() -> String {
