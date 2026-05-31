@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -4772,13 +4773,41 @@ public sealed partial class MainWindow : Window
     {
         var button = PreviewHeaderButton("Ellipsis", L("More", "\u66f4\u591a"));
         var flyout = new MenuFlyout();
-        var rename = new MenuFlyoutItem { Text = T("common.rename") };
-        rename.Click += async (_, _) => await RenameWorkspaceItemAsync();
-        flyout.Items.Add(rename);
-        var delete = new MenuFlyoutItem { Text = T("common.delete") };
-        delete.Click += async (_, _) => await DeleteWorkspaceItemAsync();
-        flyout.Items.Add(delete);
+        var newFile = new MenuFlyoutItem { Text = T("files.newFile") };
+        newFile.Click += async (_, _) => await CreateWorkspaceItemAsync(false);
+        flyout.Items.Add(newFile);
+        var newFolder = new MenuFlyoutItem { Text = T("files.newFolder") };
+        newFolder.Click += async (_, _) => await CreateWorkspaceItemAsync(true);
+        flyout.Items.Add(newFolder);
         flyout.Items.Add(new MenuFlyoutSeparator());
+        var uploadFiles = new MenuFlyoutItem { Text = L("Upload Files", "\u4e0a\u4f20\u6587\u4ef6") };
+        uploadFiles.Click += async (_, _) => await UploadWorkspaceFileAsync();
+        flyout.Items.Add(uploadFiles);
+        var uploadFolder = new MenuFlyoutItem { Text = L("Upload Folder", "\u4e0a\u4f20\u6587\u4ef6\u5939") };
+        uploadFolder.Click += async (_, _) => await UploadWorkspaceFolderAsync();
+        flyout.Items.Add(uploadFolder);
+        var download = new MenuFlyoutItem { Text = L("Download", "\u4e0b\u8f7d") };
+        download.Click += async (_, _) => await DownloadWorkspaceZipAsync();
+        flyout.Items.Add(download);
+        if (!string.IsNullOrWhiteSpace(_selectedFilePath))
+        {
+            flyout.Items.Add(new MenuFlyoutSeparator());
+            var rename = new MenuFlyoutItem { Text = T("common.rename") };
+            rename.Click += async (_, _) => await RenameWorkspaceItemAsync();
+            flyout.Items.Add(rename);
+            var delete = new MenuFlyoutItem { Text = T("common.delete") };
+            delete.Click += async (_, _) => await DeleteWorkspaceItemAsync();
+            flyout.Items.Add(delete);
+        }
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        var collapseAll = new MenuFlyoutItem { Text = L("Collapse all", "\u5168\u90e8\u6298\u53e0") };
+        collapseAll.IsEnabled = _expandedFileDirectories.Count > 0;
+        collapseAll.Click += (_, _) =>
+        {
+            _expandedFileDirectories.Clear();
+            RenderAll();
+        };
+        flyout.Items.Add(collapseAll);
         var close = new MenuFlyoutItem { Text = L("Close", "\u5173\u95ed") };
         close.Click += (_, _) =>
         {
@@ -5339,6 +5368,79 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             await Dialog(T("files.uploadFailed"), new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap }, T("common.ok")).ShowAsync();
+        }
+    }
+
+    private async Task UploadWorkspaceFolderAsync()
+    {
+        if (State.SelectedProject is null) return;
+        var picker = new FolderPicker();
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+        picker.FileTypeFilter.Add("*");
+        var folder = await picker.PickSingleFolderAsync();
+        if (folder is null) return;
+        try
+        {
+            var targetDirectory = SelectedDirectoryForFileOperation(State.SelectedProject.RootPath);
+            var uploaded = UploadFolderToWorkspace(folder.Path, targetDirectory, State.SelectedProject.RootPath);
+            _selectedFilePath = Path.GetRelativePath(State.SelectedProject.RootPath, uploaded);
+            _expandedFileDirectories.Add(uploaded);
+            _previewDraftText = null;
+            _isMarkdownPreviewing = false;
+            _isCodePreviewing = false;
+            RenderAll();
+        }
+        catch (Exception ex)
+        {
+            await Dialog(T("files.uploadFailed"), new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap }, T("common.ok")).ShowAsync();
+        }
+    }
+
+    private static string UploadFolderToWorkspace(string sourcePath, string targetDirectory, string workspaceRoot)
+    {
+        var source = Path.GetFullPath(sourcePath);
+        var targetParent = WorkspaceService.ResolveWorkspacePath(targetDirectory, workspaceRoot);
+        var target = Path.Combine(targetParent, PathHelpers.SafeFileToken(Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))));
+        if (Directory.Exists(target) || File.Exists(target))
+        {
+            throw new IOException($"Target folder already exists: {target}");
+        }
+
+        CopyDirectory(source, target);
+        return target;
+    }
+
+    private async Task DownloadWorkspaceZipAsync()
+    {
+        if (State.SelectedProject is null) return;
+        var picker = new FileSavePicker();
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+        picker.SuggestedFileName = $"{State.SelectedProject.DisplayName}.zip";
+        picker.FileTypeChoices.Add("ZIP", [".zip"]);
+        var file = await picker.PickSaveFileAsync();
+        if (file is null || string.IsNullOrWhiteSpace(file.Path)) return;
+        try
+        {
+            if (File.Exists(file.Path)) File.Delete(file.Path);
+            ZipFile.CreateFromDirectory(State.SelectedProject.RootPath, file.Path, CompressionLevel.Fastest, includeBaseDirectory: false);
+        }
+        catch (Exception ex)
+        {
+            await Dialog(L("Download failed", "\u4e0b\u8f7d\u5931\u8d25"), new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap }, T("common.ok")).ShowAsync();
+        }
+    }
+
+    private static void CopyDirectory(string source, string target)
+    {
+        Directory.CreateDirectory(target);
+        foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+        {
+            Directory.CreateDirectory(Path.Combine(target, Path.GetRelativePath(source, directory)));
+        }
+
+        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            File.Copy(file, Path.Combine(target, Path.GetRelativePath(source, file)), overwrite: false);
         }
     }
 
