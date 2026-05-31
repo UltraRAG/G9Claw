@@ -154,9 +154,7 @@ public sealed class SkillService
 
     public SkillRecord Create(SkillScope scope, string? projectRoot, string slug, string name, string description)
     {
-        var root = scope == SkillScope.Project && !string.IsNullOrWhiteSpace(projectRoot)
-            ? Path.Combine(projectRoot, ".g9claw", "skills")
-            : _userSkillDirectory;
+        var root = SkillRoot(scope, projectRoot);
         var safeSlug = SafeSlug(slug);
         var directory = Path.Combine(root, safeSlug);
         Directory.CreateDirectory(directory);
@@ -166,9 +164,50 @@ public sealed class SkillService
         return ToSkillRecord(file, scope);
     }
 
+    public SkillRecord ImportFolder(SkillScope scope, string? projectRoot, string sourceDirectory, bool overwrite = false)
+    {
+        if (string.IsNullOrWhiteSpace(sourceDirectory)) throw new ArgumentException("Skill folder is required.", nameof(sourceDirectory));
+        var source = Path.GetFullPath(sourceDirectory);
+        var sourceSkillFile = Path.Combine(source, "SKILL.md");
+        if (!File.Exists(sourceSkillFile)) throw new FileNotFoundException("Selected folder must contain SKILL.md.", sourceSkillFile);
+
+        var root = SkillRoot(scope, projectRoot);
+        Directory.CreateDirectory(root);
+        var safeSlug = SafeSlug(Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
+        var target = Path.Combine(root, safeSlug);
+        if (Directory.Exists(target))
+        {
+            if (!overwrite) throw new IOException($"Skill already exists: {safeSlug}");
+            Directory.Delete(target, recursive: true);
+        }
+
+        CopyDirectory(source, target);
+        return ToSkillRecord(Path.Combine(target, "SKILL.md"), scope);
+    }
+
     public void Delete(SkillRecord skill)
     {
         if (Directory.Exists(skill.SkillDir)) Directory.Delete(skill.SkillDir, recursive: true);
+    }
+
+    private string SkillRoot(SkillScope scope, string? projectRoot) =>
+        scope == SkillScope.Project && !string.IsNullOrWhiteSpace(projectRoot)
+            ? Path.Combine(projectRoot, ".g9claw", "skills")
+            : _userSkillDirectory;
+
+    private static void CopyDirectory(string source, string target)
+    {
+        Directory.CreateDirectory(target);
+        foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+        {
+            Directory.CreateDirectory(Path.Combine(target, Path.GetRelativePath(source, directory)));
+        }
+
+        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(source, file);
+            File.Copy(file, Path.Combine(target, relative), overwrite: false);
+        }
     }
 
     private static SkillRecord ToSkillRecord(string skillFile, SkillScope scope)

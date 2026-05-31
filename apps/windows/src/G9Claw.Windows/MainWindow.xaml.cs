@@ -5841,10 +5841,17 @@ public sealed partial class MainWindow : Window
 
     private FrameworkElement SkillsPage()
     {
-        var page = ToolPage(T("skills.title"), T("skills.subtitle"), new[]
+        var page = ToolPage(T("skills.title"), T("skills.subtitle"), new StackPanel
         {
-            ("Plus", T("skills.newSkill"), (Action)(async () => await CreateSkillAsync())),
-            ("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                ToolbarButton("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
+                ToolbarButton("FolderPlus", L("Import", "\u5bfc\u5165"), (Action)(async () => await ImportSkillFolderAsync())),
+                ToolbarButton("Plus", T("skills.newSkill"), (Action)(async () => await CreateSkillAsync()), isProminent: true),
+            },
         });
 
         var selected = SelectedSkill();
@@ -7656,13 +7663,13 @@ public sealed partial class MainWindow : Window
 
     private async Task CreateSkillAsync()
     {
-        if (State.SelectedProject is null) return;
         var slug = await PromptTextAsync(T("skills.newSkill"), "skill-slug");
         if (string.IsNullOrWhiteSpace(slug)) return;
         var description = await PromptMultilineAsync(T("skills.newSkill"), "Description");
         try
         {
-            _skillService.Create(SkillScope.Project, State.SelectedProject.RootPath, slug, slug, description ?? "");
+            var (scope, projectRoot) = SkillDestination();
+            _skillService.Create(scope, projectRoot, slug, slug, description ?? "");
             _toolStatus = $"Created skill {slug}.";
             RefreshNativeStores();
         }
@@ -7672,6 +7679,41 @@ public sealed partial class MainWindow : Window
         }
 
         RenderAll();
+    }
+
+    private async Task ImportSkillFolderAsync()
+    {
+        try
+        {
+            var picker = new FolderPicker();
+            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+            picker.FileTypeFilter.Add("*");
+            var folder = await picker.PickSingleFolderAsync();
+            if (folder is null) return;
+
+            var (scope, projectRoot) = SkillDestination();
+            var skill = _skillService.ImportFolder(scope, projectRoot, folder.Path);
+            _selectedSkillKey = SkillKey(skill);
+            _skillEditorKey = null;
+            _toolStatus = $"Imported skill {skill.Name}.";
+            RefreshNativeStores();
+        }
+        catch (Exception ex)
+        {
+            _toolStatus = ex.Message;
+        }
+
+        RenderAll();
+    }
+
+    private (SkillScope Scope, string? ProjectRoot) SkillDestination()
+    {
+        if (State.SelectedProject is { } project && !IsGeneralProject(project))
+        {
+            return (SkillScope.Project, project.RootPath);
+        }
+
+        return (SkillScope.User, null);
     }
 
     private async Task DeleteSkillAsync(SkillRecord skill)
