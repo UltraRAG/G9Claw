@@ -4844,7 +4844,7 @@ public sealed partial class MainWindow : Window
             Background = isSelected ? Brush("V2SelectedBrush") : Transparent,
             BorderBrush = Transparent,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Padding = new Thickness(8 + file.Depth * 14, 0, 8, 0),
+            Padding = new Thickness(6 + file.Depth * 18, 0, 6, 0),
             CornerRadius = new CornerRadius(6),
             Content = new Grid { ColumnSpacing = 8 },
         };
@@ -4873,18 +4873,25 @@ public sealed partial class MainWindow : Window
         };
         var grid = (Grid)row.Content;
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.Children.Add(Icon(file.IsDirectory ? (file.IsExpanded ? "ChevronDown" : "ChevronRight") : "Document", 14, Brush("V2MutedForegroundBrush")));
+        grid.Children.Add(file.IsDirectory
+            ? Icon(file.IsExpanded ? "ChevronDown" : "ChevronRight", 10, Brush("V2MutedForegroundBrush"))
+            : new Border { Width = 12 });
+        var fileIcon = Icon(FileTreeIcon(file), 14, FileTreeIconBrush(file));
+        Grid.SetColumn(fileIcon, 1);
+        grid.Children.Add(fileIcon);
         var name = new TextBlock
         {
             Text = file.Name,
-            FontSize = 13,
+            FontSize = 12.5,
+            FontWeight = isSelected ? Microsoft.UI.Text.FontWeights.Medium : Microsoft.UI.Text.FontWeights.Normal,
             Foreground = isSelected ? Brush("V2ForegroundBrush") : Brush("V2SecondaryForegroundBrush"),
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        Grid.SetColumn(name, 1);
+        Grid.SetColumn(name, 2);
         grid.Children.Add(name);
         var meta = new TextBlock
         {
@@ -4893,9 +4900,27 @@ public sealed partial class MainWindow : Window
             Foreground = Brush("V2MutedForegroundBrush"),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        Grid.SetColumn(meta, 2);
+        Grid.SetColumn(meta, 3);
         grid.Children.Add(meta);
         return row;
+    }
+
+    private string FileTreeIcon(WorkspaceFile file)
+    {
+        if (file.IsDirectory) return "Folder";
+        if (file.IsMarkdown || file.IsPdf) return "doc.richtext";
+        if (file.IsHtml) return "Code";
+        if (file.IsImage) return "Image";
+        return "Document";
+    }
+
+    private Brush FileTreeIconBrush(WorkspaceFile file)
+    {
+        if (file.IsDirectory) return Brush("V2AmberBrush");
+        if (file.IsMarkdown) return Brush("V2BlueBrush");
+        if (file.IsPdf) return Brush("V2RedBrush");
+        if (file.IsImage) return Brush("V2AmberBrush");
+        return Brush("V2MutedForegroundBrush");
     }
 
     private FrameworkElement FilePreviewPane()
