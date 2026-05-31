@@ -1499,6 +1499,171 @@ struct RoutingBucket: Hashable, Codable {
     }
 }
 
+enum RouterTier: String, CaseIterable, Hashable, Codable {
+    case simple
+    case medium
+    case complex
+    case reasoning
+
+    init(canonicalizing rawValue: String?) {
+        let normalized = rawValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        switch normalized {
+        case "simple": self = .simple
+        case "complex": self = .complex
+        case "reasoning": self = .reasoning
+        default: self = .medium
+        }
+    }
+
+    var configKey: String { rawValue }
+    var displayName: String { rawValue }
+}
+
+struct RouterTokenUsage: Hashable, Codable, Sendable {
+    var inputTokens: Int
+    var outputTokens: Int
+    var cacheReadTokens: Int
+    var totalTokens: Int
+
+    init(
+        inputTokens: Int = 0,
+        outputTokens: Int = 0,
+        cacheReadTokens: Int = 0,
+        totalTokens: Int? = nil
+    ) {
+        self.inputTokens = max(0, inputTokens)
+        self.outputTokens = max(0, outputTokens)
+        self.cacheReadTokens = max(0, cacheReadTokens)
+        self.totalTokens = max(0, totalTokens ?? inputTokens + outputTokens + cacheReadTokens)
+    }
+
+    var isEmpty: Bool { totalTokens <= 0 && inputTokens <= 0 && outputTokens <= 0 && cacheReadTokens <= 0 }
+}
+
+struct RouterDecision: Hashable, Codable, Sendable {
+    var id: String
+    var entryID: String
+    var providerID: String?
+    var model: String?
+    var scenario: String
+    var tier: String?
+    var role: String
+    var resolvedFrom: String
+    var stickyHit: Bool
+    var orchestrating: Bool
+    var reason: String?
+    var estimatedInputTokens: Int
+
+    init(
+        id: String = UUID().uuidString,
+        entryID: String,
+        providerID: String? = nil,
+        model: String? = nil,
+        scenario: String,
+        tier: String? = nil,
+        role: String = "main",
+        resolvedFrom: String,
+        stickyHit: Bool = false,
+        orchestrating: Bool = false,
+        reason: String? = nil,
+        estimatedInputTokens: Int = 0
+    ) {
+        self.id = id
+        self.entryID = entryID
+        self.providerID = providerID
+        self.model = model
+        self.scenario = scenario
+        self.tier = tier
+        self.role = role
+        self.resolvedFrom = resolvedFrom
+        self.stickyHit = stickyHit
+        self.orchestrating = orchestrating
+        self.reason = reason
+        self.estimatedInputTokens = estimatedInputTokens
+    }
+}
+
+struct RouterStatsRecord: Identifiable, Hashable, Codable {
+    var id: String
+    var sessionID: String
+    var turnID: String
+    var projectName: String
+    var projectPath: String?
+    var title: String
+    var ts: Date
+    var event: String
+    var role: String
+    var scenario: String
+    var resolvedFrom: String
+    var tier: String?
+    var providerID: String?
+    var model: String
+    var route: String?
+    var query: String?
+    var skill: String?
+    var usage: RouterTokenUsage
+    var cost: Double
+    var baselineCost: Double
+    var savedCost: Double
+    var estimatedInputTokens: Int
+    var stickyHit: Bool
+    var reason: String?
+
+    init(
+        id: String = UUID().uuidString,
+        sessionID: String,
+        turnID: String? = nil,
+        projectName: String,
+        projectPath: String? = nil,
+        title: String,
+        ts: Date = Date(),
+        event: String,
+        role: String,
+        scenario: String,
+        resolvedFrom: String,
+        tier: String? = nil,
+        providerID: String? = nil,
+        model: String,
+        route: String? = nil,
+        query: String? = nil,
+        skill: String? = nil,
+        usage: RouterTokenUsage = RouterTokenUsage(),
+        cost: Double = 0,
+        baselineCost: Double = 0,
+        savedCost: Double = 0,
+        estimatedInputTokens: Int = 0,
+        stickyHit: Bool = false,
+        reason: String? = nil
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.turnID = turnID ?? id
+        self.projectName = projectName
+        self.projectPath = projectPath
+        self.title = title
+        self.ts = ts
+        self.event = event
+        self.role = role
+        self.scenario = scenario
+        self.resolvedFrom = resolvedFrom
+        self.tier = tier
+        self.providerID = providerID
+        self.model = model
+        self.route = route
+        self.query = query
+        self.skill = skill
+        self.usage = usage
+        self.cost = cost
+        self.baselineCost = baselineCost
+        self.savedCost = savedCost
+        self.estimatedInputTokens = estimatedInputTokens
+        self.stickyHit = stickyHit
+        self.reason = reason
+    }
+}
+
 struct RoutingRequestLogEntry: Identifiable, Hashable, Codable {
     var id: String
     var ts: Date
@@ -1659,11 +1824,22 @@ struct RoutingDashboardSession: Identifiable, Hashable, Codable {
 struct RoutingDashboardSnapshot: Hashable, Codable {
     var totalProjects: Int
     var totalSessions: Int
+    var totalRequests: Int
     var routedSessions: Int
     var totalTokens: Int
     var estimatedCost: Double
     var savedCost: Double
     var recentSessions: [RoutingDashboardSession]
+    var projects: [RoutingDashboardProject] = []
+}
+
+struct RoutingDashboardProject: Identifiable, Hashable, Codable {
+    var id: String
+    var name: String
+    var displayName: String
+    var total: RoutingBucket
+    var sessions: Int
+    var lastActiveAt: Date?
 }
 
 enum AlwaysOnStatus: String, Codable {

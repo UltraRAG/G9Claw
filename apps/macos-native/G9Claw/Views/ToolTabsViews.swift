@@ -3408,24 +3408,12 @@ struct DashboardView: View {
         )
         let baseline = max(snapshot.estimatedCost + snapshot.savedCost, snapshot.estimatedCost)
         let savingsRate = baseline > 0 ? snapshot.savedCost / baseline : 0
-        let recentSessions = Array(snapshot.recentSessions.prefix(5))
+        let recentSessions = snapshot.recentSessions
         let isChinese = state.settings.language.resolved() == .chineseSimplified
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 6) {
-                        if isProjectScoped {
-                            Button {
-                                withAnimation(.snappy(duration: 0.2)) {
-                                    showsTotalDashboard = true
-                                    expandedSessions.removeAll()
-                                }
-                            } label: {
-                                Label("总计", systemImage: "arrow.left")
-                                    .labelStyle(.titleAndIcon)
-                            }
-                            .buttonStyle(RoutingBackButtonStyle())
-                        }
                         Text(state.t(.routing))
                             .font(.system(size: 19, weight: .semibold))
                         HStack(spacing: 6) {
@@ -3443,20 +3431,38 @@ struct DashboardView: View {
                         .foregroundStyle(DesignTokens.tertiaryText)
                     }
                     Spacer()
-                    Button {
-                        state.bumpToolRefresh()
-                    } label: {
-                        Label(state.t(.refresh), systemImage: "arrow.clockwise")
+                    HStack(spacing: 8) {
+                        if selectedProject != nil {
+                            Picker("", selection: Binding(
+                                get: { showsTotalDashboard ? "total" : "project" },
+                                set: { value in
+                                    withAnimation(.snappy(duration: 0.18)) {
+                                        showsTotalDashboard = value == "total"
+                                        expandedSessions.removeAll()
+                                    }
+                                }
+                            )) {
+                                Text(isChinese ? "项目" : "Project").tag("project")
+                                Text(isChinese ? "总计" : "Total").tag("total")
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 132)
+                        }
+                        Button {
+                            state.bumpToolRefresh()
+                        } label: {
+                            Label(state.t(.refresh), systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(WebToolbarButtonStyle())
                     }
-                    .buttonStyle(WebToolbarButtonStyle())
                 }
 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
                     RoutingStatCard(
                         icon: "waveform.path.ecg",
                         label: state.t(.requests),
-                        value: "\(snapshot.routedSessions)",
-                        detail: isChinese ? "\(snapshot.totalSessions) 个会话" : "\(snapshot.totalSessions) sessions",
+                        value: "\(snapshot.totalRequests)",
+                        detail: isChinese ? "\(snapshot.routedSessions) 个已路由会话" : "\(snapshot.routedSessions) routed sessions",
                         compact: true
                     )
                     RoutingStatCard(
@@ -3478,7 +3484,17 @@ struct DashboardView: View {
                     )
                 }
 
-                ToolSection(title: state.t(.recentRoutes)) {
+                if !isProjectScoped, !snapshot.projects.isEmpty {
+                    ToolSection(title: isChinese ? "项目" : "Projects") {
+                        VStack(spacing: 8) {
+                            ForEach(snapshot.projects) { project in
+                                RoutingProjectSummaryRow(project: project)
+                            }
+                        }
+                    }
+                }
+
+                ToolSection(title: isChinese ? "会话" : state.t(.recentRoutes)) {
                     if recentSessions.isEmpty {
                         Text(state.t(.noRoutingActivity))
                             .font(.system(size: 13))
@@ -3553,6 +3569,47 @@ private struct RoutingBackButtonStyle: ButtonStyle {
             .background(GlassControlBackground(isActive: false, cornerRadius: 14, showsShadow: false))
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .opacity(configuration.isPressed ? 0.72 : 1)
+    }
+}
+
+private struct RoutingProjectSummaryRow: View {
+    var project: RoutingDashboardProject
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(project.displayName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                    .lineLimit(1)
+                Text("\(project.sessions) sessions · \(project.total.requestCount) requests")
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            metric(formatTokens(project.total.totalTokens), "tokens")
+            metric(formatCost(project.total.estimatedCost), "cost")
+            Text(project.total.savedCost > 0 ? formatCost(project.total.savedCost) : "—")
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(project.total.savedCost > 0 ? DesignTokens.success : DesignTokens.tertiaryText)
+                .frame(width: 78, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator.opacity(0.56)))
+    }
+
+    private func metric(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(value)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(DesignTokens.secondaryText)
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(DesignTokens.tertiaryText)
+        }
+        .frame(width: 80, alignment: .trailing)
     }
 }
 

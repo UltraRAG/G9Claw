@@ -32,8 +32,17 @@ struct AgentRequest: Sendable {
     var workspaceContext: WorkspaceContext?
     var toolSettings: ToolPermissionSettings
     var routerRoute: String
+    var fallbackRoutes: [AgentRouteCandidate] = []
     var nativeConfigValues: [String: String] = [:]
     var permissionHandler: (@MainActor @Sendable (AgentPermissionRequest) async -> AgentPermissionDecision)?
+}
+
+struct AgentRouteCandidate: Sendable, Equatable {
+    var entryID: String
+    var scenario: String
+    var providerConfig: ProviderConfig
+    var apiKey: String
+    var contextWindow: Int
 }
 
 struct AttachmentDiagnostic: Sendable, Equatable {
@@ -2153,6 +2162,8 @@ enum AgentEvent: Sendable, Equatable {
     case toolResult(id: String, output: String, isError: Bool)
     case permissionRequest(AgentPermissionRequest)
     case status(String)
+    case routerFallback(route: String, model: String)
+    case tokenUsage(RouterTokenUsage, contextWindow: Int)
     case tokenBudget(used: Int, total: Int)
     case contextBudget(used: Int, total: Int, level: ContextBudgetLevel)
     case compactStarted(trigger: String, preTokens: Int)
@@ -2210,6 +2221,7 @@ enum ProviderClientError: Error, LocalizedError {
 }
 
 struct ProviderRetryPolicy: Sendable, Equatable {
+    var enabled: Bool
     var requestMaxRetries: Int
     var streamMaxRetries: Int
     var baseDelayMs: Int
@@ -2218,6 +2230,7 @@ struct ProviderRetryPolicy: Sendable, Equatable {
     var retryTransport: Bool
 
     static let codexDefault = ProviderRetryPolicy(
+        enabled: true,
         requestMaxRetries: 4,
         streamMaxRetries: 5,
         baseDelayMs: 200,
@@ -2225,6 +2238,43 @@ struct ProviderRetryPolicy: Sendable, Equatable {
         retry5xx: true,
         retryTransport: true
     )
+
+    static func fromConfig(_ values: [String: String]) -> ProviderRetryPolicy {
+        var policy = codexDefault
+        if let enabled = bool(values["router.transientRetry.enabled"]) {
+            policy.enabled = enabled
+        }
+        if let attempts = positiveInt(values["router.transientRetry.maxAttempts"]) {
+            policy.requestMaxRetries = attempts
+            policy.streamMaxRetries = attempts
+        }
+        if let delay = positiveInt(values["router.transientRetry.baseDelayMs"]) {
+            policy.baseDelayMs = delay
+        }
+        if let retry429 = bool(values["router.transientRetry.retry429"]) {
+            policy.retry429 = retry429
+        }
+        if let retry5xx = bool(values["router.transientRetry.retry5xx"]) {
+            policy.retry5xx = retry5xx
+        }
+        if let retryTransport = bool(values["router.transientRetry.retryTransport"]) {
+            policy.retryTransport = retryTransport
+        }
+        return policy
+    }
+
+    private static func positiveInt(_ rawValue: String?) -> Int? {
+        guard let value = rawValue.flatMap(Int.init), value >= 0 else { return nil }
+        return value
+    }
+
+    private static func bool(_ rawValue: String?) -> Bool? {
+        switch rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1", "yes": true
+        case "false", "0", "no": false
+        default: nil
+        }
+    }
 }
 
 struct ProviderRetryDecision: Sendable, Equatable {
@@ -2343,7 +2393,8 @@ struct NativeAgentRuntime: Sendable {
                     request: request,
                     messages: messages,
                     continuation: continuation,
-                    runMode: context.runMode
+                    runMode: context.runMode,
+                    policy: ProviderRetryPolicy.fromConfig(request.nativeConfigValues)
                 )
             } catch {
                 if case ProviderClientError.streamInterruptedAfterPartialOutput(let message) = error,
@@ -2653,20 +2704,40 @@ struct NativeAgentRuntime: Sendable {
         runMode: ChatRunMode,
         policy: ProviderRetryPolicy = .codexDefault
     ) async throws -> ModelTurn {
+        var activeRequest = request
+        var fallbackRoutes = request.fallbackRoutes
         var failedAttempts = 0
         while true {
             do {
-                return try await performOpenAIChatTurn(
-                    request: request,
+                let turn = try await performOpenAIChatTurn(
+                    request: activeRequest,
                     messages: messages,
                     continuation: continuation,
                     runMode: runMode
                 )
+                if shouldRetryZeroUsage(turn: turn, request: activeRequest, failedAttempts: failedAttempts) {
+                    failedAttempts += 1
+                    continuation.yield(.status("Retrying empty usage... \(failedAttempts)/\(zeroUsageMaxAttempts(values: activeRequest.nativeConfigValues))"))
+                    AppLog.write("provider zero usage retry \(failedAttempts): \(activeRequest.providerConfig.model)")
+                    continue
+                }
+                return turn
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 let decision = retryDecision(for: error, failedAttempts: failedAttempts, policy: policy)
                 guard decision.shouldRetry else {
+                    if let fallback = nextFallbackRoute(from: &fallbackRoutes, after: error) {
+                        activeRequest.providerConfig = fallback.providerConfig
+                        activeRequest.apiKey = fallback.apiKey
+                        activeRequest.contextWindow = fallback.contextWindow
+                        activeRequest.routerRoute = fallback.scenario
+                        failedAttempts = 0
+                        continuation.yield(.routerFallback(route: fallback.scenario, model: fallback.providerConfig.model))
+                        continuation.yield(.status("Router fallback -> \(fallback.providerConfig.model)"))
+                        AppLog.write("router fallback -> \(fallback.entryID): \(error.localizedDescription)")
+                        continue
+                    }
                     if isRetryableProviderError(error, policy: policy) != nil, failedAttempts >= policy.streamMaxRetries {
                         throw ProviderClientError.transport(
                             "Provider request failed after \(failedAttempts + 1) attempts: \(error.localizedDescription)"
@@ -2680,6 +2751,37 @@ struct NativeAgentRuntime: Sendable {
                 AppLog.write("provider retry \(failedAttempts)/\(policy.streamMaxRetries): \(decision.reason)")
                 try await sleepForRetryDelay(decision.delay)
             }
+        }
+    }
+
+    private static func nextFallbackRoute(from routes: inout [AgentRouteCandidate], after error: Error) -> AgentRouteCandidate? {
+        if case ProviderClientError.streamInterruptedAfterPartialOutput = error {
+            return nil
+        }
+        guard !routes.isEmpty else { return nil }
+        return routes.removeFirst()
+    }
+
+    private static func shouldRetryZeroUsage(turn: ModelTurn, request: AgentRequest, failedAttempts: Int) -> Bool {
+        guard boolConfig(request.nativeConfigValues["router.zeroUsageRetry.enabled"], defaultValue: false),
+              failedAttempts < zeroUsageMaxAttempts(values: request.nativeConfigValues),
+              !turn.sawTokenUsage,
+              turn.assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              turn.toolCalls.isEmpty else {
+            return false
+        }
+        return true
+    }
+
+    private static func zeroUsageMaxAttempts(values: [String: String]) -> Int {
+        max(0, Int(values["router.zeroUsageRetry.maxAttempts"] ?? "") ?? 1)
+    }
+
+    private static func boolConfig(_ rawValue: String?, defaultValue: Bool) -> Bool {
+        switch rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1", "yes": true
+        case "false", "0", "no": false
+        default: defaultValue
         }
     }
 
@@ -2724,6 +2826,7 @@ struct NativeAgentRuntime: Sendable {
         var heldContent = ""
         var shouldStreamContent = false
         var didYieldVisibleContent = false
+        var sawTokenUsage = false
         var accumulators: [Int: OpenAIToolCallAccumulator] = [:]
         continuation.yield(.status("streaming"))
 
@@ -2748,6 +2851,9 @@ struct NativeAgentRuntime: Sendable {
                     }
                 }
                 for event in openAIChatEvents(from: object, contextWindow: request.contextWindow) {
+                    if case .tokenUsage = event {
+                        sawTokenUsage = true
+                    }
                     if case .contentDelta(let delta) = event {
                         content += delta
                         if shouldStreamContent {
@@ -2802,7 +2908,7 @@ struct NativeAgentRuntime: Sendable {
             }
         }
 
-        return ModelTurn(assistantContent: content, toolCalls: calls)
+        return ModelTurn(assistantContent: content, toolCalls: calls, sawTokenUsage: sawTokenUsage)
     }
 
     static func endpointURL(baseURL: String, suffix: String) throws -> URL {
@@ -2837,6 +2943,7 @@ struct NativeAgentRuntime: Sendable {
         }
         if let usage = object["usage"] as? [String: Any],
            let budget = tokenBudget(from: usage, contextWindow: contextWindow) {
+            events.append(.tokenUsage(tokenUsage(from: usage), contextWindow: budget.total))
             events.append(.tokenBudget(used: budget.used, total: budget.total))
         }
         return events
@@ -3407,6 +3514,22 @@ struct NativeAgentRuntime: Sendable {
         return TokenBudget(used: total, total: budgetTotal, level: ContextBudgetLevel.level(used: total, total: budgetTotal))
     }
 
+    private static func tokenUsage(from usage: [String: Any]) -> RouterTokenUsage {
+        let input = usage["input_tokens"] as? Int ?? usage["prompt_tokens"] as? Int ?? 0
+        let output = usage["output_tokens"] as? Int ?? usage["completion_tokens"] as? Int ?? 0
+        let cacheRead = usage["cache_read_tokens"] as? Int
+            ?? usage["cached_tokens"] as? Int
+            ?? (usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int
+            ?? 0
+        let total = usage["total_tokens"] as? Int ?? input + output + cacheRead
+        return RouterTokenUsage(
+            inputTokens: input,
+            outputTokens: output,
+            cacheReadTokens: cacheRead,
+            totalTokens: total
+        )
+    }
+
     private static func timeoutInterval(from milliseconds: Int) -> TimeInterval {
         TimeInterval(max(milliseconds, 1_000)) / 1_000.0
     }
@@ -3433,7 +3556,8 @@ struct NativeAgentRuntime: Sendable {
         failedAttempts: Int,
         policy: ProviderRetryPolicy = .codexDefault
     ) -> ProviderRetryDecision {
-        guard let reason = isRetryableProviderError(error, policy: policy),
+        guard policy.enabled,
+              let reason = isRetryableProviderError(error, policy: policy),
               failedAttempts < policy.streamMaxRetries else {
             return .noRetry
         }
@@ -3836,6 +3960,7 @@ struct NativeAgentRuntime: Sendable {
 private struct ModelTurn {
     var assistantContent: String
     var toolCalls: [AgentToolCall]
+    var sawTokenUsage: Bool = false
 }
 
 private struct OpenAIToolCallAccumulator {
