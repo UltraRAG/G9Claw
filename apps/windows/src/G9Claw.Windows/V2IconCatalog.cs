@@ -67,6 +67,7 @@ public static class V2IconCatalog
         "Bot" => ["M12 8V4H8", "M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2", "M2 14h2", "M20 14h2", "M15 13v2", "M9 13v2"],
         "Calendar" => ["M8 2v4", "M16 2v4", "M3 10h18", "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2"],
         "ChevronDown" => ["M6 9l6 6 6-6"],
+        "ChevronLeft" => ["M15 18l-6-6 6-6"],
         "ChevronRight" => ["M9 18l6-6-6-6"],
         "ChevronUp" => ["M18 15l-6-6-6 6"],
         "Chevrons" => ["M7 7l5 5 5-5", "M7 13l5 5 5-5"],
