@@ -24,7 +24,7 @@ public static class V2LayoutMetrics
     public const double ComposerTextBoxMinHeight = 54;
     public const double ComposerTextBoxMaxHeight = 180;
     public const double ComposerBottomPadding = 22;
-    public const double ToolbarHeight = 40;
+    public const double ToolbarHeight = 54;
     public const double SettingsMaxWidth = 896;
     public const double SettingsMaxHeightRatio = 0.90;
     public const double SettingsMinimumHeight = 420;

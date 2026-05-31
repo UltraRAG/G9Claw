@@ -5892,7 +5892,7 @@ public sealed partial class MainWindow : Window
         };
         var toolbar = new Grid
         {
-            Padding = new Thickness(24, 0, 24, 0),
+            Padding = new Thickness(16, 0, 16, 0),
         };
         toolbarHost.Child = toolbar;
         toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -5907,7 +5907,7 @@ public sealed partial class MainWindow : Window
             var button = new Button
             {
                 Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
-                Height = 28,
+                Height = 32,
                 Content = new StackPanel
                 {
                     Orientation = Orientation.Horizontal,
@@ -5939,7 +5939,7 @@ public sealed partial class MainWindow : Window
         CornerRadius = new CornerRadius(8),
         BorderBrush = Brush("V2BorderBrush"),
         BorderThickness = new Thickness(1),
-        Background = Brush("V2CardBrush"),
+        Background = Brush("V2ContentSurfaceBrush"),
         Padding = new Thickness(16),
         Child = new StackPanel
         {
@@ -5958,7 +5958,7 @@ public sealed partial class MainWindow : Window
         CornerRadius = new CornerRadius(8),
         BorderBrush = Brush("V2BorderBrush"),
         BorderThickness = new Thickness(1),
-        Background = Brush("V2CardBrush"),
+        Background = Brush("V2ContentSurfaceBrush"),
         Padding = new Thickness(12),
         Child = new StackPanel
         {
@@ -6010,7 +6010,7 @@ public sealed partial class MainWindow : Window
         VerticalAlignment = VerticalAlignment.Top,
         Margin = new Thickness(0, 0, 0, 32),
         Spacing = 10,
-        MaxWidth = 720,
+        MaxWidth = V2LayoutMetrics.ChatColumnMaxWidth,
         Children =
         {
             new TextBlock
@@ -6021,7 +6021,7 @@ public sealed partial class MainWindow : Window
                 Foreground = Brush("V2ForegroundBrush"),
                 TextAlignment = TextAlignment.Center,
                 TextWrapping = TextWrapping.Wrap,
-                MaxWidth = 720,
+                MaxWidth = V2LayoutMetrics.ChatColumnMaxWidth,
             },
             new TextBlock
             {
@@ -8821,10 +8821,10 @@ public sealed partial class MainWindow : Window
         section.Children.Add(new TextBlock
         {
             Text = title.ToUpperInvariant(),
-            FontSize = 13,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            FontSize = 11,
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
             Foreground = Brush("V2MutedForegroundBrush"),
-            CharacterSpacing = 50,
+            CharacterSpacing = 40,
         });
         if (!string.IsNullOrWhiteSpace(detail))
         {
@@ -8858,7 +8858,7 @@ public sealed partial class MainWindow : Window
             CornerRadius = new CornerRadius(8),
             BorderBrush = Brush("V2BorderBrush"),
             BorderThickness = new Thickness(1),
-            Background = Brush("V2CardBrush"),
+            Background = Brush("V2ContentSurfaceBrush"),
             Child = panel,
         });
 
