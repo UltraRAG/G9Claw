@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using G9Claw.Windows.Core;
 using Microsoft.UI.Windowing;
 using Microsoft.UI;
@@ -172,6 +173,8 @@ public sealed partial class MainWindow : Window
     private MemoryToolTab _memoryToolTab = MemoryToolTab.ProjectMemory;
     private AlwaysOnToolTab _alwaysOnToolTab = AlwaysOnToolTab.Dashboard;
     private string? _selectedSkillKey;
+    private string _skillFilterText = "";
+    private string _memoryFilterText = "";
     private ProviderPreflightResult? _lastProviderPreflight;
     private TextBox? _composerTextBox;
     private bool _suppressComposerTextChanged;
@@ -5560,6 +5563,23 @@ public sealed partial class MainWindow : Window
         });
 
         var selected = SelectedSkill();
+        var skillFilter = _skillFilterText.Trim();
+        IEnumerable<SkillRecord> FilterSkills(IEnumerable<SkillRecord> skills) =>
+            string.IsNullOrWhiteSpace(skillFilter)
+                ? skills
+                : skills.Where(skill =>
+                    skill.Name.Contains(skillFilter, StringComparison.OrdinalIgnoreCase) ||
+                    skill.Description.Contains(skillFilter, StringComparison.OrdinalIgnoreCase) ||
+                    skill.Slug.Contains(skillFilter, StringComparison.OrdinalIgnoreCase) ||
+                    skill.SkillFile.Contains(skillFilter, StringComparison.OrdinalIgnoreCase));
+        var searchBox = Box(_skillFilterText, L("Search skills", "\u641c\u7d22\u6280\u80fd"));
+        searchBox.Height = 32;
+        searchBox.TextChanged += (_, _) =>
+        {
+            if (string.Equals(_skillFilterText, searchBox.Text, StringComparison.Ordinal)) return;
+            _skillFilterText = searchBox.Text;
+            RenderAll();
+        };
         var shell = new Grid { Background = Brush("V2BackgroundBrush") };
         shell.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(304) });
         shell.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1) });
@@ -5572,8 +5592,9 @@ public sealed partial class MainWindow : Window
             Spacing = 8,
             Children =
             {
-                ScopeIntro("Project skills", State.SelectedProject?.DisplayName ?? T("chat.status.selectProject")),
-                ScopeIntro("Global skills", "Shared across General chat and every project"),
+                ScopeIntro(L("Project skills", "\u9879\u76ee\u6280\u80fd"), State.SelectedProject?.DisplayName ?? T("chat.status.selectProject")),
+                ScopeIntro(L("Global skills", "\u5168\u5c40\u6280\u80fd"), L("Shared across General chat and every project", "\u5728\u901a\u7528\u5bf9\u8bdd\u548c\u6240\u6709\u9879\u76ee\u4e2d\u53ef\u7528")),
+                SearchField(searchBox),
             },
         };
         list.Children.Add(listHeader);
@@ -5581,8 +5602,8 @@ public sealed partial class MainWindow : Window
 
         var listContent = new StackPanel { Padding = new Thickness(12), Spacing = 12 };
         if (!string.IsNullOrWhiteSpace(_toolStatus)) listContent.Children.Add(StatusText(_toolStatus));
-        listContent.Children.Add(SkillScopeSection("Project", State.Skills.Where(skill => skill.Scope == SkillScope.Project), selected));
-        listContent.Children.Add(SkillScopeSection("Global", State.Skills.Where(skill => skill.Scope == SkillScope.User), selected));
+        listContent.Children.Add(SkillScopeSection(L("Project", "\u9879\u76ee"), L("No project skills", "\u6682\u65e0\u9879\u76ee\u6280\u80fd"), FilterSkills(State.Skills.Where(skill => skill.Scope == SkillScope.Project)), selected));
+        listContent.Children.Add(SkillScopeSection(L("Global", "\u5168\u5c40"), L("No global skills", "\u6682\u65e0\u5168\u5c40\u6280\u80fd"), FilterSkills(State.Skills.Where(skill => skill.Scope == SkillScope.User)), selected));
         if (State.Skills.Count == 0)
         {
             listContent.Children.Add(DashedEmptyState(T("skills.emptyTitle"), T("skills.emptyDetail")));
@@ -5613,11 +5634,12 @@ public sealed partial class MainWindow : Window
     {
         var page = ToolPage(T("memory.title"), T("memory.subtitle"), new[]
         {
-            ("Plus", "New", (Action)(async () => await CreateMemoryAsync())),
+            ("Plus", L("New", "\u65b0\u5efa"), (Action)(async () => await CreateMemoryAsync())),
             ("Download", T("common.export"), (Action)(async () => await ExportMemoryAsync())),
             ("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
         });
         var shell = new Grid { Background = Brush("V2BackgroundBrush") };
+        shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
@@ -5631,20 +5653,59 @@ public sealed partial class MainWindow : Window
         var memoryAuto = State.Settings.MemorySettings?.Enabled == true;
         shell.Children.Add(ToolTabbedTopbar(new[]
         {
-            ("Project Memory", _memoryToolTab == MemoryToolTab.ProjectMemory, (Action)(() => { _memoryToolTab = MemoryToolTab.ProjectMemory; RenderAll(); })),
-            ("User Profile", _memoryToolTab == MemoryToolTab.Profile, (Action)(() => { _memoryToolTab = MemoryToolTab.Profile; RenderAll(); })),
-            ("Memory Trace", _memoryToolTab == MemoryToolTab.Trace, (Action)(() => { _memoryToolTab = MemoryToolTab.Trace; RenderAll(); })),
+            (L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), _memoryToolTab == MemoryToolTab.ProjectMemory, (Action)(() => { _memoryToolTab = MemoryToolTab.ProjectMemory; RenderAll(); })),
+            (L("User Profile", "\u7528\u6237\u753b\u50cf"), _memoryToolTab == MemoryToolTab.Profile, (Action)(() => { _memoryToolTab = MemoryToolTab.Profile; RenderAll(); })),
+            (L("Memory Trace", "\u8bb0\u5fc6\u8ffd\u8e2a"), _memoryToolTab == MemoryToolTab.Trace, (Action)(() => { _memoryToolTab = MemoryToolTab.Trace; RenderAll(); })),
         },
-        StatusPill("Ready", false),
-        StatusPill(memoryAuto ? "Auto" : "Manual", memoryAuto),
+        StatusPill(L("Ready", "\u5c31\u7eea"), false),
+        StatusPill(memoryAuto ? L("Auto", "\u81ea\u52a8") : L("Manual", "\u624b\u52a8"), memoryAuto),
         new TextBlock
         {
-            Text = latest == default ? "Not indexed" : $"Updated {RelativeLabel(latest)}",
+            Text = latest == default ? L("Not indexed", "\u672a\u7d22\u5f15") : $"{L("Updated", "\u5df2\u66f4\u65b0")} {RelativeLabel(latest)}",
             FontSize = 12,
             Foreground = Brush("V2MutedForegroundBrush"),
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
         }));
+
+        var memoryFilter = _memoryFilterText.Trim();
+        IEnumerable<MemoryRecord> FilterMemory(IEnumerable<MemoryRecord> records) =>
+            string.IsNullOrWhiteSpace(memoryFilter)
+                ? records
+                : records.Where(record =>
+                    record.Name.Contains(memoryFilter, StringComparison.OrdinalIgnoreCase) ||
+                    record.Summary.Contains(memoryFilter, StringComparison.OrdinalIgnoreCase) ||
+                    record.Content.Contains(memoryFilter, StringComparison.OrdinalIgnoreCase));
+        var memorySearchBox = Box(_memoryFilterText, L("Search current view", "\u641c\u7d22\u5f53\u524d\u89c6\u56fe"));
+        memorySearchBox.Height = 32;
+        memorySearchBox.TextChanged += (_, _) =>
+        {
+            if (string.Equals(_memoryFilterText, memorySearchBox.Text, StringComparison.Ordinal)) return;
+            _memoryFilterText = memorySearchBox.Text;
+            RenderAll();
+        };
+        var memoryToolbar = new Border
+        {
+            Background = Brush("V2CardBrush"),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(16, 0, 16, 10),
+            Child = new Grid
+            {
+                ColumnSpacing = 10,
+                ColumnDefinitions =
+                {
+                    new ColumnDefinition { Width = new GridLength(360) },
+                    new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                },
+                Children =
+                {
+                    SearchField(memorySearchBox),
+                },
+            },
+        };
+        Grid.SetRow(memoryToolbar, 1);
+        shell.Children.Add(memoryToolbar);
 
         var panel = new StackPanel
         {
@@ -5657,36 +5718,36 @@ public sealed partial class MainWindow : Window
         if (_memoryToolTab == MemoryToolTab.ProjectMemory)
         {
             panel.Children.Add(MetricGrid(
-                MetricRow("Database", "Entries", State.MemoryRecords.Count.ToString(), "local memory records"),
-                MetricRow("Folder", "Project", projectRecords.ToString(), "workspace facts"),
-                MetricRow("MessageSquarePlus", "Feedback", feedbackRecords.ToString(), "collaboration rules"),
-                MetricRow("Clock", "Latest", latest == default ? "-" : latest.LocalDateTime.ToString("g"), "last update")));
-            panel.Children.Add(MemoryRecordSection("Project Memory", "Progress, facts, and state records for the current project.", State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Project && !record.Deprecated)));
-            panel.Children.Add(MemoryRecordSection("Collaboration Feedback", "User preferences, constraints, and delivery rules.", State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated)));
-            var deprecated = State.MemoryRecords.Where(record => record.Deprecated).ToList();
+                MetricRow("Database", L("Entries", "\u6761\u76ee"), State.MemoryRecords.Count.ToString(), L("local memory records", "\u672c\u5730\u8bb0\u5fc6\u8bb0\u5f55")),
+                MetricRow("Folder", L("Project", "\u9879\u76ee"), projectRecords.ToString(), L("workspace facts", "\u5de5\u4f5c\u533a\u4e8b\u5b9e")),
+                MetricRow("MessageSquarePlus", L("Feedback", "\u53cd\u9988"), feedbackRecords.ToString(), L("collaboration rules", "\u534f\u4f5c\u89c4\u5219")),
+                MetricRow("Clock", L("Latest", "\u6700\u65b0"), latest == default ? "-" : latest.LocalDateTime.ToString("g"), L("last update", "\u6700\u8fd1\u66f4\u65b0"))));
+            panel.Children.Add(MemoryRecordSection(L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), L("Progress, facts, and state records for the current project.", "\u5f53\u524d\u9879\u76ee\u7684\u8fdb\u5c55\u3001\u4e8b\u5b9e\u548c\u72b6\u6001\u8bb0\u5f55\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Project && !record.Deprecated))));
+            panel.Children.Add(MemoryRecordSection(L("Collaboration Feedback", "\u534f\u4f5c\u53cd\u9988"), L("User preferences, constraints, and delivery rules.", "\u7528\u6237\u504f\u597d\u3001\u7ea6\u675f\u548c\u4ea4\u4ed8\u89c4\u5219\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated))));
+            var deprecated = FilterMemory(State.MemoryRecords.Where(record => record.Deprecated)).ToList();
             if (deprecated.Count > 0)
             {
-                panel.Children.Add(MemoryRecordSection("Deprecated", "Records marked as deprecated.", deprecated));
+                panel.Children.Add(MemoryRecordSection(L("Deprecated", "\u5df2\u5f03\u7528"), L("Records marked as deprecated.", "\u6807\u8bb0\u4e3a\u5f03\u7528\u7684\u8bb0\u5f55\u3002"), deprecated));
             }
         }
         else if (_memoryToolTab == MemoryToolTab.Profile)
         {
             panel.Children.Add(MetricGrid(
-                MetricRow("Database", "User Notes", userRecords.ToString(), "long-term profile"),
-                MetricRow("MessageSquarePlus", "Feedback", feedbackRecords.ToString(), "collaboration profile"),
-                MetricRow("Folder", "Projects", projectRecords.ToString(), "project memory"),
-                MetricRow("Clock", "Latest", latest == default ? "-" : latest.LocalDateTime.ToString("g"), "last update")));
-            panel.Children.Add(MemoryRecordSection("User Profile", "Long-term identity background and preferences.", State.MemoryRecords.Where(record => record.Type == MemoryRecordType.User && !record.Deprecated)));
-            panel.Children.Add(MemoryRecordSection("Feedback Profile", "Preferences extracted from collaboration feedback.", State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated)));
+                MetricRow("Database", L("User Notes", "\u7528\u6237\u7b14\u8bb0"), userRecords.ToString(), L("long-term profile", "\u957f\u671f\u753b\u50cf")),
+                MetricRow("MessageSquarePlus", L("Feedback", "\u53cd\u9988"), feedbackRecords.ToString(), L("collaboration profile", "\u534f\u4f5c\u753b\u50cf")),
+                MetricRow("Folder", L("Projects", "\u9879\u76ee"), projectRecords.ToString(), L("project memory", "\u9879\u76ee\u8bb0\u5fc6")),
+                MetricRow("Clock", L("Latest", "\u6700\u65b0"), latest == default ? "-" : latest.LocalDateTime.ToString("g"), L("last update", "\u6700\u8fd1\u66f4\u65b0"))));
+            panel.Children.Add(MemoryRecordSection(L("User Profile", "\u7528\u6237\u753b\u50cf"), L("Long-term identity background and preferences.", "\u957f\u671f\u8eab\u4efd\u80cc\u666f\u548c\u504f\u597d\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.User && !record.Deprecated))));
+            panel.Children.Add(MemoryRecordSection(L("Feedback Profile", "\u53cd\u9988\u753b\u50cf"), L("Preferences extracted from collaboration feedback.", "\u4ece\u534f\u4f5c\u53cd\u9988\u4e2d\u63d0\u53d6\u7684\u504f\u597d\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated))));
         }
         else
         {
-            panel.Children.Add(ToolBoardGroup("Recall", "Inspect memory recall traces from recent agent runs.",
-                DashedEmptyState("No recall traces", "Run an agent task with memory enabled to populate this view.")));
-            panel.Children.Add(ToolBoardGroup("Index", "Index sync traces and workspace ingestion status.",
-                DashedEmptyState("No index traces", "Run index sync to show index traces here.")));
-            panel.Children.Add(ToolBoardGroup("Dream", "Memory Dream summaries and rollback snapshots.",
-                DashedEmptyState("No Dream traces", "Run Memory Dream to show Dream traces here.")));
+            panel.Children.Add(ToolBoardGroup("Recall", L("Inspect memory recall traces from recent agent runs.", "\u68c0\u67e5\u8fd1\u671f Agent \u8fd0\u884c\u4e2d\u7684\u8bb0\u5fc6\u53ec\u56de\u8ffd\u8e2a\u3002"),
+                DashedEmptyState(L("No recall traces", "\u6682\u65e0 Recall \u8ffd\u8e2a"), L("Run an agent task with memory enabled to populate this view.", "\u542f\u7528\u8bb0\u5fc6\u540e\u8fd0\u884c Agent \u4efb\u52a1\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u8ffd\u8e2a\u3002"))));
+            panel.Children.Add(ToolBoardGroup("Index", L("Index sync traces and workspace ingestion status.", "\u7d22\u5f15\u540c\u6b65\u8ffd\u8e2a\u548c\u5de5\u4f5c\u533a\u6444\u53d6\u72b6\u6001\u3002"),
+                DashedEmptyState(L("No index traces", "\u6682\u65e0 Index \u8ffd\u8e2a"), L("Run index sync to show index traces here.", "\u8fd0\u884c\u7d22\u5f15\u540c\u6b65\u540e\u8fd9\u91cc\u4f1a\u663e\u793a Index \u8ffd\u8e2a\u3002"))));
+            panel.Children.Add(ToolBoardGroup("Dream", L("Memory Dream summaries and rollback snapshots.", "Memory Dream \u6458\u8981\u548c\u56de\u6eda\u5feb\u7167\u3002"),
+                DashedEmptyState(L("No Dream traces", "\u6682\u65e0 Dream \u8ffd\u8e2a"), L("Run Memory Dream to show Dream traces here.", "\u8fd0\u884c Memory Dream \u540e\u8fd9\u91cc\u4f1a\u663e\u793a Dream \u8ffd\u8e2a\u3002"))));
         }
 
         var scroll = new ScrollViewer
@@ -5695,7 +5756,7 @@ public sealed partial class MainWindow : Window
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Content = panel,
         };
-        Grid.SetRow(scroll, 1);
+        Grid.SetRow(scroll, 2);
         shell.Children.Add(scroll);
         ((Grid)page.Tag!).Children.Add(shell);
         return page;
@@ -5705,7 +5766,7 @@ public sealed partial class MainWindow : Window
     {
         var page = ToolPage(T("tabs.alwaysOn"), T("alwaysOn.subtitle"), new[]
         {
-            ("Plus", "New plan", (Action)(async () => await CreateAlwaysOnPlanAsync())),
+            ("Plus", L("New plan", "\u65b0\u5efa\u8ba1\u5212"), (Action)(async () => await CreateAlwaysOnPlanAsync())),
             ("Play", T("alwaysOn.runNow"), (Action)(async () => await RunFirstAlwaysOnPlanAsync())),
             ("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
         });
@@ -5720,12 +5781,12 @@ public sealed partial class MainWindow : Window
         var todayPlans = State.AlwaysOnPlans.Count(plan => plan.UpdatedAt.LocalDateTime.Date == DateTime.Today);
         shell.Children.Add(ToolTabbedTopbar(new[]
         {
-            ("Dashboard", _alwaysOnToolTab == AlwaysOnToolTab.Dashboard, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Dashboard; RenderAll(); })),
-            ("Plans & Cron Jobs", _alwaysOnToolTab == AlwaysOnToolTab.Items, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Items; RenderAll(); })),
-            ("Run History", _alwaysOnToolTab == AlwaysOnToolTab.History, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.History; RenderAll(); })),
+            (L("Dashboard", "\u770b\u677f"), _alwaysOnToolTab == AlwaysOnToolTab.Dashboard, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Dashboard; RenderAll(); })),
+            (L("Plans & Cron Jobs", "\u8ba1\u5212\u4e0e\u5468\u671f\u4efb\u52a1"), _alwaysOnToolTab == AlwaysOnToolTab.Items, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Items; RenderAll(); })),
+            (L("Run History", "\u8fd0\u884c\u5386\u53f2"), _alwaysOnToolTab == AlwaysOnToolTab.History, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.History; RenderAll(); })),
         },
-        StatusPill(runningPlans > 0 ? "Running" : "Ready", runningPlans > 0),
-        StatusPill($"{readyPlans} ready", readyPlans > 0)));
+        StatusPill(runningPlans > 0 ? L("Running", "\u8fd0\u884c\u4e2d") : L("Ready", "\u5c31\u7eea"), runningPlans > 0),
+        StatusPill(IsChineseUi() ? $"{readyPlans} \u4e2a\u5c31\u7eea" : $"{readyPlans} ready", readyPlans > 0)));
 
         var panel = new StackPanel
         {
@@ -5738,22 +5799,22 @@ public sealed partial class MainWindow : Window
         if (_alwaysOnToolTab == AlwaysOnToolTab.Dashboard)
         {
             panel.Children.Add(MetricGrid(
-                MetricRow("Folder", "Enabled Projects", $"{enabledProjects}/{totalProjects}", "participating"),
-                MetricRow("ListChecks", "Ready Plans", readyPlans.ToString(), "manual runnable"),
-                MetricRow("Radio", "Running", runningPlans.ToString(), "background sessions"),
-                MetricRow("Calendar", "Today", todayPlans.ToString(), "activity events")));
+                MetricRow("Folder", L("Enabled Projects", "\u542f\u7528\u9879\u76ee"), $"{enabledProjects}/{totalProjects}", L("participating", "\u5df2\u53c2\u4e0e")),
+                MetricRow("ListChecks", L("Ready Plans", "\u5c31\u7eea\u8ba1\u5212"), readyPlans.ToString(), L("manual runnable", "\u53ef\u624b\u52a8\u8fd0\u884c")),
+                MetricRow("Radio", L("Running", "\u8fd0\u884c\u4e2d"), runningPlans.ToString(), L("background sessions", "\u540e\u53f0\u4f1a\u8bdd")),
+                MetricRow("Calendar", L("Today", "\u4eca\u5929"), todayPlans.ToString(), L("activity events", "\u6d3b\u52a8\u4e8b\u4ef6"))));
             panel.Children.Add(AlwaysOnPlansSection(State.AlwaysOnPlans));
         }
         else if (_alwaysOnToolTab == AlwaysOnToolTab.Items)
         {
             panel.Children.Add(AlwaysOnPlansSection(State.AlwaysOnPlans));
-            panel.Children.Add(ToolBoardGroup("Cron Jobs", "Recurring background jobs created from Always-On automation.",
-                DashedEmptyState("No cron jobs", "Cron jobs created by the background runner will appear here.")));
+            panel.Children.Add(ToolBoardGroup(L("Cron Jobs", "\u5468\u671f\u4efb\u52a1"), L("Recurring background jobs created from Always-On automation.", "\u7531 Always-On \u81ea\u52a8\u5316\u521b\u5efa\u7684\u5468\u671f\u540e\u53f0\u4efb\u52a1\u3002"),
+                DashedEmptyState(L("No cron jobs", "\u6682\u65e0\u5468\u671f\u4efb\u52a1"), L("Cron jobs created by the background runner will appear here.", "\u540e\u53f0 runner \u521b\u5efa\u7684\u5468\u671f\u4efb\u52a1\u4f1a\u663e\u793a\u5728\u8fd9\u91cc\u3002"))));
         }
         else
         {
-            panel.Children.Add(ToolBoardGroup("Run History", "Background run output, sessions, and transcript references.",
-                DashedEmptyState("No run history", "Run a plan to show background execution history here.")));
+            panel.Children.Add(ToolBoardGroup(L("Run History", "\u8fd0\u884c\u5386\u53f2"), L("Background run output, sessions, and transcript references.", "\u540e\u53f0\u8fd0\u884c\u8f93\u51fa\u3001\u4f1a\u8bdd\u548c transcript \u5f15\u7528\u3002"),
+                DashedEmptyState(L("No run history", "\u6682\u65e0\u8fd0\u884c\u5386\u53f2"), L("Run a plan to show background execution history here.", "\u8fd0\u884c\u8ba1\u5212\u540e\u8fd9\u91cc\u4f1a\u663e\u793a\u540e\u53f0\u6267\u884c\u5386\u53f2\u3002"))));
         }
 
         var scroll = new ScrollViewer
@@ -5917,6 +5978,40 @@ public sealed partial class MainWindow : Window
         },
     };
 
+    private FrameworkElement SearchField(TextBox textBox)
+    {
+        textBox.BorderThickness = new Thickness(0);
+        textBox.Background = Transparent;
+        textBox.Padding = new Thickness(0);
+
+        var grid = new Grid
+        {
+            Height = 32,
+            Padding = new Thickness(10, 0, 10, 0),
+            ColumnSpacing = 8,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+            },
+            Children =
+            {
+                Icon("Search", 13, Brush("V2MutedForegroundBrush")),
+                textBox,
+            },
+        };
+        Grid.SetColumn(textBox, 1);
+
+        return new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = Brush("V2ControlSurfaceBrush"),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Child = grid,
+        };
+    }
+
     private SkillRecord? SelectedSkill()
     {
         if (_selectedSkillKey is not null &&
@@ -5932,7 +6027,7 @@ public sealed partial class MainWindow : Window
 
     private static string SkillKey(SkillRecord skill) => $"{skill.Scope}:{skill.Slug}:{skill.SkillFile}";
 
-    private FrameworkElement SkillScopeSection(string title, IEnumerable<SkillRecord> skills, SkillRecord? selected)
+    private FrameworkElement SkillScopeSection(string title, string emptyTitle, IEnumerable<SkillRecord> skills, SkillRecord? selected)
     {
         var rows = skills.OrderBy(skill => skill.Name, StringComparer.OrdinalIgnoreCase).ToList();
         var stack = new StackPanel { Spacing = 6 };
@@ -5947,7 +6042,7 @@ public sealed partial class MainWindow : Window
 
         if (rows.Count == 0)
         {
-            stack.Children.Add(DashedEmptyState($"No {title.ToLowerInvariant()} skills", "Install, import, or create a skill to show it here."));
+            stack.Children.Add(DashedEmptyState(emptyTitle, L("Install, import, or create a skill to show it here.", "\u5b89\u88c5\u3001\u5bfc\u5165\u6216\u521b\u5efa\u6280\u80fd\u540e\u4f1a\u663e\u793a\u5728\u8fd9\u91cc\u3002")));
             return stack;
         }
 
@@ -6070,8 +6165,8 @@ public sealed partial class MainWindow : Window
                     Spacing = 6,
                     Children =
                     {
-                        SmallActionButton("Open", async () => await ShowTextDialogAsync(skill.Name, _skillService.Read(skill))),
-                        SmallActionButton("Delete", async () => await DeleteSkillAsync(skill)),
+                        SmallActionButton(L("Open", "\u6253\u5f00"), async () => await ShowTextDialogAsync(skill.Name, _skillService.Read(skill))),
+                        SmallActionButton(L("Delete", "\u5220\u9664"), async () => await DeleteSkillAsync(skill)),
                     },
                 },
             },
@@ -6081,14 +6176,14 @@ public sealed partial class MainWindow : Window
             Grid.SetColumn((FrameworkElement)header.Children[1], 1);
         }
 
-        detail.Children.Add(ToolBoardGroup("Description", null, new TextBlock
+        detail.Children.Add(ToolBoardGroup(L("Description", "\u63cf\u8ff0"), null, new TextBlock
         {
-            Text = string.IsNullOrWhiteSpace(skill.Description) ? "No description." : skill.Description,
+            Text = string.IsNullOrWhiteSpace(skill.Description) ? L("No description.", "\u65e0\u63cf\u8ff0\u3002") : skill.Description,
             FontSize = 13,
             Foreground = Brush("V2SecondaryForegroundBrush"),
             TextWrapping = TextWrapping.Wrap,
         }));
-        detail.Children.Add(ToolBoardGroup("Skill File", skill.SkillDir, new TextBox
+        detail.Children.Add(ToolBoardGroup(L("Skill File", "\u6280\u80fd\u6587\u4ef6"), skill.SkillDir, new TextBox
         {
             Text = content,
             IsReadOnly = true,
@@ -6112,7 +6207,7 @@ public sealed partial class MainWindow : Window
         var rows = records.OrderByDescending(record => record.UpdatedAt).ToList();
         if (rows.Count == 0)
         {
-            return ToolBoardGroup(title, subtitle, DashedEmptyState($"No {title.ToLowerInvariant()} yet", "Records will appear here after they are created or imported."));
+            return ToolBoardGroup(title, subtitle, DashedEmptyState(L("No records yet", "\u6682\u65e0\u8bb0\u5f55"), L("Records will appear here after they are created or imported.", "\u521b\u5efa\u6216\u5bfc\u5165\u540e\u8bb0\u5f55\u4f1a\u663e\u793a\u5728\u8fd9\u91cc\u3002")));
         }
 
         return ToolBoardGroup(title, subtitle, rows.Select(MemoryRecordRow).ToArray());
@@ -6150,8 +6245,8 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(text, 1);
         grid.Children.Add(text);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        actions.Children.Add(SmallActionButton("Open", async () => await ShowTextDialogAsync(record.Name, record.Content)));
-        actions.Children.Add(SmallActionButton("Delete", async () => await DeleteMemoryAsync(record)));
+        actions.Children.Add(SmallActionButton(L("Open", "\u6253\u5f00"), async () => await ShowTextDialogAsync(record.Name, record.Content)));
+        actions.Children.Add(SmallActionButton(L("Delete", "\u5220\u9664"), async () => await DeleteMemoryAsync(record)));
         Grid.SetColumn(actions, 2);
         grid.Children.Add(actions);
         return grid;
@@ -6162,11 +6257,11 @@ public sealed partial class MainWindow : Window
         var rows = plans.OrderByDescending(plan => plan.UpdatedAt).ToList();
         if (rows.Count == 0)
         {
-            return ToolBoardGroup("Plans / Cron Jobs", "Manual and scheduled background work.",
+            return ToolBoardGroup(L("Plans / Cron Jobs", "\u8ba1\u5212\u4e0e\u5468\u671f\u4efb\u52a1"), L("Manual and scheduled background work.", "\u624b\u52a8\u548c\u5b9a\u65f6\u7684\u540e\u53f0\u4efb\u52a1\u3002"),
                 DashedEmptyState(T("alwaysOn.empty.title"), T("alwaysOn.emptyDetail")));
         }
 
-        return ToolBoardGroup("Plans / Cron Jobs", "Manual and scheduled background work.", rows.Select(AlwaysOnPlanRow).ToArray());
+        return ToolBoardGroup(L("Plans / Cron Jobs", "\u8ba1\u5212\u4e0e\u5468\u671f\u4efb\u52a1"), L("Manual and scheduled background work.", "\u624b\u52a8\u548c\u5b9a\u65f6\u7684\u540e\u53f0\u4efb\u52a1\u3002"), rows.Select(AlwaysOnPlanRow).ToArray());
     }
 
     private FrameworkElement AlwaysOnPlanRow(AlwaysOnPlan plan)
@@ -6202,8 +6297,8 @@ public sealed partial class MainWindow : Window
         grid.Children.Add(text);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
         actions.Children.Add(StatusPill(RelativeLabel(plan.UpdatedAt), false));
-        actions.Children.Add(SmallActionButton("Run", async () => await RunAlwaysOnPlanAsync(plan)));
-        actions.Children.Add(SmallActionButton("Delete", async () => await DeleteAlwaysOnPlanAsync(plan)));
+        actions.Children.Add(SmallActionButton(L("Run", "\u8fd0\u884c"), async () => await RunAlwaysOnPlanAsync(plan)));
+        actions.Children.Add(SmallActionButton(L("Delete", "\u5220\u9664"), async () => await DeleteAlwaysOnPlanAsync(plan)));
         Grid.SetColumn(actions, 2);
         grid.Children.Add(actions);
         return grid;
@@ -6311,13 +6406,13 @@ public sealed partial class MainWindow : Window
         return button;
     }
 
-    private static string RelativeLabel(DateTimeOffset value)
+    private string RelativeLabel(DateTimeOffset value)
     {
         var span = DateTimeOffset.Now - value.ToLocalTime();
-        if (span.TotalSeconds < 60) return "just now";
-        if (span.TotalMinutes < 60) return $"{Math.Floor(span.TotalMinutes)}m ago";
-        if (span.TotalHours < 24) return $"{Math.Floor(span.TotalHours)}h ago";
-        if (span.TotalDays < 7) return $"{Math.Floor(span.TotalDays)}d ago";
+        if (span.TotalSeconds < 60) return L("just now", "\u521a\u521a");
+        if (span.TotalMinutes < 60) return IsChineseUi() ? $"{Math.Floor(span.TotalMinutes)} \u5206\u949f\u524d" : $"{Math.Floor(span.TotalMinutes)}m ago";
+        if (span.TotalHours < 24) return IsChineseUi() ? $"{Math.Floor(span.TotalHours)} \u5c0f\u65f6\u524d" : $"{Math.Floor(span.TotalHours)}h ago";
+        if (span.TotalDays < 7) return IsChineseUi() ? $"{Math.Floor(span.TotalDays)} \u5929\u524d" : $"{Math.Floor(span.TotalDays)}d ago";
         return value.LocalDateTime.ToString("g");
     }
 
@@ -8429,24 +8524,296 @@ public sealed partial class MainWindow : Window
         rawYaml.MaxHeight = double.PositiveInfinity;
         var rawPanel = SettingsPanel(
             SettingsSection(T("settings.config.rawYaml"), T("settings.config.rawYamlDetail"), rawYaml));
-        var mcpPath = Path.Combine(AppPaths.Current().Root, "mcp.json");
-        var initialMcpRaw = File.Exists(mcpPath)
-            ? File.ReadAllText(mcpPath)
-            : """
-            {
-              "mcpServers": {}
-            }
-            """;
-        var mcpPathBox = Box(mcpPath);
-        mcpPathBox.IsReadOnly = true;
-        mcpPathBox.FontFamily = new FontFamily("Consolas");
+        var mcpProjectOptions = State.Projects
+            .Where(project => !IsGeneralProject(project) && !string.IsNullOrWhiteSpace(project.RootPath))
+            .Select(project => (Name: project.DisplayName, Root: project.RootPath))
+            .ToList();
+        var mcpScope = "global";
+        var mcpProjectRoot = State.SelectedProject is { } selectedProject && !IsGeneralProject(selectedProject)
+            ? selectedProject.RootPath
+            : mcpProjectOptions.Count > 0 ? mcpProjectOptions[0].Root : "";
+        string CurrentMcpPath() =>
+            string.Equals(mcpScope, "project", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(mcpProjectRoot)
+                ? Path.Combine(mcpProjectRoot, ".g9claw", "mcp.json")
+                : Path.Combine(AppPaths.Current().Root, "mcp.json");
+        static string ReadMcpRaw(string path) =>
+            File.Exists(path)
+                ? File.ReadAllText(path)
+                : """
+                {
+                  "mcpServers": {}
+                }
+                """;
+        var mcpPath = CurrentMcpPath();
+        var initialMcpRaw = ReadMcpRaw(mcpPath);
         var mcpRaw = Area(initialMcpRaw);
         mcpRaw.TextWrapping = TextWrapping.NoWrap;
-        mcpRaw.MinHeight = 320;
+        mcpRaw.MinHeight = 260;
+        var mcpStatusText = new TextBlock
+        {
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
+        };
+        var mcpPathText = new TextBlock
+        {
+            FontSize = 11,
+            FontFamily = new FontFamily("Consolas"),
+            Foreground = Brush("V2MutedForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        var mcpServerCountText = new TextBlock
+        {
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var mcpEmptyState = DashedEmptyState(L("No MCP servers configured.", "\u6682\u65e0 MCP \u670d\u52a1\u5668\u3002"), L("Add a STDIO or HTTP server, or edit Advanced JSON directly.", "\u6dfb\u52a0 STDIO \u6216 HTTP \u670d\u52a1\u5668\uff0c\u6216\u76f4\u63a5\u7f16\u8f91\u9ad8\u7ea7 JSON\u3002"));
+        var mcpMessageText = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = Brush("V2GreenBrush"),
+            TextWrapping = TextWrapping.Wrap,
+            Visibility = Visibility.Collapsed,
+        };
+        var mcpProjectPicker = new ComboBox
+        {
+            Height = 34,
+            MinWidth = 0,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            IsEnabled = mcpProjectOptions.Count > 0,
+        };
+        foreach (var option in mcpProjectOptions)
+        {
+            mcpProjectPicker.Items.Add(new ComboBoxItem { Content = option.Name, Tag = option.Root });
+        }
+        var selectedMcpProjectIndex = mcpProjectOptions.FindIndex(option => string.Equals(option.Root, mcpProjectRoot, StringComparison.OrdinalIgnoreCase));
+        mcpProjectPicker.SelectedIndex = selectedMcpProjectIndex >= 0 ? selectedMcpProjectIndex : (mcpProjectOptions.Count > 0 ? 0 : -1);
+
+        FrameworkElement? mcpProjectRow = null;
+        Button McpToolbarButton(string icon, string label, bool primary = false)
+        {
+            return new Button
+            {
+                Content = IconText(icon, label, 14, primary ? Brush("V2InverseForegroundBrush") : null),
+                Height = 32,
+                Style = (Style)Application.Current.Resources[primary ? "V2PrimaryButtonStyle" : "V2ToolbarButtonStyle"],
+            };
+        }
+
+        var scopeGlobalButton = McpToolbarButton("Database", L("Global", "\u5168\u5c40"));
+        var scopeProjectButton = McpToolbarButton("Folder", L("Project", "\u9879\u76ee"));
+        scopeProjectButton.IsEnabled = mcpProjectOptions.Count > 0;
+        var scopeSelector = new Border
+        {
+            Padding = new Thickness(3),
+            CornerRadius = new CornerRadius(16),
+            Background = Brush("V2ControlSurfaceBrush"),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 2,
+                Children = { scopeGlobalButton, scopeProjectButton },
+            },
+        };
+
+        void RefreshMcpView()
+        {
+            mcpPath = CurrentMcpPath();
+            mcpStatusText.Text = File.Exists(mcpPath) ? L("Existing config", "\u5df2\u5b58\u5728") : L("Not created yet", "\u5c1a\u672a\u521b\u5efa");
+            mcpPathText.Text = mcpPath;
+            var serverCount = McpServerCount(mcpRaw.Text);
+            mcpServerCountText.Text = IsChineseUi() ? $"{serverCount} \u4e2a\u670d\u52a1\u5668" : $"{serverCount} servers";
+            mcpEmptyState.Visibility = serverCount == 0 ? Visibility.Visible : Visibility.Collapsed;
+            mcpProjectRow!.Visibility = string.Equals(mcpScope, "project", StringComparison.OrdinalIgnoreCase) ? Visibility.Visible : Visibility.Collapsed;
+            scopeGlobalButton.Background = string.Equals(mcpScope, "global", StringComparison.OrdinalIgnoreCase) ? Brush("V2ControlActiveBrush") : Transparent;
+            scopeProjectButton.Background = string.Equals(mcpScope, "project", StringComparison.OrdinalIgnoreCase) ? Brush("V2ControlActiveBrush") : Transparent;
+        }
+
+        void LoadMcpIntoEditor()
+        {
+            mcpPath = CurrentMcpPath();
+            initialMcpRaw = ReadMcpRaw(mcpPath);
+            mcpRaw.Text = initialMcpRaw;
+            mcpMessageText.Visibility = Visibility.Collapsed;
+            RefreshMcpView();
+        }
+
+        scopeGlobalButton.Click += (_, _) =>
+        {
+            mcpScope = "global";
+            LoadMcpIntoEditor();
+        };
+        scopeProjectButton.Click += (_, _) =>
+        {
+            if (mcpProjectOptions.Count == 0) return;
+            mcpScope = "project";
+            if (string.IsNullOrWhiteSpace(mcpProjectRoot)) mcpProjectRoot = mcpProjectOptions[0].Root;
+            LoadMcpIntoEditor();
+        };
+        mcpProjectPicker.SelectionChanged += (_, _) =>
+        {
+            if (mcpProjectPicker.SelectedItem is ComboBoxItem { Tag: string root })
+            {
+                mcpProjectRoot = root;
+                if (string.Equals(mcpScope, "project", StringComparison.OrdinalIgnoreCase)) LoadMcpIntoEditor();
+            }
+        };
+        mcpRaw.TextChanged += (_, _) => RefreshMcpView();
+
+        var revealMcp = McpToolbarButton("Folder", T("settings.config.revealFile"));
+        revealMcp.Click += (_, _) =>
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(mcpPath);
+                if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+                var explorerArg = File.Exists(mcpPath) ? $"/select,\"{mcpPath}\"" : $"\"{directory}\"";
+                Process.Start(new ProcessStartInfo("explorer.exe", explorerArg) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                errorText.Text = ex.Message;
+            }
+        };
+        var refreshMcp = McpToolbarButton("Refresh", T("common.refresh"));
+        refreshMcp.Click += (_, _) => LoadMcpIntoEditor();
+        var saveMcp = McpToolbarButton("Save", L("Save MCP", "\u4fdd\u5b58 MCP"), primary: true);
+        saveMcp.Click += (_, _) =>
+        {
+            try
+            {
+                using var _ = JsonDocument.Parse(mcpRaw.Text);
+                Directory.CreateDirectory(Path.GetDirectoryName(mcpPath)!);
+                File.WriteAllText(mcpPath, mcpRaw.Text);
+                initialMcpRaw = mcpRaw.Text;
+                mcpMessageText.Text = L("MCP config saved.", "MCP \u914d\u7f6e\u5df2\u4fdd\u5b58\u3002");
+                mcpMessageText.Visibility = Visibility.Visible;
+                errorText.Text = "";
+                RefreshMcpView();
+            }
+            catch (Exception ex)
+            {
+                errorText.Text = ex.Message;
+            }
+        };
+        var addStdio = McpToolbarButton("Plus", "STDIO");
+        addStdio.Click += (_, _) =>
+        {
+            try
+            {
+                mcpRaw.Text = AddMcpServerTemplate(mcpRaw.Text, "stdio");
+                mcpMessageText.Visibility = Visibility.Collapsed;
+            }
+            catch (Exception ex)
+            {
+                errorText.Text = ex.Message;
+            }
+        };
+        var addHttp = McpToolbarButton("Plus", "HTTP");
+        addHttp.Click += (_, _) =>
+        {
+            try
+            {
+                mcpRaw.Text = AddMcpServerTemplate(mcpRaw.Text, "http");
+                mcpMessageText.Visibility = Visibility.Collapsed;
+            }
+            catch (Exception ex)
+            {
+                errorText.Text = ex.Message;
+            }
+        };
+
+        var mcpConfigActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        mcpConfigActions.Children.Add(revealMcp);
+        mcpConfigActions.Children.Add(refreshMcp);
+        mcpConfigActions.Children.Add(saveMcp);
+        var mcpConfigCard = new StackPanel
+        {
+            Padding = new Thickness(14),
+            Spacing = 12,
+            Children =
+            {
+                new Grid
+                {
+                    ColumnSpacing = 10,
+                    ColumnDefinitions =
+                    {
+                        new ColumnDefinition { Width = new GridLength(24) },
+                        new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                    },
+                    Children =
+                    {
+                        Icon("Database", 16, Brush("V2MutedForegroundBrush")),
+                        new StackPanel
+                        {
+                            Spacing = 6,
+                            Children =
+                            {
+                                mcpStatusText,
+                                new Border
+                                {
+                                    CornerRadius = new CornerRadius(5),
+                                    Background = Brush("V2ControlSurfaceBrush"),
+                                    Padding = new Thickness(8, 4, 8, 4),
+                                    Child = mcpPathText,
+                                },
+                            },
+                        },
+                    },
+                },
+                mcpConfigActions,
+                mcpMessageText,
+            },
+        };
+        if (mcpConfigCard.Children[0] is Grid mcpConfigGrid)
+        {
+            Grid.SetColumn((FrameworkElement)mcpConfigGrid.Children[1], 1);
+        }
+
+        var mcpServersActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        mcpServersActions.Children.Add(addStdio);
+        mcpServersActions.Children.Add(addHttp);
+        var mcpServersSummary = new StackPanel
+        {
+            Padding = new Thickness(14),
+            Spacing = 12,
+            Children =
+            {
+                new Grid
+                {
+                    ColumnDefinitions =
+                    {
+                        new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                        new ColumnDefinition { Width = GridLength.Auto },
+                    },
+                    Children =
+                    {
+                        mcpServerCountText,
+                        mcpServersActions,
+                    },
+                },
+                mcpEmptyState,
+            },
+        };
+        if (mcpServersSummary.Children[0] is Grid mcpServersGrid)
+        {
+            Grid.SetColumn((FrameworkElement)mcpServersGrid.Children[1], 1);
+        }
+
+        mcpProjectRow = SettingsMenuRow("Folder", T("sidebar.projects"), L("Choose the project whose `.g9claw/mcp.json` should be edited.", "\u9009\u62e9\u8981\u7f16\u8f91 `.g9claw/mcp.json` \u7684\u9879\u76ee\u3002"), mcpProjectPicker);
         var mcpPanel = SettingsPanel(
-            SettingsSection("MCP Servers", "Configure the global MCP server JSON used by native tool sessions.",
-                Field("Config file", mcpPathBox),
-                Field("mcpServers JSON", mcpRaw)));
+            SettingsSection(L("MCP Servers", "MCP \u670d\u52a1\u5668"), L("Configure MCP tools with global or project JSON. Project servers override global servers with the same name.", "\u901a\u8fc7\u5168\u5c40\u6216\u9879\u76ee JSON \u914d\u7f6e MCP \u5de5\u5177\u3002\u540c\u540d\u9879\u76ee\u670d\u52a1\u5668\u4f1a\u8986\u76d6\u5168\u5c40\u670d\u52a1\u5668\u3002"),
+                SettingsMenuRow("Database", L("Scope", "\u4f5c\u7528\u57df"), L("Global MCP servers are available to every project.", "\u5168\u5c40 MCP \u4f1a\u5728\u6240\u6709\u9879\u76ee\u4e2d\u53ef\u7528\u3002"), scopeSelector),
+                mcpProjectRow),
+            SettingsSection(L("Config File", "\u914d\u7f6e\u6587\u4ef6"), "", mcpConfigCard),
+            SettingsSection(L("Servers", "\u670d\u52a1\u5668"), L("Supports STDIO and HTTP MCP servers.", "\u652f\u6301 STDIO \u548c HTTP MCP \u670d\u52a1\u5668\u3002"),
+                mcpServersSummary,
+                Field(L("Advanced JSON", "\u9ad8\u7ea7 JSON"), mcpRaw)));
+        RefreshMcpView();
         var configContent = new ContentControl { Content = configPanel };
         var formMode = new Button { Content = IconText("LayoutList", T("settings.config.form"), 14), Height = 32, Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"] };
         var rawMode = new Button { Content = IconText("Code", T("settings.config.rawYaml"), 14), Height = 32, Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"] };
@@ -8539,7 +8906,7 @@ public sealed partial class MainWindow : Window
             Background = Transparent,
             BorderBrush = Transparent,
             CornerRadius = new CornerRadius(8),
-            Content = IconText("ChevronLeft", "Back", 14),
+            Content = IconText("ChevronLeft", L("Back", "\u8fd4\u56de"), 14),
         };
 
         void ShowSettingsPage(SettingsOverlayPage page)
@@ -8554,11 +8921,11 @@ public sealed partial class MainWindow : Window
             State.OpenSettings(viewModel.ActiveTab);
             pageTitle.Text = page switch
             {
-                SettingsOverlayPage.Behavior => "Chat & Input",
+                SettingsOverlayPage.Behavior => L("Chat & Input", "\u804a\u5929\u4e0e\u8f93\u5165"),
                 SettingsOverlayPage.CodeEditor => T("settings.appearance.codeEditor"),
                 SettingsOverlayPage.Permissions => T("settings.tabs.permissions"),
                 SettingsOverlayPage.Config => T("settings.tabs.config"),
-                SettingsOverlayPage.Mcp => "MCP Servers",
+                SettingsOverlayPage.Mcp => L("MCP Servers", "MCP \u670d\u52a1\u5668"),
                 _ => T("settings.title"),
             };
             backButton.Visibility = page == SettingsOverlayPage.Main ? Visibility.Collapsed : Visibility.Visible;
@@ -8570,18 +8937,18 @@ public sealed partial class MainWindow : Window
                 SettingsOverlayPage.Config => configShell,
                 SettingsOverlayPage.Mcp => mcpPanel,
                 _ => SettingsPanel(
-                    SettingsSection("Basics", "",
-                        SettingsNavigationRow("FileCog", T("settings.tabs.config"), "Models, runtime, Search, Always-on, and essential config", () => ShowSettingsPage(SettingsOverlayPage.Config))),
-                    SettingsSection("Application", "",
+                    SettingsSection(L("Basics", "\u57fa\u7840"), "",
+                        SettingsNavigationRow("FileCog", T("settings.tabs.config"), L("Models, runtime, Search, Always-on, and essential config", "\u6a21\u578b\u3001\u8fd0\u884c\u65f6\u3001\u641c\u7d22\u3001\u5e38\u9a7b\u7b49\u57fa\u7840\u914d\u7f6e"), () => ShowSettingsPage(SettingsOverlayPage.Config))),
+                    SettingsSection(L("Application", "\u5e94\u7528"), "",
                         SettingsMenuRow("Palette", T("settings.appearance.theme"), T("settings.appearance.detail"), colorScheme),
                         SettingsMenuRow("globe", T("settings.appearance.language"), "", language),
                         SettingsMenuRow("Chevrons", T("settings.appearance.projectSorting"), "", sortOrder)),
-                    SettingsSection("Workflow", "",
-                        SettingsNavigationRow("MessageSquarePlus", "Chat & Input", "Tool display, scrolling, and send shortcut", () => ShowSettingsPage(SettingsOverlayPage.Behavior)),
-                        SettingsNavigationRow("Code", T("settings.appearance.codeEditor"), "Word wrap, line numbers, minimap, and font size", () => ShowSettingsPage(SettingsOverlayPage.CodeEditor))),
-                    SettingsSection("Advanced", "",
-                        SettingsNavigationRow("Database", "MCP Servers", "Configure global MCP tools", () => ShowSettingsPage(SettingsOverlayPage.Mcp)),
-                        SettingsNavigationRow("Shield", T("settings.tabs.permissions"), "Manage allowed and blocked tool rules", () => ShowSettingsPage(SettingsOverlayPage.Permissions)))),
+                    SettingsSection(L("Workflow", "\u5de5\u4f5c\u6d41"), "",
+                        SettingsNavigationRow("MessageSquarePlus", L("Chat & Input", "\u804a\u5929\u4e0e\u8f93\u5165"), L("Tool display, scrolling, and send shortcut", "\u5de5\u5177\u663e\u793a\u3001\u6eda\u52a8\u884c\u4e3a\u548c\u53d1\u9001\u5feb\u6377\u952e"), () => ShowSettingsPage(SettingsOverlayPage.Behavior)),
+                        SettingsNavigationRow("Code", T("settings.appearance.codeEditor"), L("Word wrap, line numbers, minimap, and font size", "\u81ea\u52a8\u6362\u884c\u3001\u884c\u53f7\u3001\u7f29\u7565\u56fe\u548c\u5b57\u53f7"), () => ShowSettingsPage(SettingsOverlayPage.CodeEditor))),
+                    SettingsSection(L("Advanced", "\u9ad8\u7ea7"), "",
+                        SettingsNavigationRow("Database", L("MCP Servers", "MCP \u670d\u52a1\u5668"), L("Configure global and project MCP tools", "\u914d\u7f6e\u5168\u5c40\u548c\u9879\u76ee MCP \u5de5\u5177"), () => ShowSettingsPage(SettingsOverlayPage.Mcp)),
+                        SettingsNavigationRow("Shield", T("settings.tabs.permissions"), L("Manage allowed and blocked tool rules", "\u7ba1\u7406\u5141\u8bb8\u548c\u7981\u7528\u7684\u5de5\u5177\u89c4\u5219"), () => ShowSettingsPage(SettingsOverlayPage.Permissions)))),
             };
         }
 
@@ -9839,6 +10206,70 @@ public sealed partial class MainWindow : Window
     private static string MergeLines(string existing, IEnumerable<string> additions) =>
         string.Join(Environment.NewLine, Lines(existing).Concat(additions).Distinct(StringComparer.OrdinalIgnoreCase));
 
+    private static int McpServerCount(string raw)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(raw) ? "{}" : raw);
+            return document.RootElement.TryGetProperty("mcpServers", out var servers) && servers.ValueKind == JsonValueKind.Object
+                ? servers.EnumerateObject().Count()
+                : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static string AddMcpServerTemplate(string raw, string transport)
+    {
+        var root = JsonNode.Parse(string.IsNullOrWhiteSpace(raw) ? "{}" : raw) as JsonObject ?? [];
+        if (root["mcpServers"] is not JsonObject servers)
+        {
+            servers = [];
+            root["mcpServers"] = servers;
+        }
+
+        var normalizedTransport = string.Equals(transport, "http", StringComparison.OrdinalIgnoreCase) ? "http" : "stdio";
+        var baseName = normalizedTransport == "http" ? "new-http-server" : "new-stdio-server";
+        var name = baseName;
+        var index = 2;
+        while (servers.ContainsKey(name))
+        {
+            name = $"{baseName}-{index}";
+            index++;
+        }
+
+        if (normalizedTransport == "http")
+        {
+            var headers = new JsonObject
+            {
+                ["Authorization"] = "Bearer ${env:MCP_TOKEN}",
+            };
+            servers[name] = new JsonObject
+            {
+                ["url"] = "http://127.0.0.1:3000/mcp",
+                ["headers"] = headers,
+            };
+        }
+        else
+        {
+            var args = new JsonArray();
+            args.Add("-y");
+            args.Add("@modelcontextprotocol/server-filesystem");
+            args.Add(".");
+            servers[name] = new JsonObject
+            {
+                ["command"] = "npx",
+                ["args"] = args,
+                ["env"] = new JsonObject(),
+                ["perSession"] = true,
+            };
+        }
+
+        return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
     private static List<string> Lines(string value) =>
         value.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(line => !string.IsNullOrWhiteSpace(line))
@@ -9952,6 +10383,8 @@ public sealed partial class MainWindow : Window
     private string T(string key) => _strings.T(key);
 
     private string Tf(string key, params object[] values) => string.Format(T(key), values);
+
+    private string L(string english, string chinese) => IsChineseUi() ? chinese : english;
 
     private bool IsChineseUi() =>
         string.Equals(NativeI18nLanguageResolver.Resolve(State.Settings.Language), "zh-CN", StringComparison.OrdinalIgnoreCase);
