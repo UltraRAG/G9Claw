@@ -5872,12 +5872,6 @@ public sealed partial class MainWindow : Window
 
     private FrameworkElement MemoryPage()
     {
-        var page = ToolPage(T("memory.title"), T("memory.subtitle"), new[]
-        {
-            ("Plus", L("New", "\u65b0\u5efa"), (Action)(async () => await CreateMemoryAsync())),
-            ("Download", T("common.export"), (Action)(async () => await ExportMemoryAsync())),
-            ("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
-        });
         var shell = new Grid { Background = Brush("V2BackgroundBrush") };
         shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -5917,8 +5911,7 @@ public sealed partial class MainWindow : Window
             Grid.SetRow(detail, 1);
             Grid.SetRowSpan(detail, 2);
             shell.Children.Add(detail);
-            ((Grid)page.Tag!).Children.Add(shell);
-            return page;
+            return shell;
         }
         _selectedMemoryRecordId = null;
 
@@ -5951,6 +5944,7 @@ public sealed partial class MainWindow : Window
                 {
                     new ColumnDefinition { Width = new GridLength(360) },
                     new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                    new ColumnDefinition { Width = GridLength.Auto },
                 },
                 Children =
                 {
@@ -5958,6 +5952,23 @@ public sealed partial class MainWindow : Window
                 },
             },
         };
+        if (memoryToolbar.Child is Grid memoryToolbarGrid)
+        {
+            var memoryActions = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children =
+                {
+                    ToolbarButton("Plus", L("New", "\u65b0\u5efa"), (Action)(async () => await CreateMemoryAsync())),
+                    ToolbarButton("Download", T("common.export"), (Action)(async () => await ExportMemoryAsync())),
+                    ToolbarButton("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
+                },
+            };
+            Grid.SetColumn(memoryActions, 2);
+            memoryToolbarGrid.Children.Add(memoryActions);
+        }
         Grid.SetRow(memoryToolbar, 1);
         shell.Children.Add(memoryToolbar);
 
@@ -6012,18 +6023,11 @@ public sealed partial class MainWindow : Window
         };
         Grid.SetRow(scroll, 2);
         shell.Children.Add(scroll);
-        ((Grid)page.Tag!).Children.Add(shell);
-        return page;
+        return shell;
     }
 
     private FrameworkElement AlwaysOnPage()
     {
-        var page = ToolPage(T("tabs.alwaysOn"), T("alwaysOn.subtitle"), new[]
-        {
-            ("Plus", L("New plan", "\u65b0\u5efa\u8ba1\u5212"), (Action)(async () => await CreateAlwaysOnPlanAsync())),
-            ("Play", T("alwaysOn.runNow"), (Action)(async () => await RunFirstAlwaysOnPlanAsync())),
-            ("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
-        });
         var shell = new Grid { Background = Brush("V2BackgroundBrush") };
         shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -6050,8 +6054,7 @@ public sealed partial class MainWindow : Window
             var detail = AlwaysOnPlanDetailPage(selectedPlan);
             Grid.SetRow(detail, 1);
             shell.Children.Add(detail);
-            ((Grid)page.Tag!).Children.Add(shell);
-            return page;
+            return shell;
         }
         _selectedAlwaysOnPlanId = null;
 
@@ -6063,6 +6066,7 @@ public sealed partial class MainWindow : Window
             HorizontalAlignment = HorizontalAlignment.Left,
         };
         if (!string.IsNullOrWhiteSpace(_toolStatus)) panel.Children.Add(StatusText(_toolStatus));
+        panel.Children.Add(AlwaysOnContentHeader());
         if (_alwaysOnToolTab == AlwaysOnToolTab.Dashboard)
         {
             panel.Children.Add(MetricGrid(
@@ -6092,8 +6096,55 @@ public sealed partial class MainWindow : Window
         };
         Grid.SetRow(scroll, 1);
         shell.Children.Add(scroll);
-        ((Grid)page.Tag!).Children.Add(shell);
-        return page;
+        return shell;
+    }
+
+    private FrameworkElement AlwaysOnContentHeader()
+    {
+        var header = new Grid
+        {
+            ColumnSpacing = 12,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+        header.Children.Add(new StackPanel
+        {
+            Spacing = 4,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = T("tabs.alwaysOn"),
+                    FontSize = 20,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = Brush("V2ForegroundBrush"),
+                },
+                new TextBlock
+                {
+                    Text = T("alwaysOn.subtitle"),
+                    FontSize = 13,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                },
+            },
+        });
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                ToolbarButton("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
+                ToolbarButton("Plus", L("New plan", "\u65b0\u5efa\u8ba1\u5212"), (Action)(async () => await CreateAlwaysOnPlanAsync()), isProminent: true),
+            },
+        };
+        Grid.SetColumn(actions, 1);
+        header.Children.Add(actions);
+        return header;
     }
 
     private FrameworkElement TasksPage()
