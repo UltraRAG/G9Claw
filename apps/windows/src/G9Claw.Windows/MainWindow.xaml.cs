@@ -1175,12 +1175,7 @@ public sealed partial class MainWindow : Window
             ];
         }
 
-        var tabs = new List<V2TabDescriptor>(AppTabCatalog.PrimaryTabDescriptors);
-        tabs.AddRange(
-            State.PluginManifests
-                .Where(plugin => plugin.Enabled)
-                .Select(AppTabCatalog.Descriptor));
-        return tabs;
+        return AppTabCatalog.PrimaryTabDescriptors;
     }
 
     private bool IsActiveHeaderTab(V2TabDescriptor tab)

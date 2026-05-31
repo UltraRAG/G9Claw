@@ -160,7 +160,7 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
-    public void MainHeaderToolSwitcherLayoutIncludesPluginTabs()
+    public void MainHeaderToolSwitcherLayoutIgnoresPluginTabsLikeMac()
     {
         var pluginTabs = new[]
         {
@@ -168,16 +168,13 @@ public sealed class ParityLogicTests
             new PluginManifest("plugin-2", "Plugin Two", "1.1.0", "plugin/path", true, [], []),
             new PluginManifest("plugin-1", "Duplicate", "2.0.0", "plugin/path", true, [], []),
         };
-        var tabs = AppTabCatalog.PrimaryTabDescriptors.Concat(pluginTabs.Select(AppTabCatalog.Descriptor));
+        var pluginDescriptors = pluginTabs.Select(AppTabCatalog.Descriptor).ToList();
+        var tabs = AppTabCatalog.PrimaryTabDescriptors;
         var layout = MainHeaderToolSwitcherLayout.Resolve(1200, AppTab.Chat, tabs, "plugin-2");
 
-        var pluginDescriptors = layout.VisibleTabs.Where(tab => tab.Tab == AppTab.Preview).ToList();
-        Assert.Equal(2, pluginDescriptors.Count);
-        Assert.Equal("plugin-1", pluginDescriptors[0].Id);
-        Assert.Equal("plugin-2", pluginDescriptors[1].Id);
-        var active = MainHeaderToolSwitcherLayout.Resolve(1200, AppTab.Preview, tabs, "plugin-2");
+        Assert.All(pluginDescriptors, descriptor => Assert.Equal(AppTab.Preview, descriptor.Tab));
+        Assert.DoesNotContain(layout.VisibleTabs, tab => tab.Tab == AppTab.Preview);
         Assert.Equal(AppTabCatalog.Descriptor(AppTab.Chat).Label, layout.VisibleTabs.First().Label);
-        Assert.Equal("plugin-2", active.VisibleTabs.Single(tab => tab.Tab == AppTab.Preview && tab.Id == "plugin-2").Id);
     }
 
     [Fact]
