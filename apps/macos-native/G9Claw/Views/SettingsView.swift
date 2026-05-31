@@ -21,6 +21,7 @@ private struct SettingsContentView: View {
     @State private var configExternalNotice: String?
     @State private var selectedModelPoolEntry: String?
     @State private var showAdvancedRouteModels = false
+    @State private var showRouterAdvancedSettings = false
 
     var body: some View {
         ScrollView {
@@ -760,15 +761,7 @@ private struct SettingsContentView: View {
                 }
             }
         case .router:
-            VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: state.t(.routing)) {
-                    SettingsCardBlock {
-                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.routerDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding(NativeRouterConfigFormFields.enabledPath))
-                        }
-                    }
-                }
-            }
+            routerSettingsContent
         case .gateway:
             VStack(alignment: .leading, spacing: 18) {
                 SettingsSectionBlock(title: state.t(.gateway)) {
@@ -826,6 +819,155 @@ private struct SettingsContentView: View {
             }
             modelAssignmentsContent
             routerModelAssignmentsContent
+        }
+    }
+
+    private var routerSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            SettingsSectionBlock(
+                title: state.t(.routing),
+                detail: local(chinese: "原生 Router 决定每次请求使用哪个模型，并把真实请求记录写入本机统计。", english: "Native Router selects the model for each request and records native request stats.")
+            ) {
+                SettingsCardBlock(divided: true) {
+                    SettingsRowBlock(title: state.t(.enabled), detail: state.t(.routerDetail)) {
+                        WebSettingsToggle(isOn: configBoolBinding(NativeRouterConfigFormFields.enabledPath))
+                    }
+                    if configBool(NativeRouterConfigFormFields.enabledPath) {
+                        SettingsCardDivider()
+                        SettingsRowBlock(
+                            title: local(chinese: "默认模型", english: "Default Model"),
+                            detail: local(chinese: "Router 未命中特殊规则时使用的模型。", english: "Model used when no special route matches.")
+                        ) {
+                            modelAssignmentPicker(path: "router.routes.default.model")
+                        }
+                        SettingsCardDivider()
+                        SettingsRowBlock(
+                            title: state.t(.judgeModel),
+                            detail: local(chinese: "Token Saver 用这个模型判断任务复杂度。", english: "Token Saver uses this model to judge task complexity.")
+                        ) {
+                            modelAssignmentPicker(path: "router.tokenSaver.judgeModel")
+                        }
+                    }
+                }
+            }
+
+            if configBool(NativeRouterConfigFormFields.enabledPath) {
+                SettingsSectionBlock(
+                    title: state.t(.tokenSaver),
+                    detail: local(chinese: "对齐 PD 的 simple / medium / complex / reasoning 四档，但保留 Swift 原生运行时。", english: "Uses PD-style simple / medium / complex / reasoning tiers in the native Swift runtime.")
+                ) {
+                    SettingsCardBlock(divided: true) {
+                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.tokenSaverDetail)) {
+                            WebSettingsToggle(isOn: configBoolBinding("router.tokenSaver.enabled"))
+                        }
+                        SettingsCardDivider()
+                        SettingsRowBlock(
+                            title: state.t(.defaultTier),
+                            detail: local(chinese: "Judge 失败时回落到这个层级。", english: "Fallback tier when judge classification fails.")
+                        ) {
+                            Picker("", selection: configBinding("router.tokenSaver.defaultTier", fallback: RouterTier.medium.rawValue)) {
+                                ForEach(RouterTier.allCases, id: \.rawValue) { tier in
+                                    Text(tier.rawValue).tag(tier.rawValue)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 180)
+                        }
+                        SettingsCardDivider()
+                        modelAssignmentRowsList(routerTierModelRows)
+                    }
+                }
+
+                SettingsSectionBlock(
+                    title: local(chinese: "统计与成本", english: "Stats & Pricing"),
+                    detail: local(chinese: "Dashboard 使用这些价格估算实际成本、基准成本和节省。", english: "Dashboard uses these prices to estimate actual cost, baseline cost, and savings.")
+                ) {
+                    SettingsCardBlock {
+                        ConfigGrid {
+                            SettingsTextField(local(chinese: "默认每百万 token 成本", english: "Default cost / MTok"), text: configBinding("router.tokenStats.defaultCostPerMillion", fallback: "0.8"))
+                            SettingsTextField(local(chinese: "基准模型", english: "Baseline model"), text: configBinding("router.tokenStats.baselineModel", fallback: "default"))
+                        }
+                        .padding(14)
+                    }
+                }
+
+                routerAdvancedSettingsDisclosure
+            }
+        }
+    }
+
+    private var routerTierModelRows: [NativeModelAssignmentRowSpec] {
+        RouterTier.allCases.map { tier in
+            NativeModelAssignmentRowSpec(
+                id: "\(tier.rawValue)Tier",
+                title: routerTierTitle(tier),
+                detail: routerTierDetail(tier),
+                path: "router.tokenSaver.tiers.\(tier.rawValue).model"
+            )
+        }
+    }
+
+    private func routerTierTitle(_ tier: RouterTier) -> String {
+        switch tier {
+        case .simple: local(chinese: "简单任务", english: "Simple")
+        case .medium: local(chinese: "中等任务", english: "Medium")
+        case .complex: local(chinese: "复杂任务", english: "Complex")
+        case .reasoning: local(chinese: "推理任务", english: "Reasoning")
+        }
+    }
+
+    private func routerTierDetail(_ tier: RouterTier) -> String {
+        switch tier {
+        case .simple:
+            local(chinese: "简短问答、读取、小改动。", english: "Short Q&A, reads, tiny edits.")
+        case .medium:
+            local(chinese: "解释、审查、单文件或中等复杂度任务。", english: "Explanations, reviews, single-file or moderate tasks.")
+        case .complex:
+            local(chinese: "多步骤实现、较大功能、协调修改。", english: "Multi-step implementation, larger features, coordinated changes.")
+        case .reasoning:
+            local(chinese: "深度分析、架构、安全或困难调试。", english: "Deep analysis, architecture, safety, or hard debugging.")
+        }
+    }
+
+    private var routerAdvancedSettingsDisclosure: some View {
+        SettingsCardBlock {
+            DisclosureGroup(isExpanded: $showRouterAdvancedSettings) {
+                VStack(spacing: 0) {
+                    SettingsCardDivider()
+                    ConfigGrid {
+                        SettingsTextField(local(chinese: "Judge 超时 ms", english: "Judge timeout ms"), text: configBinding("router.tokenSaver.judgeTimeoutMs", fallback: "15000"))
+                        SettingsTextField(local(chinese: "长上下文阈值", english: "Long context threshold"), text: configBinding("router.routes.longContextThreshold", fallback: "60000"))
+                        SettingsTextField(local(chinese: "Token Saver 规则", english: "Token Saver rules"), text: configBinding("router.tokenSaver.rules", fallback: ""))
+                        SettingsTextField(local(chinese: "Zero usage 重试", english: "Zero usage retries"), text: configBinding("router.zeroUsageRetry.maxAttempts", fallback: "1"))
+                        SettingsTextField(local(chinese: "瞬时错误重试", english: "Transient retries"), text: configBinding("router.transientRetry.maxAttempts", fallback: "5"))
+                        SettingsTextField(local(chinese: "重试基础延迟 ms", english: "Retry base delay ms"), text: configBinding("router.transientRetry.baseDelayMs", fallback: "200"))
+                        SettingsTextField(local(chinese: "Fallback 链", english: "Fallback chain"), text: configBinding("router.fallback.default", fallback: ""))
+                    }
+                    .padding(14)
+                    SettingsCardDivider()
+                    SettingsRowBlock(
+                        title: local(chinese: "Zero usage retry", english: "Zero usage retry"),
+                        detail: local(chinese: "模型没有返回 usage 且没有可见内容时自动重试。", english: "Retry when the model returns no usage and no visible content.")
+                    ) {
+                        WebSettingsToggle(isOn: configBoolBinding("router.zeroUsageRetry.enabled", defaultValue: true))
+                    }
+                    SettingsCardDivider()
+                    SettingsRowBlock(
+                        title: local(chinese: "Transient retry", english: "Transient retry"),
+                        detail: local(chinese: "网络或 5xx 等瞬时错误是否自动重试。", english: "Automatically retry transient network or 5xx errors.")
+                    ) {
+                        WebSettingsToggle(isOn: configBoolBinding("router.transientRetry.enabled", defaultValue: true))
+                    }
+                }
+            } label: {
+                SettingsFieldLabel(
+                    title: local(chinese: "高级 Router", english: "Advanced Router"),
+                    detail: local(chinese: "长上下文、重试、fallback 和诊断参数。", english: "Long context, retry, fallback, and diagnostics.")
+                )
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
     }
 
@@ -909,25 +1051,25 @@ private struct SettingsContentView: View {
                 id: "simpleTier",
                 title: local(chinese: "简单任务", english: "Simple Tier"),
                 detail: local(chinese: "简短问答、文件读取、小改动使用的模型。", english: "Model for simple Q&A, file reads, and small edits."),
-                path: "router.tokenSaver.tiers.SIMPLE.model"
+                path: "router.tokenSaver.tiers.simple.model"
             ),
             NativeModelAssignmentRowSpec(
                 id: "mediumTier",
                 title: local(chinese: "中等任务", english: "Medium Tier"),
                 detail: local(chinese: "中等复杂度编码、解释和单文件改动使用的模型。", english: "Model for moderate coding, explanations, and single-file edits."),
-                path: "router.tokenSaver.tiers.MEDIUM.model"
+                path: "router.tokenSaver.tiers.medium.model"
             ),
             NativeModelAssignmentRowSpec(
                 id: "complexTier",
                 title: local(chinese: "复杂任务", english: "Complex Tier"),
                 detail: local(chinese: "多步骤编码、架构调整和较大重构使用的模型。", english: "Model for multi-step coding, architecture changes, and larger refactors."),
-                path: "router.tokenSaver.tiers.COMPLEX.model"
+                path: "router.tokenSaver.tiers.complex.model"
             ),
             NativeModelAssignmentRowSpec(
                 id: "reasoningTier",
                 title: local(chinese: "推理任务", english: "Reasoning Tier"),
                 detail: local(chinese: "深度推理、新算法和安全分析使用的模型。", english: "Model for deep reasoning, novel algorithms, and security analysis."),
-                path: "router.tokenSaver.tiers.REASONING.model"
+                path: "router.tokenSaver.tiers.reasoning.model"
             ),
             NativeModelAssignmentRowSpec(
                 id: "autoOrchestrate",
@@ -1777,10 +1919,10 @@ enum NativeModelsConfigFormFields {
         "router.routes.longContext.model",
         "router.routes.webSearch.model",
         "router.tokenSaver.judgeModel",
-        "router.tokenSaver.tiers.SIMPLE.model",
-        "router.tokenSaver.tiers.MEDIUM.model",
-        "router.tokenSaver.tiers.COMPLEX.model",
-        "router.tokenSaver.tiers.REASONING.model",
+        "router.tokenSaver.tiers.simple.model",
+        "router.tokenSaver.tiers.medium.model",
+        "router.tokenSaver.tiers.complex.model",
+        "router.tokenSaver.tiers.reasoning.model",
         "router.autoOrchestrate.mainAgentModel",
     ]
     static let inheritableAssignmentPaths: Set<String> = [
@@ -1954,6 +2096,21 @@ enum NativeRouterConfigFormFields {
     ]
     static let visiblePaths = [
         enabledPath,
+        "router.routes.default.model",
+        "router.tokenSaver.enabled",
+        "router.tokenSaver.judgeModel",
+        "router.tokenSaver.defaultTier",
+        "router.tokenSaver.rules",
+        "router.tokenSaver.tiers.simple.model",
+        "router.tokenSaver.tiers.medium.model",
+        "router.tokenSaver.tiers.complex.model",
+        "router.tokenSaver.tiers.reasoning.model",
+        "router.tokenStats.baselineModel",
+        "router.tokenStats.defaultCostPerMillion",
+        "router.zeroUsageRetry.enabled",
+        "router.zeroUsageRetry.maxAttempts",
+        "router.transientRetry.enabled",
+        "router.transientRetry.maxAttempts",
     ]
 }
 

@@ -3828,35 +3828,40 @@ private extension Optional where Wrapped == String {
 }
 
 final class RoutingService {
-    private var tokenRecords: [String: RoutingDashboardSession] = [:]
+    private var recordsByID: [String: RouterStatsRecord] = [:]
+    private var recordOrder: [String] = []
+    private var pendingMainRecordIDBySession: [String: String] = [:]
     private let recordsURL: URL?
+    private let statsURL: URL?
 
     init() {
         if let paths = try? AppPaths.current() {
             let root = paths.applicationSupport.appendingPathComponent("Routing", isDirectory: true)
             try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             recordsURL = root.appendingPathComponent("routing-records.json")
+            statsURL = root.appendingPathComponent("routing-stats.jsonl")
         } else {
             recordsURL = nil
+            statsURL = nil
         }
         load()
     }
 
     static func classifyTier(prompt: String, runMode: ChatRunMode) -> String {
-        if runMode == .plan { return "REASONING" }
+        if runMode == .plan { return RouterTier.reasoning.rawValue }
         let normalized = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let words = normalized.split { $0.isWhitespace || $0.isNewline }
         if words.count < 20,
            !containsAny(normalized, ["修改", "优化", "实现", "生成", "创建", "网页", "网站", "代码", "edit", "fix", "build", "implement", "website", "code"]) {
-            return "SIMPLE"
+            return RouterTier.simple.rawValue
         }
         if containsAny(normalized, ["架构", "重构", "全量", "复杂", "深入", "推理", "research", "architecture", "refactor", "reasoning"]) {
-            return "REASONING"
+            return RouterTier.reasoning.rawValue
         }
         if containsAny(normalized, ["修改", "优化", "实现", "生成", "创建", "网页", "网站", "多文件", "edit", "fix", "build", "implement", "website", "multi-file"]) {
-            return "COMPLEX"
+            return RouterTier.complex.rawValue
         }
-        return "MEDIUM"
+        return RouterTier.medium.rawValue
     }
 
     private static func containsAny(_ value: String, _ needles: [String]) -> Bool {
@@ -3870,37 +3875,38 @@ final class RoutingService {
         model: String,
         route: String,
         tier: String,
-        query: String? = nil
+        query: String? = nil,
+        decision: RouterDecision? = nil,
+        projectPath: String? = nil
     ) {
         let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : model
         let now = Date()
-        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
-        record.title = title
-        record.projectName = projectName
-        record.lastActiveAt = now
-        let tierKey = tier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "COMPLEX" : tier
-        let routeKey = route.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : route
-        let requestBucket = RoutingBucket(count: 1, requestCount: 1)
-        record.total = mergeRequest(bucket: record.total, with: requestBucket)
-        record.byTier[tierKey] = mergeRequest(bucket: record.byTier[tierKey], with: requestBucket)
-        record.byModel[normalizedModel] = mergeRequest(bucket: record.byModel[normalizedModel], with: requestBucket)
-        record.byRole["main"] = mergeRequest(bucket: record.byRole["main"], with: requestBucket)
-        record.byScenario[routeKey] = mergeRequest(bucket: record.byScenario[routeKey], with: requestBucket)
-        let entry = RoutingRequestLogEntry(
+        let tierKey = canonicalTier(tier)
+        let routeKey = route.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank ?? "default"
+        let id = decision?.id ?? UUID().uuidString
+        let record = RouterStatsRecord(
+            id: id,
+            sessionID: sessionID,
+            turnID: id,
+            projectName: projectName,
+            projectPath: projectPath,
+            title: title,
             ts: now,
+            event: "decision",
             role: "main",
-            tier: tierKey,
+            scenario: decision?.scenario ?? routeKey,
+            resolvedFrom: decision?.resolvedFrom ?? routeKey,
+            tier: decision?.tier ?? tierKey,
+            providerID: decision?.providerID,
             model: normalizedModel,
+            route: routeKey,
             query: sanitizedQuery(query ?? title),
-            scenario: routeKey,
-            route: routeKey
+            estimatedInputTokens: decision?.estimatedInputTokens ?? 0,
+            stickyHit: decision?.stickyHit ?? false,
+            reason: decision?.reason
         )
-        record.requestEntries.append(entry)
-        record.requestEntries = Array(record.requestEntries.suffix(120))
-        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) \(routeKey) -> \(normalizedModel) routed as \(tierKey)")
-        record.requestLog = Array(record.requestLog.suffix(100))
-        tokenRecords[sessionID] = record
-        persist()
+        pendingMainRecordIDBySession[sessionID] = id
+        appendRecord(record)
     }
 
     func recordTokens(
@@ -3910,58 +3916,66 @@ final class RoutingService {
         model: String,
         tier: String,
         totalTokens: Int,
-        contextWindow: Int
+        contextWindow: Int,
+        values: [String: String] = [:]
+    ) {
+        recordTokenUsage(
+            sessionID: sessionID,
+            title: title,
+            projectName: projectName,
+            model: model,
+            tier: tier,
+            usage: RouterTokenUsage(inputTokens: totalTokens, totalTokens: totalTokens),
+            contextWindow: contextWindow,
+            values: values
+        )
+    }
+
+    func recordTokenUsage(
+        sessionID: String,
+        title: String,
+        projectName: String,
+        model: String,
+        tier: String,
+        usage: RouterTokenUsage,
+        contextWindow: Int,
+        values: [String: String] = [:]
     ) {
         let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : model
-        let cost = estimatedCost(model: normalizedModel, tokens: totalTokens)
-        let baselineCost = baselineCost(tokens: totalTokens)
+        let cost = estimatedCost(model: normalizedModel, usage: usage, values: values)
+        let baselineCost = baselineCost(usage: usage, values: values)
         let savedCost = max(0, baselineCost - cost)
         let now = Date()
-        let bucket = RoutingBucket(
-            inputTokens: totalTokens,
-            totalTokens: totalTokens,
-            estimatedCost: cost,
+        let tierKey = canonicalTier(tier)
+        let recordID = pendingMainRecordIDBySession[sessionID] ?? UUID().uuidString
+        let previous = recordsByID[recordID]
+        let record = RouterStatsRecord(
+            id: recordID,
+            sessionID: sessionID,
+            turnID: previous?.turnID ?? recordID,
+            projectName: projectName,
+            projectPath: previous?.projectPath,
+            title: title,
+            ts: now,
+            event: "usage",
+            role: previous?.role ?? "main",
+            scenario: previous?.scenario ?? "usage",
+            resolvedFrom: previous?.resolvedFrom ?? "usage",
+            tier: previous?.tier ?? tierKey,
+            providerID: previous?.providerID,
+            model: normalizedModel,
+            route: previous?.route,
+            query: previous?.query,
+            skill: previous?.skill,
+            usage: usage,
+            cost: cost,
             baselineCost: baselineCost,
-            savedCost: savedCost
+            savedCost: savedCost,
+            estimatedInputTokens: previous?.estimatedInputTokens ?? min(usage.totalTokens, contextWindow),
+            stickyHit: previous?.stickyHit ?? false,
+            reason: previous?.reason
         )
-        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
-        record.title = title
-        record.projectName = projectName
-        record.lastActiveAt = now
-        record.totalTokens = max(record.totalTokens, totalTokens)
-        record.estimatedCost = max(record.estimatedCost, cost)
-        record.savedCost = max(record.savedCost, savedCost)
-        let tierKey = tier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "COMPLEX" : tier
-        let scenarioKey = latestScenario(in: record) ?? "usage"
-        record.total = mergeUsage(bucket: record.total, with: bucket)
-        record.byTier[tierKey] = mergeUsage(bucket: record.byTier[tierKey], with: bucket)
-        record.byModel[normalizedModel] = mergeUsage(bucket: record.byModel[normalizedModel], with: bucket)
-        record.byRole["main"] = mergeUsage(bucket: record.byRole["main"], with: bucket)
-        record.byScenario[scenarioKey] = mergeUsage(bucket: record.byScenario[scenarioKey], with: bucket)
-        if let index = record.requestEntries.lastIndex(where: { $0.role == "main" && ($0.tier ?? tierKey) == tierKey }) {
-            record.requestEntries[index].tokens = max(record.requestEntries[index].tokens, totalTokens)
-            record.requestEntries[index].cost = max(record.requestEntries[index].cost, cost)
-            record.requestEntries[index].baselineCost = max(record.requestEntries[index].baselineCost ?? 0, baselineCost)
-            record.requestEntries[index].savedCost = max(record.requestEntries[index].savedCost ?? 0, savedCost)
-            record.requestEntries[index].model = normalizedModel
-        } else {
-            record.requestEntries.append(RoutingRequestLogEntry(
-                ts: now,
-                role: "main",
-                tier: tierKey,
-                model: normalizedModel,
-                tokens: totalTokens,
-                cost: cost,
-                baselineCost: baselineCost,
-                savedCost: savedCost,
-                scenario: scenarioKey
-            ))
-        }
-        record.requestEntries = Array(record.requestEntries.suffix(120))
-        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) \(normalizedModel) usage · \(tierKey) · \(totalTokens)/\(contextWindow) tokens")
-        record.requestLog = Array(record.requestLog.suffix(100))
-        tokenRecords[sessionID] = record
-        persist()
+        appendRecord(record)
     }
 
     func recordSkillInvocation(
@@ -3971,32 +3985,20 @@ final class RoutingService {
         skill: String
     ) {
         let now = Date()
-        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
-        record.title = title
-        record.projectName = projectName
-        record.lastActiveAt = now
         let normalized = skill.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : skill
-        let requestBucket = RoutingBucket(count: 1, requestCount: 1)
-        record.total = mergeRequest(bucket: record.total, with: requestBucket)
-        record.byModel["skill:\(normalized)"] = merge(
-            bucket: record.byModel["skill:\(normalized)"],
-            with: requestBucket
-        )
-        record.byScenario["skill"] = mergeRequest(bucket: record.byScenario["skill"], with: requestBucket)
-        record.byRole["main"] = mergeRequest(bucket: record.byRole["main"], with: requestBucket)
-        record.requestEntries.append(RoutingRequestLogEntry(
+        appendRecord(RouterStatsRecord(
+            sessionID: sessionID,
+            projectName: projectName,
+            title: title,
             ts: now,
-            role: "main",
+            event: "skill",
+            role: "tool",
+            scenario: "skill",
+            resolvedFrom: "tool",
             model: "skill:\(normalized)",
             query: "Skill invoked",
-            scenario: "skill",
             skill: normalized
         ))
-        record.requestEntries = Array(record.requestEntries.suffix(120))
-        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) skill invoked · \(normalized)")
-        record.requestLog = Array(record.requestLog.suffix(100))
-        tokenRecords[sessionID] = record
-        persist()
     }
 
     func recordSubagentInvocation(
@@ -4008,122 +4010,110 @@ final class RoutingService {
         inputJSON: String
     ) {
         let now = Date()
-        var record = tokenRecords[sessionID] ?? makeSession(id: sessionID, title: title, projectName: projectName, at: now)
-        record.title = title
-        record.projectName = projectName
-        record.lastActiveAt = now
         let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown" : model
-        let tierKey = tier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "COMPLEX" : tier
-        let requestBucket = RoutingBucket(count: 1, requestCount: 1)
-        record.total = mergeRequest(bucket: record.total, with: requestBucket)
-        record.byTier[tierKey] = mergeRequest(bucket: record.byTier[tierKey], with: requestBucket)
-        record.byModel[normalizedModel] = mergeRequest(bucket: record.byModel[normalizedModel], with: requestBucket)
-        record.byScenario["subagent"] = mergeRequest(bucket: record.byScenario["subagent"], with: requestBucket)
-        record.byRole["sub"] = mergeRequest(bucket: record.byRole["sub"], with: requestBucket)
+        let tierKey = canonicalTier(tier)
         let query = Self.subagentQuery(from: inputJSON)
-        record.requestEntries.append(RoutingRequestLogEntry(
+        appendRecord(RouterStatsRecord(
+            sessionID: sessionID,
+            projectName: projectName,
+            title: title,
             ts: now,
+            event: "decision",
             role: "sub",
+            scenario: "subagent",
+            resolvedFrom: "subagent",
             tier: tierKey,
             model: normalizedModel,
-            query: query,
-            scenario: "subagent",
-            route: "background"
+            route: "background",
+            query: query
         ))
-        record.requestEntries = Array(record.requestEntries.suffix(120))
-        record.requestLog.append("\(DateFormatter.routingTime.string(from: now)) subagent -> \(normalizedModel) routed as \(tierKey)")
-        record.requestLog = Array(record.requestLog.suffix(100))
-        tokenRecords[sessionID] = record
-        persist()
     }
 
     func dashboard(projects: [WorkspaceProject], projectFilter: String?) -> RoutingDashboardSnapshot {
-        let filtered = projectFilter == nil ? projects : projects.filter { $0.name == projectFilter }
-        let sessions = filtered.flatMap { project in
-            project.allSessions.map { session in
-                if var recorded = tokenRecords[session.id] {
-                    recorded.title = session.displayTitle
-                    recorded.projectName = project.displayName
-                    recorded.lastActiveAt = max(recorded.lastActiveAt, session.activityDate)
-                    return recorded
-                }
-                return RoutingDashboardSession(
-                    id: session.id,
-                    title: session.displayTitle,
-                    projectName: project.displayName,
-                    lastActiveAt: session.activityDate,
-                    totalTokens: 0,
-                    estimatedCost: 0,
-                    savedCost: 0,
-                    byTier: [:],
-                    byModel: [:],
-                    requestLog: []
-                )
+        let filteredProjects = projectFilter == nil ? projects : projects.filter { $0.name == projectFilter }
+        let projectNameMap = Dictionary(uniqueKeysWithValues: projects.map { ($0.name, $0.displayName) })
+        let acceptedProjectNames: Set<String>? = projectFilter.flatMap { filter in
+            var names: Set<String> = [filter]
+            if let displayName = projectNameMap[filter] {
+                names.insert(displayName)
             }
+            return names
         }
-        let knownIDs = Set(sessions.map(\.id))
-        let orphanRecords = tokenRecords.values.filter { record in
-            !knownIDs.contains(record.id) && (projectFilter == nil || record.projectName == projectFilter)
+        let sessionTitles = Dictionary(uniqueKeysWithValues: projects.flatMap { project in
+            project.allSessions.map { ($0.id, (title: $0.displayTitle, project: project.displayName, date: $0.activityDate)) }
+        })
+        let filteredRecords = orderedRecords().filter { record in
+            guard let acceptedProjectNames else { return true }
+            return acceptedProjectNames.contains(record.projectName)
         }
-        let allSessions = (sessions + orphanRecords).sorted { $0.lastActiveAt > $1.lastActiveAt }
+        let allSessions = buildSessions(from: filteredRecords, sessionTitles: sessionTitles)
+            .sorted { $0.lastActiveAt > $1.lastActiveAt }
+        let projectSummaries = buildProjectSummaries(from: allSessions)
         return RoutingDashboardSnapshot(
-            totalProjects: filtered.count,
+            totalProjects: filteredProjects.count,
             totalSessions: allSessions.count,
+            totalRequests: allSessions.reduce(0) { $0 + $1.total.requestCount },
             routedSessions: allSessions.filter { !$0.byModel.isEmpty || !$0.byTier.isEmpty }.count,
             totalTokens: allSessions.reduce(0) { $0 + $1.totalTokens },
             estimatedCost: allSessions.reduce(0) { $0 + $1.estimatedCost },
             savedCost: allSessions.reduce(0) { $0 + $1.savedCost },
-            recentSessions: Array(allSessions.prefix(40))
+            recentSessions: Array(allSessions.prefix(80)),
+            projects: projectSummaries
         )
     }
 
-    private func estimatedCost(model: String, tokens: Int) -> Double {
-        let perMillion: Double
-        if model.contains("qwen3.6-27b") {
-            perMillion = 0.4
-        } else if model.contains("qwen3.6-35b") {
-            perMillion = 0.2
-        } else {
-            perMillion = 0.8
+    private func estimatedCost(model: String, usage: RouterTokenUsage, values: [String: String]) -> Double {
+        let rate = modelPricingRate(model: model, values: values)
+        return (Double(usage.totalTokens) / 1_000_000) * rate
+    }
+
+    private func baselineCost(usage: RouterTokenUsage, values: [String: String]) -> Double {
+        let baselineModel = values["router.tokenStats.baselineModel"]?.nilIfBlank
+            ?? values["router.stats.baselineModel"]?.nilIfBlank
+            ?? values["agents.main.model"]?.nilIfBlank
+            ?? "default"
+        let rate = modelPricingRate(model: baselineModel, values: values)
+        return (Double(usage.totalTokens) / 1_000_000) * rate
+    }
+
+    private func modelPricingRate(model: String, values: [String: String]) -> Double {
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["router.tokenStats.modelPricing.", "router.stats.modelPricing."] {
+            for (key, value) in values where key.hasPrefix(prefix) && (key.hasSuffix(".inputPerMillion") || key.hasSuffix(".costPerMillion")) {
+                let modelKey = key
+                    .dropFirst(prefix.count)
+                    .replacingOccurrences(of: ".inputPerMillion", with: "")
+                    .replacingOccurrences(of: ".costPerMillion", with: "")
+                if trimmedModel == modelKey || trimmedModel.contains(modelKey),
+                   let rate = Double(value), rate >= 0 {
+                    return rate
+                }
+            }
         }
-        return (Double(tokens) / 1_000_000) * perMillion
+        if let rate = Double(values["router.tokenStats.defaultCostPerMillion"] ?? ""), rate >= 0 {
+            return rate
+        }
+        if trimmedModel.contains("qwen3.6-27b") {
+            return 0.4
+        }
+        if trimmedModel.contains("qwen3.6-35b") || trimmedModel.contains("35b-a3b") {
+            return 0.2
+        }
+        return 0.8
     }
 
-    private func baselineCost(tokens: Int) -> Double {
-        (Double(tokens) / 1_000_000) * 0.8
-    }
-
-    private func merge(bucket existing: RoutingBucket?, with incoming: RoutingBucket) -> RoutingBucket {
-        mergeRequest(bucket: existing, with: incoming)
-    }
-
-    private func mergeRequest(bucket existing: RoutingBucket?, with incoming: RoutingBucket) -> RoutingBucket {
+    private func mergeAggregate(bucket existing: RoutingBucket?, with incoming: RoutingBucket) -> RoutingBucket {
         let current = existing ?? RoutingBucket()
         return RoutingBucket(
             count: current.count + incoming.count,
-            inputTokens: max(current.inputTokens, incoming.inputTokens),
-            outputTokens: max(current.outputTokens, incoming.outputTokens),
-            cacheReadTokens: max(current.cacheReadTokens, incoming.cacheReadTokens),
-            totalTokens: max(current.totalTokens, incoming.totalTokens),
+            inputTokens: current.inputTokens + incoming.inputTokens,
+            outputTokens: current.outputTokens + incoming.outputTokens,
+            cacheReadTokens: current.cacheReadTokens + incoming.cacheReadTokens,
+            totalTokens: current.totalTokens + incoming.totalTokens,
             requestCount: current.requestCount + max(incoming.requestCount, incoming.count),
-            estimatedCost: max(current.estimatedCost, incoming.estimatedCost),
-            baselineCost: max(current.baselineCost, incoming.baselineCost),
-            savedCost: max(current.savedCost, incoming.savedCost)
-        )
-    }
-
-    private func mergeUsage(bucket existing: RoutingBucket?, with incoming: RoutingBucket) -> RoutingBucket {
-        let current = existing ?? RoutingBucket()
-        return RoutingBucket(
-            count: current.count,
-            inputTokens: max(current.inputTokens, incoming.inputTokens),
-            outputTokens: max(current.outputTokens, incoming.outputTokens),
-            cacheReadTokens: max(current.cacheReadTokens, incoming.cacheReadTokens),
-            totalTokens: max(current.totalTokens, incoming.totalTokens),
-            requestCount: current.requestCount,
-            estimatedCost: max(current.estimatedCost, incoming.estimatedCost),
-            baselineCost: max(current.baselineCost, incoming.baselineCost),
-            savedCost: max(current.savedCost, incoming.savedCost)
+            estimatedCost: current.estimatedCost + incoming.estimatedCost,
+            baselineCost: current.baselineCost + incoming.baselineCost,
+            savedCost: current.savedCost + incoming.savedCost
         )
     }
 
@@ -4142,14 +4132,122 @@ final class RoutingService {
         )
     }
 
-    private func latestScenario(in record: RoutingDashboardSession) -> String? {
-        record.requestEntries.last(where: { $0.scenario?.isEmpty == false })?.scenario
-    }
-
     private func sanitizedQuery(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count > 180 else { return trimmed }
         return String(trimmed.prefix(180)) + "…"
+    }
+
+    private func canonicalTier(_ rawValue: String?) -> String {
+        RouterTier(canonicalizing: rawValue).rawValue
+    }
+
+    private func bucket(for record: RouterStatsRecord) -> RoutingBucket {
+        let counts = countsAsRequest(record) ? 1 : 0
+        return RoutingBucket(
+            count: counts,
+            inputTokens: record.usage.inputTokens,
+            outputTokens: record.usage.outputTokens,
+            cacheReadTokens: record.usage.cacheReadTokens,
+            totalTokens: record.usage.totalTokens,
+            requestCount: counts,
+            estimatedCost: record.cost,
+            baselineCost: record.baselineCost,
+            savedCost: record.savedCost
+        )
+    }
+
+    private func countsAsRequest(_ record: RouterStatsRecord) -> Bool {
+        record.event != "skill"
+    }
+
+    private func requestEntry(for record: RouterStatsRecord) -> RoutingRequestLogEntry {
+        RoutingRequestLogEntry(
+            id: record.id,
+            ts: record.ts,
+            role: record.role,
+            tier: record.tier,
+            model: record.model,
+            tokens: record.usage.totalTokens,
+            cost: record.cost,
+            baselineCost: record.baselineCost > 0 ? record.baselineCost : nil,
+            savedCost: record.savedCost > 0 ? record.savedCost : nil,
+            query: record.query,
+            scenario: record.scenario,
+            route: record.route,
+            skill: record.skill
+        )
+    }
+
+    private func buildSessions(
+        from records: [RouterStatsRecord],
+        sessionTitles: [String: (title: String, project: String, date: Date)]
+    ) -> [RoutingDashboardSession] {
+        var sessions: [String: RoutingDashboardSession] = [:]
+        for record in records {
+            let metadata = sessionTitles[record.sessionID]
+            var session = sessions[record.sessionID] ?? makeSession(
+                id: record.sessionID,
+                title: metadata?.title ?? record.title,
+                projectName: metadata?.project ?? record.projectName,
+                at: metadata?.date ?? record.ts
+            )
+            session.title = metadata?.title ?? record.title
+            session.projectName = metadata?.project ?? record.projectName
+            session.lastActiveAt = max(session.lastActiveAt, record.ts)
+            let incoming = bucket(for: record)
+            session.total = mergeAggregate(bucket: session.total, with: incoming)
+            if let tier = record.tier?.nilIfBlank {
+                session.byTier[tier] = mergeAggregate(bucket: session.byTier[tier], with: incoming)
+            }
+            session.byModel[record.model] = mergeAggregate(bucket: session.byModel[record.model], with: incoming)
+            session.byRole[record.role] = mergeAggregate(bucket: session.byRole[record.role], with: incoming)
+            session.byScenario[record.scenario] = mergeAggregate(bucket: session.byScenario[record.scenario], with: incoming)
+            session.requestEntries.append(requestEntry(for: record))
+            session.requestEntries = Array(session.requestEntries.suffix(160))
+            session.requestLog.append(logLine(for: record))
+            session.requestLog = Array(session.requestLog.suffix(140))
+            session.totalTokens = session.total.totalTokens
+            session.estimatedCost = session.total.estimatedCost
+            session.savedCost = session.total.savedCost
+            sessions[record.sessionID] = session
+        }
+        return Array(sessions.values)
+    }
+
+    private func buildProjectSummaries(from sessions: [RoutingDashboardSession]) -> [RoutingDashboardProject] {
+        var summaries: [String: RoutingDashboardProject] = [:]
+        for session in sessions {
+            var summary = summaries[session.projectName] ?? RoutingDashboardProject(
+                id: session.projectName,
+                name: session.projectName,
+                displayName: session.projectName,
+                total: RoutingBucket(),
+                sessions: 0,
+                lastActiveAt: nil
+            )
+            summary.total = mergeAggregate(bucket: summary.total, with: session.total)
+            summary.sessions += 1
+            if let last = summary.lastActiveAt {
+                summary.lastActiveAt = max(last, session.lastActiveAt)
+            } else {
+                summary.lastActiveAt = session.lastActiveAt
+            }
+            summaries[session.projectName] = summary
+        }
+        return summaries.values.sorted {
+            ($0.lastActiveAt ?? .distantPast) > ($1.lastActiveAt ?? .distantPast)
+        }
+    }
+
+    private func logLine(for record: RouterStatsRecord) -> String {
+        let time = DateFormatter.routingTime.string(from: record.ts)
+        if record.event == "skill", let skill = record.skill {
+            return "\(time) skill invoked · \(skill)"
+        }
+        let tier = record.tier.map { " · \($0)" } ?? ""
+        let usage = record.usage.totalTokens > 0 ? " · \(record.usage.totalTokens) tokens" : ""
+        return "\(time) \(record.role) \(record.scenario) -> \(record.model)\(tier)\(usage)"
     }
 
     private static func subagentQuery(from inputJSON: String) -> String {
@@ -4168,27 +4266,106 @@ final class RoutingService {
     }
 
     private func load() {
-        guard let recordsURL,
+        var loadedJSONL = false
+        if let statsURL,
+           let data = try? Data(contentsOf: statsURL),
+           let text = String(data: data, encoding: .utf8) {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            for line in text.split(separator: "\n") {
+                guard let lineData = String(line).data(using: .utf8),
+                      let record = try? decoder.decode(RouterStatsRecord.self, from: lineData) else { continue }
+                ingest(record)
+                loadedJSONL = true
+            }
+        }
+        guard !loadedJSONL,
+              let recordsURL,
               let data = try? Data(contentsOf: recordsURL) else { return }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let decoded = try? decoder.decode([String: RoutingDashboardSession].self, from: data) {
-            tokenRecords = decoded.mapValues { migrateLegacyEntries($0) }
+            for record in decoded.values {
+                for statsRecord in migrateLegacySession(record) {
+                    ingest(statsRecord)
+                }
+            }
+            persistJSONLMigration()
         }
     }
 
-    private func persist() {
-        guard let recordsURL else { return }
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(tokenRecords) else { return }
-        try? data.write(to: recordsURL, options: .atomic)
+    private func appendRecord(_ record: RouterStatsRecord) {
+        ingest(record)
+        appendJSONL(record)
     }
 
-    private func migrateLegacyEntries(_ record: RoutingDashboardSession) -> RoutingDashboardSession {
-        guard record.requestEntries.isEmpty, !record.requestLog.isEmpty else { return record }
-        var migrated = record
+    private func ingest(_ record: RouterStatsRecord) {
+        if recordsByID[record.id] == nil {
+            recordOrder.append(record.id)
+        }
+        recordsByID[record.id] = record
+    }
+
+    private func orderedRecords() -> [RouterStatsRecord] {
+        recordOrder.compactMap { recordsByID[$0] }.sorted { $0.ts < $1.ts }
+    }
+
+    private func appendJSONL(_ record: RouterStatsRecord) {
+        guard let statsURL else { return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard var data = try? encoder.encode(record) else { return }
+        data.append(0x0A)
+        if !FileManager.default.fileExists(atPath: statsURL.path) {
+            FileManager.default.createFile(atPath: statsURL.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: statsURL) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: data)
+    }
+
+    private func persistJSONLMigration() {
+        guard let statsURL, !recordsByID.isEmpty else { return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = orderedRecords().compactMap { try? encoder.encode($0) }
+            .reduce(into: Data()) { partial, line in
+                partial.append(line)
+                partial.append(0x0A)
+            }
+        try? data.write(to: statsURL, options: .atomic)
+    }
+
+    private func migrateLegacySession(_ record: RoutingDashboardSession) -> [RouterStatsRecord] {
+        let entries = record.requestEntries.isEmpty ? migrateLegacyLogEntries(record) : record.requestEntries
+        return entries.map { entry in
+            let usage = RouterTokenUsage(inputTokens: entry.tokens, totalTokens: entry.tokens)
+            return RouterStatsRecord(
+                id: entry.id,
+                sessionID: record.id,
+                turnID: entry.id,
+                projectName: record.projectName,
+                title: record.title,
+                ts: entry.ts,
+                event: entry.tokens > 0 ? "usage" : (entry.skill == nil ? "decision" : "skill"),
+                role: entry.role,
+                scenario: entry.scenario ?? "legacy",
+                resolvedFrom: entry.route ?? entry.scenario ?? "legacy",
+                tier: entry.tier.map(canonicalTier),
+                model: entry.model,
+                route: entry.route,
+                query: entry.query,
+                skill: entry.skill,
+                usage: usage,
+                cost: entry.cost,
+                baselineCost: entry.baselineCost ?? 0,
+                savedCost: entry.savedCost ?? 0
+            )
+        }
+    }
+
+    private func migrateLegacyLogEntries(_ record: RoutingDashboardSession) -> [RoutingRequestLogEntry] {
         var entries: [RoutingRequestLogEntry] = []
         for line in record.requestLog {
             let body = String(line.dropFirst(min(line.count, 9))).trimmingCharacters(in: .whitespaces)
@@ -4214,8 +4391,9 @@ final class RoutingService {
                 let tier = parts.dropFirst().first?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let tokenText = parts.dropFirst(2).first ?? ""
                 let tokens = Int(tokenText.components(separatedBy: "/").first?.filter(\.isNumber) ?? "") ?? 0
-                let cost = estimatedCost(model: model, tokens: tokens)
-                let baseline = baselineCost(tokens: tokens)
+                let usage = RouterTokenUsage(inputTokens: tokens, totalTokens: tokens)
+                let cost = estimatedCost(model: model, usage: usage, values: [:])
+                let baseline = baselineCost(usage: usage, values: [:])
                 if let index = entries.indices.last {
                     entries[index].model = model
                     entries[index].tier = entries[index].tier ?? tier
@@ -4241,7 +4419,7 @@ final class RoutingService {
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
                 entries.append(RoutingRequestLogEntry(
                     ts: record.lastActiveAt,
-                    role: "main",
+                    role: "tool",
                     model: "skill:\(skill)",
                     query: "Skill invoked",
                     scenario: "skill",
@@ -4249,8 +4427,7 @@ final class RoutingService {
                 ))
             }
         }
-        migrated.requestEntries = entries
-        return migrated
+        return entries
     }
 }
 

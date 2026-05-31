@@ -196,6 +196,11 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(values["tools.webSearch.customProvider.auth"], "bearer")
         XCTAssertEqual(values["router.enabled"], "false")
         XCTAssertEqual(values["router.tokenSaver.enabled"], "false")
+        XCTAssertEqual(values["router.tokenSaver.defaultTier"], "medium")
+        XCTAssertEqual(values["router.tokenSaver.judgeTimeoutMs"], "15000")
+        XCTAssertEqual(values["router.tokenStats.defaultCostPerMillion"], "0.8")
+        XCTAssertEqual(values["router.zeroUsageRetry.enabled"], "true")
+        XCTAssertEqual(values["router.transientRetry.enabled"], "true")
         XCTAssertEqual(values["gateway.home"], "/Users/tester/.g9claw/gateway")
         XCTAssertEqual(values["gateway.runtimePaths.generalCwd"], "~/PilotDeck/general")
 
@@ -395,10 +400,10 @@ final class ParityLogicTests: XCTestCase {
             "router.routes.longContext.model",
             "router.routes.webSearch.model",
             "router.tokenSaver.judgeModel",
-            "router.tokenSaver.tiers.SIMPLE.model",
-            "router.tokenSaver.tiers.MEDIUM.model",
-            "router.tokenSaver.tiers.COMPLEX.model",
-            "router.tokenSaver.tiers.REASONING.model",
+            "router.tokenSaver.tiers.simple.model",
+            "router.tokenSaver.tiers.medium.model",
+            "router.tokenSaver.tiers.complex.model",
+            "router.tokenSaver.tiers.reasoning.model",
             "router.autoOrchestrate.mainAgentModel",
         ])
         XCTAssertEqual(NativeModelsConfigFormFields.newEntryScalars(firstProvider: "g9claw"), [
@@ -529,6 +534,21 @@ final class ParityLogicTests: XCTestCase {
     func testNativeRouterAndGatewayConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeRouterConfigFormFields.visiblePaths, [
             "router.enabled",
+            "router.routes.default.model",
+            "router.tokenSaver.enabled",
+            "router.tokenSaver.judgeModel",
+            "router.tokenSaver.defaultTier",
+            "router.tokenSaver.rules",
+            "router.tokenSaver.tiers.simple.model",
+            "router.tokenSaver.tiers.medium.model",
+            "router.tokenSaver.tiers.complex.model",
+            "router.tokenSaver.tiers.reasoning.model",
+            "router.tokenStats.baselineModel",
+            "router.tokenStats.defaultCostPerMillion",
+            "router.zeroUsageRetry.enabled",
+            "router.zeroUsageRetry.maxAttempts",
+            "router.transientRetry.enabled",
+            "router.transientRetry.maxAttempts",
         ])
         XCTAssertEqual(NativeRouterConfigFormFields.routeModelFields.map(\.path), [
             "router.routes.default.model",
@@ -540,8 +560,8 @@ final class ParityLogicTests: XCTestCase {
             "router.routes.webSearch.model",
         ])
         XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.log"))
-        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.default.model"))
-        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenSaver.enabled"))
+        XCTAssertTrue(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.default.model"))
+        XCTAssertTrue(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenSaver.enabled"))
 
         XCTAssertEqual(NativeGatewayConfigFormFields.visiblePaths, [
             "gateway.enabled",
@@ -930,10 +950,11 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(snapshot.providerConfig.model, "main-model")
         XCTAssertEqual(snapshot.contextWindow, 262_144)
         XCTAssertEqual(NativeConfigService.contextWindow(entryID: "router_small", values: values), 64_000)
-        XCTAssertEqual(
-            NativeRouterRuntime.decision(forTier: "SIMPLE", values: values),
-            NativeRouterRuntime.Decision(entryID: "main_large", scenario: "default", tier: nil)
-        )
+        let disabledRouterDecision = NativeRouterRuntime.decision(forTier: "SIMPLE", values: values)
+        XCTAssertEqual(disabledRouterDecision.entryID, "main_large")
+        XCTAssertEqual(disabledRouterDecision.scenario, "default")
+        XCTAssertNil(disabledRouterDecision.tier)
+        XCTAssertEqual(disabledRouterDecision.resolvedFrom, "disabled")
 
         let withoutMainContext = """
         runtime:
@@ -993,6 +1014,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(events, [
             .reasoningDelta("thinking through it"),
             .contentDelta("hello"),
+            .tokenUsage(RouterTokenUsage(inputTokens: 3, outputTokens: 4, cacheReadTokens: 0, totalTokens: 7), contextWindow: 160_000),
             .tokenBudget(used: 7, total: 160_000),
         ])
     }
@@ -1059,6 +1081,30 @@ final class ParityLogicTests: XCTestCase {
         ).shouldRetry)
         XCTAssertFalse(NativeAgentRuntime.retryDecision(
             for: ProviderClientError.httpError(statusCode: 400, body: "bad request"),
+            failedAttempts: 0,
+            policy: policy
+        ).shouldRetry)
+    }
+
+    func testProviderRetryPolicyReadsRouterTransientConfig() {
+        let policy = ProviderRetryPolicy.fromConfig([
+            "router.transientRetry.maxAttempts": "2",
+            "router.transientRetry.baseDelayMs": "50",
+            "router.transientRetry.retry429": "true",
+            "router.transientRetry.retry5xx": "false",
+            "router.transientRetry.retryTransport": "false",
+            "router.transientRetry.enabled": "false",
+        ])
+
+        XCTAssertFalse(policy.enabled)
+        XCTAssertEqual(policy.streamMaxRetries, 2)
+        XCTAssertEqual(policy.requestMaxRetries, 2)
+        XCTAssertEqual(policy.baseDelayMs, 50)
+        XCTAssertTrue(policy.retry429)
+        XCTAssertFalse(policy.retry5xx)
+        XCTAssertFalse(policy.retryTransport)
+        XCTAssertFalse(NativeAgentRuntime.retryDecision(
+            for: ProviderClientError.httpError(statusCode: 429, body: "rate limited"),
             failedAttempts: 0,
             policy: policy
         ).shouldRetry)
@@ -4942,7 +4988,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(generalSkills.contains { $0.scope == "project" })
 
         let context = NativeAgentRuntime.nativeAgentSkillContext(workspacePath: projectRoot.path, isGeneral: true)
-        XCTAssertTrue(context.contains("global skills"))
+        XCTAssertTrue(context.contains("Available skills for this workspace"))
         XCTAssertFalse(context.contains("project-only-skill"))
     }
 
@@ -6375,17 +6421,17 @@ final class ParityLogicTests: XCTestCase {
         """
         let values = NativeConfigService.scalarMap(from: yaml)
 
-        XCTAssertEqual(
-            NativeRouterRuntime.decision(
-                forTier: "SIMPLE",
-                values: values,
-                tokenCount: 70_000,
-                isBackgroundRequest: true,
-                hasWebSearchTools: true,
-                hasThinking: true
-            ),
-            NativeRouterRuntime.Decision(entryID: "long_entry", scenario: "longContext", tier: nil)
+        let longContextDecision = NativeRouterRuntime.decision(
+            forTier: "SIMPLE",
+            values: values,
+            tokenCount: 70_000,
+            isBackgroundRequest: true,
+            hasWebSearchTools: true,
+            hasThinking: true
         )
+        XCTAssertEqual(longContextDecision.entryID, "long_entry")
+        XCTAssertEqual(longContextDecision.scenario, "longContext")
+        XCTAssertNil(longContextDecision.tier)
         XCTAssertEqual(
             NativeRouterRuntime.decision(forTier: "SIMPLE", values: values, isBackgroundRequest: true).scenario,
             "background"
@@ -6638,7 +6684,45 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertEqual(decision.entryID, "simple_entry")
         XCTAssertEqual(decision.scenario, "tokenSaver")
-        XCTAssertEqual(decision.tier, "SIMPLE")
+        XCTAssertEqual(decision.tier, "simple")
+    }
+
+    func testRouterRuntimeMarksAutoOrchestrateExtensionPointForComplexTiers() {
+        let yaml = """
+        models:
+          providers:
+            g9claw:
+              type: openai-chat
+              baseUrl: http://example.local/v1
+          entries:
+            default:
+              provider: g9claw
+              name: default-model
+            complex_entry:
+              provider: g9claw
+              name: complex-model
+            orchestrator_entry:
+              provider: g9claw
+              name: orchestrator-model
+        router:
+          enabled: true
+          tokenSaver:
+            enabled: true
+            tiers:
+              complex:
+                model: complex_entry
+          autoOrchestrate:
+            enabled: true
+            mainAgentModel: orchestrator_entry
+        """
+        let values = NativeConfigService.scalarMap(from: yaml)
+
+        let decision = NativeRouterRuntime.decision(forTier: "complex", values: values)
+
+        XCTAssertEqual(decision.entryID, "orchestrator_entry")
+        XCTAssertEqual(decision.tier, "complex")
+        XCTAssertTrue(decision.orchestrating)
+        XCTAssertEqual(decision.model, "orchestrator-model")
     }
 
     func testRouterRuntimeFallsBackToDefaultForDisabledRouterOrMissingEntries() {
@@ -6667,15 +6751,15 @@ final class ParityLogicTests: XCTestCase {
         """
         let disabledValues = NativeConfigService.scalarMap(from: yaml)
 
-        XCTAssertEqual(
-            NativeRouterRuntime.decision(
-                forTier: "SIMPLE",
-                values: disabledValues,
-                tokenCount: 100_000,
-                hasWebSearchTools: true
-            ),
-            NativeRouterRuntime.Decision(entryID: "default", scenario: "default", tier: nil)
+        let disabledSignalsDecision = NativeRouterRuntime.decision(
+            forTier: "SIMPLE",
+            values: disabledValues,
+            tokenCount: 100_000,
+            hasWebSearchTools: true
         )
+        XCTAssertEqual(disabledSignalsDecision.entryID, "default")
+        XCTAssertEqual(disabledSignalsDecision.scenario, "default")
+        XCTAssertNil(disabledSignalsDecision.tier)
 
         let enabledValues = NativeConfigService.scalarMap(from: yaml.replacingOccurrences(of: "enabled: false", with: "enabled: true"))
         XCTAssertEqual(NativeRouterRuntime.decision(forTier: "SIMPLE", values: enabledValues, hasWebSearchTools: true).entryID, "default")

@@ -469,61 +469,78 @@ final class AppState: ObservableObject {
         memoryProjectNameBySession[sessionID] = selectedProject?.name
         memoryProjectRootBySession[sessionID] = workspacePath
         let nativeConfig = currentNativeConfigSnapshot()
-        let apiKey: String
         let basePrompt = agentPrompt(prompt: prompt, attachments: attachments)
         let nativeConfigValues = nativeConfig?.rawValues ?? [:]
-        let routeTier = RoutingService.classifyTier(prompt: prompt, runMode: requestedRunMode)
-        let visibleTools = NativeToolRouter.openAITools(configValues: nativeConfigValues)
-        let routeSignals = NativeRouterRuntime.requestSignals(
-            prompt: basePrompt,
-            priorMessages: historyBeforeSend,
-            attachments: attachments,
-            tools: visibleTools
-        )
-        let routeDecision = NativeRouterRuntime.decision(forTier: routeTier, values: nativeConfigValues, signals: routeSignals)
-        let routeEntryID = routeDecision.entryID
-        let providerConfig = nativeConfig.flatMap { NativeConfigService.providerConfig(entryID: routeEntryID, values: $0.rawValues) }
-            ?? nativeConfig?.providerConfig
-            ?? settings.providerConfig
-        let requestContextWindow = nativeConfig.map {
-            NativeConfigService.contextWindow(entryID: routeEntryID, values: $0.rawValues) ?? $0.contextWindow
-        } ?? settings.contextWindow
-        do {
-            let keychainValue = try keychain.readSecret(account: providerConfig.secretAccount)
-            apiKey = NativeConfigService.resolvedAPIKey(
-                routeEntryID: routeEntryID,
-                nativeConfig: nativeConfig,
-                keychainValue: keychainValue,
-                apiKeyDraft: apiKeyDraft
-            )
-        } catch {
-            handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID)
-            return
-        }
-        memoryService.updateExtractionRuntime(
-            providerConfig: providerConfig,
-            apiKey: apiKey,
-            timeoutMs: nativeConfig?.apiTimeoutMs ?? settings.apiTimeoutMs
-        )
-
-        let routingProjectName = selectedProject?.displayName ?? "general"
-        routingModelBySession[sessionID] = providerConfig.model
-        routingTierBySession[sessionID] = routeTier
-        routingProjectNameBySession[sessionID] = routingProjectName
-        routingService.recordRequest(
-            sessionID: sessionID,
-            title: selectedSession?.displayTitle ?? promptTitle(from: prompt),
-            projectName: routingProjectName,
-            model: providerConfig.model,
-            route: routeDecision.scenario,
-            tier: routeDecision.tier ?? routeTier,
-            query: prompt
-        )
-
         let runToken = UUID()
         activeRunToken = runToken
         activeAgentTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            let routeTier = await self.routerTier(
+                prompt: prompt,
+                runMode: requestedRunMode,
+                nativeConfig: nativeConfig,
+                nativeConfigValues: nativeConfigValues
+            )
+            let visibleTools = NativeToolRouter.openAITools(configValues: nativeConfigValues)
+            let routeSignals = NativeRouterRuntime.requestSignals(
+                prompt: basePrompt,
+                priorMessages: historyBeforeSend,
+                attachments: attachments,
+                tools: visibleTools
+            )
+            let routeDecision = NativeRouterRuntime.decision(
+                forTier: routeTier,
+                values: nativeConfigValues,
+                signals: routeSignals,
+                sessionID: sessionID
+            )
+            let routeEntryID = routeDecision.entryID
+            let providerConfig = nativeConfig.flatMap { NativeConfigService.providerConfig(entryID: routeEntryID, values: $0.rawValues) }
+                ?? nativeConfig?.providerConfig
+                ?? self.settings.providerConfig
+            let requestContextWindow = nativeConfig.map {
+                NativeConfigService.contextWindow(entryID: routeEntryID, values: $0.rawValues) ?? $0.contextWindow
+            } ?? self.settings.contextWindow
+            let apiKey: String
+            do {
+                let keychainValue = try self.keychain.readSecret(account: providerConfig.secretAccount)
+                apiKey = NativeConfigService.resolvedAPIKey(
+                    routeEntryID: routeEntryID,
+                    nativeConfig: nativeConfig,
+                    keychainValue: keychainValue,
+                    apiKeyDraft: self.apiKeyDraft
+                )
+            } catch {
+                self.handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID, runToken: runToken)
+                return
+            }
+            self.memoryService.updateExtractionRuntime(
+                providerConfig: providerConfig,
+                apiKey: apiKey,
+                timeoutMs: nativeConfig?.apiTimeoutMs ?? self.settings.apiTimeoutMs
+            )
+
+            let routingProjectName = self.selectedProject?.displayName ?? "general"
+            self.routingModelBySession[sessionID] = providerConfig.model
+            self.routingTierBySession[sessionID] = routeDecision.tier ?? routeTier
+            self.routingProjectNameBySession[sessionID] = routingProjectName
+            self.routingService.recordRequest(
+                sessionID: sessionID,
+                title: self.selectedSession?.displayTitle ?? self.promptTitle(from: prompt),
+                projectName: routingProjectName,
+                model: providerConfig.model,
+                route: routeDecision.scenario,
+                tier: routeDecision.tier ?? routeTier,
+                query: prompt,
+                decision: routeDecision,
+                projectPath: workspacePath
+            )
+            let fallbackRoutes = self.routerFallbackRoutes(
+                primaryEntryID: routeEntryID,
+                scenario: routeDecision.scenario,
+                nativeConfig: nativeConfig,
+                values: nativeConfigValues
+            )
             let memoryResult = await self.memoryService.retrieveContextForTurn(
                 query: basePrompt,
                 recentMessages: historyBeforeSend + [userMessage],
@@ -558,6 +575,7 @@ final class AppState: ObservableObject {
                 workspaceContext: self.selectedWorkspaceContext,
                 toolSettings: self.settings.permissions,
                 routerRoute: routeDecision.scenario,
+                fallbackRoutes: fallbackRoutes,
                 nativeConfigValues: nativeConfigValues,
                 permissionHandler: { [weak self] permission in
                     guard let self else { return .deny }
@@ -579,6 +597,205 @@ final class AppState: ObservableObject {
                 self.handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID, runToken: runToken)
             }
         }
+    }
+
+    private func routerTier(
+        prompt: String,
+        runMode: ChatRunMode,
+        nativeConfig: NativeConfigSnapshot?,
+        nativeConfigValues: [String: String]
+    ) async -> String {
+        let fallbackTier = RouterTier(canonicalizing: RoutingService.classifyTier(prompt: prompt, runMode: runMode)).rawValue
+        guard configBool(nativeConfigValues["router.enabled"]),
+              configBool(nativeConfigValues["router.tokenSaver.enabled"]) else {
+            return fallbackTier
+        }
+        let defaultTier = RouterTier(canonicalizing: nativeConfigValues["router.tokenSaver.defaultTier"]).rawValue
+        guard let judged = await judgeRouterTier(prompt: prompt, runMode: runMode, nativeConfig: nativeConfig, values: nativeConfigValues) else {
+            return defaultTier
+        }
+        return judged
+    }
+
+    private func judgeRouterTier(
+        prompt: String,
+        runMode: ChatRunMode,
+        nativeConfig: NativeConfigSnapshot?,
+        values: [String: String]
+    ) async -> String? {
+        let judgeEntryID = values["router.tokenSaver.judgeModel"]?.nilIfBlank
+            ?? values["router.tokenSaver.judge"]?.nilIfBlank
+            ?? nativeConfig?.defaultEntryID
+            ?? "default"
+        guard let providerConfig = NativeConfigService.providerConfig(entryID: judgeEntryID, values: values) ?? nativeConfig?.providerConfig else {
+            return nil
+        }
+        let apiKey: String
+        do {
+            let keychainValue = try keychain.readSecret(account: providerConfig.secretAccount)
+            apiKey = NativeConfigService.resolvedAPIKey(
+                routeEntryID: judgeEntryID,
+                nativeConfig: nativeConfig,
+                keychainValue: keychainValue,
+                apiKeyDraft: apiKeyDraft
+            )
+        } catch {
+            return nil
+        }
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+        do {
+            let endpoint = try ProviderClient.endpointURL(baseURL: providerConfig.baseURL, suffix: "chat/completions")
+            var request = URLRequest(url: endpoint)
+            request.httpMethod = "POST"
+            request.timeoutInterval = TimeInterval(max(Int(values["router.tokenSaver.judgeTimeoutMs"] ?? "") ?? 8_000, 1_000)) / 1_000.0
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            for (key, value) in providerConfig.headers {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+            let body: [String: Any] = [
+                "model": providerConfig.model,
+                "messages": [
+                    [
+                        "role": "system",
+                        "content": routerJudgeSystemPrompt(values: values),
+                    ],
+                    [
+                        "role": "user",
+                        "content": "Run mode: \(runMode.rawValue)\n\nUser request:\n\(prompt)",
+                    ],
+                ],
+                "temperature": 0,
+                "max_tokens": 96,
+                "stream": false,
+            ]
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let statusCode = (response as? HTTPURLResponse)?.statusCode,
+                  200..<300 ~= statusCode,
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = object["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any],
+                  let content = message["content"] as? String else {
+                return nil
+            }
+            return parseRouterJudgeTier(content)
+        } catch {
+            return nil
+        }
+    }
+
+    private func routerJudgeSystemPrompt(values: [String: String]) -> String {
+        let descriptions = RouterTier.allCases.map { tier in
+            let description = values["router.tokenSaver.tiers.\(tier.rawValue).description"]?.nilIfBlank
+                ?? values["router.tokenSaver.tiers.\(tier.rawValue.uppercased()).description"]?.nilIfBlank
+                ?? defaultRouterTierDescription(tier)
+            return "- \(tier.rawValue): \(description)"
+        }.joined(separator: "\n")
+        return """
+        You classify a single agent request for model routing.
+        Return only compact JSON with this shape: {"tier":"simple|medium|complex|reasoning","reason":"short reason"}.
+
+        Tier meanings:
+        \(descriptions)
+
+        Routing rules:
+        \(routerTokenSaverRules(values: values))
+
+        Use complex for multi-step implementation or broad coding work. Use reasoning for deep analysis, architecture, hard debugging, safety/security review, or plan mode.
+        """
+    }
+
+    private func routerTokenSaverRules(values: [String: String]) -> String {
+        if let rules = values["router.tokenSaver.rules"]?.nilIfBlank {
+            return rules
+        }
+        return """
+        - Short prompts (<20 words) -> simple unless they ask to edit/build/code.
+        - Single-file edits, code review, and explanations -> medium.
+        - Multi-file tasks, refactoring, implementation, or website/game creation -> complex.
+        - Novel architecture, deep analysis, hard debugging, or security review -> reasoning.
+        """
+    }
+
+    private func defaultRouterTierDescription(_ tier: RouterTier) -> String {
+        switch tier {
+        case .simple:
+            return "Short Q&A, greetings, file reads, tiny local edits."
+        case .medium:
+            return "Moderate coding, explanations, reviews, single-file changes."
+        case .complex:
+            return "Multi-step coding, larger features, coordinated edits."
+        case .reasoning:
+            return "Deep reasoning, architecture, novel algorithms, security analysis."
+        }
+    }
+
+    private func parseRouterJudgeTier(_ content: String) -> String? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidates = [
+            trimmed,
+            trimmed.replacingOccurrences(of: "```json", with: "").replacingOccurrences(of: "```", with: ""),
+        ]
+        for candidate in candidates {
+            if let data = candidate.data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let tier = object["tier"] as? String {
+                return RouterTier(canonicalizing: tier).rawValue
+            }
+        }
+        let lower = trimmed.lowercased()
+        for tier in RouterTier.allCases where lower.contains(tier.rawValue) {
+            return tier.rawValue
+        }
+        return nil
+    }
+
+    private func routerFallbackRoutes(
+        primaryEntryID: String,
+        scenario: String,
+        nativeConfig: NativeConfigSnapshot?,
+        values: [String: String]
+    ) -> [AgentRouteCandidate] {
+        let routeList = values["router.fallback.\(scenario)"]?.nilIfBlank
+            ?? values["router.fallback.default"]?.nilIfBlank
+            ?? ""
+        let entryIDs = routeList
+            .split { $0 == "," || $0 == " " || $0 == "\n" || $0 == "\t" }
+            .map(String.init)
+            .filter { !$0.isEmpty && $0 != primaryEntryID }
+        var seen: Set<String> = []
+        return entryIDs.compactMap { entryID in
+            guard seen.insert(entryID).inserted,
+                  let providerConfig = NativeConfigService.providerConfig(entryID: entryID, values: values) else {
+                return nil
+            }
+            let keychainValue = try? keychain.readSecret(account: providerConfig.secretAccount)
+            let apiKey = NativeConfigService.resolvedAPIKey(
+                routeEntryID: entryID,
+                nativeConfig: nativeConfig,
+                keychainValue: keychainValue,
+                apiKeyDraft: apiKeyDraft
+            )
+            guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            return AgentRouteCandidate(
+                entryID: entryID,
+                scenario: "fallback",
+                providerConfig: providerConfig,
+                apiKey: apiKey,
+                contextWindow: NativeConfigService.contextWindow(entryID: entryID, values: values)
+                    ?? nativeConfig?.contextWindow
+                    ?? settings.contextWindow
+            )
+        }
+    }
+
+    private func configBool(_ rawValue: String?) -> Bool {
+        let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value == "true" || value == "1" || value == "yes"
     }
 
     private func agentPrompt(prompt: String, attachments: [FileAttachment]) -> String {
@@ -1371,7 +1588,7 @@ final class AppState: ObservableObject {
                     title: sessionTitle(for: targetSessionID),
                     projectName: routingProjectNameBySession[targetSessionID] ?? "general",
                     model: routingModelBySession[targetSessionID] ?? "unknown",
-                    tier: routingTierBySession[targetSessionID] ?? "COMPLEX",
+                    tier: routingTierBySession[targetSessionID] ?? RouterTier.complex.rawValue,
                     inputJSON: inputJSON
                 )
             }
@@ -1418,19 +1635,25 @@ final class AppState: ObservableObject {
                 anchorBlockID: assistantID.uuidString,
                 sessionID: targetSessionID
             )
-        case .tokenBudget(let used, let total):
-            updateTokenBudget(TokenBudget(used: used, total: total, level: ContextBudgetLevel.level(used: used, total: total)), assistantID: assistantID, sessionID: targetSessionID)
+        case .routerFallback(_, let model):
             if let targetSessionID {
-                routingService.recordTokens(
+                routingModelBySession[targetSessionID] = model
+            }
+        case .tokenUsage(let usage, let contextWindow):
+            if let targetSessionID {
+                routingService.recordTokenUsage(
                     sessionID: targetSessionID,
                     title: sessionTitle(for: targetSessionID),
                     projectName: routingProjectNameBySession[targetSessionID] ?? "general",
                     model: routingModelBySession[targetSessionID] ?? settings.providerConfig.model,
-                    tier: routingTierBySession[targetSessionID] ?? "COMPLEX",
-                    totalTokens: used,
-                    contextWindow: total
+                    tier: routingTierBySession[targetSessionID] ?? RouterTier.complex.rawValue,
+                    usage: usage,
+                    contextWindow: contextWindow,
+                    values: currentNativeConfigSnapshot()?.rawValues ?? [:]
                 )
             }
+        case .tokenBudget(let used, let total):
+            updateTokenBudget(TokenBudget(used: used, total: total, level: ContextBudgetLevel.level(used: used, total: total)), assistantID: assistantID, sessionID: targetSessionID)
         case .contextBudget(let used, let total, let level):
             updateTokenBudget(TokenBudget(used: used, total: total, level: level), assistantID: assistantID, sessionID: targetSessionID)
             upsertActivity(
@@ -2283,19 +2506,20 @@ enum G9ClawConfigDefaults {
           tokenSaver:
             enabled: false
             judgeModel: default
-            defaultTier: MEDIUM
+            defaultTier: medium
             subagentPolicy: inherit
+            judgeTimeoutMs: 15000
             tiers:
-              SIMPLE:
+              simple:
                 model: default
                 description: Simple Q&A, file reads, greetings, small edits
-              MEDIUM:
+              medium:
                 model: default
                 description: Moderate coding, single-file edits, explanations
-              COMPLEX:
+              complex:
                 model: default
                 description: Multi-step coding, architecture, large refactors
-              REASONING:
+              reasoning:
                 model: default
                 description: Deep reasoning, novel algorithms, security analysis
             rules:
@@ -2322,6 +2546,18 @@ enum G9ClawConfigDefaults {
             slimSystemPrompt: true
           tokenStats:
             enabled: true
+            baselineModel: default
+            defaultCostPerMillion: 0.8
+          zeroUsageRetry:
+            enabled: true
+            maxAttempts: 1
+          transientRetry:
+            enabled: true
+            maxAttempts: 5
+            baseDelayMs: 200
+            retry429: false
+            retry5xx: true
+            retryTransport: true
           fallback: {}
           httpsProxy: ""
           rewriteSystemPrompt: ""
@@ -2720,12 +2956,9 @@ enum NativeConfigService {
 enum NativeRouterRuntime {
     private static let perMessageOverhead = 4
     private static let multimediaTokens = 2_000
+    nonisolated(unsafe) private static var stickyDecisionsBySession: [String: RouterDecision] = [:]
 
-    struct Decision: Equatable {
-        var entryID: String
-        var scenario: String
-        var tier: String?
-    }
+    typealias Decision = RouterDecision
 
     struct RequestSignals: Equatable {
         var tokenCount: Int
@@ -2745,14 +2978,20 @@ enum NativeRouterRuntime {
         decision(forTier: tier, values: values).entryID
     }
 
-    static func decision(forTier tier: String, values: [String: String], signals: RequestSignals) -> Decision {
+    static func decision(
+        forTier tier: String,
+        values: [String: String],
+        signals: RequestSignals,
+        sessionID: String? = nil
+    ) -> Decision {
         decision(
             forTier: tier,
             values: values,
             tokenCount: signals.tokenCount,
             isBackgroundRequest: signals.isBackgroundRequest,
             hasWebSearchTools: signals.hasWebSearchTools,
-            hasThinking: signals.hasThinking
+            hasThinking: signals.hasThinking,
+            sessionID: sessionID
         )
     }
 
@@ -2785,10 +3024,12 @@ enum NativeRouterRuntime {
         fallbackContextWindow: Int,
         signals: RequestSignals
     ) -> ProviderRoute {
-        let routeDecision = decision(forTier: tier, values: values, signals: signals)
+        var routeDecision = decision(forTier: tier, values: values, signals: signals)
         let providerConfig = NativeConfigService.providerConfig(entryID: routeDecision.entryID, values: values)
             ?? fallbackProviderConfig
         let providerID = NativeConfigService.providerID(entryID: routeDecision.entryID, values: values)
+        routeDecision.providerID = providerID
+        routeDecision.model = providerConfig.model
         let apiKey = values["models.providers.\(providerID).apiKey"]?.nilIfBlank ?? fallbackAPIKey
         let contextWindow = NativeConfigService.contextWindow(entryID: routeDecision.entryID, values: values)
             ?? fallbackContextWindow
@@ -2807,19 +3048,52 @@ enum NativeRouterRuntime {
         lastInputTokens: Int? = nil,
         isBackgroundRequest: Bool = false,
         hasWebSearchTools: Bool = false,
-        hasThinking: Bool = false
+        hasThinking: Bool = false,
+        sessionID: String? = nil
     ) -> Decision {
         let mainRoute = mainEntryID(values: values) ?? "default"
         let defaultRoute = routeEntryID("default", values: values) ?? mainRoute
         guard isEnabled(values["router.enabled"]) else {
-            return Decision(entryID: mainRoute, scenario: "default", tier: nil)
+            return makeDecision(
+                entryID: mainRoute,
+                scenario: "default",
+                tier: nil,
+                resolvedFrom: "disabled",
+                values: values,
+                estimatedInputTokens: tokenCount
+            )
         }
 
-        let normalizedTier = tier.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        if tokenSaverCanRoute(values: values),
-           let tierModel = values["router.tokenSaver.tiers.\(normalizedTier).model"]?.nilIfBlank,
-           values["models.entries.\(tierModel).provider"] != nil {
-            return Decision(entryID: tierModel, scenario: "tokenSaver", tier: normalizedTier)
+        let normalizedTier = RouterTier(canonicalizing: tier).rawValue
+        if tokenSaverCanRoute(values: values) {
+            if let sessionID,
+               normalizedTier == RouterTier.simple.rawValue,
+               let sticky = stickyDecisionsBySession[sessionID],
+               sticky.tier != RouterTier.simple.rawValue {
+                var decision = sticky
+                decision.id = UUID().uuidString
+                decision.stickyHit = true
+                decision.reason = "sticky-session"
+                decision.estimatedInputTokens = tokenCount
+                return remember(decision, sessionID: sessionID)
+            }
+            if let tierModel = tokenSaverEntryID(for: normalizedTier, values: values),
+               values["models.entries.\(tierModel).provider"] != nil {
+                return remember(
+                    applyAutoOrchestrateIfNeeded(
+                        makeDecision(
+                            entryID: tierModel,
+                            scenario: "tokenSaver",
+                            tier: normalizedTier,
+                            resolvedFrom: "tokenSaver",
+                            values: values,
+                            estimatedInputTokens: tokenCount
+                        ),
+                        values: values
+                    ),
+                    sessionID: sessionID
+                )
+            }
         }
 
         let threshold = longContextThreshold(values: values)
@@ -2827,22 +3101,91 @@ enum NativeRouterRuntime {
         let exceedsLastUsage = (lastInputTokens ?? 0) > threshold && tokenCount > 20_000
         if (exceedsCurrentContext || exceedsLastUsage),
            let entryID = routeEntryID("longContext", values: values) {
-            return Decision(entryID: entryID, scenario: "longContext", tier: nil)
+            return remember(makeDecision(entryID: entryID, scenario: "longContext", tier: nil, resolvedFrom: "longContext", values: values, estimatedInputTokens: tokenCount), sessionID: sessionID)
         }
 
         if isBackgroundRequest, let entryID = routeEntryID("background", values: values) {
-            return Decision(entryID: entryID, scenario: "background", tier: nil)
+            return remember(makeDecision(entryID: entryID, scenario: "background", tier: nil, resolvedFrom: "background", values: values, estimatedInputTokens: tokenCount), sessionID: sessionID)
         }
 
         if hasWebSearchTools, let entryID = routeEntryID("webSearch", values: values) {
-            return Decision(entryID: entryID, scenario: "webSearch", tier: nil)
+            return remember(makeDecision(entryID: entryID, scenario: "webSearch", tier: nil, resolvedFrom: "webSearch", values: values, estimatedInputTokens: tokenCount), sessionID: sessionID)
         }
 
         if hasThinking, let entryID = routeEntryID("think", values: values) {
-            return Decision(entryID: entryID, scenario: "think", tier: nil)
+            return remember(makeDecision(entryID: entryID, scenario: "think", tier: nil, resolvedFrom: "think", values: values, estimatedInputTokens: tokenCount), sessionID: sessionID)
         }
 
-        return Decision(entryID: defaultRoute, scenario: "default", tier: nil)
+        return remember(makeDecision(entryID: defaultRoute, scenario: "default", tier: nil, resolvedFrom: "default", values: values, estimatedInputTokens: tokenCount), sessionID: sessionID)
+    }
+
+    static func invalidateSticky(sessionID: String) {
+        stickyDecisionsBySession.removeValue(forKey: sessionID)
+    }
+
+    private static func remember(_ decision: Decision, sessionID: String?) -> Decision {
+        if let sessionID, decision.scenario == "tokenSaver" {
+            stickyDecisionsBySession[sessionID] = decision
+        }
+        return decision
+    }
+
+    private static func applyAutoOrchestrateIfNeeded(_ decision: Decision, values: [String: String]) -> Decision {
+        guard isEnabled(values["router.autoOrchestrate.enabled"]),
+              let tier = decision.tier,
+              autoOrchestrateTriggerTiers(values: values).contains(RouterTier(canonicalizing: tier).rawValue) else {
+            return decision
+        }
+        let entryID = values["router.autoOrchestrate.mainAgentModel"]?.nilIfBlank
+            .flatMap { values["models.entries.\($0).provider"] == nil ? nil : $0 }
+            ?? decision.entryID
+        var next = makeDecision(
+            entryID: entryID,
+            scenario: decision.scenario,
+            tier: tier,
+            resolvedFrom: decision.resolvedFrom,
+            values: values,
+            estimatedInputTokens: decision.estimatedInputTokens
+        )
+        next.id = decision.id
+        next.stickyHit = decision.stickyHit
+        next.orchestrating = true
+        next.reason = [decision.reason, "auto-orchestrate-ready"].compactMap { $0 }.joined(separator: ", ")
+        return next
+    }
+
+    private static func autoOrchestrateTriggerTiers(values: [String: String]) -> Set<String> {
+        if let raw = values["router.autoOrchestrate.triggerTiers"]?.nilIfBlank {
+            let parsed = raw
+                .split { $0 == "," || $0 == " " || $0 == "\n" || $0 == "\t" }
+                .map { RouterTier(canonicalizing: String($0)).rawValue }
+            if !parsed.isEmpty {
+                return Set(parsed)
+            }
+        }
+        return [RouterTier.complex.rawValue, RouterTier.reasoning.rawValue]
+    }
+
+    private static func makeDecision(
+        entryID: String,
+        scenario: String,
+        tier: String?,
+        resolvedFrom: String,
+        values: [String: String],
+        estimatedInputTokens: Int
+    ) -> Decision {
+        let providerID = NativeConfigService.providerID(entryID: entryID, values: values)
+        let model = NativeConfigService.providerConfig(entryID: entryID, values: values)?.model
+        return Decision(
+            entryID: entryID,
+            providerID: providerID,
+            model: model,
+            scenario: scenario,
+            tier: tier,
+            role: "main",
+            resolvedFrom: resolvedFrom,
+            estimatedInputTokens: estimatedInputTokens
+        )
     }
 
     private static func tokenSaverCanRoute(values: [String: String]) -> Bool {
@@ -2854,6 +3197,13 @@ enum NativeRouterRuntime {
             return true
         }
         return values.keys.contains { $0.hasPrefix("router.tokenSaver.tiers.") && $0.hasSuffix(".model") }
+    }
+
+    private static func tokenSaverEntryID(for tier: String, values: [String: String]) -> String? {
+        let canonical = RouterTier(canonicalizing: tier).rawValue
+        let legacy = canonical.uppercased()
+        return values["router.tokenSaver.tiers.\(canonical).model"]?.nilIfBlank
+            ?? values["router.tokenSaver.tiers.\(legacy).model"]?.nilIfBlank
     }
 
     private static func estimatedTokenCount(
