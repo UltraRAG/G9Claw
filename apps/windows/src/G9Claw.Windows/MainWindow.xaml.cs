@@ -6353,16 +6353,16 @@ public sealed partial class MainWindow : Window
         shell.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(304) });
         shell.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1) });
         shell.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var isGeneralContext = State.SelectedProject is null || IsGeneralProject(State.SelectedProject);
 
         var list = new StackPanel { Spacing = 0 };
         var listHeader = new StackPanel
         {
             Padding = new Thickness(12),
-            Spacing = 8,
+            Spacing = 10,
             Children =
             {
-                ScopeIntro(L("Project skills", "\u9879\u76ee\u6280\u80fd"), State.SelectedProject?.DisplayName ?? T("chat.status.selectProject")),
-                ScopeIntro(L("Global skills", "\u5168\u5c40\u6280\u80fd"), L("Shared across General chat and every project", "\u5728\u901a\u7528\u5bf9\u8bdd\u548c\u6240\u6709\u9879\u76ee\u4e2d\u53ef\u7528")),
+                SkillsScopeIntro(isGeneralContext),
                 SearchField(searchBox),
             },
         };
@@ -6371,11 +6371,32 @@ public sealed partial class MainWindow : Window
 
         var listContent = new StackPanel { Padding = new Thickness(12), Spacing = 12 };
         if (!string.IsNullOrWhiteSpace(_toolStatus)) listContent.Children.Add(StatusText(_toolStatus));
-        listContent.Children.Add(SkillScopeSection(L("Project", "\u9879\u76ee"), L("No project skills", "\u6682\u65e0\u9879\u76ee\u6280\u80fd"), FilterSkills(State.Skills.Where(skill => skill.Scope == SkillScope.Project)), selected));
-        listContent.Children.Add(SkillScopeSection(L("Global", "\u5168\u5c40"), L("No global skills", "\u6682\u65e0\u5168\u5c40\u6280\u80fd"), FilterSkills(State.Skills.Where(skill => skill.Scope == SkillScope.User)), selected));
-        if (State.Skills.Count == 0)
+        var projectSkills = FilterSkills(State.Skills.Where(skill => skill.Scope == SkillScope.Project)).ToList();
+        var userSkills = FilterSkills(State.Skills.Where(skill => skill.Scope == SkillScope.User)).ToList();
+        if (!isGeneralContext)
         {
-            listContent.Children.Add(DashedEmptyState(T("skills.emptyTitle"), T("skills.emptyDetail")));
+            listContent.Children.Add(SkillScopeSection(
+                L("Project", "\u9879\u76ee"),
+                L("Only active in this project. Project skills win on name conflicts.", "\u4ec5\u5f53\u524d\u9879\u76ee\u751f\u6548\u3002\u540c\u540d\u65f6\u9879\u76ee\u6280\u80fd\u4f18\u5148\u3002"),
+                L("No project skills", "\u6682\u65e0\u9879\u76ee\u6280\u80fd"),
+                projectSkills,
+                selected));
+        }
+        listContent.Children.Add(SkillScopeSection(
+            L("Global", "\u5168\u5c40"),
+            isGeneralContext
+                ? L("Available to General chat and every project.", "\u4f1a\u5728\u901a\u7528\u5bf9\u8bdd\u548c\u6240\u6709\u9879\u76ee\u91cc\u751f\u6548\u3002")
+                : L("Shared across General chat and every project.", "\u901a\u7528\u5bf9\u8bdd\u548c\u6240\u6709\u9879\u76ee\u5171\u4eab\u3002"),
+            L("No global skills", "\u6682\u65e0\u5168\u5c40\u6280\u80fd"),
+            userSkills,
+            selected));
+        if (State.Skills.Count == 0 || ((!isGeneralContext && projectSkills.Count == 0) && userSkills.Count == 0))
+        {
+            listContent.Children.Add(SkillListEmptyCard(
+                string.IsNullOrWhiteSpace(skillFilter) ? T("skills.emptyTitle") : L("No matching skills", "\u6ca1\u6709\u5339\u914d\u7684\u6280\u80fd"),
+                string.IsNullOrWhiteSpace(skillFilter)
+                    ? T("skills.emptyDetail")
+                    : L("Try a different name, description, slug, or scope.", "\u6362\u4e2a\u540d\u79f0\u3001\u63cf\u8ff0\u3001slug \u6216\u4f5c\u7528\u57df\u518d\u8bd5\u3002")));
         }
 
         list.Children.Add(new ScrollViewer
@@ -6390,7 +6411,7 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(divider, 1);
         shell.Children.Add(divider);
 
-        var detail = new Grid { Padding = new Thickness(18) };
+        var detail = new Grid { Background = Brush("V2BackgroundBrush") };
         detail.Children.Add(selected is null ? EmptyState(T("skills.emptyTitle"), T("skills.emptyDetail"), "Sparkles") : SkillDetail(selected));
         Grid.SetColumn(detail, 2);
         shell.Children.Add(detail);
@@ -6946,28 +6967,56 @@ public sealed partial class MainWindow : Window
         },
     };
 
-    private FrameworkElement ScopeIntro(string title, string detail) => new StackPanel
+    private FrameworkElement SkillsScopeIntro(bool isGeneralContext)
     {
-        Spacing = 2,
-        Children =
+        var iconKey = isGeneralContext ? "globe" : "Folder";
+        var title = isGeneralContext ? SkillScopeLabel(SkillScope.User) : L("Project + Global", "\u9879\u76ee + \u5168\u5c40");
+        var detail = isGeneralContext
+            ? L("Skills added from General are global by design.", "\u4ece\u901a\u7528\u5bf9\u8bdd\u6dfb\u52a0\u7684\u6280\u80fd\u9ed8\u8ba4\u5c31\u662f\u5168\u5c40\u6280\u80fd\u3002")
+            : L("Current project skills override global skills with the same name.", "\u5f53\u524d\u9879\u76ee\u6280\u80fd\u4f1a\u8986\u76d6\u540c\u540d\u5168\u5c40\u6280\u80fd\u3002");
+        var stack = new StackPanel
         {
-            new TextBlock
+            Spacing = 4,
+            Children =
             {
-                Text = title,
-                FontSize = 12,
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = Brush("V2ForegroundBrush"),
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 6,
+                    Children =
+                    {
+                        Icon(iconKey, 12.5, Brush("V2ForegroundBrush")),
+                        new TextBlock
+                        {
+                            Text = title,
+                            FontSize = 12.5,
+                            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                            Foreground = Brush("V2ForegroundBrush"),
+                            VerticalAlignment = VerticalAlignment.Center,
+                        },
+                    },
+                },
+                new TextBlock
+                {
+                    Text = detail,
+                    FontSize = 11.5,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxLines = 3,
+                },
             },
-            new TextBlock
-            {
-                Text = detail,
-                FontSize = 11,
-                Foreground = Brush("V2MutedForegroundBrush"),
-                TextWrapping = TextWrapping.Wrap,
-                MaxLines = 2,
-            },
-        },
-    };
+        };
+
+        return new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = Brush("V2CardSurfaceSubtleBrush"),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(10),
+            Child = stack,
+        };
+    }
 
     private FrameworkElement SearchField(TextBox textBox)
     {
@@ -7018,22 +7067,44 @@ public sealed partial class MainWindow : Window
 
     private static string SkillKey(SkillRecord skill) => $"{skill.Scope}:{skill.Slug}:{skill.SkillFile}";
 
-    private FrameworkElement SkillScopeSection(string title, string emptyTitle, IEnumerable<SkillRecord> skills, SkillRecord? selected)
+    private FrameworkElement SkillScopeSection(string title, string detail, string emptyTitle, IReadOnlyList<SkillRecord> skills, SkillRecord? selected)
     {
         var rows = skills.OrderBy(skill => skill.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        var stack = new StackPanel { Spacing = 6 };
-        stack.Children.Add(new TextBlock
+        var stack = new StackPanel { Spacing = 6, Padding = new Thickness(8, 0, 8, 0) };
+        stack.Children.Add(new StackPanel
         {
-            Text = title.ToUpperInvariant(),
-            FontSize = 11,
-            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
-            Foreground = Brush("V2MutedForegroundBrush"),
-            CharacterSpacing = 44,
+            Spacing = 2,
+            Padding = new Thickness(6, 0, 6, 0),
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = $"{title.ToUpperInvariant()} \u00b7 {rows.Count}",
+                    FontSize = 10.5,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    CharacterSpacing = 36,
+                },
+                new TextBlock
+                {
+                    Text = detail,
+                    FontSize = 10.5,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxLines = 2,
+                },
+            },
         });
 
         if (rows.Count == 0)
         {
-            stack.Children.Add(DashedEmptyState(emptyTitle, L("Install, import, or create a skill to show it here.", "\u5b89\u88c5\u3001\u5bfc\u5165\u6216\u521b\u5efa\u6280\u80fd\u540e\u4f1a\u663e\u793a\u5728\u8fd9\u91cc\u3002")));
+            stack.Children.Add(new TextBlock
+            {
+                Text = emptyTitle,
+                FontSize = 12,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                Padding = new Thickness(6, 8, 6, 8),
+            });
             return stack;
         }
 
@@ -7047,57 +7118,69 @@ public sealed partial class MainWindow : Window
 
     private FrameworkElement SkillListRow(SkillRecord skill, bool isSelected)
     {
+        var content = new StackPanel { Spacing = 4 };
+        var titleRow = new Grid { ColumnSpacing = 6 };
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        titleRow.Children.Add(new TextBlock
+        {
+            Text = skill.Name,
+            FontSize = 13,
+            FontWeight = isSelected ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Medium,
+            Foreground = Brush("V2ForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        if (!string.IsNullOrWhiteSpace(skill.Version))
+        {
+            var version = new Border
+            {
+                CornerRadius = new CornerRadius(999),
+                Background = Brush("V2CardSurfaceSubtleBrush"),
+                Padding = new Thickness(5, 2, 5, 2),
+                Child = new TextBlock
+                {
+                    Text = $"v{skill.Version}",
+                    FontSize = 10,
+                    FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                },
+            };
+            Grid.SetColumn(version, 1);
+            titleRow.Children.Add(version);
+        }
+        content.Children.Add(titleRow);
+        if (!string.IsNullOrWhiteSpace(skill.Description))
+        {
+            content.Children.Add(new TextBlock
+            {
+                Text = skill.Description,
+                FontSize = 11,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxLines = 1,
+            });
+        }
+        content.Children.Add(new TextBlock
+        {
+            Text = skill.Slug,
+            FontSize = 10.5,
+            FontFamily = new FontFamily("Cascadia Mono, Consolas"),
+            Foreground = Brush("V2MutedForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 1,
+        });
+
         var button = new Button
         {
-            MinHeight = 62,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             Background = isSelected ? Brush("V2SelectedBrush") : Transparent,
-            BorderBrush = isSelected ? Brush("V2BorderBrush") : Transparent,
-            BorderThickness = new Thickness(isSelected ? 1 : 0),
+            BorderBrush = Transparent,
+            BorderThickness = new Thickness(0),
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(10, 8, 10, 8),
-            Content = new Grid
-            {
-                ColumnSpacing = 10,
-                ColumnDefinitions =
-                {
-                    new ColumnDefinition { Width = GridLength.Auto },
-                    new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
-                },
-                Children =
-                {
-                    Icon("Sparkles", 14, Brush("V2MutedForegroundBrush")),
-                    new StackPanel
-                    {
-                        Spacing = 2,
-                        Children =
-                        {
-                            new TextBlock
-                            {
-                                Text = skill.Name,
-                                FontSize = 13,
-                                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                                Foreground = Brush("V2ForegroundBrush"),
-                                TextTrimming = TextTrimming.CharacterEllipsis,
-                            },
-                            new TextBlock
-                            {
-                                Text = string.IsNullOrWhiteSpace(skill.Description) ? skill.SkillFile : skill.Description,
-                                FontSize = 12,
-                                Foreground = Brush("V2MutedForegroundBrush"),
-                                TextWrapping = TextWrapping.Wrap,
-                                MaxLines = 2,
-                            },
-                        },
-                    },
-                },
-            },
+            Content = content,
         };
-        if (button.Content is Grid grid)
-        {
-            Grid.SetColumn((FrameworkElement)grid.Children[1], 1);
-        }
         button.Click += (_, _) =>
         {
             _selectedSkillKey = SkillKey(skill);
@@ -7105,6 +7188,32 @@ public sealed partial class MainWindow : Window
         };
         return button;
     }
+
+    private FrameworkElement SkillListEmptyCard(string title, string detail) => new Border
+    {
+        CornerRadius = new CornerRadius(8),
+        Background = Brush("V2CardSurfaceSubtleBrush"),
+        BorderBrush = Brush("V2BorderBrush"),
+        BorderThickness = new Thickness(1),
+        Margin = new Thickness(10, 0, 10, 0),
+        Padding = new Thickness(14),
+        Child = new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                IconText("Sparkles", title, 13, Brush("V2ForegroundBrush")),
+                new TextBlock
+                {
+                    Text = detail,
+                    FontSize = 12,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxLines = 3,
+                },
+            },
+        },
+    };
 
     private FrameworkElement SkillDetail(SkillRecord skill)
     {
@@ -7126,7 +7235,7 @@ public sealed partial class MainWindow : Window
         var header = new StackPanel
         {
             Spacing = 12,
-            Padding = new Thickness(0, 0, 0, 14),
+            Padding = new Thickness(18, 14, 18, 14),
         };
         var headerGrid = new Grid
         {
@@ -7144,8 +7253,8 @@ public sealed partial class MainWindow : Window
             Height = 42,
             CornerRadius = new CornerRadius(10),
             Background = Brush("V2CardSurfaceSubtleBrush"),
-            BorderBrush = scopeBrush,
-            BorderThickness = new Thickness(1),
+            BorderBrush = Transparent,
+            BorderThickness = new Thickness(0),
             Child = Icon("Sparkles", 17, scopeBrush),
         });
         var titleBlock = new StackPanel { Spacing = 5, MinWidth = 0 };
@@ -7236,6 +7345,7 @@ public sealed partial class MainWindow : Window
         var footer = new Grid
         {
             Height = 44,
+            Padding = new Thickness(18, 0, 18, 0),
             ColumnSpacing = 8,
             ColumnDefinitions =
             {
