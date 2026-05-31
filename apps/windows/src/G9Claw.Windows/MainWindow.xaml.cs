@@ -4619,7 +4619,7 @@ public sealed partial class MainWindow : Window
 
         var root = new Grid { Background = Brush("V2BackgroundBrush") };
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.46, GridUnitType.Star) });
-        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.54, GridUnitType.Star) });
 
         var left = new Grid { Background = Brush("V2BackgroundBrush") };
@@ -4661,7 +4661,7 @@ public sealed partial class MainWindow : Window
         left.Children.Add(scroller);
         root.Children.Add(left);
 
-        var divider = new Border { Background = Brush("V2BorderBrush") };
+        var divider = SplitDivider();
         Grid.SetColumn(divider, 1);
         root.Children.Add(divider);
 
@@ -4781,6 +4781,21 @@ public sealed partial class MainWindow : Window
         return button;
     }
 
+    private FrameworkElement SplitDivider() => new Grid
+    {
+        Width = 12,
+        Background = Transparent,
+        Children =
+        {
+            new Border
+            {
+                Width = 1,
+                Background = Brush("V2BorderBrush"),
+                HorizontalAlignment = HorizontalAlignment.Center,
+            },
+        },
+    };
+
     private FrameworkElement FileRow(WorkspaceFile file)
     {
         var isSelected = _selectedFilePath is not null &&
@@ -4867,7 +4882,6 @@ public sealed partial class MainWindow : Window
             var header = new Grid
             {
                 Padding = new Thickness(14, 10, 14, 10),
-                BorderBrush = Brush("V2BorderBrush"),
             };
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -4952,7 +4966,12 @@ public sealed partial class MainWindow : Window
                 header.Children.Add(actionPanel);
             }
 
-            root.Children.Add(header);
+            root.Children.Add(new Border
+            {
+                BorderBrush = Brush("V2BorderBrush"),
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                Child = header,
+            });
 
             FrameworkElement content = preview.Kind switch
             {
