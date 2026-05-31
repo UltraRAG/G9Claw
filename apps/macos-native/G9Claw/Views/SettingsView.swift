@@ -650,14 +650,102 @@ private struct SettingsContentView: View {
             modelsConfigContent
         case .alwaysOn:
             VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: state.t(.discoveryTrigger)) {
+                SettingsSectionBlock(
+                    title: state.t(.alwaysOn),
+                    detail: local(
+                        chinese: "配置原生 Always-On 后台发现、隔离工作区、执行预算和项目启用范围。",
+                        english: "Configure native Always-On discovery, isolated workspaces, execution budgets, and project opt-in."
+                    )
+                ) {
                     SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.discoveryTriggerDetail)) {
+                        SettingsRowBlock(
+                            title: state.t(.enabled),
+                            detail: local(
+                                chinese: "总开关。关闭后不会启动任何 Always-On 调度。",
+                                english: "Master switch. When off, no Always-On scheduler runs."
+                            )
+                        ) {
                             WebSettingsToggle(isOn: configBoolBinding(NativeAlwaysOnConfigFormFields.enabledPath))
                         }
+                    }
+                }
+                SettingsSectionBlock(
+                    title: local(chinese: "Trigger", english: "Trigger"),
+                    detail: local(chinese: "控制自动发现何时触发。", english: "Controls when automatic discovery is allowed to fire.")
+                ) {
+                    SettingsCardBlock(divided: true) {
+                        SettingsRowBlock(
+                            title: local(chinese: "自动发现", english: "Auto Discovery"),
+                            detail: state.t(.discoveryTriggerDetail)
+                        ) {
+                            WebSettingsToggle(isOn: configBoolBinding(NativeAlwaysOnConfigFormFields.triggerEnabledPath))
+                        }
                         ConfigGrid {
-                            ForEach(NativeAlwaysOnConfigFormFields.textFields) { field in
-                                SettingsTextField(state.t(field.label), text: configBinding(field.path))
+                            ForEach(NativeAlwaysOnConfigFormFields.triggerFields) { field in
+                                SettingsTextField(
+                                    local(chinese: field.chineseLabel, english: field.englishLabel),
+                                    text: configBinding(field.path)
+                                )
+                            }
+                        }
+                        .padding(14)
+                    }
+                }
+                SettingsSectionBlock(
+                    title: local(chinese: "Dormancy", english: "Dormancy"),
+                    detail: local(chinese: "没有新信号时进入休眠，避免无意义反复触发。", english: "Sleep after no-plan runs until a new workspace signal appears.")
+                ) {
+                    SettingsCardBlock(divided: true) {
+                        SettingsRowBlock(
+                            title: state.t(.enabled),
+                            detail: local(chinese: "发现阶段没有产出计划后启用文件信号唤醒。", english: "Wake on file signals after discovery produces no plan.")
+                        ) {
+                            WebSettingsToggle(isOn: configBoolBinding(NativeAlwaysOnConfigFormFields.dormancyEnabledPath, defaultValue: true))
+                        }
+                        ConfigGrid {
+                            ForEach(NativeAlwaysOnConfigFormFields.dormancyFields) { field in
+                                SettingsTextField(
+                                    local(chinese: field.chineseLabel, english: field.englishLabel),
+                                    text: configBinding(field.path)
+                                )
+                            }
+                        }
+                        .padding(14)
+                    }
+                }
+                SettingsSectionBlock(
+                    title: local(chinese: "Workspace", english: "Workspace"),
+                    detail: local(chinese: "后台执行使用隔离工作区，优先 git worktree，失败时 snapshot-copy。", english: "Background execution uses isolated workspaces: git worktree first, snapshot-copy fallback.")
+                ) {
+                    SettingsCardBlock(divided: true) {
+                        SettingsRowBlock(
+                            title: local(chinese: "Git LFS", english: "Git LFS"),
+                            detail: local(chinese: "创建 worktree 后是否尝试拉取 LFS 对象。", english: "Whether to fetch LFS objects after preparing a worktree.")
+                        ) {
+                            WebSettingsToggle(isOn: configBoolBinding(NativeAlwaysOnConfigFormFields.gitLfsPath))
+                        }
+                        ConfigGrid {
+                            ForEach(NativeAlwaysOnConfigFormFields.workspaceFields) { field in
+                                SettingsTextField(
+                                    local(chinese: field.chineseLabel, english: field.englishLabel),
+                                    text: configBinding(field.path)
+                                )
+                            }
+                        }
+                        .padding(14)
+                    }
+                }
+                SettingsSectionBlock(
+                    title: local(chinese: "Execution", english: "Execution"),
+                    detail: local(chinese: "限制后台执行的 turn、工具调用和超时。", english: "Limits unattended turns, tool calls, and timeout.")
+                ) {
+                    SettingsCardBlock(divided: true) {
+                        ConfigGrid {
+                            ForEach(NativeAlwaysOnConfigFormFields.executionFields) { field in
+                                SettingsTextField(
+                                    local(chinese: field.chineseLabel, english: field.englishLabel),
+                                    text: configBinding(field.path)
+                                )
                             }
                         }
                         .padding(14)
@@ -1974,6 +2062,14 @@ struct NativeConfigTextFieldSpec: Hashable, Identifiable {
     var id: String { path }
 }
 
+struct NativeAlwaysOnConfigFieldSpec: Hashable, Identifiable {
+    let path: String
+    let englishLabel: String
+    let chineseLabel: String
+
+    var id: String { path }
+}
+
 enum NativeRuntimeConfigFormFields {
     static let workspacesRootPath = "runtime.workspacesRoot"
     static let generalWorkspacePath = "gateway.runtimePaths.generalCwd"
@@ -1988,13 +2084,38 @@ enum NativeRuntimeConfigFormFields {
 }
 
 enum NativeAlwaysOnConfigFormFields {
-    static let enabledPath = "alwaysOn.discovery.trigger.enabled"
-    static let textFields: [NativeConfigTextFieldSpec] = [
-        NativeConfigTextFieldSpec(label: .tickIntervalMinutes, path: "alwaysOn.discovery.trigger.tickIntervalMinutes"),
-        NativeConfigTextFieldSpec(label: .cooldownMinutes, path: "alwaysOn.discovery.trigger.cooldownMinutes"),
-        NativeConfigTextFieldSpec(label: .dailyBudget, path: "alwaysOn.discovery.trigger.dailyBudget"),
+    static let enabledPath = "alwaysOn.enabled"
+    static let triggerEnabledPath = "alwaysOn.trigger.enabled"
+    static let dormancyEnabledPath = "alwaysOn.dormancy.enabled"
+    static let gitLfsPath = "alwaysOn.workspace.gitLfs"
+    static let triggerFields: [NativeAlwaysOnConfigFieldSpec] = [
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.tickIntervalMinutes", englishLabel: "Tick Interval (minutes)", chineseLabel: "检查间隔（分钟）"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.cooldownMinutes", englishLabel: "Cooldown (minutes)", chineseLabel: "冷却时间（分钟）"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.dailyBudget", englishLabel: "Daily Budget", chineseLabel: "每日运行预算"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.heartbeatStaleSeconds", englishLabel: "Presence Stale Seconds", chineseLabel: "状态过期秒数"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.recentUserMsgMinutes", englishLabel: "Recent User Message Window", chineseLabel: "近期用户消息窗口（分钟）"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.preferChannel", englishLabel: "Preferred Channel", chineseLabel: "优先通道"),
     ]
-    static let visiblePaths = [enabledPath] + textFields.map(\.path)
+    static let dormancyFields: [NativeAlwaysOnConfigFieldSpec] = [
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.dormancy.debounceMs", englishLabel: "Debounce (ms)", chineseLabel: "防抖时间（毫秒）"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.dormancy.ignoreGlobs", englishLabel: "Ignored Globs", chineseLabel: "忽略路径 Glob"),
+    ]
+    static let workspaceFields: [NativeAlwaysOnConfigFieldSpec] = [
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.workspace.gitWorktreeBaseDir", englishLabel: "Worktree Base Dir", chineseLabel: "Worktree 根目录"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.workspace.snapshotBaseDir", englishLabel: "Snapshot Base Dir", chineseLabel: "Snapshot 根目录"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.workspace.snapshotMaxBytes", englishLabel: "Snapshot Max Bytes", chineseLabel: "Snapshot 最大字节数"),
+    ]
+    static let executionFields: [NativeAlwaysOnConfigFieldSpec] = [
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.execution.maxTurns", englishLabel: "Max Turns", chineseLabel: "最大 Turn 数"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.execution.maxToolCalls", englishLabel: "Max Tool Calls", chineseLabel: "最大工具调用数"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.execution.timeoutMinutes", englishLabel: "Timeout (minutes)", chineseLabel: "超时（分钟）"),
+    ]
+    static let visiblePaths = [
+        enabledPath,
+        triggerEnabledPath,
+        dormancyEnabledPath,
+        gitLfsPath,
+    ] + triggerFields.map(\.path) + dormancyFields.map(\.path) + workspaceFields.map(\.path) + executionFields.map(\.path)
 }
 
 enum NativeSearchConfigFormFields {
@@ -2487,7 +2608,7 @@ enum AlwaysOnProjectConfig {
     static func isEnabled(yaml: String, projectRoot rawRoot: String) -> Bool {
         let root = projectRoot(rawRoot)
         guard !root.isEmpty else { return false }
-        let value = LegacyConfigLoader.scalarMap(from: yaml)["alwaysOn.discovery.projects.\(root).enabled"]?.lowercased()
+        let value = LegacyConfigLoader.scalarMap(from: yaml)["alwaysOn.projects.\(root).enabled"]?.lowercased()
         return value == "true" || value == "1" || value == "yes"
     }
 
@@ -2495,7 +2616,7 @@ enum AlwaysOnProjectConfig {
         let root = projectRoot(rawRoot)
         guard !root.isEmpty else { return yaml }
         return YAMLScalarEditor.setObjectScalar(
-            parentPath: "alwaysOn.discovery.projects",
+            parentPath: "alwaysOn.projects",
             id: root,
             key: "enabled",
             value: enabled ? "true" : "false",

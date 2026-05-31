@@ -274,13 +274,16 @@ final class ParityLogicTests: XCTestCase {
                 enabled: true
                 tickIntervalMinutes: 15
                 cooldownMinutes: 45
+                preferClient: webui
         """
 
         let values = NativeConfigService.scalarMap(from: yaml)
 
-        XCTAssertEqual(values["alwaysOn.discovery.trigger.enabled"], "true")
-        XCTAssertEqual(values["alwaysOn.discovery.trigger.tickIntervalMinutes"], "15")
-        XCTAssertEqual(values["alwaysOn.discovery.trigger.cooldownMinutes"], "45")
+        XCTAssertEqual(values["alwaysOn.trigger.enabled"], "true")
+        XCTAssertEqual(values["alwaysOn.trigger.tickIntervalMinutes"], "15")
+        XCTAssertEqual(values["alwaysOn.trigger.cooldownMinutes"], "45")
+        XCTAssertEqual(values["alwaysOn.trigger.preferChannel"], "web")
+        XCTAssertNil(values["alwaysOn.discovery.trigger.enabled"])
         XCTAssertNil(values["agents.alwaysOn.discovery.trigger.enabled"])
     }
 
@@ -293,16 +296,16 @@ final class ParityLogicTests: XCTestCase {
                 enabled: true
                 tickIntervalMinutes: 15
         alwaysOn:
-          discovery:
-            trigger:
-              enabled: false
-              tickIntervalMinutes: 3
+          trigger:
+            enabled: false
+            tickIntervalMinutes: 3
         """
 
         let values = NativeConfigService.scalarMap(from: yaml)
 
-        XCTAssertEqual(values["alwaysOn.discovery.trigger.enabled"], "false")
-        XCTAssertEqual(values["alwaysOn.discovery.trigger.tickIntervalMinutes"], "3")
+        XCTAssertEqual(values["alwaysOn.trigger.enabled"], "false")
+        XCTAssertEqual(values["alwaysOn.trigger.tickIntervalMinutes"], "3")
+        XCTAssertNil(values["alwaysOn.discovery.trigger.enabled"])
         XCTAssertNil(values["agents.alwaysOn.discovery.trigger.enabled"])
     }
 
@@ -521,13 +524,25 @@ final class ParityLogicTests: XCTestCase {
 
     func testNativeAlwaysOnConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeAlwaysOnConfigFormFields.visiblePaths, [
-            "alwaysOn.discovery.trigger.enabled",
-            "alwaysOn.discovery.trigger.tickIntervalMinutes",
-            "alwaysOn.discovery.trigger.cooldownMinutes",
-            "alwaysOn.discovery.trigger.dailyBudget",
+            "alwaysOn.enabled",
+            "alwaysOn.trigger.enabled",
+            "alwaysOn.dormancy.enabled",
+            "alwaysOn.workspace.gitLfs",
+            "alwaysOn.trigger.tickIntervalMinutes",
+            "alwaysOn.trigger.cooldownMinutes",
+            "alwaysOn.trigger.dailyBudget",
+            "alwaysOn.trigger.heartbeatStaleSeconds",
+            "alwaysOn.trigger.recentUserMsgMinutes",
+            "alwaysOn.trigger.preferChannel",
+            "alwaysOn.dormancy.debounceMs",
+            "alwaysOn.dormancy.ignoreGlobs",
+            "alwaysOn.workspace.gitWorktreeBaseDir",
+            "alwaysOn.workspace.snapshotBaseDir",
+            "alwaysOn.workspace.snapshotMaxBytes",
+            "alwaysOn.execution.maxTurns",
+            "alwaysOn.execution.maxToolCalls",
+            "alwaysOn.execution.timeoutMinutes",
         ])
-        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.discovery.trigger.heartbeatStaleSeconds"))
-        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.discovery.trigger.recentUserMsgMinutes"))
         XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.discovery.trigger.preferClient"))
     }
 
@@ -3514,7 +3529,29 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(history.first?.id, run.id)
         XCTAssertEqual(history.first?.sessionId, "session-run")
         XCTAssertTrue(history.first?.outputLog.contains("Started native Always-On plan run") == true)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(".g9claw/always-on", isDirectory: true).path))
+
+        let discoveryRun = try service.startDiscoveryRun(
+            projectRoot: root.path,
+            title: "Manual discovery",
+            sessionId: "session-discovery",
+            runID: "discovery-roundtrip"
+        )
+        try service.finishDiscoveryRun(
+            run: discoveryRun,
+            projectRoot: root.path,
+            status: .noPlan,
+            sessionId: "session-discovery",
+            outputLog: "No plan needed.",
+            metadata: ["trigger": "manual"]
+        )
+        let discoveryHistory = try XCTUnwrap(service.runHistory(projectRoot: root.path).first { $0.id == "discovery-roundtrip" })
+        XCTAssertEqual(discoveryHistory.kind, "discovery")
+        XCTAssertEqual(discoveryHistory.status, .noPlan)
+        XCTAssertEqual(discoveryHistory.sessionId, "session-discovery")
+        XCTAssertEqual(discoveryHistory.metadata["trigger"], "manual")
+        XCTAssertEqual(discoveryHistory.outputLog, "No plan needed.")
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".g9claw/always-on", isDirectory: true).path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".claude", isDirectory: true).path))
     }
 
@@ -3761,6 +3798,7 @@ final class ParityLogicTests: XCTestCase {
                 status: status,
                 approvalMode: "manual",
                 planFilePath: ".g9claw/always-on/plans/\(id).md",
+                contextRefs: nil,
                 createdAt: base.addingTimeInterval(-1_000),
                 updatedAt: base.addingTimeInterval(updatedOffset),
                 executionSessionId: executionSessionId,
@@ -3867,6 +3905,7 @@ final class ParityLogicTests: XCTestCase {
             status: .ready,
             approvalMode: "manual",
             planFilePath: ".g9claw/always-on/plans/plan-a.md",
+            contextRefs: nil,
             createdAt: createdAt,
             updatedAt: triggeredAt,
             executionSessionId: nil,
@@ -4215,8 +4254,10 @@ final class ParityLogicTests: XCTestCase {
             relativeTranscriptPath: nil,
             transcriptKey: nil
         )
-        XCTAssertFalse(NativeAlwaysOnCronDetailPresentation.canOpenLatestRunSession(noTargetJob))
-        XCTAssertNil(NativeAlwaysOnCronDetailPresentation.latestRunTarget(noTargetJob))
+        XCTAssertTrue(NativeAlwaysOnCronDetailPresentation.canOpenLatestRunSession(noTargetJob))
+        let originTarget = try XCTUnwrap(NativeAlwaysOnCronDetailPresentation.latestRunTarget(noTargetJob))
+        XCTAssertEqual(originTarget.kind, .origin)
+        XCTAssertEqual(originTarget.sessionId, "session-b")
         XCTAssertEqual(NativeAlwaysOnCronDetailPresentation.latestRunTargetSummary(noTargetJob), "# Cron Alpha\nRun diagnostics")
     }
 
@@ -4561,6 +4602,7 @@ final class ParityLogicTests: XCTestCase {
                     status: .ready,
                     approvalMode: "manual",
                     planFilePath: ".g9claw/always-on/plans/plan-a.md",
+                    contextRefs: nil,
                     createdAt: now.addingTimeInterval(-120),
                     updatedAt: now.addingTimeInterval(-60),
                     executionSessionId: nil,
@@ -4800,28 +4842,27 @@ final class ParityLogicTests: XCTestCase {
         let enabledValues = NativeConfigService.scalarMap(from: enabled)
 
         XCTAssertEqual(AlwaysOnProjectConfig.projectRoot("/workspace/a/"), "/workspace/a")
-        XCTAssertEqual(enabledValues["alwaysOn.discovery.projects./workspace/a.enabled"], "true")
+        XCTAssertEqual(enabledValues["alwaysOn.projects./workspace/a.enabled"], "true")
         XCTAssertTrue(AlwaysOnProjectConfig.isEnabled(yaml: enabled, projectRoot: "/workspace/a/"))
 
         let disabled = AlwaysOnProjectConfig.setEnabled(in: enabled, projectRoot: "/workspace/a/", enabled: false)
         let disabledValues = NativeConfigService.scalarMap(from: disabled)
 
-        XCTAssertEqual(disabledValues["alwaysOn.discovery.projects./workspace/a.enabled"], "false")
+        XCTAssertEqual(disabledValues["alwaysOn.projects./workspace/a.enabled"], "false")
         XCTAssertFalse(AlwaysOnProjectConfig.isEnabled(yaml: disabled, projectRoot: "/workspace/a/"))
     }
 
     func testYAMLScalarEditorSetsObjectScalarForDottedProjectRootKeys() {
         let yaml = """
         alwaysOn:
-          discovery:
-            projects:
-              /Users/tester/workspace/app.one:
-                enabled: true
-                mode: manual
+          projects:
+            /Users/tester/workspace/app.one:
+              enabled: true
+              mode: manual
         """
 
         let updated = YAMLScalarEditor.setObjectScalar(
-            parentPath: "alwaysOn.discovery.projects",
+            parentPath: "alwaysOn.projects",
             id: "/Users/tester/workspace/app.one",
             key: "enabled",
             value: "false",
@@ -4829,8 +4870,8 @@ final class ParityLogicTests: XCTestCase {
         )
         let values = NativeConfigService.scalarMap(from: updated)
 
-        XCTAssertEqual(values["alwaysOn.discovery.projects./Users/tester/workspace/app.one.enabled"], "false")
-        XCTAssertEqual(values["alwaysOn.discovery.projects./Users/tester/workspace/app.one.mode"], "manual")
+        XCTAssertEqual(values["alwaysOn.projects./Users/tester/workspace/app.one.enabled"], "false")
+        XCTAssertEqual(values["alwaysOn.projects./Users/tester/workspace/app.one.mode"], "manual")
         XCTAssertFalse(updated.contains("app:\n"))
     }
 
