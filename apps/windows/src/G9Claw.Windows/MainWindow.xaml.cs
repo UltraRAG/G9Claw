@@ -5822,14 +5822,11 @@ public sealed partial class MainWindow : Window
                     FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                     Foreground = Brush("V2ForegroundBrush"),
                 },
-                new TextBlock
-                {
-                    Text = isProjectScoped && selectedProject is not null
+                RoutingHeaderSubtitle(
+                    isProjectScoped && selectedProject is not null
                         ? (IsChineseUi() ? $"{selectedProject.DisplayName} \u7684\u8def\u7531\u7edf\u8ba1" : $"{selectedProject.DisplayName} routing stats")
                         : L("Model routing, token saver, request log, and cost summary.", "\u6a21\u578b\u8def\u7531\u3001token saver\u3001\u8bf7\u6c42\u65e5\u5fd7\u548c\u6210\u672c\u6c47\u603b\u3002"),
-                    FontSize = 13,
-                    Foreground = Brush("V2MutedForegroundBrush"),
-                },
+                    selectedProject is not null && !isProjectScoped),
             },
         });
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -5837,8 +5834,8 @@ public sealed partial class MainWindow : Window
         {
             actions.Children.Add(InlineSegmentedControl(new[]
             {
-                (L("Project", "\u9879\u76ee"), !_routingShowsTotalDashboard, (Action)(() => { _routingShowsTotalDashboard = false; RenderAll(); })),
-                (L("Total", "\u603b\u8ba1"), _routingShowsTotalDashboard, (Action)(() => { _routingShowsTotalDashboard = true; RenderAll(); })),
+                (L("Project", "\u9879\u76ee"), !_routingShowsTotalDashboard, (Action)(() => { _routingShowsTotalDashboard = false; _expandedRoutingSessions.Clear(); RenderAll(); })),
+                (L("Total", "\u603b\u8ba1"), _routingShowsTotalDashboard, (Action)(() => { _routingShowsTotalDashboard = true; _expandedRoutingSessions.Clear(); RenderAll(); })),
             }));
         }
         actions.Children.Add(ToolbarButton("Refresh", T("common.refresh"), RenderAll));
@@ -5884,13 +5881,6 @@ public sealed partial class MainWindow : Window
 
             panel.Children.Add(ToolSection(isChinese ? "\u4f1a\u8bdd" : T("routing.recentRoutes"), recent));
 
-            var models = new StackPanel { Spacing = 8 };
-            foreach (var model in snapshot.ModelBreakdown)
-            {
-                models.Children.Add(ListCard("Database", $"{model.Provider} / {model.Model}", Tf("routing.modelBreakdownDetail", model.Requests, model.TotalTokens.ToString("N0"), Money(model.SavedCost))));
-            }
-            panel.Children.Add(ToolSection(T("routing.modelBreakdown"), models));
-
             panel.Children.Add(RoutingCostSummaryCard(snapshot.EstimatedCost, baseline, snapshot.SavedCost, snapshot.RequestCount, snapshot.TotalTokens, savingsRate));
         }
 
@@ -5901,6 +5891,30 @@ public sealed partial class MainWindow : Window
             Content = panel,
         });
         return root;
+    }
+
+    private FrameworkElement RoutingHeaderSubtitle(string text, bool showTotalBadge)
+    {
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = text,
+                    FontSize = 13,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                },
+            },
+        };
+        if (showTotalBadge)
+        {
+            row.Children.Add(SkillBadge(L("Total", "\u5168\u90e8\u9879\u76ee"), Brush("V2MutedForegroundBrush")));
+        }
+        return row;
     }
 
     private FrameworkElement RoutingTableHeader(bool isChinese)
@@ -7006,9 +7020,7 @@ public sealed partial class MainWindow : Window
             (L("Dashboard", "\u770b\u677f"), _alwaysOnToolTab == AlwaysOnToolTab.Dashboard, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Dashboard; _selectedAlwaysOnPlanId = null; RenderAll(); })),
             (L("Plans & Cron Jobs", "\u8ba1\u5212\u4e0e\u5468\u671f\u4efb\u52a1"), _alwaysOnToolTab == AlwaysOnToolTab.Items, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Items; _selectedAlwaysOnPlanId = null; RenderAll(); })),
             (L("Run History", "\u8fd0\u884c\u5386\u53f2"), _alwaysOnToolTab == AlwaysOnToolTab.History, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.History; _selectedAlwaysOnPlanId = null; RenderAll(); })),
-        },
-        StatusPill(runningPlans > 0 ? L("Running", "\u8fd0\u884c\u4e2d") : L("Ready", "\u5c31\u7eea"), runningPlans > 0),
-        StatusPill(IsChineseUi() ? $"{readyPlans} \u4e2a\u5c31\u7eea" : $"{readyPlans} ready", readyPlans > 0)));
+        }));
 
         var selectedPlan = !string.IsNullOrWhiteSpace(_selectedAlwaysOnPlanId)
             ? State.AlwaysOnPlans.FirstOrDefault(plan => string.Equals(plan.Id, _selectedAlwaysOnPlanId, StringComparison.Ordinal))
@@ -7123,7 +7135,7 @@ public sealed partial class MainWindow : Window
 
     private FrameworkElement TasksPage()
     {
-        var subtitle = State.SelectedProject?.RootPath ?? L("Task plans and execution queue", "任务计划和执行队列");
+        var subtitle = L("Task plans and execution queue", "任务计划和执行队列");
         var titleInput = ToolToolbarTextBox(_taskTitleText, "Task title", 180);
         titleInput.TextChanged += (_, _) => _taskTitleText = titleInput.Text;
         var promptInput = ToolToolbarTextBox(_taskPromptText, "Prompt", 280);
