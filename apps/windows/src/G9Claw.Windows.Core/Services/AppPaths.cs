@@ -15,15 +15,12 @@ public sealed record AppPathSet(
 
 public static class AppPaths
 {
+    public const string ProductDirectoryName = "G9Claw";
+    private const string LegacyProductDirectoryName = "PilotDeck";
+
     public static AppPathSet Current()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (string.IsNullOrWhiteSpace(localAppData))
-        {
-            localAppData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "Local");
-        }
-
-        var root = Path.Combine(localAppData, "PilotDeck");
+        var root = Path.Combine(LocalAppDataRoot(), ProductDirectoryName);
         return new AppPathSet(
             root,
             Path.Combine(root, "settings.json"),
@@ -41,6 +38,7 @@ public static class AppPaths
     public static AppPathSet EnsureCreated()
     {
         var paths = Current();
+        MigrateLegacyRootIfNeeded(paths.Root);
         Directory.CreateDirectory(paths.Root);
         Directory.CreateDirectory(paths.CredentialsDirectory);
         Directory.CreateDirectory(paths.SessionsDirectory);
@@ -50,6 +48,49 @@ public static class AppPaths
         Directory.CreateDirectory(paths.PluginsDirectory);
         Directory.CreateDirectory(paths.RunHistoryDirectory);
         return paths;
+    }
+
+    private static string LocalAppDataRoot()
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrWhiteSpace(localAppData)) return localAppData;
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "Local");
+    }
+
+    private static void MigrateLegacyRootIfNeeded(string currentRoot)
+    {
+        var legacyRoot = Path.Combine(LocalAppDataRoot(), LegacyProductDirectoryName);
+        if (!Directory.Exists(legacyRoot)) return;
+
+        try
+        {
+            CopyDirectoryWithoutOverwrite(legacyRoot, currentRoot);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void CopyDirectoryWithoutOverwrite(string sourceDirectory, string targetDirectory)
+    {
+        Directory.CreateDirectory(targetDirectory);
+        foreach (var sourceFile in Directory.EnumerateFiles(sourceDirectory))
+        {
+            var targetFile = Path.Combine(targetDirectory, Path.GetFileName(sourceFile));
+            if (!File.Exists(targetFile))
+            {
+                File.Copy(sourceFile, targetFile);
+            }
+        }
+
+        foreach (var sourceChild in Directory.EnumerateDirectories(sourceDirectory))
+        {
+            var targetChild = Path.Combine(targetDirectory, Path.GetFileName(sourceChild));
+            CopyDirectoryWithoutOverwrite(sourceChild, targetChild);
+        }
     }
 }
 

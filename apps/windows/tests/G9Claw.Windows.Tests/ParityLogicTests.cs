@@ -1715,6 +1715,22 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void DefaultsUseG9ClawPaths()
+    {
+        const string home = @"C:\Users\tester";
+
+        var settings = AppSettings.Defaults(home);
+        var runtime = NativeRuntimeSettings.Defaults(home);
+        var appPaths = AppPaths.Current();
+
+        Assert.Equal(Path.Combine(home, "G9Claw", "general"), settings.GeneralWorkspacePath);
+        Assert.Equal(Path.Combine(home, "G9Claw", "general"), runtime.GeneralWorkspacePath);
+        Assert.Contains($"{Path.DirectorySeparatorChar}{AppPaths.ProductDirectoryName}", runtime.DatabasePath);
+        Assert.EndsWith($"{Path.DirectorySeparatorChar}{AppPaths.ProductDirectoryName}", appPaths.Root);
+        Assert.DoesNotContain("PilotDeck", appPaths.Root);
+    }
+
+    [Fact]
     public void ShellWorkingDirectoryRejectsRelativeOrMissingPaths()
     {
         var relative = Assert.Throws<InvalidOperationException>(() => AgentToolExecutor.ValidatedWorkingDirectory("general"));

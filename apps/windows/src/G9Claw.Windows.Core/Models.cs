@@ -507,7 +507,7 @@ public sealed record AppSettings(
     public static AppSettings Defaults(string homePath) => new(
         ProviderConfig.Empty,
         homePath,
-        System.IO.Path.Combine(homePath, "PilotDeck", "general"),
+        System.IO.Path.Combine(homePath, "G9Claw", "general"),
         90_000,
         160_000,
         ProjectSortOrder.Date,
@@ -745,11 +745,11 @@ public sealed record NativeRuntimeSettings(
     {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var dataRoot = string.IsNullOrWhiteSpace(localAppData)
-            ? System.IO.Path.Combine(homePath, "AppData", "Local", "PilotDeck")
-            : System.IO.Path.Combine(localAppData, "PilotDeck");
+            ? System.IO.Path.Combine(homePath, "AppData", "Local", AppPaths.ProductDirectoryName)
+            : System.IO.Path.Combine(localAppData, AppPaths.ProductDirectoryName);
         return new NativeRuntimeSettings(
             homePath,
-            System.IO.Path.Combine(homePath, "PilotDeck", "general"),
+            System.IO.Path.Combine(homePath, "G9Claw", "general"),
             120_000,
             160_000,
             System.IO.Path.Combine(dataRoot, "g9claw.db"),
