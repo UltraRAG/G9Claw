@@ -6501,7 +6501,9 @@ public sealed partial class MainWindow : Window
             .Select(record => record.UpdatedAt)
             .OrderByDescending(value => value)
             .FirstOrDefault();
-        var memoryAuto = State.Settings.MemorySettings?.Enabled == true;
+        var memoryDashboard = State.MemoryDashboard;
+        var latestIndexed = memoryDashboard.EffectiveOverview.LastIndexedAt ?? (latest == default ? null : latest);
+        var memoryAuto = memoryDashboard.EffectiveScheduler.Enabled || State.Settings.MemorySettings?.Enabled == true;
         shell.Children.Add(ToolTabbedTopbar(
             new[]
             {
@@ -6514,7 +6516,7 @@ public sealed partial class MainWindow : Window
             StatusPill(memoryAuto ? L("Auto", "\u81ea\u52a8") : L("Manual", "\u624b\u52a8"), memoryAuto),
             new TextBlock
             {
-                Text = latest == default ? L("Not indexed", "\u672a\u7d22\u5f15") : $"{L("Updated", "\u5df2\u66f4\u65b0")} {RelativeLabel(latest)}",
+                Text = latestIndexed is null ? L("Not indexed", "\u672a\u7d22\u5f15") : $"{L("Indexed", "\u5df2\u7d22\u5f15")} {RelativeLabel(latestIndexed.Value)}",
                 FontSize = 12,
                 Foreground = Brush("V2MutedForegroundBrush"),
                 VerticalAlignment = VerticalAlignment.Center,
@@ -6542,55 +6544,58 @@ public sealed partial class MainWindow : Window
                     record.Name.Contains(memoryFilter, StringComparison.OrdinalIgnoreCase) ||
                     record.Summary.Contains(memoryFilter, StringComparison.OrdinalIgnoreCase) ||
                     record.Content.Contains(memoryFilter, StringComparison.OrdinalIgnoreCase));
-        var memorySearchBox = Box(_memoryFilterText, L("Search current view", "\u641c\u7d22\u5f53\u524d\u89c6\u56fe"));
-        memorySearchBox.Height = 32;
-        memorySearchBox.TextChanged += (_, _) =>
+        if (_memoryToolTab == MemoryToolTab.ProjectMemory)
         {
-            if (string.Equals(_memoryFilterText, memorySearchBox.Text, StringComparison.Ordinal)) return;
-            _memoryFilterText = memorySearchBox.Text;
-            RenderAll();
-        };
-        var memoryToolbar = new Border
-        {
-            Background = Brush("V2CardBrush"),
-            BorderBrush = Brush("V2BorderBrush"),
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            Padding = new Thickness(16, 0, 16, 10),
-            Child = new Grid
+            var memorySearchBox = Box(_memoryFilterText, L("Search current view", "\u641c\u7d22\u5f53\u524d\u89c6\u56fe"));
+            memorySearchBox.Height = 32;
+            memorySearchBox.TextChanged += (_, _) =>
             {
-                ColumnSpacing = 10,
-                ColumnDefinitions =
-                {
-                    new ColumnDefinition { Width = new GridLength(360) },
-                    new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
-                    new ColumnDefinition { Width = GridLength.Auto },
-                },
-                Children =
-                {
-                    SearchField(memorySearchBox),
-                },
-            },
-        };
-        if (memoryToolbar.Child is Grid memoryToolbarGrid)
-        {
-            var memoryActions = new StackPanel
+                if (string.Equals(_memoryFilterText, memorySearchBox.Text, StringComparison.Ordinal)) return;
+                _memoryFilterText = memorySearchBox.Text;
+                RenderAll();
+            };
+            var memoryToolbar = new Border
             {
-                Orientation = Orientation.Horizontal,
-                Spacing = 8,
-                VerticalAlignment = VerticalAlignment.Center,
-                Children =
+                Background = Brush("V2CardBrush"),
+                BorderBrush = Brush("V2BorderBrush"),
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                Padding = new Thickness(16, 0, 16, 10),
+                Child = new Grid
                 {
-                    ToolbarButton("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
-                    ToolbarButton("Refresh", "Index", (Action)(() => ShowMemoryJobNotice("Index"))),
-                    ToolbarButton("Sparkles", "Dream", (Action)(() => ShowMemoryJobNotice("Dream"))),
-                    MemoryMoreButton(),
+                    ColumnSpacing = 10,
+                    ColumnDefinitions =
+                    {
+                        new ColumnDefinition { Width = new GridLength(360) },
+                        new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                        new ColumnDefinition { Width = GridLength.Auto },
+                    },
+                    Children =
+                    {
+                        SearchField(memorySearchBox),
+                    },
                 },
             };
-            Grid.SetColumn(memoryActions, 2);
-            memoryToolbarGrid.Children.Add(memoryActions);
+            if (memoryToolbar.Child is Grid memoryToolbarGrid)
+            {
+                var memoryActions = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 8,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children =
+                    {
+                        ToolbarButton("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
+                        ToolbarButton("Refresh", "Index", (Action)(() => ShowMemoryJobNotice("Index"))),
+                        ToolbarButton("Sparkles", "Dream", (Action)(() => ShowMemoryJobNotice("Dream"))),
+                        MemoryMoreButton(),
+                    },
+                };
+                Grid.SetColumn(memoryActions, 2);
+                memoryToolbarGrid.Children.Add(memoryActions);
+            }
+            Grid.SetRow(memoryToolbar, 1);
+            shell.Children.Add(memoryToolbar);
         }
-        Grid.SetRow(memoryToolbar, 1);
-        shell.Children.Add(memoryToolbar);
 
         var panel = new StackPanel
         {
