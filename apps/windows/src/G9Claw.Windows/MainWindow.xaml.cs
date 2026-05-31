@@ -4960,35 +4960,39 @@ public sealed partial class MainWindow : Window
             var header = new Grid
             {
                 Padding = new Thickness(14, 10, 14, 10),
+                ColumnSpacing = 8,
             };
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            header.Children.Add(Icon(FilePreviewHeaderIcon(preview), 14, FilePreviewHeaderIconBrush(preview)));
             var labels = new StackPanel { Spacing = 2 };
             labels.Children.Add(new TextBlock
             {
-                Text = preview.RelativePath,
+                Text = Path.GetFileName(preview.Path),
                 FontSize = 13,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                 Foreground = Brush("V2ForegroundBrush"),
                 TextTrimming = TextTrimming.CharacterEllipsis,
             });
             var languageAlias = CodeSyntaxHighlightingService.LanguageAliasForFileName(preview.RelativePath);
-            var previewMeta = string.IsNullOrWhiteSpace(languageAlias)
-                ? $"{preview.Kind} / {FormatBytes(preview.ByteCount)}"
-                : $"{languageAlias} / {preview.Kind} / {FormatBytes(preview.ByteCount)}";
             labels.Children.Add(new TextBlock
             {
-                Text = previewMeta,
-                FontSize = 11,
+                Text = preview.RelativePath,
+                FontSize = 10.5,
+                FontFamily = new FontFamily("Cascadia Mono, Consolas"),
                 Foreground = Brush("V2MutedForegroundBrush"),
+                TextTrimming = TextTrimming.CharacterEllipsis,
             });
+            Grid.SetColumn(labels, 1);
             header.Children.Add(labels);
 
             var actionPanel = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Spacing = 8,
+                Spacing = 6,
                 VerticalAlignment = VerticalAlignment.Center,
+                MaxWidth = 360,
             };
             if (FilePreviewActionPolicy.EditorPreviewToggleIcon(preview, _isMarkdownPreviewing) is { } toggleIcon)
             {
@@ -5031,18 +5035,38 @@ public sealed partial class MainWindow : Window
                 actionPanel.Children.Add(openPdf);
             }
 
+            var download = PreviewHeaderButton("Download", L("Download", "\u4e0b\u8f7d"));
+            download.Click += async (_, _) => await DownloadWorkspaceFileAsync(preview.Path);
+            actionPanel.Children.Add(download);
+
             if (preview.Text is not null)
             {
+                var revert = PreviewHeaderButton("Refresh", L("Revert", "\u8fd8\u539f"));
+                revert.Click += (_, _) =>
+                {
+                    _previewDraftText = preview.Text;
+                    RenderContent();
+                };
+                actionPanel.Children.Add(revert);
+
                 var save = PreviewHeaderButton("Save", T("common.save"));
                 save.Click += async (_, _) => await SavePreviewAsync();
                 actionPanel.Children.Add(save);
             }
 
-            if (actionPanel.Children.Count > 0)
+            var close = PreviewHeaderButton("X", L("Close", "\u5173\u95ed"));
+            close.Click += (_, _) =>
             {
-                Grid.SetColumn(actionPanel, 1);
-                header.Children.Add(actionPanel);
-            }
+                _selectedFilePath = null;
+                _previewDraftText = null;
+                _isMarkdownPreviewing = false;
+                _isCodePreviewing = false;
+                RenderContent();
+            };
+            actionPanel.Children.Add(close);
+
+            Grid.SetColumn(actionPanel, 2);
+            header.Children.Add(actionPanel);
 
             root.Children.Add(new Border
             {
@@ -5082,6 +5106,23 @@ public sealed partial class MainWindow : Window
             };
         }
     }
+
+    private string FilePreviewHeaderIcon(WorkspacePreview preview) => preview.Kind switch
+    {
+        WorkspacePreviewKind.Image => "Image",
+        WorkspacePreviewKind.Pdf or WorkspacePreviewKind.Markdown => "doc.richtext",
+        WorkspacePreviewKind.Html => "Code",
+        WorkspacePreviewKind.Binary => "Document",
+        _ => "Document",
+    };
+
+    private Brush FilePreviewHeaderIconBrush(WorkspacePreview preview) => preview.Kind switch
+    {
+        WorkspacePreviewKind.Markdown or WorkspacePreviewKind.Html => Brush("V2BlueBrush"),
+        WorkspacePreviewKind.Image => Brush("V2AmberBrush"),
+        WorkspacePreviewKind.Pdf => Brush("V2RedBrush"),
+        _ => Brush("V2MutedForegroundBrush"),
+    };
 
     private FrameworkElement TextPreview(WorkspacePreview preview)
     {
@@ -5463,6 +5504,27 @@ public sealed partial class MainWindow : Window
         {
             if (File.Exists(file.Path)) File.Delete(file.Path);
             ZipFile.CreateFromDirectory(State.SelectedProject.RootPath, file.Path, CompressionLevel.Fastest, includeBaseDirectory: false);
+        }
+        catch (Exception ex)
+        {
+            await Dialog(L("Download failed", "\u4e0b\u8f7d\u5931\u8d25"), new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap }, T("common.ok")).ShowAsync();
+        }
+    }
+
+    private async Task DownloadWorkspaceFileAsync(string sourcePath)
+    {
+        if (!File.Exists(sourcePath)) return;
+        var picker = new FileSavePicker();
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+        var extension = Path.GetExtension(sourcePath);
+        var saveExtension = string.IsNullOrWhiteSpace(extension) ? ".bin" : extension;
+        picker.SuggestedFileName = Path.GetFileName(sourcePath);
+        picker.FileTypeChoices.Add(string.IsNullOrWhiteSpace(extension) ? "File" : extension.TrimStart('.').ToUpperInvariant(), [saveExtension]);
+        var file = await picker.PickSaveFileAsync();
+        if (file is null || string.IsNullOrWhiteSpace(file.Path)) return;
+        try
+        {
+            File.Copy(sourcePath, file.Path, overwrite: true);
         }
         catch (Exception ex)
         {
