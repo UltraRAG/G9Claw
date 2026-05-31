@@ -11,39 +11,65 @@
             <SolidColorBrush x:Key="V2MutedForegroundBrush" Color="#FF737373" />
             <SolidColorBrush x:Key="V2SecondaryForegroundBrush" Color="#FF525252" />
             <SolidColorBrush x:Key="V2BorderBrush" Color="#FFE5E5E5" />
-            <SolidColorBrush x:Key="V2SelectedBrush" Color="#B3E5E5E5" />
-            <SolidColorBrush x:Key="V2HoverBrush" Color="#FFF5F5F5" />
-            <SolidColorBrush x:Key="V2CardBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="V2SelectedBrush" Color="#C7E5E5EA" />
+            <SolidColorBrush x:Key="V2HoverBrush" Color="#B8EEEEF2" />
+            <SolidColorBrush x:Key="V2CardBrush" Color="#BDFFFFFF" />
+            <SolidColorBrush x:Key="V2ContentSurfaceBrush" Color="#E0FFFFFF" />
+            <SolidColorBrush x:Key="V2CardSurfaceSubtleBrush" Color="#A3FAFAFA" />
+            <SolidColorBrush x:Key="V2ControlSurfaceBrush" Color="#7AFFFFFF" />
+            <SolidColorBrush x:Key="V2ControlActiveBrush" Color="#D1FFFFFF" />
+            <SolidColorBrush x:Key="V2SidebarControlSurfaceBrush" Color="#9EECECF2" />
+            <SolidColorBrush x:Key="V2SidebarControlActiveBrush" Color="#C7FFFFFF" />
+            <SolidColorBrush x:Key="V2TitlebarSwitchSurfaceBrush" Color="#85FAFAFC" />
+            <SolidColorBrush x:Key="V2TitlebarSwitchBorderBrush" Color="#6BA4A4AC" />
+            <SolidColorBrush x:Key="V2TitlebarSwitchHighlightBrush" Color="#75FFFFFF" />
+            <SolidColorBrush x:Key="V2TitlebarSwitchActiveSurfaceBrush" Color="#C7FFFFFF" />
+            <SolidColorBrush x:Key="V2TitlebarSwitchActiveBorderBrush" Color="#709A9AA4" />
+            <SolidColorBrush x:Key="V2ComposerSurfaceBrush" Color="#E6FFFFFF" />
+            <SolidColorBrush x:Key="V2ComposerBorderBrush" Color="#EAD0D0D6" />
             <SolidColorBrush x:Key="V2InverseBrush" Color="#FF171717" />
             <SolidColorBrush x:Key="V2InverseForegroundBrush" Color="#FFFAFAFA" />
-            <SolidColorBrush x:Key="V2BlueBrush" Color="#FF3B82F6" />
-            <SolidColorBrush x:Key="V2GreenBrush" Color="#FF059669" />
+            <SolidColorBrush x:Key="V2BlueBrush" Color="#FF2563EB" />
+            <SolidColorBrush x:Key="V2GreenBrush" Color="#FF22C55E" />
             <SolidColorBrush x:Key="V2AmberBrush" Color="#FFF59E0B" />
             <SolidColorBrush x:Key="V2RedBrush" Color="#FFEF4444" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
             <SolidColorBrush x:Key="V2BackgroundBrush" Color="#FF0A0A0A" />
             <SolidColorBrush x:Key="V2ForegroundBrush" Color="#FFF5F5F5" />
-            <SolidColorBrush x:Key="V2SidebarBrush" Color="#FF171717" />
+            <SolidColorBrush x:Key="V2SidebarBrush" Color="#FF26272E" />
             <SolidColorBrush x:Key="V2MutedBrush" Color="#FF262626" />
             <SolidColorBrush x:Key="V2MutedForegroundBrush" Color="#FFA3A3A3" />
             <SolidColorBrush x:Key="V2SecondaryForegroundBrush" Color="#FFD4D4D4" />
             <SolidColorBrush x:Key="V2BorderBrush" Color="#FF262626" />
-            <SolidColorBrush x:Key="V2SelectedBrush" Color="#FF262626" />
-            <SolidColorBrush x:Key="V2HoverBrush" Color="#FF262626" />
-            <SolidColorBrush x:Key="V2CardBrush" Color="#FF0A0A0A" />
+            <SolidColorBrush x:Key="V2SelectedBrush" Color="#C73E3F48" />
+            <SolidColorBrush x:Key="V2HoverBrush" Color="#9432333B" />
+            <SolidColorBrush x:Key="V2CardBrush" Color="#B81E1E20" />
+            <SolidColorBrush x:Key="V2ContentSurfaceBrush" Color="#C718181A" />
+            <SolidColorBrush x:Key="V2CardSurfaceSubtleBrush" Color="#94383840" />
+            <SolidColorBrush x:Key="V2ControlSurfaceBrush" Color="#752E2E30" />
+            <SolidColorBrush x:Key="V2ControlActiveBrush" Color="#B33A3A3C" />
+            <SolidColorBrush x:Key="V2SidebarControlSurfaceBrush" Color="#B81C1C20" />
+            <SolidColorBrush x:Key="V2SidebarControlActiveBrush" Color="#A83C3C42" />
+            <SolidColorBrush x:Key="V2TitlebarSwitchSurfaceBrush" Color="#8A1F1F23" />
+            <SolidColorBrush x:Key="V2TitlebarSwitchBorderBrush" Color="#4D707078" />
+            <SolidColorBrush x:Key="V2TitlebarSwitchHighlightBrush" Color="#0EFFFFFF" />
+            <SolidColorBrush x:Key="V2TitlebarSwitchActiveSurfaceBrush" Color="#7A3E3E44" />
+            <SolidColorBrush x:Key="V2TitlebarSwitchActiveBorderBrush" Color="#33B4B4BC" />
+            <SolidColorBrush x:Key="V2ComposerSurfaceBrush" Color="#EF2B2B2D" />
+            <SolidColorBrush x:Key="V2ComposerBorderBrush" Color="#B85C5C60" />
             <SolidColorBrush x:Key="V2InverseBrush" Color="#FFF5F5F5" />
             <SolidColorBrush x:Key="V2InverseForegroundBrush" Color="#FF171717" />
-            <SolidColorBrush x:Key="V2BlueBrush" Color="#FF60A5FA" />
-            <SolidColorBrush x:Key="V2GreenBrush" Color="#FF34D399" />
+            <SolidColorBrush x:Key="V2BlueBrush" Color="#FF2563EB" />
+            <SolidColorBrush x:Key="V2GreenBrush" Color="#FF22C55E" />
             <SolidColorBrush x:Key="V2AmberBrush" Color="#FFFBBF24" />
-            <SolidColorBrush x:Key="V2RedBrush" Color="#FFF87171" />
+            <SolidColorBrush x:Key="V2RedBrush" Color="#FFEF4444" />
         </ResourceDictionary>
     </ResourceDictionary.ThemeDictionaries>
 
     <x:Double x:Key="V2Radius">8</x:Double>
     <x:Double x:Key="V2SmallRadius">6</x:Double>
-    <x:Double x:Key="V2HeaderHeight">48</x:Double>
+    <x:Double x:Key="V2HeaderHeight">44</x:Double>
     <x:Double x:Key="V2ControlHeight">32</x:Double>
     <x:Double x:Key="V2SidebarDefaultWidth">248</x:Double>
 
@@ -75,7 +101,7 @@
         <Setter Property="Height" Value="32" />
         <Setter Property="Padding" Value="10,0" />
         <Setter Property="CornerRadius" Value="6" />
-        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Background" Value="{ThemeResource V2ControlSurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource V2BorderBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource V2SecondaryForegroundBrush}" />
         <Setter Property="FontSize" Value="12" />
@@ -93,7 +119,7 @@
         <Setter Property="FontSize" Value="13" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="BorderBrush" Value="{ThemeResource V2BorderBrush}" />
-        <Setter Property="Background" Value="{ThemeResource V2BackgroundBrush}" />
+        <Setter Property="Background" Value="{ThemeResource V2ControlActiveBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource V2ForegroundBrush}" />
         <Setter Property="PlaceholderForeground" Value="{ThemeResource V2MutedForegroundBrush}" />
     </Style>

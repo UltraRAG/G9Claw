@@ -35,7 +35,7 @@ public sealed record V2UiSettings(
     public V2UiSettings NormalizeForStartup()
     {
         var normalized = Normalize();
-        return normalized.SidebarWidth > 360
+        return SidebarWidth > SidebarMaxWidth
             ? normalized with { SidebarWidth = SidebarDefaultWidth }
             : normalized;
     }

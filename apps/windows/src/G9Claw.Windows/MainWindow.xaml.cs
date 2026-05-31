@@ -167,6 +167,7 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
+        SystemBackdrop = new MicaBackdrop();
         ConfigureWindow();
         Closed += async (_, _) => await DisposeShellSessionAsync();
 
@@ -524,12 +525,12 @@ public sealed partial class MainWindow : Window
         SidebarColumn.Width = new GridLength(_uiSettings.SidebarWidth);
         ProjectsSectionButton.Content = T("sidebar.projects");
         GeneralSectionButton.Content = T("sidebar.general");
-        ProjectsSectionButton.Background = _uiSettings.SidebarSection == SidebarSection.Projects ? Brush("V2CardBrush") : Transparent;
-        ProjectsSectionButton.Foreground = _uiSettings.SidebarSection == SidebarSection.Projects ? Brush("V2ForegroundBrush") : Brush("V2MutedForegroundBrush");
+        ProjectsSectionButton.Background = _uiSettings.SidebarSection == SidebarSection.Projects ? Brush("V2SidebarControlActiveBrush") : Transparent;
+        ProjectsSectionButton.Foreground = _uiSettings.SidebarSection == SidebarSection.Projects ? Brush("V2ForegroundBrush") : Brush("V2SecondaryForegroundBrush");
         ProjectsSectionButton.BorderBrush = Transparent;
         ProjectsSectionButton.FontWeight = _uiSettings.SidebarSection == SidebarSection.Projects ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Medium;
-        GeneralSectionButton.Background = _uiSettings.SidebarSection == SidebarSection.General ? Brush("V2CardBrush") : Transparent;
-        GeneralSectionButton.Foreground = _uiSettings.SidebarSection == SidebarSection.General ? Brush("V2ForegroundBrush") : Brush("V2MutedForegroundBrush");
+        GeneralSectionButton.Background = _uiSettings.SidebarSection == SidebarSection.General ? Brush("V2SidebarControlActiveBrush") : Transparent;
+        GeneralSectionButton.Foreground = _uiSettings.SidebarSection == SidebarSection.General ? Brush("V2ForegroundBrush") : Brush("V2SecondaryForegroundBrush");
         GeneralSectionButton.BorderBrush = Transparent;
         GeneralSectionButton.FontWeight = _uiSettings.SidebarSection == SidebarSection.General ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Medium;
 
@@ -728,8 +729,9 @@ public sealed partial class MainWindow : Window
         {
             Text = title.ToUpperInvariant(),
             FontSize = 11,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
             Foreground = Brush("V2MutedForegroundBrush"),
+            CharacterSpacing = 40,
             VerticalAlignment = VerticalAlignment.Center,
         });
 
@@ -803,7 +805,7 @@ public sealed partial class MainWindow : Window
         row.Children.Add(projectButton);
 
         var addButton = TinyIconButton("MessageSquarePlus", (_, _) => StartSession(project));
-        addButton.Opacity = isSelected ? 1 : 0.72;
+        addButton.Opacity = isSelected ? 1 : 0.55;
         Grid.SetColumn(addButton, 1);
         row.Children.Add(addButton);
 
@@ -1001,7 +1003,9 @@ public sealed partial class MainWindow : Window
 
     private void RenderHeader(HeaderLayoutMetrics? metrics = null, double availableToolSwitcherWidth = 0)
     {
-        BreadcrumbProjectText.Text = State.SelectedProject?.DisplayName ?? T("common.home");
+        BreadcrumbProjectText.Text = State.SelectedProject is { } selectedProject
+            ? IsGeneralProject(selectedProject) ? T("sidebar.general") : selectedProject.DisplayName
+            : T("sidebar.general");
         BreadcrumbTabText.Text = ActiveTabLabel();
         BreadcrumbSessionText.Text = State.SelectedSession?.DisplayTitle ?? "";
 
@@ -1082,8 +1086,8 @@ public sealed partial class MainWindow : Window
                 MinWidth = 0,
                 Padding = layout.IconOnly ? new Thickness(0) : new Thickness(6, 0, 6, 0),
                 CornerRadius = new CornerRadius(13),
-                Background = isActive ? Brush("V2CardBrush") : Transparent,
-                BorderBrush = isActive ? Brush("V2BorderBrush") : Transparent,
+                Background = isActive ? Brush("V2TitlebarSwitchActiveSurfaceBrush") : Transparent,
+                BorderBrush = isActive ? Brush("V2TitlebarSwitchActiveBorderBrush") : Transparent,
                 BorderThickness = isActive ? new Thickness(1) : new Thickness(0),
                 Foreground = foreground,
                 UseSystemFocusVisuals = false,
@@ -1366,10 +1370,10 @@ public sealed partial class MainWindow : Window
         {
             MaxWidth = V2LayoutMetrics.ComposerMaxWidth,
             MinHeight = V2LayoutMetrics.ComposerMinHeight,
-            BorderBrush = Brush("V2BorderBrush"),
+            BorderBrush = Brush("V2ComposerBorderBrush"),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(12),
-            Background = Brush("V2CardBrush"),
+            CornerRadius = new CornerRadius(18),
+            Background = Brush("V2ComposerSurfaceBrush"),
             Padding = new Thickness(10, 9, 10, 9),
         };
         TrackChatColumnWidth(composerShell);
