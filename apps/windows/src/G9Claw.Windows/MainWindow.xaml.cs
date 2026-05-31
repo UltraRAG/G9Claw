@@ -8570,6 +8570,9 @@ public sealed partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
         };
         var mcpEmptyState = DashedEmptyState(L("No MCP servers configured.", "\u6682\u65e0 MCP \u670d\u52a1\u5668\u3002"), L("Add a STDIO or HTTP server, or edit Advanced JSON directly.", "\u6dfb\u52a0 STDIO \u6216 HTTP \u670d\u52a1\u5668\uff0c\u6216\u76f4\u63a5\u7f16\u8f91\u9ad8\u7ea7 JSON\u3002"));
+        var mcpServerCards = new StackPanel { Spacing = 12 };
+        var mcpServerDrafts = ParseMcpServers(initialMcpRaw);
+        var suppressMcpRawRefresh = false;
         var mcpMessageText = new TextBlock
         {
             FontSize = 12,
@@ -8620,17 +8623,208 @@ public sealed partial class MainWindow : Window
             },
         };
 
-        void RefreshMcpView()
+        void RefreshMcpView(bool rebuildCards = true)
         {
             mcpPath = CurrentMcpPath();
             mcpStatusText.Text = File.Exists(mcpPath) ? L("Existing config", "\u5df2\u5b58\u5728") : L("Not created yet", "\u5c1a\u672a\u521b\u5efa");
             mcpPathText.Text = mcpPath;
-            var serverCount = McpServerCount(mcpRaw.Text);
+            if (rebuildCards)
+            {
+                mcpServerDrafts = ParseMcpServers(mcpRaw.Text);
+                RebuildMcpServerCards();
+            }
+
+            var serverCount = mcpServerDrafts.Count;
             mcpServerCountText.Text = IsChineseUi() ? $"{serverCount} \u4e2a\u670d\u52a1\u5668" : $"{serverCount} servers";
             mcpEmptyState.Visibility = serverCount == 0 ? Visibility.Visible : Visibility.Collapsed;
+            mcpServerCards.Visibility = serverCount == 0 ? Visibility.Collapsed : Visibility.Visible;
             mcpProjectRow!.Visibility = string.Equals(mcpScope, "project", StringComparison.OrdinalIgnoreCase) ? Visibility.Visible : Visibility.Collapsed;
             scopeGlobalButton.Background = string.Equals(mcpScope, "global", StringComparison.OrdinalIgnoreCase) ? Brush("V2ControlActiveBrush") : Transparent;
             scopeProjectButton.Background = string.Equals(mcpScope, "project", StringComparison.OrdinalIgnoreCase) ? Brush("V2ControlActiveBrush") : Transparent;
+        }
+
+        void RebuildMcpServerCards()
+        {
+            mcpServerCards.Children.Clear();
+            foreach (var server in mcpServerDrafts)
+            {
+                mcpServerCards.Children.Add(McpServerCard(server));
+            }
+        }
+
+        void SyncMcpRawFromServerCards()
+        {
+            try
+            {
+                suppressMcpRawRefresh = true;
+                mcpRaw.Text = McpRawFromServers(mcpRaw.Text, mcpServerDrafts);
+                RefreshMcpView(rebuildCards: false);
+                mcpMessageText.Visibility = Visibility.Collapsed;
+            }
+            catch (Exception ex)
+            {
+                errorText.Text = ex.Message;
+            }
+            finally
+            {
+                suppressMcpRawRefresh = false;
+            }
+        }
+
+        FrameworkElement McpServerCard(McpServerDraft server)
+        {
+            var nameBox = Box(server.Name, L("Server name", "\u670d\u52a1\u5668\u540d\u79f0"));
+            nameBox.TextChanged += (_, _) =>
+            {
+                server.Name = nameBox.Text;
+                SyncMcpRawFromServerCards();
+            };
+
+            var transportBox = new ComboBox
+            {
+                Height = 34,
+                MinWidth = 0,
+                Width = 150,
+                HorizontalAlignment = HorizontalAlignment.Right,
+            };
+            transportBox.Items.Add(new ComboBoxItem { Content = "STDIO", Tag = "stdio" });
+            transportBox.Items.Add(new ComboBoxItem { Content = "HTTP", Tag = "http" });
+            transportBox.SelectedIndex = string.Equals(server.Transport, "http", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+            transportBox.SelectionChanged += (_, _) =>
+            {
+                if (transportBox.SelectedItem is ComboBoxItem { Tag: string tag })
+                {
+                    server.Transport = tag;
+                    SyncMcpRawFromServerCards();
+                    RebuildMcpServerCards();
+                }
+            };
+
+            var remove = new Button
+            {
+                Width = 30,
+                Height = 30,
+                Padding = new Thickness(0),
+                Style = (Style)Application.Current.Resources["V2IconButtonStyle"],
+                Content = Icon("Trash", 14, Brush("V2RedBrush")),
+            };
+            remove.Click += (_, _) =>
+            {
+                mcpServerDrafts.Remove(server);
+                SyncMcpRawFromServerCards();
+                RebuildMcpServerCards();
+            };
+
+            var summary = new TextBlock
+            {
+                Text = McpServerSummary(server),
+                FontSize = 11,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            };
+            var header = new Grid
+            {
+                ColumnSpacing = 10,
+                ColumnDefinitions =
+                {
+                    new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                },
+                Children =
+                {
+                    new StackPanel
+                    {
+                        Spacing = 4,
+                        Children = { nameBox, summary },
+                    },
+                    transportBox,
+                    remove,
+                },
+            };
+            Grid.SetColumn(transportBox, 1);
+            Grid.SetColumn(remove, 2);
+
+            var fields = new StackPanel { Spacing = 10 };
+            if (string.Equals(server.Transport, "http", StringComparison.OrdinalIgnoreCase))
+            {
+                var urlBox = Box(server.Url, "http://127.0.0.1:3000/mcp");
+                urlBox.TextChanged += (_, _) =>
+                {
+                    server.Url = urlBox.Text;
+                    summary.Text = McpServerSummary(server);
+                    SyncMcpRawFromServerCards();
+                };
+                var headersBox = Area(server.HeadersText);
+                headersBox.MinHeight = 84;
+                headersBox.TextChanged += (_, _) =>
+                {
+                    server.HeadersText = headersBox.Text;
+                    SyncMcpRawFromServerCards();
+                };
+                fields.Children.Add(Field("URL", urlBox));
+                fields.Children.Add(Field(L("Headers KEY=VALUE", "Headers KEY=VALUE"), headersBox));
+            }
+            else
+            {
+                var commandBox = Box(server.Command, "npx");
+                commandBox.TextChanged += (_, _) =>
+                {
+                    server.Command = commandBox.Text;
+                    summary.Text = McpServerSummary(server);
+                    SyncMcpRawFromServerCards();
+                };
+                var argsBox = Area(server.ArgsText);
+                argsBox.MinHeight = 84;
+                argsBox.TextChanged += (_, _) =>
+                {
+                    server.ArgsText = argsBox.Text;
+                    SyncMcpRawFromServerCards();
+                };
+                var envBox = Area(server.EnvText);
+                envBox.MinHeight = 84;
+                envBox.TextChanged += (_, _) =>
+                {
+                    server.EnvText = envBox.Text;
+                    SyncMcpRawFromServerCards();
+                };
+                var perSession = new CheckBox
+                {
+                    Content = "Per-session",
+                    IsChecked = server.PerSession,
+                    FontSize = 13,
+                    Foreground = Brush("V2ForegroundBrush"),
+                    Margin = new Thickness(14, 8, 14, 8),
+                };
+                perSession.Checked += (_, _) =>
+                {
+                    server.PerSession = true;
+                    SyncMcpRawFromServerCards();
+                };
+                perSession.Unchecked += (_, _) =>
+                {
+                    server.PerSession = false;
+                    SyncMcpRawFromServerCards();
+                };
+                fields.Children.Add(Field(L("Command", "\u547d\u4ee4"), commandBox));
+                fields.Children.Add(Field(L("Args (one per line)", "\u53c2\u6570\uff08\u6bcf\u884c\u4e00\u4e2a\uff09"), argsBox));
+                fields.Children.Add(Field(L("Env KEY=VALUE", "\u73af\u5883\u53d8\u91cf KEY=VALUE"), envBox));
+                fields.Children.Add(SettingsMenuRow("Terminal", "Per-session", L("Start a separate MCP process for each session.", "\u4e3a\u6bcf\u4e2a\u4f1a\u8bdd\u72ec\u7acb\u542f\u52a8 MCP \u8fdb\u7a0b\u3002"), perSession));
+            }
+
+            return new Border
+            {
+                CornerRadius = new CornerRadius(8),
+                BorderBrush = Brush("V2BorderBrush"),
+                BorderThickness = new Thickness(1),
+                Background = Brush("V2CardSurfaceSubtleBrush"),
+                Padding = new Thickness(12),
+                Child = new StackPanel
+                {
+                    Spacing = 12,
+                    Children = { header, fields },
+                },
+            };
         }
 
         void LoadMcpIntoEditor()
@@ -8662,7 +8856,11 @@ public sealed partial class MainWindow : Window
                 if (string.Equals(mcpScope, "project", StringComparison.OrdinalIgnoreCase)) LoadMcpIntoEditor();
             }
         };
-        mcpRaw.TextChanged += (_, _) => RefreshMcpView();
+        mcpRaw.TextChanged += (_, _) =>
+        {
+            if (suppressMcpRawRefresh) return;
+            RefreshMcpView();
+        };
 
         var revealMcp = McpToolbarButton("Folder", T("settings.config.revealFile"));
         revealMcp.Click += (_, _) =>
@@ -8797,6 +8995,7 @@ public sealed partial class MainWindow : Window
                     },
                 },
                 mcpEmptyState,
+                mcpServerCards,
             },
         };
         if (mcpServersSummary.Children[0] is Grid mcpServersGrid)
@@ -9322,6 +9521,18 @@ public sealed partial class MainWindow : Window
         public required Func<List<NativeProviderEntry>> ReadProviders { get; init; }
         public required Func<List<NativeModelEntry>> ReadModelEntries { get; init; }
         public required Func<ICredentialStore, Task> WriteSecretsAsync { get; init; }
+    }
+
+    private sealed class McpServerDraft
+    {
+        public string Name { get; set; } = "";
+        public string Transport { get; set; } = "stdio";
+        public string Command { get; set; } = "";
+        public string ArgsText { get; set; } = "";
+        public string EnvText { get; set; } = "";
+        public bool PerSession { get; set; }
+        public string Url { get; set; } = "";
+        public string HeadersText { get; set; } = "";
     }
 
     private sealed class ProviderEditorRow
@@ -9884,8 +10095,8 @@ public sealed partial class MainWindow : Window
 
     private TextBox Area(string text) => new()
     {
-        Text = text,
         AcceptsReturn = true,
+        Text = text,
         TextWrapping = TextWrapping.NoWrap,
         MinHeight = 126,
         MaxHeight = 220,
@@ -10221,6 +10432,192 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private static List<McpServerDraft> ParseMcpServers(string raw)
+    {
+        var result = new List<McpServerDraft>();
+        try
+        {
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(raw) ? "{}" : raw);
+            if (!document.RootElement.TryGetProperty("mcpServers", out var servers) ||
+                servers.ValueKind != JsonValueKind.Object)
+            {
+                return result;
+            }
+
+            foreach (var pair in servers.EnumerateObject())
+            {
+                if (pair.Value.ValueKind != JsonValueKind.Object) continue;
+                var server = pair.Value;
+                var command = JsonElementString(server, "command");
+                var url = JsonElementString(server, "url");
+                if (string.IsNullOrWhiteSpace(url)) url = JsonElementString(server, "httpUrl");
+                var transport = !string.IsNullOrWhiteSpace(command) || string.IsNullOrWhiteSpace(url)
+                    ? "stdio"
+                    : "http";
+                result.Add(new McpServerDraft
+                {
+                    Name = pair.Name,
+                    Transport = transport,
+                    Command = command,
+                    ArgsText = JsonElementArrayToLines(server, "args"),
+                    EnvText = JsonElementObjectToKeyValueLines(server, "env"),
+                    PerSession = JsonElementBool(server, "perSession"),
+                    Url = url,
+                    HeadersText = JsonElementObjectToKeyValueLines(server, "headers"),
+                });
+            }
+        }
+        catch
+        {
+            return [];
+        }
+
+        return result;
+    }
+
+    private static string JsonElementString(JsonElement obj, string property)
+    {
+        if (!obj.TryGetProperty(property, out var value)) return "";
+        return value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? ""
+            : value.GetRawText();
+    }
+
+    private static bool JsonElementBool(JsonElement obj, string property) =>
+        obj.TryGetProperty(property, out var value) &&
+        value.ValueKind == JsonValueKind.True;
+
+    private static string JsonElementArrayToLines(JsonElement obj, string property)
+    {
+        if (!obj.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.Array) return "";
+        return string.Join(Environment.NewLine, value.EnumerateArray().Select(item =>
+            item.ValueKind == JsonValueKind.String ? item.GetString() ?? "" : item.GetRawText()));
+    }
+
+    private static string JsonElementObjectToKeyValueLines(JsonElement obj, string property)
+    {
+        if (!obj.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.Object) return "";
+        return string.Join(Environment.NewLine, value.EnumerateObject().Select(item =>
+            $"{item.Name}={(item.Value.ValueKind == JsonValueKind.String ? item.Value.GetString() ?? "" : item.Value.GetRawText())}"));
+    }
+
+    private static string McpRawFromServers(string existingRaw, IEnumerable<McpServerDraft> drafts)
+    {
+        var root = JsonNode.Parse(string.IsNullOrWhiteSpace(existingRaw) ? "{}" : existingRaw) as JsonObject ?? [];
+        var servers = new JsonObject();
+        var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var draft in drafts)
+        {
+            var name = string.IsNullOrWhiteSpace(draft.Name) ? "new-mcp-server" : draft.Name.Trim();
+            var baseName = name;
+            var index = 2;
+            while (!usedNames.Add(name))
+            {
+                name = $"{baseName}-{index}";
+                index++;
+            }
+
+            if (string.Equals(draft.Transport, "http", StringComparison.OrdinalIgnoreCase))
+            {
+                var server = new JsonObject
+                {
+                    ["url"] = draft.Url,
+                };
+                var headers = JsonObjectFromKeyValueLines(draft.HeadersText);
+                if (headers.Count > 0) server["headers"] = headers;
+                servers[name] = server;
+            }
+            else
+            {
+                var server = new JsonObject
+                {
+                    ["command"] = draft.Command,
+                    ["args"] = JsonArrayFromLines(draft.ArgsText),
+                };
+                var env = JsonObjectFromKeyValueLines(draft.EnvText);
+                if (env.Count > 0) server["env"] = env;
+                if (draft.PerSession) server["perSession"] = true;
+                servers[name] = server;
+            }
+        }
+
+        root["mcpServers"] = servers;
+        return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private static string McpServerSummary(McpServerDraft server)
+    {
+        if (string.Equals(server.Transport, "http", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.IsNullOrWhiteSpace(server.Url) ? "HTTP" : $"HTTP / {server.Url}";
+        }
+
+        var args = RawLines(server.ArgsText).ToList();
+        var command = string.IsNullOrWhiteSpace(server.Command) ? "command" : server.Command;
+        return args.Count == 0 ? $"STDIO / {command}" : $"STDIO / {command} {string.Join(" ", args)}";
+    }
+
+    private static string JsonString(JsonNode? node)
+    {
+        if (node is null) return "";
+        try
+        {
+            return node.GetValue<string>() ?? "";
+        }
+        catch
+        {
+            return node.ToJsonString();
+        }
+    }
+
+    private static bool JsonBool(JsonNode? node)
+    {
+        if (node is null) return false;
+        try
+        {
+            return node.GetValue<bool>();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string JsonArrayToLines(JsonNode? node)
+    {
+        if (node is not JsonArray array) return "";
+        return string.Join(Environment.NewLine, array.Select(JsonString).Where(value => !string.IsNullOrWhiteSpace(value)));
+    }
+
+    private static JsonArray JsonArrayFromLines(string text)
+    {
+        var array = new JsonArray();
+        foreach (var line in RawLines(text))
+        {
+            array.Add(line);
+        }
+        return array;
+    }
+
+    private static string JsonObjectToKeyValueLines(JsonNode? node)
+    {
+        if (node is not JsonObject obj) return "";
+        return string.Join(Environment.NewLine, obj.Select(pair => $"{pair.Key}={JsonString(pair.Value)}"));
+    }
+
+    private static JsonObject JsonObjectFromKeyValueLines(string text)
+    {
+        var obj = new JsonObject();
+        foreach (var line in RawLines(text))
+        {
+            var split = line.IndexOf('=');
+            if (split <= 0) continue;
+            obj[line[..split].Trim()] = line[(split + 1)..].Trim();
+        }
+
+        return obj;
+    }
+
     private static string AddMcpServerTemplate(string raw, string transport)
     {
         var root = JsonNode.Parse(string.IsNullOrWhiteSpace(raw) ? "{}" : raw) as JsonObject ?? [];
@@ -10275,6 +10672,10 @@ public sealed partial class MainWindow : Window
             .Where(line => !string.IsNullOrWhiteSpace(line))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+    private static IEnumerable<string> RawLines(string value) =>
+        value.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line => !string.IsNullOrWhiteSpace(line));
 
     private static T SelectedEnum<T>(ComboBox combo) where T : struct, Enum
     {
