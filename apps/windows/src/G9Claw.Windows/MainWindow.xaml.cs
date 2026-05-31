@@ -173,6 +173,9 @@ public sealed partial class MainWindow : Window
     private MemoryToolTab _memoryToolTab = MemoryToolTab.ProjectMemory;
     private AlwaysOnToolTab _alwaysOnToolTab = AlwaysOnToolTab.Dashboard;
     private string? _selectedSkillKey;
+    private string? _skillEditorKey;
+    private string _skillEditorContent = "";
+    private string _skillEditorOriginalContent = "";
     private string _skillFilterText = "";
     private string _memoryFilterText = "";
     private ProviderPreflightResult? _lastProviderPreflight;
@@ -182,6 +185,7 @@ public sealed partial class MainWindow : Window
     private bool _headerMetricsPending;
     private bool? _lastToolSwitcherIconOnly;
     private bool _chatRenderPending;
+    private Guid? _selectedMemoryRecordId;
     private ScrollViewer? _chatScrollViewer;
     private bool _chatStickToBottom = true;
     private double _chatScrollOffset;
@@ -5653,9 +5657,9 @@ public sealed partial class MainWindow : Window
         var memoryAuto = State.Settings.MemorySettings?.Enabled == true;
         shell.Children.Add(ToolTabbedTopbar(new[]
         {
-            (L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), _memoryToolTab == MemoryToolTab.ProjectMemory, (Action)(() => { _memoryToolTab = MemoryToolTab.ProjectMemory; RenderAll(); })),
-            (L("User Profile", "\u7528\u6237\u753b\u50cf"), _memoryToolTab == MemoryToolTab.Profile, (Action)(() => { _memoryToolTab = MemoryToolTab.Profile; RenderAll(); })),
-            (L("Memory Trace", "\u8bb0\u5fc6\u8ffd\u8e2a"), _memoryToolTab == MemoryToolTab.Trace, (Action)(() => { _memoryToolTab = MemoryToolTab.Trace; RenderAll(); })),
+            (L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), _memoryToolTab == MemoryToolTab.ProjectMemory, (Action)(() => { _memoryToolTab = MemoryToolTab.ProjectMemory; _selectedMemoryRecordId = null; RenderAll(); })),
+            (L("User Profile", "\u7528\u6237\u753b\u50cf"), _memoryToolTab == MemoryToolTab.Profile, (Action)(() => { _memoryToolTab = MemoryToolTab.Profile; _selectedMemoryRecordId = null; RenderAll(); })),
+            (L("Memory Trace", "\u8bb0\u5fc6\u8ffd\u8e2a"), _memoryToolTab == MemoryToolTab.Trace, (Action)(() => { _memoryToolTab = MemoryToolTab.Trace; _selectedMemoryRecordId = null; RenderAll(); })),
         },
         StatusPill(L("Ready", "\u5c31\u7eea"), false),
         StatusPill(memoryAuto ? L("Auto", "\u81ea\u52a8") : L("Manual", "\u624b\u52a8"), memoryAuto),
@@ -5667,6 +5671,20 @@ public sealed partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
         }));
+
+        var selectedMemory = _selectedMemoryRecordId is { } selectedMemoryId
+            ? State.MemoryRecords.FirstOrDefault(record => record.Id == selectedMemoryId)
+            : null;
+        if (selectedMemory is not null)
+        {
+            var detail = MemoryDetailPage(selectedMemory);
+            Grid.SetRow(detail, 1);
+            Grid.SetRowSpan(detail, 2);
+            shell.Children.Add(detail);
+            ((Grid)page.Tag!).Children.Add(shell);
+            return page;
+        }
+        _selectedMemoryRecordId = null;
 
         var memoryFilter = _memoryFilterText.Trim();
         IEnumerable<MemoryRecord> FilterMemory(IEnumerable<MemoryRecord> records) =>
@@ -5722,12 +5740,12 @@ public sealed partial class MainWindow : Window
                 MetricRow("Folder", L("Project", "\u9879\u76ee"), projectRecords.ToString(), L("workspace facts", "\u5de5\u4f5c\u533a\u4e8b\u5b9e")),
                 MetricRow("MessageSquarePlus", L("Feedback", "\u53cd\u9988"), feedbackRecords.ToString(), L("collaboration rules", "\u534f\u4f5c\u89c4\u5219")),
                 MetricRow("Clock", L("Latest", "\u6700\u65b0"), latest == default ? "-" : latest.LocalDateTime.ToString("g"), L("last update", "\u6700\u8fd1\u66f4\u65b0"))));
-            panel.Children.Add(MemoryRecordSection(L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), L("Progress, facts, and state records for the current project.", "\u5f53\u524d\u9879\u76ee\u7684\u8fdb\u5c55\u3001\u4e8b\u5b9e\u548c\u72b6\u6001\u8bb0\u5f55\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Project && !record.Deprecated))));
-            panel.Children.Add(MemoryRecordSection(L("Collaboration Feedback", "\u534f\u4f5c\u53cd\u9988"), L("User preferences, constraints, and delivery rules.", "\u7528\u6237\u504f\u597d\u3001\u7ea6\u675f\u548c\u4ea4\u4ed8\u89c4\u5219\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated))));
+            panel.Children.Add(MemoryRecordSection(L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), L("Progress, facts, and state records for the current project.", "\u5f53\u524d\u9879\u76ee\u7684\u8fdb\u5c55\u3001\u4e8b\u5b9e\u548c\u72b6\u6001\u8bb0\u5f55\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Project && !record.Deprecated)), SelectMemoryRecord));
+            panel.Children.Add(MemoryRecordSection(L("Collaboration Feedback", "\u534f\u4f5c\u53cd\u9988"), L("User preferences, constraints, and delivery rules.", "\u7528\u6237\u504f\u597d\u3001\u7ea6\u675f\u548c\u4ea4\u4ed8\u89c4\u5219\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated)), SelectMemoryRecord));
             var deprecated = FilterMemory(State.MemoryRecords.Where(record => record.Deprecated)).ToList();
             if (deprecated.Count > 0)
             {
-                panel.Children.Add(MemoryRecordSection(L("Deprecated", "\u5df2\u5f03\u7528"), L("Records marked as deprecated.", "\u6807\u8bb0\u4e3a\u5f03\u7528\u7684\u8bb0\u5f55\u3002"), deprecated));
+                panel.Children.Add(MemoryRecordSection(L("Deprecated", "\u5df2\u5f03\u7528"), L("Records marked as deprecated.", "\u6807\u8bb0\u4e3a\u5f03\u7528\u7684\u8bb0\u5f55\u3002"), deprecated, SelectMemoryRecord));
             }
         }
         else if (_memoryToolTab == MemoryToolTab.Profile)
@@ -5737,8 +5755,8 @@ public sealed partial class MainWindow : Window
                 MetricRow("MessageSquarePlus", L("Feedback", "\u53cd\u9988"), feedbackRecords.ToString(), L("collaboration profile", "\u534f\u4f5c\u753b\u50cf")),
                 MetricRow("Folder", L("Projects", "\u9879\u76ee"), projectRecords.ToString(), L("project memory", "\u9879\u76ee\u8bb0\u5fc6")),
                 MetricRow("Clock", L("Latest", "\u6700\u65b0"), latest == default ? "-" : latest.LocalDateTime.ToString("g"), L("last update", "\u6700\u8fd1\u66f4\u65b0"))));
-            panel.Children.Add(MemoryRecordSection(L("User Profile", "\u7528\u6237\u753b\u50cf"), L("Long-term identity background and preferences.", "\u957f\u671f\u8eab\u4efd\u80cc\u666f\u548c\u504f\u597d\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.User && !record.Deprecated))));
-            panel.Children.Add(MemoryRecordSection(L("Feedback Profile", "\u53cd\u9988\u753b\u50cf"), L("Preferences extracted from collaboration feedback.", "\u4ece\u534f\u4f5c\u53cd\u9988\u4e2d\u63d0\u53d6\u7684\u504f\u597d\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated))));
+            panel.Children.Add(MemoryRecordSection(L("User Profile", "\u7528\u6237\u753b\u50cf"), L("Long-term identity background and preferences.", "\u957f\u671f\u8eab\u4efd\u80cc\u666f\u548c\u504f\u597d\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.User && !record.Deprecated)), SelectMemoryRecord));
+            panel.Children.Add(MemoryRecordSection(L("Feedback Profile", "\u53cd\u9988\u753b\u50cf"), L("Preferences extracted from collaboration feedback.", "\u4ece\u534f\u4f5c\u53cd\u9988\u4e2d\u63d0\u53d6\u7684\u504f\u597d\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated)), SelectMemoryRecord));
         }
         else
         {
@@ -6117,92 +6135,354 @@ public sealed partial class MainWindow : Window
 
     private FrameworkElement SkillDetail(SkillRecord skill)
     {
-        var content = "";
-        try
+        EnsureSkillEditorState(skill);
+        var editorChanged = !string.Equals(_skillEditorContent, _skillEditorOriginalContent, StringComparison.Ordinal);
+        var scopeBrush = SkillScopeBrush(skill.Scope);
+        var root = new Grid
         {
-            content = _skillService.Read(skill);
-        }
-        catch (Exception ex)
-        {
-            content = ex.Message;
-        }
+            RowSpacing = 0,
+            Background = Brush("V2BackgroundBrush"),
+            RowDefinitions =
+            {
+                new RowDefinition { Height = GridLength.Auto },
+                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) },
+                new RowDefinition { Height = GridLength.Auto },
+            },
+        };
 
-        var detail = new StackPanel { Spacing = 14 };
-        detail.Children.Add(new Grid
+        var header = new StackPanel
+        {
+            Spacing = 12,
+            Padding = new Thickness(0, 0, 0, 14),
+        };
+        var headerGrid = new Grid
         {
             ColumnSpacing = 12,
             ColumnDefinitions =
             {
+                new ColumnDefinition { Width = GridLength.Auto },
                 new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
                 new ColumnDefinition { Width = GridLength.Auto },
             },
-            Children =
-            {
-                new StackPanel
-                {
-                    Spacing = 3,
-                    Children =
-                    {
-                        new TextBlock
-                        {
-                            Text = skill.Name,
-                            FontSize = 20,
-                            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                            Foreground = Brush("V2ForegroundBrush"),
-                        },
-                        new TextBlock
-                        {
-                            Text = $"{skill.Scope} / {skill.SkillFile}",
-                            FontSize = 12,
-                            Foreground = Brush("V2MutedForegroundBrush"),
-                            TextTrimming = TextTrimming.CharacterEllipsis,
-                        },
-                    },
-                },
-                new StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    Spacing = 6,
-                    Children =
-                    {
-                        SmallActionButton(L("Open", "\u6253\u5f00"), async () => await ShowTextDialogAsync(skill.Name, _skillService.Read(skill))),
-                        SmallActionButton(L("Delete", "\u5220\u9664"), async () => await DeleteSkillAsync(skill)),
-                    },
-                },
-            },
-        });
-        if (detail.Children[0] is Grid header)
+        };
+        headerGrid.Children.Add(new Border
         {
-            Grid.SetColumn((FrameworkElement)header.Children[1], 1);
+            Width = 42,
+            Height = 42,
+            CornerRadius = new CornerRadius(10),
+            Background = Brush("V2CardSurfaceSubtleBrush"),
+            BorderBrush = scopeBrush,
+            BorderThickness = new Thickness(1),
+            Child = Icon("Sparkles", 17, scopeBrush),
+        });
+        var titleBlock = new StackPanel { Spacing = 5 };
+        var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        titleRow.Children.Add(new TextBlock
+        {
+            Text = skill.Name,
+            FontSize = 16,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        titleRow.Children.Add(SkillBadge(SkillScopeLabel(skill.Scope), scopeBrush));
+        if (!string.IsNullOrWhiteSpace(skill.Version))
+        {
+            titleRow.Children.Add(SkillBadge($"v{skill.Version}", Brush("V2MutedForegroundBrush")));
+        }
+        if (editorChanged)
+        {
+            titleRow.Children.Add(SkillBadge(L("Unsaved", "\u672a\u4fdd\u5b58"), Brush("V2AmberBrush")));
         }
 
-        detail.Children.Add(ToolBoardGroup(L("Description", "\u63cf\u8ff0"), null, new TextBlock
+        titleBlock.Children.Add(titleRow);
+        titleBlock.Children.Add(new TextBlock
         {
-            Text = string.IsNullOrWhiteSpace(skill.Description) ? L("No description.", "\u65e0\u63cf\u8ff0\u3002") : skill.Description,
-            FontSize = 13,
+            Text = string.IsNullOrWhiteSpace(skill.Description) ? skill.Slug : skill.Description,
+            FontSize = 12,
             Foreground = Brush("V2SecondaryForegroundBrush"),
             TextWrapping = TextWrapping.Wrap,
-        }));
-        detail.Children.Add(ToolBoardGroup(L("Skill File", "\u6280\u80fd\u6587\u4ef6"), skill.SkillDir, new TextBox
+            MaxLines = 2,
+        });
+        var metaRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14 };
+        metaRow.Children.Add(SkillMetaLabel(L("Saved at", "\u4fdd\u5b58\u4f4d\u7f6e"), skill.SkillDir));
+        metaRow.Children.Add(SkillMetaLabel(L("Effective in", "\u751f\u6548\u8303\u56f4"), SkillEffectiveRange(skill)));
+        titleBlock.Children.Add(metaRow);
+        Grid.SetColumn(titleBlock, 1);
+        headerGrid.Children.Add(titleBlock);
+
+        var actions = new StackPanel
         {
-            Text = content,
-            IsReadOnly = true,
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Top,
+            Children =
+            {
+                SkillHeaderButton("Folder", L("Reveal", "\u663e\u793a"), async () => await RevealSkillAsync(skill)),
+                SkillHeaderButton("Copy", L("Open", "\u6253\u5f00"), async () => await ShowTextDialogAsync(skill.Name, _skillEditorContent)),
+                SkillHeaderButton("Trash", T("common.delete"), async () => await DeleteSkillAsync(skill)),
+            },
+        };
+        Grid.SetColumn(actions, 2);
+        headerGrid.Children.Add(actions);
+        header.Children.Add(headerGrid);
+
+        if (skill.Scope == SkillScope.User && State.SelectedProject is not null)
+        {
+            header.Children.Add(SkillInlineNotice("globe", L("This is a global skill. It remains available when you switch to other projects.", "\u8fd9\u662f\u5168\u5c40\u6280\u80fd\uff0c\u5207\u6362\u5230\u5176\u4ed6\u9879\u76ee\u540e\u4ecd\u7136\u53ef\u7528\u3002")));
+        }
+        else if (skill.Scope == SkillScope.Project)
+        {
+            header.Children.Add(SkillInlineNotice("Folder", L("If a global skill has the same name, this project skill is the one the agent will load here.", "\u5982\u679c\u5b58\u5728\u540c\u540d\u5168\u5c40\u6280\u80fd\uff0c\u5f53\u524d\u9879\u76ee\u4f1a\u4f18\u5148\u52a0\u8f7d\u8fd9\u4e2a\u9879\u76ee\u6280\u80fd\u3002")));
+        }
+
+        root.Children.Add(new Border
+        {
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = header,
+        });
+
+        var editor = new TextBox
+        {
             AcceptsReturn = true,
-            TextWrapping = TextWrapping.Wrap,
+            Text = _skillEditorContent,
+            TextWrapping = TextWrapping.NoWrap,
             FontFamily = new FontFamily("Consolas"),
-            FontSize = 12,
-            MinHeight = 320,
+            FontSize = 13,
+            Padding = new Thickness(12),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
             Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
-        }));
-        return new ScrollViewer
+        };
+        editor.TextChanged += (_, _) => _skillEditorContent = editor.Text;
+        Grid.SetRow(editor, 1);
+        root.Children.Add(editor);
+
+        var footer = new Grid
         {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = detail,
+            Height = 44,
+            ColumnSpacing = 8,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+        footer.Children.Add(new TextBlock
+        {
+            Text = editorChanged ? L("Edited SKILL.md", "SKILL.md \u5df2\u7f16\u8f91") : L("No unsaved changes", "\u6ca1\u6709\u672a\u4fdd\u5b58\u66f4\u6539"),
+            FontSize = 11,
+            Foreground = editorChanged ? Brush("V2AmberBrush") : Brush("V2MutedForegroundBrush"),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var revert = SkillFooterButton(L("Revert", "\u8fd8\u539f"), async () =>
+        {
+            _skillEditorContent = _skillEditorOriginalContent;
+            await Task.CompletedTask;
+            RenderAll();
+        });
+        revert.IsEnabled = editorChanged;
+        Grid.SetColumn(revert, 1);
+        footer.Children.Add(revert);
+        var save = SkillFooterButton(T("common.save"), async () => await SaveSkillAsync(skill));
+        save.Content = IconText("Save", T("common.save"), 14, editorChanged ? null : Brush("V2MutedForegroundBrush"));
+        save.IsEnabled = editorChanged;
+        Grid.SetColumn(save, 2);
+        footer.Children.Add(save);
+        Grid.SetRow(footer, 2);
+        root.Children.Add(new Border
+        {
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Child = footer,
+        });
+        return root;
+    }
+
+    private void EnsureSkillEditorState(SkillRecord skill)
+    {
+        var key = SkillKey(skill);
+        if (string.Equals(_skillEditorKey, key, StringComparison.Ordinal)) return;
+        _skillEditorKey = key;
+        try
+        {
+            _skillEditorContent = _skillService.Read(skill);
+            _skillEditorOriginalContent = _skillEditorContent;
+        }
+        catch (Exception ex)
+        {
+            _skillEditorContent = ex.Message;
+            _skillEditorOriginalContent = _skillEditorContent;
+        }
+    }
+
+    private async Task SaveSkillAsync(SkillRecord skill)
+    {
+        try
+        {
+            var updated = _skillService.Write(skill, _skillEditorContent);
+            _skillEditorOriginalContent = _skillEditorContent;
+            _skillEditorKey = SkillKey(updated);
+            _selectedSkillKey = SkillKey(updated);
+            _toolStatus = L("Skill saved.", "\u6280\u80fd\u5df2\u4fdd\u5b58\u3002");
+            RefreshNativeStores();
+        }
+        catch (Exception ex)
+        {
+            _toolStatus = ex.Message;
+        }
+
+        await Task.CompletedTask;
+        RenderAll();
+    }
+
+    private async Task RevealSkillAsync(SkillRecord skill)
+    {
+        try
+        {
+            var explorerArg = File.Exists(skill.SkillFile) ? $"/select,\"{skill.SkillFile}\"" : $"\"{skill.SkillDir}\"";
+            Process.Start(new ProcessStartInfo("explorer.exe", explorerArg) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            _toolStatus = ex.Message;
+            RenderAll();
+        }
+
+        await Task.CompletedTask;
+    }
+
+    private Button SkillHeaderButton(string iconKey, string label, Func<Task> action)
+    {
+        var button = new Button
+        {
+            Content = IconText(iconKey, label, 14),
+            Height = 32,
+            MinWidth = 0,
+            Padding = new Thickness(10, 0, 10, 0),
+            Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
+        };
+        button.Click += async (_, _) => await action();
+        return button;
+    }
+
+    private Button SkillFooterButton(string label, Func<Task> action)
+    {
+        var button = new Button
+        {
+            Content = label,
+            Height = 30,
+            MinWidth = 0,
+            Padding = new Thickness(10, 0, 10, 0),
+            Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
+        };
+        button.Click += async (_, _) => await action();
+        return button;
+    }
+
+    private FrameworkElement SkillBadge(string title, Brush tint) => new Border
+    {
+        CornerRadius = new CornerRadius(999),
+        Background = Brush("V2ControlSurfaceBrush"),
+        BorderBrush = tint,
+        BorderThickness = new Thickness(1),
+        Padding = new Thickness(7, 3, 7, 3),
+        Child = new TextBlock
+        {
+            Text = title,
+            FontSize = 10,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = tint,
+        },
+    };
+
+    private FrameworkElement SkillMetaLabel(string title, string value) => new StackPanel
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 5,
+        Children =
+        {
+            new TextBlock
+            {
+                Text = title,
+                FontSize = 11,
+                FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                Foreground = Brush("V2MutedForegroundBrush"),
+            },
+            new TextBlock
+            {
+                Text = value,
+                FontSize = 11,
+                Foreground = Brush("V2SecondaryForegroundBrush"),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = 360,
+            },
+        },
+    };
+
+    private FrameworkElement SkillInlineNotice(string iconKey, string text)
+    {
+        var body = new Grid
+        {
+            ColumnSpacing = 8,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+            },
+        };
+        body.Children.Add(Icon(iconKey, 13, Brush("V2MutedForegroundBrush")));
+        var copy = new TextBlock
+        {
+            Text = text,
+            FontSize = 12,
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+            TextWrapping = TextWrapping.Wrap,
+        };
+        Grid.SetColumn(copy, 1);
+        body.Children.Add(copy);
+        return new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = Brush("V2CardSurfaceSubtleBrush"),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(10, 8, 10, 8),
+            Child = body,
         };
     }
 
-    private FrameworkElement MemoryRecordSection(string title, string subtitle, IEnumerable<MemoryRecord> records)
+    private string SkillScopeLabel(SkillScope scope) => scope switch
+    {
+        SkillScope.Project => L("Project", "\u9879\u76ee"),
+        SkillScope.Plugin => "Plugin",
+        _ => L("Global", "\u5168\u5c40"),
+    };
+
+    private Brush SkillScopeBrush(SkillScope scope) => scope switch
+    {
+        SkillScope.Project => Brush("V2BlueBrush"),
+        SkillScope.Plugin => Brush("V2AmberBrush"),
+        _ => Brush("V2MutedForegroundBrush"),
+    };
+
+    private string SkillEffectiveRange(SkillRecord skill) => skill.Scope switch
+    {
+        SkillScope.Project => State.SelectedProject?.DisplayName ?? L("Current project", "\u5f53\u524d\u9879\u76ee"),
+        SkillScope.Plugin => L("Bundled plugin", "\u5185\u7f6e\u63d2\u4ef6"),
+        _ => L("General chat and every project", "\u901a\u7528\u5bf9\u8bdd\u548c\u6240\u6709\u9879\u76ee"),
+    };
+
+    private void SelectMemoryRecord(MemoryRecord record)
+    {
+        _selectedMemoryRecordId = record.Id;
+        RenderAll();
+    }
+
+    private FrameworkElement MemoryRecordSection(string title, string subtitle, IEnumerable<MemoryRecord> records, Action<MemoryRecord> onSelect)
     {
         var rows = records.OrderByDescending(record => record.UpdatedAt).ToList();
         if (rows.Count == 0)
@@ -6210,46 +6490,225 @@ public sealed partial class MainWindow : Window
             return ToolBoardGroup(title, subtitle, DashedEmptyState(L("No records yet", "\u6682\u65e0\u8bb0\u5f55"), L("Records will appear here after they are created or imported.", "\u521b\u5efa\u6216\u5bfc\u5165\u540e\u8bb0\u5f55\u4f1a\u663e\u793a\u5728\u8fd9\u91cc\u3002")));
         }
 
-        return ToolBoardGroup(title, subtitle, rows.Select(MemoryRecordRow).ToArray());
+        var cardStack = new StackPanel { Spacing = 10 };
+        foreach (var record in rows)
+        {
+            cardStack.Children.Add(MemoryRecordRow(record, onSelect));
+        }
+
+        return ToolBoardGroup(title, subtitle, cardStack);
     }
 
-    private FrameworkElement MemoryRecordRow(MemoryRecord record)
+    private FrameworkElement MemoryRecordRow(MemoryRecord record, Action<MemoryRecord> onSelect)
     {
         var grid = new Grid
         {
-            MinHeight = 58,
-            Padding = new Thickness(10, 9, 10, 9),
-            ColumnSpacing = 10,
+            MinHeight = 96,
+            Padding = new Thickness(14, 12, 12, 12),
+            RowSpacing = 6,
         };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.Children.Add(Icon("Database", 14, Brush("V2MutedForegroundBrush")));
-        var text = new StackPanel { Spacing = 2 };
-        text.Children.Add(new TextBlock
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var header = new Grid
+        {
+            ColumnSpacing = 8,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+        header.Children.Add(new TextBlock
         {
             Text = record.Name,
-            FontSize = 13,
+            FontSize = 14,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = Brush("V2ForegroundBrush"),
             TextTrimming = TextTrimming.CharacterEllipsis,
-        });
-        text.Children.Add(new TextBlock
-        {
-            Text = record.Summary,
-            FontSize = 12,
-            Foreground = Brush("V2MutedForegroundBrush"),
-            TextWrapping = TextWrapping.Wrap,
             MaxLines = 2,
         });
-        Grid.SetColumn(text, 1);
-        grid.Children.Add(text);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        actions.Children.Add(SmallActionButton(L("Open", "\u6253\u5f00"), async () => await ShowTextDialogAsync(record.Name, record.Content)));
-        actions.Children.Add(SmallActionButton(L("Delete", "\u5220\u9664"), async () => await DeleteMemoryAsync(record)));
-        Grid.SetColumn(actions, 2);
-        grid.Children.Add(actions);
-        return grid;
+        var badge = SkillBadge(record.Deprecated ? L("Deprecated", "\u5df2\u5f03\u7528") : MemoryRecordTypeLabel(record.Type), MemoryRecordBrush(record));
+        Grid.SetColumn(badge, 1);
+        header.Children.Add(badge);
+        grid.Children.Add(header);
+
+        var meta = new TextBlock
+        {
+            Text = MemoryRecordMetaLine(record),
+            FontSize = 11,
+            Foreground = Brush("V2MutedForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        Grid.SetRow(meta, 1);
+        grid.Children.Add(meta);
+
+        var summary = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(record.Summary) ? record.Content : record.Summary,
+            FontSize = 12,
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+            TextWrapping = TextWrapping.Wrap,
+            MaxLines = 3,
+        };
+        Grid.SetRow(summary, 2);
+        grid.Children.Add(summary);
+
+        var button = new Button
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(0),
+            Background = Brush("V2ContentSurfaceBrush"),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Content = grid,
+        };
+        button.Click += (_, _) => onSelect(record);
+        return new Grid
+        {
+            Children =
+            {
+                button,
+                new Border
+                {
+                    Width = 3,
+                    Margin = new Thickness(1, 10, 0, 10),
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    CornerRadius = new CornerRadius(999),
+                    Background = MemoryRecordBrush(record),
+                },
+            },
+        };
+    }
+
+    private FrameworkElement MemoryDetailPage(MemoryRecord record)
+    {
+        var body = new StackPanel
+        {
+            Spacing = 18,
+            Padding = new Thickness(28),
+            MaxWidth = 1120,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        body.Children.Add(SkillHeaderButton("ChevronLeft", L("Back", "\u8fd4\u56de"), async () =>
+        {
+            _selectedMemoryRecordId = null;
+            await Task.CompletedTask;
+            RenderAll();
+        }));
+
+        var header = new Grid
+        {
+            ColumnSpacing = 16,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+        var title = new StackPanel { Spacing = 7 };
+        title.Children.Add(new TextBlock
+        {
+            Text = MemoryRecordTypeLabel(record.Type),
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+            Foreground = Brush("V2MutedForegroundBrush"),
+        });
+        title.Children.Add(new TextBlock
+        {
+            Text = record.Name,
+            FontSize = 24,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
+            TextWrapping = TextWrapping.Wrap,
+        });
+        title.Children.Add(new TextBlock
+        {
+            Text = record.Summary,
+            FontSize = 14,
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+            TextWrapping = TextWrapping.Wrap,
+        });
+        title.Children.Add(new TextBlock
+        {
+            Text = MemoryRecordMetaLine(record),
+            FontSize = 11,
+            Foreground = Brush("V2MutedForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        header.Children.Add(title);
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Top,
+            Children =
+            {
+                SkillHeaderButton("Copy", L("Open", "\u6253\u5f00"), async () => await ShowTextDialogAsync(record.Name, record.Content)),
+                SkillHeaderButton("Trash", T("common.delete"), async () => await DeleteMemoryAsync(record)),
+            },
+        };
+        Grid.SetColumn(actions, 1);
+        header.Children.Add(actions);
+        body.Children.Add(new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Background = Brush("V2ContentSurfaceBrush"),
+            Padding = new Thickness(18),
+            Child = header,
+        });
+
+        body.Children.Add(new TextBox
+        {
+            AcceptsReturn = true,
+            Text = string.IsNullOrWhiteSpace(record.Content) ? record.Summary : record.Content,
+            IsReadOnly = true,
+            TextWrapping = TextWrapping.Wrap,
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
+            MinHeight = 360,
+            Padding = new Thickness(16),
+            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+        });
+        return new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = body,
+        };
+    }
+
+    private string MemoryRecordTypeLabel(MemoryRecordType type) => type switch
+    {
+        MemoryRecordType.Project => L("Project", "\u9879\u76ee"),
+        MemoryRecordType.Feedback => L("Feedback", "\u53cd\u9988"),
+        MemoryRecordType.User => L("User", "\u7528\u6237"),
+        MemoryRecordType.GeneralProjectMeta => L("Chat Project", "\u901a\u7528\u4e3b\u9898"),
+        _ => type.ToString(),
+    };
+
+    private string MemoryRecordMetaLine(MemoryRecord record) =>
+        string.Join(" / ", new[]
+        {
+            RelativeLabel(record.UpdatedAt),
+            MemoryRecordTypeLabel(record.Type),
+            record.RelativePath,
+        }.Where(part => !string.IsNullOrWhiteSpace(part)));
+
+    private Brush MemoryRecordBrush(MemoryRecord record)
+    {
+        if (record.Deprecated) return Brush("V2MutedForegroundBrush");
+        return record.Type switch
+        {
+            MemoryRecordType.Project => Brush("V2BlueBrush"),
+            MemoryRecordType.Feedback => Brush("V2GreenBrush"),
+            MemoryRecordType.User => Brush("V2AmberBrush"),
+            _ => Brush("V2MutedForegroundBrush"),
+        };
     }
 
     private FrameworkElement AlwaysOnPlansSection(IEnumerable<AlwaysOnPlan> plans)
@@ -6537,6 +6996,10 @@ public sealed partial class MainWindow : Window
         {
             _skillService.Delete(skill);
             _toolStatus = $"Deleted skill {skill.Name}.";
+            _selectedSkillKey = null;
+            _skillEditorKey = null;
+            _skillEditorContent = "";
+            _skillEditorOriginalContent = "";
             RefreshNativeStores();
         }
         catch (Exception ex)
@@ -6563,6 +7026,7 @@ public sealed partial class MainWindow : Window
     {
         _memoryService.Delete(memory);
         _toolStatus = $"Deleted memory {memory.Name}.";
+        if (_selectedMemoryRecordId == memory.Id) _selectedMemoryRecordId = null;
         RefreshNativeStores();
         await Task.CompletedTask;
         RenderAll();
