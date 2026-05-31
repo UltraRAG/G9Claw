@@ -6456,7 +6456,7 @@ public sealed partial class MainWindow : Window
             BorderThickness = new Thickness(1),
             Child = Icon("Sparkles", 17, scopeBrush),
         });
-        var titleBlock = new StackPanel { Spacing = 5 };
+        var titleBlock = new StackPanel { Spacing = 5, MinWidth = 0 };
         var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         titleRow.Children.Add(new TextBlock
         {
@@ -6486,7 +6486,7 @@ public sealed partial class MainWindow : Window
             TextWrapping = TextWrapping.Wrap,
             MaxLines = 2,
         });
-        var metaRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14 };
+        var metaRow = new StackPanel { Spacing = 4 };
         metaRow.Children.Add(SkillMetaLabel(L("Saved at", "\u4fdd\u5b58\u4f4d\u7f6e"), skill.SkillDir));
         metaRow.Children.Add(SkillMetaLabel(L("Effective in", "\u751f\u6548\u8303\u56f4"), SkillEffectiveRange(skill)));
         titleBlock.Children.Add(metaRow);
@@ -6573,13 +6573,14 @@ public sealed partial class MainWindow : Window
         save.IsEnabled = editorChanged;
         Grid.SetColumn(save, 2);
         footer.Children.Add(save);
-        Grid.SetRow(footer, 2);
-        root.Children.Add(new Border
+        var footerHost = new Border
         {
             BorderBrush = Brush("V2BorderBrush"),
             BorderThickness = new Thickness(0, 1, 0, 0),
             Child = footer,
-        });
+        };
+        Grid.SetRow(footerHost, 2);
+        root.Children.Add(footerHost);
         return root;
     }
 
@@ -6680,29 +6681,37 @@ public sealed partial class MainWindow : Window
         },
     };
 
-    private FrameworkElement SkillMetaLabel(string title, string value) => new StackPanel
+    private FrameworkElement SkillMetaLabel(string title, string value)
     {
-        Orientation = Orientation.Horizontal,
-        Spacing = 5,
-        Children =
+        var grid = new Grid
         {
-            new TextBlock
+            ColumnSpacing = 5,
+            MaxWidth = 360,
+            ColumnDefinitions =
             {
-                Text = title,
-                FontSize = 11,
-                FontWeight = Microsoft.UI.Text.FontWeights.Medium,
-                Foreground = Brush("V2MutedForegroundBrush"),
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
             },
-            new TextBlock
-            {
-                Text = value,
-                FontSize = 11,
-                Foreground = Brush("V2SecondaryForegroundBrush"),
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                MaxWidth = 360,
-            },
-        },
-    };
+        };
+        grid.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 11,
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+            Foreground = Brush("V2MutedForegroundBrush"),
+        });
+        var valueBlock = new TextBlock
+        {
+            Text = value,
+            FontSize = 11,
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MinWidth = 0,
+        };
+        Grid.SetColumn(valueBlock, 1);
+        grid.Children.Add(valueBlock);
+        return grid;
+    }
 
     private FrameworkElement SkillInlineNotice(string iconKey, string text)
     {
