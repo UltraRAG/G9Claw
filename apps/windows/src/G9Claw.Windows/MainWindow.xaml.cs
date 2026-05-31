@@ -5962,6 +5962,7 @@ public sealed partial class MainWindow : Window
                 ColumnDefinitions =
                 {
                     new ColumnDefinition { Width = new GridLength(360) },
+                    new ColumnDefinition { Width = GridLength.Auto },
                     new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
                     new ColumnDefinition { Width = GridLength.Auto },
                 },
@@ -5973,6 +5974,10 @@ public sealed partial class MainWindow : Window
         };
         if (memoryToolbar.Child is Grid memoryToolbarGrid)
         {
+            var searchButton = ToolbarButton("Search", L("Search", "\u641c\u7d22"), (Action)RenderAll);
+            Grid.SetColumn(searchButton, 1);
+            memoryToolbarGrid.Children.Add(searchButton);
+
             var memoryActions = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -5980,12 +5985,13 @@ public sealed partial class MainWindow : Window
                 VerticalAlignment = VerticalAlignment.Center,
                 Children =
                 {
-                    ToolbarButton("Plus", L("New", "\u65b0\u5efa"), (Action)(async () => await CreateMemoryAsync())),
-                    ToolbarButton("Download", T("common.export"), (Action)(async () => await ExportMemoryAsync())),
                     ToolbarButton("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
+                    ToolbarButton("Refresh", "Index", (Action)(() => ShowMemoryJobNotice("Index"))),
+                    ToolbarButton("Sparkles", "Dream", (Action)(() => ShowMemoryJobNotice("Dream"))),
+                    MemoryMoreButton(),
                 },
             };
-            Grid.SetColumn(memoryActions, 2);
+            Grid.SetColumn(memoryActions, 3);
             memoryToolbarGrid.Children.Add(memoryActions);
         }
         Grid.SetRow(memoryToolbar, 1);
@@ -6043,6 +6049,32 @@ public sealed partial class MainWindow : Window
         Grid.SetRow(scroll, 2);
         shell.Children.Add(scroll);
         return shell;
+    }
+
+    private void ShowMemoryJobNotice(string job)
+    {
+        _toolStatus = L(
+            $"{job} is not wired to the Windows native runtime yet.",
+            $"{job} \u5c1a\u672a\u63a5\u5165 Windows \u539f\u751f\u8fd0\u884c\u65f6\u3002");
+        RenderAll();
+    }
+
+    private Button MemoryMoreButton()
+    {
+        var button = ToolbarButton("Ellipsis", L("More", "\u66f4\u591a"), () => { });
+        var flyout = new MenuFlyout();
+        var create = new MenuFlyoutItem { Text = L("New", "\u65b0\u5efa") };
+        create.Click += async (_, _) => await CreateMemoryAsync();
+        flyout.Items.Add(create);
+        var export = new MenuFlyoutItem { Text = T("common.export") };
+        export.Click += async (_, _) => await ExportMemoryAsync();
+        flyout.Items.Add(export);
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        var rollback = new MenuFlyoutItem { Text = L("Rollback Last Dream", "\u56de\u6eda\u4e0a\u4e00\u6b21 Dream") };
+        rollback.Click += (_, _) => ShowMemoryJobNotice("Rollback");
+        flyout.Items.Add(rollback);
+        button.Flyout = flyout;
+        return button;
     }
 
     private FrameworkElement AlwaysOnPage()
