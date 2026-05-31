@@ -5435,26 +5435,32 @@ public sealed partial class MainWindow : Window
             return EmptyFullPage(T("git.title"), T("git.pickProject"), "GitBranch");
         }
 
-        var page = ToolPage(T("git.title"), State.SelectedProject.RootPath, new[]
+        var page = ToolPage(T("git.title"), State.SelectedProject.RootPath, new StackPanel
         {
-            ("GitBranch", "Status", (Action)(() => { _gitDiffText = null; _toolStatus = null; RenderAll(); })),
-            ("Code", "Diff", (Action)(() =>
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
             {
-                try
+                ToolbarButton("GitBranch", "Status", (Action)(() => { _gitDiffText = null; _toolStatus = null; RenderAll(); }), isProminent: true),
+                ToolbarButton("Code", "Diff", (Action)(() =>
                 {
-                    _gitDiffText = _gitService.Diff(State.SelectedProject.RootPath);
-                    _toolStatus = null;
-                }
-                catch (Exception ex)
-                {
-                    _gitDiffText = ex.Message;
-                }
+                    try
+                    {
+                        _gitDiffText = _gitService.Diff(State.SelectedProject.RootPath);
+                        _toolStatus = null;
+                    }
+                    catch (Exception ex)
+                    {
+                        _gitDiffText = ex.Message;
+                    }
 
-                RenderAll();
-            })),
-            ("Download", "Fetch", (Action)(async () => await GitActionAsync(() => { _gitService.Fetch(State.SelectedProject.RootPath); return "Fetched origin."; }))),
-            ("Download", "Pull", (Action)(async () => await GitActionAsync(() => { _gitService.Pull(State.SelectedProject.RootPath, "G9Claw", "g9claw@example.local"); return "Pulled current branch."; }))),
-            ("ArrowUp", "Push", (Action)(async () => await GitActionAsync(() => { _gitService.PushCurrentBranch(State.SelectedProject.RootPath); return "Pushed current branch."; }))),
+                    RenderAll();
+                })),
+                ToolbarButton("Download", "Fetch", (Action)(async () => await GitActionAsync(() => { _gitService.Fetch(State.SelectedProject.RootPath); return "Fetched origin."; }))),
+                ToolbarButton("Download", "Pull", (Action)(async () => await GitActionAsync(() => { _gitService.Pull(State.SelectedProject.RootPath, "G9Claw", "g9claw@example.local"); return "Pulled current branch."; }))),
+                ToolbarButton("ArrowUp", "Push", (Action)(async () => await GitActionAsync(() => { _gitService.PushCurrentBranch(State.SelectedProject.RootPath); return "Pushed current branch."; }))),
+            },
         });
         var body = (Grid)page.Tag!;
 
@@ -7464,7 +7470,7 @@ public sealed partial class MainWindow : Window
     {
         var button = new Button
         {
-            Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
+            Style = (Style)Application.Current.Resources[isProminent ? "V2PrimaryButtonStyle" : "V2ToolbarButtonStyle"],
             Height = 32,
             Content = new StackPanel
             {
@@ -7472,8 +7478,8 @@ public sealed partial class MainWindow : Window
                 Spacing = 6,
                 Children =
                 {
-                    Icon(iconKey, 14, Brush(isProminent ? "V2ForegroundBrush" : "V2SecondaryForegroundBrush")),
-                    new TextBlock { Text = label, FontSize = 12, VerticalAlignment = VerticalAlignment.Center },
+                    Icon(iconKey, 14, Brush(isProminent ? "V2InverseForegroundBrush" : "V2SecondaryForegroundBrush")),
+                    new TextBlock { Text = label, FontSize = 12, Foreground = Brush(isProminent ? "V2InverseForegroundBrush" : "V2SecondaryForegroundBrush"), VerticalAlignment = VerticalAlignment.Center },
                 },
             },
         };
