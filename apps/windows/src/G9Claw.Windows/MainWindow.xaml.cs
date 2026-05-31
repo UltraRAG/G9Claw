@@ -4606,37 +4606,15 @@ public sealed partial class MainWindow : Window
             return EmptyFullPage(T("files.title"), T("files.pickProject"), "Folder");
         }
 
-        var root = ToolPage(T("files.title"), State.SelectedProject.RootPath, new[]
-        {
-            ("Document", T("files.newFile"), (Action)(async () => await CreateWorkspaceItemAsync(false))),
-            ("FolderPlus", T("files.newFolder"), (Action)(async () => await CreateWorkspaceItemAsync(true))),
-            ("Upload", T("files.upload"), (Action)(async () => await UploadWorkspaceFileAsync())),
-            ("Refresh", T("common.refresh"), (Action)(() => { _previewDraftText = null; RenderAll(); })),
-            ("Edit", T("common.rename"), (Action)(async () => await RenameWorkspaceItemAsync())),
-            ("Trash", T("common.delete"), (Action)(async () => await DeleteWorkspaceItemAsync())),
-        });
-
-        var body = (Grid)root.Tag!;
-        body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.46, GridUnitType.Star) });
-        body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1) });
-        body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.54, GridUnitType.Star) });
+        var root = new Grid { Background = Brush("V2BackgroundBrush") };
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.46, GridUnitType.Star) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.54, GridUnitType.Star) });
 
         var left = new Grid { Background = Brush("V2BackgroundBrush") };
         left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var search = new TextBox
-        {
-            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
-            PlaceholderText = T("files.search"),
-            Text = _fileSearchText,
-            Margin = new Thickness(12, 10, 12, 8),
-        };
-        search.TextChanged += (_, _) =>
-        {
-            _fileSearchText = search.Text;
-            RenderContent();
-        };
-        left.Children.Add(search);
+        left.Children.Add(FilesPaneHeader());
 
         var list = new StackPanel { Padding = new Thickness(12, 0, 12, 10), Spacing = 2 };
         try
@@ -4670,16 +4648,126 @@ public sealed partial class MainWindow : Window
         var scroller = new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         Grid.SetRow(scroller, 1);
         left.Children.Add(scroller);
-        body.Children.Add(left);
+        root.Children.Add(left);
 
         var divider = new Border { Background = Brush("V2BorderBrush") };
         Grid.SetColumn(divider, 1);
-        body.Children.Add(divider);
+        root.Children.Add(divider);
 
         var preview = FilePreviewPane();
         Grid.SetColumn(preview, 2);
-        body.Children.Add(preview);
+        root.Children.Add(preview);
         return root;
+    }
+
+    private FrameworkElement FilesPaneHeader()
+    {
+        var header = new StackPanel
+        {
+            Spacing = 9,
+            Padding = new Thickness(12, 10, 12, 10),
+        };
+        var top = new Grid { ColumnSpacing = 10 };
+        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        top.Children.Add(new StackPanel
+        {
+            Spacing = 2,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = T("files.title"),
+                    FontSize = 14,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = Brush("V2ForegroundBrush"),
+                },
+                new TextBlock
+                {
+                    Text = State.SelectedProject?.RootPath ?? T("chat.status.selectProject"),
+                    FontSize = 10.5,
+                    FontFamily = new FontFamily("Cascadia Mono, Consolas"),
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                },
+            },
+        });
+        var toolbar = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Children =
+            {
+                FilesToolbarButton("Document", T("files.newFile"), async () => await CreateWorkspaceItemAsync(false)),
+                FilesToolbarButton("FolderPlus", T("files.newFolder"), async () => await CreateWorkspaceItemAsync(true)),
+                FilesToolbarButton("Upload", T("files.upload"), async () => await UploadWorkspaceFileAsync()),
+                FilesToolbarButton("Refresh", T("common.refresh"), async () =>
+                {
+                    _previewDraftText = null;
+                    await Task.CompletedTask;
+                    RenderAll();
+                }),
+            },
+        };
+        Grid.SetColumn(toolbar, 1);
+        top.Children.Add(toolbar);
+        header.Children.Add(top);
+
+        var search = new TextBox
+        {
+            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+            PlaceholderText = T("files.search"),
+            Text = _fileSearchText,
+        };
+        search.TextChanged += (_, _) =>
+        {
+            _fileSearchText = search.Text;
+            RenderContent();
+        };
+        var tools = new Grid { ColumnSpacing = 8 };
+        tools.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        tools.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        tools.Children.Add(SearchField(search));
+        var more = FilesMoreButton();
+        Grid.SetColumn(more, 1);
+        tools.Children.Add(more);
+        header.Children.Add(tools);
+
+        return new Border
+        {
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = header,
+        };
+    }
+
+    private Button FilesToolbarButton(string iconKey, string tooltip, Func<Task> action)
+    {
+        var button = PreviewHeaderButton(iconKey, tooltip);
+        button.Click += async (_, _) => await action();
+        return button;
+    }
+
+    private Button FilesMoreButton()
+    {
+        var button = PreviewHeaderButton("Ellipsis", L("More", "\u66f4\u591a"));
+        var flyout = new MenuFlyout();
+        var rename = new MenuFlyoutItem { Text = T("common.rename") };
+        rename.Click += async (_, _) => await RenameWorkspaceItemAsync();
+        flyout.Items.Add(rename);
+        var delete = new MenuFlyoutItem { Text = T("common.delete") };
+        delete.Click += async (_, _) => await DeleteWorkspaceItemAsync();
+        flyout.Items.Add(delete);
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        var close = new MenuFlyoutItem { Text = L("Close", "\u5173\u95ed") };
+        close.Click += (_, _) =>
+        {
+            State.ActiveTab = AppTab.Chat;
+            RenderAll();
+        };
+        flyout.Items.Add(close);
+        button.Flyout = flyout;
+        return button;
     }
 
     private FrameworkElement FileRow(WorkspaceFile file)
