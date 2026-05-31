@@ -1228,6 +1228,7 @@ public sealed class ParityLogicTests
         Assert.True(pdf.IsPdf);
         Assert.True(LucideIconCatalog.HasIcon("globe"));
         Assert.True(LucideIconCatalog.HasIcon("doc.richtext"));
+        Assert.True(LucideIconCatalog.HasIcon("Ellipsis"));
         Assert.True(LucideIconCatalog.HasIcon("pencil"));
     }
 

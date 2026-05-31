@@ -1263,17 +1263,26 @@ public sealed partial class MainWindow : Window
         }
 
         ContentHost.Children.Clear();
-        var content = State.ActiveTab switch
+        FrameworkElement content;
+        try
         {
-            AppTab.Chat => ChatPage(),
-            AppTab.Files => FilesPage(),
-            AppTab.Skills => SkillsPage(),
-            AppTab.Dashboard => RoutingPage(),
-            AppTab.Memory => MemoryPage(),
-            AppTab.AlwaysOn => AlwaysOnPage(),
-            AppTab.Preview when activePlugin is not null => PluginPlaceholder(activePlugin),
-            _ => ToolPlaceholder(T("tabs.preview"), T("preview.detail"), "eye"),
-        };
+            content = State.ActiveTab switch
+            {
+                AppTab.Chat => ChatPage(),
+                AppTab.Files => FilesPage(),
+                AppTab.Skills => SkillsPage(),
+                AppTab.Dashboard => RoutingPage(),
+                AppTab.Memory => MemoryPage(),
+                AppTab.AlwaysOn => AlwaysOnPage(),
+                AppTab.Preview when activePlugin is not null => PluginPlaceholder(activePlugin),
+                _ => ToolPlaceholder(T("tabs.preview"), T("preview.detail"), "eye"),
+            };
+        }
+        catch (Exception ex)
+        {
+            content = PageErrorFallback(ex);
+        }
+
         if (State.ActiveTab != AppTab.Chat)
         {
             _chatScrollViewer = null;
@@ -1281,6 +1290,16 @@ public sealed partial class MainWindow : Window
 
         ContentHost.Children.Add(content);
     }
+
+    private FrameworkElement PageErrorFallback(Exception ex) => new Grid
+    {
+        Background = Brush("V2BackgroundBrush"),
+        Padding = new Thickness(24),
+        Children =
+        {
+            ErrorState(ex.Message),
+        },
+    };
 
     private FrameworkElement ChatPage()
     {

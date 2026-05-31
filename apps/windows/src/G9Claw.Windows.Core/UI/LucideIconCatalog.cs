@@ -23,6 +23,7 @@ public static class LucideIconCatalog
         "Document",
         "Download",
         "Edit",
+        "Ellipsis",
         "Eye",
         "FileCog",
         "Folder",
