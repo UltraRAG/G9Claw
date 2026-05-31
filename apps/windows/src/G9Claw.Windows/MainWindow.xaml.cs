@@ -6474,7 +6474,6 @@ public sealed partial class MainWindow : Window
                 ColumnDefinitions =
                 {
                     new ColumnDefinition { Width = new GridLength(360) },
-                    new ColumnDefinition { Width = GridLength.Auto },
                     new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
                     new ColumnDefinition { Width = GridLength.Auto },
                 },
@@ -6486,10 +6485,6 @@ public sealed partial class MainWindow : Window
         };
         if (memoryToolbar.Child is Grid memoryToolbarGrid)
         {
-            var searchButton = ToolbarButton("Search", L("Search", "\u641c\u7d22"), (Action)RenderAll);
-            Grid.SetColumn(searchButton, 1);
-            memoryToolbarGrid.Children.Add(searchButton);
-
             var memoryActions = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -6503,7 +6498,7 @@ public sealed partial class MainWindow : Window
                     MemoryMoreButton(),
                 },
             };
-            Grid.SetColumn(memoryActions, 3);
+            Grid.SetColumn(memoryActions, 2);
             memoryToolbarGrid.Children.Add(memoryActions);
         }
         Grid.SetRow(memoryToolbar, 1);
