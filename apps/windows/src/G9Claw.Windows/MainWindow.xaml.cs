@@ -1313,6 +1313,7 @@ public sealed partial class MainWindow : Window
         var isReadOnlyBackgroundSession = State.IsSelectedSessionReadOnlyBackground;
 
         StackPanel? welcomePanel = null;
+        var showGeneralProjectEntry = false;
         if (!hasMessages)
         {
             _chatScrollViewer = null;
@@ -1325,19 +1326,17 @@ public sealed partial class MainWindow : Window
             {
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(24, 24, 24, footerReserve),
-                MaxWidth = V2LayoutMetrics.ChatColumnMaxWidth,
+                Margin = new Thickness(24, 0, 24, 0),
+                MaxWidth = V2LayoutMetrics.ComposerMaxWidth,
                 Spacing = 0,
             };
             TrackChatColumnWidth(welcomePanel);
+            welcomePanel.Loaded += (_, _) => ApplyChatColumnWidth();
             var title = isReadOnlyBackgroundSession
                 ? T("chat.readOnlyBackground.title")
                 : ChatEmptyStateTitle();
             welcomePanel.Children.Add(ChatEmptyPrompt(title, detail));
-            if (!isReadOnlyBackgroundSession && GeneralProjectEntryPresentation.ShouldRender(State.SelectedProject))
-            {
-                welcomePanel.Children.Add(GeneralProjectEntryButton());
-            }
+            showGeneralProjectEntry = !isReadOnlyBackgroundSession && GeneralProjectEntryPresentation.ShouldRender(State.SelectedProject);
             root.Children.Add(welcomePanel);
         }
         else
@@ -1498,8 +1497,19 @@ public sealed partial class MainWindow : Window
         controlsRow.Children.Add(rightControls);
         composerStack.Children.Add(controlsRow);
 
-        composerFooter.Children.Add(composerShell);
-        root.Children.Add(composerFooter);
+        if (welcomePanel is not null)
+        {
+            welcomePanel.Children.Add(composerShell);
+            if (showGeneralProjectEntry)
+            {
+                welcomePanel.Children.Add(GeneralProjectEntryButton());
+            }
+        }
+        else
+        {
+            composerFooter.Children.Add(composerShell);
+            root.Children.Add(composerFooter);
+        }
         composerShell.Loaded += (_, _) => ApplyChatColumnWidth();
 
         return root;
@@ -7787,20 +7797,20 @@ public sealed partial class MainWindow : Window
     {
         HorizontalAlignment = HorizontalAlignment.Center,
         VerticalAlignment = VerticalAlignment.Top,
-        Margin = new Thickness(0, 0, 0, 32),
+        Margin = new Thickness(0, 0, 0, 34),
         Spacing = 10,
-        MaxWidth = V2LayoutMetrics.ChatColumnMaxWidth,
+        MaxWidth = V2LayoutMetrics.ComposerMaxWidth,
         Children =
         {
             new TextBlock
             {
                 Text = title,
-                FontSize = 26,
-                FontWeight = Microsoft.UI.Text.FontWeights.Normal,
+                FontSize = 24,
+                FontWeight = Microsoft.UI.Text.FontWeights.Medium,
                 Foreground = Brush("V2ForegroundBrush"),
                 TextAlignment = TextAlignment.Center,
                 TextWrapping = TextWrapping.Wrap,
-                MaxWidth = V2LayoutMetrics.ChatColumnMaxWidth,
+                MaxWidth = V2LayoutMetrics.ComposerMaxWidth,
             },
             new TextBlock
             {
@@ -7822,7 +7832,7 @@ public sealed partial class MainWindow : Window
             Height = 30,
             MinWidth = 0,
             HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, -20, 0, 0),
+            Margin = new Thickness(0, 8, 0, 0),
             Padding = new Thickness(10, 0, 10, 0),
             CornerRadius = new CornerRadius(999),
             Background = Brush("V2CardBrush"),
