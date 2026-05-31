@@ -198,6 +198,7 @@ public sealed partial class MainWindow : Window
     private bool? _lastToolSwitcherIconOnly;
     private bool _chatRenderPending;
     private Guid? _selectedMemoryRecordId;
+    private string? _selectedMemoryTraceId;
     private string? _selectedAlwaysOnPlanId;
     private ScrollViewer? _chatScrollViewer;
     private bool _chatStickToBottom = true;
@@ -6677,23 +6678,286 @@ public sealed partial class MainWindow : Window
         var stack = new StackPanel { Spacing = 16 };
         stack.Children.Add(InlineSegmentedControl(new[]
         {
-            ("Recall", _memoryTraceToolTab == MemoryTraceToolTab.Recall, (Action)(() => { _memoryTraceToolTab = MemoryTraceToolTab.Recall; RenderAll(); })),
-            ("Index", _memoryTraceToolTab == MemoryTraceToolTab.Index, (Action)(() => { _memoryTraceToolTab = MemoryTraceToolTab.Index; RenderAll(); })),
-            ("Dream", _memoryTraceToolTab == MemoryTraceToolTab.Dream, (Action)(() => { _memoryTraceToolTab = MemoryTraceToolTab.Dream; RenderAll(); })),
+            ("Recall", _memoryTraceToolTab == MemoryTraceToolTab.Recall, (Action)(() => SelectMemoryTraceToolTab(MemoryTraceToolTab.Recall))),
+            ("Index", _memoryTraceToolTab == MemoryTraceToolTab.Index, (Action)(() => SelectMemoryTraceToolTab(MemoryTraceToolTab.Index))),
+            ("Dream", _memoryTraceToolTab == MemoryTraceToolTab.Dream, (Action)(() => SelectMemoryTraceToolTab(MemoryTraceToolTab.Dream))),
         }));
 
-        stack.Children.Add(_memoryTraceToolTab switch
+        var records = MemoryTraceRecordsForCurrentTab();
+        if (records.Count == 0)
         {
-            MemoryTraceToolTab.Index => ToolBoardGroup("Index", L("Index sync traces and workspace ingestion status.", "\u7d22\u5f15\u540c\u6b65\u8ffd\u8e2a\u548c\u5de5\u4f5c\u533a\u6444\u53d6\u72b6\u6001\u3002"),
-                DashedEmptyState(L("No index traces", "\u6682\u65e0 Index \u8ffd\u8e2a"), L("Run Index Sync to show Index traces here.", "\u8fd0\u884c\u7d22\u5f15\u540c\u6b65\u540e\u8fd9\u91cc\u4f1a\u663e\u793a Index \u8ffd\u8e2a\u3002"))),
-            MemoryTraceToolTab.Dream => ToolBoardGroup("Dream", L("Memory Dream summaries and rollback snapshots.", "Memory Dream \u6458\u8981\u548c\u56de\u6eda\u5feb\u7167\u3002"),
-                DashedEmptyState(L("No Dream traces", "\u6682\u65e0 Dream \u8ffd\u8e2a"), L("Run Memory Dream to show Dream traces here.", "\u8fd0\u884c Memory Dream \u540e\u8fd9\u91cc\u4f1a\u663e\u793a Dream \u8ffd\u8e2a\u3002"))),
-            _ => ToolBoardGroup("Recall", L("Inspect memory recall traces from recent agent runs.", "\u68c0\u67e5\u8fd1\u671f Agent \u8fd0\u884c\u4e2d\u7684\u8bb0\u5fc6\u53ec\u56de\u8ffd\u8e2a\u3002"),
-                DashedEmptyState(L("No recall traces", "\u6682\u65e0 Recall \u8ffd\u8e2a"), L("Select a case to inspect Recall details.", "\u9009\u62e9\u4e00\u4e2a\u4e8b\u4f8b\u67e5\u770b Recall \u8be6\u60c5\u3002"))),
-        });
+            stack.Children.Add(ToolBoardGroup(
+                MemoryTraceSelectTitle(),
+                null,
+                DashedEmptyState(L("No trace records", "\u6682\u65e0\u8ffd\u8e2a\u8bb0\u5f55"), MemoryTraceEmptyDetail())));
+            return stack;
+        }
+
+        var selected = SelectedMemoryTrace(records);
+        stack.Children.Add(ToolBoardGroup(MemoryTraceSelectTitle(), null, MemoryTraceSelectLabel(selected, records)));
+        stack.Children.Add(MemoryTraceDetail(selected));
 
         return stack;
     }
+
+    private void SelectMemoryTraceToolTab(MemoryTraceToolTab tab)
+    {
+        if (_memoryTraceToolTab == tab) return;
+        _memoryTraceToolTab = tab;
+        _selectedMemoryTraceId = null;
+        RenderAll();
+    }
+
+    private string MemoryTraceSelectTitle() => _memoryTraceToolTab switch
+    {
+        MemoryTraceToolTab.Index => L("Select an Index trace", "\u9009\u62e9\u4e00\u6761 Index \u8ffd\u8e2a"),
+        MemoryTraceToolTab.Dream => L("Select a Dream trace", "\u9009\u62e9\u4e00\u6761 Dream \u8ffd\u8e2a"),
+        _ => L("Select a case", "\u9009\u62e9\u4e00\u4e2a\u4e8b\u4f8b"),
+    };
+
+    private string MemoryTraceEmptyDetail() => _memoryTraceToolTab switch
+    {
+        MemoryTraceToolTab.Index => L("Run Index Sync to show Index traces here.", "\u8fd0\u884c\u7d22\u5f15\u540c\u6b65\u540e\u8fd9\u91cc\u4f1a\u663e\u793a Index \u8ffd\u8e2a\u3002"),
+        MemoryTraceToolTab.Dream => L("Run Memory Dream to show Dream traces here.", "\u8fd0\u884c Memory Dream \u540e\u8fd9\u91cc\u4f1a\u663e\u793a Dream \u8ffd\u8e2a\u3002"),
+        _ => L("Select a case to inspect Recall details.", "\u9009\u62e9\u4e00\u4e2a\u4e8b\u4f8b\u67e5\u770b Recall \u8be6\u60c5\u3002"),
+    };
+
+    private IReadOnlyList<MemoryTraceRecord> MemoryTraceRecordsForCurrentTab()
+    {
+        var dashboard = State.MemoryDashboard;
+        var records = _memoryTraceToolTab switch
+        {
+            MemoryTraceToolTab.Index => dashboard.IndexTraceRecords,
+            MemoryTraceToolTab.Dream => dashboard.DreamTraceRecords,
+            _ => dashboard.CaseTraceRecords,
+        };
+        if (records is { Count: > 0 }) return records;
+
+        var legacy = _memoryTraceToolTab switch
+        {
+            MemoryTraceToolTab.Index => dashboard.IndexTraces,
+            MemoryTraceToolTab.Dream => dashboard.DreamTraces,
+            _ => dashboard.CaseTraces,
+        };
+
+        return legacy.Select((trace, index) => new MemoryTraceRecord(
+            $"{_memoryTraceToolTab.ToString().ToLowerInvariant()}-{index}",
+            MemoryTraceFallbackTitle(index),
+            "completed",
+            "legacy",
+            DateTimeOffset.Now,
+            [],
+            "",
+            "",
+            trace,
+            [])).ToList();
+    }
+
+    private string MemoryTraceFallbackTitle(int index) => _memoryTraceToolTab switch
+    {
+        MemoryTraceToolTab.Index => $"Index trace #{index + 1}",
+        MemoryTraceToolTab.Dream => $"Dream trace #{index + 1}",
+        _ => $"Recall trace #{index + 1}",
+    };
+
+    private MemoryTraceRecord? SelectedMemoryTrace(IReadOnlyList<MemoryTraceRecord> records)
+    {
+        if (!string.IsNullOrWhiteSpace(_selectedMemoryTraceId))
+        {
+            var selected = records.FirstOrDefault(trace => string.Equals(trace.Id, _selectedMemoryTraceId, StringComparison.Ordinal));
+            if (selected is not null) return selected;
+        }
+
+        return records.FirstOrDefault();
+    }
+
+    private Button MemoryTraceSelectLabel(MemoryTraceRecord? selected, IReadOnlyList<MemoryTraceRecord> records)
+    {
+        var label = new TextBlock
+        {
+            Text = selected is null ? L("Select a trace...", "\u9009\u62e9\u8ffd\u8e2a...") : MemoryTraceOptionLabel(selected),
+            FontSize = 13,
+            Foreground = selected is null ? Brush("V2MutedForegroundBrush") : Brush("V2ForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var chevron = Icon("ChevronDown", 10, Brush("V2MutedForegroundBrush"));
+        Grid.SetColumn(chevron, 1);
+        var content = new Grid
+        {
+            ColumnSpacing = 10,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+            Children =
+            {
+                label,
+                chevron,
+            },
+        };
+        var button = new Button
+        {
+            Height = 34,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(10, 0, 10, 0),
+            CornerRadius = new CornerRadius(8),
+            Background = Brush("V2CardBrush"),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Content = content,
+        };
+
+        var flyout = new MenuFlyout();
+        foreach (var trace in records)
+        {
+            var item = new MenuFlyoutItem { Text = MemoryTraceOptionLabel(trace) };
+            item.Click += (_, _) =>
+            {
+                _selectedMemoryTraceId = trace.Id;
+                RenderAll();
+            };
+            flyout.Items.Add(item);
+        }
+        button.Flyout = flyout;
+        return button;
+    }
+
+    private string MemoryTraceOptionLabel(MemoryTraceRecord trace) =>
+        $"{trace.Title} \u00b7 {trace.Trigger} \u00b7 {RelativeLabel(trace.CreatedAt)}";
+
+    private FrameworkElement MemoryTraceDetail(MemoryTraceRecord? trace)
+    {
+        if (trace is null)
+        {
+            return ToolBoardGroup(
+                L("No trace records", "\u6682\u65e0\u8ffd\u8e2a\u8bb0\u5f55"),
+                null,
+                DashedEmptyState(L("Select a trace", "\u9009\u62e9\u8ffd\u8e2a"), L("Select a trace to inspect details.", "\u9009\u62e9\u4e00\u6761\u8ffd\u8e2a\u67e5\u770b\u8be6\u60c5\u3002")));
+        }
+
+        var stack = new StackPanel { Spacing = 14 };
+        stack.Children.Add(ToolBoardGroup(trace.Title, $"{trace.Trigger} \u00b7 {RelativeLabel(trace.CreatedAt)}", MemoryTraceReply(trace)));
+        stack.Children.Add(MemoryTraceBlock("Meta", MemoryTraceMetaText(trace)));
+        stack.Children.Add(MemoryTraceBlock(L("Injected Context", "\u6ce8\u5165\u4e0a\u4e0b\u6587"), trace.Context));
+        stack.Children.Add(MemoryTraceBlock(L("Tool Events", "\u5de5\u5177\u4e8b\u4ef6"), trace.ToolEvents));
+        stack.Children.Add(ToolBoardGroup(L("Reasoning Timeline", "\u63a8\u7406\u8fc7\u7a0b"), null, MemoryTraceTimeline(trace)));
+        return stack;
+    }
+
+    private FrameworkElement MemoryTraceReply(MemoryTraceRecord trace) => new TextBlock
+    {
+        Text = string.IsNullOrWhiteSpace(trace.Reply) ? L("No output yet.", "\u6682\u65e0\u8f93\u51fa\u3002") : trace.Reply,
+        FontSize = 13,
+        Foreground = Brush("V2SecondaryForegroundBrush"),
+        TextWrapping = TextWrapping.Wrap,
+    };
+
+    private string MemoryTraceMetaText(MemoryTraceRecord trace) =>
+        trace.Meta.Count == 0
+            ? ""
+            : string.Join(Environment.NewLine, trace.Meta.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase).Select(pair => $"{pair.Key}: {pair.Value}"));
+
+    private FrameworkElement MemoryTraceBlock(string title, string text) => ToolBoardGroup(title, null, new TextBox
+    {
+        Text = string.IsNullOrWhiteSpace(text) ? L("No records.", "\u6682\u65e0\u8bb0\u5f55\u3002") : text,
+        IsReadOnly = true,
+        AcceptsReturn = true,
+        TextWrapping = TextWrapping.Wrap,
+        FontFamily = new FontFamily("Consolas"),
+        FontSize = 12,
+        MinHeight = 42,
+        MaxHeight = 220,
+        Padding = new Thickness(10),
+        Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+    });
+
+    private FrameworkElement MemoryTraceTimeline(MemoryTraceRecord trace)
+    {
+        if (trace.Steps.Count == 0)
+        {
+            return DashedEmptyState(L("No steps yet.", "\u6682\u65e0\u6b65\u9aa4\u3002"), L("Timeline events will appear here as the trace records reasoning steps.", "\u8ffd\u8e2a\u8bb0\u5f55\u63a8\u7406\u6b65\u9aa4\u540e\u4f1a\u663e\u793a\u5728\u8fd9\u91cc\u3002"));
+        }
+
+        var stack = new StackPanel { Spacing = 0 };
+        for (var index = 0; index < trace.Steps.Count; index++)
+        {
+            stack.Children.Add(MemoryTraceTimelineStep(index + 1, trace.Steps[index]));
+        }
+        return stack;
+    }
+
+    private FrameworkElement MemoryTraceTimelineStep(int index, MemoryTraceStep step)
+    {
+        var tint = MemoryTraceStatusBrush(step.Status);
+        var grid = new Grid
+        {
+            Padding = new Thickness(0, 8, 0, 8),
+            ColumnSpacing = 12,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+            },
+        };
+        grid.Children.Add(new Border
+        {
+            Width = 20,
+            Height = 20,
+            CornerRadius = new CornerRadius(999),
+            Background = tint,
+            Margin = new Thickness(0, 2, 0, 0),
+            Child = new TextBlock
+            {
+                Text = index.ToString(),
+                FontSize = 10,
+                FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+                Foreground = Brush("V2BackgroundBrush"),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        });
+
+        var body = new StackPanel { Spacing = 4 };
+        body.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = step.Title,
+                    FontSize = 13,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = Brush("V2ForegroundBrush"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                },
+                SkillBadge(string.IsNullOrWhiteSpace(step.Status) ? L("Unknown", "\u672a\u77e5") : step.Status, tint),
+            },
+        });
+        body.Children.Add(new TextBlock
+        {
+            Text = step.Detail,
+            FontSize = 12,
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+            TextWrapping = TextWrapping.Wrap,
+        });
+        Grid.SetColumn(body, 1);
+        grid.Children.Add(body);
+        return grid;
+    }
+
+    private Brush MemoryTraceStatusBrush(string status) => status.Trim().ToLowerInvariant() switch
+    {
+        "success" or "completed" => Brush("V2GreenBrush"),
+        "warning" or "skipped" => Brush("V2AmberBrush"),
+        "error" or "failed" => Brush("V2RedBrush"),
+        _ => Brush("V2ForegroundBrush"),
+    };
 
     private void ShowMemoryJobNotice(string job)
     {

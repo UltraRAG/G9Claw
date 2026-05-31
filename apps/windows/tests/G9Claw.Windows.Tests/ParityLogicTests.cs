@@ -830,6 +830,12 @@ public sealed class ParityLogicTests
             NeedsForce: false);
 
         Assert.Equal("project-1", meta.Id);
+        Assert.Equal("completed", trace.Status);
+        Assert.Equal("manual", trace.Trigger);
+        Assert.Equal("Demo", trace.Meta["project"]);
+        Assert.Equal("context", trace.Context);
+        Assert.Equal("tools", trace.ToolEvents);
+        Assert.Equal("reply", trace.Reply);
         Assert.Equal("Recall", Assert.Single(trace.Steps).Title);
         Assert.NotEqual(Guid.Empty, hardFail.Id);
         Assert.False(validation.Ok);
