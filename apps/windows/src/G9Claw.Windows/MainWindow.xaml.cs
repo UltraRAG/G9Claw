@@ -6414,22 +6414,24 @@ public sealed partial class MainWindow : Window
             .OrderByDescending(value => value)
             .FirstOrDefault();
         var memoryAuto = State.Settings.MemorySettings?.Enabled == true;
-        shell.Children.Add(ToolTabbedTopbar(new[]
-        {
-            (L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), _memoryToolTab == MemoryToolTab.ProjectMemory, (Action)(() => { _memoryToolTab = MemoryToolTab.ProjectMemory; _selectedMemoryRecordId = null; RenderAll(); })),
-            (L("User Profile", "\u7528\u6237\u753b\u50cf"), _memoryToolTab == MemoryToolTab.Profile, (Action)(() => { _memoryToolTab = MemoryToolTab.Profile; _selectedMemoryRecordId = null; RenderAll(); })),
-            (L("Memory Trace", "\u8bb0\u5fc6\u8ffd\u8e2a"), _memoryToolTab == MemoryToolTab.Trace, (Action)(() => { _memoryToolTab = MemoryToolTab.Trace; _selectedMemoryRecordId = null; RenderAll(); })),
-        },
-        StatusPill(L("Ready", "\u5c31\u7eea"), false),
-        StatusPill(memoryAuto ? L("Auto", "\u81ea\u52a8") : L("Manual", "\u624b\u52a8"), memoryAuto),
-        new TextBlock
-        {
-            Text = latest == default ? L("Not indexed", "\u672a\u7d22\u5f15") : $"{L("Updated", "\u5df2\u66f4\u65b0")} {RelativeLabel(latest)}",
-            FontSize = 12,
-            Foreground = Brush("V2MutedForegroundBrush"),
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-        }));
+        shell.Children.Add(ToolTabbedTopbar(
+            new[]
+            {
+                (L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), _memoryToolTab == MemoryToolTab.ProjectMemory, (Action)(() => { _memoryToolTab = MemoryToolTab.ProjectMemory; _selectedMemoryRecordId = null; RenderAll(); })),
+                (L("User Profile", "\u7528\u6237\u753b\u50cf"), _memoryToolTab == MemoryToolTab.Profile, (Action)(() => { _memoryToolTab = MemoryToolTab.Profile; _selectedMemoryRecordId = null; RenderAll(); })),
+                (L("Memory Trace", "\u8bb0\u5fc6\u8ffd\u8e2a"), _memoryToolTab == MemoryToolTab.Trace, (Action)(() => { _memoryToolTab = MemoryToolTab.Trace; _selectedMemoryRecordId = null; RenderAll(); })),
+            },
+            false,
+            StatusPill(L("Ready", "\u5c31\u7eea"), false),
+            StatusPill(memoryAuto ? L("Auto", "\u81ea\u52a8") : L("Manual", "\u624b\u52a8"), memoryAuto),
+            new TextBlock
+            {
+                Text = latest == default ? L("Not indexed", "\u672a\u7d22\u5f15") : $"{L("Updated", "\u5df2\u66f4\u65b0")} {RelativeLabel(latest)}",
+                FontSize = 12,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            }));
 
         var selectedMemory = _selectedMemoryRecordId is { } selectedMemoryId
             ? State.MemoryRecords.FirstOrDefault(record => record.Id == selectedMemoryId)
@@ -6857,6 +6859,11 @@ public sealed partial class MainWindow : Window
 
     private FrameworkElement ToolTabbedTopbar(IReadOnlyList<(string Label, bool IsActive, Action Action)> tabs, params FrameworkElement[] statusItems)
     {
+        return ToolTabbedTopbar(tabs, useSegmentChrome: true, statusItems);
+    }
+
+    private FrameworkElement ToolTabbedTopbar(IReadOnlyList<(string Label, bool IsActive, Action Action)> tabs, bool useSegmentChrome, params FrameworkElement[] statusItems)
+    {
         var root = new Grid
         {
             Height = 44,
@@ -6868,7 +6875,9 @@ public sealed partial class MainWindow : Window
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        root.Children.Add(InlineSegmentedControl(tabs));
+        root.Children.Add(useSegmentChrome
+            ? InlineSegmentedControl(tabs)
+            : ToolTabPanel(tabs, activeBorder: false));
 
         var statusPanel = new StackPanel
         {
@@ -6891,7 +6900,18 @@ public sealed partial class MainWindow : Window
         };
     }
 
-    private Button ToolTabButton(string label, bool isActive, Action action)
+    private FrameworkElement ToolTabPanel(IReadOnlyList<(string Label, bool IsActive, Action Action)> tabs, bool activeBorder)
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        foreach (var tab in tabs)
+        {
+            panel.Children.Add(ToolTabButton(tab.Label, tab.IsActive, tab.Action, activeBorder));
+        }
+
+        return panel;
+    }
+
+    private Button ToolTabButton(string label, bool isActive, Action action, bool activeBorder = true)
     {
         var button = new Button
         {
@@ -6900,8 +6920,8 @@ public sealed partial class MainWindow : Window
             Padding = new Thickness(12, 0, 12, 0),
             CornerRadius = new CornerRadius(8),
             Background = isActive ? Brush("V2ControlActiveBrush") : Transparent,
-            BorderBrush = isActive ? Brush("V2BorderBrush") : Transparent,
-            BorderThickness = new Thickness(isActive ? 1 : 0),
+            BorderBrush = isActive && activeBorder ? Brush("V2BorderBrush") : Transparent,
+            BorderThickness = new Thickness(isActive && activeBorder ? 1 : 0),
             Content = new TextBlock
             {
                 Text = label,
