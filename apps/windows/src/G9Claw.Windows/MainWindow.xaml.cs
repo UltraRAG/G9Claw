@@ -85,6 +85,13 @@ public sealed partial class MainWindow : Window
         Trace,
     }
 
+    private enum MemoryTraceToolTab
+    {
+        Recall,
+        Index,
+        Dream,
+    }
+
     private enum AlwaysOnToolTab
     {
         Dashboard,
@@ -172,7 +179,9 @@ public sealed partial class MainWindow : Window
     private string _taskTitleText = "";
     private string _taskPromptText = "";
     private MemoryToolTab _memoryToolTab = MemoryToolTab.ProjectMemory;
+    private MemoryTraceToolTab _memoryTraceToolTab = MemoryTraceToolTab.Recall;
     private AlwaysOnToolTab _alwaysOnToolTab = AlwaysOnToolTab.Dashboard;
+    private bool _routingShowsTotalDashboard;
     private string? _selectedSkillKey;
     private string? _skillEditorKey;
     private string _skillEditorContent = "";
@@ -5568,7 +5577,14 @@ public sealed partial class MainWindow : Window
 
     private FrameworkElement RoutingPage()
     {
-        var snapshot = RoutingUsageAggregator.Snapshot(State.RoutingUsage);
+        var selectedProject = State.SelectedProject;
+        var isProjectScoped = selectedProject is not null && !_routingShowsTotalDashboard;
+        var routingRecords = isProjectScoped && selectedProject is not null
+            ? State.RoutingUsage.Where(record =>
+                string.Equals(record.ProjectName, selectedProject.DisplayName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(record.ProjectName, selectedProject.Name, StringComparison.OrdinalIgnoreCase))
+            : State.RoutingUsage;
+        var snapshot = RoutingUsageAggregator.Snapshot(routingRecords);
         var baseline = Math.Max(snapshot.EstimatedCost + snapshot.SavedCost, snapshot.EstimatedCost);
         var savingsRate = baseline > 0 ? snapshot.SavedCost / baseline : 0;
         var isChinese = IsChineseUi();
@@ -5598,13 +5614,23 @@ public sealed partial class MainWindow : Window
                 },
                 new TextBlock
                 {
-                    Text = State.Settings.RouterSettings.Enabled ? T("routing.enabled") : T("routing.disabled"),
+                    Text = isProjectScoped && selectedProject is not null
+                        ? (IsChineseUi() ? $"{selectedProject.DisplayName} \u7684\u8def\u7531\u7edf\u8ba1" : $"{selectedProject.DisplayName} routing stats")
+                        : State.Settings.RouterSettings.Enabled ? T("routing.enabled") : T("routing.disabled"),
                     FontSize = 13,
                     Foreground = Brush("V2MutedForegroundBrush"),
                 },
             },
         });
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        if (selectedProject is not null)
+        {
+            actions.Children.Add(InlineSegmentedControl(new[]
+            {
+                (L("Project", "\u9879\u76ee"), !_routingShowsTotalDashboard, (Action)(() => { _routingShowsTotalDashboard = false; RenderAll(); })),
+                (L("Total", "\u603b\u8ba1"), _routingShowsTotalDashboard, (Action)(() => { _routingShowsTotalDashboard = true; RenderAll(); })),
+            }));
+        }
         actions.Children.Add(ToolbarButton("Settings", T("common.configure"), (Action)(async () => await ShowSettingsAsync(SettingsMainTab.Config))));
         actions.Children.Add(ToolbarButton("Refresh", T("common.refresh"), RenderAll));
         Grid.SetColumn(actions, 1);
@@ -6007,11 +6033,10 @@ public sealed partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(_toolStatus)) panel.Children.Add(StatusText(_toolStatus));
         if (_memoryToolTab == MemoryToolTab.ProjectMemory)
         {
-            panel.Children.Add(MetricGrid(
-                MetricRow("Database", L("Entries", "\u6761\u76ee"), State.MemoryRecords.Count.ToString(), L("local memory records", "\u672c\u5730\u8bb0\u5fc6\u8bb0\u5f55")),
-                MetricRow("Folder", L("Project", "\u9879\u76ee"), projectRecords.ToString(), L("workspace facts", "\u5de5\u4f5c\u533a\u4e8b\u5b9e")),
-                MetricRow("MessageSquarePlus", L("Feedback", "\u53cd\u9988"), feedbackRecords.ToString(), L("collaboration rules", "\u534f\u4f5c\u89c4\u5219")),
-                MetricRow("Clock", L("Latest", "\u6700\u65b0"), latest == default ? "-" : latest.LocalDateTime.ToString("g"), L("last update", "\u6700\u8fd1\u66f4\u65b0"))));
+            if (State.SelectedProject is { } selectedProject && !IsGeneralProject(selectedProject))
+            {
+                panel.Children.Add(MemoryProjectContextCard(selectedProject, projectRecords, feedbackRecords, latest));
+            }
             panel.Children.Add(MemoryRecordSection(L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), L("Progress, facts, and state records for the current project.", "\u5f53\u524d\u9879\u76ee\u7684\u8fdb\u5c55\u3001\u4e8b\u5b9e\u548c\u72b6\u6001\u8bb0\u5f55\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Project && !record.Deprecated)), SelectMemoryRecord));
             panel.Children.Add(MemoryRecordSection(L("Collaboration Feedback", "\u534f\u4f5c\u53cd\u9988"), L("User preferences, constraints, and delivery rules.", "\u7528\u6237\u504f\u597d\u3001\u7ea6\u675f\u548c\u4ea4\u4ed8\u89c4\u5219\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated)), SelectMemoryRecord));
             var deprecated = FilterMemory(State.MemoryRecords.Where(record => record.Deprecated)).ToList();
@@ -6022,22 +6047,13 @@ public sealed partial class MainWindow : Window
         }
         else if (_memoryToolTab == MemoryToolTab.Profile)
         {
-            panel.Children.Add(MetricGrid(
-                MetricRow("Database", L("User Notes", "\u7528\u6237\u7b14\u8bb0"), userRecords.ToString(), L("long-term profile", "\u957f\u671f\u753b\u50cf")),
-                MetricRow("MessageSquarePlus", L("Feedback", "\u53cd\u9988"), feedbackRecords.ToString(), L("collaboration profile", "\u534f\u4f5c\u753b\u50cf")),
-                MetricRow("Folder", L("Projects", "\u9879\u76ee"), projectRecords.ToString(), L("project memory", "\u9879\u76ee\u8bb0\u5fc6")),
-                MetricRow("Clock", L("Latest", "\u6700\u65b0"), latest == default ? "-" : latest.LocalDateTime.ToString("g"), L("last update", "\u6700\u8fd1\u66f4\u65b0"))));
+            panel.Children.Add(MemoryProfileSummary(userRecords, latest));
             panel.Children.Add(MemoryRecordSection(L("User Profile", "\u7528\u6237\u753b\u50cf"), L("Long-term identity background and preferences.", "\u957f\u671f\u8eab\u4efd\u80cc\u666f\u548c\u504f\u597d\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.User && !record.Deprecated)), SelectMemoryRecord));
             panel.Children.Add(MemoryRecordSection(L("Feedback Profile", "\u53cd\u9988\u753b\u50cf"), L("Preferences extracted from collaboration feedback.", "\u4ece\u534f\u4f5c\u53cd\u9988\u4e2d\u63d0\u53d6\u7684\u504f\u597d\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated)), SelectMemoryRecord));
         }
         else
         {
-            panel.Children.Add(ToolBoardGroup("Recall", L("Inspect memory recall traces from recent agent runs.", "\u68c0\u67e5\u8fd1\u671f Agent \u8fd0\u884c\u4e2d\u7684\u8bb0\u5fc6\u53ec\u56de\u8ffd\u8e2a\u3002"),
-                DashedEmptyState(L("No recall traces", "\u6682\u65e0 Recall \u8ffd\u8e2a"), L("Run an agent task with memory enabled to populate this view.", "\u542f\u7528\u8bb0\u5fc6\u540e\u8fd0\u884c Agent \u4efb\u52a1\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u8ffd\u8e2a\u3002"))));
-            panel.Children.Add(ToolBoardGroup("Index", L("Index sync traces and workspace ingestion status.", "\u7d22\u5f15\u540c\u6b65\u8ffd\u8e2a\u548c\u5de5\u4f5c\u533a\u6444\u53d6\u72b6\u6001\u3002"),
-                DashedEmptyState(L("No index traces", "\u6682\u65e0 Index \u8ffd\u8e2a"), L("Run index sync to show index traces here.", "\u8fd0\u884c\u7d22\u5f15\u540c\u6b65\u540e\u8fd9\u91cc\u4f1a\u663e\u793a Index \u8ffd\u8e2a\u3002"))));
-            panel.Children.Add(ToolBoardGroup("Dream", L("Memory Dream summaries and rollback snapshots.", "Memory Dream \u6458\u8981\u548c\u56de\u6eda\u5feb\u7167\u3002"),
-                DashedEmptyState(L("No Dream traces", "\u6682\u65e0 Dream \u8ffd\u8e2a"), L("Run Memory Dream to show Dream traces here.", "\u8fd0\u884c Memory Dream \u540e\u8fd9\u91cc\u4f1a\u663e\u793a Dream \u8ffd\u8e2a\u3002"))));
+            panel.Children.Add(MemoryTracePanel());
         }
 
         var scroll = new ScrollViewer
@@ -6049,6 +6065,66 @@ public sealed partial class MainWindow : Window
         Grid.SetRow(scroll, 2);
         shell.Children.Add(scroll);
         return shell;
+    }
+
+    private FrameworkElement MemoryProjectContextCard(WorkspaceProject project, int projectRecords, int feedbackRecords, DateTimeOffset latest)
+    {
+        var rows = new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                ListCard("Folder", project.DisplayName, project.RootPath),
+                ListCard("Database", L("Memory entries", "\u8bb0\u5fc6\u6761\u76ee"), IsChineseUi()
+                    ? $"{projectRecords} \u4e2a\u9879\u76ee\u8bb0\u5fc6 / {feedbackRecords} \u4e2a\u53cd\u9988"
+                    : $"{projectRecords} project memories / {feedbackRecords} feedback records"),
+                ListCard("Clock", L("Last indexed", "\u6700\u8fd1\u7d22\u5f15"), latest == default ? L("Not indexed", "\u672a\u7d22\u5f15") : RelativeLabel(latest)),
+            },
+        };
+
+        return ToolBoardGroup(
+            L("Project Context", "\u9879\u76ee\u4e0a\u4e0b\u6587"),
+            L("Current workspace scope for memory recall and editing.", "\u8bb0\u5fc6\u53ec\u56de\u548c\u7f16\u8f91\u4f7f\u7528\u7684\u5f53\u524d\u5de5\u4f5c\u533a\u8303\u56f4\u3002"),
+            rows);
+    }
+
+    private FrameworkElement MemoryProfileSummary(int userRecords, DateTimeOffset latest)
+    {
+        var detail = userRecords == 0
+            ? DashedEmptyState(
+                L("No summarized user profile yet", "\u6682\u65e0\u6c47\u603b\u540e\u7684\u7528\u6237\u753b\u50cf"),
+                L("User notes are merged here after Dream runs.", "User Notes \u4f1a\u5728 Dream \u540e\u5408\u5e76\u5230\u8fd9\u91cc\u3002"))
+            : ListCard("Database", L("User Notes", "\u7528\u6237\u7b14\u8bb0"), IsChineseUi()
+                ? $"{userRecords} \u6761\u8bb0\u5f55 / {(latest == default ? L("Not indexed", "\u672a\u7d22\u5f15") : RelativeLabel(latest))}"
+                : $"{userRecords} records / {(latest == default ? L("Not indexed", "\u672a\u7d22\u5f15") : RelativeLabel(latest))}");
+
+        return ToolBoardGroup(
+            L("User Profile", "\u7528\u6237\u753b\u50cf"),
+            L("Long-term identity background and preferences.", "\u957f\u671f\u8eab\u4efd\u80cc\u666f\u548c\u504f\u597d\u3002"),
+            detail);
+    }
+
+    private FrameworkElement MemoryTracePanel()
+    {
+        var stack = new StackPanel { Spacing = 16 };
+        stack.Children.Add(InlineSegmentedControl(new[]
+        {
+            ("Recall", _memoryTraceToolTab == MemoryTraceToolTab.Recall, (Action)(() => { _memoryTraceToolTab = MemoryTraceToolTab.Recall; RenderAll(); })),
+            ("Index", _memoryTraceToolTab == MemoryTraceToolTab.Index, (Action)(() => { _memoryTraceToolTab = MemoryTraceToolTab.Index; RenderAll(); })),
+            ("Dream", _memoryTraceToolTab == MemoryTraceToolTab.Dream, (Action)(() => { _memoryTraceToolTab = MemoryTraceToolTab.Dream; RenderAll(); })),
+        }));
+
+        stack.Children.Add(_memoryTraceToolTab switch
+        {
+            MemoryTraceToolTab.Index => ToolBoardGroup("Index", L("Index sync traces and workspace ingestion status.", "\u7d22\u5f15\u540c\u6b65\u8ffd\u8e2a\u548c\u5de5\u4f5c\u533a\u6444\u53d6\u72b6\u6001\u3002"),
+                DashedEmptyState(L("No index traces", "\u6682\u65e0 Index \u8ffd\u8e2a"), L("Run Index Sync to show Index traces here.", "\u8fd0\u884c\u7d22\u5f15\u540c\u6b65\u540e\u8fd9\u91cc\u4f1a\u663e\u793a Index \u8ffd\u8e2a\u3002"))),
+            MemoryTraceToolTab.Dream => ToolBoardGroup("Dream", L("Memory Dream summaries and rollback snapshots.", "Memory Dream \u6458\u8981\u548c\u56de\u6eda\u5feb\u7167\u3002"),
+                DashedEmptyState(L("No Dream traces", "\u6682\u65e0 Dream \u8ffd\u8e2a"), L("Run Memory Dream to show Dream traces here.", "\u8fd0\u884c Memory Dream \u540e\u8fd9\u91cc\u4f1a\u663e\u793a Dream \u8ffd\u8e2a\u3002"))),
+            _ => ToolBoardGroup("Recall", L("Inspect memory recall traces from recent agent runs.", "\u68c0\u67e5\u8fd1\u671f Agent \u8fd0\u884c\u4e2d\u7684\u8bb0\u5fc6\u53ec\u56de\u8ffd\u8e2a\u3002"),
+                DashedEmptyState(L("No recall traces", "\u6682\u65e0 Recall \u8ffd\u8e2a"), L("Select a case to inspect Recall details.", "\u9009\u62e9\u4e00\u4e2a\u4e8b\u4f8b\u67e5\u770b Recall \u8be6\u60c5\u3002"))),
+        });
+
+        return stack;
     }
 
     private void ShowMemoryJobNotice(string job)
@@ -6265,6 +6341,26 @@ public sealed partial class MainWindow : Window
         RenderAll();
     }
 
+    private FrameworkElement InlineSegmentedControl(IReadOnlyList<(string Label, bool IsActive, Action Action)> tabs)
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        foreach (var tab in tabs)
+        {
+            panel.Children.Add(ToolTabButton(tab.Label, tab.IsActive, tab.Action));
+        }
+
+        return new Border
+        {
+            Padding = new Thickness(3),
+            CornerRadius = new CornerRadius(16),
+            Background = Brush("V2ControlSurfaceBrush"),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = panel,
+        };
+    }
+
     private FrameworkElement ToolTabbedTopbar(IReadOnlyList<(string Label, bool IsActive, Action Action)> tabs, params FrameworkElement[] statusItems)
     {
         var root = new Grid
@@ -6278,22 +6374,7 @@ public sealed partial class MainWindow : Window
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var tabsShell = new Border
-        {
-            Padding = new Thickness(3),
-            CornerRadius = new CornerRadius(16),
-            Background = Brush("V2ControlSurfaceBrush"),
-            BorderBrush = Brush("V2BorderBrush"),
-            BorderThickness = new Thickness(1),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        var tabPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        foreach (var tab in tabs)
-        {
-            tabPanel.Children.Add(ToolTabButton(tab.Label, tab.IsActive, tab.Action));
-        }
-        tabsShell.Child = tabPanel;
-        root.Children.Add(tabsShell);
+        root.Children.Add(InlineSegmentedControl(tabs));
 
         var statusPanel = new StackPanel
         {
