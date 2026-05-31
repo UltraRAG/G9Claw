@@ -5,6 +5,7 @@ public enum SettingsMainTab
     Appearance,
     Permissions,
     Config,
+    Mcp,
 }
 
 public enum SettingsConfigSection

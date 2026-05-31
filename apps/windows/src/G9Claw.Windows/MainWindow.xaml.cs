@@ -5477,10 +5477,10 @@ public sealed partial class MainWindow : Window
         metrics.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var metricCards = new[]
         {
-            MetricRow(T("routing.metrics.requests"), snapshot.RequestCount.ToString(), State.Settings.RouterSettings.Enabled ? T("routing.metrics.routerCalls") : T("routing.metrics.directCalls")),
-            MetricRow(T("routing.metrics.tokens"), snapshot.TotalTokens.ToString("N0"), Tf("routing.metrics.tokensDetail", snapshot.InputTokens.ToString("N0"), snapshot.OutputTokens.ToString("N0"))),
-            MetricRow(T("routing.metrics.actualCost"), Money(snapshot.EstimatedCost), T("routing.metrics.costDetail")),
-            MetricRow(T("routing.metrics.saved"), Money(snapshot.SavedCost), Tf("routing.metrics.baseline", Money(snapshot.BaselineCost))),
+            MetricRow("CircleGauge", T("routing.metrics.requests"), snapshot.RequestCount.ToString(), State.Settings.RouterSettings.Enabled ? T("routing.metrics.routerCalls") : T("routing.metrics.directCalls")),
+            MetricRow("Database", T("routing.metrics.tokens"), snapshot.TotalTokens.ToString("N0"), Tf("routing.metrics.tokensDetail", snapshot.InputTokens.ToString("N0"), snapshot.OutputTokens.ToString("N0"))),
+            MetricRow("BarChart3", T("routing.metrics.actualCost"), Money(snapshot.EstimatedCost), T("routing.metrics.costDetail")),
+            MetricRow("Sparkles", T("routing.metrics.saved"), Money(snapshot.SavedCost), Tf("routing.metrics.baseline", Money(snapshot.BaselineCost))),
         };
         for (var i = 0; i < metricCards.Length; i++)
         {
@@ -5560,20 +5560,34 @@ public sealed partial class MainWindow : Window
             ("Download", T("common.export"), (Action)(async () => await ExportMemoryAsync())),
             ("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
         });
-        var panel = new StackPanel { Padding = new Thickness(16), Spacing = 8 };
+        var panel = new StackPanel { Padding = new Thickness(24), Spacing = 18, MaxWidth = 1120, HorizontalAlignment = HorizontalAlignment.Left };
         if (!string.IsNullOrWhiteSpace(_toolStatus)) panel.Children.Add(StatusText(_toolStatus));
+        var projectRecords = State.MemoryRecords.Count(record => record.Type == MemoryRecordType.Project);
+        var feedbackRecords = State.MemoryRecords.Count(record => record.Type == MemoryRecordType.Feedback);
+        var latest = State.MemoryRecords
+            .Select(record => record.UpdatedAt)
+            .OrderByDescending(value => value)
+            .FirstOrDefault();
+        panel.Children.Add(MetricGrid(
+            MetricRow("Database", "Entries", State.MemoryRecords.Count.ToString(), "local memory records"),
+            MetricRow("Folder", "Project", projectRecords.ToString(), "workspace facts"),
+            MetricRow("MessageSquarePlus", "Feedback", feedbackRecords.ToString(), "collaboration rules"),
+            MetricRow("Clock", "Latest", latest == default ? "-" : latest.LocalDateTime.ToString("g"), "last update")));
         if (State.MemoryRecords.Count == 0)
         {
             panel.Children.Add(EmptyState(T("memory.emptyTitle"), T("memory.emptyDetail"), "Database"));
         }
         else
         {
+            var records = new List<FrameworkElement>();
             foreach (var memory in State.MemoryRecords)
             {
-                panel.Children.Add(ActionCard("Database", memory.Name, memory.Summary,
+                records.Add(ActionCard("Database", memory.Name, memory.Summary,
                     ("Open", async () => await ShowTextDialogAsync(memory.Name, memory.Content)),
                     ("Delete", async () => await DeleteMemoryAsync(memory))));
             }
+
+            panel.Children.Add(ToolSection("Memory Records", records.ToArray()));
         }
 
         ((Grid)page.Tag!).Children.Add(new ScrollViewer { Content = panel });
@@ -5588,20 +5602,33 @@ public sealed partial class MainWindow : Window
             ("Play", T("alwaysOn.runNow"), (Action)(async () => await RunFirstAlwaysOnPlanAsync())),
             ("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
         });
-        var panel = new StackPanel { Padding = new Thickness(16), Spacing = 8 };
+        var panel = new StackPanel { Padding = new Thickness(24), Spacing = 18, MaxWidth = 1120, HorizontalAlignment = HorizontalAlignment.Left };
         if (!string.IsNullOrWhiteSpace(_toolStatus)) panel.Children.Add(StatusText(_toolStatus));
+        var enabledProjects = State.Settings.AlwaysOnSettings?.ProjectEnabled.Count(pair => pair.Value) ?? 0;
+        var totalProjects = Math.Max(enabledProjects, State.Projects.Count(project => !V2SidebarProjection.IsGeneralProject(project)));
+        var readyPlans = State.AlwaysOnPlans.Count(plan => plan.Status == AlwaysOnStatus.Ready || plan.Status == AlwaysOnStatus.Scheduled);
+        var runningPlans = State.AlwaysOnPlans.Count(plan => plan.Status == AlwaysOnStatus.Running || plan.ExecutionStatus == AlwaysOnStatus.Running);
+        var todayPlans = State.AlwaysOnPlans.Count(plan => plan.UpdatedAt.LocalDateTime.Date == DateTime.Today);
+        panel.Children.Add(MetricGrid(
+            MetricRow("Folder", "Enabled Projects", $"{enabledProjects}/{totalProjects}", "participating"),
+            MetricRow("ListChecks", "Ready Plans", readyPlans.ToString(), "manual runnable"),
+            MetricRow("Radio", "Running", runningPlans.ToString(), "background sessions"),
+            MetricRow("Calendar", "Today", todayPlans.ToString(), "activity events")));
         if (State.AlwaysOnPlans.Count == 0)
         {
             panel.Children.Add(EmptyState(T("alwaysOn.empty.title"), T("alwaysOn.emptyDetail"), "Radio"));
         }
         else
         {
+            var plans = new List<FrameworkElement>();
             foreach (var plan in State.AlwaysOnPlans)
             {
-                panel.Children.Add(ActionCard("Radio", plan.Title, $"{plan.Status} / {plan.Summary}",
+                plans.Add(ActionCard("Radio", plan.Title, $"{plan.Status} / {plan.Summary}",
                     ("Run", async () => await RunAlwaysOnPlanAsync(plan)),
                     ("Delete", async () => await DeleteAlwaysOnPlanAsync(plan))));
             }
+
+            panel.Children.Add(ToolSection("Plans / Cron Jobs", plans.ToArray()));
         }
 
         ((Grid)page.Tag!).Children.Add(new ScrollViewer { Content = panel });
@@ -5934,24 +5961,116 @@ public sealed partial class MainWindow : Window
         return root;
     }
 
-    private FrameworkElement MetricRow(string label, string value, string detail) => new Border
+    private FrameworkElement MetricRow(string iconKey, string label, string value, string detail, string? hint = null) => new Border
     {
         CornerRadius = new CornerRadius(8),
         BorderBrush = Brush("V2BorderBrush"),
         BorderThickness = new Thickness(1),
         Background = Brush("V2ContentSurfaceBrush"),
-        Padding = new Thickness(16),
+        Padding = new Thickness(14),
+        MinHeight = 104,
         Child = new StackPanel
         {
-            Spacing = 6,
+            Spacing = 7,
             Children =
             {
-                new TextBlock { Text = label, FontSize = 12, Foreground = Brush("V2MutedForegroundBrush") },
-                new TextBlock { Text = value, FontSize = 26, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Brush("V2ForegroundBrush") },
-                new TextBlock { Text = detail, FontSize = 11, Foreground = Brush("V2MutedForegroundBrush") },
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 8,
+                    Children =
+                    {
+                        Icon(iconKey, 13, Brush("V2MutedForegroundBrush")),
+                        new TextBlock
+                        {
+                            Text = label,
+                            FontSize = 12,
+                            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                            Foreground = Brush("V2MutedForegroundBrush"),
+                            VerticalAlignment = VerticalAlignment.Center,
+                        },
+                    },
+                },
+                new TextBlock
+                {
+                    Text = value,
+                    FontSize = 22,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = Brush("V2ForegroundBrush"),
+                },
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 8,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = detail,
+                            FontSize = 11,
+                            Foreground = Brush("V2MutedForegroundBrush"),
+                            TextTrimming = TextTrimming.CharacterEllipsis,
+                        },
+                        new TextBlock
+                        {
+                            Text = hint ?? "",
+                            FontSize = 11,
+                            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                            Foreground = Brush("V2GreenBrush"),
+                            Visibility = string.IsNullOrWhiteSpace(hint) ? Visibility.Collapsed : Visibility.Visible,
+                        },
+                    },
+                },
             },
         },
     };
+
+    private Grid MetricGrid(params FrameworkElement[] cards)
+    {
+        var grid = new Grid { ColumnSpacing = 12, RowSpacing = 12 };
+        for (var index = 0; index < cards.Length; index++)
+        {
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Grid.SetColumn(cards[index], index);
+            grid.Children.Add(cards[index]);
+        }
+
+        return grid;
+    }
+
+    private FrameworkElement ToolSection(string title, params FrameworkElement[] children)
+    {
+        var content = new StackPanel { Spacing = 2 };
+        foreach (var child in children)
+        {
+            content.Children.Add(child);
+        }
+
+        return new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = title.ToUpperInvariant(),
+                    FontSize = 11,
+                    FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    CharacterSpacing = 44,
+                },
+                new Border
+                {
+                    CornerRadius = new CornerRadius(8),
+                    BorderBrush = Brush("V2BorderBrush"),
+                    BorderThickness = new Thickness(1),
+                    Background = Brush("V2CardBrush"),
+                    Padding = new Thickness(16),
+                    Child = content,
+                },
+            },
+        };
+    }
 
     private FrameworkElement ListCard(string iconKey, string title, string detail) => new Border
     {
@@ -7662,6 +7781,24 @@ public sealed partial class MainWindow : Window
         rawYaml.MaxHeight = double.PositiveInfinity;
         var rawPanel = SettingsPanel(
             SettingsSection(T("settings.config.rawYaml"), T("settings.config.rawYamlDetail"), rawYaml));
+        var mcpPath = Path.Combine(AppPaths.Current().Root, "mcp.json");
+        var initialMcpRaw = File.Exists(mcpPath)
+            ? File.ReadAllText(mcpPath)
+            : """
+            {
+              "mcpServers": {}
+            }
+            """;
+        var mcpPathBox = Box(mcpPath);
+        mcpPathBox.IsReadOnly = true;
+        mcpPathBox.FontFamily = new FontFamily("Consolas");
+        var mcpRaw = Area(initialMcpRaw);
+        mcpRaw.TextWrapping = TextWrapping.NoWrap;
+        mcpRaw.MinHeight = 320;
+        var mcpPanel = SettingsPanel(
+            SettingsSection("MCP Servers", "Configure the global MCP server JSON used by native tool sessions.",
+                Field("Config file", mcpPathBox),
+                Field("mcpServers JSON", mcpRaw)));
         var configContent = new ContentControl { Content = configPanel };
         var formMode = new Button { Content = IconText("LayoutList", T("settings.config.form"), 14), Height = 32, Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"] };
         var rawMode = new Button { Content = IconText("Code", T("settings.config.rawYaml"), 14), Height = 32, Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"] };
@@ -7747,6 +7884,7 @@ public sealed partial class MainWindow : Window
             {
                 SettingsMainTab.Permissions => permissionsPanel,
                 SettingsMainTab.Config => configShell,
+                SettingsMainTab.Mcp => mcpPanel,
                 _ => appearancePanel,
             };
             foreach (var button in navButtons)
@@ -7762,6 +7900,7 @@ public sealed partial class MainWindow : Window
             (SettingsMainTab.Appearance, "Palette", T("settings.tabs.appearance")),
             (SettingsMainTab.Permissions, "Shield", T("settings.tabs.permissions")),
             (SettingsMainTab.Config, "FileCog", T("settings.tabs.config")),
+            (SettingsMainTab.Mcp, "Database", "MCP Servers"),
         })
         {
             var button = new Button
@@ -7948,6 +8087,13 @@ public sealed partial class MainWindow : Window
                 await _settingsStore.SaveAsync(State.Settings);
                 await _uiPreferencesStore.SaveAsync(State.UiPreferences);
                 NativeConfigService.WriteDefaultConfigText(State.Settings.RawConfigDocument?.LastYaml ?? NativeConfigYamlCodec.ToYaml(State.Settings));
+                if (!string.Equals(mcpRaw.Text, initialMcpRaw, StringComparison.Ordinal))
+                {
+                    using var mcpDocument = JsonDocument.Parse(mcpRaw.Text);
+                    Directory.CreateDirectory(Path.GetDirectoryName(mcpPath)!);
+                    File.WriteAllText(mcpPath, mcpRaw.Text);
+                    initialMcpRaw = mcpRaw.Text;
+                }
                 await RefreshProviderPreflightAsync();
                 saveStatus.Text = T("common.saved");
                 return true;
@@ -8672,6 +8818,18 @@ public sealed partial class MainWindow : Window
 
         var nav = new StackPanel { Spacing = 4, Width = 180, MinWidth = 180 };
         var content = new ContentControl { Content = sections[0].Content };
+        var navButtons = new List<Button>();
+        void SelectConfigSection(Button activeButton, FrameworkElement sectionContent)
+        {
+            content.Content = sectionContent;
+            foreach (var button in navButtons)
+            {
+                var active = ReferenceEquals(button, activeButton);
+                button.Background = active ? Brush("V2HoverBrush") : Transparent;
+                button.Foreground = active ? Brush("V2ForegroundBrush") : Brush("V2MutedForegroundBrush");
+            }
+        }
+
         foreach (var section in sections)
         {
             var button = new Button
@@ -8682,8 +8840,14 @@ public sealed partial class MainWindow : Window
                 HorizontalContentAlignment = HorizontalAlignment.Left,
                 Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
             };
-            button.Click += (_, _) => content.Content = section.Content;
+            button.Click += (_, _) => SelectConfigSection(button, section.Content);
+            navButtons.Add(button);
             nav.Children.Add(button);
+        }
+
+        if (navButtons.Count > 0)
+        {
+            SelectConfigSection(navButtons[0], sections[0].Content);
         }
 
         var root = new Grid { ColumnSpacing = 12 };
@@ -8783,7 +8947,7 @@ public sealed partial class MainWindow : Window
         var panel = new Grid
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            RowSpacing = 14,
+            RowSpacing = 18,
         };
         for (var index = 0; index < sections.Length; index++)
         {
@@ -8815,16 +8979,15 @@ public sealed partial class MainWindow : Window
     {
         var section = new StackPanel
         {
-            Spacing = 10,
+            Spacing = 8,
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
         section.Children.Add(new TextBlock
         {
-            Text = title.ToUpperInvariant(),
-            FontSize = 11,
-            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
-            Foreground = Brush("V2MutedForegroundBrush"),
-            CharacterSpacing = 40,
+            Text = title,
+            FontSize = 15,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
         });
         if (!string.IsNullOrWhiteSpace(detail))
         {
@@ -8858,7 +9021,7 @@ public sealed partial class MainWindow : Window
             CornerRadius = new CornerRadius(8),
             BorderBrush = Brush("V2BorderBrush"),
             BorderThickness = new Thickness(1),
-            Background = Brush("V2ContentSurfaceBrush"),
+            Background = Brush("V2CardBrush"),
             Child = panel,
         });
 
