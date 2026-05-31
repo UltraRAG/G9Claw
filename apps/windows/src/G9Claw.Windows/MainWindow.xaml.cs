@@ -183,6 +183,7 @@ public sealed partial class MainWindow : Window
     private MemoryTraceToolTab _memoryTraceToolTab = MemoryTraceToolTab.Recall;
     private AlwaysOnToolTab _alwaysOnToolTab = AlwaysOnToolTab.Dashboard;
     private bool _routingShowsTotalDashboard;
+    private readonly HashSet<string> _expandedRoutingSessions = new(StringComparer.OrdinalIgnoreCase);
     private string? _selectedSkillKey;
     private string? _skillEditorKey;
     private string _skillEditorContent = "";
@@ -5734,6 +5735,7 @@ public sealed partial class MainWindow : Window
         var baseline = Math.Max(snapshot.EstimatedCost + snapshot.SavedCost, snapshot.EstimatedCost);
         var savingsRate = baseline > 0 ? snapshot.SavedCost / baseline : 0;
         var isChinese = IsChineseUi();
+        var recentSessions = snapshot.EffectiveRecentSessions;
 
         var root = new Grid { Background = Brush("V2BackgroundBrush") };
         var panel = new StackPanel
@@ -5762,7 +5764,7 @@ public sealed partial class MainWindow : Window
                 {
                     Text = isProjectScoped && selectedProject is not null
                         ? (IsChineseUi() ? $"{selectedProject.DisplayName} \u7684\u8def\u7531\u7edf\u8ba1" : $"{selectedProject.DisplayName} routing stats")
-                        : State.Settings.RouterSettings.Enabled ? T("routing.enabled") : T("routing.disabled"),
+                        : L("Model routing, token saver, request log, and cost summary.", "\u6a21\u578b\u8def\u7531\u3001token saver\u3001\u8bf7\u6c42\u65e5\u5fd7\u548c\u6210\u672c\u6c47\u603b\u3002"),
                     FontSize = 13,
                     Foreground = Brush("V2MutedForegroundBrush"),
                 },
@@ -5777,23 +5779,33 @@ public sealed partial class MainWindow : Window
                 (L("Total", "\u603b\u8ba1"), _routingShowsTotalDashboard, (Action)(() => { _routingShowsTotalDashboard = true; RenderAll(); })),
             }));
         }
-        actions.Children.Add(ToolbarButton("Settings", T("common.configure"), (Action)(async () => await ShowSettingsAsync(SettingsMainTab.Config))));
         actions.Children.Add(ToolbarButton("Refresh", T("common.refresh"), RenderAll));
         Grid.SetColumn(actions, 1);
         header.Children.Add(actions);
         panel.Children.Add(header);
 
         panel.Children.Add(MetricGrid(
-            MetricRow("CircleGauge", T("routing.metrics.requests"), snapshot.RequestCount.ToString(), $"{snapshot.RoutedSessions} routed sessions"),
-            MetricRow("Database", T("routing.metrics.tokens"), snapshot.TotalTokens.ToString("N0"), Tf("routing.metrics.tokensDetail", snapshot.InputTokens.ToString("N0"), snapshot.OutputTokens.ToString("N0"))),
+            MetricRow("CircleGauge", T("routing.metrics.requests"), snapshot.RequestCount.ToString(), isChinese ? $"{snapshot.RoutedSessions} \u4e2a\u5df2\u8def\u7531\u4f1a\u8bdd" : $"{snapshot.RoutedSessions} routed sessions"),
+            MetricRow("Database", T("routing.metrics.tokens"), snapshot.TotalTokens.ToString("N0"), L("input/output recorded by native agent", "native agent \u8bb0\u5f55\u7684\u8f93\u5165/\u8f93\u51fa")),
             MetricRow("BarChart3", T("routing.metrics.actualCost"), Money(snapshot.EstimatedCost), baseline > 0 ? $"{L("No router", "\u4e0d\u8d70 Router")} {Money(baseline)}" : T("routing.metrics.costDetail"), snapshot.SavedCost > 0 ? $"{L("Saved", "\u8282\u7701")} {Money(snapshot.SavedCost)} ({(int)Math.Round(savingsRate * 100)}%)" : null)));
 
-        if (snapshot.RequestCount == 0)
+        if (!isProjectScoped && snapshot.EffectiveProjects.Count > 0)
         {
-            panel.Children.Add(ToolSection(T("routing.recentRoutes"),
+            var projects = new StackPanel { Spacing = 8 };
+            foreach (var project in snapshot.EffectiveProjects)
+            {
+                projects.Children.Add(RoutingProjectSummaryRow(project));
+            }
+
+            panel.Children.Add(ToolSection(L("Projects", "\u9879\u76ee"), projects));
+        }
+
+        if (recentSessions.Count == 0)
+        {
+            panel.Children.Add(ToolSection(isChinese ? "\u4f1a\u8bdd" : T("routing.recentRoutes"),
                 new TextBlock
                 {
-                    Text = T("routing.empty.detail"),
+                    Text = L("No routing activity yet. Start a conversation to see stats here.", "\u6682\u65e0\u8def\u7531\u6d3b\u52a8\u3002\u5f00\u59cb\u5bf9\u8bdd\u540e\u8fd9\u91cc\u4f1a\u663e\u793a\u7edf\u8ba1\u3002"),
                     FontSize = 13,
                     Foreground = Brush("V2MutedForegroundBrush"),
                     Padding = new Thickness(0, 18, 0, 18),
@@ -5803,12 +5815,12 @@ public sealed partial class MainWindow : Window
         {
             var recent = new StackPanel { Spacing = 0 };
             recent.Children.Add(RoutingTableHeader(isChinese));
-            foreach (var record in snapshot.RecentRoutes)
+            foreach (var session in recentSessions)
             {
-                recent.Children.Add(RoutingRouteRow(record));
+                recent.Children.Add(RoutingSessionRow(session));
             }
 
-            panel.Children.Add(ToolSection(T("routing.recentRoutes"), recent));
+            panel.Children.Add(ToolSection(isChinese ? "\u4f1a\u8bdd" : T("routing.recentRoutes"), recent));
 
             var models = new StackPanel { Spacing = 8 };
             foreach (var model in snapshot.ModelBreakdown)
@@ -5865,11 +5877,94 @@ public sealed partial class MainWindow : Window
         return block;
     }
 
-    private FrameworkElement RoutingRouteRow(RoutingUsageRecord record)
+    private FrameworkElement RoutingProjectSummaryRow(RoutingDashboardProject project)
     {
         var row = new Grid
         {
-            Padding = new Thickness(10, 9, 10, 9),
+            ColumnSpacing = 12,
+            Padding = new Thickness(12, 10, 12, 10),
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = new GridLength(80) },
+                new ColumnDefinition { Width = new GridLength(80) },
+                new ColumnDefinition { Width = new GridLength(78) },
+            },
+        };
+        row.Children.Add(new StackPanel
+        {
+            Spacing = 4,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = project.DisplayName,
+                    FontSize = 13,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = Brush("V2ForegroundBrush"),
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                },
+                new TextBlock
+                {
+                    Text = IsChineseUi()
+                        ? $"{project.Sessions} \u4e2a sessions \u00b7 {project.Total.RequestCount} \u6b21\u8bf7\u6c42"
+                        : $"{project.Sessions} sessions \u00b7 {project.Total.RequestCount} requests",
+                    FontSize = 11,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                },
+            },
+        });
+        row.Children.Add(RoutingProjectMetric(RoutingFormatTokens(project.Total.TotalTokens), "tokens", 1));
+        row.Children.Add(RoutingProjectMetric(Money(project.Total.EstimatedCost), "cost", 2));
+        row.Children.Add(RoutingValueText(project.Total.SavedCost > 0 ? Money(project.Total.SavedCost) : "-", 3, project.Total.SavedCost > 0 ? Brush("V2GreenBrush") : Brush("V2MutedForegroundBrush")));
+
+        return new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Background = Brush("V2ContentSurfaceBrush"),
+            Child = row,
+        };
+    }
+
+    private FrameworkElement RoutingProjectMetric(string value, string label, int column)
+    {
+        var metric = new StackPanel
+        {
+            Spacing = 2,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = value,
+                    FontSize = 12,
+                    FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                    FontFamily = new FontFamily("Consolas"),
+                    Foreground = Brush("V2SecondaryForegroundBrush"),
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                },
+                new TextBlock
+                {
+                    Text = label,
+                    FontSize = 10,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                },
+            },
+        };
+        Grid.SetColumn(metric, column);
+        return metric;
+    }
+
+    private FrameworkElement RoutingSessionRow(RoutingDashboardSession session)
+    {
+        var expanded = _expandedRoutingSessions.Contains(session.Id);
+        var row = new Grid
+        {
+            Padding = new Thickness(10, 8, 10, 8),
             ColumnDefinitions =
             {
                 new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
@@ -5881,31 +5976,272 @@ public sealed partial class MainWindow : Window
         };
         row.Children.Add(new StackPanel
         {
-            Spacing = 2,
+            Orientation = Orientation.Horizontal,
+            Spacing = 10,
             Children =
             {
-                new TextBlock
+                Icon(expanded ? "ChevronDown" : "ChevronRight", 11, Brush("V2MutedForegroundBrush")),
+                new StackPanel
                 {
-                    Text = string.IsNullOrWhiteSpace(record.SessionId) ? record.ProjectName : record.SessionId,
-                    FontSize = 13,
-                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                    Foreground = Brush("V2ForegroundBrush"),
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                },
-                new TextBlock
-                {
-                    Text = $"{record.Provider} / {record.Model}",
-                    FontSize = 11,
-                    Foreground = Brush("V2MutedForegroundBrush"),
-                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    Spacing = 3,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = session.Title,
+                            FontSize = 13,
+                            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                            Foreground = Brush("V2ForegroundBrush"),
+                            TextTrimming = TextTrimming.CharacterEllipsis,
+                        },
+                        new TextBlock
+                        {
+                            Text = RoutingSessionSubtitle(session),
+                            FontSize = 11,
+                            Foreground = Brush("V2MutedForegroundBrush"),
+                            TextTrimming = TextTrimming.CharacterEllipsis,
+                        },
+                    },
                 },
             },
         });
-        row.Children.Add(RoutingValueText(record.Tier, 1, Brush("V2MutedForegroundBrush")));
-        row.Children.Add(RoutingValueText(record.TotalTokens.ToString("N0"), 2, Brush("V2MutedForegroundBrush")));
-        row.Children.Add(RoutingValueText(Money(record.EstimatedCost), 3, Brush("V2MutedForegroundBrush")));
-        row.Children.Add(RoutingValueText(record.SavedCost > 0 ? Money(record.SavedCost) : "-", 4, record.SavedCost > 0 ? Brush("V2GreenBrush") : Brush("V2MutedForegroundBrush")));
-        return row;
+        row.Children.Add(RoutingTierBadge(RoutingPrimaryTier(session), 1));
+        row.Children.Add(RoutingValueText(RoutingFormatTokens(session.EffectiveTotal.TotalTokens), 2, Brush("V2MutedForegroundBrush")));
+        row.Children.Add(RoutingValueText(Money(session.EffectiveTotal.EstimatedCost), 3, Brush("V2MutedForegroundBrush")));
+        row.Children.Add(RoutingValueText(session.EffectiveTotal.SavedCost > 0 ? Money(session.EffectiveTotal.SavedCost) : "-", 4, session.EffectiveTotal.SavedCost > 0 ? Brush("V2GreenBrush") : Brush("V2MutedForegroundBrush")));
+
+        var header = new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Background = Brush("V2ContentSurfaceBrush"),
+            Child = row,
+        };
+        header.Tapped += (_, _) =>
+        {
+            if (!_expandedRoutingSessions.Add(session.Id))
+            {
+                _expandedRoutingSessions.Remove(session.Id);
+            }
+
+            RenderAll();
+        };
+
+        var stack = new StackPanel { Spacing = 0 };
+        stack.Children.Add(header);
+        if (expanded)
+        {
+            stack.Children.Add(RoutingSessionDetails(session));
+        }
+
+        return stack;
+    }
+
+    private FrameworkElement RoutingSessionDetails(RoutingDashboardSession session)
+    {
+        var content = new StackPanel { Spacing = 8 };
+        var entries = session.EffectiveRequestEntries;
+        if (entries.Count > 0)
+        {
+            foreach (var entry in entries)
+            {
+                content.Children.Add(RoutingRequestLogRow(entry));
+            }
+        }
+        else
+        {
+            foreach (var line in session.RequestLog.TakeLast(8))
+            {
+                content.Children.Add(new TextBlock
+                {
+                    Text = line,
+                    FontSize = 12,
+                    FontFamily = new FontFamily("Consolas"),
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            }
+        }
+
+        return new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            Background = Brush("V2CardBrush"),
+            Padding = new Thickness(38, 10, 10, 10),
+            Child = content,
+        };
+    }
+
+    private FrameworkElement RoutingRequestLogRow(RoutingRequestLogEntry entry)
+    {
+        var row = new Grid
+        {
+            ColumnSpacing = 10,
+            Padding = new Thickness(10),
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(18) },
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+            },
+        };
+        row.Children.Add(Icon(string.IsNullOrWhiteSpace(entry.Skill) ? "GitBranch" : "Sparkles", 12, string.IsNullOrWhiteSpace(entry.Skill) ? Brush("V2MutedForegroundBrush") : Brush("V2AmberBrush")));
+
+        var body = new StackPanel { Spacing = 4 };
+        var top = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        top.Children.Add(new TextBlock
+        {
+            Text = entry.Role == "sub" ? "Subagent" : "Main",
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
+        });
+        if (!string.IsNullOrWhiteSpace(entry.Tier))
+        {
+            top.Children.Add(RoutingTierBadge(entry.Tier, null));
+        }
+        top.Children.Add(new TextBlock
+        {
+            Text = entry.Model,
+            FontSize = 12,
+            FontFamily = new FontFamily("Consolas"),
+            Foreground = Brush("V2MutedForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        top.Children.Add(new TextBlock
+        {
+            Text = RoutingFormatTokens(entry.Tokens),
+            FontSize = 12,
+            FontFamily = new FontFamily("Consolas"),
+            Foreground = Brush("V2MutedForegroundBrush"),
+        });
+        top.Children.Add(new TextBlock
+        {
+            Text = Money(entry.Cost),
+            FontSize = 12,
+            FontFamily = new FontFamily("Consolas"),
+            Foreground = Brush("V2SecondaryForegroundBrush"),
+        });
+        body.Children.Add(top);
+
+        if (!string.IsNullOrWhiteSpace(entry.Skill))
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = $"Skill: {entry.Skill}",
+                FontSize = 12,
+                Foreground = Brush("V2SecondaryForegroundBrush"),
+            });
+        }
+        if (!string.IsNullOrWhiteSpace(entry.Query))
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = entry.Query,
+                FontSize = 12,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                MaxLines = 2,
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+        if (entry.SavedCost is > 0)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = $"Baseline {Money(entry.BaselineCost ?? 0)} \u00b7 Saved {Money(entry.SavedCost.Value)}",
+                FontSize = 11,
+                Foreground = Brush("V2GreenBrush"),
+            });
+        }
+
+        Grid.SetColumn(body, 1);
+        row.Children.Add(body);
+        return new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Background = Brush("V2CardBrush"),
+            Child = row,
+        };
+    }
+
+    private FrameworkElement RoutingTierBadge(string tier, int? column)
+    {
+        var tint = RoutingTierBrush(tier);
+        var badge = new Border
+        {
+            CornerRadius = new CornerRadius(999),
+            Background = Brush("V2ControlSurfaceBrush"),
+            Padding = new Thickness(7, 3, 7, 3),
+            HorizontalAlignment = column is null ? HorizontalAlignment.Left : HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock
+            {
+                Text = tier,
+                FontSize = 10,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = tint,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            },
+        };
+        if (column is int gridColumn)
+        {
+            badge.Width = 76;
+            Grid.SetColumn(badge, gridColumn);
+        }
+
+        return badge;
+    }
+
+    private Brush RoutingTierBrush(string tier) => tier.ToUpperInvariant() switch
+    {
+        "SIMPLE" => Brush("V2BlueBrush"),
+        "MEDIUM" => Brush("V2AmberBrush"),
+        "REASONING" => new SolidColorBrush(global::Windows.UI.Color.FromArgb(255, 147, 51, 234)),
+        _ => Brush("V2GreenBrush"),
+    };
+
+    private static string RoutingPrimaryTier(RoutingDashboardSession session)
+    {
+        var entryTier = session.EffectiveRequestEntries.LastOrDefault(entry => !string.IsNullOrWhiteSpace(entry.Tier))?.Tier;
+        if (!string.IsNullOrWhiteSpace(entryTier))
+        {
+            return entryTier;
+        }
+
+        return session.ByTier.Keys.OrderBy(key => key, StringComparer.OrdinalIgnoreCase).FirstOrDefault() ?? "RECORDED";
+    }
+
+    private string RoutingSessionSubtitle(RoutingDashboardSession session)
+    {
+        var latest = session.EffectiveRequestEntries.LastOrDefault();
+        if (!string.IsNullOrWhiteSpace(latest?.Skill))
+        {
+            return $"{session.ProjectName} \u00b7 skill {latest.Skill}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(latest?.Query))
+        {
+            return $"{session.ProjectName} \u00b7 {latest.Query}";
+        }
+
+        return $"{session.ProjectName} \u00b7 {RelativeLabel(session.LastActiveAt)}";
+    }
+
+    private static string RoutingFormatTokens(int tokens)
+    {
+        if (tokens >= 1_000_000)
+        {
+            return $"{tokens / 1_000_000d:0.#}M";
+        }
+
+        if (tokens >= 10_000)
+        {
+            return $"{tokens / 1_000d:0.#}K";
+        }
+
+        return tokens.ToString("N0");
     }
 
     private FrameworkElement RoutingValueText(string text, int column, Brush foreground)

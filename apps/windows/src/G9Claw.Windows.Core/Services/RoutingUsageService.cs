@@ -44,12 +44,22 @@ public sealed record RoutingDashboardSnapshot(
     int TotalProjects = 0,
     int TotalSessions = 0,
     int RoutedSessions = 0,
-    IReadOnlyList<RoutingDashboardSession>? RecentSessions = null)
+    IReadOnlyList<RoutingDashboardSession>? RecentSessions = null,
+    IReadOnlyList<RoutingDashboardProject>? Projects = null)
 {
     public int TotalTokens => InputTokens + OutputTokens;
     public decimal SavedCost => Math.Max(0, BaselineCost - EstimatedCost);
     public IReadOnlyList<RoutingDashboardSession> EffectiveRecentSessions => RecentSessions ?? [];
+    public IReadOnlyList<RoutingDashboardProject> EffectiveProjects => Projects ?? [];
 }
+
+public sealed record RoutingDashboardProject(
+    string Id,
+    string Name,
+    string DisplayName,
+    RoutingBucket Total,
+    int Sessions,
+    DateTimeOffset? LastActiveAt);
 
 public sealed record RoutingRequestLogEntry(
     string Id,
@@ -186,6 +196,12 @@ public static class RoutingUsageAggregator
     public static RoutingDashboardSnapshot Snapshot(IEnumerable<RoutingUsageRecord> records, int recentLimit = 12)
     {
         var list = records.OrderByDescending(record => record.CreatedAt).ToList();
+        var sessions = list
+            .GroupBy(SessionKey, StringComparer.OrdinalIgnoreCase)
+            .Select(BuildSession)
+            .OrderByDescending(session => session.LastActiveAt)
+            .ToList();
+        var projects = BuildProjectSummaries(sessions);
         var breakdown = list
             .GroupBy(record => $"{record.Provider}\n{record.Model}", StringComparer.OrdinalIgnoreCase)
             .Select(group =>
@@ -204,14 +220,138 @@ public static class RoutingUsageAggregator
             .ThenBy(item => item.Provider, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.Model, StringComparer.OrdinalIgnoreCase)
             .ToList();
+        var total = MergeBuckets(sessions.Select(session => session.EffectiveTotal));
 
         return new RoutingDashboardSnapshot(
-            list.Count,
-            list.Sum(record => record.InputTokens),
-            list.Sum(record => record.OutputTokens),
-            list.Sum(record => record.EstimatedCost),
-            list.Sum(record => record.BaselineCost),
+            total.RequestCount,
+            total.InputTokens,
+            total.OutputTokens,
+            total.EstimatedCost,
+            total.BaselineCost,
             list.Take(Math.Max(1, recentLimit)).ToList(),
-            breakdown);
+            breakdown,
+            projects.Count,
+            sessions.Count,
+            sessions.Count(session => session.ByTier.Count > 0 || session.ByModel.Count > 0),
+            sessions.Take(Math.Max(1, recentLimit)).ToList(),
+            projects);
     }
+
+    private static string SessionKey(RoutingUsageRecord record)
+    {
+        if (!string.IsNullOrWhiteSpace(record.SessionId))
+        {
+            return record.SessionId.Trim();
+        }
+
+        return $"{record.ProjectName}:{record.CreatedAt.UtcDateTime:O}";
+    }
+
+    private static RoutingDashboardSession BuildSession(IGrouping<string, RoutingUsageRecord> group)
+    {
+        var ordered = group.OrderBy(record => record.CreatedAt).ToList();
+        var latest = ordered.Last();
+        var total = BucketFromRecords(ordered);
+        var entries = ordered.Select((record, index) => new RoutingRequestLogEntry(
+            $"{SessionKey(record)}:{record.CreatedAt.UtcDateTime:yyyyMMddHHmmssfff}:{index}",
+            record.CreatedAt,
+            "assistant",
+            string.IsNullOrWhiteSpace(record.Tier) ? null : record.Tier,
+            ModelEntry(record),
+            record.TotalTokens,
+            record.EstimatedCost,
+            record.BaselineCost > 0 ? record.BaselineCost : null,
+            record.SavedCost > 0 ? record.SavedCost : null,
+            Scenario: record.Route,
+            Route: record.Route)).ToList();
+        var requestLog = ordered.Select(record =>
+        {
+            var time = record.CreatedAt.ToLocalTime().ToString("HH:mm");
+            var tier = string.IsNullOrWhiteSpace(record.Tier) ? "" : $" · {record.Tier}";
+            var tokens = record.TotalTokens > 0 ? $" · {record.TotalTokens:N0} tokens" : "";
+            return $"{time} assistant {record.Route} -> {ModelEntry(record)}{tier}{tokens}";
+        }).ToList();
+
+        return new RoutingDashboardSession(
+            group.Key,
+            string.IsNullOrWhiteSpace(latest.SessionId) ? latest.Route : latest.SessionId,
+            latest.ProjectName,
+            latest.CreatedAt,
+            total.TotalTokens,
+            total.EstimatedCost,
+            total.SavedCost,
+            total,
+            BucketBy(ordered, record => string.IsNullOrWhiteSpace(record.Tier) ? "RECORDED" : record.Tier),
+            BucketBy(ordered, ModelEntry),
+            null,
+            null,
+            requestLog,
+            entries);
+    }
+
+    private static List<RoutingDashboardProject> BuildProjectSummaries(IReadOnlyList<RoutingDashboardSession> sessions)
+    {
+        return sessions
+            .GroupBy(session => session.ProjectName, StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var ordered = group.OrderByDescending(session => session.LastActiveAt).ToList();
+                return new RoutingDashboardProject(
+                    group.Key,
+                    group.Key,
+                    group.Key,
+                    MergeBuckets(ordered.Select(session => session.EffectiveTotal)),
+                    ordered.Count,
+                    ordered.FirstOrDefault()?.LastActiveAt);
+            })
+            .OrderByDescending(project => project.LastActiveAt ?? DateTimeOffset.MinValue)
+            .ThenBy(project => project.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static Dictionary<string, RoutingBucket> BucketBy(
+        IReadOnlyList<RoutingUsageRecord> records,
+        Func<RoutingUsageRecord, string> keySelector)
+    {
+        return records
+            .GroupBy(keySelector, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => BucketFromRecords(group), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static RoutingBucket BucketFromRecords(IEnumerable<RoutingUsageRecord> records)
+    {
+        var list = records.ToList();
+        var input = list.Sum(record => record.InputTokens);
+        var output = list.Sum(record => record.OutputTokens);
+        var estimated = list.Sum(record => record.EstimatedCost);
+        var baseline = list.Sum(record => record.BaselineCost);
+        return new RoutingBucket(
+            list.Count,
+            input,
+            output,
+            0,
+            input + output,
+            list.Count,
+            estimated,
+            baseline,
+            Math.Max(0, baseline - estimated));
+    }
+
+    private static RoutingBucket MergeBuckets(IEnumerable<RoutingBucket> buckets)
+    {
+        var list = buckets.ToList();
+        return new RoutingBucket(
+            list.Sum(bucket => bucket.Count),
+            list.Sum(bucket => bucket.InputTokens),
+            list.Sum(bucket => bucket.OutputTokens),
+            list.Sum(bucket => bucket.CacheReadTokens),
+            list.Sum(bucket => bucket.TotalTokens),
+            list.Sum(bucket => Math.Max(bucket.RequestCount, bucket.Count)),
+            list.Sum(bucket => bucket.EstimatedCost),
+            list.Sum(bucket => bucket.BaselineCost),
+            list.Sum(bucket => bucket.SavedCost));
+    }
+
+    private static string ModelEntry(RoutingUsageRecord record) =>
+        string.IsNullOrWhiteSpace(record.Provider) ? record.Model : $"{record.Provider} / {record.Model}";
 }

@@ -3658,6 +3658,14 @@ router:
         Assert.Equal(0.010m, snapshot.BaselineCost);
         Assert.Equal(0.007m, snapshot.SavedCost);
         Assert.Equal("cheap", Assert.Single(snapshot.ModelBreakdown).Model);
+        Assert.Equal(2, snapshot.TotalSessions);
+        Assert.Equal(1, snapshot.TotalProjects);
+        Assert.Equal(2, snapshot.RoutedSessions);
+        Assert.Equal(["s1", "s2"], snapshot.EffectiveRecentSessions.Select(session => session.Id).ToArray());
+        var project = Assert.Single(snapshot.EffectiveProjects);
+        Assert.Equal("Demo", project.DisplayName);
+        Assert.Equal(2, project.Sessions);
+        Assert.Equal(2, project.Total.RequestCount);
     }
 
     [Fact]
