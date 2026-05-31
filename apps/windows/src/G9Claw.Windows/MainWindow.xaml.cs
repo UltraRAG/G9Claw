@@ -1490,11 +1490,15 @@ public sealed partial class MainWindow : Window
             Spacing = 2,
         };
         var attachmentButton = ComposerIconButton("Paperclip", T("chat.composer.attach"));
-        attachmentButton.Click += async (_, _) => await AttachComposerFilesAsync();
+        var attachmentFlyout = new MenuFlyout();
+        var attachFiles = new MenuFlyoutItem { Text = T("chat.composer.attach") };
+        attachFiles.Click += async (_, _) => await AttachComposerFilesAsync();
+        attachmentFlyout.Items.Add(attachFiles);
+        var attachFolder = new MenuFlyoutItem { Text = IsChineseUi() ? "\u6dfb\u52a0\u6587\u4ef6\u5939" : "Attach folder" };
+        attachFolder.Click += async (_, _) => await AttachComposerFolderAsync();
+        attachmentFlyout.Items.Add(attachFolder);
+        attachmentButton.Flyout = attachmentFlyout;
         leftControls.Children.Add(attachmentButton);
-        var folderAttachmentButton = ComposerIconButton("Folder", IsChineseUi() ? "\u6dfb\u52a0\u6587\u4ef6\u5939" : "Attach folder");
-        folderAttachmentButton.Click += async (_, _) => await AttachComposerFolderAsync();
-        leftControls.Children.Add(folderAttachmentButton);
         var modeButton = ComposerPillButton(
             ComposerRunModeIcon(State.ComposerRunMode),
             State.ComposerRunMode.Label());
