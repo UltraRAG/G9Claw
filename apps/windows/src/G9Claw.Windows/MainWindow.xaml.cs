@@ -7804,7 +7804,8 @@ public sealed partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Top,
             Children =
             {
-                SkillHeaderButton("Copy", L("Open", "\u6253\u5f00"), async () => await ShowTextDialogAsync(record.Name, record.Content)),
+                SkillHeaderButton("Edit", L("Edit", "\u7f16\u8f91"), async () => await EditMemoryAsync(record)),
+                SkillHeaderButton(record.Deprecated ? "Refresh" : "Stop", record.Deprecated ? L("Restore", "\u6062\u590d") : L("Deprecate", "\u5f03\u7528"), async () => await ToggleMemoryDeprecatedAsync(record)),
                 SkillHeaderButton("Trash", T("common.delete"), async () => await DeleteMemoryAsync(record)),
             },
         };
@@ -7820,17 +7821,23 @@ public sealed partial class MainWindow : Window
             Child = header,
         });
 
-        body.Children.Add(new TextBox
+        body.Children.Add(new Border
         {
-            AcceptsReturn = true,
-            Text = string.IsNullOrWhiteSpace(record.Content) ? record.Summary : record.Content,
-            IsReadOnly = true,
-            TextWrapping = TextWrapping.Wrap,
-            FontFamily = new FontFamily("Consolas"),
-            FontSize = 12,
             MinHeight = 360,
+            CornerRadius = new CornerRadius(8),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Background = Brush("V2CardSurfaceSubtleBrush"),
             Padding = new Thickness(16),
-            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+            Child = new TextBlock
+            {
+                Text = string.IsNullOrWhiteSpace(record.Content) ? record.Summary : record.Content,
+                TextWrapping = TextWrapping.Wrap,
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 12,
+                Foreground = Brush("V2SecondaryForegroundBrush"),
+                IsTextSelectionEnabled = true,
+            },
         });
         return new ScrollViewer
         {
@@ -8423,6 +8430,44 @@ public sealed partial class MainWindow : Window
         _memoryService.Create(name, summary ?? "", State.SelectedProject?.DisplayName);
         _toolStatus = $"Created memory {name}.";
         RefreshNativeStores();
+        RenderAll();
+    }
+
+    private async Task EditMemoryAsync(MemoryRecord memory)
+    {
+        var name = await PromptTextAsync(L("Edit Memory", "\u7f16\u8f91\u8bb0\u5fc6"), L("Name", "\u540d\u79f0"), memory.Name);
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var summary = await PromptMultilineAsync(L("Edit Memory", "\u7f16\u8f91\u8bb0\u5fc6"), L("Summary", "\u6458\u8981"), memory.Summary);
+        try
+        {
+            var updated = _memoryService.Edit(memory, name, summary ?? "");
+            _selectedMemoryRecordId = updated.Id;
+            _toolStatus = $"Updated memory {updated.Name}.";
+            RefreshNativeStores();
+        }
+        catch (Exception ex)
+        {
+            _toolStatus = ex.Message;
+        }
+
+        RenderAll();
+    }
+
+    private async Task ToggleMemoryDeprecatedAsync(MemoryRecord memory)
+    {
+        try
+        {
+            var updated = _memoryService.SetDeprecated(memory, !memory.Deprecated);
+            _selectedMemoryRecordId = null;
+            _toolStatus = updated.Deprecated ? $"Deprecated memory {updated.Name}." : $"Restored memory {updated.Name}.";
+            RefreshNativeStores();
+        }
+        catch (Exception ex)
+        {
+            _toolStatus = ex.Message;
+        }
+
+        await Task.CompletedTask;
         RenderAll();
     }
 

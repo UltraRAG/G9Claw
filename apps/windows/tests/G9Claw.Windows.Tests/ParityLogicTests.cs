@@ -841,6 +841,39 @@ public sealed class ParityLogicTests
     }
 
     [Fact]
+    public void MemoryServicePersistsMacStyleEditAndDeprecationMetadata()
+    {
+        using var temp = new TempWorkspace();
+        var memoryRoot = Path.Combine(temp.Root, "memory");
+        var service = new MemoryService(memoryRoot);
+
+        var created = service.Create("Demo Memory", "Initial summary", "Demo Project");
+        var loaded = Assert.Single(service.Load());
+
+        Assert.Equal(created.RelativePath, loaded.RelativePath);
+        Assert.Equal("Demo Memory", loaded.Name);
+        Assert.Equal("Initial summary", loaded.Summary);
+        Assert.Equal(MemoryRecordType.Project, loaded.Type);
+        Assert.False(loaded.Deprecated);
+
+        var edited = service.Edit(loaded, "Renamed Memory", "Updated summary");
+        var deprecated = service.SetDeprecated(edited, true);
+        var restored = service.SetDeprecated(deprecated, false);
+        var reloaded = Assert.Single(service.Load());
+        var content = File.ReadAllText(Path.Combine(memoryRoot, reloaded.RelativePath));
+
+        Assert.Equal(restored.Id, reloaded.Id);
+        Assert.Equal("Renamed Memory", reloaded.Name);
+        Assert.Equal("Updated summary", reloaded.Summary);
+        Assert.False(reloaded.Deprecated);
+        Assert.Contains("name: Renamed Memory", content);
+        Assert.Contains("description: Updated summary", content);
+        Assert.Contains("type: project", content);
+        Assert.Contains("scope: project", content);
+        Assert.Contains("deprecated: false", content);
+    }
+
+    [Fact]
     public void ConfigAndPreferenceHelpersMatchMacStoragePolicies()
     {
         var date = new DateTimeOffset(2026, 5, 29, 23, 30, 0, TimeSpan.FromHours(8));
