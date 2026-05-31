@@ -323,15 +323,16 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(NativeConfigFormLayout.sectionNavigationWidth, 180)
         XCTAssertEqual(NativeConfigFormLayout.sectionNavigationGap, 16)
         XCTAssertEqual(NativeConfigFormLayout.sectionOrder, [
-            .runtime,
             .models,
-            .alwaysOn,
+            .agents,
             .memory,
-            .search,
             .router,
-            .gateway,
+            .search,
+            .alwaysOn,
         ])
         XCTAssertFalse(NativeConfigFormLayout.sectionOrder.contains(.raw))
+        XCTAssertFalse(NativeConfigFormLayout.sectionOrder.contains(.runtime))
+        XCTAssertFalse(NativeConfigFormLayout.sectionOrder.contains(.gateway))
     }
 
     func testNativeConfigReloadSummarySubsystemsMatchWebSettingsTab() {
@@ -339,14 +340,68 @@ final class ParityLogicTests: XCTestCase {
             "processEnv",
             "memory",
             "router",
-            "gateway",
         ])
         XCTAssertEqual(NativeConfigReloadSummary.subsystems.map(\.label), [
             .processEnv,
             .memory,
             .routerCCR,
-            .gateway,
         ])
+    }
+
+    func testNativeMCPSettingsUseG9ClawPathsAndJSONShape() throws {
+        let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+
+        XCTAssertEqual(
+            NativeMCPConfigService.globalConfigURL(home: home).path,
+            "/Users/tester/.g9claw/mcp.json"
+        )
+        XCTAssertEqual(
+            NativeMCPConfigService.projectConfigURL(projectRoot: "/Users/tester/project").path,
+            "/Users/tester/project/.g9claw/mcp.json"
+        )
+
+        let raw = """
+        {
+          "mcpServers": {
+            "docs": {
+              "url": "https://example.com/mcp",
+              "headers": {
+                "Authorization": "Bearer ${env:MCP_TOKEN}"
+              }
+            },
+            "github": {
+              "command": "npx",
+              "args": ["-y", "@modelcontextprotocol/server-github"],
+              "env": {
+                "GITHUB_TOKEN": "${env:GITHUB_TOKEN}"
+              },
+              "perSession": true
+            }
+          }
+        }
+        """
+
+        let draft = try NativeMCPConfigService.parse(raw: raw, path: "/tmp/mcp.json", exists: true)
+
+        XCTAssertEqual(draft.path, "/tmp/mcp.json")
+        XCTAssertTrue(draft.exists)
+        XCTAssertEqual(draft.servers.map(\.name), ["docs", "github"])
+        XCTAssertEqual(draft.servers.first?.transport, .http)
+        XCTAssertEqual(draft.servers.first?.headersText, "Authorization=Bearer ${env:MCP_TOKEN}")
+        XCTAssertEqual(draft.servers.last?.transport, .stdio)
+        XCTAssertEqual(draft.servers.last?.command, "npx")
+        XCTAssertEqual(draft.servers.last?.argsText, "-y\n@modelcontextprotocol/server-github")
+        XCTAssertEqual(draft.servers.last?.envText, "GITHUB_TOKEN=${env:GITHUB_TOKEN}")
+        XCTAssertEqual(draft.servers.last?.perSession, true)
+
+        let serialized = try NativeMCPConfigService.rawJSON(servers: draft.servers)
+        XCTAssertTrue(serialized.contains("\"mcpServers\""))
+        XCTAssertTrue(serialized.contains("\"github\""))
+        XCTAssertTrue(serialized.contains("\"perSession\" : true"))
+
+        XCTAssertThrowsError(try NativeMCPConfigService.parse(raw: #"{"mcpServers":{"bad":{}}}"#, path: "", exists: true)) { error in
+            XCTAssertEqual(error as? NativeMCPConfigError, .unrecognizedTransport("bad"))
+        }
     }
 
     func testNativeConfigModelPickerOptionsMatchWebFormSelects() {
@@ -390,7 +445,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(NativeModelsConfigFormFields.newProviderScalars.keys.contains("headers"))
 
         XCTAssertTrue(NativeModelsConfigFormFields.usesModelPoolDropdown)
-        XCTAssertTrue(NativeModelsConfigFormFields.usageAssignmentsLiveInModelSection)
+        XCTAssertFalse(NativeModelsConfigFormFields.usageAssignmentsLiveInModelSection)
         XCTAssertFalse(NativeModelsConfigFormFields.entryRowsExposeProviderPicker)
         XCTAssertFalse(NativeModelsConfigFormFields.entryRowsExposeModelNameField)
         XCTAssertEqual(NativeModelsConfigFormFields.assignmentPaths, [
@@ -414,14 +469,18 @@ final class ParityLogicTests: XCTestCase {
             "name": "",
             "contextWindow": "",
         ])
+
+        XCTAssertEqual(NativeAgentConfigFormFields.visiblePaths, [
+            "agents.main.model",
+            "agents.subagents.default",
+        ])
     }
 
     func testNativeRuntimeConfigFormFieldsMatchWebSettingsTab() {
-        XCTAssertEqual(NativeRuntimeConfigFormFields.visiblePaths, [
+        XCTAssertTrue(NativeRuntimeConfigFormFields.visiblePaths.isEmpty)
+        XCTAssertEqual(NativeRuntimeConfigFormFields.textFields.map(\.path), [
             "runtime.apiTimeoutMs",
             "runtime.databasePath",
-            "runtime.workspacesRoot",
-            "gateway.runtimePaths.generalCwd",
         ])
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.host"))
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.serverPort"))
@@ -429,7 +488,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.proxyPort"))
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.contextWindow"))
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.httpsProxy"))
-        XCTAssertTrue(NativeRuntimeConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))
     }
 
     func testNativeSearchConfigFormFieldsExposeWebSearchProviders() {
@@ -442,8 +501,6 @@ final class ParityLogicTests: XCTestCase {
                 "tools.webSearch.provider",
                 "tools.webSearch.apiKey",
                 "tools.webSearch.endpoint",
-                "tools.webSearch.organicLimit",
-                "tools.webSearch.timeoutMs",
                 "tools.webSearch.customProvider.name",
                 "tools.webSearch.customProvider.auth",
                 "tools.webSearch.customProvider.method",
@@ -463,9 +520,9 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(primaryFields.map(\.label), [
             .apiKey,
             .endpointURL,
-            .organicLimit,
-            .timeoutMs,
         ])
+        XCTAssertFalse(NativeSearchConfigFormFields.visiblePaths.contains("tools.webSearch.organicLimit"))
+        XCTAssertFalse(NativeSearchConfigFormFields.visiblePaths.contains("tools.webSearch.timeoutMs"))
         XCTAssertEqual(customFields.map(\.label), [
             .customProviderName,
             .customAuth,
@@ -510,6 +567,7 @@ final class ParityLogicTests: XCTestCase {
     func testNativeMemoryConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeMemoryConfigFormFields.visiblePaths, [
             "memory.enabled",
+            "memory.model",
             "memory.autoIndexIntervalMinutes",
             "memory.autoDreamIntervalMinutes",
         ])
@@ -518,70 +576,60 @@ final class ParityLogicTests: XCTestCase {
             "memory.autoDreamIntervalMinutes",
         ])
         XCTAssertTrue(NativeModelsConfigFormFields.assignmentPaths.contains("memory.model"))
+        XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.captureStrategy"))
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.includeAssistant"))
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.reasoningMode"))
+        XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.maxMessageChars"))
+        XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.heartbeatBatchSize"))
     }
 
     func testNativeAlwaysOnConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeAlwaysOnConfigFormFields.visiblePaths, [
             "alwaysOn.enabled",
             "alwaysOn.trigger.enabled",
-            "alwaysOn.dormancy.enabled",
-            "alwaysOn.workspace.gitLfs",
             "alwaysOn.trigger.tickIntervalMinutes",
             "alwaysOn.trigger.cooldownMinutes",
             "alwaysOn.trigger.dailyBudget",
-            "alwaysOn.trigger.heartbeatStaleSeconds",
-            "alwaysOn.trigger.recentUserMsgMinutes",
-            "alwaysOn.trigger.preferChannel",
-            "alwaysOn.dormancy.debounceMs",
-            "alwaysOn.dormancy.ignoreGlobs",
-            "alwaysOn.workspace.gitWorktreeBaseDir",
-            "alwaysOn.workspace.snapshotBaseDir",
-            "alwaysOn.workspace.snapshotMaxBytes",
-            "alwaysOn.execution.maxTurns",
-            "alwaysOn.execution.maxToolCalls",
-            "alwaysOn.execution.timeoutMinutes",
         ])
         XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.discovery.trigger.preferClient"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.dormancy.enabled"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.workspace.gitLfs"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.trigger.heartbeatStaleSeconds"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.trigger.recentUserMsgMinutes"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.trigger.preferChannel"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.execution.maxTurns"))
     }
 
     func testNativeRouterAndGatewayConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeRouterConfigFormFields.visiblePaths, [
             "router.enabled",
             "router.routes.default.model",
+            "router.routes.background.model",
             "router.tokenSaver.enabled",
             "router.tokenSaver.judgeModel",
-            "router.tokenSaver.defaultTier",
-            "router.tokenSaver.rules",
             "router.tokenSaver.tiers.simple.model",
             "router.tokenSaver.tiers.medium.model",
             "router.tokenSaver.tiers.complex.model",
             "router.tokenSaver.tiers.reasoning.model",
-            "router.tokenStats.baselineModel",
-            "router.tokenStats.defaultCostPerMillion",
-            "router.zeroUsageRetry.enabled",
-            "router.zeroUsageRetry.maxAttempts",
-            "router.transientRetry.enabled",
-            "router.transientRetry.maxAttempts",
         ])
         XCTAssertEqual(NativeRouterConfigFormFields.routeModelFields.map(\.path), [
             "router.routes.default.model",
             "router.routes.background.model",
         ])
-        XCTAssertEqual(NativeRouterConfigFormFields.advancedRouteModelFields.map(\.path), [
-            "router.routes.think.model",
-            "router.routes.longContext.model",
-            "router.routes.webSearch.model",
-        ])
         XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.log"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.think.model"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.longContext.model"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.webSearch.model"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenSaver.defaultTier"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenSaver.rules"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.autoOrchestrate.mainAgentModel"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenStats.defaultCostPerMillion"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.zeroUsageRetry.enabled"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.transientRetry.enabled"))
         XCTAssertTrue(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.default.model"))
         XCTAssertTrue(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenSaver.enabled"))
 
-        XCTAssertEqual(NativeGatewayConfigFormFields.visiblePaths, [
-            "gateway.enabled",
-            "gateway.home",
-        ])
+        XCTAssertTrue(NativeGatewayConfigFormFields.visiblePaths.isEmpty)
         XCTAssertFalse(NativeGatewayConfigFormFields.visiblePaths.contains("gateway.allowAllUsers"))
         XCTAssertFalse(NativeGatewayConfigFormFields.visiblePaths.contains("gateway.groupSessionsPerUser"))
         XCTAssertFalse(NativeGatewayConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))

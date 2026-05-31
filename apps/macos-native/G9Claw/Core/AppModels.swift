@@ -1008,6 +1008,7 @@ enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
     case appearance
     case permissions
     case config
+    case mcp
 
     var id: String { rawValue }
 
@@ -1016,6 +1017,7 @@ enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
         case .appearance: "Appearance"
         case .permissions: "Permissions"
         case .config: "Config"
+        case .mcp: "MCP Servers"
         }
     }
 
@@ -1024,6 +1026,7 @@ enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
         case .appearance: "paintpalette"
         case .permissions: "shield"
         case .config: "doc.badge.gearshape"
+        case .mcp: "server.rack"
         }
     }
 }
@@ -1031,6 +1034,7 @@ enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
 enum G9ClawConfigSection: String, CaseIterable, Identifiable {
     case runtime
     case models
+    case agents
     case alwaysOn
     case memory
     case search
@@ -1044,6 +1048,7 @@ enum G9ClawConfigSection: String, CaseIterable, Identifiable {
         switch self {
         case .runtime: "Runtime"
         case .models: "Models"
+        case .agents: "Agents"
         case .alwaysOn: "Always-On"
         case .memory: "Memory"
         case .search: "Search"
