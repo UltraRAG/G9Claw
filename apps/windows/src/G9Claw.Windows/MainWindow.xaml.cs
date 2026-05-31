@@ -6735,7 +6735,7 @@ public sealed partial class MainWindow : Window
                 },
                 new TextBlock
                 {
-                    Text = T("alwaysOn.subtitle"),
+                    Text = AlwaysOnHeaderSubtitle(),
                     FontSize = 13,
                     Foreground = Brush("V2MutedForegroundBrush"),
                     TextTrimming = TextTrimming.CharacterEllipsis,
@@ -6750,12 +6750,22 @@ public sealed partial class MainWindow : Window
             Children =
             {
                 ToolbarButton("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
-                ToolbarButton("Plus", L("New plan", "\u65b0\u5efa\u8ba1\u5212"), (Action)(async () => await CreateAlwaysOnPlanAsync()), isProminent: true),
+                ToolbarButton("Search", L("Discover", "\u53d1\u73b0"), (Action)(async () => await StartAlwaysOnDiscoveryAsync()), isProminent: true),
             },
         };
         Grid.SetColumn(actions, 1);
         header.Children.Add(actions);
         return header;
+    }
+
+    private string AlwaysOnHeaderSubtitle()
+    {
+        if (State.SelectedProject is { } selected && !V2SidebarProjection.IsGeneralProject(selected))
+        {
+            return L("Background discovery agent for this project.", "\u4e3a\u8be5\u9879\u76ee\u6301\u7eed\u8fd0\u884c\u7684\u540e\u53f0\u53d1\u73b0\u4ee3\u7406\u3002");
+        }
+
+        return L("Global background automation across enabled projects.", "\u6240\u6709\u5df2\u542f\u7528\u9879\u76ee\u7684\u540e\u53f0\u81ea\u52a8\u5316\u3002");
     }
 
     private FrameworkElement TasksPage()
@@ -8252,6 +8262,29 @@ public sealed partial class MainWindow : Window
         _alwaysOnStore.Create(title, prompt ?? "");
         _toolStatus = $"Created always-on plan {title}.";
         RefreshNativeStores();
+        RenderAll();
+    }
+
+    private async Task StartAlwaysOnDiscoveryAsync()
+    {
+        if (State.SelectedProject is not { } project || V2SidebarProjection.IsGeneralProject(project))
+        {
+            await CreateAlwaysOnPlanAsync();
+            return;
+        }
+
+        var title = L("Discovery plan", "\u53d1\u73b0\u8ba1\u5212");
+        var prompt = IsChineseUi()
+            ? $"\u68c0\u67e5\u9879\u76ee {project.DisplayName}\uff08{project.RootPath}\uff09\u7684\u5f53\u524d\u72b6\u6001\u3001\u6700\u8fd1\u5bf9\u8bdd\u3001\u8bb0\u5fc6\u548c\u8ba1\u5212\uff0c\u63d0\u51fa\u4e00\u4e2a\u53ef\u624b\u52a8\u8fd0\u884c\u7684 Always-on \u540e\u53f0\u8ba1\u5212\u3002"
+            : $"Review project {project.DisplayName} ({project.RootPath}), including recent chats, memories, and existing plans, then propose one manually runnable Always-on background plan.";
+        var plan = _alwaysOnStore.Create(title, prompt);
+        _alwaysOnToolTab = AlwaysOnToolTab.Items;
+        _selectedAlwaysOnPlanId = plan.Id;
+        _toolStatus = L(
+            $"Discovery plan created for {project.DisplayName}.",
+            $"\u5df2\u4e3a {project.DisplayName} \u521b\u5efa\u53d1\u73b0\u8ba1\u5212\u3002");
+        RefreshNativeStores();
+        await Task.CompletedTask;
         RenderAll();
     }
 
