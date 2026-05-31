@@ -186,6 +186,7 @@ public sealed partial class MainWindow : Window
     private bool? _lastToolSwitcherIconOnly;
     private bool _chatRenderPending;
     private Guid? _selectedMemoryRecordId;
+    private string? _selectedAlwaysOnPlanId;
     private ScrollViewer? _chatScrollViewer;
     private bool _chatStickToBottom = true;
     private double _chatScrollOffset;
@@ -5799,12 +5800,25 @@ public sealed partial class MainWindow : Window
         var todayPlans = State.AlwaysOnPlans.Count(plan => plan.UpdatedAt.LocalDateTime.Date == DateTime.Today);
         shell.Children.Add(ToolTabbedTopbar(new[]
         {
-            (L("Dashboard", "\u770b\u677f"), _alwaysOnToolTab == AlwaysOnToolTab.Dashboard, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Dashboard; RenderAll(); })),
-            (L("Plans & Cron Jobs", "\u8ba1\u5212\u4e0e\u5468\u671f\u4efb\u52a1"), _alwaysOnToolTab == AlwaysOnToolTab.Items, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Items; RenderAll(); })),
-            (L("Run History", "\u8fd0\u884c\u5386\u53f2"), _alwaysOnToolTab == AlwaysOnToolTab.History, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.History; RenderAll(); })),
+            (L("Dashboard", "\u770b\u677f"), _alwaysOnToolTab == AlwaysOnToolTab.Dashboard, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Dashboard; _selectedAlwaysOnPlanId = null; RenderAll(); })),
+            (L("Plans & Cron Jobs", "\u8ba1\u5212\u4e0e\u5468\u671f\u4efb\u52a1"), _alwaysOnToolTab == AlwaysOnToolTab.Items, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Items; _selectedAlwaysOnPlanId = null; RenderAll(); })),
+            (L("Run History", "\u8fd0\u884c\u5386\u53f2"), _alwaysOnToolTab == AlwaysOnToolTab.History, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.History; _selectedAlwaysOnPlanId = null; RenderAll(); })),
         },
         StatusPill(runningPlans > 0 ? L("Running", "\u8fd0\u884c\u4e2d") : L("Ready", "\u5c31\u7eea"), runningPlans > 0),
         StatusPill(IsChineseUi() ? $"{readyPlans} \u4e2a\u5c31\u7eea" : $"{readyPlans} ready", readyPlans > 0)));
+
+        var selectedPlan = !string.IsNullOrWhiteSpace(_selectedAlwaysOnPlanId)
+            ? State.AlwaysOnPlans.FirstOrDefault(plan => string.Equals(plan.Id, _selectedAlwaysOnPlanId, StringComparison.Ordinal))
+            : null;
+        if (selectedPlan is not null)
+        {
+            var detail = AlwaysOnPlanDetailPage(selectedPlan);
+            Grid.SetRow(detail, 1);
+            shell.Children.Add(detail);
+            ((Grid)page.Tag!).Children.Add(shell);
+            return page;
+        }
+        _selectedAlwaysOnPlanId = null;
 
         var panel = new StackPanel
         {
@@ -6720,48 +6734,259 @@ public sealed partial class MainWindow : Window
                 DashedEmptyState(T("alwaysOn.empty.title"), T("alwaysOn.emptyDetail")));
         }
 
-        return ToolBoardGroup(L("Plans / Cron Jobs", "\u8ba1\u5212\u4e0e\u5468\u671f\u4efb\u52a1"), L("Manual and scheduled background work.", "\u624b\u52a8\u548c\u5b9a\u65f6\u7684\u540e\u53f0\u4efb\u52a1\u3002"), rows.Select(AlwaysOnPlanRow).ToArray());
+        var cardStack = new StackPanel { Spacing = 10 };
+        foreach (var plan in rows)
+        {
+            cardStack.Children.Add(AlwaysOnPlanRow(plan));
+        }
+
+        return ToolBoardGroup(L("Plans / Cron Jobs", "\u8ba1\u5212\u4e0e\u5468\u671f\u4efb\u52a1"), L("Manual and scheduled background work.", "\u624b\u52a8\u548c\u5b9a\u65f6\u7684\u540e\u53f0\u4efb\u52a1\u3002"), cardStack);
     }
 
     private FrameworkElement AlwaysOnPlanRow(AlwaysOnPlan plan)
     {
         var grid = new Grid
         {
-            MinHeight = 62,
-            Padding = new Thickness(10, 9, 10, 9),
-            ColumnSpacing = 10,
+            MinHeight = 82,
+            Padding = new Thickness(12),
+            ColumnSpacing = 12,
         };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.Children.Add(Icon("Radio", 14, Brush("V2MutedForegroundBrush")));
-        var text = new StackPanel { Spacing = 2 };
-        text.Children.Add(new TextBlock
+        grid.Children.Add(new Border
+        {
+            Width = 34,
+            Height = 34,
+            CornerRadius = new CornerRadius(8),
+            Background = Brush("V2CardSurfaceSubtleBrush"),
+            BorderBrush = AlwaysOnStatusBrush(plan.ExecutionStatus ?? plan.Status),
+            BorderThickness = new Thickness(1),
+            Child = Icon("Radio", 15, AlwaysOnStatusBrush(plan.ExecutionStatus ?? plan.Status)),
+        });
+        var text = new StackPanel { Spacing = 5 };
+        var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        titleRow.Children.Add(new TextBlock
         {
             Text = plan.Title,
-            FontSize = 13,
+            FontSize = 14,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = Brush("V2ForegroundBrush"),
             TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 1,
         });
+        titleRow.Children.Add(SkillBadge(AlwaysOnStatusLabel(plan.ExecutionStatus ?? plan.Status), AlwaysOnStatusBrush(plan.ExecutionStatus ?? plan.Status)));
+        text.Children.Add(titleRow);
         text.Children.Add(new TextBlock
         {
-            Text = $"{plan.Status} / {plan.Summary}",
+            Text = string.IsNullOrWhiteSpace(plan.Summary) ? plan.Content : plan.Summary,
             FontSize = 12,
-            Foreground = Brush("V2MutedForegroundBrush"),
+            Foreground = Brush("V2SecondaryForegroundBrush"),
             TextWrapping = TextWrapping.Wrap,
             MaxLines = 2,
         });
+        text.Children.Add(new TextBlock
+        {
+            Text = AlwaysOnPlanMetaLine(plan),
+            FontSize = 11,
+            Foreground = Brush("V2MutedForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
         Grid.SetColumn(text, 1);
-        grid.Children.Add(text);
+        var open = new Button
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(0),
+            Background = Transparent,
+            BorderBrush = Transparent,
+            Content = text,
+        };
+        open.Click += (_, _) =>
+        {
+            _selectedAlwaysOnPlanId = plan.Id;
+            RenderAll();
+        };
+        grid.Children.Add(open);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        actions.Children.Add(StatusPill(RelativeLabel(plan.UpdatedAt), false));
         actions.Children.Add(SmallActionButton(L("Run", "\u8fd0\u884c"), async () => await RunAlwaysOnPlanAsync(plan)));
         actions.Children.Add(SmallActionButton(L("Delete", "\u5220\u9664"), async () => await DeleteAlwaysOnPlanAsync(plan)));
         Grid.SetColumn(actions, 2);
         grid.Children.Add(actions);
+        return new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Background = Brush("V2ContentSurfaceBrush"),
+            Child = grid,
+        };
+    }
+
+    private FrameworkElement AlwaysOnPlanDetailPage(AlwaysOnPlan plan)
+    {
+        var body = new StackPanel
+        {
+            Spacing = 16,
+            Padding = new Thickness(24, 18, 24, 18),
+            MaxWidth = 1120,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        var header = new Grid
+        {
+            ColumnSpacing = 16,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+        var title = new StackPanel { Spacing = 9 };
+        title.Children.Add(SkillHeaderButton("ChevronLeft", L("Back", "\u8fd4\u56de"), async () =>
+        {
+            _selectedAlwaysOnPlanId = null;
+            await Task.CompletedTask;
+            RenderAll();
+        }));
+        title.Children.Add(new TextBlock
+        {
+            Text = plan.Title,
+            FontSize = 22,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
+            TextWrapping = TextWrapping.Wrap,
+        });
+        title.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children =
+            {
+                SkillBadge(AlwaysOnStatusLabel(plan.ExecutionStatus ?? plan.Status), AlwaysOnStatusBrush(plan.ExecutionStatus ?? plan.Status)),
+                SkillBadge(RelativeLabel(plan.UpdatedAt), Brush("V2MutedForegroundBrush")),
+            },
+        });
+        header.Children.Add(title);
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Top,
+            Children =
+            {
+                SkillHeaderButton("Play", L("Run", "\u8fd0\u884c"), async () => await RunAlwaysOnPlanAsync(plan)),
+                SkillHeaderButton("Trash", T("common.delete"), async () => await DeleteAlwaysOnPlanAsync(plan)),
+            },
+        };
+        Grid.SetColumn(actions, 1);
+        header.Children.Add(actions);
+        body.Children.Add(new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Background = Brush("V2ContentSurfaceBrush"),
+            Padding = new Thickness(18),
+            Child = header,
+        });
+
+        if (!string.IsNullOrWhiteSpace(plan.Summary) || !string.IsNullOrWhiteSpace(plan.Rationale))
+        {
+            var summary = new StackPanel { Spacing = 8 };
+            if (!string.IsNullOrWhiteSpace(plan.Summary))
+            {
+                summary.Children.Add(new TextBlock
+                {
+                    Text = plan.Summary,
+                    FontSize = 13,
+                    Foreground = Brush("V2SecondaryForegroundBrush"),
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            }
+            if (!string.IsNullOrWhiteSpace(plan.Rationale))
+            {
+                summary.Children.Add(new TextBlock
+                {
+                    Text = plan.Rationale,
+                    FontSize = 12,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            }
+            body.Children.Add(ToolBoardGroup(L("Summary", "\u6458\u8981"), null, summary));
+        }
+
+        body.Children.Add(ToolBoardGroup(L("Plan Markdown", "\u8ba1\u5212 Markdown"), null, new TextBox
+        {
+            AcceptsReturn = true,
+            Text = string.IsNullOrWhiteSpace(plan.Content) ? T("alwaysOn.emptyDetail") : plan.Content,
+            IsReadOnly = true,
+            TextWrapping = TextWrapping.Wrap,
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
+            MinHeight = 240,
+            Padding = new Thickness(12),
+            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+        }));
+
+        body.Children.Add(ToolBoardGroup(L("Metadata", "\u5143\u6570\u636e"), null, AlwaysOnMetaGrid(plan)));
+        return new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = body,
+        };
+    }
+
+    private FrameworkElement AlwaysOnMetaGrid(AlwaysOnPlan plan)
+    {
+        var grid = new Grid { ColumnSpacing = 12, RowSpacing = 12 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var items = new (string Label, string Value)[]
+        {
+            (L("Created", "\u521b\u5efa"), plan.CreatedAt.LocalDateTime.ToString("g")),
+            (L("Updated", "\u66f4\u65b0"), plan.UpdatedAt.LocalDateTime.ToString("g")),
+            (L("Approval", "\u5ba1\u6279"), string.IsNullOrWhiteSpace(plan.ApprovalMode) ? "-" : plan.ApprovalMode),
+            (L("Session", "\u4f1a\u8bdd"), string.IsNullOrWhiteSpace(plan.ExecutionSessionId) ? "-" : plan.ExecutionSessionId),
+            (L("Plan file", "\u8ba1\u5212\u6587\u4ef6"), string.IsNullOrWhiteSpace(plan.PlanFilePath) ? "-" : plan.PlanFilePath),
+        };
+        for (var i = 0; i < items.Length; i++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var item = SkillMetaLabel(items[i].Label, items[i].Value);
+            Grid.SetColumn(item, i % 2);
+            Grid.SetRow(item, i / 2);
+            grid.Children.Add(item);
+        }
+
         return grid;
     }
+
+    private string AlwaysOnPlanMetaLine(AlwaysOnPlan plan) =>
+        $"{L("Created", "\u521b\u5efa")} {RelativeLabel(plan.CreatedAt)} / {L("Updated", "\u66f4\u65b0")} {RelativeLabel(plan.UpdatedAt)}";
+
+    private string AlwaysOnStatusLabel(AlwaysOnStatus status) => status switch
+    {
+        AlwaysOnStatus.Scheduled => L("Scheduled", "\u5df2\u6392\u671f"),
+        AlwaysOnStatus.Ready => L("Ready", "\u5c31\u7eea"),
+        AlwaysOnStatus.Queued => L("Queued", "\u6392\u961f\u4e2d"),
+        AlwaysOnStatus.Running => L("Running", "\u8fd0\u884c\u4e2d"),
+        AlwaysOnStatus.Completed => L("Completed", "\u5df2\u5b8c\u6210"),
+        AlwaysOnStatus.Failed => L("Failed", "\u5931\u8d25"),
+        AlwaysOnStatus.Draft => L("Draft", "\u8349\u7a3f"),
+        AlwaysOnStatus.Superseded => L("Superseded", "\u5df2\u66ff\u6362"),
+        _ => L("Unknown", "\u672a\u77e5"),
+    };
+
+    private Brush AlwaysOnStatusBrush(AlwaysOnStatus status) => status switch
+    {
+        AlwaysOnStatus.Running => Brush("V2BlueBrush"),
+        AlwaysOnStatus.Completed => Brush("V2GreenBrush"),
+        AlwaysOnStatus.Failed => Brush("V2RedBrush"),
+        AlwaysOnStatus.Scheduled or AlwaysOnStatus.Queued => Brush("V2AmberBrush"),
+        _ => Brush("V2MutedForegroundBrush"),
+    };
 
     private FrameworkElement ToolBoardGroup(string title, string? subtitle, params FrameworkElement[] children)
     {
@@ -7073,6 +7298,7 @@ public sealed partial class MainWindow : Window
     {
         _alwaysOnStore.Delete(plan);
         _toolStatus = $"Deleted always-on plan {plan.Title}.";
+        if (string.Equals(_selectedAlwaysOnPlanId, plan.Id, StringComparison.Ordinal)) _selectedAlwaysOnPlanId = null;
         RefreshNativeStores();
         await Task.CompletedTask;
         RenderAll();
