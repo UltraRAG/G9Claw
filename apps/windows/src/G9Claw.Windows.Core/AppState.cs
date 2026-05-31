@@ -166,7 +166,7 @@ public sealed class AppState : INotifyPropertyChanged
         var home = string.IsNullOrWhiteSpace(homePath)
             ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
             : homePath;
-        return Path.GetFullPath(Path.Combine(home, "PilotDeck", "general"));
+        return Path.GetFullPath(Path.Combine(home, "G9Claw", "general"));
     }
 
     public static string NormalizeGeneralWorkspacePath(string rawPath, string? homePath = null)

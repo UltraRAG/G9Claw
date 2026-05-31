@@ -63,7 +63,7 @@ public static class NativeConfigService
             Values.TryGetNonBlank(values, "runtime.workspacesRoot"),
             Values.TryGetNonBlank(values, "gateway.runtimePaths.generalCwd"),
             Values.TryGetInt(values, "runtime.apiTimeoutMs") ?? Values.TryGetInt(values, "router.apiTimeoutMs") ?? 120_000,
-            Values.TryGetInt(values, $"models.entries.{defaultEntry}.contextWindow") ?? Values.TryGetInt(values, "runtime.contextWindow") ?? 160_000,
+            ContextWindowFor(defaultEntry, values),
             defaultEntry,
             values);
     }
@@ -79,6 +79,16 @@ public static class NativeConfigService
 
         return "default";
     }
+
+    private static bool HasModelEntry(Dictionary<string, string> values, string? entryId) =>
+        !string.IsNullOrWhiteSpace(entryId) &&
+        values.ContainsKey($"models.entries.{entryId.Trim()}.provider");
+
+    private static int ContextWindowFor(string entryId, Dictionary<string, string> values) =>
+        Values.TryGetInt(values, $"models.entries.{entryId}.contextWindow") ??
+        Values.TryGetInt(values, "models.entries.default.contextWindow") ??
+        Values.TryGetInt(values, "runtime.contextWindow") ??
+        160_000;
 
     public static Dictionary<string, string> ScalarMap(string yaml)
     {

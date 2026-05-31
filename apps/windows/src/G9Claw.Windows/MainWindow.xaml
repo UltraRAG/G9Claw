@@ -148,8 +148,8 @@
             <Grid
                 x:Name="HeaderRoot"
                 Grid.Row="0"
-                Padding="24,0"
-                ColumnSpacing="16">
+                Padding="0"
+                ColumnSpacing="0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -158,7 +158,7 @@
                 <StackPanel
                     Orientation="Horizontal"
                     VerticalAlignment="Center"
-                    Spacing="8">
+                    Spacing="6">
                     <Button
                         x:Name="OpenSidebarButton"
                         Style="{StaticResource V2IconButtonStyle}"
@@ -173,6 +173,7 @@
                         TextTrimming="CharacterEllipsis"
                         MaxWidth="260" />
                     <TextBlock
+                        x:Name="BreadcrumbDividerText"
                         Text="/"
                         Foreground="{ThemeResource V2MutedForegroundBrush}"
                         Opacity="0.6"
@@ -189,7 +190,7 @@
                         Style="{StaticResource V2MutedTextBlockStyle}"
                         FontSize="11"
                         FontFamily="Consolas"
-                        Margin="8,0,0,0"
+                        Margin="6,0,0,0"
                         VerticalAlignment="Center"
                         TextTrimming="CharacterEllipsis"
                         MaxWidth="240" />

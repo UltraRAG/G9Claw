@@ -120,7 +120,7 @@ public sealed record MainHeaderToolSwitcherLayout(
         AppTab activeTab,
         IEnumerable<AppTab>? tabs = null)
     {
-        return Resolve(availableWidth, activeTab, tabs?.Select(Descriptor));
+        return Resolve(availableWidth, activeTab, tabs?.Select(AppTabCatalog.Descriptor));
     }
 
     public static MainHeaderToolSwitcherLayout Resolve(
@@ -154,7 +154,7 @@ public sealed record MainHeaderToolSwitcherLayout(
         return tab.Tab == AppTab.AlwaysOn ? 118 : RegularButtonWidth;
     }
 
-    public static double ButtonWidth(AppTab tab, bool iconOnly) => ButtonWidth(Descriptor(tab), iconOnly);
+    public static double ButtonWidth(AppTab tab, bool iconOnly) => ButtonWidth(AppTabCatalog.Descriptor(tab), iconOnly);
 
     public static double EstimatedWidthFor(IReadOnlyList<V2TabDescriptor> visible, IReadOnlyList<V2TabDescriptor> overflow, bool iconOnly)
     {

@@ -357,22 +357,48 @@ public sealed partial class MainWindow : Window
     private void ApplyHeaderMetrics()
     {
         if (HeaderRoot.ActualWidth <= 0) return;
+
+        var headerWidth = HeaderRoot.ActualWidth;
+        var horizontalPadding = headerWidth < 760 ? 12 : 18;
+        var leadingTitlebarReserve = _isSidebarVisible ? 0 : 120;
+        var controlGap = headerWidth < 1080 ? 6 : 10;
         var captionInset = HeaderLayoutMetrics.CaptionInsetToDips(
             _appWindow?.TitleBar.RightInset ?? 0,
             HeaderRoot.XamlRoot?.RasterizationScale ?? 1);
-        var metrics = new HeaderLayoutMetrics(HeaderRoot.ActualWidth, captionInset);
-        HeaderRoot.Padding = new Thickness(24, 0, 0, 0);
+        var metrics = new HeaderLayoutMetrics(headerWidth, captionInset);
+        HeaderRoot.Padding = new Thickness(horizontalPadding + leadingTitlebarReserve, 0, horizontalPadding, 0);
+        HeaderRoot.ColumnSpacing = controlGap;
         HeaderCaptionSpacer.Width = new GridLength(metrics.EffectiveRightPadding);
         ToolTabsScroll.Margin = new Thickness(0);
 
-        var layout = ResolveHeaderToolSwitcherLayout();
-        if (_lastToolSwitcherIconOnly != layout.IconOnly)
+        var availableToolSwitcherWidth = ResolveHeaderAvailableToolSwitcherWidth(metrics);
+        var showsToolSwitcher = State.SelectedProject is not null;
+        var layout = showsToolSwitcher ? ResolveHeaderToolSwitcherLayout(availableToolSwitcherWidth) : null;
+
+        if (!showsToolSwitcher || layout is null || _lastToolSwitcherIconOnly != layout.IconOnly)
         {
-            RenderHeader(metrics);
+            RenderHeader(metrics, availableToolSwitcherWidth);
             return;
         }
 
         ApplyToolSwitcherLayout(layout, metrics);
+    }
+
+    private double ResolveHeaderAvailableToolSwitcherWidth(HeaderLayoutMetrics? metrics = null)
+    {
+        var headerWidth = HeaderRoot.ActualWidth;
+        if (headerWidth <= 0)
+        {
+            return V2LayoutMetrics.DefaultWindowWidth;
+        }
+
+        var resolvedMetrics = metrics ?? new HeaderLayoutMetrics(
+            headerWidth,
+            HeaderLayoutMetrics.CaptionInsetToDips(_appWindow?.TitleBar.RightInset ?? 0, HeaderRoot.XamlRoot?.RasterizationScale ?? 1));
+        var horizontalPadding = headerWidth < 760 ? 12 : 18;
+        var leadingTitlebarReserve = _isSidebarVisible ? 0 : 120;
+        var trailingPadding = horizontalPadding;
+        return Math.Max(0, headerWidth - (horizontalPadding + leadingTitlebarReserve + trailingPadding + resolvedMetrics.EffectiveRightPadding));
     }
 
     private async Task LoadSettingsAsync()
@@ -616,7 +642,7 @@ public sealed partial class MainWindow : Window
 
             if (general is null)
             {
-                SidebarItemsPanel.Children.Add(MutedText(T("sidebar.noProjects"), 11, new Thickness(12, 4, 12, 4)));
+                SidebarItemsPanel.Children.Add(MutedText(T("sidebar.noGeneralWorkspaceFound"), 11, new Thickness(12, 4, 12, 4)));
             }
             else
             {
@@ -973,37 +999,80 @@ public sealed partial class MainWindow : Window
         return flyout;
     }
 
-    private void RenderHeader(HeaderLayoutMetrics? metrics = null)
+    private void RenderHeader(HeaderLayoutMetrics? metrics = null, double availableToolSwitcherWidth = 0)
     {
         BreadcrumbProjectText.Text = State.SelectedProject?.DisplayName ?? T("common.home");
         BreadcrumbTabText.Text = ActiveTabLabel();
         BreadcrumbSessionText.Text = State.SelectedSession?.DisplayTitle ?? "";
 
+        var showsToolSwitcher = State.SelectedProject is not null;
+        var showSessionTitle = HeaderRoot.ActualWidth >= 1160 && State.SelectedSession is not null;
+        BreadcrumbTabText.Visibility = showsToolSwitcher ? Visibility.Visible : Visibility.Collapsed;
+        BreadcrumbDividerText.Visibility = showsToolSwitcher ? Visibility.Visible : Visibility.Collapsed;
+        BreadcrumbSessionText.Visibility = showSessionTitle ? Visibility.Visible : Visibility.Collapsed;
+        BreadcrumbSessionText.Margin = showSessionTitle ? new Thickness(6, 0, 0, 0) : new Thickness(0);
+        BreadcrumbSessionText.MaxWidth = showSessionTitle ? 240 : 0;
+
         ToolTabsPanel.Children.Clear();
-        var layout = ResolveHeaderToolSwitcherLayout();
+        if (!showsToolSwitcher)
+        {
+            _lastToolSwitcherIconOnly = false;
+            ToolTabsScroll.Visibility = Visibility.Collapsed;
+            ToolTabsChrome.Visibility = Visibility.Collapsed;
+            ToolTabsScroll.Width = 0;
+            ToolTabsChrome.Width = 0;
+            return;
+        }
+
+        ToolTabsScroll.Visibility = Visibility.Visible;
+        ToolTabsChrome.Visibility = Visibility.Visible;
+
+        var layout = ResolveHeaderToolSwitcherLayout(
+            availableToolSwitcherWidth > 0 ? availableToolSwitcherWidth : ResolveHeaderAvailableToolSwitcherWidth(metrics));
         _lastToolSwitcherIconOnly = layout.IconOnly;
         ApplyToolSwitcherLayout(layout, metrics);
 
+        ToolTabsPanel.Children.Clear();
         foreach (var visibleTab in layout.VisibleTabs)
         {
             var isActive = IsActiveHeaderTab(visibleTab);
             var foreground = isActive ? Brush("V2ForegroundBrush") : Brush("V2MutedForegroundBrush");
+            var hasUnread = visibleTab.Tab == AppTab.AlwaysOn && HasUnreadSession();
             var content = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 Spacing = 6,
             };
-            content.Children.Add(Icon(visibleTab.IconKey, 13, foreground));
+            var icon = Icon(visibleTab.IconKey, 13, foreground);
+            content.Children.Add(icon);
             if (!layout.IconOnly)
             {
-                content.Children.Add(new TextBlock
+                content.Children.Add(
+                    new TextBlock
+                    {
+                        Text = TabLabel(visibleTab),
+                        FontSize = 12.5,
+                        FontWeight = isActive ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Medium,
+                        TextTrimming = TextTrimming.CharacterEllipsis,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    });
+            }
+
+            var contentGrid = new Grid();
+            contentGrid.Children.Add(content);
+            if (hasUnread)
             {
-                Text = TabLabel(visibleTab),
-                FontSize = 12.5,
-                FontWeight = isActive ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Medium,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                VerticalAlignment = VerticalAlignment.Center,
-            });
+                contentGrid.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
+                {
+                    Width = 8,
+                    Height = 8,
+                    Fill = Brush("V2BlueBrush"),
+                    Stroke = Brush("V2BackgroundBrush"),
+                    StrokeThickness = 2,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(0, -2, -2, 0),
+                });
             }
 
             var button = new Button
@@ -1019,7 +1088,7 @@ public sealed partial class MainWindow : Window
                 Foreground = foreground,
                 UseSystemFocusVisuals = false,
                 Tag = visibleTab,
-                Content = content,
+                Content = contentGrid,
             };
             ToolTipService.SetToolTip(button, TabLabel(visibleTab));
             button.Click += OnTabClick;
@@ -1027,13 +1096,16 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private MainHeaderToolSwitcherLayout ResolveHeaderToolSwitcherLayout()
+    private MainHeaderToolSwitcherLayout ResolveHeaderToolSwitcherLayout(double availableWidth)
     {
-        var availableWidth = HeaderRoot.ActualWidth > 0
-            ? HeaderRoot.ActualWidth
-            : V2LayoutMetrics.DefaultWindowWidth;
         var tabs = ResolveHeaderToolSwitcherTabs();
         return MainHeaderToolSwitcherLayout.Resolve(availableWidth, State.ActiveTab, tabs, State.ActivePluginTabId);
+    }
+
+    private bool HasUnreadSession()
+    {
+        return State.Projects.Any(project => project.AllSessions.Any(session =>
+            session.State == SessionState.Unread || _unreadSessionIds.Contains(session.Id)));
     }
 
     private IReadOnlyList<V2TabDescriptor> ResolveHeaderToolSwitcherTabs()
@@ -6428,9 +6500,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (sender is Button { Tag: AppTab tab })
+        if (sender is Button { Tag: AppTab appTab })
         {
-            State.ActiveTab = tab;
+            State.ActiveTab = appTab;
             State.ActivePluginTabId = null;
             RenderAll();
         }
