@@ -861,7 +861,7 @@ struct ProviderConfig: Hashable, Codable {
         apiType: .openAIChat,
         baseURL: "",
         model: "",
-        secretAccount: "g9claw-provider-api-key",
+        secretAccount: "pilotdeck-provider-api-key",
         headers: [:]
     )
 }
@@ -1008,6 +1008,7 @@ enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
     case appearance
     case permissions
     case config
+    case mcp
 
     var id: String { rawValue }
 
@@ -1016,6 +1017,7 @@ enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
         case .appearance: "Appearance"
         case .permissions: "Permissions"
         case .config: "Config"
+        case .mcp: "MCP Servers"
         }
     }
 
@@ -1024,6 +1026,7 @@ enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
         case .appearance: "paintpalette"
         case .permissions: "shield"
         case .config: "doc.badge.gearshape"
+        case .mcp: "server.rack"
         }
     }
 }
@@ -1031,6 +1034,7 @@ enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
 enum G9ClawConfigSection: String, CaseIterable, Identifiable {
     case runtime
     case models
+    case agents
     case alwaysOn
     case memory
     case search
@@ -1044,6 +1048,7 @@ enum G9ClawConfigSection: String, CaseIterable, Identifiable {
         switch self {
         case .runtime: "Runtime"
         case .models: "Models"
+        case .agents: "Agents"
         case .alwaysOn: "Always-On"
         case .memory: "Memory"
         case .search: "Search"
@@ -1847,10 +1852,17 @@ enum AlwaysOnStatus: String, Codable {
     case ready
     case queued
     case running
+    case executing
+    case reporting
     case completed
     case failed
     case draft
     case superseded
+    case noPlan = "no_plan"
+    case applying
+    case applied
+    case applyFailed = "apply_failed"
+    case archived
     case unknown
 }
 
@@ -1868,6 +1880,94 @@ struct AlwaysOnPlan: Identifiable, Hashable, Codable {
     var updatedAt: Date
     var executionSessionId: String?
     var executionStatus: AlwaysOnStatus?
+    var dedupeKey: String? = nil
+    var sourceRunId: String? = nil
+    var workCycleId: String? = nil
+    var workspacePath: String? = nil
+    var reportFilePath: String? = nil
+    var projectName: String? = nil
+    var projectRoot: String? = nil
+
+    init(
+        id: String,
+        title: String,
+        summary: String,
+        rationale: String,
+        content: String,
+        status: AlwaysOnStatus,
+        approvalMode: String,
+        planFilePath: String,
+        contextRefs: [String: [String]]? = nil,
+        createdAt: Date,
+        updatedAt: Date,
+        executionSessionId: String?,
+        executionStatus: AlwaysOnStatus?
+    ) {
+        self.id = id
+        self.title = title
+        self.summary = summary
+        self.rationale = rationale
+        self.content = content
+        self.status = status
+        self.approvalMode = approvalMode
+        self.planFilePath = planFilePath
+        self.contextRefs = contextRefs
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.executionSessionId = executionSessionId
+        self.executionStatus = executionStatus
+        self.dedupeKey = nil
+        self.sourceRunId = nil
+        self.workCycleId = nil
+        self.workspacePath = nil
+        self.reportFilePath = nil
+        self.projectName = nil
+        self.projectRoot = nil
+    }
+
+    init(
+        id: String,
+        title: String,
+        summary: String,
+        rationale: String,
+        content: String,
+        status: AlwaysOnStatus,
+        approvalMode: String,
+        planFilePath: String,
+        contextRefs: [String: [String]]? = nil,
+        createdAt: Date,
+        updatedAt: Date,
+        executionSessionId: String?,
+        executionStatus: AlwaysOnStatus?,
+        dedupeKey: String? = nil,
+        sourceRunId: String? = nil,
+        workCycleId: String? = nil,
+        workspacePath: String? = nil,
+        reportFilePath: String? = nil,
+        projectName: String? = nil,
+        projectRoot: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.summary = summary
+        self.rationale = rationale
+        self.content = content
+        self.status = status
+        self.approvalMode = approvalMode
+        self.planFilePath = planFilePath
+        self.contextRefs = contextRefs
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.executionSessionId = executionSessionId
+        self.executionStatus = executionStatus
+        self.dedupeKey = dedupeKey
+        self.sourceRunId = sourceRunId
+        self.workCycleId = workCycleId
+        self.workspacePath = workspacePath
+        self.reportFilePath = reportFilePath
+        self.projectName = projectName
+        self.projectRoot = projectRoot
+    }
 }
 
 struct AlwaysOnCronLatestRun: Identifiable, Hashable, Codable {
@@ -1941,6 +2041,80 @@ struct AlwaysOnRunLog: Identifiable, Hashable, Codable {
     var source: AlwaysOnRunLogSource
 
     var id: String { runId }
+}
+
+struct AlwaysOnProjectIdentity: Identifiable, Hashable, Codable, Sendable {
+    var id: String
+    var projectName: String
+    var displayName: String
+    var rootPath: String
+    var isGeneral: Bool = false
+}
+
+struct AlwaysOnDashboardSnapshot: Hashable, Codable {
+    var totalProjects: Int
+    var enabledProjects: Int
+    var runningCount: Int
+    var todayEvents: Int
+    var readyPlans: Int
+    var recentEvents: [AlwaysOnEvent]
+    var projects: [AlwaysOnProjectDashboard]
+}
+
+struct AlwaysOnProjectDashboard: Identifiable, Hashable, Codable {
+    var id: String
+    var projectName: String
+    var displayName: String
+    var rootPath: String
+    var enabled: Bool
+    var status: AlwaysOnStatus
+    var lastGate: String?
+    var lastRunAt: Date?
+    var nextEligibleAt: Date?
+    var readyPlans: Int
+    var runningRuns: Int
+}
+
+struct AlwaysOnEvent: Identifiable, Hashable, Codable {
+    var id: String
+    var projectName: String
+    var projectRoot: String
+    var kind: String
+    var status: AlwaysOnStatus
+    var title: String
+    var detail: String
+    var runId: String?
+    var planId: String?
+    var cycleId: String?
+    var createdAt: Date
+}
+
+struct AlwaysOnCycle: Identifiable, Hashable, Codable {
+    var id: String
+    var projectName: String
+    var projectRoot: String
+    var planId: String?
+    var discoveryRunId: String?
+    var executionRunId: String?
+    var reportRunId: String?
+    var workspacePath: String?
+    var workspaceMode: String?
+    var status: AlwaysOnStatus
+    var title: String
+    var summary: String?
+    var reportFilePath: String?
+    var createdAt: Date
+    var updatedAt: Date
+    var appliedAt: Date?
+    var archivedAt: Date?
+}
+
+struct AlwaysOnWorkspacePreparation: Hashable, Codable {
+    var cycleId: String
+    var workspacePath: String
+    var mode: String
+    var sourceRoot: String
+    var createdAt: Date
 }
 
 enum AlwaysOnSessionTargetKind: String, Hashable, Codable {

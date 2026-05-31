@@ -230,7 +230,7 @@ enum L10nKey: String, CaseIterable {
     case groupSessionsPerUserDetail
     case includeAssistant
     case includeAssistantDetail
-    case keychainHelp
+    case apiKeyConfigHelp
     case lastFiredAt
     case lastUpdated
     case linesFormat
@@ -655,7 +655,7 @@ struct LocalizationService {
         .groupSessionsPerUserDetail: "Keep channel sessions grouped by user.",
         .includeAssistant: "Include Assistant",
         .includeAssistantDetail: "Include assistant messages in captured memory context.",
-        .keychainHelp: "Stored in YAML so the config can be copied, pasted, and shared exactly like the main project config. Keychain is only a local fallback when YAML is blank.",
+        .apiKeyConfigHelp: "Stored in YAML so the config can be copied, pasted, and shared exactly like the main project config.",
         .lastFiredAt: "Last fired",
         .lastUpdated: "Last updated",
         .linesFormat: "%d lines",
@@ -1049,7 +1049,7 @@ struct LocalizationService {
         .groupSessionsPerUserDetail: "按用户保持频道会话分组。",
         .includeAssistant: "包含助手消息",
         .includeAssistantDetail: "在捕获记忆上下文时包含助手消息。",
-        .keychainHelp: "API Key 会写入 YAML，配置可直接复制、粘贴、分享；Keychain 只在 YAML 为空时作为本机兜底。",
+        .apiKeyConfigHelp: "API Key 只写入 YAML，配置可直接复制、粘贴和迁移；模型请求不会读取钥匙串。",
         .lastFiredAt: "上次触发",
         .lastUpdated: "最后更新",
         .linesFormat: "%d 行",

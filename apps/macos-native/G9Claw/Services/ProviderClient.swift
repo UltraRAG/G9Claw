@@ -964,6 +964,14 @@ enum AgentToolNameCanonicalizer {
             return "SwitchMode"
         case "askquestion", "ask_question", "ask-question", "askuserquestion", "ask_user_question", "ask-user-question":
             return "AskQuestion"
+        case "alwaysondiscoveryplan", "always_on_discovery_plan", "always-on-discovery-plan":
+            return "AlwaysOnDiscoveryPlan"
+        case "alwaysonprepareworkspace", "always_on_prepare_workspace", "always-on-prepare-workspace":
+            return "AlwaysOnPrepareWorkspace"
+        case "alwaysonreadchathistory", "always_on_read_chat_history", "always-on-read-chat-history":
+            return "AlwaysOnReadChatHistory"
+        case "alwaysonreport", "always_on_report", "always-on-report":
+            return "AlwaysOnReport"
         default: return trimmed
         }
     }
@@ -1616,7 +1624,7 @@ enum PlanTodoExecutionGate {
 
     static func isReadOnlyTool(_ call: AgentToolCall) -> Bool {
         switch AgentToolNameCanonicalizer.canonical(call.name) {
-        case "Read", "Glob", "Grep", "SemanticSearch", "ReadLints", "TodoRead", "AskQuestion", "SwitchMode", "Await", "Skill":
+        case "Read", "Glob", "Grep", "SemanticSearch", "ReadLints", "TodoRead", "AskQuestion", "SwitchMode", "Await", "Skill", "AlwaysOnDiscoveryPlan", "AlwaysOnPrepareWorkspace", "AlwaysOnReadChatHistory", "AlwaysOnReport":
             return true
         case "Shell":
             return AgentRunContext.isReadOnlyShell(call.inputJSON)
@@ -3154,11 +3162,59 @@ struct NativeAgentRuntime: Sendable {
         For shell commands, use Shell only when needed and keep commands scoped to the workspace. Use run_in_background plus Await for long-running commands.
         \(searchInstruction)
         \(nativeAgentSkillContext(workspacePath: request.projectPath, isGeneral: request.workspaceContext?.isGeneral ?? false))
+        \(nativeAgentRuntimeContext())
         Use Task for delegated analysis or shell-focused background work.
         If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request and no other prose in that assistant turn.
         Example: {"tool":"Read","input":{"file_path":"README.md"}}
         Do not emit markdown fences, language labels such as "bash" or "json", or a prose explanation when requesting a tool.
         """
+    }
+
+    static func nativeAgentRuntimeContext(
+        now: Date = Date(),
+        calendar inputCalendar: Calendar = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
+        var calendar = inputCalendar
+        calendar.timeZone = timeZone
+        let components = calendar.dateComponents([.year, .month, .day, .weekday], from: now)
+        let year = components.year ?? 1970
+        let month = components.month ?? 1
+        let day = components.day ?? 1
+        let weekday = weekdayName(components.weekday)
+        let dateText = String(format: "%04d-%02d-%02d", year, month, day)
+        let timezoneText = "\(timeZone.identifier) (\(timezoneOffsetDescription(timeZone: timeZone, at: now)))"
+        return """
+        Runtime context:
+        <environment>
+        current_date: \(dateText)
+        current_weekday: \(weekday)
+        timezone: \(timezoneText)
+        </environment>
+        Use current_date for relative date questions such as today, tomorrow, and yesterday. Do not infer the current date from model pretraining.
+        """
+    }
+
+    private static func weekdayName(_ weekday: Int?) -> String {
+        switch weekday {
+        case 1: "Sunday"
+        case 2: "Monday"
+        case 3: "Tuesday"
+        case 4: "Wednesday"
+        case 5: "Thursday"
+        case 6: "Friday"
+        case 7: "Saturday"
+        default: "Unknown"
+        }
+    }
+
+    private static func timezoneOffsetDescription(timeZone: TimeZone, at date: Date) -> String {
+        let seconds = timeZone.secondsFromGMT(for: date)
+        let sign = seconds >= 0 ? "+" : "-"
+        let absoluteSeconds = abs(seconds)
+        let hours = absoluteSeconds / 3_600
+        let minutes = (absoluteSeconds % 3_600) / 60
+        return String(format: "UTC%@%02d:%02d", sign, hours, minutes)
     }
 
     private static func nativeAgentSearchInstruction() -> String {
@@ -4012,13 +4068,23 @@ enum AgentToolRegistry {
         "SwitchMode",
         "Task",
     ]
+    static let alwaysOnToolNames = [
+        "AlwaysOnDiscoveryPlan",
+        "AlwaysOnPrepareWorkspace",
+        "AlwaysOnReadChatHistory",
+        "AlwaysOnReport",
+    ]
     static let toolNames = baseToolNames + ["WebSearch"]
 
-    static func visibleToolNames(configValues _: [String: String] = [:]) -> [String] {
-        toolNames
+    static func visibleToolNames(configValues: [String: String] = [:]) -> [String] {
+        var names = toolNames
+        if NativeAlwaysOnToolConfig.isAlwaysOnRun(configValues) {
+            names.append(contentsOf: alwaysOnToolNames)
+        }
+        return names.filter { !NativeAlwaysOnToolConfig.excludedTools(configValues).contains($0) }
     }
 
-    static func openAITools(configValues _: [String: String] = [:]) -> [[String: Any]] {
+    static func openAITools(configValues: [String: String] = [:]) -> [[String: Any]] {
         var tools: [[String: Any]] = [
             functionTool(
                 "Read",
@@ -4279,7 +4345,69 @@ enum AgentToolRegistry {
                 required: ["prompt"]
             ),
         ])
-        return tools
+        if NativeAlwaysOnToolConfig.isAlwaysOnRun(configValues) {
+            tools.append(contentsOf: alwaysOnTools())
+        }
+        let excluded = NativeAlwaysOnToolConfig.excludedTools(configValues)
+        return tools.filter { tool in
+            guard let function = tool["function"] as? [String: Any],
+                  let name = function["name"] as? String else { return true }
+            return !excluded.contains(AgentToolNameCanonicalizer.canonical(name))
+        }
+    }
+
+    private static func alwaysOnTools() -> [[String: Any]] {
+        [
+            functionTool(
+                "always_on_discovery_plan",
+                "Persist a structured Always-On discovery plan. Use during discovery only when the context contains worthwhile follow-up work.",
+                [
+                    "title": stringProperty("Short plan title."),
+                    "summary": stringProperty("Concise summary of the proposed work."),
+                    "rationale": stringProperty("Why this work is worth doing now."),
+                    "content": stringProperty("Full markdown plan with Context, Signals Reviewed, Proposed Work, Execution Steps, Verification, and Approval And Execution sections."),
+                    "approvalMode": stringProperty("manual or auto. Default manual."),
+                    "dedupeKey": stringProperty("Optional stable key to avoid duplicate plans."),
+                    "contextRefs": [
+                        "type": "object",
+                        "additionalProperties": [
+                            "type": "array",
+                            "items": ["type": "string"],
+                        ],
+                    ],
+                ],
+                required: ["title", "summary", "content"]
+            ),
+            functionTool(
+                "always_on_prepare_workspace",
+                "Prepare an isolated workspace for Always-On execution using git worktree first and snapshot-copy fallback.",
+                [
+                    "planId": stringProperty("Optional plan id this workspace is for."),
+                    "title": stringProperty("Optional cycle title."),
+                ],
+                required: []
+            ),
+            functionTool(
+                "always_on_read_chat_history",
+                "Read compact recent chat summaries for the current Always-On project.",
+                [
+                    "limit": integerProperty("Maximum chat sessions to return."),
+                ],
+                required: []
+            ),
+            functionTool(
+                "always_on_report",
+                "Persist an Always-On run report after execution. Include summary, verification, diff notes, and next steps.",
+                [
+                    "cycleId": stringProperty("Cycle id. Defaults to the current Always-On cycle."),
+                    "planId": stringProperty("Plan id this report belongs to."),
+                    "summary": stringProperty("Short report summary."),
+                    "content": stringProperty("Full markdown report."),
+                    "status": stringProperty("completed, failed, or no_plan."),
+                ],
+                required: ["summary", "content"]
+            ),
+        ]
     }
 
     private static func functionTool(
@@ -4316,6 +4444,47 @@ enum AgentToolRegistry {
     }
 }
 
+enum NativeAlwaysOnToolConfig {
+    static func isAlwaysOnRun(_ values: [String: String]) -> Bool {
+        bool(values["alwaysOn.run.enabled"], defaultValue: false)
+    }
+
+    static func excludedTools(_ values: [String: String]) -> Set<String> {
+        split(values["alwaysOn.run.excludedTools"])
+            .map(AgentToolNameCanonicalizer.canonical)
+            .reduce(into: Set<String>()) { $0.insert($1) }
+    }
+
+    static func isShellDenied(_ command: String, values: [String: String]) -> Bool {
+        let denied = split(values["alwaysOn.run.deniedShellPatterns"])
+        guard !denied.isEmpty else { return false }
+        let normalized = command.lowercased()
+        return denied.contains { pattern in
+            let lower = pattern.lowercased()
+            return !lower.isEmpty && normalized.contains(lower)
+        }
+    }
+
+    private static func split(_ value: String?) -> [String] {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return [] }
+        return value
+            .split { $0 == "," || $0 == "\n" }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func bool(_ value: String?, defaultValue: Bool) -> Bool {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !value.isEmpty else {
+            return defaultValue
+        }
+        switch value {
+        case "true", "1", "yes", "on": return true
+        case "false", "0", "no", "off": return false
+        default: return defaultValue
+        }
+    }
+}
+
 enum AgentPermissionPolicy {
     enum Result: Equatable {
         case allow
@@ -4337,6 +4506,10 @@ enum AgentPermissionPolicy {
         "AskQuestion",
         "SwitchMode",
         "Await",
+        "AlwaysOnDiscoveryPlan",
+        "AlwaysOnPrepareWorkspace",
+        "AlwaysOnReadChatHistory",
+        "AlwaysOnReport",
     ])
 
     static let mutatingTools = Set(["Write", "StrReplace", "Delete", "EditNotebook", "Shell"])
@@ -4344,6 +4517,16 @@ enum AgentPermissionPolicy {
 
     static func policy(for call: AgentToolCall, context: AgentRunContext) -> Result {
         let toolName = normalizedToolName(call.name)
+        if NativeAlwaysOnToolConfig.isAlwaysOnRun(context.nativeConfigValues) {
+            if NativeAlwaysOnToolConfig.excludedTools(context.nativeConfigValues).contains(toolName) || interactiveTools.contains(toolName) {
+                return .deny("\(toolName) is disabled for unattended Always-On runs.")
+            }
+            if toolName == "Shell",
+               let command = (try? AgentToolExecutor.inputObject(from: call.inputJSON))?["command"] as? String,
+               NativeAlwaysOnToolConfig.isShellDenied(command, values: context.nativeConfigValues) {
+                return .deny("Remote git commands are disabled for Always-On runs.")
+            }
+        }
         if context.runMode == .plan, !context.planExited, !isPlanModeSafe(toolName: toolName, call: call) {
             return .block(planModePolicyBlockMessage(for: toolName))
         }
@@ -4766,6 +4949,14 @@ enum AgentToolExecutor {
                 output = try SkillRuntimeService.load(inputJSON: executionCall.inputJSON, context: context)
             case "Task":
                 output = try await runTask(inputJSON: executionCall.inputJSON, context: context)
+            case "AlwaysOnDiscoveryPlan":
+                output = try alwaysOnDiscoveryPlan(inputJSON: executionCall.inputJSON, context: context)
+            case "AlwaysOnPrepareWorkspace":
+                output = try await alwaysOnPrepareWorkspace(inputJSON: executionCall.inputJSON, context: context)
+            case "AlwaysOnReadChatHistory":
+                output = try alwaysOnReadChatHistory(inputJSON: executionCall.inputJSON, context: context)
+            case "AlwaysOnReport":
+                output = try alwaysOnReport(inputJSON: executionCall.inputJSON, context: context)
             case "TodoRead":
                 output = context.todosJSON
             case "TodoWrite":
@@ -5131,9 +5322,134 @@ enum AgentToolExecutor {
         return jsonString(["query": query, "results": Array(sorted)], pretty: true)
     }
 
+    private static func alwaysOnDiscoveryPlan(inputJSON: String, context: AgentRunContext) throws -> String {
+        guard NativeAlwaysOnToolConfig.isAlwaysOnRun(context.nativeConfigValues) else {
+            throw ProviderClientError.toolExecution("always_on_discovery_plan is only available during Always-On runs.")
+        }
+        let input = try inputObject(from: inputJSON)
+        let title = try requiredString("title", input: input)
+        let summary = try requiredString("summary", input: input)
+        let content = try requiredString("content", input: input)
+        let rationale = (input["rationale"] as? String).nilIfBlank
+        let approvalMode = (input["approvalMode"] as? String).nilIfBlank ?? "manual"
+        let projectRoot = context.nativeConfigValues["alwaysOn.projectRoot"]?.nilIfBlank ?? context.workspacePath
+        let projectName = context.nativeConfigValues["alwaysOn.projectName"]?.nilIfBlank ?? "project"
+        let runId = context.nativeConfigValues["alwaysOn.run.id"]?.nilIfBlank
+        let contextRefs = alwaysOnContextRefs(input["contextRefs"])
+        let service = AlwaysOnService()
+        let plan = try service.createDiscoveryPlan(
+            projectRoot: projectRoot,
+            title: title,
+            prompt: summary,
+            summary: summary,
+            rationale: rationale,
+            content: content,
+            approvalMode: approvalMode,
+            contextRefs: contextRefs,
+            sourceRunId: runId,
+            projectName: projectName
+        )
+        service.appendRunEvent(
+            projectName: projectName,
+            projectRoot: projectRoot,
+            kind: "discovery_plan",
+            status: .draft,
+            title: title,
+            detail: summary,
+            runId: runId,
+            planId: plan.id,
+            cycleId: nil
+        )
+        return jsonString([
+            "status": "created",
+            "planId": plan.id,
+            "title": plan.title,
+            "planFilePath": plan.planFilePath,
+        ], pretty: true)
+    }
+
+    private static func alwaysOnPrepareWorkspace(inputJSON: String, context: AgentRunContext) async throws -> String {
+        guard NativeAlwaysOnToolConfig.isAlwaysOnRun(context.nativeConfigValues) else {
+            throw ProviderClientError.toolExecution("always_on_prepare_workspace is only available during Always-On runs.")
+        }
+        _ = try inputObject(from: inputJSON)
+        let values = context.nativeConfigValues
+        let projectRoot = values["alwaysOn.projectRoot"]?.nilIfBlank ?? context.workspacePath
+        let projectName = values["alwaysOn.projectName"]?.nilIfBlank ?? "project"
+        let config = AlwaysOnService.WorkspaceConfig.from(values: values)
+        let preparation = try await AlwaysOnService().prepareWorkspace(projectName: projectName, projectRoot: projectRoot, config: config)
+        return jsonString([
+            "cycleId": preparation.cycleId,
+            "workspacePath": preparation.workspacePath,
+            "mode": preparation.mode,
+            "sourceRoot": preparation.sourceRoot,
+        ], pretty: true)
+    }
+
+    private static func alwaysOnReadChatHistory(inputJSON: String, context: AgentRunContext) throws -> String {
+        guard NativeAlwaysOnToolConfig.isAlwaysOnRun(context.nativeConfigValues) else {
+            throw ProviderClientError.toolExecution("always_on_read_chat_history is only available during Always-On runs.")
+        }
+        let input = try inputObject(from: inputJSON)
+        let limit = max(1, min(input["limit"] as? Int ?? 12, 50))
+        let raw = context.nativeConfigValues["alwaysOn.run.chatHistory"]?.nilIfBlank ?? "[]"
+        if raw.count <= 1_000_000 {
+            return jsonString(["limit": limit, "items": raw], pretty: true)
+        }
+        return jsonString(["limit": limit, "items": String(raw.prefix(1_000_000)), "truncated": true], pretty: true)
+    }
+
+    private static func alwaysOnReport(inputJSON: String, context: AgentRunContext) throws -> String {
+        guard NativeAlwaysOnToolConfig.isAlwaysOnRun(context.nativeConfigValues) else {
+            throw ProviderClientError.toolExecution("always_on_report is only available during Always-On runs.")
+        }
+        let input = try inputObject(from: inputJSON)
+        let summary = try requiredString("summary", input: input)
+        let content = try requiredString("content", input: input)
+        let projectRoot = context.nativeConfigValues["alwaysOn.projectRoot"]?.nilIfBlank ?? context.workspacePath
+        let projectName = context.nativeConfigValues["alwaysOn.projectName"]?.nilIfBlank ?? "project"
+        let cycleId = (input["cycleId"] as? String).nilIfBlank ?? context.nativeConfigValues["alwaysOn.run.cycleId"]?.nilIfBlank
+        let planId = (input["planId"] as? String).nilIfBlank ?? context.nativeConfigValues["alwaysOn.run.planId"]?.nilIfBlank
+        let status = AlwaysOnStatus(rawValue: ((input["status"] as? String) ?? "completed").trimmingCharacters(in: .whitespacesAndNewlines)) ?? .completed
+        let reportPath = try AlwaysOnService().writeReport(
+            projectName: projectName,
+            projectRoot: projectRoot,
+            cycleId: cycleId,
+            planId: planId,
+            summary: summary,
+            content: content,
+            status: status
+        )
+        return jsonString([
+            "status": status.rawValue,
+            "reportFilePath": reportPath,
+            "cycleId": cycleId ?? "",
+            "planId": planId ?? "",
+        ], pretty: true)
+    }
+
+    private static func alwaysOnContextRefs(_ value: Any?) -> [String: [String]]? {
+        guard let object = value as? [String: Any] else { return nil }
+        var result: [String: [String]] = [:]
+        for (key, raw) in object {
+            let values = (raw as? [Any] ?? [])
+                .compactMap { $0 as? String }
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !values.isEmpty {
+                result[key] = values
+            }
+        }
+        return result.isEmpty ? nil : result
+    }
+
     private static func shell(inputJSON: String, context: AgentRunContext) async throws -> String {
         let input = try inputObject(from: inputJSON)
         let command = try requiredString("command", input: input)
+        if NativeAlwaysOnToolConfig.isAlwaysOnRun(context.nativeConfigValues),
+           NativeAlwaysOnToolConfig.isShellDenied(command, values: context.nativeConfigValues) {
+            throw ProviderClientError.toolExecution("Remote git commands are disabled for Always-On runs.")
+        }
         let timeoutMs = shellTimeoutMilliseconds(input)
         let cwd = context.workspacePath
         let environment = SkillRuntimeService.environment(configValues: context.nativeConfigValues)

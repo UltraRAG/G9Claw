@@ -4431,6 +4431,35 @@ final class RoutingService {
     }
 }
 
+actor NativeAlwaysOnManager {
+    typealias FireHandler = @MainActor @Sendable (AlwaysOnProjectIdentity, AlwaysOnService.ConfigSnapshot) async -> Void
+
+    private var task: Task<Void, Never>?
+
+    func start(config: AlwaysOnService.ConfigSnapshot, projects: [AlwaysOnProjectIdentity], fire: @escaping FireHandler) {
+        task?.cancel()
+        guard config.enabled, config.trigger.enabled, !projects.isEmpty else {
+            task = nil
+            return
+        }
+        let interval = UInt64(max(1, config.trigger.tickIntervalMinutes) * 60) * 1_000_000_000
+        task = Task { [config, projects, fire] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            while !Task.isCancelled {
+                for project in projects where !Task.isCancelled {
+                    await fire(project, config)
+                }
+                try? await Task.sleep(nanoseconds: interval)
+            }
+        }
+    }
+
+    func stop() {
+        task?.cancel()
+        task = nil
+    }
+}
+
 private extension DateFormatter {
     static let routingTime: DateFormatter = {
         let formatter = DateFormatter()
@@ -4439,12 +4468,152 @@ private extension DateFormatter {
     }()
 }
 
-final class AlwaysOnService {
+private enum AlwaysOnServiceError: LocalizedError {
+    case invalidWorkspace(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidWorkspace(let message):
+            message
+        }
+    }
+}
+
+final class AlwaysOnService: @unchecked Sendable {
     private let defaultRunLogTailBytes = 60_000
     private let maxRunLogTailBytes = 512_000
     private let outputLogMaxCharacters = 60_000
     private let discoveryContextLookbackDays = 7
     private let discoveryContextMaxItems = 20
+    private let maxEventCount = 200
+
+    struct ConfigSnapshot: Sendable, Equatable {
+        var enabled: Bool
+        var language: String
+        var trigger: TriggerConfig
+        var dormancy: DormancyConfig
+        var workspace: WorkspaceConfig
+        var execution: ExecutionConfig
+        var projects: [String: ProjectConfig]
+
+        static func from(values: [String: String]) -> ConfigSnapshot {
+            ConfigSnapshot(
+                enabled: AlwaysOnService.bool(values["alwaysOn.enabled"], defaultValue: false),
+                language: values["alwaysOn.language"]?.nilIfBlank ?? "zh-CN",
+                trigger: TriggerConfig.from(values: values),
+                dormancy: DormancyConfig.from(values: values),
+                workspace: WorkspaceConfig.from(values: values),
+                execution: ExecutionConfig.from(values: values),
+                projects: ProjectConfig.projects(from: values)
+            )
+        }
+
+        func projectEnabled(root: String) -> Bool {
+            let normalized = AlwaysOnService.normalizedProjectRoot(root)
+            return projects[normalized]?.enabled ?? false
+        }
+    }
+
+    struct TriggerConfig: Sendable, Equatable {
+        var enabled: Bool
+        var tickIntervalMinutes: Int
+        var cooldownMinutes: Int
+        var dailyBudget: Int
+        var heartbeatStaleSeconds: Int
+        var recentUserMsgMinutes: Int
+        var preferChannel: String
+
+        static func from(values: [String: String]) -> TriggerConfig {
+            TriggerConfig(
+                enabled: AlwaysOnService.bool(values["alwaysOn.trigger.enabled"], defaultValue: false),
+                tickIntervalMinutes: AlwaysOnService.positiveInt(values["alwaysOn.trigger.tickIntervalMinutes"], defaultValue: 5),
+                cooldownMinutes: AlwaysOnService.positiveInt(values["alwaysOn.trigger.cooldownMinutes"], defaultValue: 60),
+                dailyBudget: AlwaysOnService.positiveInt(values["alwaysOn.trigger.dailyBudget"], defaultValue: 4),
+                heartbeatStaleSeconds: AlwaysOnService.positiveInt(values["alwaysOn.trigger.heartbeatStaleSeconds"], defaultValue: 90),
+                recentUserMsgMinutes: AlwaysOnService.positiveInt(values["alwaysOn.trigger.recentUserMsgMinutes"], defaultValue: 5),
+                preferChannel: values["alwaysOn.trigger.preferChannel"]?.nilIfBlank ?? "native"
+            )
+        }
+    }
+
+    struct DormancyConfig: Sendable, Equatable {
+        var enabled: Bool
+        var debounceMs: Int
+        var ignoreGlobs: [String]
+
+        static func from(values: [String: String]) -> DormancyConfig {
+            DormancyConfig(
+                enabled: AlwaysOnService.bool(values["alwaysOn.dormancy.enabled"], defaultValue: true),
+                debounceMs: AlwaysOnService.positiveInt(values["alwaysOn.dormancy.debounceMs"], defaultValue: 2_000),
+                ignoreGlobs: AlwaysOnService.splitList(values["alwaysOn.dormancy.ignoreGlobs"])
+            )
+        }
+    }
+
+    struct WorkspaceConfig: Sendable, Equatable {
+        var gitWorktreeBaseDir: String?
+        var snapshotBaseDir: String?
+        var snapshotMaxBytes: Int
+        var gitLfs: Bool
+
+        static func from(values: [String: String]) -> WorkspaceConfig {
+            WorkspaceConfig(
+                gitWorktreeBaseDir: values["alwaysOn.workspace.gitWorktreeBaseDir"]?.nilIfBlank,
+                snapshotBaseDir: values["alwaysOn.workspace.snapshotBaseDir"]?.nilIfBlank,
+                snapshotMaxBytes: AlwaysOnService.positiveInt(values["alwaysOn.workspace.snapshotMaxBytes"], defaultValue: 1_073_741_824),
+                gitLfs: AlwaysOnService.bool(values["alwaysOn.workspace.gitLfs"], defaultValue: false)
+            )
+        }
+    }
+
+    struct ExecutionConfig: Sendable, Equatable {
+        var maxTurns: Int
+        var maxToolCalls: Int
+        var timeoutMinutes: Int
+
+        static func from(values: [String: String]) -> ExecutionConfig {
+            ExecutionConfig(
+                maxTurns: AlwaysOnService.positiveInt(values["alwaysOn.execution.maxTurns"], defaultValue: 30),
+                maxToolCalls: AlwaysOnService.positiveInt(values["alwaysOn.execution.maxToolCalls"], defaultValue: 200),
+                timeoutMinutes: AlwaysOnService.positiveInt(values["alwaysOn.execution.timeoutMinutes"], defaultValue: 20)
+            )
+        }
+    }
+
+    struct ProjectConfig: Sendable, Equatable {
+        var enabled: Bool
+
+        static func projects(from values: [String: String]) -> [String: ProjectConfig] {
+            let prefix = "alwaysOn.projects."
+            var roots = Set<String>()
+            for key in values.keys where key.hasPrefix(prefix) && key.hasSuffix(".enabled") {
+                let suffix = String(key.dropFirst(prefix.count).dropLast(".enabled".count))
+                let normalized = AlwaysOnService.normalizedProjectRoot(suffix)
+                if !normalized.isEmpty {
+                    roots.insert(normalized)
+                }
+            }
+            var result: [String: ProjectConfig] = [:]
+            for root in roots {
+                let value = values["\(prefix)\(root).enabled"]
+                result[root] = ProjectConfig(enabled: AlwaysOnService.bool(value, defaultValue: false))
+            }
+            return result
+        }
+    }
+
+    struct GateSnapshot: Sendable, Equatable {
+        var isProjectBusy: Bool
+        var lastUserMessageAt: Date?
+        var now: Date = Date()
+    }
+
+    struct GateDecision: Sendable, Equatable {
+        var allowed: Bool
+        var reason: String
+        var detail: String
+        var nextEligibleAt: Date?
+    }
 
     private struct CronJobStore {
         var url: URL
@@ -4452,6 +4621,10 @@ final class AlwaysOnService {
         var durableDefault: Bool?
         var rootObject: Any
         var rawJobs: [[String: Any]]
+    }
+
+    private struct AlwaysOnCycleIndex: Codable {
+        var cycles: [AlwaysOnCycle]
     }
 
     private struct RunHistoryEvent {
@@ -4492,16 +4665,13 @@ final class AlwaysOnService {
     }
 
     func plans(projectRoot: String) -> [AlwaysOnPlan] {
-        guard let indexURL = existingAlwaysOnFile(projectRoot, "discovery-plans.json") else { return [] }
-        guard
-            let data = try? Data(contentsOf: indexURL),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let rawPlans = json["plans"] as? [[String: Any]]
-        else { return [] }
-        return rawPlans.compactMap { raw in
+        var seen = Set<String>()
+        return planIndexObjects(projectRoot: projectRoot).compactMap { raw in
             let id = string(raw["id"], fallback: UUID().uuidString)
-            let relativePlanPath = string(raw["planFilePath"], fallback: ".g9claw/always-on/plans/\(id).md")
-            let content = (try? String(contentsOfFile: URL(fileURLWithPath: projectRoot).appendingPathComponent(relativePlanPath).path, encoding: .utf8)) ?? ""
+            guard seen.insert(id).inserted else { return nil }
+            let relativePlanPath = string(raw["planFilePath"], fallback: planFileURL(projectRoot: projectRoot, planID: id).path)
+            let contentURL = planContentURL(path: relativePlanPath, projectRoot: projectRoot)
+            let content = (try? String(contentsOf: contentURL, encoding: .utf8)) ?? ""
             return AlwaysOnPlan(
                 id: id,
                 title: string(raw["title"], fallback: "Untitled discovery plan"),
@@ -4515,7 +4685,14 @@ final class AlwaysOnService {
                 createdAt: date(raw["createdAt"]) ?? Date(),
                 updatedAt: date(raw["updatedAt"]) ?? Date(),
                 executionSessionId: optionalString(raw["executionSessionId"]),
-                executionStatus: AlwaysOnStatus(rawValue: string(raw["executionStatus"]))
+                executionStatus: AlwaysOnStatus(rawValue: string(raw["executionStatus"])),
+                dedupeKey: optionalString(raw["dedupeKey"]),
+                sourceRunId: optionalString(raw["sourceRunId"]),
+                workCycleId: optionalString(raw["workCycleId"]),
+                workspacePath: optionalString(raw["workspacePath"]),
+                reportFilePath: optionalString(raw["reportFilePath"]),
+                projectName: optionalString(raw["projectName"]),
+                projectRoot: optionalString(raw["projectRoot"])
             )
         }
         .sorted { $0.updatedAt > $1.updatedAt }
@@ -4616,7 +4793,7 @@ final class AlwaysOnService {
                 "2. 如有需要，将项目存储目录 `\(projectStorePath)` 作为辅助上下文。",
                 "3. 阅读下方结构化 discovery context，不要自行虚构上下文窗口。",
                 "4. 如果没有值得跟进的工作，说明原因并停止，不要保存任何计划。",
-                "5. 如果存在值得跟进的工作，使用 `AlwaysOnDiscoveryPlan` 最多保存 3 个计划。",
+                "5. 如果存在值得跟进的工作，使用 `always_on_discovery_plan` 最多保存 3 个计划。",
                 "6. 每个保存的计划必须严格包含这些 Markdown 小节：",
                 "   - `## Context`",
                 "   - `## Signals Reviewed`",
@@ -4647,7 +4824,7 @@ final class AlwaysOnService {
             "2. Use the project store at `\(projectStorePath)` as supporting context if needed.",
             "3. Read the structured discovery context below instead of inventing your own context window.",
             "4. If there is no worthwhile follow-up work, explain why and stop without saving any plans.",
-            "5. If there is worthwhile work, use `AlwaysOnDiscoveryPlan` to persist up to 3 plans.",
+            "5. If there is worthwhile work, use `always_on_discovery_plan` to persist up to 3 plans.",
             "6. Every saved plan must include these markdown sections exactly:",
             "   - `## Context`",
             "   - `## Signals Reviewed`",
@@ -4673,6 +4850,55 @@ final class AlwaysOnService {
 
     func runHistoryDetail(projectRoot: String, runID: String) -> AlwaysOnRunHistory? {
         runHistoryRecords(projectRoot: projectRoot, includeUnknown: true).first { $0.id == runID }
+    }
+
+    @discardableResult
+    func startDiscoveryRun(projectRoot: String, title: String, sessionId: String?, runID: String) throws -> AlwaysOnRunHistory {
+        let run = AlwaysOnRunHistory(
+            id: runID,
+            title: title,
+            kind: "discovery",
+            status: .running,
+            startedAt: Date(),
+            sourceId: "discovery",
+            outputLog: "Started native Always-On discovery.",
+            sessionId: sessionId,
+            parentSessionId: nil,
+            relativeTranscriptPath: nil,
+            metadata: ["sessionId": sessionId ?? ""]
+        )
+        try appendRunHistory(run, projectRoot: projectRoot)
+        try writeRunLog(run, projectRoot: projectRoot)
+        return run
+    }
+
+    func finishDiscoveryRun(
+        run: AlwaysOnRunHistory,
+        projectRoot: String,
+        status: AlwaysOnStatus,
+        sessionId: String?,
+        outputLog: String,
+        error: String? = nil,
+        metadata: [String: String] = [:]
+    ) throws {
+        let finished = AlwaysOnRunHistory(
+            id: run.id,
+            title: run.title,
+            kind: run.kind,
+            status: status,
+            startedAt: run.startedAt,
+            sourceId: run.sourceId,
+            outputLog: outputLog,
+            sessionId: sessionId ?? run.sessionId,
+            parentSessionId: run.parentSessionId,
+            relativeTranscriptPath: run.relativeTranscriptPath,
+            finishedAt: Date(),
+            error: error,
+            metadata: metadata.merging(["sessionId": sessionId ?? run.sessionId ?? ""]) { current, _ in current },
+            transcriptKey: run.transcriptKey
+        )
+        try appendRunHistory(finished, projectRoot: projectRoot)
+        try writeRunLog(finished, projectRoot: projectRoot)
     }
 
     private func runHistoryRecords(projectRoot: String, includeUnknown: Bool) -> [AlwaysOnRunHistory] {
@@ -4768,7 +4994,7 @@ final class AlwaysOnService {
         let kind = string(json["kind"])
         let sourceId = string(json["sourceId"])
         let statusRaw = string(json["status"])
-        guard !runId.isEmpty, kind == "plan" || kind == "cron", !sourceId.isEmpty,
+        guard !runId.isEmpty, kind == "plan" || kind == "cron" || kind == "discovery", !sourceId.isEmpty,
               let status = AlwaysOnStatus(rawValue: statusRaw) else {
             return nil
         }
@@ -4967,8 +5193,13 @@ final class AlwaysOnService {
 
     @discardableResult
     func startCronRun(job: AlwaysOnCronJob, projectRoot: String, sessionId: String?) throws -> AlwaysOnRunHistory {
+        try startCronRun(job: job, projectRoot: projectRoot, sessionId: sessionId, runID: nil)
+    }
+
+    @discardableResult
+    func startCronRun(job: AlwaysOnCronJob, projectRoot: String, sessionId: String?, runID: String? = nil) throws -> AlwaysOnRunHistory {
         let run = AlwaysOnRunHistory(
-            id: "run-\(UUID().uuidString)",
+            id: runID?.nilIfBlank ?? "run-\(UUID().uuidString)",
             title: cronRunTitle(job),
             kind: "cron",
             status: .running,
@@ -4985,20 +5216,52 @@ final class AlwaysOnService {
         return run
     }
 
+    func finishCronRun(
+        job: AlwaysOnCronJob,
+        run: AlwaysOnRunHistory,
+        projectRoot: String,
+        status: AlwaysOnStatus,
+        sessionId: String?,
+        outputLog: String,
+        error: String? = nil,
+        metadata: [String: String] = [:]
+    ) throws {
+        let finished = AlwaysOnRunHistory(
+            id: run.id,
+            title: run.title,
+            kind: run.kind,
+            status: status,
+            startedAt: run.startedAt,
+            sourceId: run.sourceId,
+            outputLog: outputLog,
+            sessionId: sessionId ?? run.sessionId,
+            parentSessionId: run.parentSessionId,
+            relativeTranscriptPath: run.relativeTranscriptPath,
+            finishedAt: Date(),
+            error: error,
+            metadata: metadata,
+            transcriptKey: run.transcriptKey
+        )
+        try appendRunHistory(finished, projectRoot: projectRoot)
+        try writeRunLog(finished, projectRoot: projectRoot)
+        try updateCronJobLatestRun(job: job, run: finished, projectRoot: projectRoot)
+    }
+
     private func updateCronJobLatestRun(job: AlwaysOnCronJob, run: AlwaysOnRunHistory, projectRoot: String) throws {
         let now = ISO8601DateFormatter().string(from: run.startedAt)
+        let lastActivity = ISO8601DateFormatter().string(from: run.finishedAt ?? run.startedAt)
         for var store in cronJobStores(projectRoot) {
             var changed = false
             for index in store.rawJobs.indices where cronJobMatches(store.rawJobs[index], jobID: job.id) {
-                store.rawJobs[index]["status"] = AlwaysOnStatus.running.rawValue
+                store.rawJobs[index]["status"] = run.status.rawValue
                 store.rawJobs[index]["lastFiredAt"] = Int(run.startedAt.timeIntervalSince1970 * 1000)
                 store.rawJobs[index]["latestRun"] = [
-                    "status": AlwaysOnStatus.running.rawValue,
+                    "status": run.status.rawValue,
                     "runId": run.id,
                     "startedAt": now,
                     "sessionId": run.sessionId ?? "",
                     "summary": run.title,
-                    "lastActivity": now,
+                    "lastActivity": lastActivity,
                     "taskId": job.id,
                     "outputFile": ".g9claw/always-on/runs/\(run.id).log",
                     "parentSessionId": run.parentSessionId ?? "",
@@ -5103,9 +5366,14 @@ final class AlwaysOnService {
 
     @discardableResult
     func startPlanRun(plan: AlwaysOnPlan, projectRoot: String, sessionId: String?) throws -> AlwaysOnRunHistory {
+        try startPlanRun(plan: plan, projectRoot: projectRoot, sessionId: sessionId, runID: nil)
+    }
+
+    @discardableResult
+    func startPlanRun(plan: AlwaysOnPlan, projectRoot: String, sessionId: String?, runID: String? = nil) throws -> AlwaysOnRunHistory {
         try updatePlanStatus(planID: plan.id, projectRoot: projectRoot, status: "running")
         let run = AlwaysOnRunHistory(
-            id: "run-\(UUID().uuidString)",
+            id: runID?.nilIfBlank ?? "run-\(UUID().uuidString)",
             title: plan.title,
             kind: "plan",
             status: .running,
@@ -5121,51 +5389,130 @@ final class AlwaysOnService {
         return run
     }
 
+    func finishPlanRun(
+        plan: AlwaysOnPlan,
+        run: AlwaysOnRunHistory,
+        projectRoot: String,
+        status: AlwaysOnStatus,
+        sessionId: String?,
+        outputLog: String,
+        error: String? = nil,
+        metadata: [String: String] = [:]
+    ) throws {
+        try updatePlanStatus(planID: plan.id, projectRoot: projectRoot, status: status.rawValue)
+        let finished = AlwaysOnRunHistory(
+            id: run.id,
+            title: run.title,
+            kind: run.kind,
+            status: status,
+            startedAt: run.startedAt,
+            sourceId: run.sourceId,
+            outputLog: outputLog,
+            sessionId: sessionId ?? run.sessionId,
+            parentSessionId: run.parentSessionId,
+            relativeTranscriptPath: run.relativeTranscriptPath,
+            finishedAt: Date(),
+            error: error,
+            metadata: metadata,
+            transcriptKey: run.transcriptKey
+        )
+        try appendRunHistory(finished, projectRoot: projectRoot)
+        try writeRunLog(finished, projectRoot: projectRoot)
+    }
+
     @discardableResult
     func createDiscoveryPlan(projectRoot: String, title: String, prompt: String) throws -> AlwaysOnPlan {
+        try createDiscoveryPlan(
+            projectRoot: projectRoot,
+            title: title,
+            prompt: prompt,
+            summary: nil,
+            rationale: nil,
+            content: nil,
+            approvalMode: "manual",
+            contextRefs: nil,
+            sourceRunId: nil,
+            projectName: nil
+        )
+    }
+
+    @discardableResult
+    func createDiscoveryPlan(
+        projectRoot: String,
+        title: String,
+        prompt: String,
+        summary: String? = nil,
+        rationale: String? = nil,
+        content: String? = nil,
+        approvalMode: String = "manual",
+        contextRefs: [String: [String]]? = nil,
+        sourceRunId: String? = nil,
+        projectName: String? = nil
+    ) throws -> AlwaysOnPlan {
         let root = alwaysOnRoot(projectRoot)
         let plansRoot = root.appendingPathComponent("plans", isDirectory: true)
         try FileManager.default.createDirectory(at: plansRoot, withIntermediateDirectories: true)
         let id = "plan-\(UUID().uuidString)"
-        let relativePlanPath = ".g9claw/always-on/plans/\(id).md"
+        let planURL = planFileURL(projectRoot: projectRoot, planID: id)
+        let relativePlanPath = planURL.path
         let now = Date()
-        let content = """
+        let resolvedContent = content?.nilIfBlank ?? """
         # \(title)
 
         Status: draft
         Created: \(ISO8601DateFormatter().string(from: now))
 
-        ## Discovery Prompt
+        ## Context
+
+        \(summary?.nilIfBlank ?? "Created from native Always-On discovery.")
+
+        ## Signals Reviewed
 
         \(prompt)
 
-        ## Notes
+        ## Proposed Work
 
-        Native PilotDeck created this draft plan. Review it, then run it from Always-On.
+        \(summary?.nilIfBlank ?? prompt)
+
+        ## Execution Steps
+
+        Review and run this plan from Always-On when ready.
+
+        ## Verification
+
+        Confirm the workspace diff and run focused checks.
+
+        ## Approval And Execution
+
+        Approval mode: \(approvalMode)
         """
-        try content.write(to: plansRoot.appendingPathComponent("\(id).md"), atomically: true, encoding: .utf8)
+        try resolvedContent.write(to: planURL, atomically: true, encoding: .utf8)
 
         let plan = AlwaysOnPlan(
             id: id,
             title: title,
-            summary: prompt,
-            rationale: "Created from native Always-On discovery.",
-            content: content,
+            summary: summary?.nilIfBlank ?? prompt,
+            rationale: rationale?.nilIfBlank ?? "Created from native Always-On discovery.",
+            content: resolvedContent,
             status: .draft,
-            approvalMode: "manual",
+            approvalMode: approvalMode.nilIfBlank ?? "manual",
             planFilePath: relativePlanPath,
+            contextRefs: contextRefs,
             createdAt: now,
             updatedAt: now,
             executionSessionId: nil,
-            executionStatus: nil
+            executionStatus: nil,
+            sourceRunId: sourceRunId,
+            projectName: projectName,
+            projectRoot: Self.normalizedProjectRoot(projectRoot)
         )
         try upsertPlanIndex(plan, projectRoot: projectRoot)
         return plan
     }
 
     private func updatePlanStatus(planID: String, projectRoot: String, status: String) throws {
-        let indexURL = existingAlwaysOnFile(projectRoot, "discovery-plans.json")
-            ?? alwaysOnRoot(projectRoot).appendingPathComponent("discovery-plans.json")
+        let indexURL = existingPlanIndexURL(projectRoot: projectRoot)
+            ?? planIndexURL(projectRoot: projectRoot)
         guard
             let data = try? Data(contentsOf: indexURL),
             var json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -5183,7 +5530,8 @@ final class AlwaysOnService {
     private func upsertPlanIndex(_ plan: AlwaysOnPlan, projectRoot: String) throws {
         let root = alwaysOnRoot(projectRoot)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let indexURL = root.appendingPathComponent("discovery-plans.json")
+        let indexURL = planIndexURL(projectRoot: projectRoot)
+        try FileManager.default.createDirectory(at: indexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         var json: [String: Any] = [:]
         if let data = try? Data(contentsOf: indexURL),
            let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -5202,6 +5550,13 @@ final class AlwaysOnService {
             "createdAt": ISO8601DateFormatter().string(from: plan.createdAt),
             "updatedAt": ISO8601DateFormatter().string(from: plan.updatedAt),
         ]
+        if let value = plan.dedupeKey { rawPlan["dedupeKey"] = value }
+        if let value = plan.sourceRunId { rawPlan["sourceRunId"] = value }
+        if let value = plan.workCycleId { rawPlan["workCycleId"] = value }
+        if let value = plan.workspacePath { rawPlan["workspacePath"] = value }
+        if let value = plan.reportFilePath { rawPlan["reportFilePath"] = value }
+        if let value = plan.projectName { rawPlan["projectName"] = value }
+        if let value = plan.projectRoot { rawPlan["projectRoot"] = value }
         if let contextRefs = plan.contextRefs, !contextRefs.isEmpty {
             rawPlan["contextRefs"] = contextRefs
         }
@@ -5220,11 +5575,24 @@ final class AlwaysOnService {
             "title": run.title,
             "kind": run.kind,
             "status": run.status.rawValue,
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
             "startedAt": ISO8601DateFormatter().string(from: run.startedAt),
             "sourceId": run.sourceId,
             "outputLog": run.outputLog,
             "sessionId": run.sessionId ?? "",
         ]
+        if let finishedAt = run.finishedAt {
+            object["finishedAt"] = ISO8601DateFormatter().string(from: finishedAt)
+        }
+        if let error = run.error?.nilIfBlank {
+            object["error"] = error
+        }
+        if !run.metadata.isEmpty {
+            object["metadata"] = run.metadata
+        }
+        if let transcriptKey = run.transcriptKey?.nilIfBlank {
+            object["transcriptKey"] = transcriptKey
+        }
         if run.sessionId != nil || run.parentSessionId != nil || run.relativeTranscriptPath != nil {
             object["session"] = [
                 "sessionId": run.sessionId ?? "",
@@ -5251,7 +5619,273 @@ final class AlwaysOnService {
         try run.outputLog.write(to: runsRoot.appendingPathComponent("\(run.id).log"), atomically: true, encoding: .utf8)
     }
 
+    func appendRunEvent(
+        projectName: String,
+        projectRoot: String,
+        kind: String,
+        status: AlwaysOnStatus,
+        title: String,
+        detail: String = "",
+        runId: String? = nil,
+        planId: String? = nil,
+        cycleId: String? = nil
+    ) {
+        let event = AlwaysOnEvent(
+            id: "evt-\(UUID().uuidString)",
+            projectName: projectName,
+            projectRoot: Self.normalizedProjectRoot(projectRoot),
+            kind: kind,
+            status: status,
+            title: title,
+            detail: detail,
+            runId: runId,
+            planId: planId,
+            cycleId: cycleId,
+            createdAt: Date()
+        )
+        do {
+            let url = eventsURL(projectRoot: projectRoot)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(event)
+            var line = String(data: data, encoding: .utf8) ?? "{}"
+            line += "\n"
+            if FileManager.default.fileExists(atPath: url.path),
+               let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data(line.utf8))
+            } else {
+                try line.write(to: url, atomically: true, encoding: .utf8)
+            }
+        } catch {
+            AppLog.write("always-on event append error: \(error.localizedDescription)", file: "always-on.log")
+        }
+    }
+
+    func events(projectRoot: String, limit: Int = 80) -> [AlwaysOnEvent] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let lines = alwaysOnRoots(projectRoot)
+            .map { $0.appendingPathComponent("events.jsonl") }
+            .compactMap { try? String(contentsOf: $0, encoding: .utf8) }
+            .flatMap { $0.split(separator: "\n", omittingEmptySubsequences: true) }
+        return lines.compactMap { line in
+            try? decoder.decode(AlwaysOnEvent.self, from: Data(String(line).utf8))
+        }
+        .sorted { $0.createdAt > $1.createdAt }
+        .prefix(max(1, limit))
+        .map { $0 }
+    }
+
+    func dashboard(projects identities: [AlwaysOnProjectIdentity], config: ConfigSnapshot) -> AlwaysOnDashboardSnapshot {
+        let projectDashboards = identities.map { identity in
+            let projectPlans = plans(projectRoot: identity.rootPath)
+            let history = runHistory(projectRoot: identity.rootPath)
+            let state = projectState(projectRoot: identity.rootPath)
+            let status = AlwaysOnStatus(rawValue: state["status"] ?? "") ?? .unknown
+            let runningHistoryCount = history.filter { $0.status == .queued || $0.status == .running || $0.status == .executing || $0.status == .reporting }.count
+            let stateRunningCount = (status == .running || status == .executing || status == .reporting) ? 1 : 0
+            return AlwaysOnProjectDashboard(
+                id: identity.id,
+                projectName: identity.projectName,
+                displayName: identity.displayName,
+                rootPath: identity.rootPath,
+                enabled: config.projectEnabled(root: identity.rootPath),
+                status: status,
+                lastGate: state["lastGate"],
+                lastRunAt: date(state["lastRunAt"]),
+                nextEligibleAt: date(state["nextEligibleAt"]),
+                readyPlans: projectPlans.filter { Self.isRunnablePlanStatus($0.status) }.count,
+                runningRuns: max(runningHistoryCount, stateRunningCount)
+            )
+        }
+        let allEvents = identities.flatMap { events(projectRoot: $0.rootPath, limit: 40) }
+            .sorted { $0.createdAt > $1.createdAt }
+        let calendar = Calendar.current
+        let todayEvents = allEvents.filter { calendar.isDateInToday($0.createdAt) }.count
+        return AlwaysOnDashboardSnapshot(
+            totalProjects: identities.count,
+            enabledProjects: projectDashboards.filter(\.enabled).count,
+            runningCount: projectDashboards.reduce(0) { $0 + $1.runningRuns },
+            todayEvents: todayEvents,
+            readyPlans: projectDashboards.reduce(0) { $0 + $1.readyPlans },
+            recentEvents: Array(allEvents.prefix(80)),
+            projects: projectDashboards
+        )
+    }
+
+    func evaluateGate(
+        project: AlwaysOnProjectIdentity,
+        config: ConfigSnapshot,
+        snapshot: GateSnapshot
+    ) -> GateDecision {
+        guard config.enabled else {
+            return GateDecision(allowed: false, reason: "disabled", detail: "Always-On is disabled.", nextEligibleAt: nil)
+        }
+        guard config.trigger.enabled else {
+            return GateDecision(allowed: false, reason: "trigger_disabled", detail: "Auto discovery trigger is disabled.", nextEligibleAt: nil)
+        }
+        guard config.projectEnabled(root: project.rootPath) else {
+            return GateDecision(allowed: false, reason: "project_disabled", detail: "Project is not opted into Always-On.", nextEligibleAt: nil)
+        }
+        guard FileManager.default.fileExists(atPath: project.rootPath) else {
+            return GateDecision(allowed: false, reason: "project_missing", detail: "Project path no longer exists.", nextEligibleAt: nil)
+        }
+        if snapshot.isProjectBusy {
+            return GateDecision(allowed: false, reason: "agent_busy", detail: "A project session is currently running.", nextEligibleAt: nil)
+        }
+        if let lastUser = snapshot.lastUserMessageAt {
+            let quietUntil = lastUser.addingTimeInterval(TimeInterval(config.trigger.recentUserMsgMinutes * 60))
+            if quietUntil > snapshot.now {
+                return GateDecision(allowed: false, reason: "recent_user_msg", detail: "Waiting after recent user activity.", nextEligibleAt: quietUntil)
+            }
+        }
+        let state = projectState(projectRoot: project.rootPath)
+        if let lastRunAt = date(state["lastRunAt"]) {
+            let cooldownUntil = lastRunAt.addingTimeInterval(TimeInterval(config.trigger.cooldownMinutes * 60))
+            if cooldownUntil > snapshot.now {
+                return GateDecision(allowed: false, reason: "cooldown", detail: "Cooldown is still active.", nextEligibleAt: cooldownUntil)
+            }
+        }
+        let todayRunCount = todayDiscoveryRunCount(projectRoot: project.rootPath, now: snapshot.now)
+        if todayRunCount >= config.trigger.dailyBudget {
+            return GateDecision(allowed: false, reason: "daily_budget", detail: "Daily discovery budget is exhausted.", nextEligibleAt: Calendar.current.startOfDay(for: snapshot.now).addingTimeInterval(24 * 60 * 60))
+        }
+        if config.dormancy.enabled,
+           state["dormant"] == "true",
+           !hasWorkspaceSignal(projectRoot: project.rootPath, since: date(state["dormantSince"]), ignoreGlobs: config.dormancy.ignoreGlobs) {
+            return GateDecision(allowed: false, reason: "dormant_no_signal", detail: "Dormant until workspace signal changes.", nextEligibleAt: nil)
+        }
+        return GateDecision(allowed: true, reason: "eligible", detail: "Discovery is eligible.", nextEligibleAt: nil)
+    }
+
+    func recordGate(project: AlwaysOnProjectIdentity, decision: GateDecision) {
+        var state = projectState(projectRoot: project.rootPath)
+        state["status"] = decision.allowed ? AlwaysOnStatus.ready.rawValue : AlwaysOnStatus.queued.rawValue
+        state["lastGate"] = decision.reason
+        state["lastGateDetail"] = decision.detail
+        if let nextEligibleAt = decision.nextEligibleAt {
+            state["nextEligibleAt"] = isoString(nextEligibleAt)
+        } else {
+            state.removeValue(forKey: "nextEligibleAt")
+        }
+        try? writeProjectState(state, projectRoot: project.rootPath)
+    }
+
+    func markDiscoveryStarted(project: AlwaysOnProjectIdentity, runID: String) {
+        var state = projectState(projectRoot: project.rootPath)
+        state["status"] = AlwaysOnStatus.running.rawValue
+        state["lastRunAt"] = isoString(Date())
+        state["lastRunId"] = runID
+        state["dormant"] = "false"
+        try? writeProjectState(state, projectRoot: project.rootPath)
+    }
+
+    func markDiscoveryFinished(project: AlwaysOnProjectIdentity, runID: String, status: AlwaysOnStatus) {
+        var state = projectState(projectRoot: project.rootPath)
+        state["status"] = status.rawValue
+        state["lastRunId"] = runID
+        state["lastFinishedAt"] = isoString(Date())
+        if status == .noPlan {
+            state["dormant"] = "true"
+            state["dormantSince"] = isoString(Date())
+        }
+        try? writeProjectState(state, projectRoot: project.rootPath)
+    }
+
+    func prepareWorkspace(projectName: String, projectRoot: String, config: WorkspaceConfig) async throws -> AlwaysOnWorkspacePreparation {
+        let cycle = AlwaysOnCycle(
+            id: "cycle-\(UUID().uuidString)",
+            projectName: projectName,
+            projectRoot: Self.normalizedProjectRoot(projectRoot),
+            planId: nil,
+            discoveryRunId: nil,
+            executionRunId: nil,
+            reportRunId: nil,
+            workspacePath: nil,
+            workspaceMode: nil,
+            status: .queued,
+            title: "Workspace preparation",
+            summary: nil,
+            reportFilePath: nil,
+            createdAt: Date(),
+            updatedAt: Date(),
+            appliedAt: nil,
+            archivedAt: nil
+        )
+        return try await prepareWorkspace(projectName: projectName, projectRoot: projectRoot, cycle: cycle, config: config)
+    }
+
+    func prepareWorkspace(projectName: String, projectRoot: String, cycle: AlwaysOnCycle, config: WorkspaceConfig) async throws -> AlwaysOnWorkspacePreparation {
+        let root = URL(fileURLWithPath: Self.normalizedProjectRoot(projectRoot))
+        let preparation: AlwaysOnWorkspacePreparation
+        if FileManager.default.fileExists(atPath: root.appendingPathComponent(".git").path),
+           let worktree = try? await createGitWorktree(projectName: projectName, sourceRoot: root, cycleID: cycle.id, config: config) {
+            preparation = worktree
+        } else {
+            preparation = try copySnapshot(projectName: projectName, sourceRoot: root, cycleID: cycle.id, config: config)
+        }
+        var updated = cycle
+        updated.workspacePath = preparation.workspacePath
+        updated.workspaceMode = preparation.mode
+        updated.status = .ready
+        updated.updatedAt = Date()
+        try upsertCycle(updated, projectRoot: projectRoot)
+        return preparation
+    }
+
+    @discardableResult
+    func writeReport(
+        projectName: String,
+        projectRoot: String,
+        cycleId: String?,
+        planId: String?,
+        summary: String,
+        content: String,
+        status: AlwaysOnStatus
+    ) throws -> String {
+        let reportID = cycleId?.nilIfBlank ?? "report-\(UUID().uuidString)"
+        let reportsRoot = alwaysOnRoot(projectRoot).appendingPathComponent("reports", isDirectory: true)
+        try FileManager.default.createDirectory(at: reportsRoot, withIntermediateDirectories: true)
+        let reportURL = reportsRoot.appendingPathComponent("\(normalizeRunID(reportID)).md")
+        let markdown = content.nilIfBlank ?? """
+        # Always-On Report
+
+        \(summary)
+        """
+        try markdown.write(to: reportURL, atomically: true, encoding: .utf8)
+        appendRunEvent(
+            projectName: projectName,
+            projectRoot: projectRoot,
+            kind: "report",
+            status: status,
+            title: summary,
+            detail: reportURL.path,
+            runId: cycleId,
+            planId: planId,
+            cycleId: cycleId
+        )
+        if var cycle = cycles(projectRoot: projectRoot).first(where: { $0.id == cycleId }) {
+            cycle.reportFilePath = reportURL.path
+            cycle.status = status
+            cycle.summary = summary
+            cycle.updatedAt = Date()
+            try upsertCycle(cycle, projectRoot: projectRoot)
+        }
+        return reportURL.path
+    }
+
     private func alwaysOnRoot(_ projectRoot: String) -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("always-on", isDirectory: true)
+            .appendingPathComponent("projects", isDirectory: true)
+            .appendingPathComponent(Self.projectStorageID(projectRoot), isDirectory: true)
+    }
+
+    private func projectLocalAlwaysOnRoot(_ projectRoot: String) -> URL {
         URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
             .appendingPathComponent(".g9claw", isDirectory: true)
             .appendingPathComponent("always-on", isDirectory: true)
@@ -5264,13 +5898,313 @@ final class AlwaysOnService {
     }
 
     private func alwaysOnRoots(_ projectRoot: String) -> [URL] {
-        [alwaysOnRoot(projectRoot), legacyAlwaysOnRoot(projectRoot)]
+        [alwaysOnRoot(projectRoot), projectLocalAlwaysOnRoot(projectRoot), legacyAlwaysOnRoot(projectRoot)]
     }
 
     private func existingAlwaysOnFile(_ projectRoot: String, _ fileName: String) -> URL? {
         alwaysOnRoots(projectRoot)
             .map { $0.appendingPathComponent(fileName) }
             .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private func planIndexObjects(projectRoot: String) -> [[String: Any]] {
+        planIndexCandidateURLs(projectRoot: projectRoot).flatMap { url -> [[String: Any]] in
+            guard let data = try? Data(contentsOf: url),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return []
+            }
+            return json["plans"] as? [[String: Any]] ?? []
+        }
+    }
+
+    private func planIndexURL(projectRoot: String) -> URL {
+        alwaysOnRoot(projectRoot)
+            .appendingPathComponent("plans", isDirectory: true)
+            .appendingPathComponent("index.json")
+    }
+
+    private func existingPlanIndexURL(projectRoot: String) -> URL? {
+        planIndexCandidateURLs(projectRoot: projectRoot)
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private func planIndexCandidateURLs(projectRoot: String) -> [URL] {
+        alwaysOnRoots(projectRoot).flatMap { root in
+            [
+                root.appendingPathComponent("plans", isDirectory: true).appendingPathComponent("index.json"),
+                root.appendingPathComponent("discovery-plans.json"),
+            ]
+        }
+    }
+
+    private func planFileURL(projectRoot: String, planID: String) -> URL {
+        alwaysOnRoot(projectRoot)
+            .appendingPathComponent("plans", isDirectory: true)
+            .appendingPathComponent("\(normalizeRunID(planID)).md")
+    }
+
+    private func planContentURL(path: String, projectRoot: String) -> URL {
+        let expanded = NSString(string: path).expandingTildeInPath
+        if expanded.hasPrefix("/") {
+            return URL(fileURLWithPath: expanded)
+        }
+        return URL(fileURLWithPath: projectRoot).appendingPathComponent(path)
+    }
+
+    private func eventsURL(projectRoot: String) -> URL {
+        alwaysOnRoot(projectRoot).appendingPathComponent("events.jsonl")
+    }
+
+    private func stateURL(projectRoot: String) -> URL {
+        alwaysOnRoot(projectRoot).appendingPathComponent("state.json")
+    }
+
+    private func projectState(projectRoot: String) -> [String: String] {
+        guard let url = alwaysOnRoots(projectRoot)
+            .map({ $0.appendingPathComponent("state.json") })
+            .first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+            let data = try? Data(contentsOf: url),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return metadataStrings(json)
+    }
+
+    private func writeProjectState(_ state: [String: String], projectRoot: String) throws {
+        let url = stateURL(projectRoot: projectRoot)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url, options: .atomic)
+    }
+
+    private func todayDiscoveryRunCount(projectRoot: String, now: Date) -> Int {
+        let calendar = Calendar.current
+        return events(projectRoot: projectRoot, limit: maxEventCount)
+            .filter { $0.kind == "discovery" && calendar.isDate($0.createdAt, inSameDayAs: now) }
+            .count
+    }
+
+    private func hasWorkspaceSignal(projectRoot: String, since: Date?, ignoreGlobs: [String]) -> Bool {
+        guard let since else { return true }
+        let root = URL(fileURLWithPath: Self.normalizedProjectRoot(projectRoot))
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return false }
+        let ignoredNames: Set<String> = [".git", "node_modules", ".g9claw", ".claude", ".DS_Store"]
+        for case let url as URL in enumerator {
+            if ignoredNames.contains(url.lastPathComponent) {
+                enumerator.skipDescendants()
+                continue
+            }
+            let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
+            if ignoreGlobs.contains(where: { Self.simpleGlob(relative, matches: $0) }) {
+                if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
+            guard let modifiedAt = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                  modifiedAt > since else { continue }
+            return true
+        }
+        return false
+    }
+
+    private func createGitWorktree(
+        projectName: String,
+        sourceRoot: URL,
+        cycleID: String,
+        config: WorkspaceConfig
+    ) async throws -> AlwaysOnWorkspacePreparation {
+        let base = workspaceBaseURL(config.gitWorktreeBaseDir, fallbackComponent: "worktrees")
+        let workspace = base
+            .appendingPathComponent(Self.safeFilename(projectName), isDirectory: true)
+            .appendingPathComponent(cycleID, isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let runner = ProcessRunner()
+        _ = try await runner.run("/usr/bin/git", arguments: ["worktree", "add", "--detach", workspace.path, "HEAD"], cwd: sourceRoot)
+        if config.gitLfs {
+            _ = try? await runner.run("/usr/bin/git", arguments: ["lfs", "pull"], cwd: workspace)
+        }
+        return AlwaysOnWorkspacePreparation(
+            cycleId: cycleID,
+            workspacePath: workspace.path,
+            mode: "worktree",
+            sourceRoot: sourceRoot.path,
+            createdAt: Date()
+        )
+    }
+
+    private func copySnapshot(
+        projectName: String,
+        sourceRoot: URL,
+        cycleID: String,
+        config: WorkspaceConfig
+    ) throws -> AlwaysOnWorkspacePreparation {
+        let base = workspaceBaseURL(config.snapshotBaseDir, fallbackComponent: "snapshots")
+        let workspace = base
+            .appendingPathComponent(Self.safeFilename(projectName), isDirectory: true)
+            .appendingPathComponent(cycleID, isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try copyDirectorySnapshot(from: sourceRoot, to: workspace, maxBytes: config.snapshotMaxBytes)
+        return AlwaysOnWorkspacePreparation(
+            cycleId: cycleID,
+            workspacePath: workspace.path,
+            mode: "snapshot",
+            sourceRoot: sourceRoot.path,
+            createdAt: Date()
+        )
+    }
+
+    private func workspaceBaseURL(_ configuredPath: String?, fallbackComponent: String) -> URL {
+        if let configuredPath = configuredPath?.nilIfBlank {
+            return URL(fileURLWithPath: NSString(string: configuredPath).expandingTildeInPath)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("always-on", isDirectory: true)
+            .appendingPathComponent(fallbackComponent, isDirectory: true)
+    }
+
+    private func copyDirectorySnapshot(from source: URL, to destination: URL, maxBytes: Int) throws {
+        let ignoredNames: Set<String> = [".git", "node_modules", ".g9claw", ".claude", ".DS_Store"]
+        var copiedBytes = 0
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        guard let enumerator = FileManager.default.enumerator(
+            at: source,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return }
+        for case let url as URL in enumerator {
+            if ignoredNames.contains(url.lastPathComponent) {
+                enumerator.skipDescendants()
+                continue
+            }
+            let relative = url.path.replacingOccurrences(of: source.path + "/", with: "")
+            let target = destination.appendingPathComponent(relative)
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+            if values.isDirectory == true {
+                try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+            } else {
+                copiedBytes += values.fileSize ?? 0
+                guard copiedBytes <= maxBytes else {
+                    throw NSError(domain: "AlwaysOnWorkspace", code: 413, userInfo: [NSLocalizedDescriptionKey: "Snapshot exceeded alwaysOn.workspace.snapshotMaxBytes."])
+                }
+                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: url, to: target)
+            }
+        }
+    }
+
+    private func applyGitWorkspaceDiff(source: URL, destination: URL) async throws {
+        let command = [
+            "set -euo pipefail",
+            "git -C \(shellQuote(source.path)) diff --binary HEAD | git -C \(shellQuote(destination.path)) apply --whitespace=nowarn",
+        ].joined(separator: "\n")
+        _ = try await ProcessRunner().run("/bin/zsh", arguments: ["-lc", command])
+    }
+
+    private func copyWorkspaceChanges(source: URL, destination: URL) throws {
+        guard let enumerator = FileManager.default.enumerator(
+            at: source,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsPackageDescendants]
+        ) else { return }
+        for case let url as URL in enumerator {
+            let relative = url.path.replacingOccurrences(of: source.path + "/", with: "")
+            guard !relative.isEmpty else { continue }
+            if relative == ".git" || relative.hasPrefix(".git/") || relative == ".g9claw" || relative.hasPrefix(".g9claw/") {
+                enumerator.skipDescendants()
+                continue
+            }
+            let target = destination.appendingPathComponent(relative)
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey])
+            if values.isDirectory == true {
+                try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+            } else {
+                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if FileManager.default.fileExists(atPath: target.path) {
+                    try FileManager.default.removeItem(at: target)
+                }
+                try FileManager.default.copyItem(at: url, to: target)
+            }
+        }
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private func cyclesIndexURL(projectRoot: String) -> URL {
+        alwaysOnRoot(projectRoot)
+            .appendingPathComponent("cycles", isDirectory: true)
+            .appendingPathComponent("index.json")
+    }
+
+    private func upsertCycle(_ cycle: AlwaysOnCycle, projectRoot: String) throws {
+        let url = cyclesIndexURL(projectRoot: projectRoot)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var cycles = cycles(projectRoot: projectRoot)
+        cycles.removeAll { $0.id == cycle.id }
+        cycles.insert(cycle, at: 0)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(["cycles": cycles])
+        try data.write(to: url, options: .atomic)
+    }
+
+    func cycles(projectRoot: String) -> [AlwaysOnCycle] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        for root in alwaysOnRoots(projectRoot) {
+            let url = root.appendingPathComponent("cycles", isDirectory: true).appendingPathComponent("index.json")
+            guard let data = try? Data(contentsOf: url),
+                  let wrapper = try? decoder.decode(AlwaysOnCycleIndex.self, from: data) else { continue }
+            return wrapper.cycles.sorted { $0.updatedAt > $1.updatedAt }
+        }
+        return []
+    }
+
+    func applyCycle(cycleID: String, projectRoot: String) async throws -> AlwaysOnCycle {
+        let trimmedID = cycleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var cycle = cycles(projectRoot: projectRoot).first(where: { $0.id == trimmedID }) else {
+            throw AlwaysOnServiceError.invalidWorkspace("Always-On cycle was not found.")
+        }
+        guard let workspacePath = cycle.workspacePath?.nilIfBlank else {
+            throw AlwaysOnServiceError.invalidWorkspace("Always-On cycle has no isolated workspace.")
+        }
+        let source = URL(fileURLWithPath: workspacePath)
+        let destination = URL(fileURLWithPath: Self.normalizedProjectRoot(projectRoot))
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw AlwaysOnServiceError.invalidWorkspace("Isolated workspace no longer exists.")
+        }
+        guard source.standardizedFileURL.path != destination.standardizedFileURL.path else {
+            throw AlwaysOnServiceError.invalidWorkspace("Refusing to apply a cycle onto the same workspace.")
+        }
+
+        cycle.status = .applying
+        cycle.updatedAt = Date()
+        try upsertCycle(cycle, projectRoot: projectRoot)
+
+        if cycle.workspaceMode == "worktree",
+           FileManager.default.fileExists(atPath: source.appendingPathComponent(".git").path),
+           FileManager.default.fileExists(atPath: destination.appendingPathComponent(".git").path) {
+            try await applyGitWorkspaceDiff(source: source, destination: destination)
+        } else {
+            try copyWorkspaceChanges(source: source, destination: destination)
+        }
+
+        cycle.status = .applied
+        cycle.appliedAt = Date()
+        cycle.updatedAt = Date()
+        try upsertCycle(cycle, projectRoot: projectRoot)
+        return cycle
     }
 
     private func alwaysOnRunsRoot(_ projectRoot: String) -> URL {
@@ -5464,6 +6398,79 @@ final class AlwaysOnService {
         if let value = value as? Bool { return value }
         if let value = value as? NSNumber { return value.boolValue }
         return fallback
+    }
+
+    static func normalizedProjectRoot(_ rawRoot: String) -> String {
+        let expanded = NSString(string: rawRoot.trimmingCharacters(in: .whitespacesAndNewlines)).expandingTildeInPath
+        return expanded.replacingOccurrences(of: "[\\\\/]+$", with: "", options: .regularExpression)
+    }
+
+    private static func projectStorageID(_ projectRoot: String) -> String {
+        let normalized = normalizedProjectRoot(projectRoot)
+        let data = Data(normalized.utf8)
+        return data.base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func safeFilename(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = trimmed.isEmpty ? "project" : trimmed
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        return fallback.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }.reduce(into: "") { $0.append($1) }
+    }
+
+    private static func bool(_ raw: String?, defaultValue: Bool) -> Bool {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !raw.isEmpty else {
+            return defaultValue
+        }
+        switch raw {
+        case "true", "1", "yes", "on": return true
+        case "false", "0", "no", "off": return false
+        default: return defaultValue
+        }
+    }
+
+    private static func positiveInt(_ raw: String?, defaultValue: Int) -> Int {
+        guard let raw, let value = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)), value > 0 else {
+            return defaultValue
+        }
+        return value
+    }
+
+    private static func splitList(_ raw: String?) -> [String] {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty, raw != "[]" else { return [] }
+        let trimmed = raw.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        return trimmed
+            .split { $0 == "," || $0 == "\n" }
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " \"'")) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func simpleGlob(_ path: String, matches pattern: String) -> Bool {
+        let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if trimmed == "*" || trimmed == "**/*" { return true }
+        if trimmed.hasSuffix("/**") {
+            return path.hasPrefix(String(trimmed.dropLast(3)))
+        }
+        if trimmed.hasSuffix("*") {
+            return path.hasPrefix(String(trimmed.dropLast()))
+        }
+        if trimmed.hasPrefix("*.") {
+            return path.hasSuffix(String(trimmed.dropFirst()))
+        }
+        return path == trimmed || path.contains(trimmed)
+    }
+
+    private static func isRunnablePlanStatus(_ status: AlwaysOnStatus) -> Bool {
+        switch status {
+        case .ready, .draft, .queued, .failed:
+            return true
+        default:
+            return false
+        }
     }
 
     private func date(_ value: Any?) -> Date? {

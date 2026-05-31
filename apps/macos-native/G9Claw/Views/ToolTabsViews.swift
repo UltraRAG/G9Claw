@@ -3846,14 +3846,15 @@ private struct TierBadge: View {
 
 struct AlwaysOnView: View {
     @EnvironmentObject private var state: AppState
-    @State private var subtab: AlwaysOnSubTab = .items
+    @State private var subtab: AlwaysOnSubTab = .dashboard
     @State private var selectedPlan: AlwaysOnPlan?
     @State private var selectedCronJob: AlwaysOnCronJob?
     @State private var selectedRun: AlwaysOnRunHistory?
+    @State private var selectedDetailProjectRoot: String?
 
     var body: some View {
         guard let context = state.selectedWorkspaceContext, !context.isGeneral else {
-            return AnyView(ToolEmptyState(title: state.t(.pickProject), detail: state.t(.alwaysOnProjectOnly), systemImage: "dot.radiowaves.left.and.right"))
+            return AnyView(generalView())
         }
         let plans = state.alwaysOnService.plans(projectRoot: context.rootPath)
         let cronJobs = state.alwaysOnService.cronJobs(projectRoot: context.rootPath)
@@ -3864,8 +3865,20 @@ struct AlwaysOnView: View {
             VStack(spacing: 0) {
                 HStack(spacing: 6) {
                     HStack(spacing: 2) {
-                        TabButton(state.t(.plansCronJobs), isActive: subtab == .items) { subtab = .items; selectedRun = nil }
-                        TabButton(state.t(.runHistory), isActive: subtab == .history) { subtab = .history; selectedPlan = nil; selectedCronJob = nil }
+                        TabButton(localized("Dashboard", "看板"), isActive: subtab == .dashboard) {
+                            subtab = .dashboard
+                            clearAlwaysOnSelection()
+                        }
+                        TabButton(state.t(.plansCronJobs), isActive: subtab == .items) {
+                            subtab = .items
+                            clearAlwaysOnSelection(keepRun: false)
+                        }
+                        TabButton(state.t(.runHistory), isActive: subtab == .history) {
+                            subtab = .history
+                            selectedPlan = nil
+                            selectedCronJob = nil
+                            selectedDetailProjectRoot = nil
+                        }
                     }
                     .padding(3)
                     .background(GlassControlBackground(isActive: false, cornerRadius: 16, material: .popover, showsShadow: false))
@@ -3894,12 +3907,16 @@ struct AlwaysOnView: View {
                             .buttonStyle(WebToolbarButtonStyle(isProminent: true))
                         }
 
-                        if subtab == .history {
-                            historyView(history)
-                        } else if let selectedPlan {
-                            planDetail(selectedPlan, projectRoot: context.rootPath)
+                        if let selectedPlan {
+                            planDetail(selectedPlan, projectRoot: selectedDetailProjectRoot ?? context.rootPath)
                         } else if let selectedCronJob {
-                            cronDetail(selectedCronJob, projectRoot: context.rootPath)
+                            cronDetail(selectedCronJob, projectRoot: selectedDetailProjectRoot ?? context.rootPath)
+                        } else if let selectedRun {
+                            runHistoryDetail(selectedRun, projectRoot: selectedDetailProjectRoot ?? context.rootPath)
+                        } else if subtab == .dashboard {
+                            dashboardContent(snapshot: state.alwaysOnDashboardSnapshot(scope: context), groups: projectGroups(scope: context))
+                        } else if subtab == .history {
+                            historyView(history, projectRoot: context.rootPath)
                         } else {
                             itemsView(rows: rows, projectRoot: context.rootPath)
                         }
@@ -3923,7 +3940,6 @@ struct AlwaysOnView: View {
     }
 
     private func itemsView(rows: [NativeAlwaysOnRow], projectRoot: String) -> some View {
-        let language = state.settings.language.resolved()
         return VStack(alignment: .leading, spacing: 12) {
             if rows.isEmpty {
                 Text(state.t(.noActivePlans))
@@ -3931,25 +3947,11 @@ struct AlwaysOnView: View {
                     .foregroundStyle(DesignTokens.tertiaryText)
                     .padding(18)
             } else {
-                VStack(spacing: 0) {
-                    HStack(spacing: 12) {
-                        ForEach(Array(NativeAlwaysOnItemsRows.columns(language: language).enumerated()), id: \.offset) { index, title in
-                            Text(title)
-                                .frame(width: NativeAlwaysOnItemsRows.columnWidths[index], alignment: .leading)
-                        }
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(DesignTokens.tertiaryText)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 8)
-                    .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator.opacity(0.72)).frame(height: 1) }
-
+                VStack(spacing: 8) {
                     ForEach(rows) { row in
-                        alwaysOnItemTableRow(row, projectRoot: projectRoot)
-                            .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator.opacity(0.45)).frame(height: 1) }
+                        compactItemRow(row, projectRoot: projectRoot)
                     }
                 }
-                .frame(minWidth: 980, alignment: .leading)
             }
         }
         .padding(16)
@@ -3964,8 +3966,10 @@ struct AlwaysOnView: View {
                 switch row.kind {
                 case .plan:
                     selectedPlan = row.plan
+                    selectedDetailProjectRoot = projectRoot
                 case .cron:
                     selectedCronJob = row.cronJob
+                    selectedDetailProjectRoot = projectRoot
                 }
             } label: {
                 Text(tableRow.title)
@@ -4037,77 +4041,20 @@ struct AlwaysOnView: View {
     }
 
     private func startDiscovery(context: WorkspaceContext) {
-        let title = "Always-On discovery: \(context.displayName)"
-        let plans = state.alwaysOnService.plans(projectRoot: context.rootPath)
-        let cronJobs = state.alwaysOnService.cronJobs(projectRoot: context.rootPath)
-        let discoveryContext = state.alwaysOnService.discoveryContext(
-            projectName: context.projectName,
-            displayName: context.displayName,
-            projectRoot: context.rootPath,
-            plans: plans,
-            cronJobs: cronJobs,
-            sessions: state.selectedProject?.allSessions ?? [],
-            memoryRecords: state.memoryService.list(projectName: context.projectName)
-        )
-        let prompt = state.alwaysOnService.discoveryPrompt(
-            projectName: context.projectName,
-            displayName: context.displayName,
-            projectRoot: context.rootPath,
-            context: discoveryContext,
-            language: state.settings.language.resolved() == .chineseSimplified ? "zh-CN" : "en"
-        )
-        state.startDraftSession(project: state.selectedProject)
-        _ = state.createSessionForSelectedProject(title: title)
-        state.composerText = prompt
-        state.activeTab = .chat
-        state.sendComposerMessage()
+        state.startAlwaysOnDiscovery(context: context)
+        state.bumpToolRefresh()
     }
 
     private func runCronJob(_ job: AlwaysOnCronJob, projectRoot: String) {
-        let title = "Always-On: \(cronTitle(job))"
-        let prompt = job.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Run scheduled Always-On task: \(job.cron)"
-            : job.prompt
-        do {
-            state.startDraftSession(project: state.selectedProject)
-            let session = state.createSessionForSelectedProject(title: title)
-            _ = try state.alwaysOnService.startCronRun(
-                job: job,
-                projectRoot: projectRoot,
-                sessionId: session?.id
-            )
-            state.composerText = prompt
-            state.activeTab = .chat
-            state.sendComposerMessage()
-        } catch {
-            state.errorBanner = error.localizedDescription
-        }
+        guard let context = context(forProjectRoot: projectRoot) else { return }
+        state.runAlwaysOnCronJob(job, context: context)
+        state.bumpToolRefresh()
     }
 
     private func runPlan(_ plan: AlwaysOnPlan, projectRoot: String) {
-        let title = "Always-On: \(plan.title)"
-        let prompt = """
-        Execute this Always-On plan in the current workspace.
-
-        Plan title: \(plan.title)
-        Plan file: \(plan.planFilePath)
-
-        \(plan.content.isEmpty ? plan.summary : plan.content)
-        """
-        do {
-            state.startDraftSession(project: state.selectedProject)
-            let session = state.createSessionForSelectedProject(title: title)
-            _ = try state.alwaysOnService.startPlanRun(
-                plan: plan,
-                projectRoot: projectRoot,
-                sessionId: session?.id
-            )
-            state.composerText = prompt
-            state.activeTab = .chat
-            state.sendComposerMessage()
-        } catch {
-            state.errorBanner = error.localizedDescription
-        }
+        guard let context = context(forProjectRoot: projectRoot) else { return }
+        state.runAlwaysOnPlan(plan, context: context)
+        state.bumpToolRefresh()
     }
 
     private func cronDetail(_ job: AlwaysOnCronJob, projectRoot: String) -> some View {
@@ -4344,14 +4291,14 @@ struct AlwaysOnView: View {
         }
     }
 
-    private func historyView(_ history: [AlwaysOnRunHistory]) -> some View {
+    private func historyView(_ history: [AlwaysOnRunHistory], projectRoot: String) -> some View {
         let language = state.settings.language.resolved()
         let rows = history
             .filter(NativeAlwaysOnRunHistoryRows.isVisible)
             .map { NativeAlwaysOnRunHistoryRows.row($0, language: language) }
         return VStack(alignment: .leading, spacing: 12) {
             if let selectedRun {
-                runHistoryDetail(selectedRun)
+                runHistoryDetail(selectedRun, projectRoot: selectedDetailProjectRoot ?? projectRoot)
             } else if rows.isEmpty {
                 Text(state.t(.noAlwaysOnRuns))
                     .font(.system(size: 13))
@@ -4373,6 +4320,7 @@ struct AlwaysOnView: View {
                     ForEach(rows) { row in
                         Button {
                             selectedRun = history.first { $0.id == row.id }
+                            selectedDetailProjectRoot = projectRoot
                         } label: {
                             HStack(spacing: 12) {
                                 Text(row.title)
@@ -4414,7 +4362,7 @@ struct AlwaysOnView: View {
         }
     }
 
-    private func runHistoryDetail(_ run: AlwaysOnRunHistory) -> some View {
+    private func runHistoryDetail(_ run: AlwaysOnRunHistory, projectRoot: String) -> some View {
         let language = state.settings.language.resolved()
         let metadataEntries = NativeAlwaysOnRunHistoryDetailPresentation.metadataEntries(run)
         return VStack(alignment: .leading, spacing: 16) {
@@ -4429,8 +4377,16 @@ struct AlwaysOnView: View {
                         .foregroundStyle(DesignTokens.secondaryText)
                 }
                 Spacer()
+                if let cycleID = nonEmptyMetadataValue(run.metadata["cycleId"]) {
+                    Button {
+                        state.applyAlwaysOnCycle(cycleID: cycleID, projectRoot: projectRoot)
+                    } label: {
+                        Label(localized("Apply Cycle", "应用 Cycle"), systemImage: "arrow.triangle.merge")
+                    }
+                    .buttonStyle(WebToolbarButtonStyle(isProminent: true))
+                }
                 Button(state.t(.refresh)) {
-                    refreshSelectedRunDetail()
+                    refreshSelectedRunDetail(projectRoot: projectRoot)
                 }
                 .buttonStyle(WebToolbarButtonStyle())
             }
@@ -4470,7 +4426,7 @@ struct AlwaysOnView: View {
                                 AlwaysOnMetaItem(
                                     title: item.key,
                                     value: item.value,
-                                    action: metadataAction(for: item.key, value: item.value, run: run)
+                                    action: metadataAction(for: item.key, value: item.value, run: run, projectRoot: projectRoot)
                                 )
                             }
                         }
@@ -4484,10 +4440,9 @@ struct AlwaysOnView: View {
         }
     }
 
-    private func refreshSelectedRunDetail() {
+    private func refreshSelectedRunDetail(projectRoot: String) {
         guard let selectedRun,
-              let context = state.selectedWorkspaceContext,
-              let refreshed = state.alwaysOnService.runHistoryDetail(projectRoot: context.rootPath, runID: selectedRun.id)
+              let refreshed = state.alwaysOnService.runHistoryDetail(projectRoot: projectRoot, runID: selectedRun.id)
         else { return }
         self.selectedRun = refreshed
         state.bumpToolRefresh()
@@ -4495,7 +4450,7 @@ struct AlwaysOnView: View {
 
     private func pollSelectedRunLog(context: WorkspaceContext) {
         guard let selectedRun, selectedRun.shouldPollLog else { return }
-        if let refreshed = state.alwaysOnService.runHistoryDetail(projectRoot: context.rootPath, runID: selectedRun.id) {
+        if let refreshed = state.alwaysOnService.runHistoryDetail(projectRoot: selectedDetailProjectRoot ?? context.rootPath, runID: selectedRun.id) {
             self.selectedRun = refreshed
         }
         state.bumpToolRefresh()
@@ -4531,17 +4486,475 @@ struct AlwaysOnView: View {
         NativeAlwaysOnRunMetadata.visibleEntries(run.metadata)
     }
 
-    private func metadataAction(for key: String, value: String, run: AlwaysOnRunHistory) -> (() -> Void)? {
+    private func metadataAction(for key: String, value: String, run: AlwaysOnRunHistory, projectRoot: String) -> (() -> Void)? {
         if key == "sessionId", let target = NativeAlwaysOnRunHistoryDetailPresentation.sessionTarget(run) {
-            return { state.openAlwaysOnSession(target) }
+            return { openSession(target, projectRoot: projectRoot) }
         }
         if key == "originSessionId" {
             let sessionId = value.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !sessionId.isEmpty, sessionId != "—" else { return nil }
-            return { state.openAlwaysOnSession(.origin(sessionId: sessionId)) }
+            return { openSession(.origin(sessionId: sessionId), projectRoot: projectRoot) }
         }
         return nil
     }
+
+    private func nonEmptyMetadataValue(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else { return nil }
+        return trimmed
+    }
+
+    private func generalView() -> some View {
+        let snapshot = state.alwaysOnDashboardSnapshot(scope: nil)
+        let groups = projectGroups(scope: nil)
+        return VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                HStack(spacing: 2) {
+                    TabButton(localized("Dashboard", "看板"), isActive: subtab == .dashboard) {
+                        subtab = .dashboard
+                        clearAlwaysOnSelection()
+                    }
+                    TabButton(state.t(.plansCronJobs), isActive: subtab == .items) {
+                        subtab = .items
+                        clearAlwaysOnSelection(keepRun: false)
+                    }
+                }
+                .padding(3)
+                .background(GlassControlBackground(isActive: false, cornerRadius: 16, material: .popover, showsShadow: false))
+                Spacer()
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+            .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator).frame(height: 1) }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(state.t(.alwaysOn))
+                                .font(.system(size: 20, weight: .semibold))
+                            Text(localized("Global background automation across enabled projects.", "所有已启用项目的后台自动化。"))
+                                .font(.system(size: 13))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                        }
+                        Spacer()
+                        Button {
+                            state.bumpToolRefresh()
+                        } label: {
+                            Label(state.t(.refresh), systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(WebToolbarButtonStyle())
+                    }
+
+                    if let selectedPlan {
+                        planDetail(selectedPlan, projectRoot: selectedDetailProjectRoot ?? "")
+                    } else if let selectedCronJob {
+                        cronDetail(selectedCronJob, projectRoot: selectedDetailProjectRoot ?? "")
+                    } else if let selectedRun {
+                        runHistoryDetail(selectedRun, projectRoot: selectedDetailProjectRoot ?? "")
+                    } else if subtab == .items {
+                        groupedItemsView(groups: groups)
+                    } else {
+                        dashboardContent(snapshot: snapshot, groups: groups)
+                    }
+                }
+                .frame(maxWidth: 1120, alignment: .topLeading)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 18)
+            }
+        }
+        .background(Color.clear)
+    }
+
+    private func dashboardContent(snapshot: AlwaysOnDashboardSnapshot, groups: [AlwaysOnProjectItemsGroup]) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12)], spacing: 12) {
+                RoutingStatCard(icon: "folder.badge.gearshape", label: localized("Enabled Projects", "启用项目"), value: "\(snapshot.enabledProjects)/\(snapshot.totalProjects)", detail: localized("participating", "已加入"))
+                RoutingStatCard(icon: "checklist", label: localized("Ready Plans", "待执行计划"), value: "\(snapshot.readyPlans)", detail: localized("manual runnable", "可手动运行"))
+                RoutingStatCard(icon: "dot.radiowaves.left.and.right", label: localized("Running", "运行中"), value: "\(snapshot.runningCount)", detail: localized("background sessions", "后台会话"))
+                RoutingStatCard(icon: "calendar", label: localized("Today", "今日事件"), value: "\(snapshot.todayEvents)", detail: localized("activity events", "活动事件"))
+            }
+
+            if groups.count > 1 {
+                ToolSection(title: localized("Projects", "项目")) {
+                    VStack(spacing: 8) {
+                        ForEach(groups) { group in
+                            HStack(spacing: 12) {
+                                Circle()
+                                    .fill(group.dashboard?.enabled == true ? DesignTokens.success : DesignTokens.tertiaryText.opacity(0.45))
+                                    .frame(width: 7, height: 7)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(group.identity.displayName)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(DesignTokens.text)
+                                        .lineLimit(1)
+                                    Text(group.identity.rootPath)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(DesignTokens.tertiaryText)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                Spacer()
+                                compactMetric("\(group.dashboard?.readyPlans ?? 0)", localized("plans", "计划"))
+                                compactMetric("\(group.cronJobs.count)", "cron")
+                                compactMetric(group.dashboard?.lastGate ?? "—", localized("gate", "门控"))
+                                if let context = context(forProjectRoot: group.identity.rootPath) {
+                                    Button {
+                                        startDiscovery(context: context)
+                                    } label: {
+                                        Image(systemName: "sparkles")
+                                    }
+                                    .help(state.t(.discover))
+                                    .buttonStyle(WebToolbarButtonStyle())
+                                    .disabled(group.dashboard?.enabled != true)
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator.opacity(0.56)))
+                        }
+                    }
+                }
+            }
+
+            HStack(alignment: .top, spacing: 14) {
+                ToolSection(title: localized("Timeline", "时间线")) {
+                    timelineRows(snapshot.recentEvents)
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                ToolSection(title: localized("Runs", "运行")) {
+                    recentRunRows(groups: groups)
+                }
+                .frame(width: 340, alignment: .topLeading)
+            }
+        }
+    }
+
+    private func groupedItemsView(groups: [AlwaysOnProjectItemsGroup]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if groups.allSatisfy({ $0.rows.isEmpty }) {
+                Text(state.t(.noActivePlans))
+                    .font(.system(size: 13))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator.opacity(0.72)))
+            } else {
+                ForEach(groups.filter { !$0.rows.isEmpty }) { group in
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Text(group.identity.displayName)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(DesignTokens.text)
+                            Text(group.identity.rootPath)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        ForEach(group.rows) { row in
+                            compactItemRow(row, projectRoot: group.identity.rootPath)
+                        }
+                    }
+                    .padding(16)
+                    .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator.opacity(0.72)))
+                }
+            }
+        }
+    }
+
+    private func compactItemRow(_ row: NativeAlwaysOnRow, projectRoot: String) -> some View {
+        let item = NativeAlwaysOnItemsRows.row(row)
+        return HStack(spacing: 12) {
+            Image(systemName: row.kind == .plan ? "list.bullet.clipboard" : "calendar.badge.clock")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(DesignTokens.tertiaryText)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 5) {
+                Button {
+                    switch row.kind {
+                    case .plan:
+                        selectedPlan = row.plan
+                    case .cron:
+                        selectedCronJob = row.cronJob
+                    }
+                    selectedDetailProjectRoot = projectRoot
+                } label: {
+                    Text(item.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(DesignTokens.accent)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .buttonStyle(.plain)
+                HStack(spacing: 7) {
+                    Text(item.type)
+                    Text(item.status)
+                        .foregroundStyle(statusTint(row.plan?.executionStatus ?? row.plan?.status ?? row.cronJob?.status ?? .unknown))
+                    Text("\(localized("Created", "创建")) \(item.created)")
+                    Text("\(localized("Triggered", "触发")) \(item.triggered)")
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(DesignTokens.tertiaryText)
+                .lineLimit(1)
+            }
+            Spacer()
+            HStack(spacing: 6) {
+                Button {
+                    switch row.kind {
+                    case .plan:
+                        selectedPlan = row.plan
+                    case .cron:
+                        selectedCronJob = row.cronJob
+                    }
+                    selectedDetailProjectRoot = projectRoot
+                } label: {
+                    Image(systemName: "sidebar.right")
+                }
+                .help(state.t(.view))
+                .buttonStyle(WebToolbarButtonStyle())
+
+                Button {
+                    if let plan = row.plan {
+                        runPlan(plan, projectRoot: projectRoot)
+                    } else if let job = row.cronJob {
+                        runCronJob(job, projectRoot: projectRoot)
+                    }
+                } label: {
+                    Image(systemName: "play.fill")
+                }
+                .help(state.t(.run))
+                .buttonStyle(WebToolbarButtonStyle(isProminent: true))
+                .disabled(!row.canRun)
+
+                Button {
+                    if let plan = row.plan {
+                        try? state.alwaysOnService.archive(plan: plan, projectRoot: projectRoot)
+                    } else if let job = row.cronJob {
+                        _ = try? state.alwaysOnService.deleteCronJob(jobID: job.id, projectRoot: projectRoot)
+                    }
+                    clearAlwaysOnSelection()
+                    state.bumpToolRefresh()
+                } label: {
+                    Image(systemName: row.kind == .plan ? "archivebox" : "trash")
+                }
+                .help(row.kind == .plan ? state.t(.archive) : state.t(.delete))
+                .buttonStyle(WebToolbarButtonStyle())
+                .disabled(!row.canArchiveOrDelete)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator.opacity(0.56)))
+    }
+
+    private func timelineRows(_ events: [AlwaysOnEvent]) -> some View {
+        VStack(spacing: 0) {
+            if events.isEmpty {
+                Text(localized("No Always-On activity yet.", "暂无 Always-On 活动。"))
+                    .font(.system(size: 13))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+            } else {
+                ForEach(events.prefix(18)) { event in
+                    HStack(alignment: .top, spacing: 10) {
+                        Circle()
+                            .fill(statusTint(event.status))
+                            .frame(width: 7, height: 7)
+                            .padding(.top, 6)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(event.title)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(DesignTokens.text)
+                                    .lineLimit(1)
+                                Text(event.kind)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(statusTint(event.status))
+                                Spacer()
+                                Text(NativeAlwaysOnUpdatedLabel.relativeText(event.createdAt, language: state.settings.language.resolved()))
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(DesignTokens.tertiaryText)
+                            }
+                            Text(event.detail.isEmpty ? event.projectName : event.detail)
+                                .font(.system(size: 12))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                                .lineLimit(2)
+                        }
+                    }
+                    .padding(.vertical, 9)
+                    .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator.opacity(0.45)).frame(height: 1) }
+                }
+            }
+        }
+    }
+
+    private func recentRunRows(groups: [AlwaysOnProjectItemsGroup]) -> some View {
+        let runs = groups
+            .flatMap { group in group.history.prefix(6).map { (group.identity, $0) } }
+            .sorted { $0.1.startedAt > $1.1.startedAt }
+            .prefix(8)
+        return VStack(spacing: 8) {
+            if runs.isEmpty {
+                Text(state.t(.noAlwaysOnRuns))
+                    .font(.system(size: 13))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+            } else {
+                ForEach(Array(runs), id: \.1.id) { item in
+                    Button {
+                        selectedRun = item.1
+                        selectedDetailProjectRoot = item.0.rootPath
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: item.1.kind == "cron" ? "calendar.badge.clock" : "list.bullet.clipboard")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(statusTint(item.1.status))
+                                .frame(width: 18)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.1.title)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(DesignTokens.text)
+                                    .lineLimit(1)
+                                Text("\(item.0.displayName) · \(item.1.status.rawValue)")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(DesignTokens.tertiaryText)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                        }
+                        .padding(9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(DesignTokens.cardSurfaceSubtle, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func projectGroups(scope: WorkspaceContext?) -> [AlwaysOnProjectItemsGroup] {
+        let snapshot = state.alwaysOnDashboardSnapshot(scope: scope)
+        let identities: [AlwaysOnProjectIdentity]
+        if let scope, !scope.isGeneral {
+            identities = [
+                AlwaysOnProjectIdentity(
+                    id: AlwaysOnService.normalizedProjectRoot(scope.rootPath),
+                    projectName: scope.projectName,
+                    displayName: scope.displayName,
+                    rootPath: scope.rootPath,
+                    isGeneral: false
+                ),
+            ]
+        } else {
+            identities = state.alwaysOnProjectIdentities()
+        }
+        let dashboardByRoot = Dictionary(
+            uniqueKeysWithValues: snapshot.projects.map { (AlwaysOnService.normalizedProjectRoot($0.rootPath), $0) }
+        )
+        return identities.map { identity in
+            let plans = state.alwaysOnService.plans(projectRoot: identity.rootPath)
+            let cronJobs = state.alwaysOnService.cronJobs(projectRoot: identity.rootPath)
+            let history = state.alwaysOnService.runHistory(projectRoot: identity.rootPath)
+            return AlwaysOnProjectItemsGroup(
+                identity: identity,
+                dashboard: dashboardByRoot[AlwaysOnService.normalizedProjectRoot(identity.rootPath)],
+                plans: plans,
+                cronJobs: cronJobs,
+                history: history,
+                rows: NativeAlwaysOnRows.rows(plans: plans, cronJobs: cronJobs)
+            )
+        }
+        .sorted { left, right in
+            let leftDate = left.dashboard?.lastRunAt ?? left.plans.first?.updatedAt ?? .distantPast
+            let rightDate = right.dashboard?.lastRunAt ?? right.plans.first?.updatedAt ?? .distantPast
+            if leftDate == rightDate {
+                return left.identity.displayName.localizedStandardCompare(right.identity.displayName) == .orderedAscending
+            }
+            return leftDate > rightDate
+        }
+    }
+
+    private func context(forProjectRoot projectRoot: String) -> WorkspaceContext? {
+        let normalized = AlwaysOnService.normalizedProjectRoot(projectRoot)
+        let project = state.projects.first { AlwaysOnService.normalizedProjectRoot($0.rootPath) == normalized }
+        let identity = state.alwaysOnProjectIdentities().first { AlwaysOnService.normalizedProjectRoot($0.rootPath) == normalized }
+        guard let identity else { return nil }
+        return WorkspaceContext(
+            projectID: project?.id,
+            projectName: identity.projectName,
+            displayName: identity.displayName,
+            rootPath: identity.rootPath,
+            isGeneral: false
+        )
+    }
+
+    private func openSession(_ target: AlwaysOnSessionTarget, projectRoot: String) {
+        let normalized = AlwaysOnService.normalizedProjectRoot(projectRoot)
+        if let project = state.projects.first(where: { AlwaysOnService.normalizedProjectRoot($0.rootPath) == normalized }) {
+            state.selectedProjectID = project.id
+        }
+        state.openAlwaysOnSession(target)
+    }
+
+    private func compactMetric(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(value)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .lineLimit(1)
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(DesignTokens.tertiaryText)
+        }
+        .frame(width: 72, alignment: .trailing)
+    }
+
+    private func statusTint(_ status: AlwaysOnStatus) -> Color {
+        switch status {
+        case .completed, .ready, .applied:
+            return DesignTokens.success
+        case .running, .executing, .reporting, .queued, .scheduled, .applying:
+            return DesignTokens.accent
+        case .failed, .applyFailed:
+            return DesignTokens.danger
+        case .noPlan, .draft, .superseded, .archived, .unknown:
+            return DesignTokens.tertiaryText
+        }
+    }
+
+    private func clearAlwaysOnSelection(keepRun: Bool = false) {
+        selectedPlan = nil
+        selectedCronJob = nil
+        if !keepRun {
+            selectedRun = nil
+        }
+        selectedDetailProjectRoot = nil
+    }
+
+    private func localized(_ english: String, _ chinese: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
+    }
+}
+
+private struct AlwaysOnProjectItemsGroup: Identifiable, Hashable {
+    var identity: AlwaysOnProjectIdentity
+    var dashboard: AlwaysOnProjectDashboard?
+    var plans: [AlwaysOnPlan]
+    var cronJobs: [AlwaysOnCronJob]
+    var history: [AlwaysOnRunHistory]
+    var rows: [NativeAlwaysOnRow]
+
+    var id: String { identity.id }
 }
 
 private struct AlwaysOnMetaItem: View {
@@ -6391,25 +6804,22 @@ enum NativeAlwaysOnCronDetailPresentation {
     }
 
     static func canOpenLatestRunSession(_ job: AlwaysOnCronJob) -> Bool {
-        guard let latestRun = job.latestRun,
-              latestRun.sessionId?.isEmpty == false,
-              latestRun.parentSessionId?.isEmpty == false,
-              latestRun.relativeTranscriptPath?.isEmpty == false
-        else { return false }
-        return true
+        job.latestRun?.sessionId?.isEmpty == false
     }
 
     static func latestRunTarget(_ job: AlwaysOnCronJob) -> AlwaysOnSessionTarget? {
         guard let latestRun = job.latestRun,
               let sessionId = latestRun.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sessionId.isEmpty,
-              let parentSessionId = latestRun.parentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !parentSessionId.isEmpty,
-              let relativeTranscriptPath = latestRun.relativeTranscriptPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !relativeTranscriptPath.isEmpty else {
+              !sessionId.isEmpty else {
             return nil
         }
         let title = latestRunTargetSummary(job)
+        guard let parentSessionId = latestRun.parentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !parentSessionId.isEmpty,
+              let relativeTranscriptPath = latestRun.relativeTranscriptPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !relativeTranscriptPath.isEmpty else {
+            return .origin(sessionId: sessionId)
+        }
         return .background(
             sessionId: sessionId,
             parentSessionId: parentSessionId,
@@ -6520,9 +6930,11 @@ enum NativeAlwaysOnItemsRows {
 
     static func canOpenCronSession(_ row: NativeAlwaysOnRow) -> Bool {
         guard row.kind == .cron,
-              let job = row.cronJob
+              let latestRun = row.cronJob?.latestRun,
+              latestRun.parentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+              latestRun.relativeTranscriptPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         else { return false }
-        return NativeAlwaysOnCronDetailPresentation.canOpenLatestRunSession(job)
+        return true
     }
 }
 
@@ -6703,6 +7115,7 @@ enum NativeAlwaysOnRunMetadata {
 }
 
 private enum AlwaysOnSubTab {
+    case dashboard
     case items
     case history
 }
@@ -6852,12 +7265,26 @@ enum NativeAlwaysOnRunHistoryDetailPresentation {
 
     static func sessionTarget(_ run: AlwaysOnRunHistory) -> AlwaysOnSessionTarget? {
         guard let sessionId = run.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sessionId.isEmpty,
-              let parentSessionId = run.parentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionId.isEmpty else {
+            return nil
+        }
+        guard let parentSessionId = run.parentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
               !parentSessionId.isEmpty,
               let relativeTranscriptPath = run.relativeTranscriptPath?.trimmingCharacters(in: .whitespacesAndNewlines),
               !relativeTranscriptPath.isEmpty else {
-            return nil
+            return AlwaysOnSessionTarget(
+                kind: .origin,
+                sessionId: sessionId,
+                parentSessionId: nil,
+                relativeTranscriptPath: nil,
+                title: run.title,
+                summary: run.title,
+                lastActivity: run.finishedAt ?? run.startedAt,
+                transcriptKey: run.transcriptKey,
+                taskId: run.sourceId,
+                taskStatus: run.status.rawValue,
+                outputFile: run.metadata["outputFile"]
+            )
         }
         return .background(
             sessionId: sessionId,

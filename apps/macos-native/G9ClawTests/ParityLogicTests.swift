@@ -26,6 +26,26 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(WorkspaceService.projectName(for: "/Users/tester/My_Project"), "-Users-tester-My-Project")
     }
 
+    func testNativeAgentRuntimeContextUsesLocalDateInsteadOfUTCDate() {
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = utcCalendar.date(from: DateComponents(
+            year: 2026,
+            month: 5,
+            day: 31,
+            hour: 16,
+            minute: 30
+        ))!
+        let shanghai = TimeZone(identifier: "Asia/Shanghai")!
+
+        let context = NativeAgentRuntime.nativeAgentRuntimeContext(now: now, timeZone: shanghai)
+
+        XCTAssertTrue(context.contains("current_date: 2026-06-01"))
+        XCTAssertTrue(context.contains("current_weekday: Monday"))
+        XCTAssertTrue(context.contains("timezone: Asia/Shanghai (UTC+08:00)"))
+        XCTAssertFalse(context.contains("current_date: 2026-05-31"))
+    }
+
     func testWorkspaceFileListingReportsHiddenOnlyRoots() throws {
         let root = temporaryDirectory("g9claw-files")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -274,13 +294,16 @@ final class ParityLogicTests: XCTestCase {
                 enabled: true
                 tickIntervalMinutes: 15
                 cooldownMinutes: 45
+                preferClient: webui
         """
 
         let values = NativeConfigService.scalarMap(from: yaml)
 
-        XCTAssertEqual(values["alwaysOn.discovery.trigger.enabled"], "true")
-        XCTAssertEqual(values["alwaysOn.discovery.trigger.tickIntervalMinutes"], "15")
-        XCTAssertEqual(values["alwaysOn.discovery.trigger.cooldownMinutes"], "45")
+        XCTAssertEqual(values["alwaysOn.trigger.enabled"], "true")
+        XCTAssertEqual(values["alwaysOn.trigger.tickIntervalMinutes"], "15")
+        XCTAssertEqual(values["alwaysOn.trigger.cooldownMinutes"], "45")
+        XCTAssertEqual(values["alwaysOn.trigger.preferChannel"], "web")
+        XCTAssertNil(values["alwaysOn.discovery.trigger.enabled"])
         XCTAssertNil(values["agents.alwaysOn.discovery.trigger.enabled"])
     }
 
@@ -293,16 +316,16 @@ final class ParityLogicTests: XCTestCase {
                 enabled: true
                 tickIntervalMinutes: 15
         alwaysOn:
-          discovery:
-            trigger:
-              enabled: false
-              tickIntervalMinutes: 3
+          trigger:
+            enabled: false
+            tickIntervalMinutes: 3
         """
 
         let values = NativeConfigService.scalarMap(from: yaml)
 
-        XCTAssertEqual(values["alwaysOn.discovery.trigger.enabled"], "false")
-        XCTAssertEqual(values["alwaysOn.discovery.trigger.tickIntervalMinutes"], "3")
+        XCTAssertEqual(values["alwaysOn.trigger.enabled"], "false")
+        XCTAssertEqual(values["alwaysOn.trigger.tickIntervalMinutes"], "3")
+        XCTAssertNil(values["alwaysOn.discovery.trigger.enabled"])
         XCTAssertNil(values["agents.alwaysOn.discovery.trigger.enabled"])
     }
 
@@ -320,15 +343,16 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(NativeConfigFormLayout.sectionNavigationWidth, 180)
         XCTAssertEqual(NativeConfigFormLayout.sectionNavigationGap, 16)
         XCTAssertEqual(NativeConfigFormLayout.sectionOrder, [
-            .runtime,
             .models,
-            .alwaysOn,
+            .agents,
             .memory,
-            .search,
             .router,
-            .gateway,
+            .search,
+            .alwaysOn,
         ])
         XCTAssertFalse(NativeConfigFormLayout.sectionOrder.contains(.raw))
+        XCTAssertFalse(NativeConfigFormLayout.sectionOrder.contains(.runtime))
+        XCTAssertFalse(NativeConfigFormLayout.sectionOrder.contains(.gateway))
     }
 
     func testNativeConfigReloadSummarySubsystemsMatchWebSettingsTab() {
@@ -336,14 +360,68 @@ final class ParityLogicTests: XCTestCase {
             "processEnv",
             "memory",
             "router",
-            "gateway",
         ])
         XCTAssertEqual(NativeConfigReloadSummary.subsystems.map(\.label), [
             .processEnv,
             .memory,
             .routerCCR,
-            .gateway,
         ])
+    }
+
+    func testNativeMCPSettingsUseG9ClawPathsAndJSONShape() throws {
+        let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+
+        XCTAssertEqual(
+            NativeMCPConfigService.globalConfigURL(home: home).path,
+            "/Users/tester/.g9claw/mcp.json"
+        )
+        XCTAssertEqual(
+            NativeMCPConfigService.projectConfigURL(projectRoot: "/Users/tester/project").path,
+            "/Users/tester/project/.g9claw/mcp.json"
+        )
+
+        let raw = """
+        {
+          "mcpServers": {
+            "docs": {
+              "url": "https://example.com/mcp",
+              "headers": {
+                "Authorization": "Bearer ${env:MCP_TOKEN}"
+              }
+            },
+            "github": {
+              "command": "npx",
+              "args": ["-y", "@modelcontextprotocol/server-github"],
+              "env": {
+                "GITHUB_TOKEN": "${env:GITHUB_TOKEN}"
+              },
+              "perSession": true
+            }
+          }
+        }
+        """
+
+        let draft = try NativeMCPConfigService.parse(raw: raw, path: "/tmp/mcp.json", exists: true)
+
+        XCTAssertEqual(draft.path, "/tmp/mcp.json")
+        XCTAssertTrue(draft.exists)
+        XCTAssertEqual(draft.servers.map(\.name), ["docs", "github"])
+        XCTAssertEqual(draft.servers.first?.transport, .http)
+        XCTAssertEqual(draft.servers.first?.headersText, "Authorization=Bearer ${env:MCP_TOKEN}")
+        XCTAssertEqual(draft.servers.last?.transport, .stdio)
+        XCTAssertEqual(draft.servers.last?.command, "npx")
+        XCTAssertEqual(draft.servers.last?.argsText, "-y\n@modelcontextprotocol/server-github")
+        XCTAssertEqual(draft.servers.last?.envText, "GITHUB_TOKEN=${env:GITHUB_TOKEN}")
+        XCTAssertEqual(draft.servers.last?.perSession, true)
+
+        let serialized = try NativeMCPConfigService.rawJSON(servers: draft.servers)
+        XCTAssertTrue(serialized.contains("\"mcpServers\""))
+        XCTAssertTrue(serialized.contains("\"github\""))
+        XCTAssertTrue(serialized.contains("\"perSession\" : true"))
+
+        XCTAssertThrowsError(try NativeMCPConfigService.parse(raw: #"{"mcpServers":{"bad":{}}}"#, path: "", exists: true)) { error in
+            XCTAssertEqual(error as? NativeMCPConfigError, .unrecognizedTransport("bad"))
+        }
     }
 
     func testNativeConfigModelPickerOptionsMatchWebFormSelects() {
@@ -387,7 +465,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(NativeModelsConfigFormFields.newProviderScalars.keys.contains("headers"))
 
         XCTAssertTrue(NativeModelsConfigFormFields.usesModelPoolDropdown)
-        XCTAssertTrue(NativeModelsConfigFormFields.usageAssignmentsLiveInModelSection)
+        XCTAssertFalse(NativeModelsConfigFormFields.usageAssignmentsLiveInModelSection)
         XCTAssertFalse(NativeModelsConfigFormFields.entryRowsExposeProviderPicker)
         XCTAssertFalse(NativeModelsConfigFormFields.entryRowsExposeModelNameField)
         XCTAssertEqual(NativeModelsConfigFormFields.assignmentPaths, [
@@ -411,14 +489,18 @@ final class ParityLogicTests: XCTestCase {
             "name": "",
             "contextWindow": "",
         ])
+
+        XCTAssertEqual(NativeAgentConfigFormFields.visiblePaths, [
+            "agents.main.model",
+            "agents.subagents.default",
+        ])
     }
 
     func testNativeRuntimeConfigFormFieldsMatchWebSettingsTab() {
-        XCTAssertEqual(NativeRuntimeConfigFormFields.visiblePaths, [
+        XCTAssertTrue(NativeRuntimeConfigFormFields.visiblePaths.isEmpty)
+        XCTAssertEqual(NativeRuntimeConfigFormFields.textFields.map(\.path), [
             "runtime.apiTimeoutMs",
             "runtime.databasePath",
-            "runtime.workspacesRoot",
-            "gateway.runtimePaths.generalCwd",
         ])
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.host"))
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.serverPort"))
@@ -426,7 +508,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.proxyPort"))
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.contextWindow"))
         XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.httpsProxy"))
-        XCTAssertTrue(NativeRuntimeConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))
     }
 
     func testNativeSearchConfigFormFieldsExposeWebSearchProviders() {
@@ -439,8 +521,6 @@ final class ParityLogicTests: XCTestCase {
                 "tools.webSearch.provider",
                 "tools.webSearch.apiKey",
                 "tools.webSearch.endpoint",
-                "tools.webSearch.organicLimit",
-                "tools.webSearch.timeoutMs",
                 "tools.webSearch.customProvider.name",
                 "tools.webSearch.customProvider.auth",
                 "tools.webSearch.customProvider.method",
@@ -460,9 +540,9 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(primaryFields.map(\.label), [
             .apiKey,
             .endpointURL,
-            .organicLimit,
-            .timeoutMs,
         ])
+        XCTAssertFalse(NativeSearchConfigFormFields.visiblePaths.contains("tools.webSearch.organicLimit"))
+        XCTAssertFalse(NativeSearchConfigFormFields.visiblePaths.contains("tools.webSearch.timeoutMs"))
         XCTAssertEqual(customFields.map(\.label), [
             .customProviderName,
             .customAuth,
@@ -507,6 +587,7 @@ final class ParityLogicTests: XCTestCase {
     func testNativeMemoryConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeMemoryConfigFormFields.visiblePaths, [
             "memory.enabled",
+            "memory.model",
             "memory.autoIndexIntervalMinutes",
             "memory.autoDreamIntervalMinutes",
         ])
@@ -515,58 +596,60 @@ final class ParityLogicTests: XCTestCase {
             "memory.autoDreamIntervalMinutes",
         ])
         XCTAssertTrue(NativeModelsConfigFormFields.assignmentPaths.contains("memory.model"))
+        XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.captureStrategy"))
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.includeAssistant"))
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.reasoningMode"))
+        XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.maxMessageChars"))
+        XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.heartbeatBatchSize"))
     }
 
     func testNativeAlwaysOnConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeAlwaysOnConfigFormFields.visiblePaths, [
-            "alwaysOn.discovery.trigger.enabled",
-            "alwaysOn.discovery.trigger.tickIntervalMinutes",
-            "alwaysOn.discovery.trigger.cooldownMinutes",
-            "alwaysOn.discovery.trigger.dailyBudget",
+            "alwaysOn.enabled",
+            "alwaysOn.trigger.enabled",
+            "alwaysOn.trigger.tickIntervalMinutes",
+            "alwaysOn.trigger.cooldownMinutes",
+            "alwaysOn.trigger.dailyBudget",
         ])
-        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.discovery.trigger.heartbeatStaleSeconds"))
-        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.discovery.trigger.recentUserMsgMinutes"))
         XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.discovery.trigger.preferClient"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.dormancy.enabled"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.workspace.gitLfs"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.trigger.heartbeatStaleSeconds"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.trigger.recentUserMsgMinutes"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.trigger.preferChannel"))
+        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.execution.maxTurns"))
     }
 
     func testNativeRouterAndGatewayConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeRouterConfigFormFields.visiblePaths, [
             "router.enabled",
             "router.routes.default.model",
+            "router.routes.background.model",
             "router.tokenSaver.enabled",
             "router.tokenSaver.judgeModel",
-            "router.tokenSaver.defaultTier",
-            "router.tokenSaver.rules",
             "router.tokenSaver.tiers.simple.model",
             "router.tokenSaver.tiers.medium.model",
             "router.tokenSaver.tiers.complex.model",
             "router.tokenSaver.tiers.reasoning.model",
-            "router.tokenStats.baselineModel",
-            "router.tokenStats.defaultCostPerMillion",
-            "router.zeroUsageRetry.enabled",
-            "router.zeroUsageRetry.maxAttempts",
-            "router.transientRetry.enabled",
-            "router.transientRetry.maxAttempts",
         ])
         XCTAssertEqual(NativeRouterConfigFormFields.routeModelFields.map(\.path), [
             "router.routes.default.model",
             "router.routes.background.model",
         ])
-        XCTAssertEqual(NativeRouterConfigFormFields.advancedRouteModelFields.map(\.path), [
-            "router.routes.think.model",
-            "router.routes.longContext.model",
-            "router.routes.webSearch.model",
-        ])
         XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.log"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.think.model"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.longContext.model"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.webSearch.model"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenSaver.defaultTier"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenSaver.rules"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.autoOrchestrate.mainAgentModel"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenStats.defaultCostPerMillion"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.zeroUsageRetry.enabled"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.transientRetry.enabled"))
         XCTAssertTrue(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.default.model"))
         XCTAssertTrue(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenSaver.enabled"))
 
-        XCTAssertEqual(NativeGatewayConfigFormFields.visiblePaths, [
-            "gateway.enabled",
-            "gateway.home",
-        ])
+        XCTAssertTrue(NativeGatewayConfigFormFields.visiblePaths.isEmpty)
         XCTAssertFalse(NativeGatewayConfigFormFields.visiblePaths.contains("gateway.allowAllUsers"))
         XCTAssertFalse(NativeGatewayConfigFormFields.visiblePaths.contains("gateway.groupSessionsPerUser"))
         XCTAssertFalse(NativeGatewayConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))
@@ -3514,7 +3597,29 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(history.first?.id, run.id)
         XCTAssertEqual(history.first?.sessionId, "session-run")
         XCTAssertTrue(history.first?.outputLog.contains("Started native Always-On plan run") == true)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(".g9claw/always-on", isDirectory: true).path))
+
+        let discoveryRun = try service.startDiscoveryRun(
+            projectRoot: root.path,
+            title: "Manual discovery",
+            sessionId: "session-discovery",
+            runID: "discovery-roundtrip"
+        )
+        try service.finishDiscoveryRun(
+            run: discoveryRun,
+            projectRoot: root.path,
+            status: .noPlan,
+            sessionId: "session-discovery",
+            outputLog: "No plan needed.",
+            metadata: ["trigger": "manual"]
+        )
+        let discoveryHistory = try XCTUnwrap(service.runHistory(projectRoot: root.path).first { $0.id == "discovery-roundtrip" })
+        XCTAssertEqual(discoveryHistory.kind, "discovery")
+        XCTAssertEqual(discoveryHistory.status, .noPlan)
+        XCTAssertEqual(discoveryHistory.sessionId, "session-discovery")
+        XCTAssertEqual(discoveryHistory.metadata["trigger"], "manual")
+        XCTAssertEqual(discoveryHistory.outputLog, "No plan needed.")
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".g9claw/always-on", isDirectory: true).path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".claude", isDirectory: true).path))
     }
 
@@ -3761,6 +3866,7 @@ final class ParityLogicTests: XCTestCase {
                 status: status,
                 approvalMode: "manual",
                 planFilePath: ".g9claw/always-on/plans/\(id).md",
+                contextRefs: nil,
                 createdAt: base.addingTimeInterval(-1_000),
                 updatedAt: base.addingTimeInterval(updatedOffset),
                 executionSessionId: executionSessionId,
@@ -3867,6 +3973,7 @@ final class ParityLogicTests: XCTestCase {
             status: .ready,
             approvalMode: "manual",
             planFilePath: ".g9claw/always-on/plans/plan-a.md",
+            contextRefs: nil,
             createdAt: createdAt,
             updatedAt: triggeredAt,
             executionSessionId: nil,
@@ -4215,8 +4322,10 @@ final class ParityLogicTests: XCTestCase {
             relativeTranscriptPath: nil,
             transcriptKey: nil
         )
-        XCTAssertFalse(NativeAlwaysOnCronDetailPresentation.canOpenLatestRunSession(noTargetJob))
-        XCTAssertNil(NativeAlwaysOnCronDetailPresentation.latestRunTarget(noTargetJob))
+        XCTAssertTrue(NativeAlwaysOnCronDetailPresentation.canOpenLatestRunSession(noTargetJob))
+        let originTarget = try XCTUnwrap(NativeAlwaysOnCronDetailPresentation.latestRunTarget(noTargetJob))
+        XCTAssertEqual(originTarget.kind, .origin)
+        XCTAssertEqual(originTarget.sessionId, "session-b")
         XCTAssertEqual(NativeAlwaysOnCronDetailPresentation.latestRunTargetSummary(noTargetJob), "# Cron Alpha\nRun diagnostics")
     }
 
@@ -4561,6 +4670,7 @@ final class ParityLogicTests: XCTestCase {
                     status: .ready,
                     approvalMode: "manual",
                     planFilePath: ".g9claw/always-on/plans/plan-a.md",
+                    contextRefs: nil,
                     createdAt: now.addingTimeInterval(-120),
                     updatedAt: now.addingTimeInterval(-60),
                     executionSessionId: nil,
@@ -4800,28 +4910,27 @@ final class ParityLogicTests: XCTestCase {
         let enabledValues = NativeConfigService.scalarMap(from: enabled)
 
         XCTAssertEqual(AlwaysOnProjectConfig.projectRoot("/workspace/a/"), "/workspace/a")
-        XCTAssertEqual(enabledValues["alwaysOn.discovery.projects./workspace/a.enabled"], "true")
+        XCTAssertEqual(enabledValues["alwaysOn.projects./workspace/a.enabled"], "true")
         XCTAssertTrue(AlwaysOnProjectConfig.isEnabled(yaml: enabled, projectRoot: "/workspace/a/"))
 
         let disabled = AlwaysOnProjectConfig.setEnabled(in: enabled, projectRoot: "/workspace/a/", enabled: false)
         let disabledValues = NativeConfigService.scalarMap(from: disabled)
 
-        XCTAssertEqual(disabledValues["alwaysOn.discovery.projects./workspace/a.enabled"], "false")
+        XCTAssertEqual(disabledValues["alwaysOn.projects./workspace/a.enabled"], "false")
         XCTAssertFalse(AlwaysOnProjectConfig.isEnabled(yaml: disabled, projectRoot: "/workspace/a/"))
     }
 
     func testYAMLScalarEditorSetsObjectScalarForDottedProjectRootKeys() {
         let yaml = """
         alwaysOn:
-          discovery:
-            projects:
-              /Users/tester/workspace/app.one:
-                enabled: true
-                mode: manual
+          projects:
+            /Users/tester/workspace/app.one:
+              enabled: true
+              mode: manual
         """
 
         let updated = YAMLScalarEditor.setObjectScalar(
-            parentPath: "alwaysOn.discovery.projects",
+            parentPath: "alwaysOn.projects",
             id: "/Users/tester/workspace/app.one",
             key: "enabled",
             value: "false",
@@ -4829,12 +4938,12 @@ final class ParityLogicTests: XCTestCase {
         )
         let values = NativeConfigService.scalarMap(from: updated)
 
-        XCTAssertEqual(values["alwaysOn.discovery.projects./Users/tester/workspace/app.one.enabled"], "false")
-        XCTAssertEqual(values["alwaysOn.discovery.projects./Users/tester/workspace/app.one.mode"], "manual")
+        XCTAssertEqual(values["alwaysOn.projects./Users/tester/workspace/app.one.enabled"], "false")
+        XCTAssertEqual(values["alwaysOn.projects./Users/tester/workspace/app.one.mode"], "manual")
         XCTAssertFalse(updated.contains("app:\n"))
     }
 
-    func testConfigYAMLAPIKeyResolutionPrefersYAMLAndFallsBackToKeychainWhenBlank() {
+    func testConfigYAMLAPIKeyResolutionUsesOnlyYAML() {
         let yamlWithKey = """
         models:
           providers:
@@ -4851,9 +4960,7 @@ final class ParityLogicTests: XCTestCase {
 
         let resolvedYAMLKey = NativeConfigService.resolvedAPIKey(
             routeEntryID: "default",
-            nativeConfig: snapshotWithKey,
-            keychainValue: "keychain-secret",
-            apiKeyDraft: "draft-secret"
+            nativeConfig: snapshotWithKey
         )
 
         XCTAssertEqual(resolvedYAMLKey, "yaml-secret")
@@ -4872,14 +4979,12 @@ final class ParityLogicTests: XCTestCase {
         """
         let snapshotBlankKey = NativeConfigService.snapshot(from: yamlBlankKey)
 
-        let resolvedFallbackKey = NativeConfigService.resolvedAPIKey(
+        let resolvedBlankKey = NativeConfigService.resolvedAPIKey(
             routeEntryID: "default",
-            nativeConfig: snapshotBlankKey,
-            keychainValue: "keychain-secret",
-            apiKeyDraft: "draft-secret"
+            nativeConfig: snapshotBlankKey
         )
 
-        XCTAssertEqual(resolvedFallbackKey, "keychain-secret")
+        XCTAssertEqual(resolvedBlankKey, "")
     }
 
     func testSkillsSlugValidationRejectsTraversal() {

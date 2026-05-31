@@ -14,14 +14,17 @@ struct SettingsView: View {
 private struct SettingsContentView: View {
     @EnvironmentObject private var state: AppState
     @State private var currentPage: SettingsPage = .main
-    @State private var configSection: G9ClawConfigSection = .runtime
+    @State private var configSection: G9ClawConfigSection = .models
     @State private var savedConfigText = ""
     @State private var configMessage: String?
     @State private var configError: String?
     @State private var configExternalNotice: String?
     @State private var selectedModelPoolEntry: String?
-    @State private var showAdvancedRouteModels = false
-    @State private var showRouterAdvancedSettings = false
+    @State private var mcpScope: NativeMCPConfigScope = .global
+    @State private var mcpDraft = NativeMCPConfigDraft.empty
+    @State private var mcpProjectRoot = ""
+    @State private var mcpMessage: String?
+    @State private var mcpError: String?
 
     var body: some View {
         ScrollView {
@@ -62,6 +65,8 @@ private struct SettingsContentView: View {
             return .permissions
         case .config:
             return .config
+        case .mcp:
+            return .mcp
         }
     }
 
@@ -77,6 +82,8 @@ private struct SettingsContentView: View {
             return state.t(.permissions)
         case .config:
             return state.t(.config)
+        case .mcp:
+            return local(chinese: "MCP 服务器", english: "MCP Servers")
         }
     }
 
@@ -123,6 +130,8 @@ private struct SettingsContentView: View {
             return state.t(.runtime)
         case .models:
             return state.t(.models)
+        case .agents:
+            return local(chinese: "智能体", english: "Agents")
         case .alwaysOn:
             return state.t(.alwaysOn)
         case .memory:
@@ -151,6 +160,8 @@ private struct SettingsContentView: View {
             permissionsContent
         case .config:
             configContent
+        case .mcp:
+            mcpContent
         }
     }
 
@@ -223,6 +234,14 @@ private struct SettingsContentView: View {
             SettingsSectionBlock(title: local(chinese: "高级", english: "Advanced")) {
                 SettingsCardBlock {
                     VStack(spacing: 0) {
+                        SettingsNavigationRow(
+                            systemImage: "server.rack",
+                            title: local(chinese: "MCP 服务器", english: "MCP Servers"),
+                            detail: local(chinese: "配置全局和项目 MCP 工具", english: "Configure global and project MCP tools")
+                        ) {
+                            currentPage = .mcp
+                        }
+                        SettingsCardDivider()
                         SettingsNavigationRow(
                             systemImage: "shield",
                             title: state.t(.permissions),
@@ -422,6 +441,352 @@ private struct SettingsContentView: View {
                     .padding(14)
                 }
             }
+        }
+    }
+
+    private var mcpContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            SettingsSectionBlock(
+                title: local(chinese: "MCP 服务器", english: "MCP Servers"),
+                detail: local(
+                    chinese: "通过全局或项目 JSON 配置 MCP 工具。同名项目服务器会覆盖全局服务器。",
+                    english: "Configure MCP tools with global or project JSON. Project servers override global servers with the same name."
+                )
+            ) {
+                SettingsCardBlock(divided: true) {
+                    SettingsRowBlock(
+                        title: local(chinese: "作用域", english: "Scope"),
+                        detail: mcpScope == .global
+                            ? local(chinese: "全局 MCP 会在所有项目中可用。", english: "Global MCP servers are available to every project.")
+                            : local(chinese: "项目 MCP 只对选中的项目生效。", english: "Project MCP servers only apply to the selected project.")
+                    ) {
+                        Picker("", selection: $mcpScope) {
+                            Text(local(chinese: "全局", english: "Global")).tag(NativeMCPConfigScope.global)
+                            Text(local(chinese: "项目", english: "Project")).tag(NativeMCPConfigScope.project)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 190)
+                    }
+                    if mcpScope == .project {
+                        SettingsCardDivider()
+                        SettingsRowBlock(
+                            title: state.t(.projects),
+                            detail: local(chinese: "选择要编辑 `.g9claw/mcp.json` 的项目。", english: "Choose the project whose `.g9claw/mcp.json` should be edited.")
+                        ) {
+                            Picker("", selection: $mcpProjectRoot) {
+                                ForEach(mcpProjectOptions, id: \.root) { item in
+                                    Text(item.name).tag(item.root)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 260)
+                            .disabled(mcpProjectOptions.isEmpty)
+                        }
+                    }
+                }
+            }
+
+            SettingsSectionBlock(title: local(chinese: "配置文件", english: "Config File")) {
+                SettingsCardBlock {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "server.rack")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                                .frame(width: 22)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(mcpDraft.exists ? local(chinese: "已存在", english: "Existing config") : local(chinese: "尚未创建", english: "Not created yet"))
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text(mcpDraft.path)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(DesignTokens.tertiaryText)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(DesignTokens.neutral100, in: RoundedRectangle(cornerRadius: 5))
+                            }
+                        }
+                        HStack(spacing: 8) {
+                            Button {
+                                revealMCPConfigFile()
+                            } label: {
+                                Label(state.t(.revealFile), systemImage: "folder")
+                            }
+                            .buttonStyle(WebToolbarButtonStyle())
+                            Button {
+                                loadMCPConfig()
+                            } label: {
+                                Label(state.t(.refresh), systemImage: "arrow.clockwise")
+                            }
+                            .buttonStyle(WebToolbarButtonStyle())
+                            Spacer()
+                            Button {
+                                saveMCPConfig()
+                            } label: {
+                                Label(local(chinese: "保存 MCP", english: "Save MCP"), systemImage: "square.and.arrow.down")
+                            }
+                            .buttonStyle(WebToolbarButtonStyle(isProminent: true))
+                            .disabled(mcpScope == .project && mcpProjectRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                    .padding(14)
+                }
+            }
+
+            if let mcpError {
+                NoticeBanner(text: mcpError, tint: DesignTokens.danger) {
+                    self.mcpError = nil
+                }
+            }
+            if let mcpMessage {
+                NoticeBanner(text: mcpMessage, tint: DesignTokens.success) {
+                    self.mcpMessage = nil
+                }
+            }
+
+            SettingsSectionBlock(
+                title: local(chinese: "服务器", english: "Servers"),
+                detail: local(chinese: "支持 STDIO 和 HTTP MCP 服务器。", english: "Supports STDIO and HTTP MCP servers.")
+            ) {
+                SettingsCardBlock {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Text(local(chinese: "\(mcpDraft.servers.count) 个服务器", english: "\(mcpDraft.servers.count) servers"))
+                                .font(.system(size: 13, weight: .semibold))
+                            Spacer()
+                            Button {
+                                addMCPServer(.stdio)
+                            } label: {
+                                Label("STDIO", systemImage: "plus")
+                            }
+                            .buttonStyle(WebToolbarButtonStyle())
+                            Button {
+                                addMCPServer(.http)
+                            } label: {
+                                Label("HTTP", systemImage: "plus")
+                            }
+                            .buttonStyle(WebToolbarButtonStyle())
+                        }
+
+                        if mcpDraft.servers.isEmpty {
+                            dashedEmpty(local(chinese: "暂无 MCP 服务器。", english: "No MCP servers configured."))
+                        } else {
+                            VStack(spacing: 12) {
+                                ForEach($mcpDraft.servers) { $server in
+                                    mcpServerCard(server: $server)
+                                }
+                            }
+                        }
+
+                        DisclosureGroup {
+                            TextEditor(text: mcpRawJSONBinding)
+                                .font(.system(size: 12, design: .monospaced))
+                                .frame(minHeight: 240)
+                                .scrollContentBackground(.hidden)
+                                .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                                .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator))
+                                .padding(.top, 8)
+                        } label: {
+                            SettingsFieldLabel(
+                                title: local(chinese: "高级 JSON", english: "Advanced JSON"),
+                                detail: local(chinese: "直接编辑原始 `mcpServers` JSON。", english: "Edit the raw `mcpServers` JSON directly.")
+                            )
+                        }
+                    }
+                    .padding(14)
+                }
+            }
+        }
+        .onAppear {
+            ensureMCPProjectRoot()
+            loadMCPConfig()
+        }
+        .onChange(of: mcpScope) { _, _ in
+            ensureMCPProjectRoot()
+            loadMCPConfig()
+        }
+        .onChange(of: mcpProjectRoot) { _, _ in
+            guard mcpScope == .project else { return }
+            loadMCPConfig()
+        }
+        .onChange(of: mcpDraft.servers) { _, _ in
+            syncMCPRawFromServers()
+        }
+    }
+
+    private func mcpServerCard(server: Binding<NativeMCPServerDraft>) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField(local(chinese: "服务器名称", english: "Server name"), text: server.name)
+                        .textFieldStyle(.roundedBorder)
+                    Text(mcpServerSummary(server.wrappedValue))
+                        .font(.system(size: 11))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .lineLimit(1)
+                }
+                Picker("", selection: server.transport) {
+                    Text("STDIO").tag(NativeMCPTransport.stdio)
+                    Text("HTTP").tag(NativeMCPTransport.http)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+                Button {
+                    removeMCPServer(server.wrappedValue.id)
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(SettingsIconButtonStyle())
+                .foregroundStyle(DesignTokens.danger)
+            }
+
+            if server.wrappedValue.transport == .stdio {
+                ConfigGrid {
+                    SettingsTextField(local(chinese: "命令", english: "Command"), text: server.command)
+                }
+                SettingsTextArea(local(chinese: "参数（每行一个）", english: "Args (one per line)"), text: server.argsText)
+                SettingsTextArea(local(chinese: "环境变量 KEY=VALUE", english: "Env KEY=VALUE"), text: server.envText)
+                SettingsRowBlock(
+                    title: "Per-session",
+                    detail: local(chinese: "为每个会话独立启动 MCP 进程。", english: "Start a separate MCP process for each session.")
+                ) {
+                    WebSettingsToggle(isOn: server.perSession)
+                }
+            } else {
+                ConfigGrid {
+                    SettingsTextField("URL", text: server.url)
+                }
+                SettingsTextArea(local(chinese: "Headers KEY=VALUE", english: "Headers KEY=VALUE"), text: server.headersText)
+            }
+        }
+        .padding(12)
+        .background(DesignTokens.neutral50.opacity(0.8), in: RoundedRectangle(cornerRadius: DesignTokens.radius))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
+    }
+
+    private var mcpProjectOptions: [(name: String, root: String)] {
+        state.projects
+            .filter { !state.isGeneralProject($0) }
+            .map { project in
+                (
+                    name: project.displayName,
+                    root: state.effectiveWorkspacePath(for: project)
+                )
+            }
+            .filter { !$0.root.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private var mcpRawJSONBinding: Binding<String> {
+        Binding(
+            get: { mcpDraft.rawJSON },
+            set: { value in
+                mcpDraft.rawJSON = value
+                do {
+                    let parsed = try NativeMCPConfigService.parse(raw: value, path: mcpDraft.path, exists: mcpDraft.exists)
+                    mcpDraft.servers = parsed.servers
+                    mcpError = nil
+                } catch {
+                    mcpError = error.localizedDescription
+                }
+            }
+        )
+    }
+
+    private func ensureMCPProjectRoot() {
+        guard mcpScope == .project else { return }
+        let options = mcpProjectOptions
+        if !options.contains(where: { $0.root == mcpProjectRoot }) {
+            mcpProjectRoot = options.first?.root ?? ""
+        }
+    }
+
+    private func loadMCPConfig() {
+        do {
+            ensureMCPProjectRoot()
+            mcpDraft = try NativeMCPConfigService.load(scope: mcpScope, projectRoot: mcpProjectRoot)
+            mcpError = nil
+            mcpMessage = nil
+        } catch {
+            mcpDraft = NativeMCPConfigService.emptyDraft(scope: mcpScope, projectRoot: mcpProjectRoot)
+            mcpError = error.localizedDescription
+        }
+    }
+
+    private func saveMCPConfig() {
+        do {
+            ensureMCPProjectRoot()
+            mcpDraft = try NativeMCPConfigService.save(raw: mcpDraft.rawJSON, scope: mcpScope, projectRoot: mcpProjectRoot)
+            mcpError = nil
+            mcpMessage = local(chinese: "MCP 配置已保存。", english: "MCP config saved.")
+        } catch {
+            mcpError = error.localizedDescription
+        }
+    }
+
+    private func revealMCPConfigFile() {
+        let url = NativeMCPConfigService.configURL(scope: mcpScope, projectRoot: mcpProjectRoot)
+        guard !url.path.isEmpty else { return }
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([url.deletingLastPathComponent()])
+        }
+    }
+
+    private func syncMCPRawFromServers() {
+        do {
+            let nextRaw = try NativeMCPConfigService.rawJSON(servers: mcpDraft.servers)
+            if nextRaw != mcpDraft.rawJSON {
+                mcpDraft.rawJSON = nextRaw
+            }
+            mcpError = nil
+        } catch {
+            mcpError = error.localizedDescription
+        }
+    }
+
+    private func addMCPServer(_ transport: NativeMCPTransport) {
+        let existing = Set(mcpDraft.servers.map(\.name))
+        let base = transport == .stdio ? "new-stdio-server" : "new-http-server"
+        var name = base
+        var index = 2
+        while existing.contains(name) {
+            name = "\(base)-\(index)"
+            index += 1
+        }
+        mcpDraft.servers.append(NativeMCPServerDraft.template(name: name, transport: transport))
+    }
+
+    private func removeMCPServer(_ id: UUID) {
+        mcpDraft.servers.removeAll { $0.id == id }
+    }
+
+    private func mcpServerSummary(_ server: NativeMCPServerDraft) -> String {
+        switch server.transport {
+        case .stdio:
+            var parts: [String] = []
+            let command = server.command.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !command.isEmpty {
+                parts.append(command)
+            }
+            let firstArg = server.argsText
+                .split(separator: "\n")
+                .first
+                .map(String.init)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !firstArg.isEmpty {
+                parts.append(firstArg)
+            }
+            return parts.isEmpty ? "STDIO" : parts.joined(separator: " ")
+        case .http:
+            let url = server.url.trimmingCharacters(in: .whitespacesAndNewlines)
+            return url.isEmpty ? "HTTP" : url
         }
     }
 
@@ -648,22 +1013,50 @@ private struct SettingsContentView: View {
             }
         case .models:
             modelsConfigContent
+        case .agents:
+            agentsConfigContent
         case .alwaysOn:
             VStack(alignment: .leading, spacing: 18) {
-                SettingsSectionBlock(title: state.t(.discoveryTrigger)) {
+                SettingsSectionBlock(
+                    title: state.t(.alwaysOn),
+                    detail: local(
+                        chinese: "配置后台发现的开关、节奏和项目范围。隔离工作区、休眠和执行保护由客户端自动处理。",
+                        english: "Configure background discovery, cadence, and project scope. Workspace isolation, dormancy, and execution guards are handled automatically."
+                    )
+                ) {
                     SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.discoveryTriggerDetail)) {
+                        SettingsRowBlock(
+                            title: state.t(.enabled),
+                            detail: local(
+                                chinese: "总开关。关闭后不会启动任何 Always-On 调度。",
+                                english: "Master switch. When off, no Always-On scheduler runs."
+                            )
+                        ) {
                             WebSettingsToggle(isOn: configBoolBinding(NativeAlwaysOnConfigFormFields.enabledPath))
                         }
+                        SettingsCardDivider()
+                        SettingsRowBlock(
+                            title: local(chinese: "自动发现", english: "Auto Discovery"),
+                            detail: state.t(.discoveryTriggerDetail)
+                        ) {
+                            WebSettingsToggle(isOn: configBoolBinding(NativeAlwaysOnConfigFormFields.triggerEnabledPath))
+                        }
+                        SettingsCardDivider()
                         ConfigGrid {
-                            ForEach(NativeAlwaysOnConfigFormFields.textFields) { field in
-                                SettingsTextField(state.t(field.label), text: configBinding(field.path))
+                            ForEach(NativeAlwaysOnConfigFormFields.triggerFields) { field in
+                                SettingsTextField(
+                                    local(chinese: field.chineseLabel, english: field.englishLabel),
+                                    text: configBinding(field.path)
+                                )
                             }
                         }
                         .padding(14)
                     }
                 }
-                SettingsSectionBlock(title: state.t(.projects)) {
+                SettingsSectionBlock(
+                    title: state.t(.projects),
+                    detail: local(chinese: "选择哪些项目允许 Always-On 后台发现。", english: "Choose which projects can run Always-On discovery.")
+                ) {
                     SettingsCardBlock(divided: true) {
                         if alwaysOnProjectRows.isEmpty {
                             Text(state.t(.noProjectsFound))
@@ -687,14 +1080,22 @@ private struct SettingsContentView: View {
                 SettingsSectionBlock(
                     title: state.t(.memory),
                     detail: local(
-                        chinese: "设置自动索引和 Dream 的间隔（分钟），0 表示关闭自动任务。",
-                        english: "Set automatic Index and Dream intervals in minutes. Use 0 to disable automatic tasks."
+                        chinese: "配置记忆捕获、索引、Dream，以及记忆专用模型。",
+                        english: "Configure memory capture, indexing, Dream, and the memory model."
                     )
                 ) {
                     SettingsCardBlock(divided: true) {
                         SettingsRowBlock(title: state.t(.enabled), detail: state.t(.memoryDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding(NativeMemoryConfigFormFields.enabledPath))
                         }
+                        SettingsCardDivider()
+                        SettingsRowBlock(
+                            title: local(chinese: "记忆模型", english: "Memory Model"),
+                            detail: local(chinese: "记忆检索、索引和 Dream 可继承主智能体模型。", english: "Recall, Index, and Dream can inherit the main agent model.")
+                        ) {
+                            modelAssignmentPicker(path: NativeMemoryConfigFormFields.modelPath, includeInherit: true)
+                        }
+                        SettingsCardDivider()
                         ConfigGrid {
                             ForEach(NativeMemoryConfigFormFields.scheduleFields) { field in
                                 SettingsTextField(
@@ -722,7 +1123,7 @@ private struct SettingsContentView: View {
                                 )
                             }
                             ConfigGrid {
-                                ForEach(NativeSearchConfigFormFields.primaryFields) { field in
+                                ForEach(NativeSearchConfigFormFields.essentialFields) { field in
                                     SettingsTextField(
                                         state.t(field.label),
                                         text: configBinding(field.path),
@@ -817,8 +1218,20 @@ private struct SettingsContentView: View {
                     .padding(14)
                 }
             }
-            modelAssignmentsContent
-            routerModelAssignmentsContent
+        }
+    }
+
+    private var agentsConfigContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            SettingsSectionBlock(
+                title: local(chinese: "智能体", english: "Agents"),
+                detail: local(
+                    chinese: "选择主智能体和子智能体默认模型。模型连接统一从模型池维护。",
+                    english: "Choose main and subagent models. Model connections are managed in the model pool."
+                )
+            ) {
+                modelAssignmentRowsCard(primaryModelAssignmentRows)
+            }
         }
     }
 
@@ -834,19 +1247,7 @@ private struct SettingsContentView: View {
                     }
                     if configBool(NativeRouterConfigFormFields.enabledPath) {
                         SettingsCardDivider()
-                        SettingsRowBlock(
-                            title: local(chinese: "默认模型", english: "Default Model"),
-                            detail: local(chinese: "Router 未命中特殊规则时使用的模型。", english: "Model used when no special route matches.")
-                        ) {
-                            modelAssignmentPicker(path: "router.routes.default.model")
-                        }
-                        SettingsCardDivider()
-                        SettingsRowBlock(
-                            title: state.t(.judgeModel),
-                            detail: local(chinese: "Token Saver 用这个模型判断任务复杂度。", english: "Token Saver uses this model to judge task complexity.")
-                        ) {
-                            modelAssignmentPicker(path: "router.tokenSaver.judgeModel")
-                        }
+                        modelAssignmentRowsList(routerDecisionModelRows)
                     }
                 }
             }
@@ -854,45 +1255,16 @@ private struct SettingsContentView: View {
             if configBool(NativeRouterConfigFormFields.enabledPath) {
                 SettingsSectionBlock(
                     title: state.t(.tokenSaver),
-                    detail: local(chinese: "对齐 PD 的 simple / medium / complex / reasoning 四档，但保留 Swift 原生运行时。", english: "Uses PD-style simple / medium / complex / reasoning tiers in the native Swift runtime.")
+                    detail: local(chinese: "对齐 PD 的 simple / medium / complex / reasoning 四档，复杂度判断和回退细节由客户端处理。", english: "Uses PD-style simple / medium / complex / reasoning tiers. Classification and fallback details are handled by the client.")
                 ) {
                     SettingsCardBlock(divided: true) {
                         SettingsRowBlock(title: state.t(.enabled), detail: state.t(.tokenSaverDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding("router.tokenSaver.enabled"))
                         }
                         SettingsCardDivider()
-                        SettingsRowBlock(
-                            title: state.t(.defaultTier),
-                            detail: local(chinese: "Judge 失败时回落到这个层级。", english: "Fallback tier when judge classification fails.")
-                        ) {
-                            Picker("", selection: configBinding("router.tokenSaver.defaultTier", fallback: RouterTier.medium.rawValue)) {
-                                ForEach(RouterTier.allCases, id: \.rawValue) { tier in
-                                    Text(tier.rawValue).tag(tier.rawValue)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .frame(width: 180)
-                        }
-                        SettingsCardDivider()
                         modelAssignmentRowsList(routerTierModelRows)
                     }
                 }
-
-                SettingsSectionBlock(
-                    title: local(chinese: "统计与成本", english: "Stats & Pricing"),
-                    detail: local(chinese: "Dashboard 使用这些价格估算实际成本、基准成本和节省。", english: "Dashboard uses these prices to estimate actual cost, baseline cost, and savings.")
-                ) {
-                    SettingsCardBlock {
-                        ConfigGrid {
-                            SettingsTextField(local(chinese: "默认每百万 token 成本", english: "Default cost / MTok"), text: configBinding("router.tokenStats.defaultCostPerMillion", fallback: "0.8"))
-                            SettingsTextField(local(chinese: "基准模型", english: "Baseline model"), text: configBinding("router.tokenStats.baselineModel", fallback: "default"))
-                        }
-                        .padding(14)
-                    }
-                }
-
-                routerAdvancedSettingsDisclosure
             }
         }
     }
@@ -906,6 +1278,17 @@ private struct SettingsContentView: View {
                 path: "router.tokenSaver.tiers.\(tier.rawValue).model"
             )
         }
+    }
+
+    private var routerDecisionModelRows: [NativeModelAssignmentRowSpec] {
+        routeModelAssignmentRows + [
+            NativeModelAssignmentRowSpec(
+                id: "judgeModel",
+                title: state.t(.judgeModel),
+                detail: local(chinese: "Token Saver 用这个模型判断任务复杂度。", english: "Token Saver uses this model to judge task complexity."),
+                path: "router.tokenSaver.judgeModel"
+            ),
+        ]
     }
 
     private func routerTierTitle(_ tier: RouterTier) -> String {
@@ -930,68 +1313,6 @@ private struct SettingsContentView: View {
         }
     }
 
-    private var routerAdvancedSettingsDisclosure: some View {
-        SettingsCardBlock {
-            DisclosureGroup(isExpanded: $showRouterAdvancedSettings) {
-                VStack(spacing: 0) {
-                    SettingsCardDivider()
-                    ConfigGrid {
-                        SettingsTextField(local(chinese: "Judge 超时 ms", english: "Judge timeout ms"), text: configBinding("router.tokenSaver.judgeTimeoutMs", fallback: "15000"))
-                        SettingsTextField(local(chinese: "长上下文阈值", english: "Long context threshold"), text: configBinding("router.routes.longContextThreshold", fallback: "60000"))
-                        SettingsTextField(local(chinese: "Token Saver 规则", english: "Token Saver rules"), text: configBinding("router.tokenSaver.rules", fallback: ""))
-                        SettingsTextField(local(chinese: "Zero usage 重试", english: "Zero usage retries"), text: configBinding("router.zeroUsageRetry.maxAttempts", fallback: "1"))
-                        SettingsTextField(local(chinese: "瞬时错误重试", english: "Transient retries"), text: configBinding("router.transientRetry.maxAttempts", fallback: "5"))
-                        SettingsTextField(local(chinese: "重试基础延迟 ms", english: "Retry base delay ms"), text: configBinding("router.transientRetry.baseDelayMs", fallback: "200"))
-                        SettingsTextField(local(chinese: "Fallback 链", english: "Fallback chain"), text: configBinding("router.fallback.default", fallback: ""))
-                    }
-                    .padding(14)
-                    SettingsCardDivider()
-                    SettingsRowBlock(
-                        title: local(chinese: "Zero usage retry", english: "Zero usage retry"),
-                        detail: local(chinese: "模型没有返回 usage 且没有可见内容时自动重试。", english: "Retry when the model returns no usage and no visible content.")
-                    ) {
-                        WebSettingsToggle(isOn: configBoolBinding("router.zeroUsageRetry.enabled", defaultValue: true))
-                    }
-                    SettingsCardDivider()
-                    SettingsRowBlock(
-                        title: local(chinese: "Transient retry", english: "Transient retry"),
-                        detail: local(chinese: "网络或 5xx 等瞬时错误是否自动重试。", english: "Automatically retry transient network or 5xx errors.")
-                    ) {
-                        WebSettingsToggle(isOn: configBoolBinding("router.transientRetry.enabled", defaultValue: true))
-                    }
-                }
-            } label: {
-                SettingsFieldLabel(
-                    title: local(chinese: "高级 Router", english: "Advanced Router"),
-                    detail: local(chinese: "长上下文、重试、fallback 和诊断参数。", english: "Long context, retry, fallback, and diagnostics.")
-                )
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-        }
-    }
-
-    private var modelAssignmentsContent: some View {
-        SettingsSectionBlock(
-            title: local(chinese: "模型使用", english: "Model Usage"),
-            detail: local(chinese: "智能体和记忆都从上方模型池选择模型。", english: "Agents and memory select from the model pool above.")
-        ) {
-            modelAssignmentRowsCard(primaryModelAssignmentRows)
-        }
-    }
-
-    private var routerModelAssignmentsContent: some View {
-        SettingsSectionBlock(
-            title: state.t(.routing),
-            detail: local(chinese: "默认只显示日常最常改的路由模型。", english: "The most common route model choices are shown by default.")
-        ) {
-            VStack(alignment: .leading, spacing: 12) {
-                modelAssignmentRowsCard(routeModelAssignmentRows)
-                advancedRouteModelsDisclosure
-            }
-        }
-    }
-
     private var primaryModelAssignmentRows: [NativeModelAssignmentRowSpec] {
         [
             NativeModelAssignmentRowSpec(
@@ -1007,13 +1328,6 @@ private struct SettingsContentView: View {
                 path: "agents.subagents.default",
                 includeInherit: true
             ),
-            NativeModelAssignmentRowSpec(
-                id: "memory",
-                title: state.t(.memory),
-                detail: local(chinese: "记忆检索和整理使用的模型，可继承主智能体。", english: "Model for memory retrieval and organization; can inherit the main agent."),
-                path: NativeMemoryConfigFormFields.modelPath,
-                includeInherit: true
-            ),
         ]
     }
 
@@ -1025,77 +1339,6 @@ private struct SettingsContentView: View {
                 detail: routerModelDetail(field.id),
                 path: field.path
             )
-        }
-    }
-
-    private var advancedRouteModelAssignmentRows: [NativeModelAssignmentRowSpec] {
-        NativeRouterConfigFormFields.advancedRouteModelFields.map { field in
-            NativeModelAssignmentRowSpec(
-                id: field.id,
-                title: state.t(field.label),
-                detail: routerModelDetail(field.id),
-                path: field.path
-            )
-        } + routerPolicyModelAssignmentRows
-    }
-
-    private var routerPolicyModelAssignmentRows: [NativeModelAssignmentRowSpec] {
-        [
-            NativeModelAssignmentRowSpec(
-                id: "judgeModel",
-                title: state.t(.judgeModel),
-                detail: local(chinese: "Token Saver 判断任务复杂度时使用的模型。", english: "Model used by Token Saver to judge task complexity."),
-                path: "router.tokenSaver.judgeModel"
-            ),
-            NativeModelAssignmentRowSpec(
-                id: "simpleTier",
-                title: local(chinese: "简单任务", english: "Simple Tier"),
-                detail: local(chinese: "简短问答、文件读取、小改动使用的模型。", english: "Model for simple Q&A, file reads, and small edits."),
-                path: "router.tokenSaver.tiers.simple.model"
-            ),
-            NativeModelAssignmentRowSpec(
-                id: "mediumTier",
-                title: local(chinese: "中等任务", english: "Medium Tier"),
-                detail: local(chinese: "中等复杂度编码、解释和单文件改动使用的模型。", english: "Model for moderate coding, explanations, and single-file edits."),
-                path: "router.tokenSaver.tiers.medium.model"
-            ),
-            NativeModelAssignmentRowSpec(
-                id: "complexTier",
-                title: local(chinese: "复杂任务", english: "Complex Tier"),
-                detail: local(chinese: "多步骤编码、架构调整和较大重构使用的模型。", english: "Model for multi-step coding, architecture changes, and larger refactors."),
-                path: "router.tokenSaver.tiers.complex.model"
-            ),
-            NativeModelAssignmentRowSpec(
-                id: "reasoningTier",
-                title: local(chinese: "推理任务", english: "Reasoning Tier"),
-                detail: local(chinese: "深度推理、新算法和安全分析使用的模型。", english: "Model for deep reasoning, novel algorithms, and security analysis."),
-                path: "router.tokenSaver.tiers.reasoning.model"
-            ),
-            NativeModelAssignmentRowSpec(
-                id: "autoOrchestrate",
-                title: local(chinese: "自动编排", english: "Auto Orchestrate"),
-                detail: local(chinese: "自动编排主智能体使用的模型。", english: "Model used by the auto-orchestrated main agent."),
-                path: "router.autoOrchestrate.mainAgentModel"
-            ),
-        ]
-    }
-
-    private var advancedRouteModelsDisclosure: some View {
-        SettingsCardBlock {
-            DisclosureGroup(isExpanded: $showAdvancedRouteModels) {
-                VStack(spacing: 0) {
-                    SettingsCardDivider()
-                    modelAssignmentRowsList(advancedRouteModelAssignmentRows)
-                }
-                .padding(.top, 4)
-            } label: {
-                SettingsFieldLabel(
-                    title: local(chinese: "高级路由", english: "Advanced Routing"),
-                    detail: local(chinese: "思考、长上下文、Web 搜索、Token Saver 和自动编排。", english: "Thinking, long context, web search, Token Saver, and auto-orchestration.")
-                )
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
         }
     }
 
@@ -1185,7 +1428,7 @@ private struct SettingsContentView: View {
                     SettingsTextField(state.t(.contextWindow), text: configBinding("models.entries.\(entry).contextWindow"))
                 }
 
-                Text(state.t(.keychainHelp))
+                Text(state.t(.apiKeyConfigHelp))
                     .font(.system(size: 11))
                     .foregroundStyle(DesignTokens.tertiaryText)
             }
@@ -1643,6 +1886,283 @@ private enum SettingsPage: Hashable {
     case codeEditor
     case permissions
     case config
+    case mcp
+}
+
+enum NativeMCPConfigScope: String, CaseIterable, Identifiable, Hashable {
+    case global
+    case project
+
+    var id: String { rawValue }
+}
+
+enum NativeMCPTransport: String, CaseIterable, Identifiable, Hashable {
+    case stdio
+    case http
+
+    var id: String { rawValue }
+}
+
+struct NativeMCPConfigDraft: Hashable {
+    var path: String
+    var exists: Bool
+    var servers: [NativeMCPServerDraft]
+    var rawJSON: String
+
+    static let empty = NativeMCPConfigDraft(
+        path: "",
+        exists: false,
+        servers: [],
+        rawJSON: NativeMCPConfigService.emptyRawJSON
+    )
+}
+
+struct NativeMCPServerDraft: Identifiable, Hashable {
+    var id: UUID
+    var name: String
+    var transport: NativeMCPTransport
+    var command: String
+    var argsText: String
+    var envText: String
+    var perSession: Bool
+    var url: String
+    var headersText: String
+
+    static func template(name: String, transport: NativeMCPTransport) -> NativeMCPServerDraft {
+        switch transport {
+        case .stdio:
+            return NativeMCPServerDraft(
+                id: UUID(),
+                name: name,
+                transport: .stdio,
+                command: "npx",
+                argsText: "-y\nsome-mcp-server",
+                envText: "API_KEY=${env:API_KEY}",
+                perSession: false,
+                url: "",
+                headersText: ""
+            )
+        case .http:
+            return NativeMCPServerDraft(
+                id: UUID(),
+                name: name,
+                transport: .http,
+                command: "",
+                argsText: "",
+                envText: "",
+                perSession: false,
+                url: "https://example.com/mcp",
+                headersText: "Authorization=Bearer ${env:MCP_TOKEN}"
+            )
+        }
+    }
+}
+
+enum NativeMCPConfigService {
+    static let emptyRawJSON = """
+    {
+      "mcpServers" : {
+
+      }
+    }
+    """
+
+    static func globalConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        home.appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("mcp.json")
+    }
+
+    static func projectConfigURL(projectRoot: String) -> URL {
+        let root = projectRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !root.isEmpty else { return URL(fileURLWithPath: "") }
+        return URL(fileURLWithPath: root)
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("mcp.json")
+    }
+
+    static func configURL(scope: NativeMCPConfigScope, projectRoot: String) -> URL {
+        switch scope {
+        case .global:
+            return globalConfigURL()
+        case .project:
+            return projectConfigURL(projectRoot: projectRoot)
+        }
+    }
+
+    static func emptyDraft(scope: NativeMCPConfigScope, projectRoot: String) -> NativeMCPConfigDraft {
+        NativeMCPConfigDraft(
+            path: configURL(scope: scope, projectRoot: projectRoot).path,
+            exists: false,
+            servers: [],
+            rawJSON: emptyRawJSON
+        )
+    }
+
+    static func load(scope: NativeMCPConfigScope, projectRoot: String) throws -> NativeMCPConfigDraft {
+        let url = configURL(scope: scope, projectRoot: projectRoot)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return NativeMCPConfigDraft(path: url.path, exists: false, servers: [], rawJSON: emptyRawJSON)
+        }
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        return try parse(raw: raw, path: url.path, exists: true)
+    }
+
+    static func save(raw: String, scope: NativeMCPConfigScope, projectRoot: String) throws -> NativeMCPConfigDraft {
+        let url = configURL(scope: scope, projectRoot: projectRoot)
+        let draft = try parse(raw: raw, path: url.path, exists: true)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try draft.rawJSON.write(to: url, atomically: true, encoding: .utf8)
+        return NativeMCPConfigDraft(path: url.path, exists: true, servers: draft.servers, rawJSON: draft.rawJSON)
+    }
+
+    static func parse(raw: String, path: String, exists: Bool) throws -> NativeMCPConfigDraft {
+        let data = Data(raw.utf8)
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let root = object as? [String: Any] else {
+            throw NativeMCPConfigError.invalidRoot
+        }
+        let rawServers = root["mcpServers"]
+        if rawServers == nil {
+            return NativeMCPConfigDraft(path: path, exists: exists, servers: [], rawJSON: try rawJSON(servers: []))
+        }
+        guard let serversObject = rawServers as? [String: Any] else {
+            throw NativeMCPConfigError.invalidServers
+        }
+        let servers = try serversObject.keys.sorted().map { name in
+            try serverDraft(name: name, value: serversObject[name] ?? [:])
+        }
+        return NativeMCPConfigDraft(path: path, exists: exists, servers: servers, rawJSON: try rawJSON(servers: servers))
+    }
+
+    static func rawJSON(servers: [NativeMCPServerDraft]) throws -> String {
+        var serverObjects: [String: Any] = [:]
+        for server in servers {
+            let name = server.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { throw NativeMCPConfigError.emptyName }
+            guard serverObjects[name] == nil else { throw NativeMCPConfigError.duplicateName(name) }
+            switch server.transport {
+            case .stdio:
+                let command = server.command.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !command.isEmpty else { throw NativeMCPConfigError.missingCommand(name) }
+                var item: [String: Any] = ["command": command]
+                let args = nonEmptyLines(server.argsText)
+                if !args.isEmpty { item["args"] = args }
+                let env = keyValueLines(server.envText)
+                if !env.isEmpty { item["env"] = env }
+                if server.perSession { item["perSession"] = true }
+                serverObjects[name] = item
+            case .http:
+                let url = server.url.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !url.isEmpty else { throw NativeMCPConfigError.missingURL(name) }
+                var item: [String: Any] = ["url": url]
+                let headers = keyValueLines(server.headersText)
+                if !headers.isEmpty { item["headers"] = headers }
+                serverObjects[name] = item
+            }
+        }
+        let root: [String: Any] = ["mcpServers": serverObjects]
+        let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+        return String(decoding: data, as: UTF8.self) + "\n"
+    }
+
+    private static func serverDraft(name: String, value: Any) throws -> NativeMCPServerDraft {
+        guard let raw = value as? [String: Any] else {
+            throw NativeMCPConfigError.invalidServer(name)
+        }
+        if let command = raw["command"] as? String {
+            return NativeMCPServerDraft(
+                id: UUID(),
+                name: name,
+                transport: .stdio,
+                command: command,
+                argsText: stringArray(raw["args"]).joined(separator: "\n"),
+                envText: lines(from: stringDictionary(raw["env"])),
+                perSession: (raw["perSession"] as? Bool) == true,
+                url: "",
+                headersText: ""
+            )
+        }
+        if let url = (raw["url"] as? String) ?? (raw["httpUrl"] as? String) {
+            return NativeMCPServerDraft(
+                id: UUID(),
+                name: name,
+                transport: .http,
+                command: "",
+                argsText: "",
+                envText: "",
+                perSession: false,
+                url: url,
+                headersText: lines(from: stringDictionary(raw["headers"]))
+            )
+        }
+        throw NativeMCPConfigError.unrecognizedTransport(name)
+    }
+
+    private static func stringArray(_ value: Any?) -> [String] {
+        (value as? [Any])?.compactMap { $0 as? String } ?? []
+    }
+
+    private static func stringDictionary(_ value: Any?) -> [String: String] {
+        guard let object = value as? [String: Any] else { return [:] }
+        return object.reduce(into: [:]) { result, item in
+            if let value = item.value as? String {
+                result[item.key] = value
+            }
+        }
+    }
+
+    private static func lines(from dictionary: [String: String]) -> String {
+        dictionary.keys.sorted().map { "\($0)=\(dictionary[$0] ?? "")" }.joined(separator: "\n")
+    }
+
+    private static func nonEmptyLines(_ text: String) -> [String] {
+        text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func keyValueLines(_ text: String) -> [String: String] {
+        nonEmptyLines(text).reduce(into: [:]) { result, line in
+            guard let separator = line.firstIndex(where: { $0 == "=" || $0 == ":" }) else { return }
+            let key = String(line[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { return }
+            result[key] = value
+        }
+    }
+}
+
+enum NativeMCPConfigError: LocalizedError, Equatable {
+    case invalidRoot
+    case invalidServers
+    case invalidServer(String)
+    case unrecognizedTransport(String)
+    case emptyName
+    case duplicateName(String)
+    case missingCommand(String)
+    case missingURL(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRoot:
+            return "MCP config root must be a JSON object."
+        case .invalidServers:
+            return "mcpServers must be a JSON object."
+        case .invalidServer(let name):
+            return "MCP server \"\(name)\" must be a JSON object."
+        case .unrecognizedTransport(let name):
+            return "MCP server \"\(name)\" must define command, url, or httpUrl."
+        case .emptyName:
+            return "MCP server name cannot be empty."
+        case .duplicateName(let name):
+            return "MCP server \"\(name)\" is duplicated."
+        case .missingCommand(let name):
+            return "MCP server \"\(name)\" requires a command."
+        case .missingURL(let name):
+            return "MCP server \"\(name)\" requires a URL."
+        }
+    }
 }
 
 private struct PermissionListSection: View {
@@ -1813,13 +2333,12 @@ enum NativeConfigFormLayout {
     static let sectionNavigationWidth: CGFloat = 180
     static let sectionNavigationGap: CGFloat = 16
     static let sectionOrder: [G9ClawConfigSection] = [
-        .runtime,
         .models,
-        .alwaysOn,
+        .agents,
         .memory,
-        .search,
         .router,
-        .gateway,
+        .search,
+        .alwaysOn,
     ]
 }
 
@@ -1860,13 +2379,6 @@ enum NativeConfigReloadSummary {
             reloadedDetail: .routerDashboardNative,
             skippedDetail: .routerDisabled
         ),
-        NativeConfigReloadSubsystemSpec(
-            id: "gateway",
-            label: .gateway,
-            state: .boolPath("gateway.enabled"),
-            reloadedDetail: .gatewayConfigParsed,
-            skippedDetail: .gatewayDisabled
-        ),
     ]
 
     static var subsystemIDs: [String] {
@@ -1906,7 +2418,7 @@ enum NativeConfigModelOptions {
 
 enum NativeModelsConfigFormFields {
     static let usesModelPoolDropdown = true
-    static let usageAssignmentsLiveInModelSection = true
+    static let usageAssignmentsLiveInModelSection = false
     static let entryRowsExposeProviderPicker = false
     static let entryRowsExposeModelNameField = false
     static let assignmentPaths = [
@@ -1952,6 +2464,13 @@ enum NativeModelsConfigFormFields {
     }
 }
 
+enum NativeAgentConfigFormFields {
+    static let visiblePaths = [
+        "agents.main.model",
+        "agents.subagents.default",
+    ]
+}
+
 struct NativeModelAssignmentRowSpec: Hashable, Identifiable {
     let id: String
     let title: String
@@ -1974,6 +2493,14 @@ struct NativeConfigTextFieldSpec: Hashable, Identifiable {
     var id: String { path }
 }
 
+struct NativeAlwaysOnConfigFieldSpec: Hashable, Identifiable {
+    let path: String
+    let englishLabel: String
+    let chineseLabel: String
+
+    var id: String { path }
+}
+
 enum NativeRuntimeConfigFormFields {
     static let workspacesRootPath = "runtime.workspacesRoot"
     static let generalWorkspacePath = "gateway.runtimePaths.generalCwd"
@@ -1981,20 +2508,21 @@ enum NativeRuntimeConfigFormFields {
         NativeConfigTextFieldSpec(label: .apiTimeoutMs, path: "runtime.apiTimeoutMs"),
         NativeConfigTextFieldSpec(label: .databasePath, path: "runtime.databasePath"),
     ]
-    static let visiblePaths = textFields.map(\.path) + [
-        workspacesRootPath,
-        generalWorkspacePath,
-    ]
+    static let visiblePaths: [String] = []
 }
 
 enum NativeAlwaysOnConfigFormFields {
-    static let enabledPath = "alwaysOn.discovery.trigger.enabled"
-    static let textFields: [NativeConfigTextFieldSpec] = [
-        NativeConfigTextFieldSpec(label: .tickIntervalMinutes, path: "alwaysOn.discovery.trigger.tickIntervalMinutes"),
-        NativeConfigTextFieldSpec(label: .cooldownMinutes, path: "alwaysOn.discovery.trigger.cooldownMinutes"),
-        NativeConfigTextFieldSpec(label: .dailyBudget, path: "alwaysOn.discovery.trigger.dailyBudget"),
+    static let enabledPath = "alwaysOn.enabled"
+    static let triggerEnabledPath = "alwaysOn.trigger.enabled"
+    static let triggerFields: [NativeAlwaysOnConfigFieldSpec] = [
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.tickIntervalMinutes", englishLabel: "Tick Interval (minutes)", chineseLabel: "检查间隔（分钟）"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.cooldownMinutes", englishLabel: "Cooldown (minutes)", chineseLabel: "冷却时间（分钟）"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.dailyBudget", englishLabel: "Daily Budget", chineseLabel: "每日运行预算"),
     ]
-    static let visiblePaths = [enabledPath] + textFields.map(\.path)
+    static let visiblePaths = [
+        enabledPath,
+        triggerEnabledPath,
+    ] + triggerFields.map(\.path)
 }
 
 enum NativeSearchConfigFormFields {
@@ -2007,9 +2535,8 @@ enum NativeSearchConfigFormFields {
     static let primaryFields: [NativeConfigTextFieldSpec] = [
         NativeConfigTextFieldSpec(label: .apiKey, path: "tools.webSearch.apiKey", isSecure: true),
         NativeConfigTextFieldSpec(label: .endpointURL, path: "tools.webSearch.endpoint"),
-        NativeConfigTextFieldSpec(label: .organicLimit, path: "tools.webSearch.organicLimit"),
-        NativeConfigTextFieldSpec(label: .timeoutMs, path: "tools.webSearch.timeoutMs"),
     ]
+    static let essentialFields = primaryFields
     static let customFields: [NativeConfigTextFieldSpec] = [
         NativeConfigTextFieldSpec(label: .customProviderName, path: "tools.webSearch.customProvider.name"),
         NativeConfigTextFieldSpec(label: .customAuth, path: "tools.webSearch.customProvider.auth"),
@@ -2023,7 +2550,7 @@ enum NativeSearchConfigFormFields {
         NativeConfigTextFieldSpec(label: .sourceField, path: "tools.webSearch.customProvider.sourceField"),
         NativeConfigTextFieldSpec(label: .publishedAtField, path: "tools.webSearch.customProvider.publishedAtField"),
     ]
-    static let visiblePaths = [providerPath] + primaryFields.map(\.path) + customFields.map(\.path)
+    static let visiblePaths = [providerPath] + essentialFields.map(\.path) + customFields.map(\.path)
 
     static func providerLabel(_ provider: String) -> String {
         switch provider {
@@ -2070,6 +2597,7 @@ enum NativeMemoryConfigFormFields {
     ]
     static let visiblePaths = [
         enabledPath,
+        modelPath,
         autoIndexIntervalPath,
         autoDreamIntervalPath,
     ]
@@ -2089,38 +2617,23 @@ enum NativeRouterConfigFormFields {
         NativeRouterModelFieldSpec(id: "default", label: .defaultRouteModel, path: "router.routes.default.model"),
         NativeRouterModelFieldSpec(id: "background", label: .backgroundRouteModel, path: "router.routes.background.model"),
     ]
-    static let advancedRouteModelFields: [NativeRouterModelFieldSpec] = [
-        NativeRouterModelFieldSpec(id: "think", label: .thinkRouteModel, path: "router.routes.think.model"),
-        NativeRouterModelFieldSpec(id: "longContext", label: .longContextRouteModel, path: "router.routes.longContext.model"),
-        NativeRouterModelFieldSpec(id: "webSearch", label: .webSearchRouteModel, path: "router.routes.webSearch.model"),
-    ]
     static let visiblePaths = [
         enabledPath,
         "router.routes.default.model",
+        "router.routes.background.model",
         "router.tokenSaver.enabled",
         "router.tokenSaver.judgeModel",
-        "router.tokenSaver.defaultTier",
-        "router.tokenSaver.rules",
         "router.tokenSaver.tiers.simple.model",
         "router.tokenSaver.tiers.medium.model",
         "router.tokenSaver.tiers.complex.model",
         "router.tokenSaver.tiers.reasoning.model",
-        "router.tokenStats.baselineModel",
-        "router.tokenStats.defaultCostPerMillion",
-        "router.zeroUsageRetry.enabled",
-        "router.zeroUsageRetry.maxAttempts",
-        "router.transientRetry.enabled",
-        "router.transientRetry.maxAttempts",
     ]
 }
 
 enum NativeGatewayConfigFormFields {
     static let enabledPath = "gateway.enabled"
     static let homePath = "gateway.home"
-    static let visiblePaths = [
-        enabledPath,
-        homePath,
-    ]
+    static let visiblePaths: [String] = []
 }
 
 private struct NativeConfigValidation {
@@ -2487,7 +3000,7 @@ enum AlwaysOnProjectConfig {
     static func isEnabled(yaml: String, projectRoot rawRoot: String) -> Bool {
         let root = projectRoot(rawRoot)
         guard !root.isEmpty else { return false }
-        let value = LegacyConfigLoader.scalarMap(from: yaml)["alwaysOn.discovery.projects.\(root).enabled"]?.lowercased()
+        let value = LegacyConfigLoader.scalarMap(from: yaml)["alwaysOn.projects.\(root).enabled"]?.lowercased()
         return value == "true" || value == "1" || value == "yes"
     }
 
@@ -2495,7 +3008,7 @@ enum AlwaysOnProjectConfig {
         let root = projectRoot(rawRoot)
         guard !root.isEmpty else { return yaml }
         return YAMLScalarEditor.setObjectScalar(
-            parentPath: "alwaysOn.discovery.projects",
+            parentPath: "alwaysOn.projects",
             id: root,
             key: "enabled",
             value: enabled ? "true" : "false",
@@ -2569,6 +3082,30 @@ struct SettingsTextField: View {
                     .controlSize(.regular)
                     .font(.system(size: 13, design: .monospaced))
             }
+        }
+    }
+}
+
+struct SettingsTextArea: View {
+    var label: String
+    @Binding var text: String
+
+    init(_ label: String, text: Binding<String>) {
+        self.label = label
+        self._text = text
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(DesignTokens.tertiaryText)
+            TextEditor(text: $text)
+                .font(.system(size: 12, design: .monospaced))
+                .frame(minHeight: 74)
+                .scrollContentBackground(.hidden)
+                .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator))
         }
     }
 }

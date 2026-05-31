@@ -19,7 +19,6 @@ final class AppState: ObservableObject {
     @Published var composerPermissionMode: ComposerPermissionMode = .default
     @Published var pendingAttachments: [FileAttachment] = []
     @Published var settings = AppSettings.defaults
-    @Published var apiKeyDraft = ""
     @Published var pendingPermissions: [PermissionRequest] = []
     @Published var terminalRuns: [TerminalRun] = []
     @Published var gitOutput = ""
@@ -39,7 +38,6 @@ final class AppState: ObservableObject {
     @Published var collapsedToolRowIDs: Set<String> = []
     @Published var tokenBudgetBySession: [String: TokenBudget] = [:]
 
-    let keychain = KeychainStore()
     let settingsStore: AppSettingsStore
     let providerClient = NativeAgentRuntime()
     let workspaceService = WorkspaceService()
@@ -50,9 +48,13 @@ final class AppState: ObservableObject {
     let skillsService = SkillsService()
     let routingService = RoutingService()
     let alwaysOnService = AlwaysOnService()
+    let alwaysOnManager = NativeAlwaysOnManager()
 
     private var activeAgentTask: Task<Void, Never>?
     private var activeRunToken: UUID?
+    private var alwaysOnBackgroundTasks: [String: Task<Void, Never>] = [:]
+    private var alwaysOnBackgroundRunTokens: Set<UUID> = []
+    private var lastUserMessageAtByProjectRoot: [String: Date] = [:]
     private var activitySequence = 0
     private var permissionContinuations: [UUID: CheckedContinuation<AgentPermissionDecision, Never>] = [:]
     private var pendingAssistantDeltas: [UUID: String] = [:]
@@ -162,11 +164,10 @@ final class AppState: ObservableObject {
             try bootstrapLocalDebugConfigIfNeeded()
             loadG9ClawConfigText()
             applyNativeConfigFromCurrentText()
-            try seedDebugKeyFromEnvironmentIfPresent()
-            apiKeyDraft = try keychain.readSecret(account: settings.providerConfig.secretAccount) ?? apiKeyDraft
             loadManualProjectsFromG9ClawConfig()
             refreshNativeToolData()
             restartMemoryAutomationLoop()
+            restartAlwaysOnAutomationLoop()
             statusLine = t(.nativeInitialized)
         } catch {
             errorBanner = error.localizedDescription
@@ -214,10 +215,15 @@ final class AppState: ObservableObject {
         guard let projectIndex = selectedProjectIndex else { return }
         switch target.kind {
         case .origin:
-            guard let session = projects[projectIndex].allSessions.first(where: { $0.id == target.sessionId }) else {
+            if let session = projects[projectIndex].allSessions.first(where: { $0.id == target.sessionId }) {
+                selectSession(session)
+                return
+            }
+            guard let session = AlwaysOnBackgroundTranscriptLoader.makePersistedSession(target: target) else {
                 errorBanner = "This chat record no longer exists."
                 return
             }
+            upsertBackgroundSession(session, projectIndex: projectIndex)
             selectSession(session)
         case .background:
             guard let session = AlwaysOnBackgroundTranscriptLoader.makeSession(
@@ -362,6 +368,7 @@ final class AppState: ObservableObject {
         }
         selectProject(project)
         startNewSession()
+        restartAlwaysOnAutomationLoop()
     }
 
     func createProjectFromWizard(displayName: String, path: String, createDirectory: Bool, githubURL: String?) async {
@@ -466,6 +473,7 @@ final class AppState: ObservableObject {
             handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID)
             return
         }
+        lastUserMessageAtByProjectRoot[AlwaysOnService.normalizedProjectRoot(workspacePath)] = Date()
         memoryProjectNameBySession[sessionID] = selectedProject?.name
         memoryProjectRootBySession[sessionID] = workspacePath
         let nativeConfig = currentNativeConfigSnapshot()
@@ -501,19 +509,10 @@ final class AppState: ObservableObject {
             let requestContextWindow = nativeConfig.map {
                 NativeConfigService.contextWindow(entryID: routeEntryID, values: $0.rawValues) ?? $0.contextWindow
             } ?? self.settings.contextWindow
-            let apiKey: String
-            do {
-                let keychainValue = try self.keychain.readSecret(account: providerConfig.secretAccount)
-                apiKey = NativeConfigService.resolvedAPIKey(
-                    routeEntryID: routeEntryID,
-                    nativeConfig: nativeConfig,
-                    keychainValue: keychainValue,
-                    apiKeyDraft: self.apiKeyDraft
-                )
-            } catch {
-                self.handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID, runToken: runToken)
-                return
-            }
+            let apiKey = NativeConfigService.resolvedAPIKey(
+                routeEntryID: routeEntryID,
+                nativeConfig: nativeConfig
+            )
             self.memoryService.updateExtractionRuntime(
                 providerConfig: providerConfig,
                 apiKey: apiKey,
@@ -630,18 +629,10 @@ final class AppState: ObservableObject {
         guard let providerConfig = NativeConfigService.providerConfig(entryID: judgeEntryID, values: values) ?? nativeConfig?.providerConfig else {
             return nil
         }
-        let apiKey: String
-        do {
-            let keychainValue = try keychain.readSecret(account: providerConfig.secretAccount)
-            apiKey = NativeConfigService.resolvedAPIKey(
-                routeEntryID: judgeEntryID,
-                nativeConfig: nativeConfig,
-                keychainValue: keychainValue,
-                apiKeyDraft: apiKeyDraft
-            )
-        } catch {
-            return nil
-        }
+        let apiKey = NativeConfigService.resolvedAPIKey(
+            routeEntryID: judgeEntryID,
+            nativeConfig: nativeConfig
+        )
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
         do {
@@ -771,12 +762,9 @@ final class AppState: ObservableObject {
                   let providerConfig = NativeConfigService.providerConfig(entryID: entryID, values: values) else {
                 return nil
             }
-            let keychainValue = try? keychain.readSecret(account: providerConfig.secretAccount)
             let apiKey = NativeConfigService.resolvedAPIKey(
                 routeEntryID: entryID,
-                nativeConfig: nativeConfig,
-                keychainValue: keychainValue,
-                apiKeyDraft: apiKeyDraft
+                nativeConfig: nativeConfig
             )
             guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
@@ -994,19 +982,722 @@ final class AppState: ObservableObject {
 
     func saveSettings() {
         do {
-            if !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                try keychain.saveSecret(apiKeyDraft, account: settings.providerConfig.secretAccount)
-            }
             try saveG9ClawConfigTextIfChanged()
             applyNativeConfigFromCurrentText()
             try settingsStore.save(settings)
             refreshNativeToolData()
             restartMemoryAutomationLoop()
+            restartAlwaysOnAutomationLoop()
             settingsSaveNotice = t(.saved)
             statusLine = t(.settingsSaved)
         } catch {
             errorBanner = error.localizedDescription
         }
+    }
+
+    func alwaysOnConfigSnapshot() -> AlwaysOnService.ConfigSnapshot {
+        AlwaysOnService.ConfigSnapshot.from(values: NativeConfigService.scalarMap(from: g9ClawConfigText))
+    }
+
+    func alwaysOnProjectIdentities(includeGeneral: Bool = false) -> [AlwaysOnProjectIdentity] {
+        projects.compactMap { project in
+            let isGeneral = isGeneralProject(project)
+            guard includeGeneral || !isGeneral else { return nil }
+            let rootPath = effectiveWorkspacePath(for: project)
+            return AlwaysOnProjectIdentity(
+                id: AlwaysOnService.normalizedProjectRoot(rootPath),
+                projectName: project.name,
+                displayName: project.displayName,
+                rootPath: rootPath,
+                isGeneral: isGeneral
+            )
+        }
+    }
+
+    func alwaysOnDashboardSnapshot(scope: WorkspaceContext?) -> AlwaysOnDashboardSnapshot {
+        let config = alwaysOnConfigSnapshot()
+        let identities: [AlwaysOnProjectIdentity]
+        if let scope, !scope.isGeneral {
+            identities = [
+                AlwaysOnProjectIdentity(
+                    id: AlwaysOnService.normalizedProjectRoot(scope.rootPath),
+                    projectName: scope.projectName,
+                    displayName: scope.displayName,
+                    rootPath: scope.rootPath,
+                    isGeneral: false
+                ),
+            ]
+        } else {
+            identities = alwaysOnProjectIdentities()
+        }
+        return alwaysOnService.dashboard(projects: identities, config: config)
+    }
+
+    func restartAlwaysOnAutomationLoop() {
+        let config = alwaysOnConfigSnapshot()
+        let identities = alwaysOnProjectIdentities()
+        Task {
+            await alwaysOnManager.start(config: config, projects: identities) { [weak self] project, config in
+                guard let self else { return }
+                await self.fireAlwaysOnDiscoveryIfEligible(project: project, config: config)
+            }
+        }
+    }
+
+    func startAlwaysOnDiscovery(context: WorkspaceContext) {
+        let project = AlwaysOnProjectIdentity(
+            id: AlwaysOnService.normalizedProjectRoot(context.rootPath),
+            projectName: context.projectName,
+            displayName: context.displayName,
+            rootPath: context.rootPath,
+            isGeneral: context.isGeneral
+        )
+        let config = alwaysOnConfigSnapshot()
+        Task { @MainActor in
+            await runAlwaysOnDiscovery(project: project, config: config, trigger: "manual")
+        }
+    }
+
+    func runAlwaysOnPlan(_ plan: AlwaysOnPlan, context: WorkspaceContext) {
+        let config = alwaysOnConfigSnapshot()
+        let project = AlwaysOnProjectIdentity(
+            id: AlwaysOnService.normalizedProjectRoot(context.rootPath),
+            projectName: context.projectName,
+            displayName: context.displayName,
+            rootPath: context.rootPath,
+            isGeneral: context.isGeneral
+        )
+        Task { @MainActor in
+            await runAlwaysOnPlanInBackground(plan: plan, project: project, config: config)
+        }
+    }
+
+    func runAlwaysOnCronJob(_ job: AlwaysOnCronJob, context: WorkspaceContext) {
+        let config = alwaysOnConfigSnapshot()
+        let project = AlwaysOnProjectIdentity(
+            id: AlwaysOnService.normalizedProjectRoot(context.rootPath),
+            projectName: context.projectName,
+            displayName: context.displayName,
+            rootPath: context.rootPath,
+            isGeneral: context.isGeneral
+        )
+        Task { @MainActor in
+            await runAlwaysOnCronInBackground(job: job, project: project, config: config)
+        }
+    }
+
+    func applyAlwaysOnCycle(cycleID: String, projectRoot: String) {
+        let normalizedRoot = AlwaysOnService.normalizedProjectRoot(projectRoot)
+        let project = alwaysOnProjectIdentities().first {
+            AlwaysOnService.normalizedProjectRoot($0.rootPath) == normalizedRoot
+        } ?? AlwaysOnProjectIdentity(
+            id: normalizedRoot,
+            projectName: URL(fileURLWithPath: normalizedRoot).lastPathComponent,
+            displayName: URL(fileURLWithPath: normalizedRoot).lastPathComponent,
+            rootPath: normalizedRoot,
+            isGeneral: false
+        )
+        alwaysOnService.appendRunEvent(
+            projectName: project.projectName,
+            projectRoot: project.rootPath,
+            kind: "apply",
+            status: .applying,
+            title: "Apply cycle",
+            detail: cycleID,
+            runId: nil,
+            planId: nil,
+            cycleId: cycleID
+        )
+        Task { @MainActor in
+            do {
+                let cycle = try await alwaysOnService.applyCycle(cycleID: cycleID, projectRoot: project.rootPath)
+                alwaysOnService.appendRunEvent(
+                    projectName: project.projectName,
+                    projectRoot: project.rootPath,
+                    kind: "apply",
+                    status: .applied,
+                    title: "Cycle applied",
+                    detail: cycle.workspacePath ?? cycle.id,
+                    runId: nil,
+                    planId: cycle.planId,
+                    cycleId: cycle.id
+                )
+            } catch {
+                errorBanner = error.localizedDescription
+                alwaysOnService.appendRunEvent(
+                    projectName: project.projectName,
+                    projectRoot: project.rootPath,
+                    kind: "apply",
+                    status: .applyFailed,
+                    title: "Apply failed",
+                    detail: error.localizedDescription,
+                    runId: nil,
+                    planId: nil,
+                    cycleId: cycleID
+                )
+            }
+            bumpToolRefresh()
+        }
+    }
+
+    private func fireAlwaysOnDiscoveryIfEligible(project: AlwaysOnProjectIdentity, config: AlwaysOnService.ConfigSnapshot) async {
+        let decision = alwaysOnService.evaluateGate(
+            project: project,
+            config: config,
+            snapshot: AlwaysOnService.GateSnapshot(
+                isProjectBusy: isAlwaysOnProjectBusy(rootPath: project.rootPath),
+                lastUserMessageAt: lastUserMessageAtByProjectRoot[AlwaysOnService.normalizedProjectRoot(project.rootPath)],
+                now: Date()
+            )
+        )
+        alwaysOnService.recordGate(project: project, decision: decision)
+        guard decision.allowed else { return }
+        await runAlwaysOnDiscovery(project: project, config: config, trigger: "auto")
+    }
+
+    private func runAlwaysOnDiscovery(project: AlwaysOnProjectIdentity, config: AlwaysOnService.ConfigSnapshot, trigger: String) async {
+        let runID = "discovery-\(UUID().uuidString)"
+        let beforePlanIDs = Set(alwaysOnService.plans(projectRoot: project.rootPath).map(\.id))
+        alwaysOnService.markDiscoveryStarted(project: project, runID: runID)
+        alwaysOnService.appendRunEvent(
+            projectName: project.projectName,
+            projectRoot: project.rootPath,
+            kind: "discovery",
+            status: .running,
+            title: trigger == "manual" ? "Manual discovery" : "Auto discovery",
+            detail: project.displayName,
+            runId: runID,
+            planId: nil,
+            cycleId: nil
+        )
+        let plans = alwaysOnService.plans(projectRoot: project.rootPath)
+        let cronJobs = alwaysOnService.cronJobs(projectRoot: project.rootPath)
+        let sessions = sessions(forProjectRoot: project.rootPath)
+        let discoveryContext = alwaysOnService.discoveryContext(
+            projectName: project.projectName,
+            displayName: project.displayName,
+            projectRoot: project.rootPath,
+            plans: plans,
+            cronJobs: cronJobs,
+            sessions: sessions,
+            memoryRecords: memoryService.list(projectName: project.projectName)
+        )
+        let prompt = alwaysOnService.discoveryPrompt(
+            projectName: project.projectName,
+            displayName: project.displayName,
+            projectRoot: project.rootPath,
+            context: discoveryContext,
+            language: settings.language.resolved() == .chineseSimplified ? "zh-CN" : "en"
+        )
+        let chatHistory = alwaysOnChatHistoryJSON(sessions: sessions)
+        let session = createAlwaysOnBackgroundSession(projectRoot: project.rootPath, title: "Always-On discovery: \(project.displayName)", runID: runID)
+        let runRecord: AlwaysOnRunHistory?
+        do {
+            runRecord = try alwaysOnService.startDiscoveryRun(
+                projectRoot: project.rootPath,
+                title: trigger == "manual" ? "Manual discovery" : "Auto discovery",
+                sessionId: session.id,
+                runID: runID
+            )
+        } catch {
+            AppLog.write("always-on discovery start history error: \(error.localizedDescription)", file: "always-on.log")
+            runRecord = nil
+        }
+        let result = await runAlwaysOnAgentTurn(
+            project: project,
+            title: "Always-On discovery: \(project.displayName)",
+            prompt: prompt,
+            projectPath: project.rootPath,
+            runID: runID,
+            phase: "discovery",
+            config: config,
+            extraValues: [
+                "alwaysOn.run.trigger": trigger,
+                "alwaysOn.run.chatHistory": chatHistory,
+            ],
+            existingSession: session
+        )
+        let afterPlans = alwaysOnService.plans(projectRoot: project.rootPath)
+        let createdCount = afterPlans.filter { !beforePlanIDs.contains($0.id) }.count
+        let status: AlwaysOnStatus = result.succeeded
+            ? (createdCount > 0 ? .completed : .noPlan)
+            : .failed
+        let discoverySummary = result.summary.nilIfBlank ?? "\(createdCount) plan(s) created"
+        let timelineDetail = discoverySummary.count > 800
+            ? "\(String(discoverySummary.prefix(800)))..."
+            : discoverySummary
+        if let runRecord {
+            do {
+                try alwaysOnService.finishDiscoveryRun(
+                    run: runRecord,
+                    projectRoot: project.rootPath,
+                    status: status,
+                    sessionId: result.sessionID,
+                    outputLog: discoverySummary,
+                    error: result.succeeded ? nil : result.summary.nilIfBlank,
+                    metadata: [
+                        "trigger": trigger,
+                        "createdPlans": String(createdCount),
+                        "sessionId": result.sessionID,
+                    ]
+                )
+            } catch {
+                AppLog.write("always-on discovery finish history error: \(error.localizedDescription)", file: "always-on.log")
+            }
+        }
+        alwaysOnService.markDiscoveryFinished(project: project, runID: runID, status: status)
+        alwaysOnService.appendRunEvent(
+            projectName: project.projectName,
+            projectRoot: project.rootPath,
+            kind: "discovery",
+            status: status,
+            title: status == .noPlan ? "No plan" : "Discovery finished",
+            detail: timelineDetail,
+            runId: runID,
+            planId: nil,
+            cycleId: nil
+        )
+        bumpToolRefresh()
+    }
+
+    private func runAlwaysOnPlanInBackground(plan: AlwaysOnPlan, project: AlwaysOnProjectIdentity, config: AlwaysOnService.ConfigSnapshot) async {
+        let preparation: AlwaysOnWorkspacePreparation
+        do {
+            preparation = try await alwaysOnService.prepareWorkspace(
+                projectName: project.projectName,
+                projectRoot: project.rootPath,
+                config: config.workspace
+            )
+        } catch {
+            errorBanner = error.localizedDescription
+            alwaysOnService.appendRunEvent(
+                projectName: project.projectName,
+                projectRoot: project.rootPath,
+                kind: "workspace",
+                status: .failed,
+                title: plan.title,
+                detail: error.localizedDescription,
+                runId: nil,
+                planId: plan.id,
+                cycleId: nil
+            )
+            return
+        }
+
+        let runID = "execution-\(UUID().uuidString)"
+        let session = createAlwaysOnBackgroundSession(projectRoot: project.rootPath, title: "Always-On: \(plan.title)", runID: runID)
+        let runRecord: AlwaysOnRunHistory?
+        do {
+            runRecord = try alwaysOnService.startPlanRun(
+                plan: plan,
+                projectRoot: project.rootPath,
+                sessionId: session.id,
+                runID: runID
+            )
+        } catch {
+            AppLog.write("always-on plan start history error: \(error.localizedDescription)", file: "always-on.log")
+            runRecord = nil
+        }
+        alwaysOnService.appendRunEvent(
+            projectName: project.projectName,
+            projectRoot: project.rootPath,
+            kind: "execution",
+            status: .running,
+            title: plan.title,
+            detail: preparation.workspacePath,
+            runId: runID,
+            planId: plan.id,
+            cycleId: preparation.cycleId
+        )
+        let prompt = """
+        Execute this Always-On plan in the isolated workspace.
+
+        Original project root: \(project.rootPath)
+        Isolated workspace: \(preparation.workspacePath)
+        Workspace mode: \(preparation.mode)
+        Plan id: \(plan.id)
+        Plan title: \(plan.title)
+
+        \(plan.content.isEmpty ? plan.summary : plan.content)
+
+        Requirements:
+        - Work only inside the isolated workspace.
+        - Do not use interactive tools.
+        - Do not run git push or git remote commands.
+        - At the end, call always_on_report with a concise report.
+        """
+        let result = await runAlwaysOnAgentTurn(
+            project: project,
+            title: "Always-On: \(plan.title)",
+            prompt: prompt,
+            projectPath: preparation.workspacePath,
+            runID: runID,
+            phase: "execution",
+            config: config,
+            extraValues: [
+                "alwaysOn.run.planId": plan.id,
+                "alwaysOn.run.cycleId": preparation.cycleId,
+                "alwaysOn.run.workspacePath": preparation.workspacePath,
+            ],
+            existingSession: session
+        )
+        let finalStatus: AlwaysOnStatus = result.succeeded ? .completed : .failed
+        if let runRecord {
+            do {
+                try alwaysOnService.finishPlanRun(
+                    plan: plan,
+                    run: runRecord,
+                    projectRoot: project.rootPath,
+                    status: finalStatus,
+                    sessionId: result.sessionID,
+                    outputLog: result.summary.nilIfBlank ?? "Always-On execution finished.",
+                    error: result.succeeded ? nil : result.summary.nilIfBlank,
+                    metadata: [
+                        "cycleId": preparation.cycleId,
+                        "workspacePath": preparation.workspacePath,
+                        "workspaceMode": preparation.mode,
+                        "sessionId": result.sessionID,
+                    ]
+                )
+            } catch {
+                AppLog.write("always-on plan finish history error: \(error.localizedDescription)", file: "always-on.log")
+            }
+        }
+        alwaysOnService.appendRunEvent(
+            projectName: project.projectName,
+            projectRoot: project.rootPath,
+            kind: "execution",
+            status: finalStatus,
+            title: plan.title,
+            detail: result.summary.nilIfBlank ?? preparation.workspacePath,
+            runId: runID,
+            planId: plan.id,
+            cycleId: preparation.cycleId
+        )
+        bumpToolRefresh()
+    }
+
+    private func runAlwaysOnCronInBackground(job: AlwaysOnCronJob, project: AlwaysOnProjectIdentity, config: AlwaysOnService.ConfigSnapshot) async {
+        let title = alwaysOnCronRunTitle(job)
+        let preparation: AlwaysOnWorkspacePreparation
+        do {
+            preparation = try await alwaysOnService.prepareWorkspace(
+                projectName: project.projectName,
+                projectRoot: project.rootPath,
+                config: config.workspace
+            )
+        } catch {
+            errorBanner = error.localizedDescription
+            alwaysOnService.appendRunEvent(
+                projectName: project.projectName,
+                projectRoot: project.rootPath,
+                kind: "workspace",
+                status: .failed,
+                title: title,
+                detail: error.localizedDescription,
+                runId: nil,
+                planId: nil,
+                cycleId: nil
+            )
+            return
+        }
+
+        let runID = "cron-\(UUID().uuidString)"
+        let session = createAlwaysOnBackgroundSession(projectRoot: project.rootPath, title: "Always-On: \(title)", runID: runID)
+        let runRecord: AlwaysOnRunHistory?
+        do {
+            runRecord = try alwaysOnService.startCronRun(
+                job: job,
+                projectRoot: project.rootPath,
+                sessionId: session.id,
+                runID: runID
+            )
+        } catch {
+            AppLog.write("always-on cron start history error: \(error.localizedDescription)", file: "always-on.log")
+            runRecord = nil
+        }
+        alwaysOnService.appendRunEvent(
+            projectName: project.projectName,
+            projectRoot: project.rootPath,
+            kind: "cron",
+            status: .running,
+            title: title,
+            detail: preparation.workspacePath,
+            runId: runID,
+            planId: nil,
+            cycleId: preparation.cycleId
+        )
+        let prompt = """
+        Run this Always-On cron job in the isolated workspace.
+
+        Original project root: \(project.rootPath)
+        Isolated workspace: \(preparation.workspacePath)
+        Workspace mode: \(preparation.mode)
+        Cron id: \(job.id)
+        Schedule: \(job.cron)
+
+        \(job.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Run the scheduled Always-On task." : job.prompt)
+
+        Requirements:
+        - Work only inside the isolated workspace.
+        - Do not use interactive tools.
+        - Do not run git push or git remote commands.
+        - At the end, call always_on_report with a concise report.
+        """
+        let result = await runAlwaysOnAgentTurn(
+            project: project,
+            title: "Always-On: \(title)",
+            prompt: prompt,
+            projectPath: preparation.workspacePath,
+            runID: runID,
+            phase: "execution",
+            config: config,
+            extraValues: [
+                "alwaysOn.run.cronId": job.id,
+                "alwaysOn.run.cycleId": preparation.cycleId,
+                "alwaysOn.run.workspacePath": preparation.workspacePath,
+            ],
+            existingSession: session
+        )
+        let finalStatus: AlwaysOnStatus = result.succeeded ? .completed : .failed
+        if let runRecord {
+            do {
+                try alwaysOnService.finishCronRun(
+                    job: job,
+                    run: runRecord,
+                    projectRoot: project.rootPath,
+                    status: finalStatus,
+                    sessionId: result.sessionID,
+                    outputLog: result.summary.nilIfBlank ?? "Always-On cron run finished.",
+                    error: result.succeeded ? nil : result.summary.nilIfBlank,
+                    metadata: [
+                        "cycleId": preparation.cycleId,
+                        "workspacePath": preparation.workspacePath,
+                        "workspaceMode": preparation.mode,
+                        "sessionId": result.sessionID,
+                    ]
+                )
+            } catch {
+                AppLog.write("always-on cron finish history error: \(error.localizedDescription)", file: "always-on.log")
+            }
+        }
+        alwaysOnService.appendRunEvent(
+            projectName: project.projectName,
+            projectRoot: project.rootPath,
+            kind: "cron",
+            status: finalStatus,
+            title: title,
+            detail: result.summary.nilIfBlank ?? preparation.workspacePath,
+            runId: runID,
+            planId: nil,
+            cycleId: preparation.cycleId
+        )
+        bumpToolRefresh()
+    }
+
+    private func alwaysOnCronRunTitle(_ job: AlwaysOnCronJob) -> String {
+        let firstLine = job.prompt.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
+        let title = firstLine.replacingOccurrences(of: #"^#\s+"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? job.cron : title
+    }
+
+    private struct AlwaysOnTurnResult {
+        var succeeded: Bool
+        var sessionID: String
+        var summary: String
+    }
+
+    private func runAlwaysOnAgentTurn(
+        project: AlwaysOnProjectIdentity,
+        title: String,
+        prompt: String,
+        projectPath: String,
+        runID: String,
+        phase: String,
+        config: AlwaysOnService.ConfigSnapshot,
+        extraValues: [String: String],
+        existingSession: ProjectSession? = nil
+    ) async -> AlwaysOnTurnResult {
+        guard let nativeConfig = currentNativeConfigSnapshot() else {
+            return AlwaysOnTurnResult(succeeded: false, sessionID: "", summary: "Native config is invalid.")
+        }
+        let entryID = nativeConfig.rawValues["router.routes.background.model"]?.nilIfBlank
+            ?? nativeConfig.rawValues["router.routes.default.model"]?.nilIfBlank
+            ?? nativeConfig.defaultEntryID
+        let providerConfig = NativeConfigService.providerConfig(entryID: entryID, values: nativeConfig.rawValues)
+            ?? nativeConfig.providerConfig
+        let apiKey = NativeConfigService.resolvedAPIKey(
+            routeEntryID: entryID,
+            nativeConfig: nativeConfig
+        )
+
+        let session = existingSession ?? createAlwaysOnBackgroundSession(projectRoot: project.rootPath, title: title, runID: runID)
+        let sessionID = session.id
+        memoryProjectNameBySession[sessionID] = project.projectName
+        memoryProjectRootBySession[sessionID] = project.rootPath
+        let assistantID = UUID()
+        assistantSessionByID[assistantID] = sessionID
+        let userMessage = ChatMessage(
+            id: UUID(),
+            sessionId: sessionID,
+            provider: .g9Claw,
+            role: .user,
+            blocks: [.text(prompt)],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+        let assistantMessage = ChatMessage(
+            id: assistantID,
+            sessionId: sessionID,
+            provider: .g9Claw,
+            role: .assistant,
+            blocks: [.text("")],
+            createdAt: Date(),
+            isStreaming: true,
+            tokenBudget: nil
+        )
+        messagesBySession[sessionID] = [userMessage, assistantMessage]
+        markSession(sessionID, state: .processing)
+        persistSessionMessages(sessionID: sessionID)
+
+        var values = nativeConfig.rawValues
+        values["alwaysOn.run.enabled"] = "true"
+        values["alwaysOn.run.phase"] = phase
+        values["alwaysOn.run.id"] = runID
+        values["alwaysOn.projectName"] = project.projectName
+        values["alwaysOn.projectRoot"] = project.rootPath
+        values["alwaysOn.displayName"] = project.displayName
+        values["alwaysOn.run.excludedTools"] = "AskQuestion,SwitchMode,Task"
+        values["alwaysOn.run.deniedShellPatterns"] = "git push,git remote"
+        values["alwaysOn.execution.maxTurns"] = String(config.execution.maxTurns)
+        values["alwaysOn.execution.maxToolCalls"] = String(config.execution.maxToolCalls)
+        values["alwaysOn.execution.timeoutMinutes"] = String(config.execution.timeoutMinutes)
+        for (key, value) in extraValues {
+            values[key] = value
+        }
+
+        let requestContext = WorkspaceContext(
+            projectID: nil,
+            projectName: project.projectName,
+            displayName: project.displayName,
+            rootPath: projectPath,
+            isGeneral: false
+        )
+        let request = AgentRequest(
+            sessionId: sessionID,
+            projectPath: projectPath,
+            prompt: prompt,
+            attachments: [],
+            providerConfig: providerConfig,
+            apiKey: apiKey,
+            priorMessages: [],
+            timeoutMs: max(60_000, config.execution.timeoutMinutes * 60_000),
+            contextWindow: NativeConfigService.contextWindow(entryID: entryID, values: nativeConfig.rawValues) ?? nativeConfig.contextWindow,
+            permissionMode: .bypassPermissions,
+            runMode: .agent,
+            workspaceContext: requestContext,
+            toolSettings: settings.permissions,
+            routerRoute: "always-on-\(phase)",
+            fallbackRoutes: routerFallbackRoutes(
+                primaryEntryID: entryID,
+                scenario: "always-on-\(phase)",
+                nativeConfig: nativeConfig,
+                values: nativeConfig.rawValues
+            ),
+            nativeConfigValues: values,
+            permissionHandler: nil
+        )
+        let runToken = UUID()
+        var succeeded = false
+        var sawTerminalEvent = false
+        let taskKey = "\(phase)-\(runID)"
+        alwaysOnBackgroundTasks[taskKey] = Task {}
+        alwaysOnBackgroundRunTokens.insert(runToken)
+        defer {
+            alwaysOnBackgroundTasks.removeValue(forKey: taskKey)
+            alwaysOnBackgroundRunTokens.remove(runToken)
+        }
+        do {
+            for try await event in providerClient.stream(request: request) {
+                if event.isTerminal {
+                    sawTerminalEvent = true
+                }
+                handleAgentEvent(event, assistantID: assistantID, sessionID: sessionID, runToken: runToken)
+            }
+            if !sawTerminalEvent {
+                handleAgentEvent(.complete(sessionId: sessionID), assistantID: assistantID, sessionID: sessionID, runToken: runToken)
+            }
+            succeeded = true
+        } catch {
+            handleAgentEvent(.error(error.localizedDescription), assistantID: assistantID, sessionID: sessionID, runToken: runToken)
+        }
+        let summary = messagesBySession[sessionID]?.last(where: { $0.role == .assistant })?.plainText ?? ""
+        return AlwaysOnTurnResult(succeeded: succeeded, sessionID: sessionID, summary: summary)
+    }
+
+    private func createAlwaysOnBackgroundSession(projectRoot: String, title: String, runID: String) -> ProjectSession {
+        let session = ProjectSession(
+            id: "always-on-\(UUID().uuidString)",
+            provider: .g9Claw,
+            title: title,
+            summary: runID,
+            createdAt: Date(),
+            updatedAt: Date(),
+            lastActivity: Date(),
+            lastConversationAt: Date(),
+            state: .idle,
+            sessionKind: .backgroundTask,
+            taskId: runID,
+            taskStatus: "running",
+            isReadOnly: true
+        )
+        if let index = projects.firstIndex(where: { AlwaysOnService.normalizedProjectRoot(effectiveWorkspacePath(for: $0)) == AlwaysOnService.normalizedProjectRoot(projectRoot) }) {
+            projects[index].sessions.insert(session, at: 0)
+        }
+        return session
+    }
+
+    private func sessions(forProjectRoot rootPath: String) -> [ProjectSession] {
+        let normalized = AlwaysOnService.normalizedProjectRoot(rootPath)
+        return projects.first { AlwaysOnService.normalizedProjectRoot(effectiveWorkspacePath(for: $0)) == normalized }?.allSessions ?? []
+    }
+
+    private func isAlwaysOnProjectBusy(rootPath: String) -> Bool {
+        let normalized = AlwaysOnService.normalizedProjectRoot(rootPath)
+        if alwaysOnBackgroundTasks.keys.contains(where: { !$0.isEmpty }) {
+            let hasProjectTask = projects
+                .first { AlwaysOnService.normalizedProjectRoot(effectiveWorkspacePath(for: $0)) == normalized }?
+                .allSessions
+                .contains { $0.state == .processing } ?? false
+            if hasProjectTask { return true }
+        }
+        return sessions(forProjectRoot: rootPath).contains { $0.state == .processing }
+    }
+
+    private func alwaysOnChatHistoryJSON(sessions: [ProjectSession], limit: Int = 12) -> String {
+        let items = sessions
+            .sorted { $0.activityDate > $1.activityDate }
+            .prefix(limit)
+            .map { session -> [String: Any] in
+                let messages = messagesBySession[session.id] ?? []
+                let lastUser = messages.last(where: { $0.role == .user })?.plainText
+                let lastAssistant = messages.last(where: { $0.role == .assistant })?.plainText
+                return [
+                    "id": session.id,
+                    "title": session.displayTitle,
+                    "summary": session.summary,
+                    "lastActivity": ISO8601DateFormatter().string(from: session.activityDate),
+                    "lastUserMessage": String((lastUser ?? "").prefix(1_500)),
+                    "lastAssistantMessage": String((lastAssistant ?? "").prefix(1_500)),
+                ]
+            }
+        guard let data = try? JSONSerialization.data(withJSONObject: Array(items), options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+        return text
     }
 
     func openSettings(_ tab: SettingsMainTab = .appearance) {
@@ -1289,13 +1980,6 @@ final class AppState: ObservableObject {
         }
         settings = Self.normalizedSettings(updated)
         memoryService.updateSettings(MemorySettingsSnapshot.fromConfigValues(native.rawValues))
-
-        if apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let apiKey = native.apiKey,
-           !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            apiKeyDraft = apiKey
-            try? keychain.saveSecret(apiKey, account: settings.providerConfig.secretAccount)
-        }
     }
 
     private func loadG9ClawConfigText() {
@@ -1338,13 +2022,6 @@ final class AppState: ObservableObject {
         }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Self.defaultG9ClawConfigText().write(to: url, atomically: true, encoding: .utf8)
-    }
-
-    private func seedDebugKeyFromEnvironmentIfPresent() throws {
-        let env = ProcessInfo.processInfo.environment
-        guard let key = env["G9CLAW_DEBUG_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !key.isEmpty else { return }
-        try keychain.saveSecret(key, account: settings.providerConfig.secretAccount)
     }
 
     private func logBundleNetworkPolicy() {
@@ -1552,7 +2229,9 @@ final class AppState: ObservableObject {
     }
 
     private func handleAgentEvent(_ event: AgentEvent, assistantID: UUID, sessionID explicitSessionID: String? = nil, runToken: UUID? = nil) {
-        if let runToken, activeRunToken != runToken {
+        if let runToken,
+           !alwaysOnBackgroundRunTokens.contains(runToken),
+           activeRunToken != runToken {
             return
         }
         let targetSessionID = explicitSessionID ?? assistantSessionByID[assistantID] ?? selectedSessionID
@@ -2440,16 +3119,30 @@ enum G9ClawConfigDefaults {
             default: inherit
             params: {}
         alwaysOn:
-          discovery:
-            trigger:
-              enabled: false
-              tickIntervalMinutes: 5
-              cooldownMinutes: 60
-              dailyBudget: 4
-              heartbeatStaleSeconds: 90
-              recentUserMsgMinutes: 5
-              preferClient: webui
-            projects: {}
+          enabled: false
+          language: zh-CN
+          trigger:
+            enabled: false
+            tickIntervalMinutes: 5
+            cooldownMinutes: 60
+            dailyBudget: 4
+            heartbeatStaleSeconds: 90
+            recentUserMsgMinutes: 5
+            preferChannel: native
+          dormancy:
+            enabled: true
+            debounceMs: 2000
+            ignoreGlobs: []
+          workspace:
+            gitWorktreeBaseDir: ""
+            snapshotBaseDir: ""
+            snapshotMaxBytes: 1073741824
+            gitLfs: false
+          execution:
+            maxTurns: 30
+            maxToolCalls: 200
+            timeoutMinutes: 20
+          projects: {}
         memory:
           enabled: true
           model: inherit
@@ -2861,20 +3554,58 @@ enum NativeConfigService {
     private static func normalizedScalarMap(_ values: [String: String]) -> [String: String] {
         var normalized = values
 
-        let topLevelAlwaysOnPrefix = "alwaysOn.discovery.trigger."
-        let legacyAlwaysOnPrefix = "agents.alwaysOn.discovery.trigger."
-        let hasTopLevelAlwaysOnTrigger = normalized.keys.contains { $0.hasPrefix(topLevelAlwaysOnPrefix) }
-        if !hasTopLevelAlwaysOnTrigger {
-            for (key, value) in normalized where key.hasPrefix(legacyAlwaysOnPrefix) {
-                let suffix = String(key.dropFirst(legacyAlwaysOnPrefix.count))
-                normalized["\(topLevelAlwaysOnPrefix)\(suffix)"] = value
-            }
-        }
+        migrateAlwaysOnScalars(values, into: &normalized)
         normalized = normalized.filter { !$0.key.hasPrefix("agents.alwaysOn.") }
+        normalized = normalized.filter { !$0.key.hasPrefix("alwaysOn.discovery.") }
 
         normalized = normalized.filter { $0.key != "compat" && !$0.key.hasPrefix("compat.") }
 
         return normalized
+    }
+
+    private static func migrateAlwaysOnScalars(_ values: [String: String], into normalized: inout [String: String]) {
+        migrateAlwaysOnTriggerScalars(values, into: &normalized, legacyPrefix: "agents.alwaysOn.discovery.trigger.")
+        migrateAlwaysOnTriggerScalars(values, into: &normalized, legacyPrefix: "alwaysOn.discovery.trigger.")
+
+        let legacyProjectPrefixes = [
+            "agents.alwaysOn.discovery.projects.",
+            "alwaysOn.discovery.projects.",
+        ]
+        for prefix in legacyProjectPrefixes {
+            for (key, value) in values where key.hasPrefix(prefix) {
+                let suffix = String(key.dropFirst(prefix.count))
+                let target = "alwaysOn.projects.\(suffix)"
+                if normalized[target] == nil {
+                    normalized[target] = value
+                }
+            }
+        }
+    }
+
+    private static func migrateAlwaysOnTriggerScalars(
+        _ values: [String: String],
+        into normalized: inout [String: String],
+        legacyPrefix: String
+    ) {
+        for (key, value) in values where key.hasPrefix(legacyPrefix) {
+            let legacySuffix = String(key.dropFirst(legacyPrefix.count))
+            let suffix = legacySuffix == "preferClient" ? "preferChannel" : legacySuffix
+            let target = "alwaysOn.trigger.\(suffix)"
+            if normalized[target] == nil {
+                normalized[target] = suffix == "preferChannel" ? normalizedAlwaysOnChannel(value) : value
+            }
+        }
+    }
+
+    private static func normalizedAlwaysOnChannel(_ value: String) -> String {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "webui", "web-ui", "web_ui":
+            return "web"
+        case "macos", "mac", "native":
+            return "native"
+        default:
+            return value
+        }
     }
 
     private static func validEntryID(_ entryID: String, values: [String: String]) -> String? {
@@ -2914,7 +3645,7 @@ enum NativeConfigService {
             apiType: apiType,
             baseURL: baseURL,
             model: model,
-            secretAccount: (providerID == "g9claw" || providerID == "edgeclaw") ? ProviderConfig.empty.secretAccount : "g9claw-provider-\(providerID)-api-key",
+            secretAccount: (providerID == "g9claw" || providerID == "edgeclaw") ? ProviderConfig.empty.secretAccount : "pilotdeck-provider-\(providerID)-api-key",
             headers: headers
         )
     }
@@ -2925,18 +3656,15 @@ enum NativeConfigService {
 
     static func resolvedAPIKey(
         routeEntryID: String,
-        nativeConfig: NativeConfigSnapshot?,
-        keychainValue: String?,
-        apiKeyDraft: String
+        nativeConfig: NativeConfigSnapshot?
     ) -> String {
         guard let nativeConfig else {
-            return keychainValue?.nilIfBlank ?? apiKeyDraft
+            return ""
         }
         let providerID = providerID(entryID: routeEntryID, values: nativeConfig.rawValues)
         return nativeConfig.rawValues["models.providers.\(providerID).apiKey"]?.nilIfBlank
             ?? nativeConfig.apiKey?.nilIfBlank
-            ?? keychainValue?.nilIfBlank
-            ?? apiKeyDraft
+            ?? ""
     }
 
     private static func normalizeScalar(_ rawValue: String) -> String {
@@ -3375,6 +4103,41 @@ enum AlwaysOnBackgroundTranscriptLoader {
         session.outputFile = firstNonBlank(target.outputFile, existing?.outputFile)
         session.isReadOnly = true
         return session
+    }
+
+    static func makePersistedSession(target: AlwaysOnSessionTarget) -> ProjectSession? {
+        let sessionId = target.sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard target.kind == .origin,
+              sessionId.hasPrefix("always-on-"),
+              let paths = try? AppPaths.current() else {
+            return nil
+        }
+        let url = paths.sessions.appendingPathComponent("\(sessionId).json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+
+        let messages = (try? Data(contentsOf: url))
+            .flatMap { try? JSONDecoder().decode([ChatMessage].self, from: $0) } ?? []
+        let createdAt = messages.first?.createdAt ?? target.lastActivity ?? Date()
+        let lastActivity = messages.last?.createdAt ?? target.lastActivity ?? createdAt
+        let title = firstNonBlank(target.title, target.summary) ?? "Always-On run"
+        let summary = firstNonBlank(target.summary, target.taskId, target.taskStatus) ?? title
+        return ProjectSession(
+            id: sessionId,
+            provider: .g9Claw,
+            title: title,
+            summary: summary,
+            createdAt: createdAt,
+            updatedAt: lastActivity,
+            lastActivity: lastActivity,
+            lastConversationAt: lastActivity,
+            state: .idle,
+            messageCount: messages.isEmpty ? nil : messages.count,
+            sessionKind: .backgroundTask,
+            taskId: target.taskId,
+            taskStatus: target.taskStatus,
+            outputFile: target.outputFile,
+            isReadOnly: true
+        )
     }
 
     static func messages(
