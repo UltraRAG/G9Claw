@@ -242,14 +242,14 @@
         <Grid
             x:Name="SettingsOverlayRoot"
             Grid.ColumnSpan="3"
-            Background="#99000000"
+            Background="{ThemeResource V2BackgroundBrush}"
             Visibility="Collapsed">
             <ContentControl
                 x:Name="SettingsOverlayHost"
                 HorizontalAlignment="Stretch"
                 VerticalAlignment="Stretch"
                 HorizontalContentAlignment="Center"
-                VerticalContentAlignment="Center" />
+                VerticalContentAlignment="Stretch" />
         </Grid>
     </Grid>
 </Window>

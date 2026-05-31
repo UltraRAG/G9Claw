@@ -10200,14 +10200,15 @@ public sealed partial class MainWindow : Window
         var pageTitle = new TextBlock
         {
             Text = T("settings.title"),
-            FontSize = 15,
+            FontSize = 22,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = Brush("V2ForegroundBrush"),
             VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
         };
         var backButton = new Button
         {
-            Height = 32,
+            Height = 28,
             MinWidth = 0,
             Padding = new Thickness(8, 0, 10, 0),
             Background = Transparent,
@@ -10466,20 +10467,17 @@ public sealed partial class MainWindow : Window
         var modal = new Border
         {
             HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(V2LayoutMetrics.SettingsOuterMargin),
-            Background = Brush("V2CardBrush"),
-            BorderBrush = Brush("V2BorderBrush"),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(12),
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Background = Brush("V2BackgroundBrush"),
+            BorderThickness = new Thickness(0),
         };
 
         void UpdateBounds()
         {
             var metrics = new SettingsOverlayMetrics(RootGrid.ActualWidth, RootGrid.ActualHeight);
             modal.Width = metrics.Width;
-            modal.Height = metrics.Height;
-            var contentWidth = Math.Max(0, metrics.Width - 48);
+            modal.Height = RootGrid.ActualHeight > 0 ? RootGrid.ActualHeight : metrics.Height;
+            var contentWidth = Math.Max(0, metrics.Width - 80);
             content.Width = contentWidth;
             content.MaxWidth = contentWidth;
         }
@@ -10490,27 +10488,28 @@ public sealed partial class MainWindow : Window
         RootGrid.SizeChanged += sizeHandler;
 
         var root = new Grid();
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(56) });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(56) });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         var header = new Grid
         {
-            Padding = new Thickness(18, 0, 14, 0),
-            BorderBrush = Brush("V2BorderBrush"),
-            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(40, 48, 40, 18),
         };
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        backButton.Margin = new Thickness(0, 0, 10, 0);
-        header.Children.Add(backButton);
-        Grid.SetColumn(pageTitle, 1);
-        header.Children.Add(pageTitle);
-        Grid.SetColumn(saveStatus, 2);
-        saveStatus.Margin = new Thickness(0, 0, 10, 0);
-        header.Children.Add(saveStatus);
+        backButton.HorizontalAlignment = HorizontalAlignment.Left;
+        backButton.Margin = new Thickness(0, 0, 0, 8);
+        var titleStack = new StackPanel
+        {
+            Spacing = 0,
+            Children =
+            {
+                backButton,
+                pageTitle,
+            },
+        };
+        header.Children.Add(titleStack);
         var closeButton = new Button
         {
             Width = 32,
@@ -10521,12 +10520,13 @@ public sealed partial class MainWindow : Window
             CornerRadius = new CornerRadius(8),
             Content = Icon("X", 16, Brush("V2MutedForegroundBrush")),
         };
+        closeButton.VerticalAlignment = VerticalAlignment.Top;
         closeButton.Click += (_, _) =>
         {
             if (sizeHandler is not null) RootGrid.SizeChanged -= sizeHandler;
             completion.TrySetResult(false);
         };
-        Grid.SetColumn(closeButton, 3);
+        Grid.SetColumn(closeButton, 1);
         header.Children.Add(closeButton);
         root.Children.Add(header);
 
@@ -10537,7 +10537,7 @@ public sealed partial class MainWindow : Window
         body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var contentHost = new Grid
         {
-            Padding = new Thickness(24),
+            Padding = new Thickness(40, 0, 40, 18),
             MinWidth = 0,
         };
         content.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -10549,15 +10549,17 @@ public sealed partial class MainWindow : Window
 
         var footer = new Grid
         {
-            Padding = new Thickness(16, 10, 16, 10),
-            BorderBrush = Brush("V2BorderBrush"),
-            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(40, 10, 40, 20),
         };
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         errorText.VerticalAlignment = VerticalAlignment.Center;
         errorText.MaxHeight = 36;
         footer.Children.Add(errorText);
+        Grid.SetColumn(saveStatus, 1);
+        saveStatus.Margin = new Thickness(0, 0, 10, 0);
+        footer.Children.Add(saveStatus);
         var footerButtons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -10604,7 +10606,7 @@ public sealed partial class MainWindow : Window
         };
         footerButtons.Children.Add(reloadButton);
         footerButtons.Children.Add(saveButton);
-        Grid.SetColumn(footerButtons, 1);
+        Grid.SetColumn(footerButtons, 2);
         footer.Children.Add(footerButtons);
         Grid.SetRow(footer, 2);
         root.Children.Add(footer);
@@ -11337,7 +11339,13 @@ public sealed partial class MainWindow : Window
         var panel = new StackPanel { Spacing = 0 };
         for (var index = 0; index < children.Length; index++)
         {
-            panel.Children.Add(children[index]);
+            var child = children[index];
+            if (child is CheckBox checkBox)
+            {
+                child = SettingsToggleRow(checkBox.Content?.ToString() ?? "", "", checkBox);
+            }
+
+            panel.Children.Add(child);
             if (index < children.Length - 1)
             {
                 panel.Children.Add(new Border
@@ -11345,6 +11353,7 @@ public sealed partial class MainWindow : Window
                     Height = 1,
                     Background = Brush("V2BorderBrush"),
                     Opacity = 0.8,
+                    Margin = new Thickness(54, 0, 0, 0),
                 });
             }
         }
@@ -11360,6 +11369,34 @@ public sealed partial class MainWindow : Window
         });
 
         return section;
+    }
+
+    private FrameworkElement SettingsToggleRow(string title, string detail, CheckBox checkBox)
+    {
+        checkBox.Content = null;
+        checkBox.Margin = new Thickness(0);
+        checkBox.VerticalAlignment = VerticalAlignment.Center;
+        checkBox.HorizontalAlignment = HorizontalAlignment.Right;
+        checkBox.MinWidth = 0;
+
+        var grid = new Grid
+        {
+            MinHeight = 48,
+            Padding = new Thickness(16, 7, 16, 7),
+            ColumnSpacing = 16,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+            Children =
+            {
+                SettingsFieldLabel(title, detail),
+                checkBox,
+            },
+        };
+        Grid.SetColumn(checkBox, 1);
+        return grid;
     }
 
     private FrameworkElement SettingsNavigationRow(string iconKey, string title, string detail, Action action)
@@ -11458,68 +11495,28 @@ public sealed partial class MainWindow : Window
     {
         control.HorizontalAlignment = HorizontalAlignment.Stretch;
         control.MinWidth = 0;
-        var grid = new Grid
+        control.MaxWidth = double.PositiveInfinity;
+        control.Width = double.NaN;
+
+        return new StackPanel
         {
             Padding = new Thickness(14, 11, 14, 11),
-            ColumnSpacing = 16,
-            RowSpacing = 8,
+            Spacing = 5,
             MinWidth = 0,
-        };
-        var labelBlock = new TextBlock
-        {
-            Text = label,
-            FontSize = 13,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = Brush("V2ForegroundBrush"),
-            TextWrapping = TextWrapping.Wrap,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        grid.Children.Add(labelBlock);
-        grid.Children.Add(control);
-
-        bool? currentStackedLayout = null;
-        void ApplyFieldLayout(bool stacked)
-        {
-            if (currentStackedLayout == stacked) return;
-            currentStackedLayout = stacked;
-            grid.ColumnDefinitions.Clear();
-            grid.RowDefinitions.Clear();
-            Grid.SetColumn(labelBlock, 0);
-            Grid.SetRow(labelBlock, 0);
-            Grid.SetColumn(control, 0);
-            Grid.SetRow(control, 0);
-
-            if (stacked)
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Children =
             {
-                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-                Grid.SetRow(control, 1);
-                return;
-            }
-
-            if (control is ComboBox)
-            {
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                control.MaxWidth = 260;
-            }
-            else
-            {
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(180) });
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                control.MaxWidth = double.PositiveInfinity;
-            }
-            control.Width = double.NaN;
-            Grid.SetColumn(control, 1);
-        }
-
-        ApplyFieldLayout(false);
-        grid.SizeChanged += (_, args) =>
-        {
-            var stacked = args.NewSize.Width > 0 && args.NewSize.Width < 420;
-            ApplyFieldLayout(stacked);
+                new TextBlock
+                {
+                    Text = label,
+                    FontSize = 12,
+                    FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                    Foreground = Brush("V2MutedForegroundBrush"),
+                    TextWrapping = TextWrapping.Wrap,
+                },
+                control,
+            },
         };
-        return grid;
     }
 
     private static string MergeLines(string existing, IEnumerable<string> additions) =>
