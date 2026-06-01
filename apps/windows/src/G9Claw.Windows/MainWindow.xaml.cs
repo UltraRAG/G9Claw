@@ -4991,16 +4991,33 @@ public sealed partial class MainWindow : Window
         };
         Grid.SetColumn(name, 2);
         grid.Children.Add(name);
-        var meta = new TextBlock
+        if (FilePreviewActionPolicy.TreePreviewIcon(file) is { } previewIcon)
         {
-            Text = file.IsDirectory ? "" : FormatBytes(file.ByteCount ?? 0),
-            FontSize = 11,
-            Foreground = Brush("V2MutedForegroundBrush"),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        Grid.SetColumn(meta, 3);
-        grid.Children.Add(meta);
+            var preview = FileTreeInlineActionButton(previewIcon, L("Open HTML", "\u6253\u5f00 HTML"));
+            preview.Click += async (_, _) => await OpenWorkspacePreviewAsync(file.Path);
+            Grid.SetColumn(preview, 3);
+            grid.Children.Add(preview);
+        }
         return row;
+    }
+
+    private Button FileTreeInlineActionButton(string iconKey, string label)
+    {
+        var button = new Button
+        {
+            Width = 22,
+            Height = 22,
+            MinWidth = 0,
+            MinHeight = 0,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(6),
+            Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(20, 37, 99, 235)),
+            BorderBrush = new SolidColorBrush(global::Windows.UI.Color.FromArgb(34, 37, 99, 235)),
+            BorderThickness = new Thickness(1),
+            Content = Icon(iconKey, 11, Brush("V2BlueBrush")),
+        };
+        ToolTipService.SetToolTip(button, label);
+        return button;
     }
 
     private string FileTreeIcon(WorkspaceFile file)
