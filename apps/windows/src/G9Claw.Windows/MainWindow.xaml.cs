@@ -4657,12 +4657,14 @@ public sealed partial class MainWindow : Window
         var left = new Grid { Background = Brush("V2BackgroundBrush") };
         left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        left.Children.Add(FilesPaneHeader());
 
         var list = new StackPanel { Padding = new Thickness(12, 0, 12, 10), Spacing = 2 };
+        WorkspaceFileListing? listing = null;
+        string? listingError = null;
         try
         {
-            var files = _workspaceService.ListFiles(State.SelectedProject.RootPath, _expandedFileDirectories);
+            listing = _workspaceService.FileListing(State.SelectedProject.RootPath, _expandedFileDirectories);
+            var files = listing.Files;
             if (!string.IsNullOrWhiteSpace(_fileSearchText))
             {
                 files = files
@@ -4685,9 +4687,11 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            listingError = ex.Message;
             list.Children.Add(ErrorState(ex.Message));
         }
 
+        left.Children.Add(FilesPaneHeader(listing, listingError));
         var scroller = new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         Grid.SetRow(scroller, 1);
         left.Children.Add(scroller);
@@ -4703,7 +4707,7 @@ public sealed partial class MainWindow : Window
         return root;
     }
 
-    private FrameworkElement FilesPaneHeader()
+    private FrameworkElement FilesPaneHeader(WorkspaceFileListing? listing, string? listingError)
     {
         var header = new StackPanel
         {
@@ -4776,6 +4780,11 @@ public sealed partial class MainWindow : Window
         tools.Children.Add(more);
         header.Children.Add(tools);
 
+        if (FilePaneStatusLine(listing, listingError) is { } statusLine)
+        {
+            header.Children.Add(statusLine);
+        }
+
         return new Border
         {
             BorderBrush = Brush("V2BorderBrush"),
@@ -4783,6 +4792,42 @@ public sealed partial class MainWindow : Window
             Child = header,
         };
     }
+
+    private FrameworkElement? FilePaneStatusLine(WorkspaceFileListing? listing, string? listingError)
+    {
+        if (!string.IsNullOrWhiteSpace(listingError))
+        {
+            return FilePaneStatusLine("AlertCircle", listingError, Brush("V2RedBrush"));
+        }
+        if (listing is { SkippedItemCount: > 0 })
+        {
+            var count = listing.SkippedItemCount;
+            var text = IsChineseUi()
+                ? $"\u5df2\u7701\u7565 {count} \u4e2a\u9690\u85cf\u6216\u751f\u6210\u9879"
+                : $"{count} hidden or generated item{(count == 1 ? "" : "s")} omitted";
+            return FilePaneStatusLine("Eye", text, Brush("V2MutedForegroundBrush"));
+        }
+
+        return null;
+    }
+
+    private FrameworkElement FilePaneStatusLine(string iconKey, string text, Brush foreground) => new StackPanel
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 5,
+        Children =
+        {
+            Icon(iconKey, 10, foreground),
+            new TextBlock
+            {
+                Text = text,
+                FontSize = 10.5,
+                Foreground = foreground,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxLines = 1,
+            },
+        },
+    };
 
     private Button FilesToolbarButton(string iconKey, string tooltip, Func<Task> action)
     {
