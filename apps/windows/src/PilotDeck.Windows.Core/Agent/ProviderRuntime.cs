@@ -1,0 +1,922 @@
+using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Json;
+
+namespace PilotDeck.Windows.Core;
+
+public sealed class ProviderClientException : Exception
+{
+    public int? StatusCode { get; }
+    public bool PartialVisibleOutput { get; }
+
+    private ProviderClientException(string message, int? statusCode = null, bool partialVisibleOutput = false, Exception? innerException = null)
+        : base(message, innerException)
+    {
+        StatusCode = statusCode;
+        PartialVisibleOutput = partialVisibleOutput;
+    }
+
+    public static ProviderClientException MissingBaseUrl() => new("Provider base URL is not configured.");
+    public static ProviderClientException MissingModel() => new("Provider model is not configured.");
+    public static ProviderClientException MissingApiKey() => new("Provider API key is not configured. Add it in Settings or ~/.pd/config.yaml.");
+    public static ProviderClientException InvalidUrl(string value) => new($"Provider base URL is invalid: {value}");
+    public static ProviderClientException HttpError(int statusCode, string body) => new(
+        string.IsNullOrWhiteSpace(body) ? $"Provider request failed with HTTP {statusCode}." : $"Provider request failed with HTTP {statusCode}: {body}",
+        statusCode);
+    public static ProviderClientException UnsupportedProvider(SessionProvider provider) => new($"{provider.DisplayName()} is not implemented yet in native AgentCore.");
+    public static ProviderClientException UnsupportedApiType(ProviderApiType apiType) => new($"Provider API type {apiType} is not implemented yet in native AgentCore.");
+    public static ProviderClientException InvalidResponse() => new("Provider returned an invalid response.");
+    public static ProviderClientException Transport(string message, Exception? innerException = null) => new(message, innerException: innerException);
+    public static ProviderClientException StreamInterruptedAfterPartialOutput(string message) => new(
+        $"Provider response stream disconnected after partial output: {message}",
+        partialVisibleOutput: true);
+}
+
+public sealed record ProviderRetryPolicy(
+    int RequestMaxRetries,
+    int StreamMaxRetries,
+    int BaseDelayMs,
+    bool Retry429,
+    bool Retry5xx,
+    bool RetryTransport)
+{
+    public static ProviderRetryPolicy CodexDefault { get; } = new(
+        RequestMaxRetries: 4,
+        StreamMaxRetries: 5,
+        BaseDelayMs: 200,
+        Retry429: false,
+        Retry5xx: true,
+        RetryTransport: true);
+}
+
+public sealed record ProviderRetryDecision(bool ShouldRetry, TimeSpan Delay, string Reason)
+{
+    public static ProviderRetryDecision NoRetry { get; } = new(false, TimeSpan.Zero, "");
+}
+
+public enum ProviderStreamEventKind
+{
+    Status,
+    ContentDelta,
+    ReasoningDelta,
+    ToolCall,
+    TokenBudget,
+    Done,
+}
+
+public sealed record ProviderStreamEvent(
+    ProviderStreamEventKind Kind,
+    string? Text = null,
+    AgentToolCall? ToolCall = null,
+    TokenBudget? TokenBudget = null);
+
+public static partial class NativeAgentRuntime
+{
+    public static string NativeAgentSystemPrompt(AgentRequest request)
+    {
+        var modeText = request.RunMode == ChatRunMode.Plan
+            ? """
+            You are in plan mode. The user does not want implementation yet.
+            Only read/search/todo/question tools are allowed before approval. Do not edit files or run mutating shell commands until SwitchMode is called with mode="agent" and a concrete plan, and the user approves it.
+            A plan-mode turn must end only by calling AskQuestion to gather user input or SwitchMode mode="agent" with the final plan. Do not ask questions, request approval, or present the final plan as ordinary prose.
+            Ask the user at least one blocking question with AskQuestion before requesting execution. AskQuestion must use the questions array shape. Include concrete options when useful, with no fixed minimum or maximum; do not include an "Other" option because the UI adds it automatically.
+            """
+            : "You are in agent mode. Use tools to inspect and modify the workspace.";
+        var fallbackExample = "{\"tool\":\"Read\",\"input\":{\"file_path\":\"README.md\"}}";
+
+        return $"""
+        You are PilotDeck, a native Windows coding agent with a PilotDeck style workflow.
+        Workspace root: {request.ProjectPath}
+        {modeText}
+
+        Use the provided tools for all file reads, file writes, edits, searches, todos, and shell commands.
+        Never claim that you created, edited, deleted, or inspected a file unless the corresponding tool result confirms it.
+        Prefer small, verifiable steps: inspect files, make precise edits, run focused checks, then summarize.
+        Prefer targeted Read/Grep/Glob once paths are known. Use root Glob **/* only for the first workspace discovery; do not repeat full-workspace glob after you already have a file list.
+        Prefer the canonical tool names: Read, Write, StrReplace, Delete, EditNotebook, Grep, Glob, SemanticSearch, Shell, Await, ReadLints, Skill, TodoWrite, AskQuestion, SwitchMode, and Task.
+        For shell commands, use Shell only when needed and keep commands scoped to the workspace. Use run_in_background plus Await for long-running commands.
+        For current public information, weather, or web evidence, call Skill with skill="pilotdeck-rag:glm-web-search" or skill="pilotdeck-rag:rag-research". Do not call separate weather, web search, or web fetch tools directly.
+        {NativeAgentSkillContext(request.ProjectPath)}
+        Use Task for delegated analysis or shell-focused background work.
+        If OpenAI tool calling is unavailable, emit exactly one raw JSON fallback tool request and no other prose in that assistant turn.
+        Example: {fallbackExample}
+        Do not emit markdown fences, language labels such as "bash" or "json", or a prose explanation when requesting a tool.
+        """;
+    }
+
+    public static string NativeAgentSkillContext(string workspacePath)
+    {
+        IReadOnlyList<SkillRecord> skills;
+        try
+        {
+            skills = new SkillService().Load(workspacePath);
+        }
+        catch
+        {
+            skills = [];
+        }
+
+        var skillLines = skills.Count == 0
+            ? "- No project or user skills are installed for this workspace."
+            : string.Join("\n", skills.Select(skill =>
+            {
+                var summary = (skill.Description ?? "")
+                    .Replace("\r", " ", StringComparison.Ordinal)
+                    .Replace("\n", " ", StringComparison.Ordinal)
+                    .Trim();
+                var clipped = summary.Length > 220 ? $"{summary[..220]}..." : summary;
+                var scope = skill.Scope.ToString().ToLowerInvariant();
+                return $"- {skill.Name} ({scope}): {clipped}";
+            }));
+
+        return $"""
+        Available skills for this workspace:
+        {skillLines}
+        To use one, call Skill with the exact skill name above. Skill loads instructions; it does not execute subcommands. After loading a skill, follow its returned instructions using Shell/Read/other tools. If the skill refers to relative paths such as scripts/foo, run them from the returned skillDir or use absolute paths. Do not invent sub-skill names like skill:action unless that exact skill name is listed.
+        """;
+    }
+
+    public static Uri EndpointUrl(string baseUrl, string suffix)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl)) throw ProviderClientException.MissingBaseUrl();
+        if (!Uri.TryCreate(baseUrl.Trim(), UriKind.Absolute, out var baseUri))
+        {
+            throw ProviderClientException.InvalidUrl(baseUrl);
+        }
+
+        var trimmedSuffix = suffix.Trim('/');
+        var path = baseUri.AbsolutePath.Trim('/');
+        if (path.EndsWith(trimmedSuffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return baseUri;
+        }
+
+        var normalizedBase = baseUri.ToString().TrimEnd('/');
+        return new Uri($"{normalizedBase}/{trimmedSuffix}");
+    }
+
+    public static IReadOnlyList<ProviderStreamEvent> OpenAIChatEvents(JsonElement root, int contextWindow)
+    {
+        var events = new List<ProviderStreamEvent>();
+        if (root.TryGetProperty("choices", out var choices) &&
+            choices.ValueKind == JsonValueKind.Array &&
+            choices.GetArrayLength() > 0)
+        {
+            var choice = choices[0];
+            if (choice.TryGetProperty("delta", out var delta))
+            {
+                foreach (var reasoning in ReasoningDeltas(delta))
+                {
+                    events.Add(new ProviderStreamEvent(ProviderStreamEventKind.ReasoningDelta, Text: reasoning));
+                }
+
+                if (delta.TryGetProperty("content", out var content) &&
+                    content.ValueKind == JsonValueKind.String &&
+                    !string.IsNullOrEmpty(content.GetString()))
+                {
+                    events.Add(new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: content.GetString()));
+                }
+
+                if (delta.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var toolCall in toolCalls.EnumerateArray())
+                    {
+                        var call = OpenAIToolCallFromDelta(toolCall);
+                        if (call is not null) events.Add(new ProviderStreamEvent(ProviderStreamEventKind.ToolCall, ToolCall: call));
+                    }
+                }
+            }
+            else if (choice.TryGetProperty("message", out var message))
+            {
+                foreach (var reasoning in ReasoningDeltas(message))
+                {
+                    events.Add(new ProviderStreamEvent(ProviderStreamEventKind.ReasoningDelta, Text: reasoning));
+                }
+
+                if (message.TryGetProperty("content", out var content) &&
+                    content.ValueKind == JsonValueKind.String &&
+                    !string.IsNullOrEmpty(content.GetString()))
+                {
+                    events.Add(new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: content.GetString()));
+                }
+
+                if (message.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var toolCall in toolCalls.EnumerateArray())
+                    {
+                        var call = OpenAIToolCallFromDelta(toolCall);
+                        if (call is not null) events.Add(new ProviderStreamEvent(ProviderStreamEventKind.ToolCall, ToolCall: call));
+                    }
+                }
+            }
+        }
+
+        if (TryTokenBudget(root, contextWindow) is { } budget)
+        {
+            events.Add(new ProviderStreamEvent(ProviderStreamEventKind.TokenBudget, TokenBudget: budget));
+        }
+
+        return events;
+    }
+
+    private static IReadOnlyList<string> ReasoningDeltas(JsonElement root)
+    {
+        var values = new List<string>();
+        foreach (var key in new[] { "reasoning_content", "reasoning", "thinking", "redacted_thinking", "reasoning_summary" })
+        {
+            if (root.TryGetProperty(key, out var value))
+            {
+                AppendReasoningText(value, values);
+            }
+        }
+
+        return values;
+    }
+
+    private static void AppendReasoningText(JsonElement value, List<string> values)
+    {
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var text = value.GetString();
+            if (!string.IsNullOrEmpty(text))
+            {
+                values.Add(text);
+            }
+
+            return;
+        }
+
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        foreach (var key in new[] { "content", "thinking", "text", "reasoning", "summary" })
+        {
+            if (value.TryGetProperty(key, out var nested))
+            {
+                AppendReasoningText(nested, values);
+            }
+        }
+    }
+
+    public static IReadOnlyList<ProviderStreamEvent> OpenAIResponsesEvents(JsonElement root, int contextWindow)
+    {
+        var events = new List<ProviderStreamEvent>();
+        var type = root.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : null;
+        switch (type)
+        {
+            case "response.output_text.delta":
+                if (root.TryGetProperty("delta", out var delta) && delta.ValueKind == JsonValueKind.String)
+                {
+                    events.Add(new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: delta.GetString()));
+                }
+                break;
+            case "response.output_item.done":
+                if (root.TryGetProperty("item", out var item) && item.TryGetProperty("type", out var itemType) &&
+                    itemType.GetString() == "function_call")
+                {
+                    var name = item.TryGetProperty("name", out var nameElement) ? nameElement.GetString() ?? "" : "";
+                    var callId = item.TryGetProperty("call_id", out var callIdElement) ? callIdElement.GetString() ?? "" : "";
+                    var arguments = item.TryGetProperty("arguments", out var argumentsElement) ? argumentsElement.ToString() : "{}";
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        events.Add(new ProviderStreamEvent(
+                            ProviderStreamEventKind.ToolCall,
+                            ToolCall: new AgentToolCall(string.IsNullOrWhiteSpace(callId) ? $"call-{Guid.NewGuid():D}" : callId, name, string.IsNullOrWhiteSpace(arguments) ? "{}" : arguments)));
+                    }
+                }
+                break;
+            case "response.completed":
+                if (TryTokenBudget(root, contextWindow) is { } budget)
+                {
+                    events.Add(new ProviderStreamEvent(ProviderStreamEventKind.TokenBudget, TokenBudget: budget));
+                }
+                events.Add(new ProviderStreamEvent(ProviderStreamEventKind.Done));
+                break;
+        }
+
+        return events;
+    }
+
+    public static IReadOnlyList<ProviderStreamEvent> AnthropicMessagesEvents(JsonElement root, int contextWindow)
+    {
+        var events = new List<ProviderStreamEvent>();
+        var type = root.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : null;
+        if (type == "content_block_delta" &&
+            root.TryGetProperty("delta", out var delta) &&
+            delta.TryGetProperty("text", out var text) &&
+            text.ValueKind == JsonValueKind.String)
+        {
+            events.Add(new ProviderStreamEvent(ProviderStreamEventKind.ContentDelta, Text: text.GetString()));
+        }
+        else if (type == "message_delta" && TryTokenBudget(root, contextWindow) is { } budget)
+        {
+            events.Add(new ProviderStreamEvent(ProviderStreamEventKind.TokenBudget, TokenBudget: budget));
+        }
+        else if (type == "message_stop")
+        {
+            events.Add(new ProviderStreamEvent(ProviderStreamEventKind.Done));
+        }
+
+        return events;
+    }
+
+    public static ProviderRetryDecision RetryDecision(Exception error, int failedAttempts, ProviderRetryPolicy? policy = null)
+    {
+        policy ??= ProviderRetryPolicy.CodexDefault;
+        if (error is ProviderClientException { PartialVisibleOutput: true })
+        {
+            return ProviderRetryDecision.NoRetry;
+        }
+
+        if (failedAttempts >= policy.StreamMaxRetries)
+        {
+            return ProviderRetryDecision.NoRetry;
+        }
+
+        if (error is ProviderClientException { StatusCode: int statusCode })
+        {
+            var retry = (statusCode == 429 && policy.Retry429) || (statusCode >= 500 && policy.Retry5xx);
+            return retry
+                ? new ProviderRetryDecision(true, RetryBackoffDelay(failedAttempts, policy.BaseDelayMs), $"HTTP {statusCode}")
+                : ProviderRetryDecision.NoRetry;
+        }
+
+        if (policy.RetryTransport && error is HttpRequestException or TaskCanceledException or IOException)
+        {
+            return new ProviderRetryDecision(true, RetryBackoffDelay(failedAttempts, policy.BaseDelayMs), "transport");
+        }
+
+        if (policy.RetryTransport && error is ProviderClientException transport &&
+            transport.Message.Contains("timed out", StringComparison.OrdinalIgnoreCase))
+        {
+            return new ProviderRetryDecision(true, RetryBackoffDelay(failedAttempts, policy.BaseDelayMs), "transport");
+        }
+
+        return ProviderRetryDecision.NoRetry;
+    }
+
+    public static TimeSpan RetryBackoffDelay(int failedAttempts, int baseDelayMs = 200)
+    {
+        var multiplier = Math.Pow(2, Math.Max(0, failedAttempts));
+        return TimeSpan.FromMilliseconds(baseDelayMs * multiplier);
+    }
+
+    private static AgentToolCall? OpenAIToolCallFromDelta(JsonElement toolCall)
+    {
+        if (!toolCall.TryGetProperty("function", out var function)) return null;
+        var name = function.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null;
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        var id = toolCall.TryGetProperty("id", out var idElement) ? idElement.GetString() : null;
+        var arguments = function.TryGetProperty("arguments", out var argumentsElement) ? argumentsElement.GetString() : "{}";
+        return new AgentToolCall(string.IsNullOrWhiteSpace(id) ? $"call-{Guid.NewGuid():D}" : id!, name!, string.IsNullOrWhiteSpace(arguments) ? "{}" : arguments!);
+    }
+
+    private static TokenBudget? TryTokenBudget(JsonElement root, int contextWindow)
+    {
+        if (!root.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object) return null;
+
+        var inputTokens = IntProperty(usage, "input_tokens");
+        var outputTokens = IntProperty(usage, "output_tokens");
+        var total = IntProperty(usage, "total_tokens") ??
+                    AddNullable(inputTokens, outputTokens) ??
+                    inputTokens ??
+                    outputTokens;
+        return total is int used ? new TokenBudget(used, contextWindow) : null;
+    }
+
+    private static int? AddNullable(int? left, int? right) =>
+        left is int leftValue && right is int rightValue ? leftValue + rightValue : null;
+
+    private static int? IntProperty(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var value)) return null;
+        return value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var result) ? result : null;
+    }
+}
+
+public sealed class OpenAIChatToolCallAccumulator
+{
+    private readonly Dictionary<int, ToolCallBuilder> _builders = [];
+
+    public IReadOnlyList<ProviderStreamEvent> Apply(JsonElement root)
+    {
+        var events = new List<ProviderStreamEvent>();
+        if (!root.TryGetProperty("choices", out var choices) ||
+            choices.ValueKind != JsonValueKind.Array ||
+            choices.GetArrayLength() == 0)
+        {
+            return events;
+        }
+
+        var choice = choices[0];
+        if (choice.TryGetProperty("delta", out var delta) &&
+            delta.TryGetProperty("tool_calls", out var toolCalls) &&
+            toolCalls.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var toolCall in toolCalls.EnumerateArray())
+            {
+                var index = toolCall.TryGetProperty("index", out var indexElement) && indexElement.TryGetInt32(out var parsedIndex)
+                    ? parsedIndex
+                    : _builders.Count;
+                if (!_builders.TryGetValue(index, out var builder))
+                {
+                    builder = new ToolCallBuilder();
+                    _builders[index] = builder;
+                }
+
+                if (toolCall.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.String)
+                {
+                    builder.Id = idElement.GetString();
+                }
+
+                if (toolCall.TryGetProperty("function", out var function))
+                {
+                    if (function.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String)
+                    {
+                        builder.Name = nameElement.GetString();
+                    }
+
+                    if (function.TryGetProperty("arguments", out var argumentsElement) && argumentsElement.ValueKind == JsonValueKind.String)
+                    {
+                        builder.Arguments.Append(argumentsElement.GetString());
+                    }
+                }
+            }
+        }
+
+        var finishReason = choice.TryGetProperty("finish_reason", out var finishElement) && finishElement.ValueKind == JsonValueKind.String
+            ? finishElement.GetString()
+            : null;
+        if (string.Equals(finishReason, "tool_calls", StringComparison.OrdinalIgnoreCase))
+        {
+            events.AddRange(Flush());
+        }
+
+        return events;
+    }
+
+    public IReadOnlyList<ProviderStreamEvent> Flush()
+    {
+        if (_builders.Count == 0) return [];
+        var events = _builders
+            .OrderBy(pair => pair.Key)
+            .Select(pair => pair.Value.ToCall())
+            .Where(call => call is not null)
+            .Select(call => new ProviderStreamEvent(ProviderStreamEventKind.ToolCall, ToolCall: call))
+            .ToList();
+        _builders.Clear();
+        return events;
+    }
+
+    private sealed class ToolCallBuilder
+    {
+        public string? Id { get; set; }
+        public string? Name { get; set; }
+        public StringBuilder Arguments { get; } = new();
+
+        public AgentToolCall? ToCall()
+        {
+            if (string.IsNullOrWhiteSpace(Name)) return null;
+            var id = string.IsNullOrWhiteSpace(Id) ? $"call-{Guid.NewGuid():D}" : Id.Trim();
+            var args = Arguments.Length == 0 ? "{}" : Arguments.ToString();
+            return new AgentToolCall(id, Name.Trim(), string.IsNullOrWhiteSpace(args) ? "{}" : args);
+        }
+    }
+}
+
+public interface IProviderClient
+{
+    IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+        AgentRequest request,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed class ProviderClient : IProviderClient
+{
+    private readonly HttpClient _httpClient;
+
+    public ProviderClient(HttpClient? httpClient = null)
+    {
+        _httpClient = httpClient ?? new HttpClient();
+    }
+
+    public async IAsyncEnumerable<ProviderStreamEvent> StreamAsync(
+        AgentRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ValidateRequest(request);
+        var chatToolAccumulator = request.ProviderConfig.ApiType == ProviderApiType.OpenAIChat
+            ? new OpenAIChatToolCallAccumulator()
+            : null;
+        using var httpRequest = BuildRequest(request);
+        using var response = await _httpClient.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw ProviderClientException.HttpError((int)response.StatusCode, body);
+        }
+
+        if (request.Stream)
+        {
+            yield return new ProviderStreamEvent(ProviderStreamEventKind.Status, Text: "streaming");
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        var sawVisibleOutput = false;
+        var nonSseBody = new StringBuilder();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (line is null) break;
+            if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    nonSseBody.AppendLine(line);
+                }
+
+                continue;
+            }
+
+            var data = line["data:".Length..].Trim();
+            if (data == "[DONE]")
+            {
+                if (chatToolAccumulator is not null)
+                {
+                    foreach (var pendingToolCall in chatToolAccumulator.Flush())
+                    {
+                        yield return pendingToolCall;
+                    }
+                }
+
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+                yield break;
+            }
+
+            IReadOnlyList<ProviderStreamEvent> events;
+            try
+            {
+                using var doc = JsonDocument.Parse(data);
+                events = request.ProviderConfig.ApiType switch
+                {
+                    ProviderApiType.OpenAIChat => NativeAgentRuntime.OpenAIChatEvents(doc.RootElement, request.ContextWindow)
+                        .Where(item => item.Kind != ProviderStreamEventKind.ToolCall)
+                        .Concat(chatToolAccumulator?.Apply(doc.RootElement) ?? [])
+                        .ToList(),
+                    ProviderApiType.OpenAIResponses => NativeAgentRuntime.OpenAIResponsesEvents(doc.RootElement, request.ContextWindow),
+                    ProviderApiType.AnthropicMessages => NativeAgentRuntime.AnthropicMessagesEvents(doc.RootElement, request.ContextWindow),
+                    _ => [],
+                };
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            foreach (var providerEvent in events)
+            {
+                sawVisibleOutput |= providerEvent.Kind is ProviderStreamEventKind.ContentDelta or ProviderStreamEventKind.ReasoningDelta or ProviderStreamEventKind.ToolCall;
+                yield return providerEvent;
+            }
+        }
+
+        if (!sawVisibleOutput && nonSseBody.Length > 0)
+        {
+            foreach (var providerEvent in ParseNonSseResponse(nonSseBody.ToString(), request))
+            {
+                sawVisibleOutput |= providerEvent.Kind is ProviderStreamEventKind.ContentDelta or ProviderStreamEventKind.ReasoningDelta or ProviderStreamEventKind.ToolCall;
+                yield return providerEvent;
+            }
+
+            if (sawVisibleOutput)
+            {
+                yield return new ProviderStreamEvent(ProviderStreamEventKind.Done);
+                yield break;
+            }
+        }
+
+        if (sawVisibleOutput)
+        {
+            throw ProviderClientException.StreamInterruptedAfterPartialOutput("Provider stream ended without a done marker.");
+        }
+    }
+
+    private static IReadOnlyList<ProviderStreamEvent> ParseNonSseResponse(string body, AgentRequest request)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return request.ProviderConfig.ApiType switch
+            {
+                ProviderApiType.OpenAIChat => NativeAgentRuntime.OpenAIChatEvents(doc.RootElement, request.ContextWindow),
+                ProviderApiType.OpenAIResponses => NativeAgentRuntime.OpenAIResponsesEvents(doc.RootElement, request.ContextWindow),
+                ProviderApiType.AnthropicMessages => NativeAgentRuntime.AnthropicMessagesEvents(doc.RootElement, request.ContextWindow),
+                _ => [],
+            };
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static void ValidateRequest(AgentRequest request)
+    {
+        if (request.ProviderConfig.Provider != SessionProvider.PilotDeck) throw ProviderClientException.UnsupportedProvider(request.ProviderConfig.Provider);
+        if (string.IsNullOrWhiteSpace(request.ProviderConfig.BaseUrl)) throw ProviderClientException.MissingBaseUrl();
+        if (string.IsNullOrWhiteSpace(request.ProviderConfig.Model)) throw ProviderClientException.MissingModel();
+        if (string.IsNullOrWhiteSpace(request.ApiKey)) throw ProviderClientException.MissingApiKey();
+    }
+
+    private static HttpRequestMessage BuildRequest(AgentRequest request)
+    {
+        var suffix = request.ProviderConfig.ApiType switch
+        {
+            ProviderApiType.OpenAIChat => "chat/completions",
+            ProviderApiType.OpenAIResponses => "responses",
+            ProviderApiType.AnthropicMessages => "messages",
+            _ => "chat/completions",
+        };
+        var httpRequest = new HttpRequestMessage(HttpMethod.Post, NativeAgentRuntime.EndpointUrl(request.ProviderConfig.BaseUrl, suffix));
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", request.ApiKey);
+        foreach (var header in request.ProviderConfig.Headers)
+        {
+            httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
+
+        if (request.ProviderConfig.ApiType == ProviderApiType.AnthropicMessages)
+        {
+            httpRequest.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+        }
+
+        var body = request.ProviderConfig.ApiType switch
+        {
+            ProviderApiType.OpenAIResponses => BuildOpenAIResponsesBody(request),
+            ProviderApiType.AnthropicMessages => BuildAnthropicBody(request),
+            _ => BuildOpenAIChatBody(request),
+        };
+        httpRequest.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        return httpRequest;
+    }
+
+    private static Dictionary<string, object?> BuildOpenAIChatBody(AgentRequest request)
+    {
+        var body = new Dictionary<string, object?>
+        {
+            ["model"] = request.ProviderConfig.Model,
+            ["stream"] = request.Stream,
+            ["messages"] = BuildOpenAIMessages(request),
+        };
+        if (request.Stream)
+        {
+            body["stream_options"] = new Dictionary<string, object?> { ["include_usage"] = true };
+        }
+
+        if (request.EnableTools)
+        {
+            body["tools"] = AgentToolRegistry.OpenAITools();
+            body["tool_choice"] = "auto";
+        }
+
+        return body;
+    }
+
+    private static Dictionary<string, object?> BuildOpenAIResponsesBody(AgentRequest request)
+    {
+        var body = new Dictionary<string, object?>
+        {
+            ["model"] = request.ProviderConfig.Model,
+            ["stream"] = request.Stream,
+            ["input"] = PromptWithAttachmentSummary(request),
+        };
+        if (request.EnableTools)
+        {
+            body["tools"] = AgentToolRegistry.OpenAITools().Select(tool => tool["function"]).ToList();
+        }
+
+        return body;
+    }
+
+    private static Dictionary<string, object?> BuildAnthropicBody(AgentRequest request) => new()
+    {
+        ["model"] = request.ProviderConfig.Model,
+        ["stream"] = request.Stream,
+        ["max_tokens"] = 4096,
+        ["messages"] = new[] { new Dictionary<string, object?> { ["role"] = "user", ["content"] = PromptWithAttachmentSummary(request) } },
+    };
+
+    private static List<Dictionary<string, object?>> BuildOpenAIMessages(AgentRequest request)
+    {
+        var messages = new List<Dictionary<string, object?>>();
+        if (request.IncludeNativeSystemPrompt)
+        {
+            messages.Add(new Dictionary<string, object?>
+            {
+                ["role"] = "system",
+                ["content"] = NativeAgentRuntime.NativeAgentSystemPrompt(request),
+            });
+        }
+
+        messages.AddRange(request.PriorMessages
+            .Where(message => message.Role is ChatRole.User or ChatRole.Assistant or ChatRole.System)
+            .Select(message => new Dictionary<string, object?>
+            {
+                ["role"] = message.Role.ToString().ToLowerInvariant(),
+                ["content"] = message.PlainText,
+            })
+            .ToList());
+        messages.Add(new Dictionary<string, object?> { ["role"] = "user", ["content"] = BuildOpenAIUserContent(request) });
+        foreach (var exchange in request.ToolExchanges)
+        {
+            messages.Add(new Dictionary<string, object?>
+            {
+                ["role"] = "assistant",
+                ["content"] = "",
+                ["tool_calls"] = new object[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = exchange.Call.Id,
+                        ["type"] = "function",
+                        ["function"] = new Dictionary<string, object?>
+                        {
+                            ["name"] = exchange.Call.Name,
+                            ["arguments"] = exchange.Call.InputJson,
+                        },
+                    },
+                },
+            });
+            messages.Add(new Dictionary<string, object?>
+            {
+                ["role"] = "tool",
+                ["tool_call_id"] = exchange.Call.Id,
+                ["content"] = exchange.Result.Output,
+            });
+        }
+
+        return PreserveOpenAIToolPairIntegrity(messages).ToList();
+    }
+
+    public static IReadOnlyList<Dictionary<string, object?>> PreserveOpenAIToolPairIntegrity(IReadOnlyList<Dictionary<string, object?>> messages)
+    {
+        var assistantCallIds = messages
+            .SelectMany(ToolCallIds)
+            .ToHashSet(StringComparer.Ordinal);
+        var toolResultIds = messages
+            .Select(ToolResultId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id!)
+            .ToHashSet(StringComparer.Ordinal);
+        assistantCallIds.IntersectWith(toolResultIds);
+
+        var preserved = new List<Dictionary<string, object?>>();
+        foreach (var message in messages)
+        {
+            var role = ValueAsString(message.GetValueOrDefault("role"));
+            if (string.Equals(role, "tool", StringComparison.Ordinal))
+            {
+                var id = ToolResultId(message);
+                if (!string.IsNullOrWhiteSpace(id) && assistantCallIds.Contains(id))
+                {
+                    preserved.Add(new Dictionary<string, object?>(message));
+                }
+                continue;
+            }
+
+            if (string.Equals(role, "assistant", StringComparison.Ordinal) &&
+                FilteredToolCalls(message.GetValueOrDefault("tool_calls"), assistantCallIds) is { } filteredCalls)
+            {
+                var next = new Dictionary<string, object?>(message);
+                if (filteredCalls.Count == 0)
+                {
+                    next.Remove("tool_calls");
+                    if (ContentIsEmpty(next.GetValueOrDefault("content")))
+                    {
+                        continue;
+                    }
+                }
+                else
+                {
+                    next["tool_calls"] = filteredCalls;
+                }
+
+                preserved.Add(next);
+                continue;
+            }
+
+            preserved.Add(new Dictionary<string, object?>(message));
+        }
+
+        return preserved;
+    }
+
+    private static IEnumerable<string> ToolCallIds(IReadOnlyDictionary<string, object?> message)
+    {
+        if (!string.Equals(ValueAsString(message.GetValueOrDefault("role")), "assistant", StringComparison.Ordinal))
+        {
+            yield break;
+        }
+
+        foreach (var call in ToolCallDictionaries(message.GetValueOrDefault("tool_calls")))
+        {
+            if (ValueAsString(call.GetValueOrDefault("id")) is { Length: > 0 } id)
+            {
+                yield return id;
+            }
+        }
+    }
+
+    private static string? ToolResultId(IReadOnlyDictionary<string, object?> message)
+    {
+        if (!string.Equals(ValueAsString(message.GetValueOrDefault("role")), "tool", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return ValueAsString(message.GetValueOrDefault("tool_call_id"));
+    }
+
+    private static List<Dictionary<string, object?>>? FilteredToolCalls(object? rawCalls, IReadOnlySet<string> pairedIds)
+    {
+        if (rawCalls is null)
+        {
+            return null;
+        }
+
+        var filtered = ToolCallDictionaries(rawCalls)
+            .Where(call => ValueAsString(call.GetValueOrDefault("id")) is { } id && pairedIds.Contains(id))
+            .Select(call => new Dictionary<string, object?>(call))
+            .ToList();
+        return filtered;
+    }
+
+    private static IEnumerable<IReadOnlyDictionary<string, object?>> ToolCallDictionaries(object? rawCalls)
+    {
+        if (rawCalls is IEnumerable<Dictionary<string, object?>> dictionaries)
+        {
+            foreach (var call in dictionaries)
+            {
+                yield return call;
+            }
+        }
+        else if (rawCalls is IEnumerable<object?> objects)
+        {
+            foreach (var item in objects)
+            {
+                if (item is IReadOnlyDictionary<string, object?> call)
+                {
+                    yield return call;
+                }
+            }
+        }
+    }
+
+    private static bool ContentIsEmpty(object? value) =>
+        value is null ||
+        value is string text && string.IsNullOrWhiteSpace(text);
+
+    private static string? ValueAsString(object? value) => value switch
+    {
+        null => null,
+        string text => text,
+        _ => value.ToString(),
+    };
+
+    private static object BuildOpenAIUserContent(AgentRequest request)
+    {
+        if (request.Attachments.Count == 0)
+        {
+            return request.Prompt;
+        }
+
+        var attachmentParts = NativeAttachmentResolver.OpenAIContentParts(request.Attachments).Parts;
+        if (attachmentParts.Count == 0)
+        {
+            return PromptWithAttachmentSummary(request);
+        }
+
+        var summary = PromptWithAttachmentSummary(request);
+        var parts = new List<Dictionary<string, object?>>();
+        if (!string.IsNullOrWhiteSpace(summary))
+        {
+            parts.Add(new Dictionary<string, object?>
+            {
+                ["type"] = "text",
+                ["text"] = summary,
+            });
+        }
+
+        parts.AddRange(attachmentParts);
+        return parts;
+    }
+
+    private static string PromptWithAttachmentSummary(AgentRequest request)
+    {
+        return NativeAttachmentResolver.PromptWithAttachments(request.Prompt, request.Attachments);
+    }
+}

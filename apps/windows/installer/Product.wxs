@@ -1,22 +1,24 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
-    Name="G9Claw"
-    Manufacturer="G9Claw Contributors"
+    Name="PilotDeck"
+    Manufacturer="PilotDeck Contributors"
     Version="0.1.0"
     Scope="perMachine"
     UpgradeCode="{F4EF07B0-51E6-4A77-9C6C-D4A8D57D271B}">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of G9Claw is already installed." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of PilotDeck is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="PilotDeckIcon" SourceFile="..\src\PilotDeck.Windows\Assets\pilotdeck.ico" />
+    <Property Id="ARPPRODUCTICON" Value="PilotDeckIcon" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="G9Claw" />
+      <Directory Id="INSTALLFOLDER" Name="PilotDeck" />
     </StandardDirectory>
 
     <ComponentGroup Id="PublishedFiles" Directory="INSTALLFOLDER">
       <Files Include="$(var.PublishDir)**\*" />
     </ComponentGroup>
 
-    <Feature Id="Main" Title="G9Claw" Level="1">
+    <Feature Id="Main" Title="PilotDeck" Level="1">
       <ComponentGroupRef Id="PublishedFiles" />
     </Feature>
   </Package>

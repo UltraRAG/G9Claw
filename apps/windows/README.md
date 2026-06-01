@@ -1,6 +1,6 @@
-# G9Claw Native Windows
+# PilotDeck Native Windows
 
-Native Windows desktop implementation for G9Claw.
+Native Windows desktop implementation for PilotDeck.
 
 This app follows the native macOS parity target in `apps/macos-native/`:
 
@@ -14,9 +14,9 @@ This app follows the native macOS parity target in `apps/macos-native/`:
 
 ```text
 apps/windows/
-  src/G9Claw.Windows.Core/   # Native runtime, models, tools, settings, providers
-  src/G9Claw.Windows/        # WinUI 3 app shell
-  tests/G9Claw.Windows.Tests # Parity and Windows safety tests
+  src/PilotDeck.Windows.Core/   # Native runtime, models, tools, settings, providers
+  src/PilotDeck.Windows/        # WinUI 3 app shell
+  tests/PilotDeck.Windows.Tests # Parity and Windows safety tests
   installer/                 # WiX installer scaffold
 ```
 
@@ -28,20 +28,20 @@ workloads installed.
 ```powershell
 cd apps/windows
 dotnet restore
-dotnet build .\G9Claw.Windows.sln -c Debug
-dotnet test .\G9Claw.Windows.sln -c Debug
-dotnet publish .\src\G9Claw.Windows\G9Claw.Windows.csproj -c Release -r win-x64 --self-contained true
-dotnet build .\installer\G9Claw.Windows.Installer.wixproj -c Release
+dotnet build .\PilotDeck.Windows.sln -c Debug
+dotnet test .\PilotDeck.Windows.sln -c Debug
+dotnet publish .\src\PilotDeck.Windows\PilotDeck.Windows.csproj -c Release -r win-x64 --self-contained true
+dotnet build .\installer\PilotDeck.Windows.Installer.wixproj -c Release
 ```
 
-`G9Claw.Windows.sln` intentionally contains only the WinUI app, core library,
+`PilotDeck.Windows.sln` intentionally contains only the WinUI app, core library,
 and tests so Visual Studio 2026 can open and build it without a WiX extension.
 Build the WiX installer project from the command line with `dotnet build`.
 If Visual Studio still says it cannot start a class library, set
-`G9Claw.Windows` as the startup project. Older `.vs/` state can keep pointing at
-`G9Claw.Windows.Core` from before the solution order was corrected.
+`PilotDeck.Windows` as the startup project. Older `.vs/` state can keep pointing at
+`PilotDeck.Windows.Core` from before the solution order was corrected.
 
-The app stores runtime data under `%LOCALAPPDATA%\G9Claw`.
+The app stores runtime data under `%LOCALAPPDATA%\PilotDeck`.
 
 The WinUI app targets the installed Windows SDK API contract
 `net10.0-windows10.0.26100.0` while keeping `TargetPlatformMinVersion` at

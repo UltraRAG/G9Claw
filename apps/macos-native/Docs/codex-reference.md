@@ -1,6 +1,6 @@
 # Codex Architecture Reference
 
-`/Users/hx/Workspace/codex` is the local, read-only architecture reference for the native G9Claw agent runtime.
+`/Users/hx/Workspace/codex` is the local, read-only architecture reference for the native PilotDeck agent runtime.
 
 The Swift native app does not depend on Codex binaries or Rust crates. The reference is used to keep our implementation aligned with Codex's management model:
 
