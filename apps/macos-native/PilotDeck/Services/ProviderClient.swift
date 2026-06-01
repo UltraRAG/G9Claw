@@ -3690,7 +3690,7 @@ struct NativeAgentRuntime: Sendable {
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorAppTransportSecurityRequiresSecureConnection {
             return ProviderClientError.transport(
-                "App Transport Security blocked the HTTP provider request. Rebuild and launch the latest PilotDeck app bundle so NSAppTransportSecurity is included."
+                "App Transport Security blocked the HTTP provider request. Remote HTTP endpoints require a PilotDeck build that explicitly allows user-configured insecure provider URLs, or the provider must be served over HTTPS."
             )
         }
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {

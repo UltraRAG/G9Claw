@@ -2898,6 +2898,76 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(AgentActivity.runHeaderActivities([completedStatus, unrelated], anchoredTo: assistantID).map(\.id), ["run"])
     }
 
+    func testAssistantProcessHeaderCanFallbackToPersistedToolBlocks() {
+        let message = ChatMessage(
+            id: UUID(),
+            sessionId: "session",
+            provider: .pilotDeck,
+            role: .assistant,
+            blocks: [
+                .toolCall(ToolCall(id: "call-read", name: "Read", inputJSON: "{}", status: .completed)),
+                .toolResult(ToolResult(toolCallId: "call-read", output: "ok", isError: false)),
+                .text("Done")
+            ],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+        let askQuestion = ChatMessage(
+            id: UUID(),
+            sessionId: "session",
+            provider: .pilotDeck,
+            role: .assistant,
+            blocks: [.toolCall(ToolCall(id: "ask", name: "AskQuestion", inputJSON: "{}", status: .completed))],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+
+        XCTAssertTrue(message.hasPersistedProcessBlocks)
+        XCTAssertTrue(message.hasAssistantTranscriptContent)
+        XCTAssertFalse(askQuestion.hasPersistedProcessBlocks)
+        XCTAssertFalse(askQuestion.hasAssistantTranscriptContent)
+    }
+
+    func testChatMessagePersistsRunTimingForCompletedHeaders() throws {
+        let started = Date(timeIntervalSince1970: 1_800_000_000)
+        let ended = started.addingTimeInterval(12)
+        let legacyMessage = ChatMessage(
+            id: UUID(),
+            sessionId: "session",
+            provider: .pilotDeck,
+            role: .assistant,
+            blocks: [.text("Legacy")],
+            createdAt: started,
+            isStreaming: false,
+            tokenBudget: nil
+        )
+        let message = ChatMessage(
+            id: UUID(),
+            sessionId: "session",
+            provider: .pilotDeck,
+            role: .assistant,
+            blocks: [.text("Done")],
+            createdAt: started,
+            isStreaming: false,
+            tokenBudget: nil,
+            runStartedAt: started,
+            runEndedAt: ended
+        )
+
+        let legacyData = try JSONEncoder().encode(legacyMessage)
+        let decodedLegacy = try JSONDecoder().decode(ChatMessage.self, from: legacyData)
+        let data = try JSONEncoder().encode(message)
+        let decoded = try JSONDecoder().decode(ChatMessage.self, from: data)
+
+        XCTAssertTrue(decodedLegacy.hasAssistantTranscriptContent)
+        XCTAssertNil(decodedLegacy.runStartedAt)
+        XCTAssertNil(decodedLegacy.runEndedAt)
+        XCTAssertEqual(decoded.runStartedAt?.timeIntervalSince1970 ?? 0, started.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(decoded.runEndedAt?.timeIntervalSince1970 ?? 0, ended.timeIntervalSince1970, accuracy: 0.001)
+    }
+
     func testMemoryDashboardBuildsWorkspaceSnapshot() throws {
         let root = repoRootURL()
             .appendingPathComponent("pilotdeck-memory-\(UUID().uuidString)", isDirectory: true)

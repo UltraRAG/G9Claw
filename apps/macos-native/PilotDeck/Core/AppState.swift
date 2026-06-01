@@ -438,6 +438,7 @@ final class AppState: ObservableObject {
             userBlocks.append(.text("Attached files"))
         }
         let assistantID = UUID()
+        let runStartedAt = Date()
         assistantSessionByID[assistantID] = sessionID
         let userMessage = ChatMessage(
             id: UUID(),
@@ -461,8 +462,8 @@ final class AppState: ObservableObject {
                 detail: t(.openingRemoteModelStream),
                 phase: .status,
                 state: .running,
-                createdAt: Date(),
-                updatedAt: Date(),
+                createdAt: runStartedAt,
+                updatedAt: runStartedAt,
                 anchorBlockID: assistantID.uuidString,
                 sequence: nextActivitySequence()
             )
@@ -475,9 +476,10 @@ final class AppState: ObservableObject {
             provider: .pilotDeck,
             role: .assistant,
             blocks: [.text("")],
-            createdAt: Date(),
+            createdAt: runStartedAt,
             isStreaming: true,
-            tokenBudget: nil
+            tokenBudget: nil,
+            runStartedAt: runStartedAt
         )
         append(assistantMessage)
         markSession(sessionID, state: .processing)
@@ -861,6 +863,24 @@ final class AppState: ObservableObject {
         statusLine = t(.stopGeneration)
     }
 
+    func shutdownForTermination() {
+        activeAgentTask?.cancel()
+        activeAgentTask = nil
+        flushAllPendingAssistantDeltas()
+        assistantDeltaFlushTasks.values.forEach { $0.cancel() }
+        assistantDeltaFlushTasks.removeAll()
+        memoryAutomationTask?.cancel()
+        memoryAutomationTask = nil
+        alwaysOnBackgroundTasks.values.forEach { $0.cancel() }
+        alwaysOnBackgroundTasks.removeAll()
+        alwaysOnBackgroundRunTokens.removeAll()
+        activeRunToken = nil
+        resolveAllPendingPermissions(decision: .deny)
+        Task {
+            await alwaysOnManager.stop()
+        }
+    }
+
     private func finishCurrentRunAsSuperseded() {
         guard activeRunToken != nil || activeAgentTask != nil || isCurrentSessionStreaming else { return }
         activeAgentTask?.cancel()
@@ -1069,8 +1089,8 @@ final class AppState: ObservableObject {
             isGeneral: context.isGeneral
         )
         let config = alwaysOnConfigSnapshot()
-        Task { @MainActor in
-            await runAlwaysOnDiscovery(project: project, config: config, trigger: "manual")
+        launchAlwaysOnBackgroundTask(label: "manual-discovery-\(UUID().uuidString)") { [weak self] in
+            await self?.runAlwaysOnDiscovery(project: project, config: config, trigger: "manual")
         }
     }
 
@@ -1083,8 +1103,8 @@ final class AppState: ObservableObject {
             rootPath: context.rootPath,
             isGeneral: context.isGeneral
         )
-        Task { @MainActor in
-            await runAlwaysOnPlanInBackground(plan: plan, project: project, config: config)
+        launchAlwaysOnBackgroundTask(label: "manual-plan-\(plan.id)-\(UUID().uuidString)") { [weak self] in
+            await self?.runAlwaysOnPlanInBackground(plan: plan, project: project, config: config)
         }
     }
 
@@ -1097,9 +1117,19 @@ final class AppState: ObservableObject {
             rootPath: context.rootPath,
             isGeneral: context.isGeneral
         )
-        Task { @MainActor in
-            await runAlwaysOnCronInBackground(job: job, project: project, config: config)
+        launchAlwaysOnBackgroundTask(label: "manual-cron-\(job.id)-\(UUID().uuidString)") { [weak self] in
+            await self?.runAlwaysOnCronInBackground(job: job, project: project, config: config)
         }
+    }
+
+    private func launchAlwaysOnBackgroundTask(label: String, operation: @escaping @MainActor () async -> Void) {
+        alwaysOnBackgroundTasks[label]?.cancel()
+        let task = Task { @MainActor [weak self] in
+            defer { self?.alwaysOnBackgroundTasks.removeValue(forKey: label) }
+            guard !Task.isCancelled else { return }
+            await operation()
+        }
+        alwaysOnBackgroundTasks[label] = task
     }
 
     func applyAlwaysOnCycle(cycleID: String, projectRoot: String) {
@@ -1553,6 +1583,7 @@ final class AppState: ObservableObject {
         memoryProjectNameBySession[sessionID] = project.projectName
         memoryProjectRootBySession[sessionID] = project.rootPath
         let assistantID = UUID()
+        let runStartedAt = Date()
         assistantSessionByID[assistantID] = sessionID
         let userMessage = ChatMessage(
             id: UUID(),
@@ -1570,9 +1601,10 @@ final class AppState: ObservableObject {
             provider: .pilotDeck,
             role: .assistant,
             blocks: [.text("")],
-            createdAt: Date(),
+            createdAt: runStartedAt,
             isStreaming: true,
-            tokenBudget: nil
+            tokenBudget: nil,
+            runStartedAt: runStartedAt
         )
         messagesBySession[sessionID] = [userMessage, assistantMessage]
         markSession(sessionID, state: .processing)
@@ -2589,8 +2621,17 @@ final class AppState: ObservableObject {
 
     private func finishStreamingMessage(sessionID: String) {
         guard var messages = messagesBySession[sessionID] else { return }
+        let finishedAt = Date()
         for index in messages.indices where messages[index].isStreaming {
             messages[index].isStreaming = false
+            if messages[index].role == .assistant {
+                if messages[index].runStartedAt == nil {
+                    messages[index].runStartedAt = messages[index].createdAt
+                }
+                if messages[index].runEndedAt == nil {
+                    messages[index].runEndedAt = finishedAt
+                }
+            }
         }
         messagesBySession[sessionID] = messages
         persistSessionMessages(sessionID: sessionID)
@@ -2785,7 +2826,7 @@ final class AppState: ObservableObject {
     }
 
     private func resolveAllPendingPermissions(decision: AgentPermissionDecision) {
-        let ids = pendingPermissions.map(\.id)
+        let ids = Set(pendingPermissions.map(\.id)).union(permissionContinuations.keys)
         pendingPermissions.removeAll()
         for id in ids {
             permissionContinuations.removeValue(forKey: id)?.resume(returning: decision)

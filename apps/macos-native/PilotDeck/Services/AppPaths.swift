@@ -50,11 +50,14 @@ struct AppPaths {
 }
 
 enum AppLog {
+    private static let maxFileSize = 2_000_000
+
     static func write(_ message: String, file: String = "app.log") {
         guard let paths = try? AppPaths.current() else { return }
         let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
         let url = paths.logs.appendingPathComponent(file)
         if let data = line.data(using: .utf8) {
+            rotateIfNeeded(url)
             if FileManager.default.fileExists(atPath: url.path),
                let handle = try? FileHandle(forWritingTo: url) {
                 defer { try? handle.close() }
@@ -68,5 +71,18 @@ enum AppLog {
                 try? data.write(to: url, options: .atomic)
             }
         }
+    }
+
+    private static func rotateIfNeeded(_ url: URL) {
+        guard
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+            let size = attributes[.size] as? NSNumber,
+            size.intValue > maxFileSize
+        else { return }
+
+        let rotatedURL = url.deletingLastPathComponent()
+            .appendingPathComponent("\(url.lastPathComponent).1")
+        try? FileManager.default.removeItem(at: rotatedURL)
+        try? FileManager.default.moveItem(at: url, to: rotatedURL)
     }
 }

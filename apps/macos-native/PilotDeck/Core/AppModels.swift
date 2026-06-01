@@ -434,6 +434,8 @@ struct ChatMessage: Identifiable, Hashable, Codable {
     var createdAt: Date
     var isStreaming: Bool
     var tokenBudget: TokenBudget?
+    var runStartedAt: Date? = nil
+    var runEndedAt: Date? = nil
 
     var plainText: String {
         blocks.compactMap {

@@ -25,8 +25,12 @@ struct ChatView: View {
                                 VStack(alignment: .leading, spacing: 18) {
                                     ForEach(state.currentMessages) { message in
                                         let headerActivities = runHeaderActivities(for: message)
-                                        if !headerActivities.isEmpty {
-                                            ProcessRunHeader(activities: headerActivities)
+                                        if shouldShowRunHeader(for: message, activities: headerActivities) {
+                                            ProcessRunHeader(
+                                                activities: headerActivities,
+                                                startedAt: message.runStartedAt,
+                                                endedAt: message.runEndedAt
+                                            )
                                                 .environmentObject(state)
                                                 .id("process-run-header-\(message.id.uuidString)")
                                         }
@@ -139,6 +143,14 @@ struct ChatView: View {
     private func runHeaderActivities(for message: ChatMessage) -> [AgentActivity] {
         guard message.role == .assistant else { return [] }
         return AgentActivity.runHeaderActivities(state.currentActivities, anchoredTo: message.id.uuidString)
+    }
+
+    private func shouldShowRunHeader(for message: ChatMessage, activities: [AgentActivity]) -> Bool {
+        guard message.role == .assistant else { return false }
+        if !activities.isEmpty { return true }
+        if message.runStartedAt != nil || message.runEndedAt != nil { return true }
+        return message.hasPersistedProcessBlocks
+            || message.hasAssistantTranscriptContent
     }
 
     private var isPinnedToBottom: Bool {
@@ -1625,6 +1637,40 @@ private enum AssistantBlockSegment {
 private struct AssistantMessagePresentation {
     var processSegments: [AssistantBlockSegment]
     var visibleSegments: [AssistantBlockSegment]
+}
+
+extension ChatMessage {
+    var hasPersistedProcessBlocks: Bool {
+        blocks.contains { block in
+            switch block {
+            case .reasoning:
+                return true
+            case .toolCall(let call):
+                let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+                return canonicalName != "SwitchMode" && canonicalName != "AskQuestion"
+            case .toolResult:
+                return true
+            case .text, .attachment:
+                return false
+            }
+        }
+    }
+
+    var hasAssistantTranscriptContent: Bool {
+        blocks.contains { block in
+            switch block {
+            case .text(let text), .reasoning(let text):
+                return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .toolCall(let call):
+                let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+                return canonicalName != "SwitchMode" && canonicalName != "AskQuestion"
+            case .toolResult(let result):
+                return !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .attachment:
+                return true
+            }
+        }
+    }
 }
 
 private extension AssistantBlockSegment {
@@ -5044,6 +5090,8 @@ private struct PlanTraceContentView: View {
 private struct ProcessRunHeader: View {
     @EnvironmentObject private var state: AppState
     var activities: [AgentActivity]
+    var startedAt: Date?
+    var endedAt: Date?
     @State private var now = Date()
 
     private var visibleActivities: [AgentActivity] {
@@ -5070,18 +5118,28 @@ private struct ProcessRunHeader: View {
     }
 
     private var runStartedAt: Date {
-        visibleActivities.map(\.createdAt).min() ?? Date()
+        visibleActivities.map(\.createdAt).min() ?? startedAt ?? Date()
     }
 
     private var runEndedAt: Date {
         if hasRunningActivity {
             return now
         }
-        return visibleActivities.map(\.updatedAt).max() ?? now
+        return visibleActivities.map(\.updatedAt).max() ?? endedAt ?? now
+    }
+
+    private var measuredDuration: TimeInterval? {
+        if !visibleActivities.isEmpty || (startedAt != nil && endedAt != nil) {
+            return max(0, runEndedAt.timeIntervalSince(runStartedAt))
+        }
+        return nil
     }
 
     private var headerText: String {
-        let duration = formatDuration(max(0, runEndedAt.timeIntervalSince(runStartedAt)))
+        guard let measuredDuration else {
+            return isChinese ? "已处理" : "Processed"
+        }
+        let duration = formatDuration(measuredDuration)
         return isChinese ? "已处理 \(duration)" : "Processed \(duration)"
     }
 
