@@ -1,4 +1,6 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix
+  xmlns="http://wixtoolset.org/schemas/v4/wxs"
+  xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
     Name="PilotDeck"
     Manufacturer="PilotDeck Contributors"
@@ -9,17 +11,47 @@
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="PilotDeckIcon" SourceFile="..\src\PilotDeck.Windows\Assets\pilotdeck.ico" />
     <Property Id="ARPPRODUCTICON" Value="PilotDeckIcon" />
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="PilotDeck" />
     </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="PilotDeck" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
 
     <ComponentGroup Id="PublishedFiles" Directory="INSTALLFOLDER">
       <Files Include="$(var.PublishDir)**\*" />
     </ComponentGroup>
 
+    <ComponentGroup Id="ApplicationShortcuts">
+      <Component Id="StartMenuShortcut" Directory="ApplicationProgramsFolder" Guid="{65369F35-9796-45DF-93EF-F3B5A4768875}">
+        <Shortcut
+          Id="StartMenuPilotDeckShortcut"
+          Name="PilotDeck"
+          Description="Launch PilotDeck"
+          Target="[INSTALLFOLDER]PilotDeck.Windows.exe"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="PilotDeckIcon" />
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\PilotDeck\PilotDeck" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="{48B5BAE2-28F7-4217-8EFA-0F2419322DBD}">
+        <Shortcut
+          Id="DesktopPilotDeckShortcut"
+          Name="PilotDeck"
+          Description="Launch PilotDeck"
+          Target="[INSTALLFOLDER]PilotDeck.Windows.exe"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="PilotDeckIcon" />
+        <RegistryValue Root="HKCU" Key="Software\PilotDeck\PilotDeck" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
     <Feature Id="Main" Title="PilotDeck" Level="1">
       <ComponentGroupRef Id="PublishedFiles" />
+      <ComponentGroupRef Id="ApplicationShortcuts" />
     </Feature>
   </Package>
 </Wix>
