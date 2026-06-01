@@ -24,10 +24,11 @@ struct ChatView: View {
                             ScrollView {
                                 VStack(alignment: .leading, spacing: 18) {
                                     ForEach(state.currentMessages) { message in
-                                        if message.id == tracedAssistantID {
-                                            ProcessRunHeader(activities: runHeaderActivities)
+                                        let headerActivities = runHeaderActivities(for: message)
+                                        if !headerActivities.isEmpty {
+                                            ProcessRunHeader(activities: headerActivities)
                                                 .environmentObject(state)
-                                                .id("process-run-header")
+                                                .id("process-run-header-\(message.id.uuidString)")
                                         }
                                         MessageRow(message: message)
                                             .id(message.id)
@@ -133,6 +134,11 @@ struct ChatView: View {
 
     private var runHeaderActivities: [AgentActivity] {
         AgentActivity.runHeaderActivities(state.currentActivities, anchoredTo: latestAssistantID?.uuidString)
+    }
+
+    private func runHeaderActivities(for message: ChatMessage) -> [AgentActivity] {
+        guard message.role == .assistant else { return [] }
+        return AgentActivity.runHeaderActivities(state.currentActivities, anchoredTo: message.id.uuidString)
     }
 
     private var isPinnedToBottom: Bool {
@@ -1320,9 +1326,13 @@ private struct MessageRow: View {
     }
 
     private var assistantRow: some View {
-        HStack(alignment: .top, spacing: 8) {
+        let presentation = assistantPresentation
+        return HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(assistantSegments.enumerated()), id: \.offset) { _, segment in
+                if !presentation.processSegments.isEmpty {
+                    assistantProcessDisclosure(segments: presentation.processSegments)
+                }
+                ForEach(Array(presentation.visibleSegments.enumerated()), id: \.offset) { _, segment in
                     assistantSegmentView(segment)
                 }
             }
@@ -1348,6 +1358,62 @@ private struct MessageRow: View {
         .foregroundStyle(DesignTokens.text)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var assistantPresentation: AssistantMessagePresentation {
+        let segments = assistantSegments
+        guard !message.isStreaming,
+              let finalTextIndex = segments.indices.last(where: { segments[$0].isTextSegment }),
+              finalTextIndex > segments.startIndex else {
+            return AssistantMessagePresentation(processSegments: [], visibleSegments: segments)
+        }
+        let processSegments = Array(segments[..<finalTextIndex])
+        guard processSegments.contains(where: \.isProcessSegment) else {
+            return AssistantMessagePresentation(processSegments: [], visibleSegments: segments)
+        }
+        return AssistantMessagePresentation(
+            processSegments: processSegments,
+            visibleSegments: Array(segments[finalTextIndex...])
+        )
+    }
+
+    private var assistantProcessExpansionKey: String {
+        "assistant-process:\(message.sessionId):\(message.id.uuidString)"
+    }
+
+    @ViewBuilder
+    private func assistantProcessDisclosure(segments: [AssistantBlockSegment]) -> some View {
+        let expanded = state.isAssistantProcessExpanded(assistantProcessExpansionKey)
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    state.toggleAssistantProcessExpanded(assistantProcessExpansionKey)
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(CodexProcessStyle.detail)
+                        .frame(width: 16, height: 16)
+                    Text(localized("执行过程", "Process"))
+                        .font(CodexProcessStyle.rowFont)
+                        .foregroundStyle(CodexProcessStyle.detailStrong)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                        assistantSegmentView(segment)
+                    }
+                }
+                .padding(.leading, 24)
+                .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .topLeading)))
+            }
+        }
     }
 
     private func copyAssistantMessage() {
@@ -1443,6 +1509,17 @@ private struct MessageRow: View {
     private func isPureMarkdownSeparator(_ text: String) -> Bool {
         let compact = text.replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: " ", with: "")
         return compact == "---" || compact == "----"
+    }
+
+    private func localized(_ zh: String, _ en: String) -> String {
+        switch state.settings.language {
+        case .chineseSimplified:
+            return zh
+        case .english:
+            return en
+        case .system:
+            return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en
+        }
     }
 
     private var delegatedRow: some View {
@@ -1543,6 +1620,22 @@ private enum AssistantBlockSegment {
     case tool(ToolCall, ToolResult?, TodoListDiff?)
     case toolGroup([(ToolCall, ToolResult?)])
     case orphanToolResult(ToolResult)
+}
+
+private struct AssistantMessagePresentation {
+    var processSegments: [AssistantBlockSegment]
+    var visibleSegments: [AssistantBlockSegment]
+}
+
+private extension AssistantBlockSegment {
+    var isTextSegment: Bool {
+        if case .text = self { return true }
+        return false
+    }
+
+    var isProcessSegment: Bool {
+        !isTextSegment
+    }
 }
 
 private struct ReasoningDisclosure: View {

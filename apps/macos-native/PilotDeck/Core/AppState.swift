@@ -34,6 +34,7 @@ final class AppState: ObservableObject {
     @Published var toolRefreshRevision = 0
     @Published var streamRenderRevision = 0
     @Published var isDraftSessionVisible = false
+    @Published var expandedAssistantProcessIDs: Set<String> = []
     @Published var expandedToolRowIDs: Set<String> = []
     @Published var collapsedToolRowIDs: Set<String> = []
     @Published var tokenBudgetBySession: [String: TokenBudget] = [:]
@@ -292,6 +293,18 @@ final class AppState: ObservableObject {
         )
     }
 
+    func isAssistantProcessExpanded(_ id: String) -> Bool {
+        expandedAssistantProcessIDs.contains(id)
+    }
+
+    func toggleAssistantProcessExpanded(_ id: String) {
+        if expandedAssistantProcessIDs.contains(id) {
+            expandedAssistantProcessIDs.remove(id)
+        } else {
+            expandedAssistantProcessIDs.insert(id)
+        }
+    }
+
     private func updateUIPreferences(_ update: (inout NativeUIPreferences) -> Void) {
         var preferences = uiPreferences
         update(&preferences)
@@ -438,7 +451,9 @@ final class AppState: ObservableObject {
         )
         append(userMessage)
         touchSessionConversation(sessionID)
-        activitiesBySession[sessionID] = [
+        var activities = activitiesBySession[sessionID] ?? []
+        activities.removeAll { $0.anchorBlockID == assistantID.uuidString }
+        activities.append(
             AgentActivity(
                 id: "run-\(assistantID.uuidString)",
                 sessionId: sessionID,
@@ -451,7 +466,8 @@ final class AppState: ObservableObject {
                 anchorBlockID: assistantID.uuidString,
                 sequence: nextActivitySequence()
             )
-        ]
+        )
+        activitiesBySession[sessionID] = activities
 
         let assistantMessage = ChatMessage(
             id: assistantID,
