@@ -5200,9 +5200,24 @@ public sealed partial class MainWindow : Window
         try
         {
             var preview = _workspaceService.Preview(_selectedFilePath, State.SelectedProject.RootPath);
+            if (preview.Text is not null)
+            {
+                _previewDraftText ??= preview.Text;
+            }
+
             var root = new Grid { Background = Brush("V2BackgroundBrush") };
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            var isDirty = PreviewHasUnsavedChanges(preview);
+            Border? unsavedBadge = null;
+            Button? revertButton = null;
+            Button? saveButton = null;
+            void UpdateDirtyChrome(bool dirty)
+            {
+                if (unsavedBadge is not null) unsavedBadge.Visibility = dirty ? Visibility.Visible : Visibility.Collapsed;
+                if (revertButton is not null) revertButton.IsEnabled = dirty;
+                if (saveButton is not null) saveButton.IsEnabled = dirty;
+            }
 
             var header = new Grid
             {
@@ -5241,6 +5256,10 @@ public sealed partial class MainWindow : Window
                 VerticalAlignment = VerticalAlignment.Center,
                 MaxWidth = 360,
             };
+            unsavedBadge = FileUnsavedBadge();
+            unsavedBadge.Visibility = isDirty ? Visibility.Visible : Visibility.Collapsed;
+            actionPanel.Children.Add(unsavedBadge);
+
             if (FilePreviewActionPolicy.EditorPreviewToggleIcon(preview, _isMarkdownPreviewing) is { } toggleIcon)
             {
                 var toggle = PreviewHeaderButton(toggleIcon, _isMarkdownPreviewing ? (IsChineseUi() ? "\u7f16\u8f91" : "Edit") : T("tabs.preview"));
@@ -5288,17 +5307,19 @@ public sealed partial class MainWindow : Window
 
             if (preview.Text is not null)
             {
-                var revert = PreviewHeaderButton("Refresh", L("Revert", "\u8fd8\u539f"));
-                revert.Click += (_, _) =>
+                revertButton = PreviewHeaderButton("Refresh", L("Revert", "\u8fd8\u539f"));
+                revertButton.IsEnabled = isDirty;
+                revertButton.Click += (_, _) =>
                 {
                     _previewDraftText = preview.Text;
                     RenderContent();
                 };
-                actionPanel.Children.Add(revert);
+                actionPanel.Children.Add(revertButton);
 
-                var save = PreviewHeaderButton("Save", T("common.save"));
-                save.Click += async (_, _) => await SavePreviewAsync();
-                actionPanel.Children.Add(save);
+                saveButton = PreviewHeaderButton("Save", T("common.save"));
+                saveButton.IsEnabled = isDirty;
+                saveButton.Click += async (_, _) => await SavePreviewAsync();
+                actionPanel.Children.Add(saveButton);
             }
 
             var expand = PreviewHeaderButton(_isFileEditorExpanded ? "Shrink" : "Expand", _isFileEditorExpanded ? L("Restore", "\u8fd8\u539f") : L("Expand", "\u5c55\u5f00"));
@@ -5327,7 +5348,7 @@ public sealed partial class MainWindow : Window
             {
                 WorkspacePreviewKind.Markdown when _isMarkdownPreviewing => MarkdownPreview(preview),
                 WorkspacePreviewKind.Text or WorkspacePreviewKind.Html when _isCodePreviewing => CodeHighlightedPreview(preview, languageAlias),
-                WorkspacePreviewKind.Text or WorkspacePreviewKind.Markdown or WorkspacePreviewKind.Html => TextPreview(preview),
+                WorkspacePreviewKind.Text or WorkspacePreviewKind.Markdown or WorkspacePreviewKind.Html => TextPreview(preview, UpdateDirtyChrome),
                 WorkspacePreviewKind.Image => new ScrollViewer
                 {
                     Content = new Image
@@ -5359,6 +5380,23 @@ public sealed partial class MainWindow : Window
         preview.Text is not null
         && _previewDraftText is not null
         && !string.Equals(_previewDraftText, preview.Text, StringComparison.Ordinal);
+
+    private Border FileUnsavedBadge() => new()
+    {
+        CornerRadius = new CornerRadius(999),
+        Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(26, 245, 158, 11)),
+        Padding = new Thickness(7, 2, 7, 2),
+        VerticalAlignment = VerticalAlignment.Center,
+        Child = new TextBlock
+        {
+            Text = L("UNSAVED", "\u672a\u4fdd\u5b58"),
+            FontSize = 10,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            CharacterSpacing = 50,
+            Foreground = Brush("V2AmberBrush"),
+            VerticalAlignment = VerticalAlignment.Center,
+        },
+    };
 
     private async Task ClosePreviewAsync(WorkspacePreview preview)
     {
@@ -5440,7 +5478,7 @@ public sealed partial class MainWindow : Window
         _ => Brush("V2MutedForegroundBrush"),
     };
 
-    private FrameworkElement TextPreview(WorkspacePreview preview)
+    private FrameworkElement TextPreview(WorkspacePreview preview, Action<bool>? onDirtyChanged = null)
     {
         _previewDraftText ??= preview.Text ?? "";
         var editor = new TextBox
@@ -5454,7 +5492,11 @@ public sealed partial class MainWindow : Window
             Padding = new Thickness(12),
             BorderThickness = new Thickness(0),
         };
-        editor.TextChanged += (_, _) => _previewDraftText = editor.Text;
+        editor.TextChanged += (_, _) =>
+        {
+            _previewDraftText = editor.Text;
+            onDirtyChanged?.Invoke(PreviewHasUnsavedChanges(preview));
+        };
         return editor;
     }
 
