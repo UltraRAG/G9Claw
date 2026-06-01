@@ -93,6 +93,7 @@ public static class V2IconCatalog
         "Refresh" => ["M3 12a9 9 0 0 1 15-6.7L21 8", "M21 3v5h-5", "M21 12a9 9 0 0 1-15 6.7L3 16", "M3 21v-5h5"],
         "Search" => ["M21 21l-4.3-4.3", "M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16"],
         "Sparkles" => ["M12 3l1.9 5.7L20 11l-6.1 2.3L12 19l-1.9-5.7L4 11l6.1-2.3z", "M5 3v4", "M3 5h4", "M19 17v4", "M17 19h4"],
+        "SidebarLeft" => ["M3 3h18v18H3z", "M9 3v18"],
         "Stop" or "Square" => ["M6 6h12v12H6z"],
         "Terminal" or "terminal" => ["M4 17l6-6-6-6", "M12 19h8"],
         "Trash" => ["M3 6h18", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2", "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6", "M10 11v6", "M14 11v6"],

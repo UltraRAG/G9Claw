@@ -49,6 +49,7 @@ public static class LucideIconCatalog
         "Search",
         "Settings",
         "Shield",
+        "SidebarLeft",
         "Sparkles",
         "Square",
         "Terminal",

@@ -6213,7 +6213,7 @@ router:
         {
             "Bot", "Message", "Folder", "Sparkles", "BarChart3", "ChartBar", "Database", "ExternalDrive", "Radio", "DotRadiowaves",
             "PanelLeftClose", "PanelLeftOpen", "Settings", "MessageSquarePlus",
-            "Palette", "Shield", "Hand", "FileCog", "LayoutList", "Code", "Save",
+            "Palette", "Shield", "SidebarLeft", "Hand", "FileCog", "LayoutList", "Code", "Save",
             "Paperclip", "Copy", "Calendar", "Clock", "Search", "ChevronLeft",
         };
 

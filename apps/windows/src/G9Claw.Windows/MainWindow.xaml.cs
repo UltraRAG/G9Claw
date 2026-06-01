@@ -4999,7 +4999,7 @@ public sealed partial class MainWindow : Window
 
         if (string.IsNullOrWhiteSpace(_selectedFilePath))
         {
-            return EmptyState(T("files.noFileSelected"), T("files.noFileSelectedDetail"), "Document");
+            return FileEmptyEditor();
         }
 
         try
@@ -5158,6 +5158,43 @@ public sealed partial class MainWindow : Window
             };
         }
     }
+
+    private FrameworkElement FileEmptyEditor() => new Grid
+    {
+        Background = Brush("V2CardSurfaceSubtleBrush"),
+        Children =
+        {
+            new StackPanel
+            {
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                MaxWidth = 320,
+                Children =
+                {
+                    Icon("SidebarLeft", 24, Brush("V2MutedForegroundBrush")),
+                    new TextBlock
+                    {
+                        Text = L("Select a file to edit", "\u9009\u62e9\u6587\u4ef6\u5f00\u59cb\u7f16\u8f91"),
+                        FontSize = 14,
+                        FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                        Foreground = Brush("V2ForegroundBrush"),
+                        TextAlignment = TextAlignment.Center,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                    },
+                    new TextBlock
+                    {
+                        Text = L("Browse the project tree, then open a source file, image, or Markdown preview.", "\u5728\u5de6\u4fa7\u6d4f\u89c8\u9879\u76ee\u6587\u4ef6\uff0c\u6253\u5f00\u6e90\u7801\u3001\u56fe\u7247\u6216 Markdown \u9884\u89c8\u3002"),
+                        FontSize = 12,
+                        Foreground = Brush("V2SecondaryForegroundBrush"),
+                        TextWrapping = TextWrapping.Wrap,
+                        TextAlignment = TextAlignment.Center,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                    },
+                },
+            },
+        },
+    };
 
     private string FilePreviewHeaderIcon(WorkspacePreview preview) => preview.Kind switch
     {
