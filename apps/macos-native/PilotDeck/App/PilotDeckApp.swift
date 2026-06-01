@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct G9ClawApp: App {
+struct PilotDeckApp: App {
     @StateObject private var state = AppState()
 
     init() {

@@ -1,11 +1,11 @@
-# G9Claw Native macOS
+# PilotDeck Native macOS
 
-This is the active desktop implementation target for G9Claw. It is a native
+This is the active desktop implementation target for PilotDeck. It is a native
 macOS app written in Swift, SwiftUI, and AppKit.
 
 ## Goals
 
-- Provide the active G9Claw desktop experience as a native macOS app.
+- Provide the active PilotDeck desktop experience as a native macOS app.
 - Use native macOS controls where they improve fidelity and platform feel.
 - Remove Electron, Tauri, React desktop hosting, Node server hosting, Bun
   runtime hosting, and localhost HTTP/WebSocket listeners from the desktop app.
@@ -25,8 +25,8 @@ The app targets macOS 15.0+.
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcodebuild -project apps/macos-native/G9Claw.xcodeproj \
-  -scheme G9Claw \
+  xcodebuild -project apps/macos-native/PilotDeck.xcodeproj \
+  -scheme PilotDeck \
   -configuration Debug \
   CODE_SIGNING_ALLOWED=NO \
   build
@@ -40,9 +40,9 @@ Use the local packaging script when handing the app to another Mac:
 apps/macos-native/Scripts/package-local.sh
 ```
 
-The script creates `apps/macos-native/build/dist/G9Claw-mac-local.zip`, ad-hoc
+The script creates `apps/macos-native/build/dist/PilotDeck-mac-local.zip`, ad-hoc
 signs the app without using the Keychain, and includes an `INSTALL.txt` in the
-unzipped folder. For a passwordless install, unzip it and put `G9Claw.app` in
+unzipped folder. For a passwordless install, unzip it and put `PilotDeck.app` in
 `~/Applications` instead of the system `/Applications` folder. Copying into
 system `/Applications` may require an administrator password on the recipient's
 Mac.

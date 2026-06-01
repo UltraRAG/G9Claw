@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import G9Claw
+@testable import PilotDeck
 
 final class ParityLogicTests: XCTestCase {
     func testWorkspacePathValidationCoversRootOutsideAndSystemPaths() {
@@ -47,7 +47,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testWorkspaceFileListingReportsHiddenOnlyRoots() throws {
-        let root = temporaryDirectory("g9claw-files")
+        let root = temporaryDirectory("pilotdeck-files")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent(".pilotdeck"), withIntermediateDirectories: true)
 
@@ -68,7 +68,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testWorkspaceTextReadRejectsBinaryAndLargeFiles() throws {
-        let root = temporaryDirectory("g9claw-read")
+        let root = temporaryDirectory("pilotdeck-read")
         defer { try? FileManager.default.removeItem(at: root) }
         let service = WorkspaceService(workspaceRoot: root)
 
@@ -108,7 +108,7 @@ final class ParityLogicTests: XCTestCase {
         recent.sessions = [
             ProjectSession(
                 id: "recent-session",
-                provider: .g9Claw,
+                provider: .pilotDeck,
                 title: "Recent",
                 summary: "",
                 createdAt: now.addingTimeInterval(-9000),
@@ -144,16 +144,16 @@ final class ParityLogicTests: XCTestCase {
           workspacesRoot: ~/Workspace
         gateway:
           runtimePaths:
-            generalCwd: ~/G9Claw/general
+            generalCwd: ~/PilotDeck/general
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://example.local/v1
               apiKey: local-secret
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: qwen3.6-27b
         """
 
@@ -163,7 +163,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(snapshot?.apiKey, "local-secret")
         XCTAssertEqual(snapshot?.model, "qwen3.6-27b")
         XCTAssertEqual(snapshot?.workspacesRoot, "~/Workspace")
-        XCTAssertEqual(snapshot?.generalWorkspacePath, "~/G9Claw/general")
+        XCTAssertEqual(snapshot?.generalWorkspacePath, "~/PilotDeck/general")
     }
 
     func testGeneralWorkspacePathFallsBackWhenConfigIsRelative() {
@@ -183,30 +183,34 @@ final class ParityLogicTests: XCTestCase {
         )
     }
 
-    func testNativeConfigPathUsesG9ClawConfigLocationAndOverride() {
+    func testNativeConfigPathUsesPilotDeckConfigLocationAndOverride() {
         let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
 
         XCTAssertEqual(
-            G9ClawConfigPath.configURL(environment: [:], home: home).path,
+            PilotDeckConfigPath.configURL(environment: [:], home: home).path,
+            "/Users/tester/.pilotdeck/config.yaml"
+        )
+        XCTAssertEqual(
+            PilotDeckConfigPath.configURL(environment: ["PILOTDECK_CONFIG_PATH": "~/pilotdeck-dev.yaml"], home: home).path,
+            "/Users/tester/pilotdeck-dev.yaml"
+        )
+        XCTAssertEqual(
+            PilotDeckConfigPath.configURL(environment: ["G9CLAW_CONFIG_PATH": "~/legacy-dev.yaml"], home: home).path,
+            "/Users/tester/legacy-dev.yaml"
+        )
+        XCTAssertEqual(
+            PilotDeckConfigPath.legacyConfigURL(home: home).path,
             "/Users/tester/.g9claw/config.yaml"
-        )
-        XCTAssertEqual(
-            G9ClawConfigPath.configURL(environment: ["G9CLAW_CONFIG_PATH": "~/g9claw-dev.yaml"], home: home).path,
-            "/Users/tester/g9claw-dev.yaml"
-        )
-        XCTAssertEqual(
-            G9ClawConfigPath.legacyConfigURL(home: home).path,
-            "/Users/tester/.edgeclaw/config.yaml"
         )
     }
 
-    func testNativeDefaultConfigUsesG9ClawProviderAndSearchDefaults() {
-        let yaml = G9ClawConfigDefaults.configText(homePath: "/Users/tester", userName: "tester")
+    func testNativeDefaultConfigUsesPilotDeckProviderAndSearchDefaults() {
+        let yaml = PilotDeckConfigDefaults.configText(homePath: "/Users/tester", userName: "tester")
         let values = NativeConfigService.scalarMap(from: yaml)
 
-        XCTAssertEqual(values["models.entries.default.provider"], "g9claw")
-        XCTAssertEqual(values["models.providers.g9claw.type"], "openai-chat")
-        XCTAssertEqual(values["models.providers.edgeclaw.type"], nil)
+        XCTAssertEqual(values["models.entries.default.provider"], "pilotdeck")
+        XCTAssertEqual(values["models.providers.pilotdeck.type"], "openai-chat")
+        XCTAssertEqual(values["models.providers.g9claw.type"], nil)
         XCTAssertEqual(values["memory.model"], "inherit")
         XCTAssertEqual(values["memory.autoIndexIntervalMinutes"], "30")
         XCTAssertEqual(values["memory.autoDreamIntervalMinutes"], "60")
@@ -221,7 +225,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(values["router.tokenStats.defaultCostPerMillion"], "0.8")
         XCTAssertEqual(values["router.zeroUsageRetry.enabled"], "true")
         XCTAssertEqual(values["router.transientRetry.enabled"], "true")
-        XCTAssertEqual(values["gateway.home"], "/Users/tester/.g9claw/gateway")
+        XCTAssertEqual(values["gateway.home"], "/Users/tester/.pilotdeck/gateway")
         XCTAssertEqual(values["gateway.runtimePaths.generalCwd"], "~/PilotDeck/general")
 
         let channelNames = Set(values.keys.compactMap { key -> String? in
@@ -257,29 +261,29 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(values["gateway.channels.telegram.webhookPort"], "null")
         XCTAssertEqual(values["gateway.channels.wecom.websocketUrl"], "wss://openws.work.weixin.qq.com")
         XCTAssertEqual(values["gateway.channels.api_server.port"], "8642")
-        XCTAssertEqual(values["gateway.channels.api_server.modelName"], "g9claw-gateway")
+        XCTAssertEqual(values["gateway.channels.api_server.modelName"], "pilotdeck-gateway")
         XCTAssertEqual(values["gateway.channels.webhook.secret"], "")
     }
 
-    func testNativeConfigServiceUsesG9ClawAsDefaultProviderID() {
+    func testNativeConfigServiceUsesPilotDeckAsDefaultProviderID() {
         let yaml = """
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
-              baseUrl: http://g9claw.local/v1
+              baseUrl: http://pilotdeck.local/v1
               apiKey: test-secret
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: test-model
         """
 
         let values = NativeConfigService.scalarMap(from: yaml)
         let snapshot = NativeConfigService.snapshot(from: yaml)
 
-        XCTAssertEqual(NativeConfigService.providerID(entryID: "missing", values: values), "g9claw")
-        XCTAssertEqual(snapshot?.providerConfig.baseURL, "http://g9claw.local/v1")
+        XCTAssertEqual(NativeConfigService.providerID(entryID: "missing", values: values), "pilotdeck")
+        XCTAssertEqual(snapshot?.providerConfig.baseURL, "http://pilotdeck.local/v1")
         XCTAssertEqual(snapshot?.providerConfig.model, "test-model")
         XCTAssertEqual(snapshot?.providerConfig.secretAccount, ProviderConfig.empty.secretAccount)
         XCTAssertEqual(snapshot?.apiKey, "test-secret")
@@ -368,16 +372,16 @@ final class ParityLogicTests: XCTestCase {
         ])
     }
 
-    func testNativeMCPSettingsUseG9ClawPathsAndJSONShape() throws {
+    func testNativeMCPSettingsUsePilotDeckPathsAndJSONShape() throws {
         let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
 
         XCTAssertEqual(
             NativeMCPConfigService.globalConfigURL(home: home).path,
-            "/Users/tester/.g9claw/mcp.json"
+            "/Users/tester/.pilotdeck/mcp.json"
         )
         XCTAssertEqual(
             NativeMCPConfigService.projectConfigURL(projectRoot: "/Users/tester/project").path,
-            "/Users/tester/project/.g9claw/mcp.json"
+            "/Users/tester/project/.pilotdeck/mcp.json"
         )
 
         let raw = """
@@ -429,10 +433,10 @@ final class ParityLogicTests: XCTestCase {
         models:
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: main-model
             router_small:
-              provider: g9claw
+              provider: pilotdeck
               name: small-model
         """
         let values = NativeConfigService.scalarMap(from: yaml)
@@ -484,8 +488,8 @@ final class ParityLogicTests: XCTestCase {
             "router.tokenSaver.tiers.reasoning.model",
             "router.autoOrchestrate.mainAgentModel",
         ])
-        XCTAssertEqual(NativeModelsConfigFormFields.newEntryScalars(firstProvider: "g9claw"), [
-            "provider": "g9claw",
+        XCTAssertEqual(NativeModelsConfigFormFields.newEntryScalars(firstProvider: "pilotdeck"), [
+            "provider": "pilotdeck",
             "name": "",
             "contextWindow": "",
         ])
@@ -685,20 +689,20 @@ final class ParityLogicTests: XCTestCase {
     func testPermissionsExportDefaultsMatchWebNaming() throws {
         let date = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-05-23T23:55:00Z"))
 
-        XCTAssertEqual(PermissionsExportDefaults.source, "g9claw")
+        XCTAssertEqual(PermissionsExportDefaults.source, "pilotdeck")
         XCTAssertEqual(
             PermissionsExportDefaults.filename(date: date),
-            "g9claw-permissions-2026-05-23.json"
+            "pilotdeck-permissions-2026-05-23.json"
         )
     }
 
     @MainActor
-    func testPermissionsExportUsesG9ClawPayloadShape() throws {
+    func testPermissionsExportUsesPilotDeckPayloadShape() throws {
         let state = makeTestAppState()
         state.settings.permissions.allowedTools = ["Bash(git log:*)", "MultiEdit"]
         state.settings.permissions.disallowedTools = ["Bash(rm:*)"]
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-permissions-\(UUID().uuidString).json")
+            .appendingPathComponent("pilotdeck-permissions-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
 
         try state.exportPermissions(to: url)
@@ -706,7 +710,7 @@ final class ParityLogicTests: XCTestCase {
         let data = try Data(contentsOf: url)
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(payload["version"] as? Int, 1)
-        XCTAssertEqual(payload["source"] as? String, "g9claw")
+        XCTAssertEqual(payload["source"] as? String, "pilotdeck")
         XCTAssertNotNil(payload["exportedAt"] as? String)
         XCTAssertEqual(payload["allowedTools"] as? [String], ["Bash(git log:*)", "MultiEdit"])
         XCTAssertEqual(payload["disallowedTools"] as? [String], ["Bash(rm:*)"])
@@ -726,7 +730,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(state.settings.permissions.disallowedTools, ["Read"])
 
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-permissions-import-\(UUID().uuidString).json")
+            .appendingPathComponent("pilotdeck-permissions-import-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
         let payload: [String: Any] = [
             "allowedTools": ["Bash(git log:*)", "WebSearch"],
@@ -772,7 +776,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testComposerPermissionModeStorageMatchesWebLocalStorageKeys() throws {
-        let suiteName = "g9claw-permission-mode-\(UUID().uuidString)"
+        let suiteName = "pilotdeck-permission-mode-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
@@ -797,7 +801,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testNativeUIPreferencesStorageMatchesWebDefaultsAndLegacyFallback() throws {
-        let suiteName = "g9claw-ui-prefs-\(UUID().uuidString)"
+        let suiteName = "pilotdeck-ui-prefs-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
@@ -830,7 +834,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testNativeUIPreferencesStorageSavesUnifiedSidebarVisibility() throws {
-        let suiteName = "g9claw-ui-prefs-save-\(UUID().uuidString)"
+        let suiteName = "pilotdeck-ui-prefs-save-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
@@ -901,7 +905,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertThrowsError(try AgentToolExecutor.validatedWorkingDirectory("general")) { error in
             XCTAssertTrue(error.localizedDescription.contains("absolute path"))
         }
-        XCTAssertThrowsError(try AgentToolExecutor.validatedWorkingDirectory("/tmp/g9claw-missing-\(UUID().uuidString)")) { error in
+        XCTAssertThrowsError(try AgentToolExecutor.validatedWorkingDirectory("/tmp/pilotdeck-missing-\(UUID().uuidString)")) { error in
             XCTAssertTrue(error.localizedDescription.contains("does not exist"))
         }
     }
@@ -914,26 +918,26 @@ final class ParityLogicTests: XCTestCase {
           workspacesRoot: /Users/tester
         gateway:
           runtimePaths:
-            generalCwd: /Users/tester/G9Claw/general
+            generalCwd: /Users/tester/PilotDeck/general
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://example.local/v1
               apiKey: local-secret
               headers:
                 X-Test: enabled
-            g9claw_router:
+            pilotdeck_router:
               type: openai-chat
               baseUrl: http://router.local/v1
               apiKey: router-secret
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: qwen3.6-27b
               contextWindow: 160000
             router_small:
-              provider: g9claw_router
+              provider: pilotdeck_router
               name: qwen3.6-35b-a3b
               contextWindow: 64000
         router:
@@ -961,7 +965,7 @@ final class ParityLogicTests: XCTestCase {
         let yaml = """
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://example.local/v1
             router:
@@ -970,7 +974,7 @@ final class ParityLogicTests: XCTestCase {
               apiKey: router-secret
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: default-model
             direct_router:
               provider: router
@@ -1000,19 +1004,19 @@ final class ParityLogicTests: XCTestCase {
           contextWindow: 131072
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://main.local/v1
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: default-model
             main_large:
-              provider: g9claw
+              provider: pilotdeck
               name: main-model
               contextWindow: 262144
             router_small:
-              provider: g9claw
+              provider: pilotdeck
               name: router-model
               contextWindow: 64000
         agents:
@@ -1044,15 +1048,15 @@ final class ParityLogicTests: XCTestCase {
           contextWindow: 131072
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://main.local/v1
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: default-model
             main_large:
-              provider: g9claw
+              provider: pilotdeck
               name: main-model
         agents:
           main:
@@ -1218,7 +1222,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertLessThanOrEqual(second, 0.44)
     }
 
-    func testNativeAgentRuntimeToolSchemasIncludeG9ClawCodeCoreTools() {
+    func testNativeAgentRuntimeToolSchemasIncludePilotDeckCodeCoreTools() {
         let tools = AgentToolRegistry.openAITools()
         let names = tools.compactMap { tool -> String? in
             guard let function = tool["function"] as? [String: Any] else { return nil }
@@ -1256,7 +1260,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(names.contains("Weather"))
     }
 
-    func testAgentToolNameCanonicalizerKeepsG9ClawCodeAndSubagentAliasesCompatible() {
+    func testAgentToolNameCanonicalizerKeepsPilotDeckCodeAndSubagentAliasesCompatible() {
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("Edit"), "StrReplace")
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("MultiEdit"), "StrReplace")
         XCTAssertEqual(AgentToolNameCanonicalizer.canonical("Bash"), "Shell")
@@ -1364,7 +1368,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(calls.first?.inputJSON.contains(#""pattern":"*""#) == true)
     }
 
-    func testNativeAgentRuntimeParsesG9ClawInvokeFallbackToolCall() {
+    func testNativeAgentRuntimeParsesPilotDeckInvokeFallbackToolCall() {
         let text = """
         <invoke name="Skill">
         <parameter name="skill">code-review</parameter>
@@ -1542,7 +1546,7 @@ final class ParityLogicTests: XCTestCase {
 
     func testAgentPathResolverRejectsTraversalOutsideWorkspace() throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-agent-root-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-agent-root-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -1980,12 +1984,12 @@ final class ParityLogicTests: XCTestCase {
     func testWorkspaceMutationIgnoresInjectedMemoryContext() {
         let prompt = """
         <memory-context>
-        只回答一句：G9Claw smoke test ok。
+        只回答一句：PilotDeck smoke test ok。
 
         之前用户要求优化、创建、修改网页。
         </memory-context>
 
-        只回答一句：G9Claw smoke test ok。
+        只回答一句：PilotDeck smoke test ok。
         """
 
         XCTAssertFalse(NativeAgentRuntime.isWorkspaceMutationRequest(prompt))
@@ -2101,7 +2105,7 @@ final class ParityLogicTests: XCTestCase {
 
     func testAgentToolExecutorWritesInsideWorkspace() async throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-agent-write-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-agent-write-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
@@ -2119,7 +2123,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testAgentToolExecutorReadsTextImagePDFAndNotebook() async throws {
-        let root = try makeAgentWorkspace("g9claw-agent-read")
+        let root = try makeAgentWorkspace("pilotdeck-agent-read")
         defer { try? FileManager.default.removeItem(at: root) }
         try "alpha\nbeta\ngamma".write(to: root.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
         try writeTinyPNG(to: root.appendingPathComponent("pixel.png"))
@@ -2165,7 +2169,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testAgentToolExecutorEditsDeletesAndNotebookCells() async throws {
-        let root = try makeAgentWorkspace("g9claw-agent-edit")
+        let root = try makeAgentWorkspace("pilotdeck-agent-edit")
         defer { try? FileManager.default.removeItem(at: root) }
         let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
         try "one fish one fish".write(to: root.appendingPathComponent("story.txt"), atomically: true, encoding: .utf8)
@@ -2234,7 +2238,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testAgentToolExecutorSearchShellAwaitAndLints() async throws {
-        let root = try makeAgentWorkspace("g9claw-agent-search")
+        let root = try makeAgentWorkspace("pilotdeck-agent-search")
         defer {
             AgentBackgroundTaskStore.shared.terminate()
             try? FileManager.default.removeItem(at: root)
@@ -2305,7 +2309,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testLegacySearchAndWeatherExecutionsNormalizeToWebSearchWhileWebFetchIsDisabled() async throws {
-        let root = try makeAgentWorkspace("g9claw-agent-disabled-search")
+        let root = try makeAgentWorkspace("pilotdeck-agent-disabled-search")
         defer { try? FileManager.default.removeItem(at: root) }
         let context = AgentRunContext(request: agentRequest(
             projectPath: root.path,
@@ -2340,7 +2344,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testAgentToolExecutorInteractionModeTodoAndTaskTools() async throws {
-        let root = try makeAgentWorkspace("g9claw-agent-interaction")
+        let root = try makeAgentWorkspace("pilotdeck-agent-interaction")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent("subdir"), withIntermediateDirectories: true)
         let context = AgentRunContext(request: agentRequest(projectPath: root.path, runMode: .plan, permissionMode: .bypassPermissions))
@@ -2432,12 +2436,12 @@ final class ParityLogicTests: XCTestCase {
 
     func testComposerPasteboardReaderParsesFinderFileAndMixedText() throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-paste-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-paste-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let fileURL = root.appendingPathComponent("notes.txt")
         try "hello".write(to: fileURL, atomically: true, encoding: .utf8)
-        let pasteboard = NSPasteboard(name: NSPasteboard.Name("g9claw-test-\(UUID().uuidString)"))
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("pilotdeck-test-\(UUID().uuidString)"))
         pasteboard.clearContents()
         pasteboard.writeObjects([fileURL as NSURL])
         pasteboard.setString("Please inspect the attached file.", forType: .string)
@@ -2450,12 +2454,12 @@ final class ParityLogicTests: XCTestCase {
 
     func testComposerPasteboardReaderDropsFinderFileNameTextPayload() throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-filename-paste-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-filename-paste-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let fileURL = root.appendingPathComponent("github.pptx")
         try Data("pptx".utf8).write(to: fileURL)
-        let pasteboard = NSPasteboard(name: NSPasteboard.Name("g9claw-filename-\(UUID().uuidString)"))
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("pilotdeck-filename-\(UUID().uuidString)"))
         pasteboard.clearContents()
         pasteboard.writeObjects([fileURL as NSURL])
         pasteboard.setString("github.pptx", forType: .string)
@@ -2468,12 +2472,12 @@ final class ParityLogicTests: XCTestCase {
 
     func testComposerPasteboardReaderParsesPlainFilePathWithoutTextPayload() throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-path-paste-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-path-paste-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let fileURL = root.appendingPathComponent("notes with spaces.md")
         try "# Notes".write(to: fileURL, atomically: true, encoding: .utf8)
-        let pasteboard = NSPasteboard(name: NSPasteboard.Name("g9claw-path-\(UUID().uuidString)"))
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("pilotdeck-path-\(UUID().uuidString)"))
         pasteboard.clearContents()
         pasteboard.setString(fileURL.path, forType: .string)
 
@@ -2489,7 +2493,7 @@ final class ParityLogicTests: XCTestCase {
         NSColor.red.setFill()
         NSRect(x: 0, y: 0, width: 8, height: 8).fill()
         image.unlockFocus()
-        let pasteboard = NSPasteboard(name: NSPasteboard.Name("g9claw-image-\(UUID().uuidString)"))
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("pilotdeck-image-\(UUID().uuidString)"))
         pasteboard.clearContents()
         pasteboard.writeObjects([image])
         let savedURL = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -2517,7 +2521,7 @@ final class ParityLogicTests: XCTestCase {
               let jpeg = bitmap.representation(using: .jpeg, properties: [:]) else {
             return XCTFail("Expected test image to produce JPEG data.")
         }
-        let pasteboard = NSPasteboard(name: NSPasteboard.Name("g9claw-jpeg-\(UUID().uuidString)"))
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("pilotdeck-jpeg-\(UUID().uuidString)"))
         pasteboard.clearContents()
         pasteboard.setData(jpeg, forType: NSPasteboard.PasteboardType("public.jpeg"))
         let savedURL = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -2629,13 +2633,13 @@ final class ParityLogicTests: XCTestCase {
         let english = LocalizationService(language: .english)
         let chinese = LocalizationService(language: .chineseSimplified)
 
-        XCTAssertEqual(english.text(.projectWelcomePrompt, "G9Claw"), "Where should we move G9Claw forward today?")
+        XCTAssertEqual(english.text(.projectWelcomePrompt, "PilotDeck"), "Where should we move PilotDeck forward today?")
         XCTAssertEqual(chinese.text(.projectWelcomePrompt, "原神"), "从「原神」开始，今天推进哪一块？")
     }
 
     func testAppSettingsStoreRoundTripsLanguage() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-settings-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-settings-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = AppSettingsStore(url: root.appendingPathComponent("settings.json"))
         var settings = AppSettings.defaults
@@ -2896,8 +2900,8 @@ final class ParityLogicTests: XCTestCase {
 
     func testMemoryDashboardBuildsWorkspaceSnapshot() throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-memory-\(UUID().uuidString)", isDirectory: true)
-        let memoryRoot = root.appendingPathComponent(".g9claw/memory", isDirectory: true)
+            .appendingPathComponent("pilotdeck-memory-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent(".pilotdeck/memory", isDirectory: true)
         try FileManager.default.createDirectory(at: memoryRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -2915,7 +2919,7 @@ final class ParityLogicTests: XCTestCase {
         Ship the native Memory dashboard.
         """.write(to: memoryRoot.appendingPathComponent("launch-plan.md"), atomically: true, encoding: .utf8)
 
-        let service = MemoryService()
+        let service = MemoryService(memoryRoot: root.appendingPathComponent("isolated-pilotdeck-memory", isDirectory: true))
         service.loadWorkspaceRecords(projectRoot: root.path, projectName: "Native")
         let snapshot = service.dashboard(projectName: "Native", projectRoot: root.path)
 
@@ -2927,11 +2931,11 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(snapshot.overview.totalEntries, 1)
     }
 
-    func testMemoryServiceLoadsG9ClawWorkspaceAndGlobalMemoryShape() throws {
+    func testMemoryServiceLoadsPilotDeckWorkspaceAndGlobalMemoryShape() throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-memory-load-\(UUID().uuidString)", isDirectory: true)
-        let memoryRoot = root.appendingPathComponent("g9claw-memory", isDirectory: true)
-        let workspaceHash = MemoryService.g9clawWorkspaceHash(for: root.standardizedFileURL.path)
+            .appendingPathComponent("pilotdeck-memory-load-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("pilotdeck-memory", isDirectory: true)
+        let workspaceHash = MemoryService.pilotDeckWorkspaceHash(for: root.standardizedFileURL.path)
         let workspaceMemoryRoot = memoryRoot
             .appendingPathComponent("workspaces", isDirectory: true)
             .appendingPathComponent(workspaceHash, isDirectory: true)
@@ -3015,7 +3019,7 @@ final class ParityLogicTests: XCTestCase {
         try """
         ---
         project_name: Web Memory Project
-        description: Project metadata from g9claw memory.
+        description: Project metadata from pilotdeck memory.
         status: active
         updated_at: 2026-05-23T11:00:00Z
         ---
@@ -3044,10 +3048,10 @@ final class ParityLogicTests: XCTestCase {
 
     func testMemoryCurrentProjectExportUsesWebSnapshotBundleShape() throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-memory-export-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-memory-export-\(UUID().uuidString)", isDirectory: true)
         let projectRoot = root.appendingPathComponent("project", isDirectory: true)
-        let memoryRoot = root.appendingPathComponent("g9claw-memory", isDirectory: true)
-        let workspaceHash = MemoryService.g9clawWorkspaceHash(for: projectRoot.standardizedFileURL.path)
+        let memoryRoot = root.appendingPathComponent("pilotdeck-memory", isDirectory: true)
+        let workspaceHash = MemoryService.pilotDeckWorkspaceHash(for: projectRoot.standardizedFileURL.path)
         let workspaceMemoryRoot = memoryRoot
             .appendingPathComponent("workspaces", isDirectory: true)
             .appendingPathComponent(workspaceHash, isDirectory: true)
@@ -3097,7 +3101,7 @@ final class ParityLogicTests: XCTestCase {
         let files = try XCTUnwrap(object["files"] as? [[String: Any]])
         let paths = files.compactMap { $0["relativePath"] as? String }
 
-        XCTAssertEqual(object["formatVersion"] as? String, "clawxmemory-memory-snapshot.v4")
+        XCTAssertEqual(object["formatVersion"] as? String, "pilotdeck-memory-snapshot.v1")
         XCTAssertEqual(object["scope"] as? String, "current_project")
         XCTAssertEqual(paths, ["Project/router-cost.md"])
         XCTAssertFalse(paths.contains("MEMORY.md"))
@@ -3105,14 +3109,14 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue((files.first?["content"] as? String)?.contains("Saved price baseline") == true)
     }
 
-    func testMemoryImportCurrentProjectWritesG9ClawWorkspaceFiles() throws {
+    func testMemoryImportCurrentProjectWritesPilotDeckWorkspaceFiles() throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-memory-import-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-memory-import-\(UUID().uuidString)", isDirectory: true)
         let projectRoot = root.appendingPathComponent("project", isDirectory: true)
-        let memoryRoot = root.appendingPathComponent("g9claw-memory", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("pilotdeck-memory", isDirectory: true)
         try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspaceHash = MemoryService.g9clawWorkspaceHash(for: projectRoot.standardizedFileURL.path)
+        let workspaceHash = MemoryService.pilotDeckWorkspaceHash(for: projectRoot.standardizedFileURL.path)
         let workspaceMemoryRoot = memoryRoot
             .appendingPathComponent("workspaces", isDirectory: true)
             .appendingPathComponent(workspaceHash, isDirectory: true)
@@ -3127,10 +3131,10 @@ final class ParityLogicTests: XCTestCase {
         updated_at: 2026-05-23T10:00:00Z
         ---
 
-        The native app should materialize this file under the G9Claw workspace memory root.
+        The native app should materialize this file under the PilotDeck workspace memory root.
         """
         let bundle: [String: Any] = [
-            "formatVersion": "clawxmemory-memory-snapshot.v4",
+            "formatVersion": "pilotdeck-memory-snapshot.v1",
             "scope": "current_project",
             "exportedAt": "2026-05-23T10:00:00Z",
             "files": [
@@ -3154,7 +3158,7 @@ final class ParityLogicTests: XCTestCase {
 
     func testMemoryImportRejectsUnsafeSnapshotPaths() throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-memory-unsafe-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-memory-unsafe-\(UUID().uuidString)", isDirectory: true)
         let projectRoot = root.appendingPathComponent("project", isDirectory: true)
         try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -3170,7 +3174,7 @@ final class ParityLogicTests: XCTestCase {
             ]
         ]
         let data = try JSONSerialization.data(withJSONObject: bundle, options: [.sortedKeys])
-        let service = MemoryService(memoryRoot: root.appendingPathComponent("g9claw-memory", isDirectory: true))
+        let service = MemoryService(memoryRoot: root.appendingPathComponent("pilotdeck-memory", isDirectory: true))
 
         XCTAssertThrowsError(try service.importBundle(data, projectName: "Native", projectRoot: projectRoot.path)) { error in
             XCTAssertTrue(error.localizedDescription.contains("Invalid files[0].relativePath"))
@@ -3179,7 +3183,7 @@ final class ParityLogicTests: XCTestCase {
 
     func testMemoryDreamRollbackAndBundleRoundTrip() throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-memory-dream-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-memory-dream-\(UUID().uuidString)", isDirectory: true)
         let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
         let projectRoot = root.appendingPathComponent("Native", isDirectory: true)
         try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
@@ -3243,13 +3247,13 @@ final class ParityLogicTests: XCTestCase {
             projectRoot: nil
         )
         XCTAssertFalse(empty.injected)
-        XCTAssertEqual(service.caseTraces(limit: 1).first?.reply, "EdgeClaw memory returned no relevant context.")
+        XCTAssertEqual(service.caseTraces(limit: 1).first?.reply, "PilotDeck memory returned no relevant context.")
     }
 
     @MainActor
     func testMemoryCaptureTurnIndexesProjectMemoryAndCompletesTrace() async throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-memory-capture-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-memory-capture-\(UUID().uuidString)", isDirectory: true)
         let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
         let projectRoot = root.appendingPathComponent("Native", isDirectory: true)
         try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
@@ -3260,7 +3264,7 @@ final class ParityLogicTests: XCTestCase {
         let user = ChatMessage(
             id: UUID(),
             sessionId: sessionID,
-            provider: .g9Claw,
+            provider: .pilotDeck,
             role: .user,
             blocks: [.text("Remember that router pricing should show saved price first.")],
             createdAt: Date(),
@@ -3270,7 +3274,7 @@ final class ParityLogicTests: XCTestCase {
         let assistant = ChatMessage(
             id: UUID(),
             sessionId: sessionID,
-            provider: .g9Claw,
+            provider: .pilotDeck,
             role: .assistant,
             blocks: [.text("Captured the router pricing display preference.")],
             createdAt: Date(),
@@ -3314,7 +3318,7 @@ final class ParityLogicTests: XCTestCase {
     @MainActor
     func testMemoryIndexAndDreamPromoteUserIdentityToGlobalProfile() async throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-memory-identity-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-memory-identity-\(UUID().uuidString)", isDirectory: true)
         let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
         let projectRoot = root.appendingPathComponent("Native", isDirectory: true)
         try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
@@ -3325,7 +3329,7 @@ final class ParityLogicTests: XCTestCase {
         let user = ChatMessage(
             id: UUID(),
             sessionId: sessionID,
-            provider: .g9Claw,
+            provider: .pilotDeck,
             role: .user,
             blocks: [.text("你好 我叫张三 是一个游戏开发工程师")],
             createdAt: Date(),
@@ -3335,7 +3339,7 @@ final class ParityLogicTests: XCTestCase {
         let assistant = ChatMessage(
             id: UUID(),
             sessionId: sessionID,
-            provider: .g9Claw,
+            provider: .pilotDeck,
             role: .assistant,
             blocks: [.text("你好，张三。")],
             createdAt: Date(),
@@ -3389,7 +3393,7 @@ final class ParityLogicTests: XCTestCase {
     @MainActor
     func testMemoryJobsPersistStateAndTraceIDsInSnapshot() async throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-memory-job-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-memory-job-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try "hello".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
@@ -3419,7 +3423,7 @@ final class ParityLogicTests: XCTestCase {
     @MainActor
     func testMemoryAutomaticJobsRunDueIndexAndDreamWithAutoTraces() async throws {
         let root = repoRootURL()
-            .appendingPathComponent("g9claw-memory-auto-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-memory-auto-\(UUID().uuidString)", isDirectory: true)
         let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -3432,7 +3436,7 @@ final class ParityLogicTests: XCTestCase {
             let user = ChatMessage(
                 id: UUID(),
                 sessionId: sessionID,
-                provider: .g9Claw,
+                provider: .pilotDeck,
                 role: .user,
                 blocks: [.text("Remember project fact \(index): auto memory should persist.")],
                 createdAt: Date(),
@@ -3442,7 +3446,7 @@ final class ParityLogicTests: XCTestCase {
             let assistant = ChatMessage(
                 id: UUID(),
                 sessionId: sessionID,
-                provider: .g9Claw,
+                provider: .pilotDeck,
                 role: .assistant,
                 blocks: [.text("Saved project fact \(index).")],
                 createdAt: Date(),
@@ -3476,8 +3480,8 @@ final class ParityLogicTests: XCTestCase {
 
     func testAlwaysOnServiceParsesWebCronAndRunHistoryShape() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-alwayson-\(UUID().uuidString)", isDirectory: true)
-        let alwaysOnRoot = root.appendingPathComponent(".g9claw/always-on", isDirectory: true)
+            .appendingPathComponent("pilotdeck-alwayson-\(UUID().uuidString)", isDirectory: true)
+        let alwaysOnRoot = root.appendingPathComponent(".pilotdeck/always-on", isDirectory: true)
         let plansRoot = alwaysOnRoot.appendingPathComponent("plans", isDirectory: true)
         let runsRoot = alwaysOnRoot.appendingPathComponent("runs", isDirectory: true)
         try FileManager.default.createDirectory(at: plansRoot, withIntermediateDirectories: true)
@@ -3499,7 +3503,7 @@ final class ParityLogicTests: XCTestCase {
               "rationale": "Keep background maintenance visible.",
               "status": "ready",
               "approvalMode": "manual",
-              "planFilePath": ".g9claw/always-on/plans/plan-a.md",
+              "planFilePath": ".pilotdeck/always-on/plans/plan-a.md",
               "contextRefs": {
                 "workingDirectory": ["/repo"],
                 "memory": ["Router parity note"],
@@ -3578,7 +3582,7 @@ final class ParityLogicTests: XCTestCase {
 
     func testAlwaysOnServiceCreatesPlanAndRunHistoryRoundTrip() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-alwayson-roundtrip-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-alwayson-roundtrip-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -3619,19 +3623,19 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(discoveryHistory.metadata["trigger"], "manual")
         XCTAssertEqual(discoveryHistory.outputLog, "No plan needed.")
 
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".g9claw/always-on", isDirectory: true).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".pilotdeck/always-on", isDirectory: true).path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".claude", isDirectory: true).path))
     }
 
-    func testAlwaysOnServiceReadsWebG9ClawAlwaysOnAndCronTaskFiles() throws {
+    func testAlwaysOnServiceReadsWebPilotDeckAlwaysOnAndCronTaskFiles() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-alwayson-g9claw-\(UUID().uuidString)", isDirectory: true)
-        let alwaysOnRoot = root.appendingPathComponent(".g9claw/always-on", isDirectory: true)
+            .appendingPathComponent("pilotdeck-alwayson-pilotdeck-\(UUID().uuidString)", isDirectory: true)
+        let alwaysOnRoot = root.appendingPathComponent(".pilotdeck/always-on", isDirectory: true)
         let plansRoot = alwaysOnRoot.appendingPathComponent("plans", isDirectory: true)
         let runsRoot = alwaysOnRoot.appendingPathComponent("runs", isDirectory: true)
         try FileManager.default.createDirectory(at: plansRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: runsRoot, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".g9claw", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".pilotdeck", isDirectory: true), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         try "# Web Plan\n\nUse the web Always-On root.".write(
@@ -3645,11 +3649,11 @@ final class ParityLogicTests: XCTestCase {
             {
               "id": "plan-web",
               "title": "Web root plan",
-              "summary": "Plan stored in .g9claw.",
+              "summary": "Plan stored in .pilotdeck.",
               "rationale": "Matches the web UI storage path.",
               "status": "ready",
               "approvalMode": "manual",
-              "planFilePath": ".g9claw/always-on/plans/plan-web.md",
+              "planFilePath": ".pilotdeck/always-on/plans/plan-web.md",
               "createdAt": "2026-05-23T10:00:00Z",
               "updatedAt": "2026-05-23T10:05:00Z"
             }
@@ -3674,7 +3678,7 @@ final class ParityLogicTests: XCTestCase {
             }
           ]
         }
-        """.write(to: root.appendingPathComponent(".g9claw/scheduled_tasks.json"), atomically: true, encoding: .utf8)
+        """.write(to: root.appendingPathComponent(".pilotdeck/scheduled_tasks.json"), atomically: true, encoding: .utf8)
         try """
         {
           "tasks": [
@@ -3688,14 +3692,14 @@ final class ParityLogicTests: XCTestCase {
             }
           ]
         }
-        """.write(to: root.appendingPathComponent(".g9claw/session_scheduled_tasks.json"), atomically: true, encoding: .utf8)
+        """.write(to: root.appendingPathComponent(".pilotdeck/session_scheduled_tasks.json"), atomically: true, encoding: .utf8)
 
         let service = AlwaysOnService()
         let plans = service.plans(projectRoot: root.path)
         let history = service.runHistory(projectRoot: root.path)
         let jobsByID = Dictionary(uniqueKeysWithValues: service.cronJobs(projectRoot: root.path).map { ($0.id, $0) })
 
-        XCTAssertEqual(plans.first?.planFilePath, ".g9claw/always-on/plans/plan-web.md")
+        XCTAssertEqual(plans.first?.planFilePath, ".pilotdeck/always-on/plans/plan-web.md")
         XCTAssertEqual(plans.first?.content, "# Web Plan\n\nUse the web Always-On root.")
         XCTAssertEqual(history.first?.outputLog, "web log content")
         XCTAssertEqual(jobsByID["cron-durable"]?.durable, true)
@@ -3708,8 +3712,8 @@ final class ParityLogicTests: XCTestCase {
 
     func testAlwaysOnServiceStartsAndDeletesWebCronJobs() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-alwayson-cron-actions-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".g9claw", isDirectory: true), withIntermediateDirectories: true)
+            .appendingPathComponent("pilotdeck-alwayson-cron-actions-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".pilotdeck", isDirectory: true), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try """
         {
@@ -3730,7 +3734,7 @@ final class ParityLogicTests: XCTestCase {
             }
           ]
         }
-        """.write(to: root.appendingPathComponent(".g9claw/scheduled_tasks.json"), atomically: true, encoding: .utf8)
+        """.write(to: root.appendingPathComponent(".pilotdeck/scheduled_tasks.json"), atomically: true, encoding: .utf8)
 
         let service = AlwaysOnService()
         let job = try XCTUnwrap(service.cronJobs(projectRoot: root.path).first { $0.id == "cron-run-now" })
@@ -3749,8 +3753,8 @@ final class ParityLogicTests: XCTestCase {
 
     func testAlwaysOnServiceFoldsRunHistoryEventsAndPreservesMetadata() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-alwayson-run-history-fold-\(UUID().uuidString)", isDirectory: true)
-        let alwaysOnRoot = root.appendingPathComponent(".g9claw/always-on", isDirectory: true)
+            .appendingPathComponent("pilotdeck-alwayson-run-history-fold-\(UUID().uuidString)", isDirectory: true)
+        let alwaysOnRoot = root.appendingPathComponent(".pilotdeck/always-on", isDirectory: true)
         try FileManager.default.createDirectory(at: alwaysOnRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -3759,7 +3763,7 @@ final class ParityLogicTests: XCTestCase {
             {"runId":"run-1","kind":"plan","sourceId":"plan-alpha","title":"Plan Alpha","status":"queued","timestamp":"2026-04-20T10:00:00.000Z","metadata":{"source":"manual"}}
             """,
             """
-            {"runId":"run-1","kind":"plan","sourceId":"plan-alpha","title":"Plan Alpha","status":"completed","timestamp":"2026-04-20T10:05:00.000Z","finishedAt":"2026-04-20T10:05:00.000Z","sessionId":"session-1","output":"Done.","metadata":{"planFilePath":".g9claw/always-on/plans/plan-alpha.md"}}
+            {"runId":"run-1","kind":"plan","sourceId":"plan-alpha","title":"Plan Alpha","status":"completed","timestamp":"2026-04-20T10:05:00.000Z","finishedAt":"2026-04-20T10:05:00.000Z","sessionId":"session-1","output":"Done.","metadata":{"planFilePath":".pilotdeck/always-on/plans/plan-alpha.md"}}
             """,
             "not json",
         ].joined(separator: "\n") + "\n"
@@ -3775,15 +3779,15 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(history.first?.sessionId, "session-1")
         XCTAssertEqual(detail.outputLog, "Done.")
         XCTAssertEqual(detail.metadata["source"], "manual")
-        XCTAssertEqual(detail.metadata["planFilePath"], ".g9claw/always-on/plans/plan-alpha.md")
+        XCTAssertEqual(detail.metadata["planFilePath"], ".pilotdeck/always-on/plans/plan-alpha.md")
         XCTAssertEqual(detail.metadata["logSource"], "history")
         XCTAssertEqual(detail.metadata["finishedAt"], "2026-04-20T10:05:00Z")
     }
 
     func testAlwaysOnServiceDerivesBackgroundSessionAndFiltersUnknownHistoryLikeWeb() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-alwayson-run-history-session-\(UUID().uuidString)", isDirectory: true)
-        let alwaysOnRoot = root.appendingPathComponent(".g9claw/always-on", isDirectory: true)
+            .appendingPathComponent("pilotdeck-alwayson-run-history-session-\(UUID().uuidString)", isDirectory: true)
+        let alwaysOnRoot = root.appendingPathComponent(".pilotdeck/always-on", isDirectory: true)
         try FileManager.default.createDirectory(at: alwaysOnRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -3817,8 +3821,8 @@ final class ParityLogicTests: XCTestCase {
 
     func testAlwaysOnRunHistoryDetailPrefersDedicatedLogAndPollsOnlyQueuedOrRunning() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-alwayson-run-history-log-\(UUID().uuidString)", isDirectory: true)
-        let alwaysOnRoot = root.appendingPathComponent(".g9claw/always-on", isDirectory: true)
+            .appendingPathComponent("pilotdeck-alwayson-run-history-log-\(UUID().uuidString)", isDirectory: true)
+        let alwaysOnRoot = root.appendingPathComponent(".pilotdeck/always-on", isDirectory: true)
         let runsRoot = alwaysOnRoot.appendingPathComponent("runs", isDirectory: true)
         try FileManager.default.createDirectory(at: runsRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -3865,7 +3869,7 @@ final class ParityLogicTests: XCTestCase {
                 content: "",
                 status: status,
                 approvalMode: "manual",
-                planFilePath: ".g9claw/always-on/plans/\(id).md",
+                planFilePath: ".pilotdeck/always-on/plans/\(id).md",
                 contextRefs: nil,
                 createdAt: base.addingTimeInterval(-1_000),
                 updatedAt: base.addingTimeInterval(updatedOffset),
@@ -3906,7 +3910,7 @@ final class ParityLogicTests: XCTestCase {
                         summary: id,
                         lastActivity: base.addingTimeInterval($0),
                         taskId: id,
-                        outputFile: ".g9claw/always-on/runs/run-\(id).log",
+                        outputFile: ".pilotdeck/always-on/runs/run-\(id).log",
                         parentSessionId: nil,
                         relativeTranscriptPath: nil,
                         transcriptKey: nil
@@ -3972,7 +3976,7 @@ final class ParityLogicTests: XCTestCase {
             content: "",
             status: .ready,
             approvalMode: "manual",
-            planFilePath: ".g9claw/always-on/plans/plan-a.md",
+            planFilePath: ".pilotdeck/always-on/plans/plan-a.md",
             contextRefs: nil,
             createdAt: createdAt,
             updatedAt: triggeredAt,
@@ -4001,7 +4005,7 @@ final class ParityLogicTests: XCTestCase {
                 summary: "done",
                 lastActivity: completedAt,
                 taskId: "task-a",
-                outputFile: ".g9claw/always-on/runs/run-a.log",
+                outputFile: ".pilotdeck/always-on/runs/run-a.log",
                 parentSessionId: "origin-a",
                 relativeTranscriptPath: "origin-a/subagents/agent-a.jsonl",
                 transcriptKey: "agent-a.jsonl"
@@ -4131,7 +4135,7 @@ final class ParityLogicTests: XCTestCase {
             content: "# Plan",
             status: .ready,
             approvalMode: "manual",
-            planFilePath: " .g9claw/always-on/plans/plan-a.md ",
+            planFilePath: " .pilotdeck/always-on/plans/plan-a.md ",
             contextRefs: [
                 "workingDirectory": ["/repo"],
                 "memory": ["Router parity note"],
@@ -4151,7 +4155,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(NativeAlwaysOnPlanDetailPresentation.sectionTitle(.contextRefs, language: .chineseSimplified), "上下文引用")
         XCTAssertEqual(
             NativeAlwaysOnPlanDetailPresentation.fileLocation(projectRoot: "/Users/tester/repo/", planFilePath: plan.planFilePath),
-            "/Users/tester/repo/.g9claw/always-on/plans/plan-a.md"
+            "/Users/tester/repo/.pilotdeck/always-on/plans/plan-a.md"
         )
         XCTAssertEqual(
             NativeAlwaysOnPlanDetailPresentation.fileLocation(projectRoot: "/repo", planFilePath: "/tmp/plan.md"),
@@ -4331,12 +4335,12 @@ final class ParityLogicTests: XCTestCase {
 
     func testAlwaysOnBackgroundTranscriptLoaderMatchesWebReadOnlySessionAndMessages() throws {
         let home = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-bg-transcript-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-bg-transcript-\(UUID().uuidString)", isDirectory: true)
         let projectName = "project-with-readonly-cron-count"
         let parentSessionId = "parent-session-readonly"
         let transcriptFileName = "agent-cron-readonly.jsonl"
         let transcriptPath = home
-            .appendingPathComponent(".g9claw/projects/\(projectName)/\(parentSessionId)/subagents", isDirectory: true)
+            .appendingPathComponent(".pilotdeck/projects/\(projectName)/\(parentSessionId)/subagents", isDirectory: true)
             .appendingPathComponent(transcriptFileName)
         try FileManager.default.createDirectory(at: transcriptPath.deletingLastPathComponent(), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -4366,7 +4370,7 @@ final class ParityLogicTests: XCTestCase {
             transcriptKey: transcriptFileName,
             taskId: "cron-task",
             taskStatus: "completed",
-            outputFile: ".g9claw/always-on/runs/run-a.log"
+            outputFile: ".pilotdeck/always-on/runs/run-a.log"
         )
 
         let session = try XCTUnwrap(AlwaysOnBackgroundTranscriptLoader.makeSession(target: target, existing: nil, now: Date(timeIntervalSince1970: 0)))
@@ -4378,7 +4382,7 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(session.transcriptKey, transcriptFileName)
         XCTAssertEqual(session.taskId, "cron-task")
         XCTAssertEqual(session.taskStatus, "completed")
-        XCTAssertEqual(session.outputFile, ".g9claw/always-on/runs/run-a.log")
+        XCTAssertEqual(session.outputFile, ".pilotdeck/always-on/runs/run-a.log")
         XCTAssertEqual(session.isReadOnly, true)
         XCTAssertTrue(session.isBackgroundTaskSession)
 
@@ -4419,7 +4423,7 @@ final class ParityLogicTests: XCTestCase {
     @MainActor
     func testAppStateOpenAlwaysOnBackgroundSessionCreatesReadOnlyFallbackAndBlocksSend() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-open-bg-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-open-bg-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -4649,7 +4653,7 @@ final class ParityLogicTests: XCTestCase {
 
     func testAlwaysOnDiscoveryPromptMatchesWebStructuredContextShape() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-alwayson-discovery-prompt-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-alwayson-discovery-prompt-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try "Project README".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -4657,8 +4661,8 @@ final class ParityLogicTests: XCTestCase {
         let now = ISO8601DateFormatter().date(from: "2026-05-23T10:00:00Z")!
         let service = AlwaysOnService()
         let context = service.discoveryContext(
-            projectName: "g9claw-opc",
-            displayName: "G9Claw OPC",
+            projectName: "pilotdeck-opc",
+            displayName: "PilotDeck OPC",
             projectRoot: root.path,
             plans: [
                 AlwaysOnPlan(
@@ -4669,7 +4673,7 @@ final class ParityLogicTests: XCTestCase {
                     content: "",
                     status: .ready,
                     approvalMode: "manual",
-                    planFilePath: ".g9claw/always-on/plans/plan-a.md",
+                    planFilePath: ".pilotdeck/always-on/plans/plan-a.md",
                     contextRefs: nil,
                     createdAt: now.addingTimeInterval(-120),
                     updatedAt: now.addingTimeInterval(-60),
@@ -4700,7 +4704,7 @@ final class ParityLogicTests: XCTestCase {
                         summary: "Finished scan",
                         lastActivity: now.addingTimeInterval(-240),
                         taskId: "cron-a",
-                        outputFile: ".g9claw/always-on/runs/run-a.log",
+                        outputFile: ".pilotdeck/always-on/runs/run-a.log",
                         parentSessionId: "parent-a",
                         relativeTranscriptPath: "parent-a/subagents/agent-cron-a.jsonl",
                         transcriptKey: "agent-cron-a.jsonl"
@@ -4710,7 +4714,7 @@ final class ParityLogicTests: XCTestCase {
             sessions: [
                 ProjectSession(
                     id: "chat-1",
-                    provider: .g9Claw,
+                    provider: .pilotDeck,
                     title: "中文规划",
                     summary: "用户要求用中文整理 Always-On 计划。",
                     createdAt: now.addingTimeInterval(-180),
@@ -4724,7 +4728,7 @@ final class ParityLogicTests: XCTestCase {
                     id: UUID(),
                     name: "Router",
                     summary: "Router parity details.",
-                    projectName: "g9claw-opc",
+                    projectName: "pilotdeck-opc",
                     updatedAt: now.addingTimeInterval(-30),
                     type: .project,
                     relativePath: "Project/router.md",
@@ -4735,15 +4739,15 @@ final class ParityLogicTests: XCTestCase {
             now: now
         )
         let english = service.discoveryPrompt(
-            projectName: "g9claw-opc",
-            displayName: "G9Claw OPC",
+            projectName: "pilotdeck-opc",
+            displayName: "PilotDeck OPC",
             projectRoot: root.path,
             context: context,
             language: "en"
         )
         let chinese = service.discoveryPrompt(
-            projectName: "g9claw-opc",
-            displayName: "G9Claw OPC",
+            projectName: "pilotdeck-opc",
+            displayName: "PilotDeck OPC",
             projectRoot: root.path,
             context: context,
             language: "zh-CN"
@@ -4757,14 +4761,14 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(context.cronJobs.first?.latestRunSummary, "Finished scan")
         XCTAssertEqual(context.recentChats.first?.id, "chat-1")
 
-        XCTAssertTrue(english.contains("Always-On discovery planning for project \"G9Claw OPC\"."))
-        XCTAssertTrue(english.contains("Use the project store at `~/.g9claw/projects/g9claw-opc`"))
+        XCTAssertTrue(english.contains("Always-On discovery planning for project \"PilotDeck OPC\"."))
+        XCTAssertTrue(english.contains("Use the project store at `~/.pilotdeck/projects/pilotdeck-opc`"))
         XCTAssertTrue(english.contains("Every saved plan must include these markdown sections exactly:"))
         XCTAssertTrue(english.contains("Do not call `CronCreate`"))
         XCTAssertTrue(english.contains("\"recentChats\""))
         XCTAssertTrue(english.contains("\"cronJobs\""))
         XCTAssertTrue(english.contains("## Approval And Execution"))
-        XCTAssertFalse(english.contains(".g9claw/always-on"))
+        XCTAssertFalse(english.contains(".pilotdeck/always-on"))
 
         XCTAssertTrue(chinese.contains("Always-On 主动发现规划"))
         XCTAssertTrue(chinese.contains("近期聊天语言为准"))
@@ -4790,8 +4794,8 @@ final class ParityLogicTests: XCTestCase {
 
     func testAlwaysOnServiceRunLogReadsTailMetadataLikeWeb() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-alwayson-run-log-\(UUID().uuidString)", isDirectory: true)
-        let runsRoot = root.appendingPathComponent(".g9claw/always-on/runs", isDirectory: true)
+            .appendingPathComponent("pilotdeck-alwayson-run-log-\(UUID().uuidString)", isDirectory: true)
+        let runsRoot = root.appendingPathComponent(".pilotdeck/always-on/runs", isDirectory: true)
         try FileManager.default.createDirectory(at: runsRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -4813,7 +4817,7 @@ final class ParityLogicTests: XCTestCase {
 
     func testAlwaysOnServiceRunLogReturnsHistorySourceWhenFileIsMissing() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-alwayson-run-log-missing-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-alwayson-run-log-missing-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -4947,13 +4951,13 @@ final class ParityLogicTests: XCTestCase {
         let yamlWithKey = """
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://example.local/v1
               apiKey: yaml-secret
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: qwen3.6-27b
         """
         let snapshotWithKey = NativeConfigService.snapshot(from: yamlWithKey)
@@ -4968,13 +4972,13 @@ final class ParityLogicTests: XCTestCase {
         let yamlBlankKey = """
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://example.local/v1
               apiKey: ""
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: qwen3.6-27b
         """
         let snapshotBlankKey = NativeConfigService.snapshot(from: yamlBlankKey)
@@ -5006,7 +5010,7 @@ final class ParityLogicTests: XCTestCase {
 
     func testSkillValidationRequiresSkillMarkdownFrontmatter() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-skill-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pilotdeck-skill-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -5030,7 +5034,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testSkillValidationRejectsSymlinks() throws {
-        let root = temporaryDirectory("g9claw-skill-symlink")
+        let root = temporaryDirectory("pilotdeck-skill-symlink")
         defer { try? FileManager.default.removeItem(at: root) }
         try """
         ---
@@ -5049,7 +5053,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testNativeAgentPromptListsWorkspaceSkillsBeforeInvocation() throws {
-        let projectRoot = temporaryDirectory("g9claw-project")
+        let projectRoot = temporaryDirectory("pilotdeck-project")
         defer { try? FileManager.default.removeItem(at: projectRoot) }
         let skillDir = try writeProjectSkill(
             projectRoot: projectRoot,
@@ -5080,7 +5084,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testGeneralSkillContextExcludesProjectScopedSkills() throws {
-        let projectRoot = temporaryDirectory("g9claw-general-skill-scope")
+        let projectRoot = temporaryDirectory("pilotdeck-general-skill-scope")
         defer { try? FileManager.default.removeItem(at: projectRoot) }
         _ = try writeProjectSkill(
             projectRoot: projectRoot,
@@ -5098,7 +5102,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testProjectScopedSkillOverridesGlobalSkillWithSameName() throws {
-        let projectRoot = temporaryDirectory("g9claw-skill-priority")
+        let projectRoot = temporaryDirectory("pilotdeck-skill-priority")
         defer { try? FileManager.default.removeItem(at: projectRoot) }
         let slug = "priority-\(UUID().uuidString.prefix(8)).skill"
         let userSkillDir = try writeUserSkill(
@@ -5132,7 +5136,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testSkillsServiceCanCopyAndMoveBetweenScopes() throws {
-        let projectRoot = temporaryDirectory("g9claw-skill-transfer")
+        let projectRoot = temporaryDirectory("pilotdeck-skill-transfer")
         defer { try? FileManager.default.removeItem(at: projectRoot) }
         let service = SkillsService()
         let userSkillDir = try writeUserSkill(
@@ -5145,7 +5149,7 @@ final class ParityLogicTests: XCTestCase {
 
         let copied = try service.copySkill(userSkill, to: .project, projectPath: projectRoot.path, overwrite: false)
         XCTAssertEqual(copied.scope, .project)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: projectRoot.appendingPathComponent(".g9claw/skills/\(userSkill.slug)/SKILL.md").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: projectRoot.appendingPathComponent(".pilotdeck/skills/\(userSkill.slug)/SKILL.md").path))
 
         let moved = try service.moveSkill(copied, to: .user, projectPath: nil, overwrite: true)
         XCTAssertEqual(moved.scope, .user)
@@ -5153,7 +5157,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testNativeClawHubInstallImportsDownloadedArchive() async throws {
-        let projectRoot = temporaryDirectory("g9claw-project")
+        let projectRoot = temporaryDirectory("pilotdeck-project")
         let archive = try makeSkillArchive(name: "Demo Skill", description: "Installs from a mocked native ClawHub archive.")
         defer { try? FileManager.default.removeItem(at: projectRoot) }
 
@@ -5180,11 +5184,11 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(result.installed)
         XCTAssertEqual(result.skill?.slug, "demo-skill")
         XCTAssertEqual(client.downloadRequests, 1)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: projectRoot.appendingPathComponent(".g9claw/skills/demo-skill/SKILL.md").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: projectRoot.appendingPathComponent(".pilotdeck/skills/demo-skill/SKILL.md").path))
     }
 
     func testNativeClawHubInstallRequiresForceForSuspiciousSkills() async throws {
-        let projectRoot = temporaryDirectory("g9claw-project")
+        let projectRoot = temporaryDirectory("pilotdeck-project")
         defer { try? FileManager.default.removeItem(at: projectRoot) }
         let client = MockSkillHubClient(
             detail: SkillHubSkillDetail(
@@ -6306,10 +6310,10 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testLowercaseSkillToolNameIsCanonicalizedBeforeExecution() async throws {
-        let root = try makeAgentWorkspace("g9claw-agent-lowercase-skill")
+        let root = try makeAgentWorkspace("pilotdeck-agent-lowercase-skill")
         defer { try? FileManager.default.removeItem(at: root) }
         let skillDir = root
-            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("skills", isDirectory: true)
             .appendingPathComponent("demo-skill", isDirectory: true)
         try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)
@@ -6371,10 +6375,10 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testSkillRuntimeLoadsProjectSkillWithoutPluginEnvironment() throws {
-        let root = try makeAgentWorkspace("g9claw-project-skill")
+        let root = try makeAgentWorkspace("pilotdeck-project-skill")
         defer { try? FileManager.default.removeItem(at: root) }
         let skillDir = root
-            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("skills", isDirectory: true)
             .appendingPathComponent("research", isDirectory: true)
         try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)
@@ -6448,16 +6452,16 @@ final class ParityLogicTests: XCTestCase {
         let yaml = """
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://example.local/v1
               apiKey: test
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: qwen3.6-27b
             router_small:
-              provider: g9claw
+              provider: pilotdeck
               name: qwen3.6-35b-a3b
         router:
           enabled: true
@@ -6482,27 +6486,27 @@ final class ParityLogicTests: XCTestCase {
         let yaml = """
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://example.local/v1
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: default-model
             background_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: background-model
             think_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: think-model
             long_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: long-model
             web_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: web-model
             simple_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: simple-model
         router:
           enabled: true
@@ -6556,18 +6560,18 @@ final class ParityLogicTests: XCTestCase {
         let yaml = """
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://example.local/v1
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: default-model
             long_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: long-model
             web_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: web-model
         router:
           enabled: true
@@ -6585,7 +6589,7 @@ final class ParityLogicTests: XCTestCase {
             ChatMessage(
                 id: UUID(),
                 sessionId: "router-session",
-                provider: .g9Claw,
+                provider: .pilotDeck,
                 role: .user,
                 blocks: [.text(String(repeating: "h", count: 2_500))],
                 createdAt: Date(),
@@ -6714,7 +6718,7 @@ final class ParityLogicTests: XCTestCase {
         """
         let values = NativeConfigService.scalarMap(from: yaml)
         let fallbackProvider = ProviderConfig(
-            provider: .g9Claw,
+            provider: .pilotDeck,
             apiType: .openAIChat,
             baseURL: "http://fallback.local/v1",
             model: "fallback-model",
@@ -6746,21 +6750,21 @@ final class ParityLogicTests: XCTestCase {
         let yaml = """
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://example.local/v1
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: default-model
             simple_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: simple-model
             long_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: long-model
             web_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: web-model
         router:
           enabled: true
@@ -6796,18 +6800,18 @@ final class ParityLogicTests: XCTestCase {
         let yaml = """
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://example.local/v1
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: default-model
             complex_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: complex-model
             orchestrator_entry:
-              provider: g9claw
+              provider: pilotdeck
               name: orchestrator-model
         router:
           enabled: true
@@ -6834,12 +6838,12 @@ final class ParityLogicTests: XCTestCase {
         let yaml = """
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: http://example.local/v1
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: default-model
         router:
           enabled: false
@@ -7204,7 +7208,7 @@ final class ParityLogicTests: XCTestCase {
     @MainActor
     private func makeTestAppState() -> AppState {
         let settingsURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("g9claw-test-settings-\(UUID().uuidString).json")
+            .appendingPathComponent("pilotdeck-test-settings-\(UUID().uuidString).json")
         return AppState(settingsStore: AppSettingsStore(url: settingsURL))
     }
 
@@ -7236,7 +7240,7 @@ final class ParityLogicTests: XCTestCase {
             projectPath: projectPath,
             prompt: prompt,
             providerConfig: ProviderConfig(
-                provider: .g9Claw,
+                provider: .pilotDeck,
                 apiType: .openAIChat,
                 baseURL: "http://example.local/v1",
                 model: "qwen3.6-27b",
@@ -7303,7 +7307,7 @@ final class ParityLogicTests: XCTestCase {
     }
 
     private func makeSkillArchive(name: String, description: String) throws -> Data {
-        let root = temporaryDirectory("g9claw-skill-archive")
+        let root = temporaryDirectory("pilotdeck-skill-archive")
         defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("source", isDirectory: true)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
@@ -7324,7 +7328,7 @@ final class ParityLogicTests: XCTestCase {
 
     private func writeProjectSkill(projectRoot: URL, slug: String, name: String, description: String) throws -> URL {
         let skillDir = projectRoot
-            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("skills", isDirectory: true)
             .appendingPathComponent(slug, isDirectory: true)
         try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)

@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROJECT="$APP_ROOT/G9Claw.xcodeproj"
+PROJECT="$APP_ROOT/PilotDeck.xcodeproj"
 CONFIGURATION="${CONFIGURATION:-Release}"
 DERIVED_DATA="${DERIVED_DATA:-$APP_ROOT/build/DerivedDataLocal}"
 DIST_DIR="${DIST_DIR:-$APP_ROOT/build/dist}"
@@ -16,7 +16,7 @@ mkdir -p "$PACKAGE_DIR"
 
 xcodebuild \
   -project "$PROJECT" \
-  -scheme G9Claw \
+  -scheme PilotDeck \
   -configuration "$CONFIGURATION" \
   -destination "platform=macOS" \
   -derivedDataPath "$DERIVED_DATA" \

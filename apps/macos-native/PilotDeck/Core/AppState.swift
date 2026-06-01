@@ -29,7 +29,7 @@ final class AppState: ObservableObject {
     @Published var showSettings = false
     @Published var showProjectCreationWizard = false
     @Published var settingsInitialTab: SettingsMainTab = .appearance
-    @Published var g9ClawConfigText = ""
+    @Published var pilotDeckConfigText = ""
     @Published var settingsSaveNotice: String?
     @Published var toolRefreshRevision = 0
     @Published var streamRenderRevision = 0
@@ -81,7 +81,7 @@ final class AppState: ObservableObject {
                 ChatMessage(
                     id: UUID(),
                     sessionId: sessionID,
-                    provider: .g9Claw,
+                    provider: .pilotDeck,
                     role: .assistant,
                     blocks: [.text("Native PilotDeck is running with the macOS parity shell. Configure a provider in Settings to start a real agent session.")],
                     createdAt: Date(),
@@ -162,9 +162,9 @@ final class AppState: ObservableObject {
             }
             logBundleNetworkPolicy()
             try bootstrapLocalDebugConfigIfNeeded()
-            loadG9ClawConfigText()
+            loadPilotDeckConfigText()
             applyNativeConfigFromCurrentText()
-            loadManualProjectsFromG9ClawConfig()
+            loadManualProjectsFromPilotDeckConfig()
             refreshNativeToolData()
             restartMemoryAutomationLoop()
             restartAlwaysOnAutomationLoop()
@@ -320,7 +320,7 @@ final class AppState: ObservableObject {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let session = ProjectSession(
             id: UUID().uuidString,
-            provider: .g9Claw,
+            provider: .pilotDeck,
             title: trimmedTitle.isEmpty ? t(.newSession) : trimmedTitle,
             summary: "",
             createdAt: Date(),
@@ -429,7 +429,7 @@ final class AppState: ObservableObject {
         let userMessage = ChatMessage(
             id: UUID(),
             sessionId: sessionID,
-            provider: .g9Claw,
+            provider: .pilotDeck,
             role: .user,
             blocks: userBlocks,
             createdAt: Date(),
@@ -456,7 +456,7 @@ final class AppState: ObservableObject {
         let assistantMessage = ChatMessage(
             id: assistantID,
             sessionId: sessionID,
-            provider: .g9Claw,
+            provider: .pilotDeck,
             role: .assistant,
             blocks: [.text("")],
             createdAt: Date(),
@@ -982,7 +982,7 @@ final class AppState: ObservableObject {
 
     func saveSettings() {
         do {
-            try saveG9ClawConfigTextIfChanged()
+            try savePilotDeckConfigTextIfChanged()
             applyNativeConfigFromCurrentText()
             try settingsStore.save(settings)
             refreshNativeToolData()
@@ -996,7 +996,7 @@ final class AppState: ObservableObject {
     }
 
     func alwaysOnConfigSnapshot() -> AlwaysOnService.ConfigSnapshot {
-        AlwaysOnService.ConfigSnapshot.from(values: NativeConfigService.scalarMap(from: g9ClawConfigText))
+        AlwaysOnService.ConfigSnapshot.from(values: NativeConfigService.scalarMap(from: pilotDeckConfigText))
     }
 
     func alwaysOnProjectIdentities(includeGeneral: Bool = false) -> [AlwaysOnProjectIdentity] {
@@ -1541,7 +1541,7 @@ final class AppState: ObservableObject {
         let userMessage = ChatMessage(
             id: UUID(),
             sessionId: sessionID,
-            provider: .g9Claw,
+            provider: .pilotDeck,
             role: .user,
             blocks: [.text(prompt)],
             createdAt: Date(),
@@ -1551,7 +1551,7 @@ final class AppState: ObservableObject {
         let assistantMessage = ChatMessage(
             id: assistantID,
             sessionId: sessionID,
-            provider: .g9Claw,
+            provider: .pilotDeck,
             role: .assistant,
             blocks: [.text("")],
             createdAt: Date(),
@@ -1640,7 +1640,7 @@ final class AppState: ObservableObject {
     private func createAlwaysOnBackgroundSession(projectRoot: String, title: String, runID: String) -> ProjectSession {
         let session = ProjectSession(
             id: "always-on-\(UUID().uuidString)",
-            provider: .g9Claw,
+            provider: .pilotDeck,
             title: title,
             summary: runID,
             createdAt: Date(),
@@ -1789,7 +1789,7 @@ final class AppState: ObservableObject {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: workspacePath, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw NSError(
-                domain: "G9ClawWorkspace",
+                domain: "PilotDeckWorkspace",
                 code: 404,
                 userInfo: [NSLocalizedDescriptionKey: "Workspace path does not exist: \(workspacePath). Check PilotDeck general workspace settings."]
             )
@@ -1965,7 +1965,7 @@ final class AppState: ObservableObject {
     }
 
     private func applyNativeConfigFromCurrentText() {
-        guard let native = NativeConfigService.snapshot(from: g9ClawConfigText) else { return }
+        guard let native = NativeConfigService.snapshot(from: pilotDeckConfigText) else { return }
         var updated = settings
         updated.providerConfig = native.providerConfig
         updated.apiTimeoutMs = native.apiTimeoutMs
@@ -1982,46 +1982,46 @@ final class AppState: ObservableObject {
         memoryService.updateSettings(MemorySettingsSnapshot.fromConfigValues(native.rawValues))
     }
 
-    private func loadG9ClawConfigText() {
-        g9ClawConfigText = (try? String(contentsOf: Self.g9ClawConfigURL(), encoding: .utf8))
-            ?? (try? String(contentsOf: Self.legacyG9ClawConfigURL(), encoding: .utf8))
-            ?? Self.defaultG9ClawConfigText()
+    private func loadPilotDeckConfigText() {
+        pilotDeckConfigText = (try? String(contentsOf: Self.pilotDeckConfigURL(), encoding: .utf8))
+            ?? Self.legacyPilotDeckConfigURLs().lazy.compactMap { try? String(contentsOf: $0, encoding: .utf8) }.first
+            ?? Self.defaultPilotDeckConfigText()
     }
 
     private func currentNativeConfigSnapshot() -> NativeConfigSnapshot? {
-        NativeConfigService.snapshot(from: g9ClawConfigText)
+        NativeConfigService.snapshot(from: pilotDeckConfigText)
     }
 
-    private func saveG9ClawConfigTextIfChanged() throws {
-        let url = Self.g9ClawConfigURL()
+    private func savePilotDeckConfigTextIfChanged() throws {
+        let url = Self.pilotDeckConfigURL()
         let old = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        guard g9ClawConfigText != old else { return }
+        guard pilotDeckConfigText != old else { return }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try g9ClawConfigText.write(to: url, atomically: true, encoding: .utf8)
+        try pilotDeckConfigText.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    static func g9ClawConfigURL(
+    static func pilotDeckConfigURL(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
-        G9ClawConfigPath.configURL(environment: environment, home: home)
+        PilotDeckConfigPath.configURL(environment: environment, home: home)
     }
 
-    static func legacyG9ClawConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        G9ClawConfigPath.legacyConfigURL(home: home)
+    static func legacyPilotDeckConfigURLs(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [URL] {
+        PilotDeckConfigPath.legacyConfigURLs(home: home)
     }
 
     private func bootstrapLocalDebugConfigIfNeeded() throws {
-        let url = Self.g9ClawConfigURL()
+        let url = Self.pilotDeckConfigURL()
         guard !FileManager.default.fileExists(atPath: url.path) else { return }
-        if FileManager.default.fileExists(atPath: Self.legacyG9ClawConfigURL().path),
-           let legacyText = try? String(contentsOf: Self.legacyG9ClawConfigURL(), encoding: .utf8) {
+        if let legacyURL = Self.legacyPilotDeckConfigURLs().first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+           let legacyText = try? String(contentsOf: legacyURL, encoding: .utf8) {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try legacyText.write(to: url, atomically: true, encoding: .utf8)
             return
         }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Self.defaultG9ClawConfigText().write(to: url, atomically: true, encoding: .utf8)
+        try Self.defaultPilotDeckConfigText().write(to: url, atomically: true, encoding: .utf8)
     }
 
     private func logBundleNetworkPolicy() {
@@ -2031,8 +2031,9 @@ final class AppState: ObservableObject {
         AppLog.write("bundle=\(Bundle.main.bundleIdentifier ?? "unknown") ats.arbitraryLoads=\(arbitraryLoads) ats.localNetworking=\(localNetworking)")
     }
 
-    private func loadManualProjectsFromG9ClawConfig() {
-        guard let data = try? Data(contentsOf: Self.g9clawProjectConfigURL()),
+    private func loadManualProjectsFromPilotDeckConfig() {
+        guard let url = Self.pilotDeckProjectConfigURLs().first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+              let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rawProjects = json["projects"] as? [String: Any] else { return }
 
@@ -2071,7 +2072,7 @@ final class AppState: ObservableObject {
     }
 
     private func persistManualProject(_ project: WorkspaceProject) throws {
-        let url = Self.g9clawProjectConfigURL()
+        let url = Self.pilotDeckProjectConfigURL()
         var root: [String: Any] = [:]
         if let data = try? Data(contentsOf: url),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -2090,7 +2091,7 @@ final class AppState: ObservableObject {
     }
 
     private func removeManualProjectFromConfig(_ project: WorkspaceProject) throws {
-        let url = Self.g9clawProjectConfigURL()
+        let url = Self.pilotDeckProjectConfigURL()
         var root: [String: Any] = [:]
         if let data = try? Data(contentsOf: url),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -2104,14 +2105,22 @@ final class AppState: ObservableObject {
         try data.write(to: url)
     }
 
-    private static func g9clawProjectConfigURL() -> URL {
+    private static func pilotDeckProjectConfigURL() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("project-config.json")
     }
 
-    private static func defaultG9ClawConfigText() -> String {
-        G9ClawConfigDefaults.configText(
+    private static func pilotDeckProjectConfigURLs() -> [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [
+            pilotDeckProjectConfigURL(),
+            home.appendingPathComponent(".g9claw", isDirectory: true).appendingPathComponent("project-config.json"),
+        ]
+    }
+
+    private static func defaultPilotDeckConfigText() -> String {
+        PilotDeckConfigDefaults.configText(
             homePath: FileManager.default.homeDirectoryForCurrentUser.path,
             userName: NSUserName()
         )
@@ -3057,12 +3066,16 @@ struct NativeConfigSnapshot: Equatable {
     var rawValues: [String: String]
 }
 
-enum G9ClawConfigPath {
+enum PilotDeckConfigPath {
+    private static let configDirectoryName = ".pilotdeck"
+    private static let legacyConfigDirectoryNames = [".g9claw", ".edgeclaw"]
+
     static func configURL(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
-        if let override = environment["G9CLAW_CONFIG_PATH"]?.nilIfBlank
+        if let override = environment["PILOTDECK_CONFIG_PATH"]?.nilIfBlank
+            ?? environment["G9CLAW_CONFIG_PATH"]?.nilIfBlank
             ?? environment["EDGECLAW_CONFIG_PATH"]?.nilIfBlank {
             if override == "~" {
                 return home
@@ -3073,18 +3086,24 @@ enum G9ClawConfigPath {
             return URL(fileURLWithPath: override)
         }
         return home
-            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent(configDirectoryName, isDirectory: true)
             .appendingPathComponent("config.yaml")
+    }
+
+    static func legacyConfigURLs(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [URL] {
+        legacyConfigDirectoryNames.map { directory in
+            home
+                .appendingPathComponent(directory, isDirectory: true)
+                .appendingPathComponent("config.yaml")
+        }
     }
 
     static func legacyConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        home
-            .appendingPathComponent(".edgeclaw", isDirectory: true)
-            .appendingPathComponent("config.yaml")
+        legacyConfigURLs(home: home)[0]
     }
 }
 
-enum G9ClawConfigDefaults {
+enum PilotDeckConfigDefaults {
     static func configText(homePath: String, userName: String) -> String {
         """
         version: 1
@@ -3096,11 +3115,11 @@ enum G9ClawConfigDefaults {
           contextWindow: 160000
           apiTimeoutMs: 120000
           httpsProxy: ""
-          databasePath: \(homePath)/.g9claw/auth.db
+          databasePath: \(homePath)/.pilotdeck/auth.db
           workspacesRoot: \(homePath)
         models:
           providers:
-            g9claw:
+            pilotdeck:
               type: openai-chat
               baseUrl: ""
               apiKey: ""
@@ -3108,7 +3127,7 @@ enum G9ClawConfigDefaults {
               headers: {}
           entries:
             default:
-              provider: g9claw
+              provider: pilotdeck
               name: ""
               contextWindow: 160000
         agents:
@@ -3226,7 +3245,7 @@ enum G9ClawConfigDefaults {
               - COMPLEX
               - REASONING
             mainAgentModel: default
-            skillPath: ~/.g9claw/prompts/auto-orchestrate.md
+            skillPath: ~/.pilotdeck/prompts/auto-orchestrate.md
             blockedTools: []
             allowedTools:
               - Agent
@@ -3257,7 +3276,7 @@ enum G9ClawConfigDefaults {
           customRouterPath: ""
         gateway:
           enabled: false
-          home: \(homePath)/.g9claw/gateway
+          home: \(homePath)/.pilotdeck/gateway
           allowAllUsers: false
           allowedUsers: []
           groupSessionsPerUser: true
@@ -3456,7 +3475,7 @@ enum G9ClawConfigDefaults {
               port: 8642
               host: ""
               corsOrigins: ""
-              modelName: g9claw-gateway
+              modelName: pilotdeck-gateway
             webhook:
               enabled: false
               port: 8643
@@ -3472,18 +3491,18 @@ enum G9ClawConfigDefaults {
               allowAllUsers: false
               replyToMode: first
           runtimePaths:
-            sessionMetadata: ~/.g9claw/projects/.gateway/sessions.json
-            userBindings: ~/.g9claw/projects/.gateway/user-projects.json
+            sessionMetadata: ~/.pilotdeck/projects/.gateway/sessions.json
+            userBindings: ~/.pilotdeck/projects/.gateway/user-projects.json
             generalCwd: ~/PilotDeck/general
-            generalJsonl: ~/.g9claw/projects/-Users-\(userName)-PilotDeck-general/*.jsonl
-            boundProjectJsonl: ~/.g9claw/projects/<encoded-project>/*.jsonl
+            generalJsonl: ~/.pilotdeck/projects/-Users-\(userName)-PilotDeck-general/*.jsonl
+            boundProjectJsonl: ~/.pilotdeck/projects/<encoded-project>/*.jsonl
         """
     }
 }
 
 enum NativeConfigService {
     static func loadDefaultConfig(
-        url: URL = G9ClawConfigPath.configURL()
+        url: URL = PilotDeckConfigPath.configURL()
     ) -> NativeConfigSnapshot? {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         return snapshot(from: text)
@@ -3641,17 +3660,26 @@ enum NativeConfigService {
             headers[String(key.dropFirst(headersPrefix.count))] = value
         }
         return ProviderConfig(
-            provider: .g9Claw,
+            provider: .pilotDeck,
             apiType: apiType,
             baseURL: baseURL,
             model: model,
-            secretAccount: (providerID == "g9claw" || providerID == "edgeclaw") ? ProviderConfig.empty.secretAccount : "pilotdeck-provider-\(providerID)-api-key",
+            secretAccount: isPilotDeckProviderID(providerID) ? ProviderConfig.empty.secretAccount : "pilotdeck-provider-\(providerID)-api-key",
             headers: headers
         )
     }
 
     static func providerID(entryID: String, values: [String: String]) -> String {
-        values["models.entries.\(entryID).provider"]?.nilIfBlank ?? "g9claw"
+        values["models.entries.\(entryID).provider"]?.nilIfBlank ?? "pilotdeck"
+    }
+
+    private static func isPilotDeckProviderID(_ providerID: String) -> Bool {
+        switch providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "pilotdeck", "g9claw", "9gclaw", "edgeclaw":
+            return true
+        default:
+            return false
+        }
     }
 
     static func resolvedAPIKey(
@@ -4078,7 +4106,7 @@ enum AlwaysOnBackgroundTranscriptLoader {
         let summary = firstNonBlank(target.summary, existing?.summary, target.title) ?? title
         var session = existing ?? ProjectSession(
             id: target.sessionId,
-            provider: .g9Claw,
+            provider: .pilotDeck,
             title: title,
             summary: summary,
             createdAt: target.lastActivity ?? now,
@@ -4088,7 +4116,7 @@ enum AlwaysOnBackgroundTranscriptLoader {
             state: .idle
         )
         session.id = target.sessionId
-        session.provider = existing?.provider ?? .g9Claw
+        session.provider = existing?.provider ?? .pilotDeck
         session.title = title
         session.summary = summary
         session.updatedAt = target.lastActivity ?? session.updatedAt
@@ -4123,7 +4151,7 @@ enum AlwaysOnBackgroundTranscriptLoader {
         let summary = firstNonBlank(target.summary, target.taskId, target.taskStatus) ?? title
         return ProjectSession(
             id: sessionId,
-            provider: .g9Claw,
+            provider: .pilotDeck,
             title: title,
             summary: summary,
             createdAt: createdAt,
@@ -4174,7 +4202,7 @@ enum AlwaysOnBackgroundTranscriptLoader {
         let relative = relativeTranscriptPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !projectName.isEmpty, !parent.isEmpty, !relative.isEmpty else { return nil }
 
-        let projectDirs = [".g9claw", ".claude"].map { directory in
+        let projectDirs = [".pilotdeck", ".g9claw", ".claude"].map { directory in
             home
                 .appendingPathComponent(directory, isDirectory: true)
                 .appendingPathComponent("projects", isDirectory: true)
@@ -4425,7 +4453,7 @@ enum AlwaysOnBackgroundTranscriptLoader {
 
 enum LegacyConfigLoader {
     static func loadDefaultConfig(
-        url: URL = G9ClawConfigPath.configURL()
+        url: URL = PilotDeckConfigPath.configURL()
     ) -> LegacyConfigSnapshot? {
         guard let native = NativeConfigService.loadDefaultConfig(url: url) else { return nil }
         return legacySnapshot(from: native)

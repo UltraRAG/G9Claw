@@ -2210,7 +2210,7 @@ enum ProviderClientError: Error, LocalizedError {
         switch self {
         case .missingBaseURL: "Provider base URL is not configured."
         case .missingModel: "Provider model is not configured."
-        case .missingAPIKey: "Provider API key is not configured. Add it in Settings or ~/.g9claw/config.yaml."
+        case .missingAPIKey: "Provider API key is not configured. Add it in Settings or ~/.pilotdeck/config.yaml."
         case .invalidURL(let value): "Provider base URL is invalid: \(value)"
         case .httpError(let statusCode, let body):
             if body.isEmpty {
@@ -2313,8 +2313,8 @@ struct NativeAgentRuntime: Sendable {
                     continuation.yield(.status("connecting"))
 
                     switch request.providerConfig.provider {
-                    case .g9Claw:
-                        try await Self.streamG9ClawAgent(
+                    case .pilotDeck:
+                        try await Self.streamPilotDeckAgent(
                             request: request,
                             continuation: continuation,
                             turnController: turnController
@@ -2350,7 +2350,7 @@ struct NativeAgentRuntime: Sendable {
         }
     }
 
-    private static func streamG9ClawAgent(
+    private static func streamPilotDeckAgent(
         request: AgentRequest,
         continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation,
         turnController: NativeTurnController
@@ -3365,7 +3365,7 @@ struct NativeAgentRuntime: Sendable {
         }
         let separators = [
             "\n\nRelevant PilotDeck memory context:",
-            "\n\nRelevant G9Claw memory context:",
+            "\n\nRelevant PilotDeck memory context:",
             "\n\nAttached files:",
             "\n\n附件:",
         ]
@@ -4819,13 +4819,13 @@ enum SkillRuntimeService {
 
     private static func userSkillsRoot() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("skills", isDirectory: true)
     }
 
     private static func projectSkillsRoot(_ workspacePath: String) -> URL {
         URL(fileURLWithPath: NSString(string: workspacePath).expandingTildeInPath)
-            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("skills", isDirectory: true)
     }
 
@@ -6345,7 +6345,7 @@ enum AgentToolExecutor {
             environment: environment
         )
         let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("g9claw-worktrees", isDirectory: true)
+            .appendingPathComponent("pilotdeck-worktrees", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         let worktree = parent.appendingPathComponent("worktree-\(UUID().uuidString)", isDirectory: true)
         let add = try runProcessSync(

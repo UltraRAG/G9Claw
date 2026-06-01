@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		B001 /* G9ClawApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F001 /* G9ClawApp.swift */; };
+		B001 /* PilotDeckApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F001 /* PilotDeckApp.swift */; };
 		B002 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F002 /* RootView.swift */; };
 		B010 /* AppModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F010 /* AppModels.swift */; };
 		B011 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F011 /* AppState.swift */; };
@@ -30,8 +30,8 @@
 		B033 /* ToolTabsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F033 /* ToolTabsViews.swift */; };
 		B034 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F034 /* SettingsView.swift */; };
 		B035 /* MarkdownRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F035 /* MarkdownRenderer.swift */; };
-		B040 /* g9claw-logo.png in Resources */ = {isa = PBXBuildFile; fileRef = F040 /* g9claw-logo.png */; };
-		B041 /* g9claw-logo-white.png in Resources */ = {isa = PBXBuildFile; fileRef = F041 /* g9claw-logo-white.png */; };
+		B040 /* pilotdeck-logo.png in Resources */ = {isa = PBXBuildFile; fileRef = F040 /* pilotdeck-logo.png */; };
+		B041 /* pilotdeck-logo-white.png in Resources */ = {isa = PBXBuildFile; fileRef = F041 /* pilotdeck-logo-white.png */; };
 		B042 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F042 /* Assets.xcassets */; };
 		B100 /* ParityLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F100 /* ParityLogicTests.swift */; };
 		BF900 /* HighlightSwift in Frameworks */ = {isa = PBXBuildFile; productRef = PD900 /* HighlightSwift */; };
@@ -45,13 +45,13 @@
 			containerPortal = P0001 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = T0001;
-			remoteInfo = G9Claw;
+			remoteInfo = PilotDeck;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		APP01 /* PilotDeck.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PilotDeck.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		F001 /* G9ClawApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = G9ClawApp.swift; sourceTree = "<group>"; };
+		F001 /* PilotDeckApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PilotDeckApp.swift; sourceTree = "<group>"; };
 		F002 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		F010 /* AppModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModels.swift; sourceTree = "<group>"; };
 		F011 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
@@ -74,12 +74,12 @@
 		F033 /* ToolTabsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolTabsViews.swift; sourceTree = "<group>"; };
 		F034 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		F035 /* MarkdownRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownRenderer.swift; sourceTree = "<group>"; };
-		F040 /* g9claw-logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "g9claw-logo.png"; sourceTree = "<group>"; };
-		F041 /* g9claw-logo-white.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "g9claw-logo-white.png"; sourceTree = "<group>"; };
+		F040 /* pilotdeck-logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "pilotdeck-logo.png"; sourceTree = "<group>"; };
+		F041 /* pilotdeck-logo-white.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "pilotdeck-logo-white.png"; sourceTree = "<group>"; };
 		F042 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F100 /* ParityLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityLogicTests.swift; sourceTree = "<group>"; };
 		FW901 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
-		TEST01 /* G9ClawTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = G9ClawTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		TEST01 /* PilotDeckTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PilotDeckTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -106,14 +106,14 @@
 		G0001 = {
 			isa = PBXGroup;
 			children = (
-				G0100 /* G9Claw */,
-				G1000 /* G9ClawTests */,
+				G0100 /* PilotDeck */,
+				G1000 /* PilotDeckTests */,
 				G8000 /* Frameworks */,
 				G9000 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		G0100 /* G9Claw */ = {
+		G0100 /* PilotDeck */ = {
 			isa = PBXGroup;
 			children = (
 				G0110 /* App */,
@@ -122,13 +122,13 @@
 				G0130 /* Services */,
 				G0140 /* Views */,
 			);
-			path = G9Claw;
+			path = PilotDeck;
 			sourceTree = "<group>";
 		};
 		G0110 /* App */ = {
 			isa = PBXGroup;
 			children = (
-				F001 /* G9ClawApp.swift */,
+				F001 /* PilotDeckApp.swift */,
 				F002 /* RootView.swift */,
 			);
 			path = App;
@@ -180,18 +180,18 @@
 			isa = PBXGroup;
 			children = (
 				F042 /* Assets.xcassets */,
-				F040 /* g9claw-logo.png */,
-				F041 /* g9claw-logo-white.png */,
+				F040 /* pilotdeck-logo.png */,
+				F041 /* pilotdeck-logo-white.png */,
 			);
 			path = Assets;
 			sourceTree = "<group>";
 		};
-		G1000 /* G9ClawTests */ = {
+		G1000 /* PilotDeckTests */ = {
 			isa = PBXGroup;
 			children = (
 				F100 /* ParityLogicTests.swift */,
 			);
-			path = G9ClawTests;
+			path = PilotDeckTests;
 			sourceTree = "<group>";
 		};
 		G8000 /* Frameworks */ = {
@@ -206,7 +206,7 @@
 			isa = PBXGroup;
 			children = (
 				APP01 /* PilotDeck.app */,
-				TEST01 /* G9ClawTests.xctest */,
+				TEST01 /* PilotDeckTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -214,9 +214,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		T0001 /* G9Claw */ = {
+		T0001 /* PilotDeck */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = CLT001 /* Build configuration list for PBXNativeTarget "G9Claw" */;
+			buildConfigurationList = CLT001 /* Build configuration list for PBXNativeTarget "PilotDeck" */;
 			buildPhases = (
 				BS001 /* Sources */,
 				BF001 /* Frameworks */,
@@ -226,7 +226,7 @@
 			);
 			dependencies = (
 			);
-			name = G9Claw;
+			name = PilotDeck;
 			packageProductDependencies = (
 				PD900 /* HighlightSwift */,
 			);
@@ -234,9 +234,9 @@
 			productReference = APP01 /* PilotDeck.app */;
 			productType = "com.apple.product-type.application";
 		};
-		T0100 /* G9ClawTests */ = {
+		T0100 /* PilotDeckTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = CLT100 /* Build configuration list for PBXNativeTarget "G9ClawTests" */;
+			buildConfigurationList = CLT100 /* Build configuration list for PBXNativeTarget "PilotDeckTests" */;
 			buildPhases = (
 				BS100 /* Sources */,
 				BF100 /* Frameworks */,
@@ -247,9 +247,9 @@
 			dependencies = (
 				TD001 /* PBXTargetDependency */,
 			);
-			name = G9ClawTests;
-			productName = G9ClawTests;
-			productReference = TEST01 /* G9ClawTests.xctest */;
+			name = PilotDeckTests;
+			productName = PilotDeckTests;
+			productReference = TEST01 /* PilotDeckTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
@@ -271,7 +271,7 @@
 					};
 				};
 			};
-			buildConfigurationList = CLP001 /* Build configuration list for PBXProject "G9Claw" */;
+			buildConfigurationList = CLP001 /* Build configuration list for PBXProject "PilotDeck" */;
 			compatibilityVersion = "Xcode 15.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -287,8 +287,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				T0001 /* G9Claw */,
-				T0100 /* G9ClawTests */,
+				T0001 /* PilotDeck */,
+				T0100 /* PilotDeckTests */,
 			);
 		};
 /* End PBXProject section */
@@ -299,8 +299,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				B042 /* Assets.xcassets in Resources */,
-				B040 /* g9claw-logo.png in Resources */,
-				B041 /* g9claw-logo-white.png in Resources */,
+				B040 /* pilotdeck-logo.png in Resources */,
+				B041 /* pilotdeck-logo-white.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -318,7 +318,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B001 /* G9ClawApp.swift in Sources */,
+				B001 /* PilotDeckApp.swift in Sources */,
 				B002 /* RootView.swift in Sources */,
 				B010 /* AppModels.swift in Sources */,
 				B011 /* AppState.swift in Sources */,
@@ -357,7 +357,7 @@
 /* Begin PBXTargetDependency section */
 		TD001 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = T0001 /* G9Claw */;
+			target = T0001 /* PilotDeck */;
 			targetProxy = CP001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -476,13 +476,13 @@
 				ENABLE_ASSISTANT_INTENTS_PROVIDER_VALIDATION = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = G9Claw/App/Info.plist;
+				INFOPLIST_FILE = PilotDeck/App/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LM_FILTER_WARNINGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.5;
 				MARKETING_VERSION = 0.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.hx.pilotdeck;
-				PRODUCT_MODULE_NAME = G9Claw;
+				PRODUCT_MODULE_NAME = PilotDeck;
 				PRODUCT_NAME = PilotDeck;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = macosx;
@@ -505,13 +505,13 @@
 				ENABLE_ASSISTANT_INTENTS_PROVIDER_VALIDATION = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = G9Claw/App/Info.plist;
+				INFOPLIST_FILE = PilotDeck/App/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LM_FILTER_WARNINGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.5;
 				MARKETING_VERSION = 0.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.hx.pilotdeck;
-				PRODUCT_MODULE_NAME = G9Claw;
+				PRODUCT_MODULE_NAME = PilotDeck;
 				PRODUCT_NAME = PilotDeck;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = macosx;
@@ -531,7 +531,7 @@
 				LM_FILTER_WARNINGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.hx.pilotdeck.tests;
-				PRODUCT_MODULE_NAME = G9ClawTests;
+				PRODUCT_MODULE_NAME = PilotDeckTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
@@ -551,7 +551,7 @@
 				LM_FILTER_WARNINGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.hx.pilotdeck.tests;
-				PRODUCT_MODULE_NAME = G9ClawTests;
+				PRODUCT_MODULE_NAME = PilotDeckTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_STRICT_CONCURRENCY = minimal;
@@ -563,7 +563,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		CLP001 /* Build configuration list for PBXProject "G9Claw" */ = {
+		CLP001 /* Build configuration list for PBXProject "PilotDeck" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				CFGP01 /* Debug */,
@@ -572,7 +572,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		CLT001 /* Build configuration list for PBXNativeTarget "G9Claw" */ = {
+		CLT001 /* Build configuration list for PBXNativeTarget "PilotDeck" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				CFGT01 /* Debug */,
@@ -581,7 +581,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		CLT100 /* Build configuration list for PBXNativeTarget "G9ClawTests" */ = {
+		CLT100 /* Build configuration list for PBXNativeTarget "PilotDeckTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				CFGU01 /* Debug */,

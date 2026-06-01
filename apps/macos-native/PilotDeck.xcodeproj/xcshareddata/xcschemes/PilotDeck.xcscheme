@@ -17,8 +17,8 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "T0001"
                BuildableName = "PilotDeck.app"
-               BlueprintName = "G9Claw"
-               ReferencedContainer = "container:G9Claw.xcodeproj">
+               BlueprintName = "PilotDeck"
+               ReferencedContainer = "container:PilotDeck.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -35,9 +35,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "T0100"
-               BuildableName = "G9ClawTests.xctest"
-               BlueprintName = "G9ClawTests"
-               ReferencedContainer = "container:G9Claw.xcodeproj">
+               BuildableName = "PilotDeckTests.xctest"
+               BlueprintName = "PilotDeckTests"
+               ReferencedContainer = "container:PilotDeck.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -46,8 +46,8 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "T0001"
             BuildableName = "PilotDeck.app"
-            BlueprintName = "G9Claw"
-            ReferencedContainer = "container:G9Claw.xcodeproj">
+            BlueprintName = "PilotDeck"
+            ReferencedContainer = "container:PilotDeck.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
       <EnvironmentVariables>
@@ -74,8 +74,8 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "T0001"
             BuildableName = "PilotDeck.app"
-            BlueprintName = "G9Claw"
-            ReferencedContainer = "container:G9Claw.xcodeproj">
+            BlueprintName = "PilotDeck"
+            ReferencedContainer = "container:PilotDeck.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
       <EnvironmentVariables>
@@ -98,8 +98,8 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "T0001"
             BuildableName = "PilotDeck.app"
-            BlueprintName = "G9Claw"
-            ReferencedContainer = "container:G9Claw.xcodeproj">
+            BlueprintName = "PilotDeck"
+            ReferencedContainer = "container:PilotDeck.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

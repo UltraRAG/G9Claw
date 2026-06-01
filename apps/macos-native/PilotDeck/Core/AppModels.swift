@@ -2,22 +2,44 @@ import Foundation
 import SwiftUI
 
 enum SessionProvider: String, CaseIterable, Codable, Identifiable {
-    case g9Claw = "g9claw"
+    case pilotDeck = "pilotdeck"
     case cursor
     case codex
     case gemini
 
     var id: String { rawValue }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "pilotdeck", "g9claw", "9gclaw", "edgeclaw":
+            self = .pilotDeck
+        default:
+            guard let provider = SessionProvider(rawValue: rawValue) else {
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "Unknown session provider: \(rawValue)"
+                )
+            }
+            self = provider
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
     var displayName: String {
         switch self {
-        case .g9Claw: "PilotDeck"
+        case .pilotDeck: "PilotDeck"
         default: rawValue.capitalized
         }
     }
 
     var isNativeAvailable: Bool {
-        self == .g9Claw
+        self == .pilotDeck
     }
 }
 
@@ -857,7 +879,7 @@ struct ProviderConfig: Hashable, Codable {
     var headers: [String: String]
 
     static let empty = ProviderConfig(
-        provider: .g9Claw,
+        provider: .pilotDeck,
         apiType: .openAIChat,
         baseURL: "",
         model: "",
@@ -992,7 +1014,7 @@ struct ToolPermissionSettings: Hashable, Codable {
 }
 
 enum PermissionsExportDefaults {
-    static let source = "g9claw"
+    static let source = "pilotdeck"
 
     static func filename(date: Date = Date()) -> String {
         let formatter = DateFormatter()
@@ -1000,7 +1022,7 @@ enum PermissionsExportDefaults {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyy-MM-dd"
-        return "g9claw-permissions-\(formatter.string(from: date)).json"
+        return "pilotdeck-permissions-\(formatter.string(from: date)).json"
     }
 }
 
@@ -1031,7 +1053,7 @@ enum SettingsMainTab: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
-enum G9ClawConfigSection: String, CaseIterable, Identifiable {
+enum PilotDeckConfigSection: String, CaseIterable, Identifiable {
     case runtime
     case models
     case agents

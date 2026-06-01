@@ -14,7 +14,7 @@ struct SettingsView: View {
 private struct SettingsContentView: View {
     @EnvironmentObject private var state: AppState
     @State private var currentPage: SettingsPage = .main
-    @State private var configSection: G9ClawConfigSection = .models
+    @State private var configSection: PilotDeckConfigSection = .models
     @State private var savedConfigText = ""
     @State private var configMessage: String?
     @State private var configError: String?
@@ -49,7 +49,7 @@ private struct SettingsContentView: View {
         .onAppear {
             currentPage = settingsPage(for: state.settingsInitialTab)
             if savedConfigText.isEmpty {
-                savedConfigText = state.g9ClawConfigText
+                savedConfigText = state.pilotDeckConfigText
             }
         }
         .onChange(of: state.settingsInitialTab) { _, newValue in
@@ -124,7 +124,7 @@ private struct SettingsContentView: View {
         }
     }
 
-    private func configSectionLabel(_ section: G9ClawConfigSection) -> String {
+    private func configSectionLabel(_ section: PilotDeckConfigSection) -> String {
         switch section {
         case .runtime:
             return state.t(.runtime)
@@ -472,7 +472,7 @@ private struct SettingsContentView: View {
                         SettingsCardDivider()
                         SettingsRowBlock(
                             title: state.t(.projects),
-                            detail: local(chinese: "选择要编辑 `.g9claw/mcp.json` 的项目。", english: "Choose the project whose `.g9claw/mcp.json` should be edited.")
+                            detail: local(chinese: "选择要编辑 `.pilotdeck/mcp.json` 的项目。", english: "Choose the project whose `.pilotdeck/mcp.json` should be edited.")
                         ) {
                             Picker("", selection: $mcpProjectRoot) {
                                 ForEach(mcpProjectOptions, id: \.root) { item in
@@ -1494,11 +1494,11 @@ private struct SettingsContentView: View {
     private func alwaysOnProjectEnabledBinding(root: String) -> Binding<Bool> {
         Binding(
             get: {
-                AlwaysOnProjectConfig.isEnabled(yaml: state.g9ClawConfigText, projectRoot: root)
+                AlwaysOnProjectConfig.isEnabled(yaml: state.pilotDeckConfigText, projectRoot: root)
             },
             set: { enabled in
-                state.g9ClawConfigText = AlwaysOnProjectConfig.setEnabled(
-                    in: state.g9ClawConfigText,
+                state.pilotDeckConfigText = AlwaysOnProjectConfig.setEnabled(
+                    in: state.pilotDeckConfigText,
                     projectRoot: root,
                     enabled: enabled
                 )
@@ -1507,15 +1507,15 @@ private struct SettingsContentView: View {
     }
 
     private func configValue(_ path: String) -> String {
-        LegacyConfigLoader.scalarMap(from: state.g9ClawConfigText)[path] ?? ""
+        LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText)[path] ?? ""
     }
 
     private func setConfigValue(_ path: String, _ value: String) {
-        state.g9ClawConfigText = YAMLScalarEditor.set(path: path, value: value, in: state.g9ClawConfigText)
+        state.pilotDeckConfigText = YAMLScalarEditor.set(path: path, value: value, in: state.pilotDeckConfigText)
     }
 
     private var isConfigDirty: Bool {
-        state.g9ClawConfigText != savedConfigText
+        state.pilotDeckConfigText != savedConfigText
     }
 
     private func configBool(_ path: String, defaultValue: Bool = false) -> Bool {
@@ -1544,7 +1544,7 @@ private struct SettingsContentView: View {
     }
 
     private func configFileURL() -> URL {
-        G9ClawConfigPath.configURL()
+        PilotDeckConfigPath.configURL()
     }
 
     private var yamlContentTypes: [UTType] {
@@ -1559,12 +1559,12 @@ private struct SettingsContentView: View {
         do {
             let url = FileManager.default.fileExists(atPath: configFileURL().path)
                 ? configFileURL()
-                : G9ClawConfigPath.legacyConfigURL()
+                : PilotDeckConfigPath.legacyConfigURLs().first(where: { FileManager.default.fileExists(atPath: $0.path) }) ?? configFileURL()
             let text = try String(contentsOf: url, encoding: .utf8)
             if isConfigDirty {
                 configExternalNotice = state.t(.configReloadedNotice)
             }
-            state.g9ClawConfigText = text
+            state.pilotDeckConfigText = text
             savedConfigText = text
             configError = nil
             configMessage = state.t(.reloadedCurrentConfig)
@@ -1586,7 +1586,7 @@ private struct SettingsContentView: View {
         panel.allowedContentTypes = yamlContentTypes
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            state.g9ClawConfigText = try String(contentsOf: url, encoding: .utf8)
+            state.pilotDeckConfigText = try String(contentsOf: url, encoding: .utf8)
             configError = nil
             configMessage = local(chinese: "已导入配置，保存并重新加载后生效。", english: "Imported config. Save and reload to apply it.")
         } catch {
@@ -1600,7 +1600,7 @@ private struct SettingsContentView: View {
         panel.allowedContentTypes = yamlContentTypes
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try state.g9ClawConfigText.write(to: url, atomically: true, encoding: .utf8)
+            try state.pilotDeckConfigText.write(to: url, atomically: true, encoding: .utf8)
             configError = nil
             configMessage = state.t(.exported)
         } catch {
@@ -1610,7 +1610,7 @@ private struct SettingsContentView: View {
 
     private func saveConfigAndReload() {
         state.saveSettings()
-        savedConfigText = state.g9ClawConfigText
+        savedConfigText = state.pilotDeckConfigText
         configError = nil
         configMessage = state.t(.savedAndReloaded)
         applyRuntimeFieldsFromConfig()
@@ -1620,7 +1620,7 @@ private struct SettingsContentView: View {
     }
 
     private func applyRuntimeFieldsFromConfig() {
-        let values = LegacyConfigLoader.scalarMap(from: state.g9ClawConfigText)
+        let values = LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText)
         if let root = values["runtime.workspacesRoot"], !root.isEmpty {
             state.settings.workspacesRoot = NSString(string: root).expandingTildeInPath
         }
@@ -1643,7 +1643,7 @@ private struct SettingsContentView: View {
     }
 
     private func validateConfig() -> NativeConfigValidation {
-        let values = LegacyConfigLoader.scalarMap(from: state.g9ClawConfigText)
+        let values = LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText)
         var errors: [String] = []
         var warnings: [String] = []
         let defaultProvider = values["models.entries.default.provider"] ?? ""
@@ -1661,7 +1661,7 @@ private struct SettingsContentView: View {
         if (values["gateway.runtimePaths.generalCwd"] ?? "").isEmpty {
             warnings.append("gateway.runtimePaths.generalCwd is empty; Chat will use the default workspace.")
         }
-        if state.g9ClawConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if state.pilotDeckConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             errors.append("Config YAML is empty.")
         }
         return NativeConfigValidation(errors: errors, warnings: warnings)
@@ -1669,7 +1669,7 @@ private struct SettingsContentView: View {
 
     private func defaultProviderID() -> String {
         let provider = configValue("models.entries.default.provider").trimmingCharacters(in: .whitespacesAndNewlines)
-        return provider.isEmpty ? "g9claw" : provider
+        return provider.isEmpty ? "pilotdeck" : provider
     }
 
     private func isDefaultProvider(_ provider: String) -> Bool {
@@ -1679,7 +1679,7 @@ private struct SettingsContentView: View {
     private func configChildIDs(parentPath: String) -> [String] {
         let prefix = parentPath + "."
         var ids = Set<String>()
-        for key in LegacyConfigLoader.scalarMap(from: state.g9ClawConfigText).keys where key.hasPrefix(prefix) {
+        for key in LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText).keys where key.hasPrefix(prefix) {
             let suffix = key.dropFirst(prefix.count)
             if let first = suffix.split(separator: ".").first {
                 ids.insert(String(first))
@@ -1689,7 +1689,7 @@ private struct SettingsContentView: View {
     }
 
     private func providerID(forEntry entry: String) -> String {
-        nonBlank(configValue("models.entries.\(entry).provider")) ?? "g9claw"
+        nonBlank(configValue("models.entries.\(entry).provider")) ?? "pilotdeck"
     }
 
     private func modelName(forEntry entry: String) -> String {
@@ -1763,13 +1763,13 @@ private struct SettingsContentView: View {
 
         let providerIDs = Set(configChildIDs(parentPath: "models.providers"))
         let providerID: String
-        if id == "default", providerIDs.contains("g9claw") {
-            providerID = "g9claw"
+        if id == "default", providerIDs.contains("pilotdeck") {
+            providerID = "pilotdeck"
         } else {
             providerID = id
         }
 
-        var yaml = state.g9ClawConfigText
+        var yaml = state.pilotDeckConfigText
         if !providerIDs.contains(providerID) {
             yaml = YAMLScalarEditor.appendBlock(
                 parentPath: "models.providers",
@@ -1778,7 +1778,7 @@ private struct SettingsContentView: View {
                 in: yaml
             )
         }
-        state.g9ClawConfigText = YAMLScalarEditor.appendBlock(
+        state.pilotDeckConfigText = YAMLScalarEditor.appendBlock(
             parentPath: "models.entries",
             id: id,
             scalars: NativeModelsConfigFormFields.newEntryScalars(firstProvider: providerID),
@@ -1794,12 +1794,12 @@ private struct SettingsContentView: View {
             .filter { $0 != entry }
             .filter { providerID(forEntry: $0) == provider }
             .count
-        var yaml = YAMLScalarEditor.removeObject(path: "models.entries.\(entry)", in: state.g9ClawConfigText)
+        var yaml = YAMLScalarEditor.removeObject(path: "models.entries.\(entry)", in: state.pilotDeckConfigText)
         yaml = reassignModelReferences(removing: entry, fallback: fallbackEntry, in: yaml)
-        if remainingUses == 0, provider != "g9claw" {
+        if remainingUses == 0, provider != "pilotdeck" {
             yaml = YAMLScalarEditor.removeObject(path: "models.providers.\(provider)", in: yaml)
         }
-        state.g9ClawConfigText = yaml
+        state.pilotDeckConfigText = yaml
         if selectedModelPoolEntry == entry {
             selectedModelPoolEntry = nil
         }
@@ -1968,7 +1968,7 @@ enum NativeMCPConfigService {
     """
 
     static func globalConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        home.appendingPathComponent(".g9claw", isDirectory: true)
+        home.appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("mcp.json")
     }
 
@@ -1976,7 +1976,7 @@ enum NativeMCPConfigService {
         let root = projectRoot.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !root.isEmpty else { return URL(fileURLWithPath: "") }
         return URL(fileURLWithPath: root)
-            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("mcp.json")
     }
 
@@ -2332,7 +2332,7 @@ enum NativeConfigFormLayout {
     ]
     static let sectionNavigationWidth: CGFloat = 180
     static let sectionNavigationGap: CGFloat = 16
-    static let sectionOrder: [G9ClawConfigSection] = [
+    static let sectionOrder: [PilotDeckConfigSection] = [
         .models,
         .agents,
         .memory,
