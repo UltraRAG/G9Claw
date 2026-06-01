@@ -14,17 +14,29 @@ struct SettingsView: View {
 private struct SettingsContentView: View {
     @EnvironmentObject private var state: AppState
     @State private var currentPage: SettingsPage = .main
-    @State private var configSection: PilotDeckConfigSection = .models
+    @State private var configSection: PilotDeckConfigSection?
     @State private var savedConfigText = ""
     @State private var configMessage: String?
     @State private var configError: String?
     @State private var configExternalNotice: String?
+    @State private var showConfigDetails = false
     @State private var selectedModelPoolEntry: String?
+    @State private var recentlyRemovedWebProviderIDs = Set<String>()
+    @State private var showCatalogProviderPicker = false
+    @State private var newModelID = ""
+    @State private var showAdvancedAgents = false
+    @State private var showAdvancedRouter = false
+    @State private var showAdvancedRuntime = false
+    @State private var isTestingSearchConnection = false
+    @State private var searchConnectionMessage: String?
+    @State private var searchConnectionError: String?
     @State private var mcpScope: NativeMCPConfigScope = .global
     @State private var mcpDraft = NativeMCPConfigDraft.empty
     @State private var mcpProjectRoot = ""
     @State private var mcpMessage: String?
     @State private var mcpError: String?
+    @State private var newCustomEnvKey = ""
+    @State private var newCustomEnvValue = ""
 
     var body: some View {
         ScrollView {
@@ -142,6 +154,8 @@ private struct SettingsContentView: View {
             return state.t(.routing)
         case .gateway:
             return state.t(.gateway)
+        case .customEnv:
+            return local(chinese: "自定义环境变量", english: "Custom Env")
         case .raw:
             return state.t(.rawYAML)
         }
@@ -810,10 +824,22 @@ private struct SettingsContentView: View {
                 }
             }
 
-            HStack(alignment: .top, spacing: NativeConfigFormLayout.sectionNavigationGap) {
-                configSectionSidebar
-                configSectionContent
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            if configSection == nil {
+                configSectionHome
+            } else {
+                VStack(alignment: .leading, spacing: 16) {
+                    Button {
+                        configSection = nil
+                    } label: {
+                        Label(local(chinese: "返回服务配置", english: "Back to service config"), systemImage: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(DesignTokens.tertiaryText)
+
+                    configSectionContent
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
             }
         }
     }
@@ -822,71 +848,86 @@ private struct SettingsContentView: View {
         SettingsCardBlock {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "doc.badge.gearshape")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(DesignTokens.tertiaryText)
-                        .frame(width: 22)
-                        .padding(.top, 1)
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            Text(configFileURL().path.isEmpty ? state.t(.configPreview) : state.t(.configFile))
-                                .font(.system(size: 13, weight: .semibold))
-                            if isConfigDirty {
-                                Text(state.t(.unsaved))
-                                    .font(.system(size: 10, weight: .bold))
-                                    .tracking(0.6)
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 2)
-                                    .foregroundStyle(DesignTokens.warning)
-                                    .background(DesignTokens.warning.opacity(0.10), in: Capsule())
-                                    .overlay(Capsule().stroke(DesignTokens.warning.opacity(0.35), lineWidth: 1))
+                    Button {
+                        showConfigDetails.toggle()
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "doc.badge.gearshape")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                                .frame(width: 22)
+                                .padding(.top, 1)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(configFileURL().path.isEmpty ? state.t(.configPreview) : state.t(.configFile))
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(DesignTokens.text)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Text(configFileURL().path)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(DesignTokens.tertiaryText)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(DesignTokens.neutral100, in: RoundedRectangle(cornerRadius: 5))
                             }
-                            Spacer()
                         }
-                        Text(configFileURL().path)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(DesignTokens.tertiaryText)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(DesignTokens.neutral100, in: RoundedRectangle(cornerRadius: 5))
                     }
-                }
-                HStack(spacing: 8) {
-                    Button {
-                        revealConfigFile()
-                    } label: {
-                        Label(state.t(.revealFile), systemImage: "folder")
-                            .lineLimit(1)
-                    }
-                    .buttonStyle(WebToolbarButtonStyle())
-                    Button {
-                        importConfigFile()
-                    } label: {
-                        Label(state.t(.importAction), systemImage: "square.and.arrow.down")
-                            .lineLimit(1)
-                    }
-                    .buttonStyle(WebToolbarButtonStyle())
-                    Button {
-                        exportConfigFile()
-                    } label: {
-                        Label(state.t(.exportAction), systemImage: "square.and.arrow.up")
-                            .lineLimit(1)
-                    }
-                    .buttonStyle(WebToolbarButtonStyle())
+                    .buttonStyle(.plain)
                     Spacer(minLength: 8)
+                    let validation = validateConfig()
+                    Text(validation.valid ? (isConfigDirty ? state.t(.unsavedChanges) : local(chinese: "无未保存更改", english: "No unsaved changes")) : state.t(.configInvalid))
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .foregroundStyle(validation.valid ? DesignTokens.tertiaryText : DesignTokens.danger)
+                        .background(validation.valid ? DesignTokens.neutral100 : DesignTokens.danger.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
                     Button {
                         saveConfigAndReload()
                     } label: {
-                        Label(local(chinese: "保存并重新加载当前配置", english: "Save & Reload Current"), systemImage: "arrow.clockwise")
+                        Label(local(chinese: "保存并重载", english: "Save & Reload"), systemImage: "externaldrive.badge.checkmark")
                             .lineLimit(1)
                     }
-                    .buttonStyle(WebToolbarButtonStyle())
+                    .buttonStyle(WebToolbarButtonStyle(isProminent: true))
+                    .disabled(!isConfigDirty && validation.valid)
+                    Button {
+                        showConfigDetails.toggle()
+                    } label: {
+                        Image(systemName: showConfigDetails ? "chevron.up" : "chevron.down")
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(SettingsIconButtonStyle())
                 }
-                Divider()
-                configStatusOverview
+
+                if showConfigDetails {
+                    HStack(spacing: 8) {
+                        Button {
+                            revealConfigFile()
+                        } label: {
+                            Label(state.t(.revealFile), systemImage: "folder")
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(WebToolbarButtonStyle())
+                        Button {
+                            importConfigFile()
+                        } label: {
+                            Label(state.t(.importAction), systemImage: "square.and.arrow.down")
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(WebToolbarButtonStyle())
+                        Button {
+                            exportConfigFile()
+                        } label: {
+                            Label(state.t(.exportAction), systemImage: "square.and.arrow.up")
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(WebToolbarButtonStyle())
+                        Spacer(minLength: 8)
+                    }
+                    Divider()
+                    configStatusOverview
+                }
             }
             .padding(14)
         }
@@ -983,32 +1024,166 @@ private struct SettingsContentView: View {
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.radius).stroke(DesignTokens.separator))
     }
 
+    private var configSectionHome: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            configSectionGroup(
+                title: local(chinese: "基础", english: "Basic"),
+                detail: local(chinese: "先配置模型池，再把模型分配给智能体。", english: "Configure model providers first, then assign models to agents."),
+                sections: [.models, .agents]
+            )
+            configSectionGroup(
+                title: local(chinese: "功能", english: "Features"),
+                detail: nil,
+                sections: [.router, .memory, .search, .alwaysOn, .gateway]
+            )
+            configSectionGroup(
+                title: local(chinese: "高级", english: "Advanced"),
+                detail: nil,
+                sections: [.runtime, .customEnv]
+            )
+        }
+    }
+
+    private func configSectionGroup(title: String, detail: String?, sections: [PilotDeckConfigSection]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                }
+            }
+            SettingsCardBlock(divided: true) {
+                ForEach(sections) { section in
+                    Button {
+                        configSection = section
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: configSectionIcon(section))
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                                .frame(width: 22)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(configSectionLabel(section))
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(DesignTokens.text)
+                                Text(configSectionDescription(section))
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(DesignTokens.tertiaryText)
+                                    .lineLimit(2)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func configSectionIcon(_ section: PilotDeckConfigSection) -> String {
+        switch section {
+        case .runtime: return "server.rack"
+        case .models: return "externaldrive"
+        case .agents: return "bubble.left.and.bubble.right"
+        case .alwaysOn: return "dot.radiowaves.left.and.right"
+        case .memory: return "archivebox"
+        case .search: return "magnifyingglass"
+        case .router: return "point.3.connected.trianglepath.dotted"
+        case .gateway: return "network"
+        case .customEnv: return "curlybraces"
+        case .raw: return "doc.plaintext"
+        }
+    }
+
+    private func configSectionDescription(_ section: PilotDeckConfigSection) -> String {
+        switch section {
+        case .runtime:
+            return state.t(.runtimeDetail)
+        case .models:
+            return local(chinese: "配置想使用的模型提供商、API 密钥、接口地址与启用模型。", english: "Configure providers, API keys, endpoints, and enabled models.")
+        case .agents:
+            return local(chinese: "为主智能体和子智能体选择默认模型。", english: "Choose default models for the main agent and subagents.")
+        case .alwaysOn:
+            return local(chinese: "配置后台发现、触发节奏、休眠与项目启用范围。", english: "Configure discovery, cadence, dormancy, and project opt-in.")
+        case .memory:
+            return local(chinese: "配置记忆开关、记忆模型，以及导入导出。", english: "Configure memory, its model, and import/export.")
+        case .search:
+            return state.t(.searchSectionDetail)
+        case .router:
+            return state.t(.routerDetail)
+        case .gateway:
+            return state.t(.gatewayDetail)
+        case .customEnv:
+            return local(chinese: "维护传给运行时和工具的自定义环境变量。", english: "Manage custom environment variables for runtime and tools.")
+        case .raw:
+            return ""
+        }
+    }
+
     @ViewBuilder
     private var configSectionContent: some View {
+        if let configSection {
         switch configSection {
         case .runtime:
-            SettingsSectionBlock(title: state.t(.runtime), detail: state.t(.runtimeDetail)) {
-                SettingsCardBlock(divided: true) {
-                    ConfigGrid {
-                        ForEach(NativeRuntimeConfigFormFields.textFields) { field in
-                            SettingsTextField(state.t(field.label), text: configBinding(field.path))
+            VStack(alignment: .leading, spacing: 18) {
+                SettingsSectionBlock(title: state.t(.runtime), detail: state.t(.runtimeDetail)) {
+                    SettingsCardBlock(divided: true) {
+                        SettingsRowBlock(
+                            title: state.t(.workspacesRoot),
+                            detail: local(chinese: "新项目默认创建位置。", english: "Default location for new projects.")
+                        ) {
+                            SettingsTextField(state.t(.workspacesRoot), text: Binding(
+                                get: { state.settings.workspacesRoot },
+                                set: { value in
+                                    state.settings.workspacesRoot = value
+                                    setConfigValue(NativeRuntimeConfigFormFields.workspacesRootPath, value)
+                                }
+                            ))
+                            .frame(width: 340)
                         }
-                        SettingsTextField(state.t(.workspacesRoot), text: Binding(
-                            get: { state.settings.workspacesRoot },
-                            set: { value in
-                                state.settings.workspacesRoot = value
-                                setConfigValue(NativeRuntimeConfigFormFields.workspacesRootPath, value)
-                            }
-                        ))
-                        SettingsTextField(state.t(.generalWorkspace), text: Binding(
-                            get: { state.settings.generalWorkspacePath },
-                            set: { value in
-                                state.settings.generalWorkspacePath = value
-                                setConfigValue(NativeRuntimeConfigFormFields.generalWorkspacePath, value)
-                            }
-                        ))
+                        SettingsCardDivider()
+                        SettingsRowBlock(
+                            title: state.t(.generalWorkspace),
+                            detail: local(chinese: "通用对话使用的本地工作目录。", english: "Local workspace used by General chat.")
+                        ) {
+                            SettingsTextField(state.t(.generalWorkspace), text: Binding(
+                                get: { state.settings.generalWorkspacePath },
+                                set: { value in
+                                    state.settings.generalWorkspacePath = value
+                                    setConfigValue(NativeRuntimeConfigFormFields.generalWorkspacePath, value)
+                                }
+                            ))
+                            .frame(width: 340)
+                        }
                     }
-                    .padding(14)
+                }
+                Button {
+                    showAdvancedRuntime.toggle()
+                } label: {
+                    Label(local(chinese: "高级运行时", english: "Advanced runtime"), systemImage: showAdvancedRuntime ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(DesignTokens.tertiaryText)
+                if showAdvancedRuntime {
+                    SettingsCardBlock(divided: true) {
+                        ConfigGrid {
+                            ForEach(NativeRuntimeConfigFormFields.textFields) { field in
+                                SettingsTextField(state.t(field.label), text: configBinding(field.path))
+                            }
+                        }
+                        .padding(14)
+                    }
                 }
             }
         case .models:
@@ -1020,8 +1195,8 @@ private struct SettingsContentView: View {
                 SettingsSectionBlock(
                     title: state.t(.alwaysOn),
                     detail: local(
-                        chinese: "配置后台发现的开关、节奏和项目范围。隔离工作区、休眠和执行保护由客户端自动处理。",
-                        english: "Configure background discovery, cadence, and project scope. Workspace isolation, dormancy, and execution guards are handled automatically."
+                        chinese: "配置后台发现的开关、节奏、休眠、执行保护和项目范围。",
+                        english: "Configure background discovery, cadence, dormancy, execution guards, and project scope."
                     )
                 ) {
                     SettingsCardBlock(divided: true) {
@@ -1034,41 +1209,120 @@ private struct SettingsContentView: View {
                         ) {
                             WebSettingsToggle(isOn: configBoolBinding(NativeAlwaysOnConfigFormFields.enabledPath))
                         }
-                        SettingsCardDivider()
-                        SettingsRowBlock(
-                            title: local(chinese: "自动发现", english: "Auto Discovery"),
-                            detail: state.t(.discoveryTriggerDetail)
-                        ) {
-                            WebSettingsToggle(isOn: configBoolBinding(NativeAlwaysOnConfigFormFields.triggerEnabledPath))
-                        }
-                        SettingsCardDivider()
-                        ConfigGrid {
-                            ForEach(NativeAlwaysOnConfigFormFields.triggerFields) { field in
-                                SettingsTextField(
-                                    local(chinese: field.chineseLabel, english: field.englishLabel),
-                                    text: configBinding(field.path)
-                                )
-                            }
-                        }
-                        .padding(14)
                     }
                 }
-                SettingsSectionBlock(
-                    title: state.t(.projects),
-                    detail: local(chinese: "选择哪些项目允许 Always-On 后台发现。", english: "Choose which projects can run Always-On discovery.")
-                ) {
-                    SettingsCardBlock(divided: true) {
-                        if alwaysOnProjectRows.isEmpty {
-                            Text(state.t(.noProjectsFound))
-                                .font(.system(size: 13))
-                                .foregroundStyle(DesignTokens.tertiaryText)
-                                .padding(16)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        } else {
-                            ForEach(alwaysOnProjectRows) { project in
-                                let root = AlwaysOnProjectConfig.projectRoot(state.effectiveWorkspacePath(for: project))
-                                SettingsRowBlock(title: project.displayName, detail: root) {
-                                    WebSettingsToggle(isOn: alwaysOnProjectEnabledBinding(root: root))
+
+                if configBool(NativeAlwaysOnConfigFormFields.enabledPath) {
+                    SettingsSectionBlock(
+                        title: local(chinese: "触发", english: "Trigger"),
+                        detail: local(chinese: "控制自动发现的触发频率、冷却时间和预算。", english: "Control discovery cadence, cooldown, and budget.")
+                    ) {
+                        SettingsCardBlock(divided: true) {
+                            SettingsRowBlock(
+                                title: local(chinese: "自动发现", english: "Auto Discovery"),
+                                detail: state.t(.discoveryTriggerDetail)
+                            ) {
+                                WebSettingsToggle(isOn: configBoolBinding(NativeAlwaysOnConfigFormFields.triggerEnabledPath))
+                            }
+                            ConfigGrid {
+                                ForEach(NativeAlwaysOnConfigFormFields.triggerFields) { field in
+                                    SettingsTextField(
+                                        local(chinese: field.chineseLabel, english: field.englishLabel),
+                                        text: configBinding(field.path)
+                                    )
+                                }
+                                SettingsPickerField(
+                                    local(chinese: "偏好通道", english: "Prefer Channel"),
+                                    selection: configBinding("alwaysOn.trigger.preferChannel", fallback: "web"),
+                                    options: ["web", "tui"],
+                                    emptyLabel: "web"
+                                )
+                            }
+                            .padding(14)
+                        }
+                    }
+
+                    SettingsSectionBlock(
+                        title: local(chinese: "休眠", english: "Dormancy"),
+                        detail: local(chinese: "文件变化检测的防抖和忽略规则。", english: "Debounce and ignore rules for filesystem activity.")
+                    ) {
+                        SettingsCardBlock(divided: true) {
+                            SettingsRowBlock(
+                                title: state.t(.enabled),
+                                detail: local(chinese: "开启后会忽略频繁抖动和不重要文件。", english: "When on, noisy and irrelevant filesystem changes are ignored.")
+                            ) {
+                                WebSettingsToggle(isOn: configBoolBinding("alwaysOn.dormancy.enabled", defaultValue: true))
+                            }
+                            ConfigGrid {
+                                SettingsTextField(
+                                    local(chinese: "防抖（毫秒）", english: "Debounce (ms)"),
+                                    text: configBinding("alwaysOn.dormancy.debounceMs")
+                                )
+                                SettingsTextField(
+                                    local(chinese: "忽略规则", english: "Ignore globs"),
+                                    text: configBinding("alwaysOn.dormancy.ignoreGlobs")
+                                )
+                            }
+                            .padding(14)
+                        }
+                    }
+
+                    SettingsSectionBlock(
+                        title: local(chinese: "工作区", english: "Workspace"),
+                        detail: local(chinese: "隔离工作区和快照的位置与限制。", english: "Isolation workspace and snapshot locations and limits.")
+                    ) {
+                        SettingsCardBlock {
+                            ConfigGrid {
+                                ForEach(NativeAlwaysOnConfigFormFields.workspaceFields) { field in
+                                    SettingsTextField(
+                                        local(chinese: field.chineseLabel, english: field.englishLabel),
+                                        text: configBinding(field.path)
+                                    )
+                                }
+                                webSettingsToggleRow(
+                                    title: local(chinese: "Git LFS", english: "Git LFS"),
+                                    detail: local(chinese: "复制工作区时保留 Git LFS 行为。", english: "Preserve Git LFS behavior when preparing workspaces."),
+                                    isOn: configBoolBinding("alwaysOn.workspace.gitLfs")
+                                )
+                            }
+                            .padding(14)
+                        }
+                    }
+
+                    SettingsSectionBlock(
+                        title: local(chinese: "执行", english: "Execution"),
+                        detail: local(chinese: "限制后台任务的轮次、工具调用和超时时间。", english: "Limit background turns, tool calls, and timeout.")
+                    ) {
+                        SettingsCardBlock {
+                            ConfigGrid {
+                                ForEach(NativeAlwaysOnConfigFormFields.executionFields) { field in
+                                    SettingsTextField(
+                                        local(chinese: field.chineseLabel, english: field.englishLabel),
+                                        text: configBinding(field.path)
+                                    )
+                                }
+                            }
+                            .padding(14)
+                        }
+                    }
+
+                    SettingsSectionBlock(
+                        title: state.t(.projects),
+                        detail: local(chinese: "选择哪些项目允许 Always-On 后台发现。", english: "Choose which projects can run Always-On discovery.")
+                    ) {
+                        SettingsCardBlock(divided: true) {
+                            if alwaysOnProjectRows.isEmpty {
+                                Text(state.t(.noProjectsFound))
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(DesignTokens.tertiaryText)
+                                    .padding(16)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                ForEach(alwaysOnProjectRows) { project in
+                                    let root = AlwaysOnProjectConfig.projectRoot(state.effectiveWorkspacePath(for: project))
+                                    SettingsRowBlock(title: project.displayName, detail: root) {
+                                        WebSettingsToggle(isOn: alwaysOnProjectEnabledBinding(root: root))
+                                    }
                                 }
                             }
                         }
@@ -1080,31 +1334,23 @@ private struct SettingsContentView: View {
                 SettingsSectionBlock(
                     title: state.t(.memory),
                     detail: local(
-                        chinese: "配置记忆捕获、索引、Dream，以及记忆专用模型。",
-                        english: "Configure memory capture, indexing, Dream, and the memory model."
+                        chinese: "配置记忆开关与记忆专用模型。导入导出用于备份和迁移。",
+                        english: "Configure memory and its model. Import/export is for backup and migration."
                     )
                 ) {
                     SettingsCardBlock(divided: true) {
                         SettingsRowBlock(title: state.t(.enabled), detail: state.t(.memoryDetail)) {
                             WebSettingsToggle(isOn: configBoolBinding(NativeMemoryConfigFormFields.enabledPath))
                         }
-                        SettingsCardDivider()
-                        SettingsRowBlock(
-                            title: local(chinese: "记忆模型", english: "Memory Model"),
-                            detail: local(chinese: "记忆检索、索引和 Dream 可继承主智能体模型。", english: "Recall, Index, and Dream can inherit the main agent model.")
-                        ) {
-                            modelAssignmentPicker(path: NativeMemoryConfigFormFields.modelPath, includeInherit: true)
-                        }
-                        SettingsCardDivider()
-                        ConfigGrid {
-                            ForEach(NativeMemoryConfigFormFields.scheduleFields) { field in
-                                SettingsTextField(
-                                    local(chinese: field.chineseLabel, english: field.englishLabel),
-                                    text: configBinding(field.path)
-                                )
+                        if configBool(NativeMemoryConfigFormFields.enabledPath) {
+                            SettingsCardDivider()
+                            SettingsRowBlock(
+                                title: local(chinese: "记忆模型", english: "Memory Model"),
+                                detail: local(chinese: "记忆检索、索引和 Dream 可继承主智能体模型。", english: "Recall, Index, and Dream can inherit the main agent model.")
+                            ) {
+                                modelAssignmentPicker(path: NativeMemoryConfigFormFields.modelPath, includeInherit: true)
                             }
                         }
-                        .padding(14)
                     }
                 }
                 SettingsSectionBlock(
@@ -1182,6 +1428,36 @@ private struct SettingsContentView: View {
                                 }
                             }
                             .padding(14)
+                            SettingsCardDivider()
+                            HStack(alignment: .center, spacing: 10) {
+                                Button {
+                                    testSearchConnection()
+                                } label: {
+                                    Label(
+                                        isTestingSearchConnection
+                                            ? state.t(.connecting)
+                                            : local(chinese: "测试连接", english: "Test Connection"),
+                                        systemImage: "arrow.clockwise"
+                                    )
+                                }
+                                .buttonStyle(WebToolbarButtonStyle())
+                                .disabled(isTestingSearchConnection)
+
+                                if let searchConnectionMessage {
+                                    Text(searchConnectionMessage)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(DesignTokens.success)
+                                        .lineLimit(2)
+                                } else if let searchConnectionError {
+                                    Text(searchConnectionError)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(DesignTokens.danger)
+                                        .lineLimit(2)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
                         }
                         if configValue(NativeSearchConfigFormFields.providerPath) == "custom" {
                             SettingsCardBlock(divided: true) {
@@ -1229,7 +1505,12 @@ private struct SettingsContentView: View {
                     }
                 }
             }
+        case .customEnv:
+            customEnvSettingsContent
         case .raw:
+            EmptyView()
+        }
+        } else {
             EmptyView()
         }
     }
@@ -1238,34 +1519,27 @@ private struct SettingsContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsSectionBlock(
                 title: local(chinese: "模型池", english: "Model Pool"),
-                detail: local(chinese: "集中维护可复用的模型连接与模型名称。", english: "Manage reusable model connections and model names.")
+                detail: local(chinese: "配置想使用的模型提供商、API 密钥、接口地址与启用模型。智能体、记忆和路由会从这里选择。", english: "Configure providers, API keys, endpoints, and enabled models. Agents, memory, and router choose from this pool.")
             ) {
-                SettingsCardBlock {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text(local(chinese: "已配置模型", english: "Configured Models"))
-                                .font(.system(size: 13, weight: .semibold))
-                            Spacer()
-                            Button(local(chinese: "添加配置", english: "Add Config")) { addModelPoolEntry() }
-                                .buttonStyle(WebToolbarButtonStyle())
-                        }
-                        let entries = modelPoolEntryIDs
-                        if entries.isEmpty {
-                            dashedEmpty(local(chinese: "暂无模型配置。", english: "No model configs yet."))
-                        } else {
-                            SettingsPickerField(
-                                local(chinese: "选择模型", english: "Select Model"),
-                                selection: selectedModelPoolEntryBinding,
-                                options: entries,
-                                emptyLabel: local(chinese: "选择模型", english: "Select model"),
-                                optionLabel: modelOptionLabel
-                            )
-                            if let entry = selectedModelPoolEntryID {
-                                modelPoolEditorCard(entry)
-                            }
+                VStack(alignment: .leading, spacing: 12) {
+                    Button {
+                        showCatalogProviderPicker.toggle()
+                    } label: {
+                        Label(local(chinese: "添加提供商", english: "Add Provider"), systemImage: "plus")
+                    }
+                    .buttonStyle(WebToolbarButtonStyle())
+
+                    if showCatalogProviderPicker {
+                        catalogProviderPickerCard
+                    }
+
+                    if webProviderIDs.isEmpty {
+                        dashedEmpty(local(chinese: "暂无模型提供商。", english: "No model providers yet."))
+                    } else {
+                        ForEach(webProviderIDs, id: \.self) { provider in
+                            webProviderCard(provider)
                         }
                     }
-                    .padding(14)
                 }
             }
         }
@@ -1280,7 +1554,50 @@ private struct SettingsContentView: View {
                     english: "Choose main and subagent models. Model connections are managed in the model pool."
                 )
             ) {
-                modelAssignmentRowsCard(primaryModelAssignmentRows)
+                SettingsCardBlock(divided: true) {
+                    SettingsRowBlock(
+                        title: state.t(.mainAgent),
+                        detail: local(chinese: "默认会话和普通任务使用的模型。", english: "Model used by default chats and regular tasks.")
+                    ) {
+                        modelAssignmentPicker(path: "agent.model")
+                    }
+
+                    if let mainRef = nonBlank(configValue("agent.model")), NativeConfigService.splitModelRef(mainRef) != nil {
+                        SettingsCardDivider()
+                        agentCapabilitiesBlock(modelRef: mainRef)
+                    }
+
+                    SettingsCardDivider()
+                    Button {
+                        showAdvancedAgents.toggle()
+                    } label: {
+                        Label(local(chinese: "高级智能体", english: "Advanced agents"), systemImage: showAdvancedAgents ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(DesignTokens.tertiaryText)
+
+                    if showAdvancedAgents {
+                        SettingsCardDivider()
+                        SettingsRowBlock(
+                            title: state.t(.subagents),
+                            detail: local(chinese: "子智能体默认模型，可继承主智能体。", english: "Default subagent model; can inherit the main agent.")
+                        ) {
+                            modelAssignmentPicker(path: "agent.subagents.default", includeInherit: true)
+                        }
+                        SettingsCardDivider()
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "info.circle")
+                                .foregroundStyle(DesignTokens.accent)
+                            Text(local(chinese: "子智能体的模型也会被 Router 和 Token Saver 规则影响。", english: "Subagent models can still be affected by Router and Token Saver policy."))
+                                .font(.system(size: 11))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                        }
+                        .padding(14)
+                    }
+                }
             }
         }
     }
@@ -1297,24 +1614,242 @@ private struct SettingsContentView: View {
                     }
                     if configBool(NativeRouterConfigFormFields.enabledPath) {
                         SettingsCardDivider()
-                        modelAssignmentRowsList(routerDecisionModelRows)
+                        modelAssignmentRowsList(routerLevelModelRows)
                     }
                 }
             }
 
             if configBool(NativeRouterConfigFormFields.enabledPath) {
-                SettingsSectionBlock(
-                    title: state.t(.tokenSaver),
-                    detail: local(chinese: "对齐 PD 的 simple / medium / complex / reasoning 四档，复杂度判断和回退细节由客户端处理。", english: "Uses PD-style simple / medium / complex / reasoning tiers. Classification and fallback details are handled by the client.")
-                ) {
-                    SettingsCardBlock(divided: true) {
-                        SettingsRowBlock(title: state.t(.enabled), detail: state.t(.tokenSaverDetail)) {
-                            WebSettingsToggle(isOn: configBoolBinding("router.tokenSaver.enabled"))
+                Button {
+                    showAdvancedRouter.toggle()
+                } label: {
+                    Label(local(chinese: "高级路由", english: "Advanced router"), systemImage: showAdvancedRouter ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(DesignTokens.tertiaryText)
+
+                if showAdvancedRouter {
+                    SettingsSectionBlock(
+                        title: local(chinese: "回退链", english: "Fallback chains"),
+                        detail: local(chinese: "按场景配置候选模型链。mac 端会按顺序尝试可用模型。", english: "Configure candidate model chains per scenario. macOS tries available models in order.")
+                    ) {
+                        SettingsCardBlock {
+                            ConfigGrid {
+                                ForEach(NativeRouterConfigFormFields.fallbackFields) { field in
+                                    SettingsTextField(
+                                        local(chinese: field.chineseLabel, english: field.englishLabel),
+                                        text: configBinding(field.path)
+                                    )
+                                }
+                            }
+                            .padding(14)
                         }
-                        SettingsCardDivider()
-                        modelAssignmentRowsList(routerTierModelRows)
+                    }
+
+                    SettingsSectionBlock(
+                        title: local(chinese: "零用量重试", english: "Zero-usage retry"),
+                        detail: local(chinese: "当提供商返回空 usage 时自动重试，避免错误计费/路由统计。", english: "Retry when a provider returns empty usage to avoid bad billing or router stats.")
+                    ) {
+                        SettingsCardBlock(divided: true) {
+                            SettingsRowBlock(
+                                title: state.t(.enabled),
+                                detail: local(chinese: "启用后最多按下面次数重试。", english: "When enabled, retry up to the configured attempt count.")
+                            ) {
+                                WebSettingsToggle(isOn: configBoolBinding("router.zeroUsageRetry.enabled", defaultValue: true))
+                            }
+                            if configBool("router.zeroUsageRetry.enabled", defaultValue: true) {
+                                SettingsCardDivider()
+                                ConfigGrid {
+                                    SettingsTextField(
+                                        local(chinese: "最大尝试次数", english: "Max attempts"),
+                                        text: configBinding("router.zeroUsageRetry.maxAttempts")
+                                    )
+                                }
+                                .padding(14)
+                            }
+                        }
+                    }
+
+                    SettingsSectionBlock(
+                        title: state.t(.tokenSaver),
+                        detail: local(chinese: "对齐 PD 的 simple / medium / complex / reasoning 四档，复杂度判断和回退细节由客户端处理。", english: "Uses PD-style simple / medium / complex / reasoning tiers. Classification and fallback details are handled by the client.")
+                    ) {
+                        SettingsCardBlock(divided: true) {
+                            SettingsRowBlock(title: state.t(.enabled), detail: state.t(.tokenSaverDetail)) {
+                                WebSettingsToggle(isOn: configBoolBinding("router.tokenSaver.enabled", defaultValue: true))
+                            }
+                            if configBool("router.tokenSaver.enabled", defaultValue: true) {
+                                SettingsCardDivider()
+                                ConfigGrid {
+                                    SettingsPickerField(
+                                        local(chinese: "默认档位", english: "Default tier"),
+                                        selection: configBinding("router.tokenSaver.defaultTier", fallback: "medium"),
+                                        options: RouterTier.allCases.map(\.rawValue),
+                                        emptyLabel: "medium"
+                                    )
+                                    SettingsTextField(
+                                        local(chinese: "判断超时（毫秒）", english: "Judge timeout (ms)"),
+                                        text: configBinding("router.tokenSaver.judgeTimeoutMs")
+                                    )
+                                    SettingsPickerField(
+                                        local(chinese: "子智能体策略", english: "Subagent policy"),
+                                        selection: configBinding("router.tokenSaver.subagent.policy", fallback: "judge"),
+                                        options: ["judge", "skip"],
+                                        emptyLabel: "judge"
+                                    )
+                                }
+                                .padding(14)
+                                SettingsCardDivider()
+                                ConfigGrid {
+                                    ForEach(NativeRouterConfigFormFields.tierDescriptionFields) { field in
+                                        SettingsTextField(
+                                            local(chinese: field.chineseLabel, english: field.englishLabel),
+                                            text: configBinding(field.path)
+                                        )
+                                    }
+                                    SettingsTextField(
+                                        local(chinese: "规则", english: "Rules"),
+                                        text: configBinding("router.tokenSaver.rules")
+                                    )
+                                }
+                                .padding(14)
+                            }
+                        }
+                    }
+
+                    SettingsSectionBlock(
+                        title: local(chinese: "自动编排", english: "Auto-orchestrate"),
+                        detail: local(chinese: "达到指定复杂度档位时自动启用更轻的系统提示和编排策略。", english: "Enable orchestration behavior for selected complexity tiers.")
+                    ) {
+                        SettingsCardBlock(divided: true) {
+                            SettingsRowBlock(
+                                title: state.t(.enabled),
+                                detail: local(chinese: "通常 complex 档位会触发。", english: "Usually triggered by the complex tier.")
+                            ) {
+                                WebSettingsToggle(isOn: configBoolBinding("router.autoOrchestrate.enabled", defaultValue: true))
+                            }
+                            if configBool("router.autoOrchestrate.enabled", defaultValue: true) {
+                                SettingsCardDivider()
+                                ConfigGrid {
+                                    SettingsTextField(
+                                        local(chinese: "触发档位", english: "Trigger tiers"),
+                                        text: configBinding("router.autoOrchestrate.triggerTiers")
+                                    )
+                                    webSettingsToggleRow(
+                                        title: local(chinese: "精简系统提示", english: "Slim system prompt"),
+                                        detail: local(chinese: "编排时减少重复提示上下文。", english: "Reduce repeated prompt context during orchestration."),
+                                        isOn: configBoolBinding("router.autoOrchestrate.slimSystemPrompt", defaultValue: true)
+                                    )
+                                }
+                                .padding(14)
+                            }
+                        }
+                    }
+
+                    SettingsSectionBlock(
+                        title: local(chinese: "统计与价格", english: "Stats & pricing"),
+                        detail: local(chinese: "记录路由统计，并可为模型配置每百万 token 价格。", english: "Record router stats and optionally configure per-million token pricing.")
+                    ) {
+                        SettingsCardBlock(divided: true) {
+                            SettingsRowBlock(
+                                title: state.t(.enabled),
+                                detail: local(chinese: "用于路由看板展示请求、Token 和成本。", english: "Used by the router dashboard for requests, tokens, and cost.")
+                            ) {
+                                WebSettingsToggle(isOn: configBoolBinding("router.stats.enabled", defaultValue: true))
+                            }
+                            if configBool("router.stats.enabled", defaultValue: true) {
+                                SettingsCardDivider()
+                                ConfigGrid {
+                                    ForEach(NativeRouterConfigFormFields.pricingFields) { field in
+                                        SettingsTextField(
+                                            local(chinese: field.chineseLabel, english: field.englishLabel),
+                                            text: configBinding(field.path)
+                                        )
+                                    }
+                                }
+                                .padding(14)
+                            }
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    private var customEnvSettingsContent: some View {
+        SettingsSectionBlock(
+            title: local(chinese: "自定义环境变量", english: "Custom Env"),
+            detail: local(chinese: "与网页版一致，写入 `customEnv`；mac 端会保留这些键，并在需要时传给运行时。", english: "Matches the web config `customEnv` block; macOS preserves these keys for runtime use.")
+        ) {
+            SettingsCardBlock {
+                VStack(alignment: .leading, spacing: 12) {
+                    if customEnvKeys.isEmpty {
+                        dashedEmpty(local(chinese: "暂无自定义环境变量。", english: "No custom environment variables."))
+                    } else {
+                        VStack(spacing: 10) {
+                            ForEach(customEnvKeys, id: \.self) { key in
+                                HStack(spacing: 10) {
+                                    Text(key)
+                                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                        .frame(width: 180, alignment: .leading)
+                                    SettingsTextField(
+                                        local(chinese: "值", english: "Value"),
+                                        text: configBinding("customEnv.\(key)"),
+                                        isSecure: customEnvKeyLooksSecret(key)
+                                    )
+                                    Button {
+                                        removeCustomEnvKey(key)
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .frame(width: 28, height: 28)
+                                    }
+                                    .buttonStyle(SettingsIconButtonStyle())
+                                    .foregroundStyle(DesignTokens.danger)
+                                }
+                            }
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        TextField("KEY", text: $newCustomEnvKey)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12, design: .monospaced))
+                            .onSubmit(addCustomEnvKey)
+                        TextField("value", text: $newCustomEnvValue)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12, design: .monospaced))
+                            .onSubmit(addCustomEnvKey)
+                        Button {
+                            addCustomEnvKey()
+                        } label: {
+                            Label(state.t(.add), systemImage: "plus")
+                        }
+                        .buttonStyle(WebToolbarButtonStyle(isProminent: true))
+                        .disabled(!isValidCustomEnvKey(newCustomEnvKey))
+                    }
+                    let quickKeys = NativeCustomEnvConfigFormFields.wellKnownKeys.filter { !customEnvKeys.contains($0.key) }
+                    if !quickKeys.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(local(chinese: "快速添加常用变量", english: "Quick add common variables"))
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                            FlowLayout(spacing: 6) {
+                                ForEach(quickKeys, id: \.key) { item in
+                                    Button {
+                                        setConfigValue("customEnv.\(item.key)", "")
+                                    } label: {
+                                        Label(item.key, systemImage: "plus")
+                                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    }
+                                    .buttonStyle(WebToolbarButtonStyle())
+                                    .help(item.hint)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(14)
             }
         }
     }
@@ -1330,15 +1865,21 @@ private struct SettingsContentView: View {
         }
     }
 
-    private var routerDecisionModelRows: [NativeModelAssignmentRowSpec] {
-        routeModelAssignmentRows + [
+    private var routerLevelModelRows: [NativeModelAssignmentRowSpec] {
+        [
+            NativeModelAssignmentRowSpec(
+                id: "defaultRoute",
+                title: state.t(.defaultRouteModel),
+                detail: routerModelDetail("default"),
+                path: "router.scenarios.default"
+            ),
             NativeModelAssignmentRowSpec(
                 id: "judgeModel",
                 title: state.t(.judgeModel),
                 detail: local(chinese: "Token Saver 用这个模型判断任务复杂度。", english: "Token Saver uses this model to judge task complexity."),
-                path: "router.tokenSaver.judgeModel"
+                path: "router.tokenSaver.judge"
             ),
-        ]
+        ] + routerTierModelRows
     }
 
     private func routerTierTitle(_ tier: RouterTier) -> String {
@@ -1369,13 +1910,13 @@ private struct SettingsContentView: View {
                 id: "mainAgent",
                 title: state.t(.mainAgent),
                 detail: local(chinese: "默认会话和普通任务使用的模型。", english: "Model used by default chats and regular tasks."),
-                path: "agents.main.model"
+                path: "agent.model"
             ),
             NativeModelAssignmentRowSpec(
                 id: "subagents",
                 title: state.t(.subagents),
                 detail: local(chinese: "子智能体默认模型，可继承主智能体。", english: "Default subagent model; can inherit the main agent."),
-                path: "agents.subagents.default",
+                path: "agent.subagents.default",
                 includeInherit: true
             ),
         ]
@@ -1409,8 +1950,273 @@ private struct SettingsContentView: View {
         }
     }
 
+    private var webProviderIDs: [String] {
+        configChildIDs(parentPath: "model.providers")
+            .filter { provider in
+                !provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+    }
+
+    private var catalogProviderPickerCard: some View {
+        SettingsCardBlock {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(local(chinese: "添加模型提供商", english: "Add model provider"))
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Button(state.t(.cancel)) {
+                        showCatalogProviderPicker = false
+                    }
+                    .buttonStyle(WebToolbarButtonStyle())
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
+                    ForEach(NativeModelCatalog.providers) { provider in
+                        Button {
+                            addCatalogProvider(provider)
+                            showCatalogProviderPicker = false
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(provider.displayName)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(DesignTokens.text)
+                                Text(local(chinese: "\(provider.models.count) 个模型", english: "\(provider.models.count) models"))
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(DesignTokens.tertiaryText)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                            .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(webProviderIDs.contains(provider.id))
+                        .opacity(webProviderIDs.contains(provider.id) ? 0.45 : 1)
+                    }
+                    Button {
+                        addCustomProvider()
+                        showCatalogProviderPicker = false
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("+ " + local(chinese: "自定义提供商", english: "Custom provider"))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(DesignTokens.text)
+                            Text(local(chinese: "手动配置接口地址", english: "Manual endpoint setup"))
+                                .font(.system(size: 10))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: DesignTokens.smallRadius))
+                        .overlay(RoundedRectangle(cornerRadius: DesignTokens.smallRadius).stroke(DesignTokens.separator, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(14)
+        }
+    }
+
+    private func webProviderCard(_ provider: String) -> some View {
+        let catalog = NativeModelCatalog.provider(id: provider)
+        let models = enabledModels(forProvider: provider)
+        return SettingsCardBlock {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(catalog?.displayName ?? provider)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(DesignTokens.text)
+                        HStack(spacing: 8) {
+                            Text(local(chinese: "ID", english: "ID"))
+                                .font(.system(size: 11))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                            TextField("provider", text: Binding(
+                                get: { provider },
+                                set: { renameWebProvider(oldID: provider, newID: $0) }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12, design: .monospaced))
+                            .frame(width: 220)
+                        }
+                    }
+                    Spacer()
+                    Button {
+                        removeWebProvider(provider)
+                    } label: {
+                        Image(systemName: "trash")
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(SettingsIconButtonStyle())
+                    .foregroundStyle(DesignTokens.danger)
+                }
+
+                ConfigGrid {
+                    SettingsPickerField(
+                        local(chinese: "协议", english: "Protocol"),
+                        selection: Binding(
+                            get: { nonBlank(configValue("model.providers.\(provider).protocol")) ?? catalog?.protocolValue ?? "openai" },
+                            set: { setConfigValue("model.providers.\(provider).protocol", $0 == "anthropic" ? "anthropic" : "openai") }
+                        ),
+                        options: NativeModelsConfigFormFields.providerProtocolOptions,
+                        emptyLabel: "openai",
+                        optionLabel: NativeModelsConfigFormFields.providerProtocolLabel
+                    )
+                    SettingsTextField(local(chinese: "接口地址", english: "Base URL"), text: configBinding("model.providers.\(provider).url"))
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    SettingsTextField(state.t(.apiKey), text: configBinding("model.providers.\(provider).apiKey"), isSecure: true)
+                    Text(state.t(.apiKeyConfigHelp))
+                        .font(.system(size: 11))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Text(local(chinese: "已启用模型", english: "Enabled Models"))
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("·")
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                        Image(systemName: "photo")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                        Text(local(chinese: "支持图片输入", english: "supports image input"))
+                            .font(.system(size: 10))
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                    }
+
+                    if let catalog, !catalog.models.isEmpty {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 6)], alignment: .leading, spacing: 6) {
+                            ForEach(catalog.models) { model in
+                                let isEnabled = models.contains(model.id)
+                                Button {
+                                    if isEnabled {
+                                        removeWebModel(provider: provider, model: model.id)
+                                    } else {
+                                        addWebModel(provider: provider, model: model.id)
+                                    }
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        if isEnabled {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 10, weight: .bold))
+                                        }
+                                        Text(model.displayName)
+                                            .lineLimit(1)
+                                        if model.supportsImage {
+                                            Image(systemName: "photo")
+                                                .font(.system(size: 10))
+                                        }
+                                    }
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(isEnabled ? DesignTokens.text : DesignTokens.tertiaryText)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(isEnabled ? DesignTokens.neutral100 : DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: 6))
+                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(isEnabled ? DesignTokens.neutral300 : DesignTokens.separator))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    ForEach(models.filter { model in
+                        catalog?.models.contains(where: { $0.id == model }) != true
+                    }, id: \.self) { model in
+                        HStack(spacing: 8) {
+                            Text(model)
+                                .font(.system(size: 12, design: .monospaced))
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button {
+                                removeWebModel(provider: provider, model: model)
+                            } label: {
+                                Image(systemName: "trash")
+                                    .frame(width: 24, height: 24)
+                            }
+                            .buttonStyle(SettingsIconButtonStyle())
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(DesignTokens.neutral50, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(DesignTokens.separator))
+                    }
+
+                    HStack(spacing: 8) {
+                        TextField(local(chinese: "自定义模型 ID", english: "Custom model ID"), text: $newModelID)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12, design: .monospaced))
+                            .onSubmit {
+                                addPendingCustomModel(provider: provider)
+                            }
+                        Button {
+                            addPendingCustomModel(provider: provider)
+                        } label: {
+                            Label(state.t(.add), systemImage: "plus")
+                        }
+                        .buttonStyle(WebToolbarButtonStyle())
+                        .disabled(newModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    private func agentCapabilitiesBlock(modelRef: String) -> some View {
+        let parsed = NativeConfigService.splitModelRef(modelRef)
+        let provider = parsed?.providerID ?? ""
+        let model = parsed?.modelID ?? ""
+        let catalogModel = NativeModelCatalog.model(providerID: provider, modelID: model)
+        return VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(local(chinese: "模型能力", english: "Model capabilities"))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                Text(local(chinese: "这里覆盖当前主模型的上下文窗口和最大输出。图片能力优先参考模型目录。", english: "Override context window and max output for the selected main model. Image support follows the catalog when available."))
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+            }
+            HStack(spacing: 10) {
+                Label(
+                    (catalogModel?.supportsImage == true)
+                        ? local(chinese: "支持图片输入", english: "Image input enabled")
+                        : local(chinese: "文本模型", english: "Text model"),
+                    systemImage: "photo"
+                )
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(catalogModel?.supportsImage == true ? DesignTokens.success : DesignTokens.tertiaryText)
+                Spacer()
+            }
+            ConfigGrid {
+                SettingsTextField(
+                    local(chinese: "最大输出 Tokens", english: "Max output tokens"),
+                    text: Binding(
+                        get: { webModelScalar(provider: provider, model: model, suffix: ["capabilities", "maxOutputTokens"]) },
+                        set: { setWebModelScalar(provider: provider, model: model, suffix: ["capabilities", "maxOutputTokens"], value: $0) }
+                    )
+                )
+                SettingsTextField(
+                    local(chinese: "最大上下文 Tokens", english: "Max context tokens"),
+                    text: configBinding("agent.maxContextTokens")
+                )
+            }
+        }
+        .padding(14)
+    }
+
     private var modelPoolEntryIDs: [String] {
-        configChildIDs(parentPath: "models.entries")
+        let values = LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText)
+        var ids = Set(NativeConfigService.modelEntryIDs(values: values))
+        for provider in webProviderIDs {
+            if let catalog = NativeModelCatalog.provider(id: provider) {
+                for model in catalog.models {
+                    ids.insert(NativeConfigService.modelRef(providerID: provider, modelID: model.id))
+                }
+            }
+        }
+        return ids.sorted()
     }
 
     private var selectedModelPoolEntryID: String? {
@@ -1428,9 +2234,13 @@ private struct SettingsContentView: View {
         )
     }
 
+    @ViewBuilder
     private func modelPoolEditorCard(_ entry: String) -> some View {
+        if let parsed = NativeConfigService.splitModelRef(entry) {
+            webModelPoolEditorCard(provider: parsed.providerID, model: parsed.modelID)
+        } else {
         let provider = providerID(forEntry: entry)
-        return SettingsCardBlock {
+        SettingsCardBlock {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
@@ -1484,6 +2294,58 @@ private struct SettingsContentView: View {
             }
             .padding(14)
         }
+        }
+    }
+
+    private func webModelPoolEditorCard(provider: String, model: String) -> some View {
+        let ref = NativeConfigService.modelRef(providerID: provider, modelID: model)
+        return SettingsCardBlock {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(modelOptionLabel(ref))
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(modelPoolSummary(forEntry: ref))
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.tertiaryText)
+                    }
+                    Spacer()
+                    Button(state.t(.remove)) { removeModelPoolEntry(ref) }
+                        .buttonStyle(WebToolbarButtonStyle())
+                }
+
+                ConfigGrid {
+                    SettingsTextField(local(chinese: "Provider ID", english: "Provider ID"), text: Binding(
+                        get: { provider },
+                        set: { renameWebProvider(oldID: provider, newID: $0) }
+                    ))
+                    SettingsPickerField(
+                        state.t(.type),
+                        selection: Binding(
+                            get: { nonBlank(configValue("model.providers.\(provider).protocol")) ?? "openai" },
+                            set: { setConfigValue("model.providers.\(provider).protocol", $0 == "anthropic" ? "anthropic" : "openai") }
+                        ),
+                        options: ["openai", "anthropic"],
+                        emptyLabel: "openai"
+                    )
+                    SettingsTextField(local(chinese: "模型 ID", english: "Model ID"), text: Binding(
+                        get: { model },
+                        set: { renameWebModel(provider: provider, oldID: model, newID: $0) }
+                    ))
+                    SettingsTextField(state.t(.baseURL), text: configBinding("model.providers.\(provider).url"))
+                    SettingsTextField(state.t(.apiKey), text: configBinding("model.providers.\(provider).apiKey"), isSecure: true)
+                    SettingsTextField(state.t(.contextWindow), text: Binding(
+                        get: { webModelScalar(provider: provider, model: model, suffix: ["capabilities", "maxContextTokens"]) },
+                        set: { setWebModelScalar(provider: provider, model: model, suffix: ["capabilities", "maxContextTokens"], value: $0) }
+                    ))
+                }
+
+                Text(state.t(.apiKeyConfigHelp))
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+            }
+            .padding(14)
+        }
     }
 
     private func configBinding(_ path: String) -> Binding<String> {
@@ -1512,6 +2374,27 @@ private struct SettingsContentView: View {
         )
     }
 
+    private func testSearchConnection() {
+        isTestingSearchConnection = true
+        searchConnectionMessage = nil
+        searchConnectionError = nil
+        let values = LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText)
+        Task {
+            let result = await NativeSearchConnectionTester.test(values: values)
+            await MainActor.run {
+                isTestingSearchConnection = false
+                switch result {
+                case .success:
+                    searchConnectionMessage = local(chinese: "连接成功", english: "Connection succeeded")
+                    searchConnectionError = nil
+                case .failure(let message):
+                    searchConnectionMessage = nil
+                    searchConnectionError = message
+                }
+            }
+        }
+    }
+
     private func searchProviderBinding() -> Binding<String> {
         Binding(
             get: {
@@ -1520,6 +2403,8 @@ private struct SettingsContentView: View {
             },
             set: { provider in
                 let selected = NativeSearchConfigFormFields.providerOptions.contains(provider) ? provider : "glm"
+                searchConnectionMessage = nil
+                searchConnectionError = nil
                 setConfigValue(NativeSearchConfigFormFields.providerPath, selected)
                 let endpoint = configValue("tools.webSearch.endpoint").trimmingCharacters(in: .whitespacesAndNewlines)
                 let defaultEndpoints = Set(NativeSearchConfigFormFields.defaultEndpoints.values)
@@ -1557,11 +2442,60 @@ private struct SettingsContentView: View {
     }
 
     private func configValue(_ path: String) -> String {
-        LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText)[path] ?? ""
+        let values = LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText)
+        let canonical = canonicalConfigPath(path)
+        return values[canonical] ?? values[path] ?? ""
     }
 
     private func setConfigValue(_ path: String, _ value: String) {
-        state.pilotDeckConfigText = YAMLScalarEditor.set(path: path, value: value, in: state.pilotDeckConfigText)
+        guard !shouldIgnoreRecentlyRemovedProviderWrite(path) else { return }
+        state.pilotDeckConfigText = YAMLScalarEditor.set(path: canonicalConfigPath(path), value: value, in: state.pilotDeckConfigText)
+    }
+
+    private func shouldIgnoreRecentlyRemovedProviderWrite(_ path: String) -> Bool {
+        let canonical = canonicalConfigPath(path)
+        let components = canonical.split(separator: ".").map(String.init)
+        guard components.count >= 4,
+              components[0] == "model",
+              components[1] == "providers"
+        else { return false }
+
+        let provider = components[2]
+        guard recentlyRemovedWebProviderIDs.contains(provider) else { return false }
+
+        let prefix = "model.providers.\(provider)."
+        return !LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText).keys.contains { $0.hasPrefix(prefix) }
+    }
+
+    private func canonicalConfigPath(_ path: String) -> String {
+        switch path {
+        case "runtime.workspacesRoot":
+            return "webui.runtime.workspacesRoot"
+        case "runtime.apiTimeoutMs":
+            return "webui.runtime.apiTimeoutMs"
+        case "runtime.databasePath":
+            return "webui.runtime.databasePath"
+        case "runtime.httpsProxy":
+            return "webui.runtime.httpsProxy"
+        case "agents.main.model":
+            return "agent.model"
+        case "agents.subagents.default":
+            return "agent.subagents.default"
+        case "router.routes.default.model":
+            return "router.scenarios.default"
+        case "router.routes.background.model":
+            return "router.scenarios.background"
+        case "router.routes.think.model":
+            return "router.scenarios.think"
+        case "router.routes.longContext.model":
+            return "router.scenarios.longContext"
+        case "router.routes.webSearch.model":
+            return "router.scenarios.webSearch"
+        case "router.tokenSaver.judgeModel":
+            return "router.tokenSaver.judge"
+        default:
+            return path
+        }
     }
 
     private var isConfigDirty: Bool {
@@ -1646,7 +2580,7 @@ private struct SettingsContentView: View {
 
     private func exportConfigFile() {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "config.yaml"
+        panel.nameFieldStringValue = "pilotdeck.yaml"
         panel.allowedContentTypes = yamlContentTypes
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
@@ -1683,11 +2617,12 @@ private struct SettingsContentView: View {
         if let context = values["runtime.contextWindow"].flatMap(Int.init) {
             state.settings.contextWindow = context
         }
-        let defaultProvider = defaultProviderID()
-        if let baseURL = values["models.providers.\(defaultProvider).baseUrl"] {
+        let mainRef = nonBlank(values["agent.model"] ?? "") ?? nonBlank(values["agents.main.model"] ?? "") ?? "default"
+        let defaultProvider = NativeConfigService.providerID(entryID: mainRef, values: values)
+        if let baseURL = values["model.providers.\(defaultProvider).url"] ?? values["models.providers.\(defaultProvider).baseUrl"] {
             state.settings.providerConfig.baseURL = baseURL
         }
-        if let model = values["models.entries.default.name"] {
+        if let model = values["models.entries.\(mainRef).name"] ?? NativeConfigService.splitModelRef(mainRef)?.modelID {
             state.settings.providerConfig.model = model
         }
     }
@@ -1696,17 +2631,16 @@ private struct SettingsContentView: View {
         let values = LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText)
         var errors: [String] = []
         var warnings: [String] = []
-        let defaultProvider = values["models.entries.default.provider"] ?? ""
-        if defaultProvider.isEmpty {
-            errors.append("models.entries.default.provider is required.")
-        } else if values["models.providers.\(defaultProvider).baseUrl"] == nil {
-            errors.append("models.entries.default.provider must reference an existing provider.")
-        }
-        if (values["models.entries.default.name"] ?? "").isEmpty {
-            errors.append("models.entries.default.name is required.")
+        let mainRef = nonBlank(values["agent.model"] ?? "") ?? nonBlank(values["agents.main.model"] ?? "")
+        if let mainRef {
+            if NativeConfigService.providerConfig(entryID: mainRef, values: values) == nil {
+                errors.append("agent.model must resolve to a configured model provider.")
+            }
+        } else {
+            warnings.append("agent.model is empty; pick a model from the model pool.")
         }
         if (values["runtime.workspacesRoot"] ?? "").isEmpty {
-            warnings.append("runtime.workspacesRoot is empty; project creation will use the home directory fallback.")
+            warnings.append("webui.runtime.workspacesRoot is empty; project creation will use the home directory fallback.")
         }
         if (values["gateway.runtimePaths.generalCwd"] ?? "").isEmpty {
             warnings.append("gateway.runtimePaths.generalCwd is empty; Chat will use the default workspace.")
@@ -1718,8 +2652,9 @@ private struct SettingsContentView: View {
     }
 
     private func defaultProviderID() -> String {
-        let provider = configValue("models.entries.default.provider").trimmingCharacters(in: .whitespacesAndNewlines)
-        return provider.isEmpty ? "pilotdeck" : provider
+        let values = LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText)
+        let mainRef = nonBlank(values["agent.model"] ?? "") ?? nonBlank(values["agents.main.model"] ?? "") ?? "default"
+        return NativeConfigService.providerID(entryID: mainRef, values: values)
     }
 
     private func isDefaultProvider(_ provider: String) -> Bool {
@@ -1738,17 +2673,52 @@ private struct SettingsContentView: View {
         return ids.sorted()
     }
 
+    private var customEnvKeys: [String] {
+        configChildIDs(parentPath: "customEnv")
+    }
+
+    private func isValidCustomEnvKey(_ key: String) -> Bool {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return trimmed.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil
+            && !customEnvKeys.contains(trimmed)
+    }
+
+    private func addCustomEnvKey() {
+        let key = newCustomEnvKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidCustomEnvKey(key) else { return }
+        setConfigValue("customEnv.\(key)", newCustomEnvValue)
+        newCustomEnvKey = ""
+        newCustomEnvValue = ""
+    }
+
+    private func removeCustomEnvKey(_ key: String) {
+        state.pilotDeckConfigText = YAMLScalarEditor.removeObject(
+            components: ["customEnv", key],
+            in: state.pilotDeckConfigText
+        )
+    }
+
+    private func customEnvKeyLooksSecret(_ key: String) -> Bool {
+        key.range(of: #"(KEY|TOKEN|SECRET|PASSWORD)"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
     private func providerID(forEntry entry: String) -> String {
-        nonBlank(configValue("models.entries.\(entry).provider")) ?? "pilotdeck"
+        NativeConfigService.splitModelRef(entry)?.providerID
+            ?? nonBlank(configValue("models.entries.\(entry).provider"))
+            ?? "pilotdeck"
     }
 
     private func modelName(forEntry entry: String) -> String {
-        configValue("models.entries.\(entry).name")
+        NativeConfigService.splitModelRef(entry)?.modelID
+            ?? configValue("models.entries.\(entry).name")
     }
 
     private func modelPoolSummary(forEntry entry: String) -> String {
         let provider = providerID(forEntry: entry)
-        let providerType = nonBlank(configValue("models.providers.\(provider).type")) ?? NativeModelsConfigFormFields.defaultProviderType
+        let providerType = nonBlank(configValue("model.providers.\(provider).protocol"))
+            ?? nonBlank(configValue("models.providers.\(provider).type"))
+            ?? "openai"
         return "\(provider) · \(providerType)"
     }
 
@@ -1780,7 +2750,15 @@ private struct SettingsContentView: View {
     }
 
     private func modelAssignmentPicker(path: String, includeInherit: Bool = false) -> some View {
-        Picker("", selection: configBinding(path)) {
+        Picker("", selection: Binding(
+            get: { configValue(path) },
+            set: { value in
+                if let parsed = NativeConfigService.splitModelRef(value) {
+                    addWebModel(provider: parsed.providerID, model: parsed.modelID)
+                }
+                setConfigValue(path, value)
+            }
+        )) {
             ForEach(modelAssignmentOptions(path: path, includeInherit: includeInherit), id: \.self) { option in
                 Text(modelOptionLabel(option)).tag(option)
             }
@@ -1802,42 +2780,137 @@ private struct SettingsContentView: View {
             )
     }
 
+    private func webSettingsToggleRow(title: String, detail: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                    .lineLimit(2)
+            }
+            Spacer()
+            WebSettingsToggle(isOn: isOn)
+        }
+    }
+
     private func addModelPoolEntry() {
         let entryIDs = Set(modelPoolEntryIDs)
-        var id = entryIDs.contains("default") ? "model1" : "default"
+        var providerID = "provider1"
         var index = 1
-        while entryIDs.contains(id) {
+        while entryIDs.contains("\(providerID)/model1") || configValue("model.providers.\(providerID).protocol") != "" {
             index += 1
-            id = "model\(index)"
+            providerID = "provider\(index)"
         }
-
-        let providerIDs = Set(configChildIDs(parentPath: "models.providers"))
-        let providerID: String
-        if id == "default", providerIDs.contains("pilotdeck") {
-            providerID = "pilotdeck"
-        } else {
-            providerID = id
-        }
+        let modelID = "model1"
+        recentlyRemovedWebProviderIDs.remove(providerID)
 
         var yaml = state.pilotDeckConfigText
-        if !providerIDs.contains(providerID) {
-            yaml = YAMLScalarEditor.appendBlock(
-                parentPath: "models.providers",
-                id: providerID,
-                scalars: NativeModelsConfigFormFields.newProviderScalars,
-                in: yaml
-            )
+        yaml = YAMLScalarEditor.set(path: "model.providers.\(providerID).protocol", value: "openai", in: yaml)
+        yaml = YAMLScalarEditor.set(path: "model.providers.\(providerID).url", value: "", in: yaml)
+        yaml = YAMLScalarEditor.set(path: "model.providers.\(providerID).apiKey", value: "", in: yaml)
+        yaml = YAMLScalarEditor.set(components: ["model", "providers", providerID, "models", modelID], value: "{}", in: yaml)
+        state.pilotDeckConfigText = yaml
+        selectedModelPoolEntry = NativeConfigService.modelRef(providerID: providerID, modelID: modelID)
+    }
+
+    private func enabledModels(forProvider provider: String) -> [String] {
+        configChildIDs(parentPath: "model.providers.\(provider).models")
+    }
+
+    private func addCatalogProvider(_ provider: NativeModelCatalogProvider) {
+        guard !webProviderIDs.contains(provider.id) else { return }
+        recentlyRemovedWebProviderIDs.remove(provider.id)
+        var yaml = state.pilotDeckConfigText
+        yaml = YAMLScalarEditor.set(path: "model.providers.\(provider.id).protocol", value: provider.protocolValue, in: yaml)
+        yaml = YAMLScalarEditor.set(path: "model.providers.\(provider.id).url", value: provider.defaultURL, in: yaml)
+        yaml = YAMLScalarEditor.set(path: "model.providers.\(provider.id).apiKey", value: "", in: yaml)
+        yaml = YAMLScalarEditor.set(components: ["model", "providers", provider.id, "models"], value: "{}", in: yaml)
+        state.pilotDeckConfigText = yaml
+    }
+
+    private func addCustomProvider() {
+        var index = 1
+        var providerID = "provider\(index)"
+        while webProviderIDs.contains(providerID) || !configValue("model.providers.\(providerID).protocol").isEmpty {
+            index += 1
+            providerID = "provider\(index)"
         }
-        state.pilotDeckConfigText = YAMLScalarEditor.appendBlock(
-            parentPath: "models.entries",
-            id: id,
-            scalars: NativeModelsConfigFormFields.newEntryScalars(firstProvider: providerID),
-            in: yaml
+        recentlyRemovedWebProviderIDs.remove(providerID)
+        var yaml = state.pilotDeckConfigText
+        yaml = YAMLScalarEditor.set(path: "model.providers.\(providerID).protocol", value: "openai", in: yaml)
+        yaml = YAMLScalarEditor.set(path: "model.providers.\(providerID).url", value: "", in: yaml)
+        yaml = YAMLScalarEditor.set(path: "model.providers.\(providerID).apiKey", value: "", in: yaml)
+        yaml = YAMLScalarEditor.set(components: ["model", "providers", providerID, "models"], value: "{}", in: yaml)
+        state.pilotDeckConfigText = yaml
+    }
+
+    private func addWebModel(provider: String, model: String) {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        recentlyRemovedWebProviderIDs.remove(provider)
+        state.pilotDeckConfigText = YAMLScalarEditor.set(
+            components: ["model", "providers", provider, "models", trimmed],
+            value: "{}",
+            in: state.pilotDeckConfigText
         )
-        selectedModelPoolEntry = id
+    }
+
+    private func addPendingCustomModel(provider: String) {
+        let model = newModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else { return }
+        addWebModel(provider: provider, model: model)
+        newModelID = ""
+    }
+
+    private func removeWebModel(provider: String, model: String) {
+        let ref = NativeConfigService.modelRef(providerID: provider, modelID: model)
+        let fallback = modelPoolEntryIDs.first { $0 != ref }
+        var yaml = YAMLScalarEditor.removeObject(
+            components: ["model", "providers", provider, "models", model],
+            in: state.pilotDeckConfigText
+        )
+        yaml = reassignModelReferences(removing: ref, fallback: fallback, in: yaml)
+        state.pilotDeckConfigText = yaml
+    }
+
+    private func removeWebProvider(_ provider: String) {
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        recentlyRemovedWebProviderIDs.insert(provider)
+        let refs = modelPoolEntryIDs.filter { NativeConfigService.splitModelRef($0)?.providerID == provider }
+        let fallback = modelPoolEntryIDs.first { NativeConfigService.splitModelRef($0)?.providerID != provider }
+        var yaml = YAMLScalarEditor.removeObject(
+            components: ["model", "providers", provider],
+            in: state.pilotDeckConfigText
+        )
+        for ref in refs {
+            yaml = reassignModelReferences(removing: ref, fallback: fallback, in: yaml)
+        }
+        state.pilotDeckConfigText = yaml
     }
 
     private func removeModelPoolEntry(_ entry: String) {
+        if let parsed = NativeConfigService.splitModelRef(entry) {
+            let fallbackEntry = modelPoolEntryIDs.first { $0 != entry }
+            var yaml = YAMLScalarEditor.removeObject(
+                components: ["model", "providers", parsed.providerID, "models", parsed.modelID],
+                in: state.pilotDeckConfigText
+            )
+            yaml = reassignModelReferences(removing: entry, fallback: fallbackEntry, in: yaml)
+            let remaining = NativeConfigService.modelEntryIDs(values: LegacyConfigLoader.scalarMap(from: yaml))
+                .contains { NativeConfigService.splitModelRef($0)?.providerID == parsed.providerID }
+            if !remaining {
+                yaml = YAMLScalarEditor.removeObject(components: ["model", "providers", parsed.providerID], in: yaml)
+            }
+            state.pilotDeckConfigText = yaml
+            if selectedModelPoolEntry == entry {
+                selectedModelPoolEntry = nil
+            }
+            return
+        }
+
         let provider = providerID(forEntry: entry)
         let fallbackEntry = modelPoolEntryIDs.first { $0 != entry }
         let remainingUses = modelPoolEntryIDs
@@ -1858,11 +2931,71 @@ private struct SettingsContentView: View {
     private func reassignModelReferences(removing removedEntry: String, fallback: String?, in yaml: String) -> String {
         let values = LegacyConfigLoader.scalarMap(from: yaml)
         return NativeModelsConfigFormFields.assignmentPaths.reduce(yaml) { result, path in
-            guard values[path] == removedEntry else { return result }
+            guard values[path] == removedEntry || values[canonicalConfigPath(path)] == removedEntry else { return result }
             let replacement = NativeModelsConfigFormFields.inheritableAssignmentPaths.contains(path)
                 ? (fallback ?? "inherit")
                 : (fallback ?? "")
-            return YAMLScalarEditor.set(path: path, value: replacement, in: result)
+            return YAMLScalarEditor.set(path: canonicalConfigPath(path), value: replacement, in: result)
+        }
+    }
+
+    private func webModelScalar(provider: String, model: String, suffix: [String]) -> String {
+        let path = (["model", "providers", provider, "models", model] + suffix).joined(separator: ".")
+        return LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText)[path] ?? ""
+    }
+
+    private func setWebModelScalar(provider: String, model: String, suffix: [String], value: String) {
+        state.pilotDeckConfigText = YAMLScalarEditor.set(
+            components: ["model", "providers", provider, "models", model] + suffix,
+            value: value,
+            in: state.pilotDeckConfigText
+        )
+    }
+
+    private func renameWebModel(provider: String, oldID: String, newID rawNewID: String) {
+        let newID = rawNewID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newID.isEmpty, newID != oldID else { return }
+        let oldRef = NativeConfigService.modelRef(providerID: provider, modelID: oldID)
+        let newRef = NativeConfigService.modelRef(providerID: provider, modelID: newID)
+        guard !modelPoolEntryIDs.contains(newRef) else { return }
+        var yaml = YAMLScalarEditor.renameObject(
+            parentComponents: ["model", "providers", provider, "models"],
+            oldID: oldID,
+            newID: newID,
+            in: state.pilotDeckConfigText
+        )
+        yaml = replaceModelReference(oldRef: oldRef, newRef: newRef, in: yaml)
+        state.pilotDeckConfigText = yaml
+        selectedModelPoolEntry = newRef
+    }
+
+    private func renameWebProvider(oldID: String, newID rawNewID: String) {
+        let newID = rawNewID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newID.isEmpty, newID != oldID else { return }
+        guard configValue("model.providers.\(newID).protocol").isEmpty else { return }
+        var yaml = YAMLScalarEditor.renameObject(
+            parentComponents: ["model", "providers"],
+            oldID: oldID,
+            newID: newID,
+            in: state.pilotDeckConfigText
+        )
+        for entry in modelPoolEntryIDs {
+            guard let parsed = NativeConfigService.splitModelRef(entry), parsed.providerID == oldID else { continue }
+            let newRef = NativeConfigService.modelRef(providerID: newID, modelID: parsed.modelID)
+            yaml = replaceModelReference(oldRef: entry, newRef: newRef, in: yaml)
+            if selectedModelPoolEntry == entry {
+                selectedModelPoolEntry = newRef
+            }
+        }
+        state.pilotDeckConfigText = yaml
+    }
+
+    private func replaceModelReference(oldRef: String, newRef: String, in yaml: String) -> String {
+        let values = LegacyConfigLoader.scalarMap(from: yaml)
+        return NativeModelsConfigFormFields.assignmentPaths.reduce(yaml) { result, path in
+            values[path] == oldRef || values[canonicalConfigPath(path)] == oldRef
+                ? YAMLScalarEditor.set(path: canonicalConfigPath(path), value: newRef, in: result)
+                : result
         }
     }
 
@@ -2482,8 +3615,116 @@ enum NativeAppearanceSettingsLayout {
     ]
 }
 
+private struct NativeModelCatalogModel: Hashable, Identifiable {
+    let id: String
+    let displayName: String
+    var supportsImage = false
+    var maxContextTokens: Int?
+}
+
+private struct NativeModelCatalogProvider: Hashable, Identifiable {
+    let id: String
+    let displayName: String
+    let protocolValue: String
+    let defaultURL: String
+    let models: [NativeModelCatalogModel]
+}
+
+private enum NativeModelCatalog {
+    static let providers: [NativeModelCatalogProvider] = [
+        NativeModelCatalogProvider(
+            id: "anthropic",
+            displayName: "Anthropic",
+            protocolValue: "anthropic",
+            defaultURL: "https://api.anthropic.com",
+            models: [
+                NativeModelCatalogModel(id: "claude-sonnet-4.6", displayName: "Claude Sonnet 4.6", supportsImage: true, maxContextTokens: 200_000),
+                NativeModelCatalogModel(id: "claude-opus-4-20250514", displayName: "Claude Opus 4", supportsImage: true, maxContextTokens: 200_000),
+                NativeModelCatalogModel(id: "claude-sonnet-4-20250514", displayName: "Claude Sonnet 4", supportsImage: true, maxContextTokens: 200_000),
+                NativeModelCatalogModel(id: "claude-haiku-3-5-20241022", displayName: "Claude 3.5 Haiku", supportsImage: true, maxContextTokens: 200_000),
+            ]
+        ),
+        NativeModelCatalogProvider(
+            id: "openai",
+            displayName: "OpenAI",
+            protocolValue: "openai",
+            defaultURL: "https://api.openai.com/v1",
+            models: [
+                NativeModelCatalogModel(id: "gpt-4.1", displayName: "GPT-4.1", supportsImage: true, maxContextTokens: 1_047_576),
+                NativeModelCatalogModel(id: "gpt-4.1-mini", displayName: "GPT-4.1 Mini", supportsImage: true, maxContextTokens: 1_047_576),
+                NativeModelCatalogModel(id: "gpt-4o", displayName: "GPT-4o", supportsImage: true, maxContextTokens: 128_000),
+                NativeModelCatalogModel(id: "gpt-4o-mini", displayName: "GPT-4o Mini", supportsImage: true, maxContextTokens: 128_000),
+                NativeModelCatalogModel(id: "o3", displayName: "o3", supportsImage: true, maxContextTokens: 200_000),
+            ]
+        ),
+        NativeModelCatalogProvider(
+            id: "deepseek",
+            displayName: "DeepSeek",
+            protocolValue: "openai",
+            defaultURL: "https://api.deepseek.com/v1",
+            models: [
+                NativeModelCatalogModel(id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", maxContextTokens: 131_072),
+                NativeModelCatalogModel(id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash", maxContextTokens: 1_048_576),
+                NativeModelCatalogModel(id: "deepseek-chat", displayName: "DeepSeek Chat (V3)", maxContextTokens: 65_536),
+                NativeModelCatalogModel(id: "deepseek-reasoner", displayName: "DeepSeek Reasoner", maxContextTokens: 65_536),
+            ]
+        ),
+        NativeModelCatalogProvider(
+            id: "google",
+            displayName: "Google AI",
+            protocolValue: "openai",
+            defaultURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+            models: [
+                NativeModelCatalogModel(id: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro", supportsImage: true, maxContextTokens: 1_048_576),
+                NativeModelCatalogModel(id: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash", supportsImage: true, maxContextTokens: 1_048_576),
+                NativeModelCatalogModel(id: "gemini-2.0-flash", displayName: "Gemini 2.0 Flash", supportsImage: true, maxContextTokens: 1_048_576),
+            ]
+        ),
+        NativeModelCatalogProvider(
+            id: "openrouter",
+            displayName: "OpenRouter",
+            protocolValue: "openai",
+            defaultURL: "https://openrouter.ai/api/v1",
+            models: [
+                NativeModelCatalogModel(id: "anthropic/claude-sonnet-4.6", displayName: "Claude Sonnet 4.6", supportsImage: true, maxContextTokens: 200_000),
+                NativeModelCatalogModel(id: "google/gemini-2.5-pro", displayName: "Gemini 2.5 Pro", supportsImage: true, maxContextTokens: 1_048_576),
+                NativeModelCatalogModel(id: "deepseek/deepseek-v4-flash", displayName: "DeepSeek V4 Flash", maxContextTokens: 1_048_576),
+            ]
+        ),
+        NativeModelCatalogProvider(
+            id: "minimax",
+            displayName: "MiniMax",
+            protocolValue: "openai",
+            defaultURL: "https://api.minimaxi.com/v1",
+            models: [
+                NativeModelCatalogModel(id: "MiniMax-M2.5", displayName: "MiniMax M2.5", maxContextTokens: 1_000_000),
+                NativeModelCatalogModel(id: "MiniMax-M2.7-highspeed", displayName: "MiniMax M2.7 Highspeed", maxContextTokens: 1_000_000),
+            ]
+        ),
+        NativeModelCatalogProvider(
+            id: "moonshot",
+            displayName: "Moonshot AI (Kimi)",
+            protocolValue: "openai",
+            defaultURL: "https://api.moonshot.cn/v1",
+            models: [
+                NativeModelCatalogModel(id: "kimi-k2.6", displayName: "Kimi K2.6", supportsImage: true, maxContextTokens: 262_144),
+                NativeModelCatalogModel(id: "kimi-k1.5", displayName: "Kimi K1.5", supportsImage: true, maxContextTokens: 131_072),
+            ]
+        ),
+    ]
+
+    static func provider(id: String) -> NativeModelCatalogProvider? {
+        providers.first { $0.id == id }
+    }
+
+    static func model(providerID: String, modelID: String) -> NativeModelCatalogModel? {
+        provider(id: providerID)?.models.first { $0.id == modelID }
+    }
+}
+
 enum NativeConfigFormLayout {
-    static let usesSplitSectionNavigation = true
+    static let usesGroupedSectionHome = true
+    static let usesSplitSectionNavigation = false
     static let usesSectionDropdown = false
     static let usesViewModeToggle = false
     static let exposesRawYAMLEditor = false
@@ -2498,10 +3739,13 @@ enum NativeConfigFormLayout {
     static let sectionOrder: [PilotDeckConfigSection] = [
         .models,
         .agents,
-        .memory,
         .router,
+        .memory,
         .search,
         .alwaysOn,
+        .gateway,
+        .runtime,
+        .customEnv,
     ]
 }
 
@@ -2542,6 +3786,13 @@ enum NativeConfigReloadSummary {
             reloadedDetail: .routerDashboardNative,
             skippedDetail: .routerDisabled
         ),
+        NativeConfigReloadSubsystemSpec(
+            id: "gateway",
+            label: .gateway,
+            state: .boolPath("gateway.enabled"),
+            reloadedDetail: .gatewayConfigParsed,
+            skippedDetail: nil
+        ),
     ]
 
     static var subsystemIDs: [String] {
@@ -2551,15 +3802,7 @@ enum NativeConfigReloadSummary {
 
 enum NativeConfigModelOptions {
     static func entryIDs(values: [String: String]) -> [String] {
-        let prefix = "models.entries."
-        var ids = Set<String>()
-        for key in values.keys where key.hasPrefix(prefix) {
-            let suffix = key.dropFirst(prefix.count)
-            if let first = suffix.split(separator: ".").first {
-                ids.insert(String(first))
-            }
-        }
-        return ids.sorted()
+        NativeConfigService.modelEntryIDs(values: values)
     }
 
     static func options(
@@ -2580,20 +3823,22 @@ enum NativeConfigModelOptions {
 }
 
 enum NativeModelsConfigFormFields {
-    static let usesModelPoolDropdown = true
+    static let usesProviderCards = true
+    static let usesCatalogProviderPicker = true
+    static let usesModelPoolDropdown = false
     static let usageAssignmentsLiveInModelSection = false
     static let entryRowsExposeProviderPicker = false
     static let entryRowsExposeModelNameField = false
     static let assignmentPaths = [
-        "agents.main.model",
-        "agents.subagents.default",
+        "agent.model",
+        "agent.subagents.default",
         "memory.model",
-        "router.routes.default.model",
-        "router.routes.background.model",
-        "router.routes.think.model",
-        "router.routes.longContext.model",
-        "router.routes.webSearch.model",
-        "router.tokenSaver.judgeModel",
+        "router.scenarios.default",
+        "router.scenarios.background",
+        "router.scenarios.think",
+        "router.scenarios.longContext",
+        "router.scenarios.webSearch",
+        "router.tokenSaver.judge",
         "router.tokenSaver.tiers.simple.model",
         "router.tokenSaver.tiers.medium.model",
         "router.tokenSaver.tiers.complex.model",
@@ -2601,36 +3846,42 @@ enum NativeModelsConfigFormFields {
         "router.autoOrchestrate.mainAgentModel",
     ]
     static let inheritableAssignmentPaths: Set<String> = [
-        "agents.subagents.default",
+        "agent.subagents.default",
         "memory.model",
     ]
-    static let defaultProviderType = "openai-chat"
-    static let providerTypeOptions = [
-        "openai-chat",
-        "openai-responses",
+    static let providerProtocolOptions = [
+        "openai",
         "anthropic",
-        "litellm",
-        "ccr",
     ]
+    static let defaultProviderType = "openai"
+    static let providerTypeOptions = providerProtocolOptions
     static let newProviderScalars = [
-        "type": defaultProviderType,
-        "baseUrl": "",
+        "protocol": defaultProviderType,
+        "url": "",
         "apiKey": "",
+        "models": "{}",
     ]
 
     static func newEntryScalars(firstProvider: String) -> [String: String] {
         [
             "provider": firstProvider,
-            "name": "",
-            "contextWindow": "",
+            "model": "",
         ]
+    }
+
+    static func providerProtocolLabel(_ value: String) -> String {
+        switch value {
+        case "openai": return "openai"
+        case "anthropic": return "anthropic"
+        default: return value
+        }
     }
 }
 
 enum NativeAgentConfigFormFields {
     static let visiblePaths = [
-        "agents.main.model",
-        "agents.subagents.default",
+        "agent.model",
+        "agent.subagents.default",
     ]
 }
 
@@ -2665,13 +3916,17 @@ struct NativeAlwaysOnConfigFieldSpec: Hashable, Identifiable {
 }
 
 enum NativeRuntimeConfigFormFields {
-    static let workspacesRootPath = "runtime.workspacesRoot"
+    static let workspacesRootPath = "webui.runtime.workspacesRoot"
     static let generalWorkspacePath = "gateway.runtimePaths.generalCwd"
     static let textFields: [NativeConfigTextFieldSpec] = [
-        NativeConfigTextFieldSpec(label: .apiTimeoutMs, path: "runtime.apiTimeoutMs"),
-        NativeConfigTextFieldSpec(label: .databasePath, path: "runtime.databasePath"),
+        NativeConfigTextFieldSpec(label: .apiTimeoutMs, path: "webui.runtime.apiTimeoutMs"),
+        NativeConfigTextFieldSpec(label: .databasePath, path: "webui.runtime.databasePath"),
+        NativeConfigTextFieldSpec(label: .httpsProxy, path: "webui.runtime.httpsProxy"),
     ]
-    static let visiblePaths: [String] = []
+    static let visiblePaths: [String] = [
+        workspacesRootPath,
+        generalWorkspacePath,
+    ] + textFields.map(\.path)
 }
 
 enum NativeAlwaysOnConfigFormFields {
@@ -2681,16 +3936,34 @@ enum NativeAlwaysOnConfigFormFields {
         NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.tickIntervalMinutes", englishLabel: "Tick Interval (minutes)", chineseLabel: "检查间隔（分钟）"),
         NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.cooldownMinutes", englishLabel: "Cooldown (minutes)", chineseLabel: "冷却时间（分钟）"),
         NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.dailyBudget", englishLabel: "Daily Budget", chineseLabel: "每日运行预算"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.heartbeatStaleSeconds", englishLabel: "Heartbeat stale (seconds)", chineseLabel: "心跳过期（秒）"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.trigger.recentUserMsgMinutes", englishLabel: "Recent user message (minutes)", chineseLabel: "最近用户消息（分钟）"),
+    ]
+    static let workspaceFields: [NativeAlwaysOnConfigFieldSpec] = [
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.workspace.gitWorktreeBaseDir", englishLabel: "Git worktree base dir", chineseLabel: "Git worktree 目录"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.workspace.snapshotBaseDir", englishLabel: "Snapshot base dir", chineseLabel: "快照目录"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.workspace.snapshotMaxBytes", englishLabel: "Snapshot max bytes", chineseLabel: "快照最大字节数"),
+    ]
+    static let executionFields: [NativeAlwaysOnConfigFieldSpec] = [
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.execution.maxTurns", englishLabel: "Max turns", chineseLabel: "最大轮次"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.execution.maxToolCalls", englishLabel: "Max tool calls", chineseLabel: "最大工具调用"),
+        NativeAlwaysOnConfigFieldSpec(path: "alwaysOn.execution.timeoutMinutes", englishLabel: "Timeout (minutes)", chineseLabel: "超时（分钟）"),
     ]
     static let visiblePaths = [
         enabledPath,
         triggerEnabledPath,
-    ] + triggerFields.map(\.path)
+        "alwaysOn.trigger.preferChannel",
+        "alwaysOn.dormancy.enabled",
+        "alwaysOn.dormancy.debounceMs",
+        "alwaysOn.dormancy.ignoreGlobs",
+        "alwaysOn.workspace.gitLfs",
+    ] + triggerFields.map(\.path) + workspaceFields.map(\.path) + executionFields.map(\.path)
 }
 
 enum NativeSearchConfigFormFields {
     static let providerPath = "tools.webSearch.provider"
     static let providerOptions = ["glm", "tavily", "custom"]
+    static let exposesTestConnectionAction = true
     static let defaultEndpoints = [
         "glm": "https://api.z.ai/api/paas/v4/web_search",
         "tavily": "https://api.tavily.com/search",
@@ -2723,6 +3996,194 @@ enum NativeSearchConfigFormFields {
         default: return provider
         }
     }
+}
+
+enum NativeSearchConnectionTestResult: Equatable {
+    case success(String)
+    case failure(String)
+}
+
+enum NativeSearchConnectionTester {
+    static func test(
+        values: [String: String],
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        query: String = "PilotDeck connection test"
+    ) async -> NativeSearchConnectionTestResult {
+        do {
+            let request = try request(values: values, environment: environment, query: query)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return .failure("Search provider returned a non-HTTP response.")
+            }
+            guard 200..<300 ~= http.statusCode else {
+                let detail = String(data: data, encoding: .utf8) ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+                return .failure("HTTP \(http.statusCode): \(String(detail.prefix(160)))")
+            }
+            return .success("Search provider responded successfully.")
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+    }
+
+    static func request(
+        values: [String: String],
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        query: String = "PilotDeck connection test"
+    ) throws -> URLRequest {
+        let config = NativeSearchConnectionConfig(values: values, environment: environment)
+        guard let endpoint = NativeSearchConnectionConfig.nonBlank(config.endpoint) else {
+            throw NativeSearchConnectionError.missingEndpoint
+        }
+        guard var url = URL(string: endpoint) else {
+            throw NativeSearchConnectionError.invalidEndpoint(endpoint)
+        }
+        guard config.apiKey != nil || (config.provider == "custom" && config.customAuth == "none") else {
+            throw NativeSearchConnectionError.missingAPIKey(config.provider)
+        }
+
+        var headers = ["Accept": "application/json"]
+        var body: [String: Any]?
+        var method = "POST"
+
+        switch config.provider {
+        case "tavily":
+            headers["Content-Type"] = "application/json"
+            body = [
+                "api_key": config.apiKey ?? "",
+                "query": query,
+                "max_results": 1,
+                "search_depth": "basic",
+            ]
+        case "custom":
+            method = config.customMethod == "GET" ? "GET" : "POST"
+            if method == "GET" {
+                url.appendPilotDeckQueryItem(name: config.customQueryParam, value: query)
+            } else {
+                headers["Content-Type"] = "application/json"
+                body = [config.customQueryParam: query]
+            }
+            if config.customAuth == "bearer", let apiKey = config.apiKey {
+                headers["Authorization"] = "Bearer \(apiKey)"
+            } else if config.customAuth == "queryApiKey", let apiKey = config.apiKey {
+                url.appendPilotDeckQueryItem(name: config.customAPIKeyParam, value: apiKey)
+            } else if config.customAuth == "bodyApiKey", let apiKey = config.apiKey {
+                if method == "GET" {
+                    url.appendPilotDeckQueryItem(name: config.customAPIKeyParam, value: apiKey)
+                } else {
+                    body?[config.customAPIKeyParam] = apiKey
+                }
+            }
+        default:
+            headers["Authorization"] = "Bearer \(config.apiKey ?? "")"
+            headers["Content-Type"] = "application/json"
+            body = [
+                "search_engine": "search-prime",
+                "search_query": query,
+                "count": 1,
+                "search_recency_filter": "noLimit",
+            ]
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = TimeInterval(config.timeoutMs) / 1000
+        headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        if let body {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        return request
+    }
+}
+
+private struct NativeSearchConnectionConfig {
+    var provider: String
+    var endpoint: String
+    var apiKey: String?
+    var timeoutMs: Int
+    var customAuth: String
+    var customMethod: String
+    var customQueryParam: String
+    var customAPIKeyParam: String
+
+    init(values: [String: String], environment: [String: String]) {
+        let rawProvider = Self.nonBlank(values["tools.webSearch.provider"])?.lowercased() ?? "glm"
+        provider = NativeSearchConfigFormFields.providerOptions.contains(rawProvider) ? rawProvider : "glm"
+        timeoutMs = Self.clampedInt(values["tools.webSearch.timeoutMs"], defaultValue: 30_000, min: 1_000, max: 120_000)
+        customAuth = Self.nonBlank(values["tools.webSearch.customProvider.auth"]) ?? "bearer"
+        customMethod = (Self.nonBlank(values["tools.webSearch.customProvider.method"]) ?? "POST").uppercased()
+        customQueryParam = Self.nonBlank(values["tools.webSearch.customProvider.queryParam"]) ?? "query"
+        customAPIKeyParam = Self.nonBlank(values["tools.webSearch.customProvider.apiKeyParam"]) ?? "api_key"
+
+        let configuredEndpoint = Self.nonBlank(values["tools.webSearch.endpoint"])
+        switch provider {
+        case "tavily":
+            endpoint = configuredEndpoint == NativeSearchConfigFormFields.defaultEndpoints["glm"]
+                ? NativeSearchConfigFormFields.defaultEndpoints["tavily"] ?? ""
+                : (configuredEndpoint ?? NativeSearchConfigFormFields.defaultEndpoints["tavily"] ?? "")
+            apiKey = Self.nonBlank(values["tools.webSearch.apiKey"]) ?? Self.nonBlank(environment["TAVILY_API_KEY"])
+        case "custom":
+            let defaults = Set(NativeSearchConfigFormFields.defaultEndpoints.values)
+            endpoint = configuredEndpoint.flatMap { defaults.contains($0) ? nil : $0 } ?? ""
+            apiKey = Self.nonBlank(values["tools.webSearch.apiKey"]) ?? Self.nonBlank(environment["CUSTOM_WEB_SEARCH_API_KEY"])
+        default:
+            endpoint = configuredEndpoint
+                ?? Self.nonBlank(environment["GLM_WEB_SEARCH_ENDPOINT"])
+                ?? NativeSearchConfigFormFields.defaultEndpoints["glm"]
+                ?? ""
+            apiKey = Self.nonBlank(values["tools.webSearch.apiKey"])
+                ?? Self.nonBlank(environment["GLM_WEB_SEARCH_API_KEY"])
+                ?? Self.nonBlank(environment["ZAI_API_KEY"])
+        }
+    }
+
+    static func nonBlank(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func clampedInt(_ rawValue: String?, defaultValue: Int, min: Int, max: Int) -> Int {
+        guard let value = rawValue.flatMap(Int.init) else { return defaultValue }
+        return Swift.max(min, Swift.min(max, value))
+    }
+}
+
+enum NativeSearchConnectionError: LocalizedError, Equatable {
+    case missingEndpoint
+    case invalidEndpoint(String)
+    case missingAPIKey(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingEndpoint:
+            return "Search endpoint is empty."
+        case .invalidEndpoint(let endpoint):
+            return "Invalid search endpoint: \(endpoint)"
+        case .missingAPIKey(let provider):
+            return "\(NativeSearchConfigFormFields.providerLabel(provider)) requires an API key."
+        }
+    }
+}
+
+private extension URL {
+    mutating func appendPilotDeckQueryItem(name: String, value: String) {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false) else { return }
+        var items = components.queryItems ?? []
+        items.removeAll { $0.name == name }
+        items.append(URLQueryItem(name: name, value: value))
+        components.queryItems = items
+        if let url = components.url {
+            self = url
+        }
+    }
+}
+
+enum NativeCustomEnvConfigFormFields {
+    static let wellKnownKeys: [(key: String, hint: String)] = [
+        ("TAVILY_API_KEY", "Tavily web search API key"),
+        ("FIRECRAWL_API_KEY", "Firecrawl web scraping API key"),
+        ("SERPER_API_KEY", "Serper search API key"),
+        ("BROWSERBASE_API_KEY", "Browserbase API key"),
+    ]
 }
 
 enum NativeConfigBoolValue {
@@ -2761,8 +4222,6 @@ enum NativeMemoryConfigFormFields {
     static let visiblePaths = [
         enabledPath,
         modelPath,
-        autoIndexIntervalPath,
-        autoDreamIntervalPath,
     ]
 }
 
@@ -2777,20 +4236,43 @@ struct NativeMemoryScheduleFieldSpec: Hashable, Identifiable {
 enum NativeRouterConfigFormFields {
     static let enabledPath = "router.enabled"
     static let routeModelFields: [NativeRouterModelFieldSpec] = [
-        NativeRouterModelFieldSpec(id: "default", label: .defaultRouteModel, path: "router.routes.default.model"),
-        NativeRouterModelFieldSpec(id: "background", label: .backgroundRouteModel, path: "router.routes.background.model"),
+        NativeRouterModelFieldSpec(id: "default", label: .defaultRouteModel, path: "router.scenarios.default"),
+    ]
+    static let fallbackFields: [NativeAlwaysOnConfigFieldSpec] = [
+        NativeAlwaysOnConfigFieldSpec(path: "router.fallback.default", englishLabel: "Default fallback", chineseLabel: "默认回退"),
+        NativeAlwaysOnConfigFieldSpec(path: "router.fallback.background", englishLabel: "Background fallback", chineseLabel: "后台回退"),
+    ]
+    static let tierDescriptionFields: [NativeAlwaysOnConfigFieldSpec] = [
+        NativeAlwaysOnConfigFieldSpec(path: "router.tokenSaver.tiers.simple.description", englishLabel: "Simple description", chineseLabel: "简单描述"),
+        NativeAlwaysOnConfigFieldSpec(path: "router.tokenSaver.tiers.medium.description", englishLabel: "Medium description", chineseLabel: "中等描述"),
+        NativeAlwaysOnConfigFieldSpec(path: "router.tokenSaver.tiers.complex.description", englishLabel: "Complex description", chineseLabel: "复杂描述"),
+        NativeAlwaysOnConfigFieldSpec(path: "router.tokenSaver.tiers.reasoning.description", englishLabel: "Reasoning description", chineseLabel: "推理描述"),
+    ]
+    static let pricingFields: [NativeAlwaysOnConfigFieldSpec] = [
+        NativeAlwaysOnConfigFieldSpec(path: "router.stats.modelPricing.default.input", englishLabel: "Default input / 1M", chineseLabel: "默认输入 / 百万"),
+        NativeAlwaysOnConfigFieldSpec(path: "router.stats.modelPricing.default.output", englishLabel: "Default output / 1M", chineseLabel: "默认输出 / 百万"),
+        NativeAlwaysOnConfigFieldSpec(path: "router.stats.modelPricing.default.cacheRead", englishLabel: "Default cache read / 1M", chineseLabel: "默认缓存读取 / 百万"),
     ]
     static let visiblePaths = [
         enabledPath,
-        "router.routes.default.model",
-        "router.routes.background.model",
+        "router.scenarios.default",
         "router.tokenSaver.enabled",
-        "router.tokenSaver.judgeModel",
+        "router.tokenSaver.judge",
+        "router.tokenSaver.defaultTier",
+        "router.tokenSaver.judgeTimeoutMs",
+        "router.tokenSaver.subagent.policy",
         "router.tokenSaver.tiers.simple.model",
         "router.tokenSaver.tiers.medium.model",
         "router.tokenSaver.tiers.complex.model",
         "router.tokenSaver.tiers.reasoning.model",
-    ]
+        "router.tokenSaver.rules",
+        "router.zeroUsageRetry.enabled",
+        "router.zeroUsageRetry.maxAttempts",
+        "router.autoOrchestrate.enabled",
+        "router.autoOrchestrate.triggerTiers",
+        "router.autoOrchestrate.slimSystemPrompt",
+        "router.stats.enabled",
+    ] + fallbackFields.map(\.path) + tierDescriptionFields.map(\.path) + pricingFields.map(\.path)
 }
 
 enum NativeGatewayConfigFormFields {
@@ -2970,8 +4452,13 @@ struct WebSettingsToggle: View {
 
 enum YAMLScalarEditor {
     static func set(path: String, value: String, in yaml: String) -> String {
+        set(components: path.split(separator: ".").map(String.init), value: value, in: yaml)
+    }
+
+    static func set(components: [String], value: String, in yaml: String) -> String {
         var lines = yaml.components(separatedBy: "\n")
         var stack: [(indent: Int, key: String)] = []
+        guard !components.isEmpty else { return yaml }
 
         for index in lines.indices {
             let line = lines[index]
@@ -2984,8 +4471,8 @@ enum YAMLScalarEditor {
             guard let colon = trimmed.firstIndex(of: ":") else { continue }
             let key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespaces)
             let rawValue = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-            let currentPath = (stack.map(\.key) + [key]).joined(separator: ".")
-            if currentPath == path {
+            let currentComponents = stack.map(\.key) + [key]
+            if currentComponents == components {
                 let prefix = String(repeating: " ", count: indent)
                 if rawValue.isEmpty && value.isEmpty {
                     lines[index] = "\(prefix)\(key): \"\""
@@ -2994,18 +4481,29 @@ enum YAMLScalarEditor {
                 }
                 return lines.joined(separator: "\n")
             }
-            if rawValue.isEmpty {
+            if rawValue.isEmpty || (rawValue == "{}" && components.starts(with: currentComponents)) {
+                if rawValue == "{}" {
+                    lines[index] = "\(String(repeating: " ", count: indent))\(key):"
+                }
                 stack.append((indent, key))
             }
         }
 
-        return append(path: path, value: value, to: yaml)
+        return append(components: components, value: value, to: yaml)
     }
 
     static func appendBlock(parentPath: String, id: String, scalars: [String: String], in yaml: String) -> String {
+        appendBlock(parentComponents: parentPath.split(separator: ".").map(String.init), id: id, scalars: scalars, in: yaml)
+    }
+
+    static func appendBlock(parentComponents: [String], id: String, scalars: [String: String], in yaml: String) -> String {
         var lines = yaml.components(separatedBy: "\n")
-        if let parentIndex = lineIndex(for: parentPath, in: lines) {
+        if let parentIndex = lineIndex(forComponents: parentComponents, in: lines) {
             let parentIndent = indent(of: lines[parentIndex])
+            if lines[parentIndex].trimmingCharacters(in: .whitespaces).hasSuffix(": {}") {
+                let key = parentComponents.last ?? ""
+                lines[parentIndex] = "\(String(repeating: " ", count: parentIndent))\(key):"
+            }
             var insertIndex = parentIndex + 1
             while insertIndex < lines.count {
                 let trimmed = lines[insertIndex].trimmingCharacters(in: .whitespaces)
@@ -3026,11 +4524,10 @@ enum YAMLScalarEditor {
 
         var result = yaml.trimmingCharacters(in: .newlines)
         if !result.isEmpty { result += "\n" }
-        let parts = parentPath.split(separator: ".").map(String.init)
-        for index in parts.indices {
-            result += "\(String(repeating: " ", count: index * 2))\(parts[index]):\n"
+        for index in parentComponents.indices {
+            result += "\(String(repeating: " ", count: index * 2))\(parentComponents[index]):\n"
         }
-        result = appendBlock(parentPath: parentPath, id: id, scalars: scalars, in: result)
+        result = appendBlock(parentComponents: parentComponents, id: id, scalars: scalars, in: result)
         return result
     }
 
@@ -3065,32 +4562,47 @@ enum YAMLScalarEditor {
     }
 
     static func renameObject(parentPath: String, oldID: String, newID: String, in yaml: String) -> String {
+        renameObject(parentComponents: parentPath.split(separator: ".").map(String.init), oldID: oldID, newID: newID, in: yaml)
+    }
+
+    static func renameObject(parentComponents: [String], oldID: String, newID: String, in yaml: String) -> String {
         var lines = yaml.components(separatedBy: "\n")
-        let path = "\(parentPath).\(oldID)"
-        guard let index = lineIndex(for: path, in: lines) else { return yaml }
+        guard let index = lineIndex(forComponents: parentComponents + [oldID], in: lines) else { return yaml }
         let currentIndent = indent(of: lines[index])
-        lines[index] = "\(String(repeating: " ", count: currentIndent))\(newID):"
+        let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+        let rawValue: String
+        if let colon = trimmed.firstIndex(of: ":") {
+            rawValue = String(trimmed[trimmed.index(after: colon)...])
+        } else {
+            rawValue = ""
+        }
+        lines[index] = "\(String(repeating: " ", count: currentIndent))\(newID):\(rawValue)"
         return lines.joined(separator: "\n")
     }
 
     static func removeObject(path: String, in yaml: String) -> String {
+        removeObject(components: path.split(separator: ".").map(String.init), in: yaml)
+    }
+
+    static func removeObject(components: [String], in yaml: String) -> String {
         var lines = yaml.components(separatedBy: "\n")
-        guard let start = lineIndex(for: path, in: lines) else { return yaml }
-        let startIndent = indent(of: lines[start])
-        var end = start + 1
-        while end < lines.count {
-            let trimmed = lines[end].trimmingCharacters(in: .whitespaces)
-            if !trimmed.isEmpty, indent(of: lines[end]) <= startIndent {
-                break
+        if let start = lineIndex(forComponents: components, in: lines) {
+            let startIndent = indent(of: lines[start])
+            var end = start + 1
+            while end < lines.count {
+                let trimmed = lines[end].trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty, indent(of: lines[end]) <= startIndent {
+                    break
+                }
+                end += 1
             }
-            end += 1
+            lines.removeSubrange(start..<end)
         }
-        lines.removeSubrange(start..<end)
+        lines = removeLooseEntries(components: components, from: lines)
         return lines.joined(separator: "\n")
     }
 
-    private static func append(path: String, value: String, to yaml: String) -> String {
-        let parts = path.split(separator: ".").map(String.init)
+    private static func append(components parts: [String], value: String, to yaml: String) -> String {
         guard !parts.isEmpty else { return yaml }
         var lines = yaml.trimmingCharacters(in: .newlines).components(separatedBy: "\n")
         lines.append("# Added by native Settings")
@@ -3131,6 +4643,37 @@ enum YAMLScalarEditor {
             }
         }
         return nil
+    }
+
+    private static func removeLooseEntries(components: [String], from lines: [String]) -> [String] {
+        guard !components.isEmpty else { return lines }
+        let prefix = components.joined(separator: ".")
+        var stack: [(indent: Int, key: String)] = []
+        var indexesToRemove = Set<Int>()
+
+        for index in lines.indices {
+            let line = lines[index]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#"), !trimmed.hasPrefix("- ") else { continue }
+            let currentIndent = indent(of: line)
+            while let last = stack.last, last.indent >= currentIndent {
+                stack.removeLast()
+            }
+            guard let colon = trimmed.firstIndex(of: ":") else { continue }
+            let key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespaces)
+            let value = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            let currentPath = (stack.map(\.key) + [key]).joined(separator: ".")
+            if currentPath == prefix || currentPath.hasPrefix(prefix + ".") {
+                indexesToRemove.insert(index)
+            }
+            if value.isEmpty {
+                stack.append((currentIndent, key))
+            }
+        }
+
+        return lines.enumerated()
+            .filter { !indexesToRemove.contains($0.offset) }
+            .map(\.element)
     }
 
     private static func indent(of line: String) -> Int {

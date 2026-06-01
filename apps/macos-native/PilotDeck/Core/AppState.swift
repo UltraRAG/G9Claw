@@ -2059,10 +2059,18 @@ final class AppState: ObservableObject {
 
     private func savePilotDeckConfigTextIfChanged() throws {
         let url = Self.pilotDeckConfigURL()
+        let nextText = NativeConfigService.webSchemaConfigTextIfNeeded(
+            from: pilotDeckConfigText,
+            homePath: FileManager.default.homeDirectoryForCurrentUser.path,
+            userName: NSUserName()
+        )
+        if nextText != pilotDeckConfigText {
+            pilotDeckConfigText = nextText
+        }
         let old = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        guard pilotDeckConfigText != old else { return }
+        guard nextText != old else { return }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try pilotDeckConfigText.write(to: url, atomically: true, encoding: .utf8)
+        try nextText.write(to: url, atomically: true, encoding: .utf8)
     }
 
     static func pilotDeckConfigURL(
@@ -2082,7 +2090,12 @@ final class AppState: ObservableObject {
         if let legacyURL = Self.legacyPilotDeckConfigURLs().first(where: { FileManager.default.fileExists(atPath: $0.path) }),
            let legacyText = try? String(contentsOf: legacyURL, encoding: .utf8) {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try legacyText.write(to: url, atomically: true, encoding: .utf8)
+            let migratedText = NativeConfigService.webSchemaConfigTextIfNeeded(
+                from: legacyText,
+                homePath: FileManager.default.homeDirectoryForCurrentUser.path,
+                userName: NSUserName()
+            )
+            try migratedText.write(to: url, atomically: true, encoding: .utf8)
             return
         }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -3805,6 +3818,8 @@ struct NativeConfigSnapshot: Equatable {
 enum PilotDeckConfigPath {
     private static let configDirectoryName = ".pilotdeck"
     private static let legacyConfigDirectoryNames = [".g9claw", ".edgeclaw"]
+    private static let configFileName = "pilotdeck.yaml"
+    private static let legacyConfigFileName = "config.yaml"
 
     static func configURL(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -3823,14 +3838,17 @@ enum PilotDeckConfigPath {
         }
         return home
             .appendingPathComponent(configDirectoryName, isDirectory: true)
-            .appendingPathComponent("config.yaml")
+            .appendingPathComponent(configFileName)
     }
 
     static func legacyConfigURLs(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [URL] {
-        legacyConfigDirectoryNames.map { directory in
+        let oldPilotDeckConfig = home
+            .appendingPathComponent(configDirectoryName, isDirectory: true)
+            .appendingPathComponent(legacyConfigFileName)
+        return [oldPilotDeckConfig] + legacyConfigDirectoryNames.map { directory in
             home
                 .appendingPathComponent(directory, isDirectory: true)
-                .appendingPathComponent("config.yaml")
+                .appendingPathComponent(legacyConfigFileName)
         }
     }
 
@@ -3842,37 +3860,34 @@ enum PilotDeckConfigPath {
 enum PilotDeckConfigDefaults {
     static func configText(homePath: String, userName: String) -> String {
         """
-        version: 1
-        runtime:
-          host: 0.0.0.0
-          serverPort: 3001
-          vitePort: 5173
-          proxyPort: 18080
-          contextWindow: 160000
-          apiTimeoutMs: 120000
-          httpsProxy: ""
-          databasePath: \(homePath)/.pilotdeck/auth.db
-          workspacesRoot: \(homePath)
-        models:
-          providers:
-            pilotdeck:
-              type: openai-chat
-              baseUrl: ""
-              apiKey: ""
-              transformer: null
-              headers: {}
-          entries:
-            default:
-              provider: pilotdeck
-              name: ""
-              contextWindow: 160000
-        agents:
-          main:
-            model: default
-            params: {}
+        schemaVersion: 1
+        agent:
+          model: ""
+          params: {}
           subagents:
             default: inherit
             params: {}
+        model:
+          providers: {}
+        memory:
+          enabled: true
+          reasoningMode: answer_first
+          autoIndexIntervalMinutes: 30
+          autoDreamIntervalMinutes: 60
+          captureStrategy: last_turn
+          includeAssistant: true
+          maxMessageChars: 6000
+          heartbeatBatchSize: 30
+        webui:
+          runtime:
+            host: 0.0.0.0
+            serverPort: 3001
+            vitePort: 5173
+            proxyPort: 18080
+            apiTimeoutMs: 120000
+            httpsProxy: ""
+            databasePath: \(homePath)/.pilotdeck/auth.db
+            workspacesRoot: \(homePath)
         alwaysOn:
           enabled: false
           language: zh-CN
@@ -3898,17 +3913,6 @@ enum PilotDeckConfigDefaults {
             maxToolCalls: 200
             timeoutMinutes: 20
           projects: {}
-        memory:
-          enabled: true
-          model: inherit
-          params: {}
-          reasoningMode: answer_first
-          autoIndexIntervalMinutes: 30
-          autoDreamIntervalMinutes: 60
-          captureStrategy: last_turn
-          includeAssistant: true
-          maxMessageChars: 6000
-          heartbeatBatchSize: 30
         tools:
           webSearch:
             provider: glm
@@ -3934,41 +3938,32 @@ enum PilotDeckConfigDefaults {
           host: 127.0.0.1
           port: 19080
           apiTimeoutMs: 120000
+          scenarios:
+            default: ""
+            background: ""
+            think: ""
+            longContext: ""
+            webSearch: ""
           routes:
-            default:
-              model: default
-              params: {}
-            background:
-              model: default
-              params: {}
-            think:
-              model: default
-              params: {}
-            longContext:
-              model: default
-              params: {}
-            webSearch:
-              model: default
-              params: {}
             longContextThreshold: 60000
           tokenSaver:
             enabled: false
-            judgeModel: default
+            judge: ""
             defaultTier: medium
             subagentPolicy: inherit
             judgeTimeoutMs: 15000
             tiers:
               simple:
-                model: default
+                model: ""
                 description: Simple Q&A, file reads, greetings, small edits
               medium:
-                model: default
+                model: ""
                 description: Moderate coding, single-file edits, explanations
               complex:
-                model: default
+                model: ""
                 description: Multi-step coding, architecture, large refactors
               reasoning:
-                model: default
+                model: ""
                 description: Deep reasoning, novel algorithms, security analysis
             rules:
               - Short prompts (<20 words) -> SIMPLE
@@ -3980,7 +3975,7 @@ enum PilotDeckConfigDefaults {
             triggerTiers:
               - COMPLEX
               - REASONING
-            mainAgentModel: default
+            mainAgentModel: ""
             skillPath: ~/.pilotdeck/prompts/auto-orchestrate.md
             blockedTools: []
             allowedTools:
@@ -3994,7 +3989,7 @@ enum PilotDeckConfigDefaults {
             slimSystemPrompt: true
           tokenStats:
             enabled: true
-            baselineModel: default
+            baselineModel: ""
             defaultCostPerMillion: 0.8
           zeroUsageRetry:
             enabled: true
@@ -4237,6 +4232,131 @@ enum PilotDeckConfigDefaults {
 }
 
 enum NativeConfigService {
+    static func webSchemaConfigTextIfNeeded(from yaml: String, homePath: String, userName: String) -> String {
+        let values = scalarMap(from: yaml)
+        if values["schemaVersion"] != nil || values.keys.contains(where: { $0.hasPrefix("model.providers.") }) {
+            return yaml
+        }
+
+        let entries = modelEntryIDs(values: values)
+        let providerIDs = legacyProviderIDs(values: values, entries: entries)
+        let mainEntry = values["agents.main.model"]?.nilIfBlank ?? "default"
+        let mainRef = legacyEntryToModelRef(mainEntry, values: values) ?? ""
+        let modelRef = { (key: String, fallback: String) -> String in
+            yamlScalar(legacyEntryToModelRef(values[key] ?? "", values: values) ?? fallback)
+        }
+        let modelRefAny = { (keys: [String], fallback: String) -> String in
+            let raw = keys.compactMap { values[$0]?.nilIfBlank }.first ?? ""
+            return yamlScalar(legacyEntryToModelRef(raw, values: values) ?? fallback)
+        }
+
+        var lines: [String] = [
+            "schemaVersion: 1",
+            "agent:",
+            "  model: \(yamlScalar(mainRef))",
+            "  params: {}",
+            "  subagents:",
+            "    default: \(yamlScalar(values["agents.subagents.default"]?.nilIfBlank ?? "inherit"))",
+            "    params: {}",
+            "model:",
+            "  providers:",
+        ]
+
+        if providerIDs.isEmpty {
+            lines[lines.count - 1] = "  providers: {}"
+        } else {
+            for providerID in providerIDs {
+                lines.append("    \(providerID):")
+                lines.append("      protocol: \(yamlScalar(legacyTypeToProviderProtocol(values["models.providers.\(providerID).type"])))")
+                lines.append("      url: \(yamlScalar(values["models.providers.\(providerID).baseUrl"] ?? ""))")
+                lines.append("      apiKey: \(yamlScalar(values["models.providers.\(providerID).apiKey"] ?? ""))")
+                lines.append("      models:")
+                let providerEntries = entries.filter { values["models.entries.\($0).provider"] == providerID }
+                if providerEntries.isEmpty {
+                    lines[lines.count - 1] = "      models: {}"
+                } else {
+                    for entry in providerEntries {
+                        guard let model = values["models.entries.\(entry).name"]?.nilIfBlank else { continue }
+                        if let context = values["models.entries.\(entry).contextWindow"]?.nilIfBlank {
+                            lines.append("        \(model):")
+                            lines.append("          capabilities:")
+                            lines.append("            maxContextTokens: \(context)")
+                        } else {
+                            lines.append("        \(model): {}")
+                        }
+                    }
+                }
+            }
+        }
+
+        lines.append(contentsOf: [
+            "memory:",
+            "  enabled: \(values["memory.enabled"] ?? "true")",
+            "  model: \(yamlScalar(legacyEntryToModelRef(values["memory.model"] ?? "", values: values) ?? values["memory.model"] ?? ""))",
+            "  reasoningMode: \(yamlScalar(values["memory.reasoningMode"] ?? "answer_first"))",
+            "  autoIndexIntervalMinutes: \(values["memory.autoIndexIntervalMinutes"] ?? "30")",
+            "  autoDreamIntervalMinutes: \(values["memory.autoDreamIntervalMinutes"] ?? "60")",
+            "  captureStrategy: \(yamlScalar(values["memory.captureStrategy"] ?? "last_turn"))",
+            "  includeAssistant: \(values["memory.includeAssistant"] ?? "true")",
+            "  maxMessageChars: \(values["memory.maxMessageChars"] ?? "6000")",
+            "  heartbeatBatchSize: \(values["memory.heartbeatBatchSize"] ?? "30")",
+            "webui:",
+            "  runtime:",
+            "    host: \(yamlScalar(values["runtime.host"] ?? "0.0.0.0"))",
+            "    serverPort: \(values["runtime.serverPort"] ?? "3001")",
+            "    vitePort: \(values["runtime.vitePort"] ?? "5173")",
+            "    proxyPort: \(values["runtime.proxyPort"] ?? "18080")",
+            "    apiTimeoutMs: \(values["runtime.apiTimeoutMs"] ?? "120000")",
+            "    httpsProxy: \(yamlScalar(values["runtime.httpsProxy"] ?? ""))",
+            "    databasePath: \(yamlScalar(values["runtime.databasePath"] ?? "\(homePath)/.pilotdeck/auth.db"))",
+            "    workspacesRoot: \(yamlScalar(values["runtime.workspacesRoot"] ?? homePath))",
+            "alwaysOn:",
+            "  enabled: \(values["alwaysOn.enabled"] ?? "false")",
+            "  trigger:",
+            "    enabled: \(values["alwaysOn.trigger.enabled"] ?? "false")",
+            "    tickIntervalMinutes: \(values["alwaysOn.trigger.tickIntervalMinutes"] ?? "5")",
+            "    cooldownMinutes: \(values["alwaysOn.trigger.cooldownMinutes"] ?? "60")",
+            "    dailyBudget: \(values["alwaysOn.trigger.dailyBudget"] ?? "4")",
+            "  projects: {}",
+            "tools:",
+            "  webSearch:",
+            "    provider: \(yamlScalar(values["tools.webSearch.provider"] ?? "glm"))",
+            "    apiKey: \(yamlScalar(values["tools.webSearch.apiKey"] ?? ""))",
+            "    endpoint: \(yamlScalar(values["tools.webSearch.endpoint"] ?? "https://api.z.ai/api/paas/v4/web_search"))",
+            "router:",
+            "  enabled: \(values["router.enabled"] ?? "false")",
+            "  scenarios:",
+            "    default: \(modelRef("router.routes.default.model", mainRef))",
+            "    background: \(modelRef("router.routes.background.model", mainRef))",
+            "    think: \(modelRef("router.routes.think.model", mainRef))",
+            "    longContext: \(modelRef("router.routes.longContext.model", mainRef))",
+            "    webSearch: \(modelRef("router.routes.webSearch.model", mainRef))",
+            "  routes:",
+            "    longContextThreshold: \(values["router.routes.longContextThreshold"] ?? values["router.longContextThreshold"] ?? "60000")",
+            "  tokenSaver:",
+            "    enabled: \(values["router.tokenSaver.enabled"] ?? "false")",
+            "    judge: \(modelRef("router.tokenSaver.judgeModel", mainRef))",
+            "    tiers:",
+            "      simple:",
+            "        model: \(modelRefAny(["router.tokenSaver.tiers.simple.model", "router.tokenSaver.tiers.SIMPLE.model"], mainRef))",
+            "      medium:",
+            "        model: \(modelRefAny(["router.tokenSaver.tiers.medium.model", "router.tokenSaver.tiers.MEDIUM.model"], mainRef))",
+            "      complex:",
+            "        model: \(modelRefAny(["router.tokenSaver.tiers.complex.model", "router.tokenSaver.tiers.COMPLEX.model"], mainRef))",
+            "      reasoning:",
+            "        model: \(modelRefAny(["router.tokenSaver.tiers.reasoning.model", "router.tokenSaver.tiers.REASONING.model"], mainRef))",
+            "gateway:",
+            "  enabled: \(values["gateway.enabled"] ?? "false")",
+            "  home: \(yamlScalar(values["gateway.home"] ?? "\(homePath)/.pilotdeck/gateway"))",
+            "  runtimePaths:",
+            "    generalCwd: \(yamlScalar(values["gateway.runtimePaths.generalCwd"] ?? "~/PilotDeck/general"))",
+            "    generalJsonl: \(yamlScalar(values["gateway.runtimePaths.generalJsonl"] ?? "~/.pilotdeck/projects/-Users-\(userName)-PilotDeck-general/*.jsonl"))",
+            "customEnv: {}",
+        ])
+
+        return lines.joined(separator: "\n") + "\n"
+    }
+
     static func loadDefaultConfig(
         url: URL = PilotDeckConfigPath.configURL()
     ) -> NativeConfigSnapshot? {
@@ -4246,17 +4366,23 @@ enum NativeConfigService {
 
     static func snapshot(from yaml: String) -> NativeConfigSnapshot? {
         let values = scalarMap(from: yaml)
-        let mainEntry = values["agents.main.model"]?.nilIfBlank ?? "default"
+        let mainEntry = values["agent.model"]?.nilIfBlank
+            ?? values["agents.main.model"]?.nilIfBlank
+            ?? "default"
         let mainEntryID = validEntryID(mainEntry, values: values) ?? "default"
-        let defaultEntry = values["router.routes.default.model"]?.nilIfBlank
+        let defaultEntry = values["router.scenarios.default"]?.nilIfBlank
+            ?? values["router.routes.default.model"]?.nilIfBlank
             ?? values["router.default"]?.nilIfBlank
             ?? mainEntryID
         let defaultEntryID = validEntryID(defaultEntry, values: values) ?? mainEntryID
         guard let providerConfig = providerConfig(entryID: mainEntryID, values: values) else { return nil }
-        let apiKey = values["models.providers.\(providerID(entryID: mainEntryID, values: values)).apiKey"]
-        let workspacesRoot = values["runtime.workspacesRoot"]
+        let mainProviderID = providerID(entryID: mainEntryID, values: values)
+        let apiKey = values["model.providers.\(mainProviderID).apiKey"]
+            ?? values["models.providers.\(mainProviderID).apiKey"]
+        let workspacesRoot = values["webui.runtime.workspacesRoot"] ?? values["runtime.workspacesRoot"]
         let generalWorkspacePath = values["gateway.runtimePaths.generalCwd"]
-        let apiTimeoutMs = values["runtime.apiTimeoutMs"].flatMap(Int.init)
+        let apiTimeoutMs = values["webui.runtime.apiTimeoutMs"].flatMap(Int.init)
+            ?? values["runtime.apiTimeoutMs"].flatMap(Int.init)
             ?? values["router.apiTimeoutMs"].flatMap(Int.init)
             ?? 120_000
         let contextWindow = contextWindow(entryID: mainEntryID, values: values) ?? 160_000
@@ -4276,6 +4402,9 @@ enum NativeConfigService {
 
     static func contextWindow(entryID: String, values: [String: String]) -> Int? {
         positiveInt(values["models.entries.\(entryID).contextWindow"])
+            ?? webModelContextWindow(entryID: entryID, values: values)
+            ?? positiveInt(values["agent.maxContextTokens"])
+            ?? positiveInt(values["webui.runtime.contextWindow"])
             ?? positiveInt(values["runtime.contextWindow"])
     }
 
@@ -4309,6 +4438,7 @@ enum NativeConfigService {
     private static func normalizedScalarMap(_ values: [String: String]) -> [String: String] {
         var normalized = values
 
+        addWebSchemaAliases(values, into: &normalized)
         migrateAlwaysOnScalars(values, into: &normalized)
         normalized = normalized.filter { !$0.key.hasPrefix("agents.alwaysOn.") }
         normalized = normalized.filter { !$0.key.hasPrefix("alwaysOn.discovery.") }
@@ -4316,6 +4446,191 @@ enum NativeConfigService {
         normalized = normalized.filter { $0.key != "compat" && !$0.key.hasPrefix("compat.") }
 
         return normalized
+    }
+
+    private static func addWebSchemaAliases(_ values: [String: String], into normalized: inout [String: String]) {
+        copyAlias(from: "schemaVersion", to: "version", values: values, normalized: &normalized)
+        copyPrefixAliases(from: "webui.runtime.", to: "runtime.", values: values, normalized: &normalized)
+
+        copyAlias(from: "agent.model", to: "agents.main.model", values: values, normalized: &normalized)
+        copyAlias(from: "agent.subagents.default", to: "agents.subagents.default", values: values, normalized: &normalized)
+
+        for providerID in webProviderIDs(values) {
+            let providerPrefix = "model.providers.\(providerID)."
+            let legacyPrefix = "models.providers.\(providerID)."
+            if normalized["\(legacyPrefix)type"] == nil {
+                let protocolValue = values["\(providerPrefix)protocol"]?.nilIfBlank ?? "openai"
+                normalized["\(legacyPrefix)type"] = providerProtocolToLegacyType(protocolValue)
+            }
+            copyAlias(from: "\(providerPrefix)url", to: "\(legacyPrefix)baseUrl", values: values, normalized: &normalized)
+            copyAlias(from: "\(providerPrefix)apiKey", to: "\(legacyPrefix)apiKey", values: values, normalized: &normalized)
+            copyPrefixAliases(from: "\(providerPrefix)headers.", to: "\(legacyPrefix)headers.", values: values, normalized: &normalized)
+
+            for modelID in webModelIDs(providerID: providerID, values: values) {
+                let entryID = modelRef(providerID: providerID, modelID: modelID)
+                normalized["models.entries.\(entryID).provider"] = normalized["models.entries.\(entryID).provider"] ?? providerID
+                normalized["models.entries.\(entryID).name"] = normalized["models.entries.\(entryID).name"] ?? modelID
+                let maxContextPath = "model.providers.\(providerID).models.\(modelID).capabilities.maxContextTokens"
+                if let maxContext = values[maxContextPath],
+                   normalized["models.entries.\(entryID).contextWindow"] == nil {
+                    normalized["models.entries.\(entryID).contextWindow"] = maxContext
+                }
+            }
+        }
+
+        let modelRefs = [
+            values["agent.model"],
+            values["memory.model"],
+            values["agent.subagents.default"],
+            values["router.scenarios.default"],
+            values["router.scenarios.background"],
+            values["router.scenarios.think"],
+            values["router.scenarios.longContext"],
+            values["router.scenarios.webSearch"],
+            values["router.tokenSaver.judge"],
+            values["router.tokenSaver.tiers.simple.model"],
+            values["router.tokenSaver.tiers.medium.model"],
+            values["router.tokenSaver.tiers.complex.model"],
+            values["router.tokenSaver.tiers.reasoning.model"],
+        ]
+        for ref in modelRefs.compactMap({ $0?.nilIfBlank }) where ref != "inherit" {
+            guard let parsed = splitModelRef(ref), values["model.providers.\(parsed.providerID).url"] != nil || values["model.providers.\(parsed.providerID).apiKey"] != nil || values["model.providers.\(parsed.providerID).protocol"] != nil else {
+                continue
+            }
+            let entryID = modelRef(providerID: parsed.providerID, modelID: parsed.modelID)
+            normalized["models.entries.\(entryID).provider"] = normalized["models.entries.\(entryID).provider"] ?? parsed.providerID
+            normalized["models.entries.\(entryID).name"] = normalized["models.entries.\(entryID).name"] ?? parsed.modelID
+        }
+
+        copyAlias(from: "router.scenarios.default", to: "router.routes.default.model", values: values, normalized: &normalized)
+        copyAlias(from: "router.scenarios.background", to: "router.routes.background.model", values: values, normalized: &normalized)
+        copyAlias(from: "router.scenarios.think", to: "router.routes.think.model", values: values, normalized: &normalized)
+        copyAlias(from: "router.scenarios.longContext", to: "router.routes.longContext.model", values: values, normalized: &normalized)
+        copyAlias(from: "router.scenarios.webSearch", to: "router.routes.webSearch.model", values: values, normalized: &normalized)
+        copyAlias(from: "router.tokenSaver.judge", to: "router.tokenSaver.judgeModel", values: values, normalized: &normalized)
+    }
+
+    private static func copyAlias(from source: String, to target: String, values: [String: String], normalized: inout [String: String]) {
+        guard normalized[target] == nil, let value = values[source] else { return }
+        normalized[target] = value
+    }
+
+    private static func copyPrefixAliases(from sourcePrefix: String, to targetPrefix: String, values: [String: String], normalized: inout [String: String]) {
+        for (key, value) in values where key.hasPrefix(sourcePrefix) {
+            let suffix = String(key.dropFirst(sourcePrefix.count))
+            if normalized["\(targetPrefix)\(suffix)"] == nil {
+                normalized["\(targetPrefix)\(suffix)"] = value
+            }
+        }
+    }
+
+    private static func webProviderIDs(_ values: [String: String]) -> [String] {
+        let prefix = "model.providers."
+        var ids = Set<String>()
+        for key in values.keys where key.hasPrefix(prefix) {
+            let suffix = String(key.dropFirst(prefix.count))
+            guard let first = suffix.split(separator: ".").first else { continue }
+            ids.insert(String(first))
+        }
+        return ids.sorted()
+    }
+
+    static func webModelIDs(providerID: String, values: [String: String]) -> [String] {
+        let prefix = "model.providers.\(providerID).models."
+        var ids = Set<String>()
+        for key in values.keys where key.hasPrefix(prefix) {
+            let suffix = String(key.dropFirst(prefix.count))
+            if let capabilitiesRange = suffix.range(of: ".capabilities.") {
+                ids.insert(String(suffix[..<capabilitiesRange.lowerBound]))
+            } else if let multimodalRange = suffix.range(of: ".multimodal.") {
+                ids.insert(String(suffix[..<multimodalRange.lowerBound]))
+            } else {
+                ids.insert(suffix)
+            }
+        }
+        return ids.sorted()
+    }
+
+    static func modelEntryIDs(values: [String: String]) -> [String] {
+        let prefix = "models.entries."
+        var ids = Set<String>()
+        for key in values.keys where key.hasPrefix(prefix) {
+            let suffix = String(key.dropFirst(prefix.count))
+            if let range = suffix.range(of: ".provider") ?? suffix.range(of: ".name") ?? suffix.range(of: ".contextWindow") {
+                ids.insert(String(suffix[..<range.lowerBound]))
+            } else if let first = suffix.split(separator: ".").first {
+                ids.insert(String(first))
+            }
+        }
+        return ids.sorted()
+    }
+
+    private static func providerProtocolToLegacyType(_ value: String) -> String {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "anthropic":
+            return "anthropic"
+        default:
+            return "openai-chat"
+        }
+    }
+
+    private static func legacyTypeToProviderProtocol(_ value: String?) -> String {
+        switch (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "anthropic", "anthropic-messages":
+            return "anthropic"
+        default:
+            return "openai"
+        }
+    }
+
+    private static func legacyProviderIDs(values: [String: String], entries: [String]) -> [String] {
+        let explicit = values.keys.compactMap { key -> String? in
+            let prefix = "models.providers."
+            guard key.hasPrefix(prefix) else { return nil }
+            return key.dropFirst(prefix.count).split(separator: ".").first.map(String.init)
+        }
+        let fromEntries = entries.compactMap { values["models.entries.\($0).provider"]?.nilIfBlank }
+        return Array(Set(explicit + fromEntries)).sorted()
+    }
+
+    private static func legacyEntryToModelRef(_ entryID: String, values: [String: String]) -> String? {
+        let entry = entryID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !entry.isEmpty, entry != "inherit" else { return entry.isEmpty ? nil : entry }
+        if splitModelRef(entry) != nil {
+            return entry
+        }
+        guard let provider = values["models.entries.\(entry).provider"]?.nilIfBlank,
+              let model = values["models.entries.\(entry).name"]?.nilIfBlank else {
+            return nil
+        }
+        return modelRef(providerID: provider, modelID: model)
+    }
+
+    private static func yamlScalar(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "\"\"" }
+        let lower = trimmed.lowercased()
+        if lower == "true" || lower == "false" || lower == "null" || Int(trimmed) != nil || Double(trimmed) != nil {
+            return trimmed
+        }
+        let needsQuote = trimmed.contains("#")
+            || trimmed.contains(": ")
+            || trimmed.contains("{")
+            || trimmed.contains("}")
+            || trimmed.contains("[")
+            || trimmed.contains("]")
+            || trimmed.hasPrefix("*")
+            || trimmed.hasPrefix("&")
+            || trimmed.hasPrefix("!")
+            || trimmed.hasPrefix("|")
+            || trimmed.hasPrefix(">")
+            || trimmed.hasPrefix("-")
+            || trimmed.hasPrefix("@")
+            || trimmed.hasPrefix("`")
+        if needsQuote {
+            return "\"\(trimmed.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
+        }
+        return trimmed
     }
 
     private static func migrateAlwaysOnScalars(_ values: [String: String], into normalized: inout [String: String]) {
@@ -4363,8 +4678,15 @@ enum NativeConfigService {
         }
     }
 
-    private static func validEntryID(_ entryID: String, values: [String: String]) -> String? {
-        values["models.entries.\(entryID).provider"] == nil ? nil : entryID
+    static func validEntryID(_ entryID: String, values: [String: String]) -> String? {
+        if values["models.entries.\(entryID).provider"] != nil {
+            return entryID
+        }
+        guard let parsed = splitModelRef(entryID),
+              values.keys.contains(where: { $0.hasPrefix("model.providers.\(parsed.providerID).") }) else {
+            return nil
+        }
+        return entryID
     }
 
     private static func positiveInt(_ rawValue: String?) -> Int? {
@@ -4374,13 +4696,18 @@ enum NativeConfigService {
 
     static func providerConfig(entryID: String, values: [String: String]) -> ProviderConfig? {
         let providerID = providerID(entryID: entryID, values: values)
-        let baseURL = values["models.providers.\(providerID).baseUrl"] ?? ""
-        let model = values["models.entries.\(entryID).name"] ?? ""
+        let baseURL = values["model.providers.\(providerID).url"]
+            ?? values["models.providers.\(providerID).baseUrl"]
+            ?? ""
+        let model = values["models.entries.\(entryID).name"]
+            ?? splitModelRef(entryID)?.modelID
+            ?? ""
         guard !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
             !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
-        let type = values["models.providers.\(providerID).type"] ?? "openai-chat"
+        let type = values["models.providers.\(providerID).type"]
+            ?? providerProtocolToLegacyType(values["model.providers.\(providerID).protocol"] ?? "openai")
         let apiType: ProviderAPIType
         switch type {
         case "openai-responses":
@@ -4406,7 +4733,9 @@ enum NativeConfigService {
     }
 
     static func providerID(entryID: String, values: [String: String]) -> String {
-        values["models.entries.\(entryID).provider"]?.nilIfBlank ?? "pilotdeck"
+        values["models.entries.\(entryID).provider"]?.nilIfBlank
+            ?? splitModelRef(entryID)?.providerID
+            ?? "pilotdeck"
     }
 
     private static func isPilotDeckProviderID(_ providerID: String) -> Bool {
@@ -4426,9 +4755,33 @@ enum NativeConfigService {
             return ""
         }
         let providerID = providerID(entryID: routeEntryID, values: nativeConfig.rawValues)
-        return nativeConfig.rawValues["models.providers.\(providerID).apiKey"]?.nilIfBlank
+        return nativeConfig.rawValues["model.providers.\(providerID).apiKey"]?.nilIfBlank
+            ?? nativeConfig.rawValues["models.providers.\(providerID).apiKey"]?.nilIfBlank
             ?? nativeConfig.apiKey?.nilIfBlank
             ?? ""
+    }
+
+    static func splitModelRef(_ ref: String) -> (providerID: String, modelID: String)? {
+        let value = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let slash = value.firstIndex(of: "/"),
+              slash > value.startIndex,
+              slash < value.index(before: value.endIndex) else {
+            return nil
+        }
+        return (
+            providerID: String(value[..<slash]),
+            modelID: String(value[value.index(after: slash)...])
+        )
+    }
+
+    static func modelRef(providerID: String, modelID: String) -> String {
+        "\(providerID)/\(modelID)"
+    }
+
+    private static func webModelContextWindow(entryID: String, values: [String: String]) -> Int? {
+        guard let parsed = splitModelRef(entryID) else { return nil }
+        return positiveInt(values["model.providers.\(parsed.providerID).models.\(parsed.modelID).capabilities.maxContextTokens"])
+            ?? positiveInt(values["model.providers.\(parsed.providerID).models.\(parsed.modelID).maxContextTokens"])
     }
 
     private static func normalizeScalar(_ rawValue: String) -> String {
@@ -4522,7 +4875,9 @@ enum NativeRouterRuntime {
         let providerID = NativeConfigService.providerID(entryID: routeDecision.entryID, values: values)
         routeDecision.providerID = providerID
         routeDecision.model = providerConfig.model
-        let apiKey = values["models.providers.\(providerID).apiKey"]?.nilIfBlank ?? fallbackAPIKey
+        let apiKey = values["model.providers.\(providerID).apiKey"]?.nilIfBlank
+            ?? values["models.providers.\(providerID).apiKey"]?.nilIfBlank
+            ?? fallbackAPIKey
         let contextWindow = NativeConfigService.contextWindow(entryID: routeDecision.entryID, values: values)
             ?? fallbackContextWindow
         return ProviderRoute(
@@ -4570,7 +4925,7 @@ enum NativeRouterRuntime {
                 return remember(decision, sessionID: sessionID)
             }
             if let tierModel = tokenSaverEntryID(for: normalizedTier, values: values),
-               values["models.entries.\(tierModel).provider"] != nil {
+               NativeConfigService.validEntryID(tierModel, values: values) != nil {
                 return remember(
                     applyAutoOrchestrateIfNeeded(
                         makeDecision(
@@ -4629,7 +4984,7 @@ enum NativeRouterRuntime {
             return decision
         }
         let entryID = values["router.autoOrchestrate.mainAgentModel"]?.nilIfBlank
-            .flatMap { values["models.entries.\($0).provider"] == nil ? nil : $0 }
+            .flatMap { NativeConfigService.validEntryID($0, values: values) == nil ? nil : $0 }
             ?? decision.entryID
         var next = makeDecision(
             entryID: entryID,
@@ -4802,10 +5157,11 @@ enum NativeRouterRuntime {
 
     private static func mainEntryID(values: [String: String]) -> String? {
         let candidates = [
+            values["agent.model"]?.nilIfBlank,
             values["agents.main.model"]?.nilIfBlank,
             "default",
         ]
-        guard let entryID = candidates.compactMap({ $0 }).first(where: { values["models.entries.\($0).provider"] != nil }) else {
+        guard let entryID = candidates.compactMap({ $0 }).first(where: { NativeConfigService.validEntryID($0, values: values) != nil }) else {
             return nil
         }
         return entryID
@@ -4813,11 +5169,14 @@ enum NativeRouterRuntime {
 
     private static func routeEntryID(_ route: String, values: [String: String]) -> String? {
         let candidates = [
+            values["router.scenarios.\(route)"]?.nilIfBlank,
             values["router.routes.\(route).model"]?.nilIfBlank,
             values["router.\(route)"]?.nilIfBlank,
         ]
-        guard let entryID = candidates.compactMap({ $0 }).first else { return nil }
-        return values["models.entries.\(entryID).provider"] == nil ? nil : entryID
+        guard let entryID = candidates.compactMap({ $0 }).first(where: { NativeConfigService.validEntryID($0, values: values) != nil }) else {
+            return nil
+        }
+        return entryID
     }
 
     private static func longContextThreshold(values: [String: String]) -> Int {

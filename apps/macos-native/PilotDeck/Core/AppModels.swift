@@ -962,7 +962,7 @@ enum AppLanguage: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .system: "System"
+        case .system: "Follow System"
         case .english: "English"
         case .chineseSimplified: "简体中文"
         }
@@ -1064,6 +1064,7 @@ enum PilotDeckConfigSection: String, CaseIterable, Identifiable {
     case search
     case router
     case gateway
+    case customEnv
     case raw
 
     var id: String { rawValue }
@@ -1078,6 +1079,7 @@ enum PilotDeckConfigSection: String, CaseIterable, Identifiable {
         case .search: "Search"
         case .router: "Router"
         case .gateway: "Gateway"
+        case .customEnv: "Custom Env"
         case .raw: "Raw YAML"
         }
     }

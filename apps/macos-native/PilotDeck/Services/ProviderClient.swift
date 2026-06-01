@@ -2431,7 +2431,7 @@ enum ProviderClientError: Error, LocalizedError {
         switch self {
         case .missingBaseURL: "Provider base URL is not configured."
         case .missingModel: "Provider model is not configured."
-        case .missingAPIKey: "Provider API key is not configured. Add it in Settings or ~/.pilotdeck/config.yaml."
+        case .missingAPIKey: "Provider API key is not configured. Add it in Settings or ~/.pilotdeck/pilotdeck.yaml."
         case .invalidURL(let value): "Provider base URL is invalid: \(value)"
         case .httpError(let statusCode, let body):
             if body.isEmpty {

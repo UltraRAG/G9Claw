@@ -33,8 +33,10 @@ struct PilotDeckApp: App {
             }
 
             CommandGroup(replacing: .newItem) {
-                Button("New Chat") {
+                Button {
                     state.startNewSession()
+                } label: {
+                    Text(verbatim: "New Chat")
                 }
                 .keyboardShortcut("n", modifiers: [.command])
             }
@@ -44,13 +46,17 @@ struct PilotDeckApp: App {
             CommandGroup(replacing: .printItem) {}
 
             CommandGroup(after: .newItem) {
-                Button("Refresh") {
+                Button {
                     Task { await state.refreshProjects() }
+                } label: {
+                    Text(verbatim: "Refresh")
                 }
                 .keyboardShortcut("r", modifiers: [.command])
 
-                Button("Stop Generating") {
+                Button {
                     state.abortActiveRun()
+                } label: {
+                    Text(verbatim: "Stop Generating")
                 }
                 .keyboardShortcut(".", modifiers: [.command])
                 .disabled(!state.isCurrentSessionStreaming)

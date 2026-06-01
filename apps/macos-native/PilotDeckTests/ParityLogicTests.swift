@@ -269,7 +269,7 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertEqual(
             PilotDeckConfigPath.configURL(environment: [:], home: home).path,
-            "/Users/tester/.pilotdeck/config.yaml"
+            "/Users/tester/.pilotdeck/pilotdeck.yaml"
         )
         XCTAssertEqual(
             PilotDeckConfigPath.configURL(environment: ["PILOTDECK_CONFIG_PATH": "~/pilotdeck-dev.yaml"], home: home).path,
@@ -281,25 +281,30 @@ final class ParityLogicTests: XCTestCase {
         )
         XCTAssertEqual(
             PilotDeckConfigPath.legacyConfigURL(home: home).path,
-            "/Users/tester/.g9claw/config.yaml"
+            "/Users/tester/.pilotdeck/config.yaml"
         )
+        XCTAssertTrue(PilotDeckConfigPath.legacyConfigURLs(home: home).map(\.path).contains("/Users/tester/.g9claw/config.yaml"))
     }
 
-    func testNativeDefaultConfigUsesPilotDeckProviderAndSearchDefaults() {
+    func testNativeDefaultConfigUsesWebSchemaAndSearchDefaults() {
         let yaml = PilotDeckConfigDefaults.configText(homePath: "/Users/tester", userName: "tester")
         let values = NativeConfigService.scalarMap(from: yaml)
 
-        XCTAssertEqual(values["models.entries.default.provider"], "pilotdeck")
-        XCTAssertEqual(values["models.providers.pilotdeck.type"], "openai-chat")
+        XCTAssertEqual(values["schemaVersion"], "1")
+        XCTAssertEqual(values["agent.model"], "")
+        XCTAssertEqual(values["model.providers"], "{}")
         XCTAssertEqual(values["models.providers.g9claw.type"], nil)
-        XCTAssertEqual(values["memory.model"], "inherit")
+        XCTAssertNil(values["memory.model"])
         XCTAssertEqual(values["memory.autoIndexIntervalMinutes"], "30")
         XCTAssertEqual(values["memory.autoDreamIntervalMinutes"], "60")
+        XCTAssertEqual(values["webui.runtime.workspacesRoot"], "/Users/tester")
+        XCTAssertEqual(values["runtime.workspacesRoot"], "/Users/tester")
         XCTAssertEqual(values["tools.webSearch.provider"], "glm")
         XCTAssertEqual(values["tools.webSearch.endpoint"], "https://api.z.ai/api/paas/v4/web_search")
         XCTAssertEqual(values["tools.webSearch.organicLimit"], "8")
         XCTAssertEqual(values["tools.webSearch.customProvider.auth"], "bearer")
         XCTAssertEqual(values["router.enabled"], "false")
+        XCTAssertEqual(values["router.scenarios.default"], "")
         XCTAssertEqual(values["router.tokenSaver.enabled"], "false")
         XCTAssertEqual(values["router.tokenSaver.defaultTier"], "medium")
         XCTAssertEqual(values["router.tokenSaver.judgeTimeoutMs"], "15000")
@@ -344,6 +349,102 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(values["gateway.channels.api_server.port"], "8642")
         XCTAssertEqual(values["gateway.channels.api_server.modelName"], "pilotdeck-gateway")
         XCTAssertEqual(values["gateway.channels.webhook.secret"], "")
+    }
+
+    func testNativeConfigServiceReadsWebV2PilotDeckYamlDirectly() throws {
+        let yaml = """
+        schemaVersion: 1
+        agent:
+          model: zai/glm-4.5
+          maxContextTokens: 128000
+          subagents:
+            default: inherit
+        model:
+          providers:
+            zai:
+              protocol: openai
+              url: https://api.z.ai/api/paas/v4
+              apiKey: web-secret
+              headers:
+                X-Test: yes
+              models:
+                glm-4.5: {}
+                glm-4.5-air:
+                  capabilities:
+                    maxContextTokens: 64000
+        memory:
+          enabled: true
+          model: zai/glm-4.5-air
+        webui:
+          runtime:
+            apiTimeoutMs: 90000
+            workspacesRoot: /Users/tester/workspace
+        router:
+          enabled: true
+          scenarios:
+            default: zai/glm-4.5
+            background: zai/glm-4.5-air
+          tokenSaver:
+            judge: zai/glm-4.5-air
+            tiers:
+              simple:
+                model: zai/glm-4.5-air
+        """
+
+        let snapshot = try XCTUnwrap(NativeConfigService.snapshot(from: yaml))
+        let values = snapshot.rawValues
+
+        XCTAssertEqual(snapshot.mainEntryID, "zai/glm-4.5")
+        XCTAssertEqual(snapshot.defaultEntryID, "zai/glm-4.5")
+        XCTAssertEqual(snapshot.providerConfig.baseURL, "https://api.z.ai/api/paas/v4")
+        XCTAssertEqual(snapshot.providerConfig.model, "glm-4.5")
+        XCTAssertEqual(snapshot.apiKey, "web-secret")
+        XCTAssertEqual(snapshot.apiTimeoutMs, 90_000)
+        XCTAssertEqual(snapshot.contextWindow, 128_000)
+        XCTAssertEqual(values["models.entries.zai/glm-4.5.provider"], "zai")
+        XCTAssertEqual(values["models.entries.zai/glm-4.5-air.contextWindow"], "64000")
+        XCTAssertEqual(NativeConfigService.resolvedAPIKey(routeEntryID: "zai/glm-4.5-air", nativeConfig: snapshot), "web-secret")
+        XCTAssertEqual(NativeRouterRuntime.decision(forTier: "simple", values: values, isBackgroundRequest: true).entryID, "zai/glm-4.5-air")
+    }
+
+    func testLegacyNativeConfigCanBeMigratedToWebSchema() throws {
+        let legacy = """
+        runtime:
+          apiTimeoutMs: 90000
+          workspacesRoot: /Users/tester/workspace
+        models:
+          providers:
+            pilotdeck:
+              type: openai-chat
+              baseUrl: https://api.example.com/v1
+              apiKey: old-secret
+          entries:
+            default:
+              provider: pilotdeck
+              name: qwen3
+              contextWindow: 96000
+            small:
+              provider: pilotdeck
+              name: qwen-small
+        agents:
+          main:
+            model: default
+        router:
+          routes:
+            background:
+              model: small
+        """
+
+        let migrated = NativeConfigService.webSchemaConfigTextIfNeeded(from: legacy, homePath: "/Users/tester", userName: "tester")
+        let snapshot = try XCTUnwrap(NativeConfigService.snapshot(from: migrated))
+
+        XCTAssertTrue(migrated.contains("schemaVersion: 1"))
+        XCTAssertTrue(migrated.contains("model: pilotdeck/qwen3"))
+        XCTAssertFalse(migrated.contains("\nmodels:\n  providers:"))
+        XCTAssertEqual(snapshot.providerConfig.baseURL, "https://api.example.com/v1")
+        XCTAssertEqual(snapshot.providerConfig.model, "qwen3")
+        XCTAssertEqual(snapshot.contextWindow, 96_000)
+        XCTAssertEqual(snapshot.rawValues["router.scenarios.background"], "pilotdeck/qwen-small")
     }
 
     func testNativeConfigServiceUsesPilotDeckAsDefaultProviderID() {
@@ -414,8 +515,9 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertNil(values["agents.alwaysOn.discovery.trigger.enabled"])
     }
 
-    func testNativeConfigFormLayoutMatchesWebSplitSectionNavigation() {
-        XCTAssertTrue(NativeConfigFormLayout.usesSplitSectionNavigation)
+    func testNativeConfigFormLayoutMatchesWebGroupedSectionNavigation() {
+        XCTAssertTrue(NativeConfigFormLayout.usesGroupedSectionHome)
+        XCTAssertFalse(NativeConfigFormLayout.usesSplitSectionNavigation)
         XCTAssertFalse(NativeConfigFormLayout.usesSectionDropdown)
         XCTAssertFalse(NativeConfigFormLayout.usesViewModeToggle)
         XCTAssertFalse(NativeConfigFormLayout.exposesRawYAMLEditor)
@@ -425,19 +527,18 @@ final class ParityLogicTests: XCTestCase {
             "export",
             "saveAndReloadCurrent",
         ])
-        XCTAssertEqual(NativeConfigFormLayout.sectionNavigationWidth, 180)
-        XCTAssertEqual(NativeConfigFormLayout.sectionNavigationGap, 16)
         XCTAssertEqual(NativeConfigFormLayout.sectionOrder, [
             .models,
             .agents,
-            .memory,
             .router,
+            .memory,
             .search,
             .alwaysOn,
+            .gateway,
+            .runtime,
+            .customEnv,
         ])
         XCTAssertFalse(NativeConfigFormLayout.sectionOrder.contains(.raw))
-        XCTAssertFalse(NativeConfigFormLayout.sectionOrder.contains(.runtime))
-        XCTAssertFalse(NativeConfigFormLayout.sectionOrder.contains(.gateway))
     }
 
     func testNativeConfigReloadSummarySubsystemsMatchWebSettingsTab() {
@@ -445,11 +546,13 @@ final class ParityLogicTests: XCTestCase {
             "processEnv",
             "memory",
             "router",
+            "gateway",
         ])
         XCTAssertEqual(NativeConfigReloadSummary.subsystems.map(\.label), [
             .processEnv,
             .memory,
             .routerCCR,
+            .gateway,
         ])
     }
 
@@ -511,6 +614,14 @@ final class ParityLogicTests: XCTestCase {
 
     func testNativeConfigModelPickerOptionsMatchWebFormSelects() {
         let yaml = """
+        model:
+          providers:
+            pilotdeck:
+              protocol: openai
+              url: http://example.local/v1
+              models:
+                main-model: {}
+                small-model: {}
         models:
           entries:
             default:
@@ -522,47 +633,44 @@ final class ParityLogicTests: XCTestCase {
         """
         let values = NativeConfigService.scalarMap(from: yaml)
 
-        XCTAssertEqual(NativeConfigModelOptions.entryIDs(values: values), ["default", "router_small"])
+        XCTAssertEqual(NativeConfigModelOptions.entryIDs(values: values), ["default", "pilotdeck/main-model", "pilotdeck/small-model", "router_small"])
         XCTAssertEqual(
             NativeConfigModelOptions.options(values: values, includeEmpty: true),
-            ["", "default", "router_small"]
+            ["", "default", "pilotdeck/main-model", "pilotdeck/small-model", "router_small"]
         )
         XCTAssertEqual(
             NativeConfigModelOptions.options(values: values, includeInherit: true),
-            ["inherit", "default", "router_small"]
+            ["inherit", "default", "pilotdeck/main-model", "pilotdeck/small-model", "router_small"]
         )
     }
 
     func testNativeModelsConfigFormBehaviorMatchesWebSettingsTab() {
-        XCTAssertEqual(NativeModelsConfigFormFields.providerTypeOptions, [
-            "openai-chat",
-            "openai-responses",
-            "anthropic",
-            "litellm",
-            "ccr",
-        ])
+        XCTAssertTrue(NativeModelsConfigFormFields.usesProviderCards)
+        XCTAssertTrue(NativeModelsConfigFormFields.usesCatalogProviderPicker)
+        XCTAssertEqual(NativeModelsConfigFormFields.providerTypeOptions, ["openai", "anthropic"])
         XCTAssertEqual(NativeModelsConfigFormFields.newProviderScalars, [
-            "type": "openai-chat",
-            "baseUrl": "",
+            "protocol": "openai",
+            "url": "",
             "apiKey": "",
+            "models": "{}",
         ])
         XCTAssertFalse(NativeModelsConfigFormFields.newProviderScalars.keys.contains("transformer"))
         XCTAssertFalse(NativeModelsConfigFormFields.newProviderScalars.keys.contains("headers"))
 
-        XCTAssertTrue(NativeModelsConfigFormFields.usesModelPoolDropdown)
+        XCTAssertFalse(NativeModelsConfigFormFields.usesModelPoolDropdown)
         XCTAssertFalse(NativeModelsConfigFormFields.usageAssignmentsLiveInModelSection)
         XCTAssertFalse(NativeModelsConfigFormFields.entryRowsExposeProviderPicker)
         XCTAssertFalse(NativeModelsConfigFormFields.entryRowsExposeModelNameField)
         XCTAssertEqual(NativeModelsConfigFormFields.assignmentPaths, [
-            "agents.main.model",
-            "agents.subagents.default",
+            "agent.model",
+            "agent.subagents.default",
             "memory.model",
-            "router.routes.default.model",
-            "router.routes.background.model",
-            "router.routes.think.model",
-            "router.routes.longContext.model",
-            "router.routes.webSearch.model",
-            "router.tokenSaver.judgeModel",
+            "router.scenarios.default",
+            "router.scenarios.background",
+            "router.scenarios.think",
+            "router.scenarios.longContext",
+            "router.scenarios.webSearch",
+            "router.tokenSaver.judge",
             "router.tokenSaver.tiers.simple.model",
             "router.tokenSaver.tiers.medium.model",
             "router.tokenSaver.tiers.complex.model",
@@ -571,29 +679,33 @@ final class ParityLogicTests: XCTestCase {
         ])
         XCTAssertEqual(NativeModelsConfigFormFields.newEntryScalars(firstProvider: "pilotdeck"), [
             "provider": "pilotdeck",
-            "name": "",
-            "contextWindow": "",
+            "model": "",
         ])
 
         XCTAssertEqual(NativeAgentConfigFormFields.visiblePaths, [
-            "agents.main.model",
-            "agents.subagents.default",
+            "agent.model",
+            "agent.subagents.default",
         ])
     }
 
     func testNativeRuntimeConfigFormFieldsMatchWebSettingsTab() {
-        XCTAssertTrue(NativeRuntimeConfigFormFields.visiblePaths.isEmpty)
-        XCTAssertEqual(NativeRuntimeConfigFormFields.textFields.map(\.path), [
-            "runtime.apiTimeoutMs",
-            "runtime.databasePath",
+        XCTAssertEqual(NativeRuntimeConfigFormFields.visiblePaths, [
+            "webui.runtime.workspacesRoot",
+            "gateway.runtimePaths.generalCwd",
+            "webui.runtime.apiTimeoutMs",
+            "webui.runtime.databasePath",
+            "webui.runtime.httpsProxy",
         ])
-        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.host"))
-        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.serverPort"))
-        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.vitePort"))
-        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.proxyPort"))
-        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.contextWindow"))
-        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("runtime.httpsProxy"))
-        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("gateway.runtimePaths.generalCwd"))
+        XCTAssertEqual(NativeRuntimeConfigFormFields.textFields.map(\.path), [
+            "webui.runtime.apiTimeoutMs",
+            "webui.runtime.databasePath",
+            "webui.runtime.httpsProxy",
+        ])
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("webui.runtime.host"))
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("webui.runtime.serverPort"))
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("webui.runtime.vitePort"))
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("webui.runtime.proxyPort"))
+        XCTAssertFalse(NativeRuntimeConfigFormFields.visiblePaths.contains("webui.runtime.contextWindow"))
     }
 
     func testNativeSearchConfigFormFieldsExposeWebSearchProviders() {
@@ -620,6 +732,7 @@ final class ParityLogicTests: XCTestCase {
             ]
         )
         XCTAssertEqual(NativeSearchConfigFormFields.providerOptions, ["glm", "tavily", "custom"])
+        XCTAssertTrue(NativeSearchConfigFormFields.exposesTestConnectionAction)
         XCTAssertEqual(Set(primaryFields.filter(\.isSecure).map(\.path)), ["tools.webSearch.apiKey"])
         XCTAssertTrue(customFields.filter(\.isSecure).isEmpty)
         XCTAssertEqual(primaryFields.map(\.label), [
@@ -669,12 +782,42 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(chinese.text(.endpointURL), "Endpoint URL")
     }
 
+    func testNativeSearchConnectionTesterBuildsProviderRequests() throws {
+        let glm = try NativeSearchConnectionTester.request(values: [
+            "tools.webSearch.provider": "glm",
+            "tools.webSearch.apiKey": "glm-key",
+        ], environment: [:], query: "hello")
+        XCTAssertEqual(glm.url?.absoluteString, "https://api.z.ai/api/paas/v4/web_search")
+        XCTAssertEqual(glm.httpMethod, "POST")
+        XCTAssertEqual(glm.value(forHTTPHeaderField: "Authorization"), "Bearer glm-key")
+
+        let tavily = try NativeSearchConnectionTester.request(values: [
+            "tools.webSearch.provider": "tavily",
+            "tools.webSearch.endpoint": "https://api.z.ai/api/paas/v4/web_search",
+            "tools.webSearch.apiKey": "tavily-key",
+        ], environment: [:], query: "hello")
+        XCTAssertEqual(tavily.url?.absoluteString, "https://api.tavily.com/search")
+        XCTAssertEqual(tavily.httpMethod, "POST")
+
+        let custom = try NativeSearchConnectionTester.request(values: [
+            "tools.webSearch.provider": "custom",
+            "tools.webSearch.endpoint": "https://search.example.test/api",
+            "tools.webSearch.customProvider.auth": "none",
+            "tools.webSearch.customProvider.method": "GET",
+            "tools.webSearch.customProvider.queryParam": "q",
+        ], environment: [:], query: "hello world")
+        XCTAssertEqual(custom.httpMethod, "GET")
+        XCTAssertEqual(custom.url?.query, "q=hello%20world")
+
+        XCTAssertThrowsError(try NativeSearchConnectionTester.request(values: [
+            "tools.webSearch.provider": "glm",
+        ], environment: [:]))
+    }
+
     func testNativeMemoryConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeMemoryConfigFormFields.visiblePaths, [
             "memory.enabled",
             "memory.model",
-            "memory.autoIndexIntervalMinutes",
-            "memory.autoDreamIntervalMinutes",
         ])
         XCTAssertEqual(NativeMemoryConfigFormFields.scheduleFields.map(\.path), [
             "memory.autoIndexIntervalMinutes",
@@ -692,46 +835,66 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(NativeAlwaysOnConfigFormFields.visiblePaths, [
             "alwaysOn.enabled",
             "alwaysOn.trigger.enabled",
+            "alwaysOn.trigger.preferChannel",
+            "alwaysOn.dormancy.enabled",
+            "alwaysOn.dormancy.debounceMs",
+            "alwaysOn.dormancy.ignoreGlobs",
+            "alwaysOn.workspace.gitLfs",
             "alwaysOn.trigger.tickIntervalMinutes",
             "alwaysOn.trigger.cooldownMinutes",
             "alwaysOn.trigger.dailyBudget",
+            "alwaysOn.trigger.heartbeatStaleSeconds",
+            "alwaysOn.trigger.recentUserMsgMinutes",
+            "alwaysOn.workspace.gitWorktreeBaseDir",
+            "alwaysOn.workspace.snapshotBaseDir",
+            "alwaysOn.workspace.snapshotMaxBytes",
+            "alwaysOn.execution.maxTurns",
+            "alwaysOn.execution.maxToolCalls",
+            "alwaysOn.execution.timeoutMinutes",
         ])
         XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.discovery.trigger.preferClient"))
-        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.dormancy.enabled"))
-        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.workspace.gitLfs"))
-        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.trigger.heartbeatStaleSeconds"))
-        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.trigger.recentUserMsgMinutes"))
-        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.trigger.preferChannel"))
-        XCTAssertFalse(NativeAlwaysOnConfigFormFields.visiblePaths.contains("alwaysOn.execution.maxTurns"))
     }
 
     func testNativeRouterAndGatewayConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeRouterConfigFormFields.visiblePaths, [
             "router.enabled",
-            "router.routes.default.model",
-            "router.routes.background.model",
+            "router.scenarios.default",
             "router.tokenSaver.enabled",
-            "router.tokenSaver.judgeModel",
+            "router.tokenSaver.judge",
+            "router.tokenSaver.defaultTier",
+            "router.tokenSaver.judgeTimeoutMs",
+            "router.tokenSaver.subagent.policy",
             "router.tokenSaver.tiers.simple.model",
             "router.tokenSaver.tiers.medium.model",
             "router.tokenSaver.tiers.complex.model",
             "router.tokenSaver.tiers.reasoning.model",
+            "router.tokenSaver.rules",
+            "router.zeroUsageRetry.enabled",
+            "router.zeroUsageRetry.maxAttempts",
+            "router.autoOrchestrate.enabled",
+            "router.autoOrchestrate.triggerTiers",
+            "router.autoOrchestrate.slimSystemPrompt",
+            "router.stats.enabled",
+            "router.fallback.default",
+            "router.fallback.background",
+            "router.tokenSaver.tiers.simple.description",
+            "router.tokenSaver.tiers.medium.description",
+            "router.tokenSaver.tiers.complex.description",
+            "router.tokenSaver.tiers.reasoning.description",
+            "router.stats.modelPricing.default.input",
+            "router.stats.modelPricing.default.output",
+            "router.stats.modelPricing.default.cacheRead",
         ])
         XCTAssertEqual(NativeRouterConfigFormFields.routeModelFields.map(\.path), [
-            "router.routes.default.model",
-            "router.routes.background.model",
+            "router.scenarios.default",
         ])
         XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.log"))
-        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.think.model"))
-        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.longContext.model"))
-        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.webSearch.model"))
-        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenSaver.defaultTier"))
-        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenSaver.rules"))
-        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.autoOrchestrate.mainAgentModel"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.scenarios.think"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.scenarios.longContext"))
+        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.scenarios.webSearch"))
         XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenStats.defaultCostPerMillion"))
-        XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.zeroUsageRetry.enabled"))
         XCTAssertFalse(NativeRouterConfigFormFields.visiblePaths.contains("router.transientRetry.enabled"))
-        XCTAssertTrue(NativeRouterConfigFormFields.visiblePaths.contains("router.routes.default.model"))
+        XCTAssertTrue(NativeRouterConfigFormFields.visiblePaths.contains("router.scenarios.default"))
         XCTAssertTrue(NativeRouterConfigFormFields.visiblePaths.contains("router.tokenSaver.enabled"))
 
         XCTAssertTrue(NativeGatewayConfigFormFields.visiblePaths.isEmpty)
@@ -2973,7 +3136,9 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertEqual(LocalizationService.english[.colorScheme], "Theme")
         XCTAssertEqual(LocalizationService.english[.colorSchemeSystem], "Follow System")
+        XCTAssertEqual(LocalizationService.english[.languageSystem], "Follow System")
         XCTAssertEqual(LocalizationService.chineseSimplified[.colorSchemeSystem], "系统跟随")
+        XCTAssertEqual(LocalizationService.chineseSimplified[.languageSystem], "系统跟随")
         XCTAssertEqual(LocalizationService.english[.colorSchemeDetail], "Follow the system appearance or choose a fixed theme.")
         XCTAssertEqual(LocalizationService.english[.displayLanguageDetail], "Choose your preferred language for the interface")
         XCTAssertEqual(LocalizationService.english[.toolDisplay], "Tool Display")
@@ -5270,6 +5435,37 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(updated.contains("runtime:"))
         XCTAssertTrue(updated.contains("  serverPort: 3002"))
         XCTAssertTrue(updated.contains("router:"))
+    }
+
+    func testYAMLScalarEditorRemovesWholeModelProviderSubtree() {
+        let yaml = """
+        model:
+          providers:
+            provider1:
+              protocol: openai
+              url: http://example.local/v1
+              apiKey: secret
+              models:
+                qwen3: {}
+            provider10:
+              protocol: openai
+              url: http://other.local/v1
+        model.providers.provider1.url: http://stale.local/v1
+        agent:
+          model: provider10/qwen3
+        """
+
+        let updated = YAMLScalarEditor.removeObject(
+            components: ["model", "providers", "provider1"],
+            in: yaml
+        )
+
+        XCTAssertFalse(updated.contains("provider1:"))
+        XCTAssertFalse(updated.contains("model.providers.provider1"))
+        XCTAssertFalse(updated.contains("http://example.local/v1"))
+        XCTAssertFalse(updated.contains("http://stale.local/v1"))
+        XCTAssertTrue(updated.contains("provider10"))
+        XCTAssertTrue(updated.contains("http://other.local/v1"))
     }
 
     func testAlwaysOnProjectConfigPatchMatchesWebTopLevelShape() {
