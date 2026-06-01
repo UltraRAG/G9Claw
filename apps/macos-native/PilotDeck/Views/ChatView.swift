@@ -24,10 +24,15 @@ struct ChatView: View {
                             ScrollView {
                                 VStack(alignment: .leading, spacing: 18) {
                                     ForEach(state.currentMessages) { message in
-                                        if message.id == tracedAssistantID {
-                                            ProcessRunHeader(activities: runHeaderActivities)
+                                        let headerActivities = runHeaderActivities(for: message)
+                                        if shouldShowRunHeader(for: message, activities: headerActivities) {
+                                            ProcessRunHeader(
+                                                activities: headerActivities,
+                                                startedAt: message.runStartedAt,
+                                                endedAt: message.runEndedAt
+                                            )
                                                 .environmentObject(state)
-                                                .id("process-run-header")
+                                                .id("process-run-header-\(message.id.uuidString)")
                                         }
                                         MessageRow(message: message)
                                             .id(message.id)
@@ -133,6 +138,19 @@ struct ChatView: View {
 
     private var runHeaderActivities: [AgentActivity] {
         AgentActivity.runHeaderActivities(state.currentActivities, anchoredTo: latestAssistantID?.uuidString)
+    }
+
+    private func runHeaderActivities(for message: ChatMessage) -> [AgentActivity] {
+        guard message.role == .assistant else { return [] }
+        return AgentActivity.runHeaderActivities(state.currentActivities, anchoredTo: message.id.uuidString)
+    }
+
+    private func shouldShowRunHeader(for message: ChatMessage, activities: [AgentActivity]) -> Bool {
+        guard message.role == .assistant else { return false }
+        if !activities.isEmpty { return true }
+        if message.runStartedAt != nil || message.runEndedAt != nil { return true }
+        return message.hasPersistedProcessBlocks
+            || message.hasAssistantTranscriptContent
     }
 
     private var isPinnedToBottom: Bool {
@@ -1320,16 +1338,14 @@ private struct MessageRow: View {
     }
 
     private var assistantRow: some View {
-        HStack(alignment: .top, spacing: 8) {
+        let presentation = assistantPresentation
+        return HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(assistantSegments.enumerated()), id: \.offset) { _, segment in
-                    assistantSegmentView(segment)
+                if !presentation.processSegments.isEmpty {
+                    assistantProcessDisclosure(segments: presentation.processSegments)
                 }
-                if message.isStreaming && message.plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(DesignTokens.neutral400)
-                        .frame(width: 8, height: 16)
-                        .opacity(0.8)
+                ForEach(Array(presentation.visibleSegments.enumerated()), id: \.offset) { _, segment in
+                    assistantSegmentView(segment)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1354,6 +1370,62 @@ private struct MessageRow: View {
         .foregroundStyle(DesignTokens.text)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var assistantPresentation: AssistantMessagePresentation {
+        let segments = assistantSegments
+        guard !message.isStreaming,
+              let finalTextIndex = segments.indices.last(where: { segments[$0].isTextSegment }),
+              finalTextIndex > segments.startIndex else {
+            return AssistantMessagePresentation(processSegments: [], visibleSegments: segments)
+        }
+        let processSegments = Array(segments[..<finalTextIndex])
+        guard processSegments.contains(where: \.isProcessSegment) else {
+            return AssistantMessagePresentation(processSegments: [], visibleSegments: segments)
+        }
+        return AssistantMessagePresentation(
+            processSegments: processSegments,
+            visibleSegments: Array(segments[finalTextIndex...])
+        )
+    }
+
+    private var assistantProcessExpansionKey: String {
+        "assistant-process:\(message.sessionId):\(message.id.uuidString)"
+    }
+
+    @ViewBuilder
+    private func assistantProcessDisclosure(segments: [AssistantBlockSegment]) -> some View {
+        let expanded = state.isAssistantProcessExpanded(assistantProcessExpansionKey)
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    state.toggleAssistantProcessExpanded(assistantProcessExpansionKey)
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(CodexProcessStyle.detail)
+                        .frame(width: 16, height: 16)
+                    Text(localized("执行过程", "Process"))
+                        .font(CodexProcessStyle.rowFont)
+                        .foregroundStyle(CodexProcessStyle.detailStrong)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                        assistantSegmentView(segment)
+                    }
+                }
+                .padding(.leading, 24)
+                .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .topLeading)))
+            }
+        }
     }
 
     private func copyAssistantMessage() {
@@ -1449,6 +1521,17 @@ private struct MessageRow: View {
     private func isPureMarkdownSeparator(_ text: String) -> Bool {
         let compact = text.replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: " ", with: "")
         return compact == "---" || compact == "----"
+    }
+
+    private func localized(_ zh: String, _ en: String) -> String {
+        switch state.settings.language {
+        case .chineseSimplified:
+            return zh
+        case .english:
+            return en
+        case .system:
+            return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en
+        }
     }
 
     private var delegatedRow: some View {
@@ -1549,6 +1632,56 @@ private enum AssistantBlockSegment {
     case tool(ToolCall, ToolResult?, TodoListDiff?)
     case toolGroup([(ToolCall, ToolResult?)])
     case orphanToolResult(ToolResult)
+}
+
+private struct AssistantMessagePresentation {
+    var processSegments: [AssistantBlockSegment]
+    var visibleSegments: [AssistantBlockSegment]
+}
+
+extension ChatMessage {
+    var hasPersistedProcessBlocks: Bool {
+        blocks.contains { block in
+            switch block {
+            case .reasoning:
+                return true
+            case .toolCall(let call):
+                let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+                return canonicalName != "SwitchMode" && canonicalName != "AskQuestion"
+            case .toolResult:
+                return true
+            case .text, .attachment:
+                return false
+            }
+        }
+    }
+
+    var hasAssistantTranscriptContent: Bool {
+        blocks.contains { block in
+            switch block {
+            case .text(let text), .reasoning(let text):
+                return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .toolCall(let call):
+                let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+                return canonicalName != "SwitchMode" && canonicalName != "AskQuestion"
+            case .toolResult(let result):
+                return !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .attachment:
+                return true
+            }
+        }
+    }
+}
+
+private extension AssistantBlockSegment {
+    var isTextSegment: Bool {
+        if case .text = self { return true }
+        return false
+    }
+
+    var isProcessSegment: Bool {
+        !isTextSegment
+    }
 }
 
 private struct ReasoningDisclosure: View {
@@ -2823,7 +2956,9 @@ private struct InlineProcessToolGroupRow: View {
     var items: [(ToolCall, ToolResult?)]
 
     private var isRunning: Bool { items.contains { $0.1 == nil } }
-    private var hasFailure: Bool { items.contains { $0.1?.isError == true } }
+    private var allFailed: Bool {
+        !items.isEmpty && items.allSatisfy { $0.1?.isError == true }
+    }
     private var expansionKey: String {
         "tool-group:" + items.map { $0.0.id }.joined(separator: ",")
     }
@@ -2844,7 +2979,7 @@ private struct InlineProcessToolGroupRow: View {
                     } else {
                         Text(summaryText)
                             .font(CodexProcessStyle.rowFont)
-                            .foregroundStyle(hasFailure ? DesignTokens.danger.opacity(0.78) : CodexProcessStyle.title)
+                            .foregroundStyle(allFailed ? DesignTokens.danger.opacity(0.78) : CodexProcessStyle.title)
                             .lineLimit(1)
                     }
                     if isRunning {
@@ -2889,12 +3024,12 @@ private struct InlineProcessToolGroupRow: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .topLeading)))
             }
         }
-        .padding(.vertical, hasFailure ? 4 : 5)
+        .padding(.vertical, allFailed ? 4 : 5)
     }
 
     private var groupState: AgentActivityState {
         if isRunning { return .running }
-        if hasFailure { return .failed }
+        if allFailed { return .failed }
         return .completed
     }
 
@@ -4955,6 +5090,8 @@ private struct PlanTraceContentView: View {
 private struct ProcessRunHeader: View {
     @EnvironmentObject private var state: AppState
     var activities: [AgentActivity]
+    var startedAt: Date?
+    var endedAt: Date?
     @State private var now = Date()
 
     private var visibleActivities: [AgentActivity] {
@@ -4981,18 +5118,28 @@ private struct ProcessRunHeader: View {
     }
 
     private var runStartedAt: Date {
-        visibleActivities.map(\.createdAt).min() ?? Date()
+        visibleActivities.map(\.createdAt).min() ?? startedAt ?? Date()
     }
 
     private var runEndedAt: Date {
         if hasRunningActivity {
             return now
         }
-        return visibleActivities.map(\.updatedAt).max() ?? now
+        return visibleActivities.map(\.updatedAt).max() ?? endedAt ?? now
+    }
+
+    private var measuredDuration: TimeInterval? {
+        if !visibleActivities.isEmpty || (startedAt != nil && endedAt != nil) {
+            return max(0, runEndedAt.timeIntervalSince(runStartedAt))
+        }
+        return nil
     }
 
     private var headerText: String {
-        let duration = formatDuration(max(0, runEndedAt.timeIntervalSince(runStartedAt)))
+        guard let measuredDuration else {
+            return isChinese ? "已处理" : "Processed"
+        }
+        let duration = formatDuration(measuredDuration)
         return isChinese ? "已处理 \(duration)" : "Processed \(duration)"
     }
 

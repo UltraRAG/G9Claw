@@ -110,7 +110,7 @@ final class MemoryService {
 
     init(
         memoryRoot: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pd", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("memory", isDirectory: true)
     ) {
         self.memoryRoot = memoryRoot
@@ -141,10 +141,12 @@ final class MemoryService {
     func loadWorkspaceRecords(projectRoot: String?, projectName: String?) {
         guard let projectRoot else { return }
         let projectURL = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
+        let projectLocalMemoryRoot = projectLocalWorkspaceMemoryRoot(for: projectURL.path)
         let legacyMemoryRoot = legacyWorkspaceMemoryRoot(for: projectURL.path)
         let nativeWorkspaceMemoryRoot = nativeWorkspaceMemoryRoot(for: projectURL.path)
         let globalMemoryRoot = globalMemoryRoot()
         let roots = uniqueMemoryRoots([
+            (root: projectLocalMemoryRoot, relativeRoot: projectURL, projectName: projectName, exposedPrefix: ""),
             (root: legacyMemoryRoot, relativeRoot: projectURL, projectName: projectName, exposedPrefix: ""),
             (root: nativeWorkspaceMemoryRoot, relativeRoot: nativeWorkspaceMemoryRoot, projectName: projectName, exposedPrefix: ""),
             (root: globalMemoryRoot, relativeRoot: globalMemoryRoot, projectName: nil, exposedPrefix: "global/")
@@ -191,7 +193,7 @@ final class MemoryService {
         records = merge(loaded, into: records)
     }
 
-    static func pilotdeckWorkspaceHash(for projectRoot: String) -> String {
+    static func pilotDeckWorkspaceHash(for projectRoot: String) -> String {
         let digest = Insecure.SHA1.hash(data: Data(projectRoot.utf8))
         return digest.map { String(format: "%02x", $0) }.joined().prefix(10).description
     }
@@ -1015,10 +1017,10 @@ final class MemoryService {
         decoder.dateDecodingStrategy = .iso8601
         let envelope = try? decoder.decode(MemoryExportEnvelope.self, from: data)
         switch envelope?.formatVersion {
-        case Self.memoryExportFormatVersion:
+        case Self.memoryExportFormatVersion, Self.legacyMemoryExportFormatVersion:
             let bundle = try decoder.decode(CurrentProjectMemoryExportBundle.self, from: data)
             try importCurrentProjectBundle(bundle, projectName: projectName, projectRoot: projectRoot)
-        case Self.allProjectsMemoryExportFormatVersion:
+        case Self.allProjectsMemoryExportFormatVersion, Self.legacyAllProjectsMemoryExportFormatVersion:
             guard projectName == nil else {
                 throw NSError(domain: "MemoryService", code: 400, userInfo: [NSLocalizedDescriptionKey: "All-project memory bundles cannot be imported into a single project."])
             }
@@ -1311,7 +1313,7 @@ final class MemoryService {
         let userRecords = records.filter { isGlobalMemoryRecord($0) || $0.type == .user }
         let projectRecords = records.filter { !(isGlobalMemoryRecord($0) || $0.type == .user) }
         var lines: [String] = [
-            "## ClawXMemory Recall",
+            "## PilotDeck Memory Recall",
             "- route: \(route)",
             "- query: \(String(query.prefix(240)))"
         ]
@@ -2449,8 +2451,10 @@ final class MemoryService {
         return String(content[endRange.upperBound...])
     }
 
-    private static let memoryExportFormatVersion = "clawxmemory-memory-snapshot.v4"
-    private static let allProjectsMemoryExportFormatVersion = "clawxmemory-memory-snapshot.all-projects.v1"
+    private static let memoryExportFormatVersion = "pilotdeck-memory-snapshot.v1"
+    private static let allProjectsMemoryExportFormatVersion = "pilotdeck-memory-snapshot.all-projects.v1"
+    private static let legacyMemoryExportFormatVersion = "clawxmemory-memory-snapshot.v4"
+    private static let legacyAllProjectsMemoryExportFormatVersion = "clawxmemory-memory-snapshot.all-projects.v1"
 
     private func currentProjectExportBundle(projectName: String, projectRoot: String?) throws -> CurrentProjectMemoryExportBundle {
         let files = try currentProjectSnapshotFiles(projectName: projectName, projectRoot: projectRoot)
@@ -2606,13 +2610,19 @@ final class MemoryService {
         let projectURL = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
         return memoryRoot
             .appendingPathComponent("workspaces", isDirectory: true)
-            .appendingPathComponent(Self.pdWorkspaceHash(for: projectURL.path), isDirectory: true)
+            .appendingPathComponent(Self.pilotDeckWorkspaceHash(for: projectURL.path), isDirectory: true)
+            .appendingPathComponent("memory", isDirectory: true)
+    }
+
+    private func projectLocalWorkspaceMemoryRoot(for projectRoot: String) -> URL {
+        URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("memory", isDirectory: true)
     }
 
     private func legacyWorkspaceMemoryRoot(for projectRoot: String) -> URL {
         URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
-            .appendingPathComponent(".pd", isDirectory: true)
+            .appendingPathComponent(".g9claw", isDirectory: true)
             .appendingPathComponent("memory", isDirectory: true)
     }
 
@@ -3101,7 +3111,7 @@ final class MemoryService {
     }
 
     private static func indexableFiles(in root: URL) -> [URL] {
-        let skipped = Set([".git", "node_modules", "dist", "build", ".pd", ".pilotdeck", ".next", ".turbo"])
+        let skipped = Set([".git", "node_modules", "dist", "build", ".pilotdeck", ".g9claw", ".claude", ".next", ".turbo"])
         let allowedExtensions = Set(["md", "txt", "swift", "js", "ts", "tsx", "jsx", "json", "yaml", "yml", "py", "rb", "go", "rs", "html", "css"])
         guard let enumerator = FileManager.default.enumerator(
             at: root,
@@ -3643,13 +3653,13 @@ final class SkillsService: @unchecked Sendable {
 
     static func userSkillsRoot() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pd", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("skills", isDirectory: true)
     }
 
     static func projectSkillsRoot(_ projectPath: String) -> URL {
         URL(fileURLWithPath: projectPath)
-            .appendingPathComponent(".pd", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("skills", isDirectory: true)
     }
 
@@ -4780,7 +4790,7 @@ final class AlwaysOnService: @unchecked Sendable {
     ) -> String {
         let normalizedLanguage = language == "zh-CN" ? "zh-CN" : "en"
         let contextJSON = discoveryContextJSON(context)
-        let projectStorePath = pilotdeckProjectStorePath(projectName: projectName, projectRoot: projectRoot)
+        let projectStorePath = pilotDeckProjectStorePath(projectName: projectName, projectRoot: projectRoot)
         if normalizedLanguage == "zh-CN" {
             return [
                 "Always-On 主动发现规划，项目为“\(displayName)”。",
@@ -5263,7 +5273,7 @@ final class AlwaysOnService: @unchecked Sendable {
                     "summary": run.title,
                     "lastActivity": lastActivity,
                     "taskId": job.id,
-                    "outputFile": ".pd/always-on/runs/\(run.id).log",
+                    "outputFile": ".pilotdeck/always-on/runs/\(run.id).log",
                     "parentSessionId": run.parentSessionId ?? "",
                     "relativeTranscriptPath": run.relativeTranscriptPath ?? "",
                     "transcriptKey": job.transcriptKey ?? "",
@@ -5879,7 +5889,7 @@ final class AlwaysOnService: @unchecked Sendable {
 
     private func alwaysOnRoot(_ projectRoot: String) -> URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pd", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("always-on", isDirectory: true)
             .appendingPathComponent("projects", isDirectory: true)
             .appendingPathComponent(Self.projectStorageID(projectRoot), isDirectory: true)
@@ -5887,18 +5897,29 @@ final class AlwaysOnService: @unchecked Sendable {
 
     private func projectLocalAlwaysOnRoot(_ projectRoot: String) -> URL {
         URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
-            .appendingPathComponent(".pd", isDirectory: true)
-            .appendingPathComponent("always-on", isDirectory: true)
-    }
-
-    private func legacyAlwaysOnRoot(_ projectRoot: String) -> URL {
-        URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
             .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("always-on", isDirectory: true)
     }
 
+    private func legacyProjectLocalAlwaysOnRoot(_ projectRoot: String) -> URL {
+        URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
+            .appendingPathComponent(".g9claw", isDirectory: true)
+            .appendingPathComponent("always-on", isDirectory: true)
+    }
+
+    private func legacyClaudeAlwaysOnRoot(_ projectRoot: String) -> URL {
+        URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("always-on", isDirectory: true)
+    }
+
     private func alwaysOnRoots(_ projectRoot: String) -> [URL] {
-        [alwaysOnRoot(projectRoot), projectLocalAlwaysOnRoot(projectRoot), legacyAlwaysOnRoot(projectRoot)]
+        [
+            alwaysOnRoot(projectRoot),
+            projectLocalAlwaysOnRoot(projectRoot),
+            legacyProjectLocalAlwaysOnRoot(projectRoot),
+            legacyClaudeAlwaysOnRoot(projectRoot),
+        ]
     }
 
     private func existingAlwaysOnFile(_ projectRoot: String, _ fileName: String) -> URL? {
@@ -5992,7 +6013,7 @@ final class AlwaysOnService: @unchecked Sendable {
             includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return false }
-        let ignoredNames: Set<String> = [".git", "node_modules", ".pd", ".pilotdeck", ".DS_Store"]
+        let ignoredNames: Set<String> = [".git", "node_modules", ".pilotdeck", ".g9claw", ".claude", ".DS_Store"]
         for case let url as URL in enumerator {
             if ignoredNames.contains(url.lastPathComponent) {
                 enumerator.skipDescendants()
@@ -6063,13 +6084,13 @@ final class AlwaysOnService: @unchecked Sendable {
             return URL(fileURLWithPath: NSString(string: configuredPath).expandingTildeInPath)
         }
         return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pd", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("always-on", isDirectory: true)
             .appendingPathComponent(fallbackComponent, isDirectory: true)
     }
 
     private func copyDirectorySnapshot(from source: URL, to destination: URL, maxBytes: Int) throws {
-        let ignoredNames: Set<String> = [".git", "node_modules", ".pd", ".pilotdeck", ".DS_Store"]
+        let ignoredNames: Set<String> = [".git", "node_modules", ".pilotdeck", ".g9claw", ".claude", ".DS_Store"]
         var copiedBytes = 0
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
@@ -6118,7 +6139,7 @@ final class AlwaysOnService: @unchecked Sendable {
         for case let url as URL in enumerator {
             let relative = url.path.replacingOccurrences(of: source.path + "/", with: "")
             guard !relative.isEmpty else { continue }
-            if relative == ".git" || relative.hasPrefix(".git/") || relative == ".pd" || relative.hasPrefix(".pd/") {
+            if relative == ".git" || relative.hasPrefix(".git/") || relative == ".pilotdeck" || relative.hasPrefix(".pilotdeck/") || relative == ".g9claw" || relative.hasPrefix(".g9claw/") {
                 enumerator.skipDescendants()
                 continue
             }
@@ -6224,13 +6245,17 @@ final class AlwaysOnService: @unchecked Sendable {
     private func cronJobSourceURLs(_ projectRoot: String) -> [(url: URL, durableDefault: Bool?)] {
         let root = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
         return [
-            (root.appendingPathComponent(".pd").appendingPathComponent("scheduled_tasks.json"), true),
-            (root.appendingPathComponent(".pd").appendingPathComponent("session_scheduled_tasks.json"), false),
-            (root.appendingPathComponent(".pd").appendingPathComponent("cron-jobs.json"), nil),
-            (root.appendingPathComponent(".pd").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
             (root.appendingPathComponent(".pilotdeck").appendingPathComponent("scheduled_tasks.json"), true),
             (root.appendingPathComponent(".pilotdeck").appendingPathComponent("session_scheduled_tasks.json"), false),
+            (root.appendingPathComponent(".pilotdeck").appendingPathComponent("cron-jobs.json"), nil),
             (root.appendingPathComponent(".pilotdeck").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
+            (root.appendingPathComponent(".g9claw").appendingPathComponent("scheduled_tasks.json"), true),
+            (root.appendingPathComponent(".g9claw").appendingPathComponent("session_scheduled_tasks.json"), false),
+            (root.appendingPathComponent(".g9claw").appendingPathComponent("cron-jobs.json"), nil),
+            (root.appendingPathComponent(".g9claw").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
+            (root.appendingPathComponent(".claude").appendingPathComponent("scheduled_tasks.json"), true),
+            (root.appendingPathComponent(".claude").appendingPathComponent("session_scheduled_tasks.json"), false),
+            (root.appendingPathComponent(".claude").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
         ]
     }
 
@@ -6288,15 +6313,15 @@ final class AlwaysOnService: @unchecked Sendable {
         return text
     }
 
-    private func pilotdeckProjectStorePath(projectName: String, projectRoot: String) -> String {
+    private func pilotDeckProjectStorePath(projectName: String, projectRoot: String) -> String {
         let root = projectRoot.trimmingCharacters(in: .whitespacesAndNewlines)
         if let home = firstMatch(pattern: #"^(\/Users\/[^\/]+|\/home\/[^\/]+)"#, in: root) {
-            return "\(home)/.pd/projects/\(projectName)"
+            return "\(home)/.pilotdeck/projects/\(projectName)"
         }
         if let windowsHome = firstMatch(pattern: #"^([A-Za-z]:\\Users\\[^\\]+)"#, in: root) {
-            return "\(windowsHome)\\.pd\\projects\\\(projectName)"
+            return "\(windowsHome)\\.pilotdeck\\projects\\\(projectName)"
         }
-        return "~/.pd/projects/\(projectName)"
+        return "~/.pilotdeck/projects/\(projectName)"
     }
 
     private func firstMatch(pattern: String, in value: String) -> String? {
@@ -6514,7 +6539,7 @@ final class AlwaysOnService: @unchecked Sendable {
             summary: run.title,
             lastActivity: run.startedAt,
             taskId: run.sourceId,
-            outputFile: ".pd/always-on/runs/\(run.id).log",
+            outputFile: ".pilotdeck/always-on/runs/\(run.id).log",
             parentSessionId: run.parentSessionId,
             relativeTranscriptPath: run.relativeTranscriptPath,
             transcriptKey: run.transcriptKey

@@ -9,6 +9,28 @@ enum SessionProvider: String, CaseIterable, Codable, Identifiable {
 
     var id: String { rawValue }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "pilotdeck", "g9claw", "9gclaw", "edgeclaw":
+            self = .pilotDeck
+        default:
+            guard let provider = SessionProvider(rawValue: rawValue) else {
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "Unknown session provider: \(rawValue)"
+                )
+            }
+            self = provider
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
     var displayName: String {
         switch self {
         case .pilotDeck: "PilotDeck"
@@ -412,6 +434,8 @@ struct ChatMessage: Identifiable, Hashable, Codable {
     var createdAt: Date
     var isStreaming: Bool
     var tokenBudget: TokenBudget?
+    var runStartedAt: Date? = nil
+    var runEndedAt: Date? = nil
 
     var plainText: String {
         blocks.compactMap {

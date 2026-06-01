@@ -11,6 +11,10 @@ PACKAGE_DIR="$DIST_DIR/PilotDeck-mac-local"
 APP_NAME="PilotDeck.app"
 ZIP_NAME="PilotDeck-mac-local.zip"
 
+if [[ -z "${DEVELOPER_DIR:-}" && -d "/Applications/Xcode.app/Contents/Developer" ]]; then
+  export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+fi
+
 rm -rf "$DIST_DIR"
 mkdir -p "$PACKAGE_DIR"
 
@@ -36,7 +40,7 @@ ditto "$BUILT_APP" "$STAGED_APP"
 # Ad-hoc signing does not require a paid certificate or Keychain password. It is
 # enough for local sharing builds; public distribution still needs Developer ID
 # signing and notarization.
-codesign --force --deep --sign - "$STAGED_APP"
+codesign --force --deep --options runtime --sign - "$STAGED_APP"
 xattr -cr "$STAGED_APP"
 
 cat > "$PACKAGE_DIR/INSTALL.txt" <<'EOF'

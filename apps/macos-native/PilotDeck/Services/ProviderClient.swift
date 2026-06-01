@@ -2210,7 +2210,7 @@ enum ProviderClientError: Error, LocalizedError {
         switch self {
         case .missingBaseURL: "Provider base URL is not configured."
         case .missingModel: "Provider model is not configured."
-        case .missingAPIKey: "Provider API key is not configured. Add it in Settings or ~/.pd/config.yaml."
+        case .missingAPIKey: "Provider API key is not configured. Add it in Settings or ~/.pilotdeck/config.yaml."
         case .invalidURL(let value): "Provider base URL is invalid: \(value)"
         case .httpError(let statusCode, let body):
             if body.isEmpty {
@@ -3690,7 +3690,7 @@ struct NativeAgentRuntime: Sendable {
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorAppTransportSecurityRequiresSecureConnection {
             return ProviderClientError.transport(
-                "App Transport Security blocked the HTTP provider request. Rebuild and launch the latest PilotDeck app bundle so NSAppTransportSecurity is included."
+                "App Transport Security blocked the HTTP provider request. Remote HTTP endpoints require a PilotDeck build that explicitly allows user-configured insecure provider URLs, or the provider must be served over HTTPS."
             )
         }
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
@@ -4819,13 +4819,13 @@ enum SkillRuntimeService {
 
     private static func userSkillsRoot() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pd", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("skills", isDirectory: true)
     }
 
     private static func projectSkillsRoot(_ workspacePath: String) -> URL {
         URL(fileURLWithPath: NSString(string: workspacePath).expandingTildeInPath)
-            .appendingPathComponent(".pd", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("skills", isDirectory: true)
     }
 

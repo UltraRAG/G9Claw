@@ -7,6 +7,7 @@ struct PilotDeckApp: App {
 
     init() {
         AppLifecycleDiagnostics.install()
+        MenuBarSanitizer.install()
     }
 
     var body: some Scene {
@@ -15,9 +16,22 @@ struct PilotDeckApp: App {
                 .environmentObject(state)
                 .frame(minWidth: 1120, minHeight: 720)
                 .background(WindowChromeConfigurator())
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    state.shutdownForTermination()
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About PilotDeck") {
+                    NSApp.orderFrontStandardAboutPanel(options: [
+                        .applicationName: "PilotDeck",
+                        .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+                        .version: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+                    ])
+                }
+            }
+
             CommandGroup(replacing: .newItem) {
                 Button(state.t(.newSession)) {
                     state.startNewSession()
@@ -25,15 +39,11 @@ struct PilotDeckApp: App {
                 .keyboardShortcut("n", modifiers: [.command])
             }
 
-            CommandGroup(replacing: .appSettings) {
-                Button(state.t(.settings)) {
-                    state.openSettings(.appearance)
-                    SettingsWindowPresenter.openAndBringToFront()
-                }
-                .keyboardShortcut(",", modifiers: [.command])
-            }
+            CommandGroup(replacing: .saveItem) {}
+            CommandGroup(replacing: .importExport) {}
+            CommandGroup(replacing: .printItem) {}
 
-            CommandMenu("PilotDeck") {
+            CommandGroup(after: .newItem) {
                 Button(state.t(.refreshProjects)) {
                     Task { await state.refreshProjects() }
                 }
@@ -43,7 +53,10 @@ struct PilotDeckApp: App {
                     state.abortActiveRun()
                 }
                 .keyboardShortcut(".", modifiers: [.command])
+                .disabled(!state.isCurrentSessionStreaming)
             }
+
+            CommandGroup(replacing: .help) {}
         }
 
         Settings {
@@ -51,6 +64,117 @@ struct PilotDeckApp: App {
                 .environmentObject(state)
                 .preferredColorScheme(state.settings.colorScheme.swiftUIColorScheme)
                 .frame(width: 920, height: 640)
+        }
+    }
+}
+
+@MainActor
+private enum MenuBarSanitizer {
+    private static var installed = false
+    private static var observers: [NSObjectProtocol] = []
+    private static let removedMenuTitles: Set<String> = [
+        "Help",
+        "帮助",
+        "Format",
+        "格式",
+        "View",
+        "显示",
+    ]
+    private static let fileMenuTitles: Set<String> = [
+        "File",
+        "文件",
+    ]
+
+    static func install() {
+        guard !installed else { return }
+        installed = true
+        let notificationNames: [Notification.Name] = [
+            NSApplication.didFinishLaunchingNotification,
+            NSApplication.didBecomeActiveNotification,
+            NSApplication.didUpdateNotification,
+            NSMenu.didAddItemNotification,
+            NSMenu.didBeginTrackingNotification,
+            NSMenu.didChangeItemNotification,
+        ]
+        observers = notificationNames.map { name in
+            NotificationCenter.default.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { _ in
+                Task { @MainActor in
+                    prune()
+                    pruneSoon()
+                }
+            }
+        }
+        pruneSoon()
+    }
+
+    static func pruneSoon() {
+        DispatchQueue.main.async {
+            prune()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            prune()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            prune()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            prune()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+            prune()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) {
+            prune()
+        }
+    }
+
+    private static func prune() {
+        guard let menu = NSApp.mainMenu else { return }
+        for item in menu.items where removedMenuTitles.contains(item.title) {
+            menu.removeItem(item)
+        }
+        for item in menu.items {
+            if let submenu = item.submenu {
+                pruneSeparators(in: submenu)
+                if fileMenuTitles.contains(item.title) {
+                    pruneFileMenu(submenu)
+                }
+            }
+        }
+    }
+
+    private static func pruneSeparators(in menu: NSMenu) {
+        while let first = menu.items.first, isPrunableSeparator(first) {
+            menu.removeItem(first)
+        }
+
+        while let last = menu.items.last, isPrunableSeparator(last) {
+            menu.removeItem(last)
+        }
+
+        var index = 1
+        while index < menu.items.count {
+            let previous = menu.items[index - 1]
+            let current = menu.items[index]
+            if isPrunableSeparator(previous), isPrunableSeparator(current) {
+                menu.removeItem(at: index)
+            } else {
+                index += 1
+            }
+        }
+    }
+
+    private static func isPrunableSeparator(_ item: NSMenuItem) -> Bool {
+        item.isSeparatorItem || item.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func pruneFileMenu(_ menu: NSMenu) {
+        while menu.items.count > 3 {
+            menu.removeItem(at: 3)
         }
     }
 }
@@ -108,6 +232,7 @@ struct SettingsWindowConfigurator: NSViewRepresentable {
 @MainActor
 private enum AppLifecycleDiagnostics {
     private static var installed = false
+    private static var terminationObserver: NSObjectProtocol?
 
     static func install() {
         guard !installed else { return }
@@ -118,12 +243,18 @@ private enum AppLifecycleDiagnostics {
         AppLog.write(
             "launch pid=\(process.processIdentifier) bundle=\(Bundle.main.bundleIdentifier ?? "unknown") path=\(Bundle.main.bundlePath) xcode=\(xcodeFlag)"
         )
-        NotificationCenter.default.addObserver(
+        terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
         ) { _ in
-            AppLog.write("willTerminate pid=\(ProcessInfo.processInfo.processIdentifier)")
+            Task { @MainActor in
+                AppLog.write("willTerminate pid=\(ProcessInfo.processInfo.processIdentifier)")
+                if let observer = terminationObserver {
+                    NotificationCenter.default.removeObserver(observer)
+                    terminationObserver = nil
+                }
+            }
         }
     }
 }
@@ -155,6 +286,7 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
         window.hasShadow = true
         window.contentView?.wantsLayer = true
         window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        MenuBarSanitizer.pruneSoon()
         alignTrafficLightButtons(in: window)
     }
 

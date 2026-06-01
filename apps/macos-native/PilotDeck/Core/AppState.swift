@@ -34,6 +34,7 @@ final class AppState: ObservableObject {
     @Published var toolRefreshRevision = 0
     @Published var streamRenderRevision = 0
     @Published var isDraftSessionVisible = false
+    @Published var expandedAssistantProcessIDs: Set<String> = []
     @Published var expandedToolRowIDs: Set<String> = []
     @Published var collapsedToolRowIDs: Set<String> = []
     @Published var tokenBudgetBySession: [String: TokenBudget] = [:]
@@ -292,6 +293,18 @@ final class AppState: ObservableObject {
         )
     }
 
+    func isAssistantProcessExpanded(_ id: String) -> Bool {
+        expandedAssistantProcessIDs.contains(id)
+    }
+
+    func toggleAssistantProcessExpanded(_ id: String) {
+        if expandedAssistantProcessIDs.contains(id) {
+            expandedAssistantProcessIDs.remove(id)
+        } else {
+            expandedAssistantProcessIDs.insert(id)
+        }
+    }
+
     private func updateUIPreferences(_ update: (inout NativeUIPreferences) -> Void) {
         var preferences = uiPreferences
         update(&preferences)
@@ -425,6 +438,7 @@ final class AppState: ObservableObject {
             userBlocks.append(.text("Attached files"))
         }
         let assistantID = UUID()
+        let runStartedAt = Date()
         assistantSessionByID[assistantID] = sessionID
         let userMessage = ChatMessage(
             id: UUID(),
@@ -438,7 +452,9 @@ final class AppState: ObservableObject {
         )
         append(userMessage)
         touchSessionConversation(sessionID)
-        activitiesBySession[sessionID] = [
+        var activities = activitiesBySession[sessionID] ?? []
+        activities.removeAll { $0.anchorBlockID == assistantID.uuidString }
+        activities.append(
             AgentActivity(
                 id: "run-\(assistantID.uuidString)",
                 sessionId: sessionID,
@@ -446,12 +462,13 @@ final class AppState: ObservableObject {
                 detail: t(.openingRemoteModelStream),
                 phase: .status,
                 state: .running,
-                createdAt: Date(),
-                updatedAt: Date(),
+                createdAt: runStartedAt,
+                updatedAt: runStartedAt,
                 anchorBlockID: assistantID.uuidString,
                 sequence: nextActivitySequence()
             )
-        ]
+        )
+        activitiesBySession[sessionID] = activities
 
         let assistantMessage = ChatMessage(
             id: assistantID,
@@ -459,9 +476,10 @@ final class AppState: ObservableObject {
             provider: .pilotDeck,
             role: .assistant,
             blocks: [.text("")],
-            createdAt: Date(),
+            createdAt: runStartedAt,
             isStreaming: true,
-            tokenBudget: nil
+            tokenBudget: nil,
+            runStartedAt: runStartedAt
         )
         append(assistantMessage)
         markSession(sessionID, state: .processing)
@@ -845,6 +863,24 @@ final class AppState: ObservableObject {
         statusLine = t(.stopGeneration)
     }
 
+    func shutdownForTermination() {
+        activeAgentTask?.cancel()
+        activeAgentTask = nil
+        flushAllPendingAssistantDeltas()
+        assistantDeltaFlushTasks.values.forEach { $0.cancel() }
+        assistantDeltaFlushTasks.removeAll()
+        memoryAutomationTask?.cancel()
+        memoryAutomationTask = nil
+        alwaysOnBackgroundTasks.values.forEach { $0.cancel() }
+        alwaysOnBackgroundTasks.removeAll()
+        alwaysOnBackgroundRunTokens.removeAll()
+        activeRunToken = nil
+        resolveAllPendingPermissions(decision: .deny)
+        Task {
+            await alwaysOnManager.stop()
+        }
+    }
+
     private func finishCurrentRunAsSuperseded() {
         guard activeRunToken != nil || activeAgentTask != nil || isCurrentSessionStreaming else { return }
         activeAgentTask?.cancel()
@@ -1053,8 +1089,8 @@ final class AppState: ObservableObject {
             isGeneral: context.isGeneral
         )
         let config = alwaysOnConfigSnapshot()
-        Task { @MainActor in
-            await runAlwaysOnDiscovery(project: project, config: config, trigger: "manual")
+        launchAlwaysOnBackgroundTask(label: "manual-discovery-\(UUID().uuidString)") { [weak self] in
+            await self?.runAlwaysOnDiscovery(project: project, config: config, trigger: "manual")
         }
     }
 
@@ -1067,8 +1103,8 @@ final class AppState: ObservableObject {
             rootPath: context.rootPath,
             isGeneral: context.isGeneral
         )
-        Task { @MainActor in
-            await runAlwaysOnPlanInBackground(plan: plan, project: project, config: config)
+        launchAlwaysOnBackgroundTask(label: "manual-plan-\(plan.id)-\(UUID().uuidString)") { [weak self] in
+            await self?.runAlwaysOnPlanInBackground(plan: plan, project: project, config: config)
         }
     }
 
@@ -1081,9 +1117,19 @@ final class AppState: ObservableObject {
             rootPath: context.rootPath,
             isGeneral: context.isGeneral
         )
-        Task { @MainActor in
-            await runAlwaysOnCronInBackground(job: job, project: project, config: config)
+        launchAlwaysOnBackgroundTask(label: "manual-cron-\(job.id)-\(UUID().uuidString)") { [weak self] in
+            await self?.runAlwaysOnCronInBackground(job: job, project: project, config: config)
         }
+    }
+
+    private func launchAlwaysOnBackgroundTask(label: String, operation: @escaping @MainActor () async -> Void) {
+        alwaysOnBackgroundTasks[label]?.cancel()
+        let task = Task { @MainActor [weak self] in
+            defer { self?.alwaysOnBackgroundTasks.removeValue(forKey: label) }
+            guard !Task.isCancelled else { return }
+            await operation()
+        }
+        alwaysOnBackgroundTasks[label] = task
     }
 
     func applyAlwaysOnCycle(cycleID: String, projectRoot: String) {
@@ -1537,6 +1583,7 @@ final class AppState: ObservableObject {
         memoryProjectNameBySession[sessionID] = project.projectName
         memoryProjectRootBySession[sessionID] = project.rootPath
         let assistantID = UUID()
+        let runStartedAt = Date()
         assistantSessionByID[assistantID] = sessionID
         let userMessage = ChatMessage(
             id: UUID(),
@@ -1554,9 +1601,10 @@ final class AppState: ObservableObject {
             provider: .pilotDeck,
             role: .assistant,
             blocks: [.text("")],
-            createdAt: Date(),
+            createdAt: runStartedAt,
             isStreaming: true,
-            tokenBudget: nil
+            tokenBudget: nil,
+            runStartedAt: runStartedAt
         )
         messagesBySession[sessionID] = [userMessage, assistantMessage]
         markSession(sessionID, state: .processing)
@@ -1984,7 +2032,7 @@ final class AppState: ObservableObject {
 
     private func loadPilotDeckConfigText() {
         pilotDeckConfigText = (try? String(contentsOf: Self.pilotDeckConfigURL(), encoding: .utf8))
-            ?? (try? String(contentsOf: Self.legacyPilotDeckConfigURL(), encoding: .utf8))
+            ?? Self.legacyPilotDeckConfigURLs().lazy.compactMap { try? String(contentsOf: $0, encoding: .utf8) }.first
             ?? Self.defaultPilotDeckConfigText()
     }
 
@@ -2007,15 +2055,15 @@ final class AppState: ObservableObject {
         PilotDeckConfigPath.configURL(environment: environment, home: home)
     }
 
-    static func legacyPilotDeckConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        PilotDeckConfigPath.legacyConfigURL(home: home)
+    static func legacyPilotDeckConfigURLs(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [URL] {
+        PilotDeckConfigPath.legacyConfigURLs(home: home)
     }
 
     private func bootstrapLocalDebugConfigIfNeeded() throws {
         let url = Self.pilotDeckConfigURL()
         guard !FileManager.default.fileExists(atPath: url.path) else { return }
-        if FileManager.default.fileExists(atPath: Self.legacyPilotDeckConfigURL().path),
-           let legacyText = try? String(contentsOf: Self.legacyPilotDeckConfigURL(), encoding: .utf8) {
+        if let legacyURL = Self.legacyPilotDeckConfigURLs().first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+           let legacyText = try? String(contentsOf: legacyURL, encoding: .utf8) {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try legacyText.write(to: url, atomically: true, encoding: .utf8)
             return
@@ -2032,7 +2080,8 @@ final class AppState: ObservableObject {
     }
 
     private func loadManualProjectsFromPilotDeckConfig() {
-        guard let data = try? Data(contentsOf: Self.pdProjectConfigURL()),
+        guard let url = Self.pilotDeckProjectConfigURLs().first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+              let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rawProjects = json["projects"] as? [String: Any] else { return }
 
@@ -2071,7 +2120,7 @@ final class AppState: ObservableObject {
     }
 
     private func persistManualProject(_ project: WorkspaceProject) throws {
-        let url = Self.pdProjectConfigURL()
+        let url = Self.pilotDeckProjectConfigURL()
         var root: [String: Any] = [:]
         if let data = try? Data(contentsOf: url),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -2090,7 +2139,7 @@ final class AppState: ObservableObject {
     }
 
     private func removeManualProjectFromConfig(_ project: WorkspaceProject) throws {
-        let url = Self.pdProjectConfigURL()
+        let url = Self.pilotDeckProjectConfigURL()
         var root: [String: Any] = [:]
         if let data = try? Data(contentsOf: url),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -2104,10 +2153,18 @@ final class AppState: ObservableObject {
         try data.write(to: url)
     }
 
-    private static func pilotdeckProjectConfigURL() -> URL {
+    private static func pilotDeckProjectConfigURL() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pd", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("project-config.json")
+    }
+
+    private static func pilotDeckProjectConfigURLs() -> [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [
+            pilotDeckProjectConfigURL(),
+            home.appendingPathComponent(".g9claw", isDirectory: true).appendingPathComponent("project-config.json"),
+        ]
     }
 
     private static func defaultPilotDeckConfigText() -> String {
@@ -2564,8 +2621,17 @@ final class AppState: ObservableObject {
 
     private func finishStreamingMessage(sessionID: String) {
         guard var messages = messagesBySession[sessionID] else { return }
+        let finishedAt = Date()
         for index in messages.indices where messages[index].isStreaming {
             messages[index].isStreaming = false
+            if messages[index].role == .assistant {
+                if messages[index].runStartedAt == nil {
+                    messages[index].runStartedAt = messages[index].createdAt
+                }
+                if messages[index].runEndedAt == nil {
+                    messages[index].runEndedAt = finishedAt
+                }
+            }
         }
         messagesBySession[sessionID] = messages
         persistSessionMessages(sessionID: sessionID)
@@ -2760,7 +2826,7 @@ final class AppState: ObservableObject {
     }
 
     private func resolveAllPendingPermissions(decision: AgentPermissionDecision) {
-        let ids = pendingPermissions.map(\.id)
+        let ids = Set(pendingPermissions.map(\.id)).union(permissionContinuations.keys)
         pendingPermissions.removeAll()
         for id in ids {
             permissionContinuations.removeValue(forKey: id)?.resume(returning: decision)
@@ -3058,12 +3124,16 @@ struct NativeConfigSnapshot: Equatable {
 }
 
 enum PilotDeckConfigPath {
+    private static let configDirectoryName = ".pilotdeck"
+    private static let legacyConfigDirectoryNames = [".g9claw", ".edgeclaw"]
+
     static func configURL(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
         if let override = environment["PILOTDECK_CONFIG_PATH"]?.nilIfBlank
-            ?? environment["PILOTDECK_CONFIG_PATH"]?.nilIfBlank {
+            ?? environment["G9CLAW_CONFIG_PATH"]?.nilIfBlank
+            ?? environment["EDGECLAW_CONFIG_PATH"]?.nilIfBlank {
             if override == "~" {
                 return home
             }
@@ -3073,14 +3143,20 @@ enum PilotDeckConfigPath {
             return URL(fileURLWithPath: override)
         }
         return home
-            .appendingPathComponent(".pd", isDirectory: true)
+            .appendingPathComponent(configDirectoryName, isDirectory: true)
             .appendingPathComponent("config.yaml")
     }
 
+    static func legacyConfigURLs(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [URL] {
+        legacyConfigDirectoryNames.map { directory in
+            home
+                .appendingPathComponent(directory, isDirectory: true)
+                .appendingPathComponent("config.yaml")
+        }
+    }
+
     static func legacyConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        home
-            .appendingPathComponent(".pilotdeck", isDirectory: true)
-            .appendingPathComponent("config.yaml")
+        legacyConfigURLs(home: home)[0]
     }
 }
 
@@ -3096,7 +3172,7 @@ enum PilotDeckConfigDefaults {
           contextWindow: 160000
           apiTimeoutMs: 120000
           httpsProxy: ""
-          databasePath: \(homePath)/.pd/auth.db
+          databasePath: \(homePath)/.pilotdeck/auth.db
           workspacesRoot: \(homePath)
         models:
           providers:
@@ -3226,7 +3302,7 @@ enum PilotDeckConfigDefaults {
               - COMPLEX
               - REASONING
             mainAgentModel: default
-            skillPath: ~/.pd/prompts/auto-orchestrate.md
+            skillPath: ~/.pilotdeck/prompts/auto-orchestrate.md
             blockedTools: []
             allowedTools:
               - Agent
@@ -3257,7 +3333,7 @@ enum PilotDeckConfigDefaults {
           customRouterPath: ""
         gateway:
           enabled: false
-          home: \(homePath)/.pd/gateway
+          home: \(homePath)/.pilotdeck/gateway
           allowAllUsers: false
           allowedUsers: []
           groupSessionsPerUser: true
@@ -3472,11 +3548,11 @@ enum PilotDeckConfigDefaults {
               allowAllUsers: false
               replyToMode: first
           runtimePaths:
-            sessionMetadata: ~/.pd/projects/.gateway/sessions.json
-            userBindings: ~/.pd/projects/.gateway/user-projects.json
+            sessionMetadata: ~/.pilotdeck/projects/.gateway/sessions.json
+            userBindings: ~/.pilotdeck/projects/.gateway/user-projects.json
             generalCwd: ~/PilotDeck/general
-            generalJsonl: ~/.pd/projects/-Users-\(userName)-PilotDeck-general/*.jsonl
-            boundProjectJsonl: ~/.pd/projects/<encoded-project>/*.jsonl
+            generalJsonl: ~/.pilotdeck/projects/-Users-\(userName)-PilotDeck-general/*.jsonl
+            boundProjectJsonl: ~/.pilotdeck/projects/<encoded-project>/*.jsonl
         """
     }
 }
@@ -3645,13 +3721,22 @@ enum NativeConfigService {
             apiType: apiType,
             baseURL: baseURL,
             model: model,
-            secretAccount: (providerID == "pilotdeck" || providerID == "pilotdeck") ? ProviderConfig.empty.secretAccount : "pilotdeck-provider-\(providerID)-api-key",
+            secretAccount: isPilotDeckProviderID(providerID) ? ProviderConfig.empty.secretAccount : "pilotdeck-provider-\(providerID)-api-key",
             headers: headers
         )
     }
 
     static func providerID(entryID: String, values: [String: String]) -> String {
         values["models.entries.\(entryID).provider"]?.nilIfBlank ?? "pilotdeck"
+    }
+
+    private static func isPilotDeckProviderID(_ providerID: String) -> Bool {
+        switch providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "pilotdeck", "g9claw", "9gclaw", "edgeclaw":
+            return true
+        default:
+            return false
+        }
     }
 
     static func resolvedAPIKey(
@@ -4174,7 +4259,7 @@ enum AlwaysOnBackgroundTranscriptLoader {
         let relative = relativeTranscriptPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !projectName.isEmpty, !parent.isEmpty, !relative.isEmpty else { return nil }
 
-        let projectDirs = [".pd", ".pilotdeck"].map { directory in
+        let projectDirs = [".pilotdeck", ".g9claw", ".claude"].map { directory in
             home
                 .appendingPathComponent(directory, isDirectory: true)
                 .appendingPathComponent("projects", isDirectory: true)

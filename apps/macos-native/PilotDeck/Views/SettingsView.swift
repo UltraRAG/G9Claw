@@ -472,7 +472,7 @@ private struct SettingsContentView: View {
                         SettingsCardDivider()
                         SettingsRowBlock(
                             title: state.t(.projects),
-                            detail: local(chinese: "选择要编辑 `.pd/mcp.json` 的项目。", english: "Choose the project whose `.pd/mcp.json` should be edited.")
+                            detail: local(chinese: "选择要编辑 `.pilotdeck/mcp.json` 的项目。", english: "Choose the project whose `.pilotdeck/mcp.json` should be edited.")
                         ) {
                             Picker("", selection: $mcpProjectRoot) {
                                 ForEach(mcpProjectOptions, id: \.root) { item in
@@ -1107,6 +1107,56 @@ private struct SettingsContentView: View {
                         .padding(14)
                     }
                 }
+                SettingsSectionBlock(
+                    title: local(chinese: "导入与导出", english: "Import & Export"),
+                    detail: local(chinese: "备份或迁移当前项目记忆，也可以导入/导出完整记忆库。", english: "Back up or migrate the current project memory, or move the full memory library.")
+                ) {
+                    SettingsCardBlock(divided: true) {
+                        SettingsRowBlock(
+                            title: local(chinese: "当前项目记忆", english: "Current Project Memory"),
+                            detail: selectedMemoryProjectDetail()
+                        ) {
+                            HStack(spacing: 8) {
+                                Button {
+                                    importMemoryBundle(scope: .currentProject)
+                                } label: {
+                                    Label(state.t(.importAction), systemImage: "square.and.arrow.down")
+                                }
+                                .buttonStyle(WebToolbarButtonStyle())
+                                .disabled(selectedMemoryProjectTarget() == nil)
+
+                                Button {
+                                    exportMemoryBundle(scope: .currentProject)
+                                } label: {
+                                    Label(state.t(.exportAction), systemImage: "square.and.arrow.up")
+                                }
+                                .buttonStyle(WebToolbarButtonStyle(isProminent: true))
+                                .disabled(selectedMemoryProjectTarget() == nil)
+                            }
+                        }
+                        SettingsCardDivider()
+                        SettingsRowBlock(
+                            title: local(chinese: "所有记忆", english: "All Memory"),
+                            detail: local(chinese: "包含用户/全局记忆，以及 PilotDeck 当前已知的项目记忆。", english: "Includes user/global memory and project memory currently known to PilotDeck.")
+                        ) {
+                            HStack(spacing: 8) {
+                                Button {
+                                    importMemoryBundle(scope: .allMemory)
+                                } label: {
+                                    Label(state.t(.importAction), systemImage: "square.and.arrow.down")
+                                }
+                                .buttonStyle(WebToolbarButtonStyle())
+
+                                Button {
+                                    exportMemoryBundle(scope: .allMemory)
+                                } label: {
+                                    Label(state.t(.exportAction), systemImage: "square.and.arrow.up")
+                                }
+                                .buttonStyle(WebToolbarButtonStyle(isProminent: true))
+                            }
+                        }
+                    }
+                }
             }
         case .search:
             VStack(alignment: .leading, spacing: 18) {
@@ -1559,7 +1609,7 @@ private struct SettingsContentView: View {
         do {
             let url = FileManager.default.fileExists(atPath: configFileURL().path)
                 ? configFileURL()
-                : PilotDeckConfigPath.legacyConfigURL()
+                : PilotDeckConfigPath.legacyConfigURLs().first(where: { FileManager.default.fileExists(atPath: $0.path) }) ?? configFileURL()
             let text = try String(contentsOf: url, encoding: .utf8)
             if isConfigDirty {
                 configExternalNotice = state.t(.configReloadedNotice)
@@ -1816,6 +1866,108 @@ private struct SettingsContentView: View {
         }
     }
 
+    private func selectedMemoryProjectTarget() -> MemorySettingsTransferTarget? {
+        guard let project = state.selectedProject else { return nil }
+        return MemorySettingsTransferTarget(
+            projectName: project.name,
+            displayName: project.displayName,
+            rootPath: state.effectiveWorkspacePath(for: project)
+        )
+    }
+
+    private func selectedMemoryProjectDetail() -> String {
+        guard let target = selectedMemoryProjectTarget() else {
+            return state.t(.noProjectSelected)
+        }
+        return "\(target.displayName) · \(target.rootPath)"
+    }
+
+    private func memoryBundleFilename(scope: MemorySettingsTransferScope) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let date = formatter.string(from: Date())
+        switch scope {
+        case .currentProject:
+            return "pilotdeck-memory-current-project-\(date).json"
+        case .allMemory:
+            return "pilotdeck-memory-all-\(date).json"
+        }
+    }
+
+    private func exportMemoryBundle(scope: MemorySettingsTransferScope) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = memoryBundleFilename(scope: scope)
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data: Data
+            switch scope {
+            case .currentProject:
+                guard let target = selectedMemoryProjectTarget() else {
+                    state.errorBanner = state.t(.noProjectSelected)
+                    return
+                }
+                state.memoryService.loadWorkspaceRecords(projectRoot: target.rootPath, projectName: target.projectName)
+                data = try state.memoryService.exportBundle(projectName: target.projectName, projectRoot: target.rootPath)
+            case .allMemory:
+                if let target = selectedMemoryProjectTarget() {
+                    state.memoryService.loadWorkspaceRecords(projectRoot: target.rootPath, projectName: target.projectName)
+                }
+                data = try state.memoryService.exportBundle(projectName: nil)
+            }
+            try data.write(to: url, options: [.atomic])
+            state.settingsSaveNotice = local(chinese: "记忆已导出。", english: "Memory exported.")
+        } catch {
+            state.errorBanner = error.localizedDescription
+        }
+    }
+
+    private func importMemoryBundle(scope: MemorySettingsTransferScope) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let bundleScope = memoryBundleScope(from: data)
+            switch scope {
+            case .currentProject:
+                guard let target = selectedMemoryProjectTarget() else {
+                    state.errorBanner = state.t(.noProjectSelected)
+                    return
+                }
+                if bundleScope == "all_projects" {
+                    state.errorBanner = local(chinese: "这是所有记忆备份，请在“所有记忆”里导入。", english: "This is an all-memory backup. Import it from All Memory.")
+                    return
+                }
+                try state.memoryService.importBundle(data, projectName: target.projectName, projectRoot: target.rootPath)
+                state.memoryService.loadWorkspaceRecords(projectRoot: target.rootPath, projectName: target.projectName)
+            case .allMemory:
+                if bundleScope == "current_project" {
+                    state.errorBanner = local(chinese: "这是当前项目记忆备份，请在“当前项目记忆”里导入。", english: "This is a current-project memory backup. Import it from Current Project Memory.")
+                    return
+                }
+                try state.memoryService.importBundle(data, projectName: nil, projectRoot: nil)
+                if let target = selectedMemoryProjectTarget() {
+                    state.memoryService.loadWorkspaceRecords(projectRoot: target.rootPath, projectName: target.projectName)
+                }
+            }
+            state.bumpToolRefresh()
+            state.settingsSaveNotice = local(chinese: "记忆已导入。", english: "Memory imported.")
+        } catch {
+            state.errorBanner = error.localizedDescription
+        }
+    }
+
+    private func memoryBundleScope(from data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object["scope"] as? String
+    }
+
     private func exportPermissions() {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = PermissionsExportDefaults.filename()
@@ -1843,6 +1995,17 @@ private struct SettingsContentView: View {
             state.errorBanner = error.localizedDescription
         }
     }
+}
+
+private enum MemorySettingsTransferScope {
+    case currentProject
+    case allMemory
+}
+
+private struct MemorySettingsTransferTarget {
+    var projectName: String
+    var displayName: String
+    var rootPath: String
 }
 
 private struct SettingsPageContainer<Content: View>: View {
@@ -1968,7 +2131,7 @@ enum NativeMCPConfigService {
     """
 
     static func globalConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        home.appendingPathComponent(".pd", isDirectory: true)
+        home.appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("mcp.json")
     }
 
@@ -1976,7 +2139,7 @@ enum NativeMCPConfigService {
         let root = projectRoot.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !root.isEmpty else { return URL(fileURLWithPath: "") }
         return URL(fileURLWithPath: root)
-            .appendingPathComponent(".pd", isDirectory: true)
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
             .appendingPathComponent("mcp.json")
     }
 
