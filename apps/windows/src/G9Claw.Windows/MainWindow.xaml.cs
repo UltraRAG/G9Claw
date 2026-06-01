@@ -100,6 +100,23 @@ public sealed partial class MainWindow : Window
         History,
     }
 
+    private enum FileInlineEditKind
+    {
+        CreateFile,
+        CreateFolder,
+        Rename,
+    }
+
+    private sealed class FileInlineEditState
+    {
+        public required FileInlineEditKind Kind { get; init; }
+        public string? TargetPath { get; init; }
+        public string? ParentPath { get; init; }
+        public required int Depth { get; init; }
+        public required bool IsDirectory { get; init; }
+        public required string Text { get; set; }
+    }
+
     [DllImport("comctl32.dll", SetLastError = true)]
     private static extern bool SetWindowSubclass(IntPtr hWnd, WindowSubclassProc callback, UIntPtr subclassId, UIntPtr referenceData);
 
@@ -162,6 +179,7 @@ public sealed partial class MainWindow : Window
     private bool _isAgentSubmitting;
     private string? _selectedFilePath;
     private string _fileSearchText = "";
+    private FileInlineEditState? _fileInlineEdit;
     private string? _previewDraftText;
     private bool _isMarkdownPreviewing;
     private bool _isCodePreviewing;
@@ -4676,15 +4694,34 @@ public sealed partial class MainWindow : Window
                     .ToList();
             }
 
-            if (files.Count == 0)
+            if (files.Count == 0 && _fileInlineEdit is null)
             {
                 list.Children.Add(FilesTreeEmptyState(listing));
             }
             else
             {
+                if (_fileInlineEdit is { ParentPath: null, TargetPath: null } rootEdit)
+                {
+                    list.Children.Add(FileInlineEditRow(rootEdit));
+                }
+
                 foreach (var file in files.Take(300))
                 {
-                    list.Children.Add(FileRow(file));
+                    if (_fileInlineEdit is { TargetPath: { } targetPath } renameEdit &&
+                        string.Equals(targetPath, file.Path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        list.Children.Add(FileInlineEditRow(renameEdit));
+                    }
+                    else
+                    {
+                        list.Children.Add(FileRow(file));
+                    }
+
+                    if (_fileInlineEdit is { ParentPath: { } parentPath } childEdit &&
+                        string.Equals(parentPath, file.Path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        list.Children.Add(FileInlineEditRow(childEdit));
+                    }
                 }
             }
         }
@@ -5002,6 +5039,60 @@ public sealed partial class MainWindow : Window
         return row;
     }
 
+    private FrameworkElement FileInlineEditRow(FileInlineEditState edit)
+    {
+        var row = new Grid
+        {
+            Height = 28,
+            Padding = new Thickness(6 + edit.Depth * 18, 0, 6, 0),
+            ColumnSpacing = 6,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(12) },
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+            },
+        };
+
+        row.Children.Add(new Border { Width = 12 });
+        var icon = Icon(edit.IsDirectory ? "Folder" : "Document", 14, edit.IsDirectory ? Brush("V2AmberBrush") : Brush("V2MutedForegroundBrush"));
+        Grid.SetColumn(icon, 1);
+        row.Children.Add(icon);
+
+        var input = new TextBox
+        {
+            Text = edit.Text,
+            Height = 24,
+            MinWidth = 0,
+            FontSize = 12.5,
+            Padding = new Thickness(6, 0, 6, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
+        };
+        input.TextChanged += (_, _) => edit.Text = input.Text;
+        input.Loaded += (_, _) =>
+        {
+            input.Focus(FocusState.Programmatic);
+            input.SelectAll();
+        };
+        input.KeyDown += async (_, args) =>
+        {
+            if (args.Key == global::Windows.System.VirtualKey.Enter)
+            {
+                args.Handled = true;
+                await CommitFileInlineEditAsync(edit);
+            }
+            else if (args.Key == global::Windows.System.VirtualKey.Escape)
+            {
+                args.Handled = true;
+                CancelFileInlineEdit();
+            }
+        };
+        Grid.SetColumn(input, 2);
+        row.Children.Add(input);
+        return row;
+    }
+
     private Button FileTreeInlineActionButton(string iconKey, string label)
     {
         var button = new Button
@@ -5035,19 +5126,11 @@ public sealed partial class MainWindow : Window
         if (file.IsDirectory)
         {
             var newFile = new MenuFlyoutItem { Text = T("files.newFile") };
-            newFile.Click += async (_, _) =>
-            {
-                SelectFileForAction();
-                await CreateWorkspaceItemAsync(false);
-            };
+            newFile.Click += (_, _) => BeginCreateInDirectory(file, false);
             flyout.Items.Add(newFile);
 
             var newFolder = new MenuFlyoutItem { Text = T("files.newFolder") };
-            newFolder.Click += async (_, _) =>
-            {
-                SelectFileForAction();
-                await CreateWorkspaceItemAsync(true);
-            };
+            newFolder.Click += (_, _) => BeginCreateInDirectory(file, true);
             flyout.Items.Add(newFolder);
             flyout.Items.Add(new MenuFlyoutSeparator());
         }
@@ -5070,11 +5153,7 @@ public sealed partial class MainWindow : Window
         flyout.Items.Add(copyPath);
 
         var rename = new MenuFlyoutItem { Text = T("common.rename") };
-        rename.Click += async (_, _) =>
-        {
-            SelectFileForAction();
-            await RenameWorkspaceItemAsync();
-        };
+        rename.Click += (_, _) => BeginRename(file);
         flyout.Items.Add(rename);
         flyout.Items.Add(new MenuFlyoutSeparator());
 
@@ -5584,61 +5663,155 @@ public sealed partial class MainWindow : Window
         return button;
     }
 
-    private async Task CreateWorkspaceItemAsync(bool isDirectory)
+    private Task CreateWorkspaceItemAsync(bool isDirectory)
+    {
+        BeginCreateAtSelection(isDirectory);
+        return Task.CompletedTask;
+    }
+
+    private Task RenameWorkspaceItemAsync()
+    {
+        if (State.SelectedProject is null || string.IsNullOrWhiteSpace(_selectedFilePath)) return Task.CompletedTask;
+        var targetPath = WorkspaceService.ResolveWorkspacePath(_selectedFilePath, State.SelectedProject.RootPath);
+        BeginRename(targetPath, Path.GetFileName(targetPath), WorkspaceDepthForPath(targetPath), Directory.Exists(targetPath));
+        return Task.CompletedTask;
+    }
+
+    private void BeginCreateAtSelection(bool isDirectory)
     {
         if (State.SelectedProject is null) return;
-        var nameBox = new TextBox { Style = (Style)Application.Current.Resources["V2TextBoxStyle"], Header = isDirectory ? T("files.folderName") : T("files.fileName") };
-        var dialog = Dialog(isDirectory ? T("files.newFolder") : T("files.newFile"), nameBox, T("common.create"));
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-        if (string.IsNullOrWhiteSpace(nameBox.Text)) return;
-        var parent = SelectedDirectoryForFileOperation(State.SelectedProject.RootPath);
-        try
+        if (!string.IsNullOrWhiteSpace(_selectedFilePath))
         {
-            var created = _workspaceService.CreateFile(parent, nameBox.Text, isDirectory, State.SelectedProject.RootPath);
-            if (isDirectory)
+            var selectedPath = WorkspaceService.ResolveWorkspacePath(_selectedFilePath, State.SelectedProject.RootPath);
+            if (Directory.Exists(selectedPath))
             {
-                _expandedFileDirectories.Add(created);
-            }
-            else
-            {
-                _selectedFilePath = Path.GetRelativePath(State.SelectedProject.RootPath, created);
-                _previewDraftText = "";
-                _isMarkdownPreviewing = false;
-                _isCodePreviewing = false;
+                _expandedFileDirectories.Add(selectedPath);
+                BeginCreate(selectedPath, WorkspaceDepthForPath(selectedPath) + 1, isDirectory);
+                return;
             }
 
+            var parent = Path.GetDirectoryName(selectedPath);
+            if (!string.IsNullOrWhiteSpace(parent) &&
+                !string.Equals(parent, State.SelectedProject.RootPath, StringComparison.OrdinalIgnoreCase))
+            {
+                _expandedFileDirectories.Add(parent);
+                BeginCreate(parent, WorkspaceDepthForPath(parent) + 1, isDirectory);
+                return;
+            }
+        }
+
+        BeginCreate(null, 0, isDirectory);
+    }
+
+    private void BeginCreateInDirectory(WorkspaceFile file, bool isDirectory)
+    {
+        if (!file.IsDirectory) return;
+        _expandedFileDirectories.Add(file.Path);
+        BeginCreate(file.Path, file.Depth + 1, isDirectory);
+    }
+
+    private void BeginCreate(string? parentPath, int depth, bool isDirectory)
+    {
+        _fileInlineEdit = new FileInlineEditState
+        {
+            Kind = isDirectory ? FileInlineEditKind.CreateFolder : FileInlineEditKind.CreateFile,
+            ParentPath = parentPath,
+            Depth = Math.Max(0, depth),
+            IsDirectory = isDirectory,
+            Text = isDirectory ? "untitled" : "untitled.txt",
+        };
+        RenderContent();
+    }
+
+    private void BeginRename(WorkspaceFile file)
+    {
+        BeginRename(file.Path, file.Name, file.Depth, file.IsDirectory);
+    }
+
+    private void BeginRename(string targetPath, string name, int depth, bool isDirectory)
+    {
+        _fileInlineEdit = new FileInlineEditState
+        {
+            Kind = FileInlineEditKind.Rename,
+            TargetPath = targetPath,
+            Depth = Math.Max(0, depth),
+            IsDirectory = isDirectory,
+            Text = name,
+        };
+        RenderContent();
+    }
+
+    private async Task CommitFileInlineEditAsync(FileInlineEditState edit)
+    {
+        if (State.SelectedProject is null) return;
+        var value = edit.Text.Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            CancelFileInlineEdit();
+            return;
+        }
+
+        try
+        {
+            switch (edit.Kind)
+            {
+                case FileInlineEditKind.Rename when !string.IsNullOrWhiteSpace(edit.TargetPath):
+                {
+                    var renamed = _workspaceService.Rename(edit.TargetPath, value, State.SelectedProject.RootPath);
+                    if (_expandedFileDirectories.Remove(edit.TargetPath))
+                    {
+                        _expandedFileDirectories.Add(renamed);
+                    }
+
+                    _selectedFilePath = Path.GetRelativePath(State.SelectedProject.RootPath, renamed);
+                    _previewDraftText = null;
+                    _isMarkdownPreviewing = false;
+                    _isCodePreviewing = false;
+                    break;
+                }
+                case FileInlineEditKind.CreateFile:
+                case FileInlineEditKind.CreateFolder:
+                {
+                    var parent = edit.ParentPath ?? State.SelectedProject.RootPath;
+                    var created = _workspaceService.CreateFile(parent, value, edit.Kind == FileInlineEditKind.CreateFolder, State.SelectedProject.RootPath);
+                    if (edit.Kind == FileInlineEditKind.CreateFolder)
+                    {
+                        _expandedFileDirectories.Add(created);
+                    }
+                    else
+                    {
+                        _selectedFilePath = Path.GetRelativePath(State.SelectedProject.RootPath, created);
+                        _previewDraftText = "";
+                        _isMarkdownPreviewing = false;
+                        _isCodePreviewing = false;
+                    }
+
+                    break;
+                }
+            }
+
+            _fileInlineEdit = null;
             RenderAll();
         }
         catch (Exception ex)
         {
-            await Dialog(T("files.createFailed"), new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap }, T("common.ok")).ShowAsync();
+            var title = edit.Kind == FileInlineEditKind.Rename ? T("files.renameFailed") : T("files.createFailed");
+            await Dialog(title, new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap }, T("common.ok")).ShowAsync();
         }
     }
 
-    private async Task RenameWorkspaceItemAsync()
+    private void CancelFileInlineEdit()
     {
-        if (State.SelectedProject is null || string.IsNullOrWhiteSpace(_selectedFilePath)) return;
-        var box = new TextBox
-        {
-            Text = Path.GetFileName(_selectedFilePath),
-            Style = (Style)Application.Current.Resources["V2TextBoxStyle"],
-            Header = T("files.newName"),
-        };
-        if (await Dialog(T("common.rename"), box, T("common.rename")).ShowAsync() != ContentDialogResult.Primary) return;
-        if (string.IsNullOrWhiteSpace(box.Text)) return;
-        try
-        {
-            var renamed = _workspaceService.Rename(_selectedFilePath, box.Text, State.SelectedProject.RootPath);
-            _selectedFilePath = Path.GetRelativePath(State.SelectedProject.RootPath, renamed);
-            _previewDraftText = null;
-            _isMarkdownPreviewing = false;
-            _isCodePreviewing = false;
-            RenderAll();
-        }
-        catch (Exception ex)
-        {
-            await Dialog(T("files.renameFailed"), new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap }, T("common.ok")).ShowAsync();
-        }
+        _fileInlineEdit = null;
+        RenderContent();
+    }
+
+    private int WorkspaceDepthForPath(string path)
+    {
+        if (State.SelectedProject is null) return 0;
+        var relative = Path.GetRelativePath(State.SelectedProject.RootPath, path);
+        if (string.IsNullOrWhiteSpace(relative) || relative == ".") return 0;
+        return relative.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries).Length - 1;
     }
 
     private async Task DeleteWorkspaceItemAsync()
