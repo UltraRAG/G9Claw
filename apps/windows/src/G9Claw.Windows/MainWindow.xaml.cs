@@ -7017,12 +7017,22 @@ public sealed partial class MainWindow : Window
         var readyPlans = State.AlwaysOnPlans.Count(plan => plan.Status == AlwaysOnStatus.Ready || plan.Status == AlwaysOnStatus.Scheduled);
         var runningPlans = State.AlwaysOnPlans.Count(plan => plan.Status == AlwaysOnStatus.Running || plan.ExecutionStatus == AlwaysOnStatus.Running);
         var todayPlans = State.AlwaysOnPlans.Count(plan => plan.UpdatedAt.LocalDateTime.Date == DateTime.Today);
-        shell.Children.Add(ToolTabbedTopbar(new[]
+        var isProjectContext = State.SelectedProject is { } selectedAlwaysOnProject && !V2SidebarProjection.IsGeneralProject(selectedAlwaysOnProject);
+        if (!isProjectContext && _alwaysOnToolTab == AlwaysOnToolTab.History)
+        {
+            _alwaysOnToolTab = AlwaysOnToolTab.Dashboard;
+        }
+
+        var tabs = new List<(string Label, bool IsActive, Action Action)>
         {
             (L("Dashboard", "\u770b\u677f"), _alwaysOnToolTab == AlwaysOnToolTab.Dashboard, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Dashboard; ClearAlwaysOnSelection(); RenderAll(); })),
             (L("Plans & Cron Jobs", "\u8ba1\u5212\u4e0e\u5468\u671f\u4efb\u52a1"), _alwaysOnToolTab == AlwaysOnToolTab.Items, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.Items; ClearAlwaysOnSelection(); RenderAll(); })),
-            (L("Run History", "\u8fd0\u884c\u5386\u53f2"), _alwaysOnToolTab == AlwaysOnToolTab.History, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.History; ClearAlwaysOnSelection(); RenderAll(); })),
-        }));
+        };
+        if (isProjectContext)
+        {
+            tabs.Add((L("Run History", "\u8fd0\u884c\u5386\u53f2"), _alwaysOnToolTab == AlwaysOnToolTab.History, (Action)(() => { _alwaysOnToolTab = AlwaysOnToolTab.History; ClearAlwaysOnSelection(); RenderAll(); })));
+        }
+        shell.Children.Add(ToolTabbedTopbar(tabs));
 
         var selectedPlan = !string.IsNullOrWhiteSpace(_selectedAlwaysOnPlanId)
             ? State.AlwaysOnPlans.FirstOrDefault(plan => string.Equals(plan.Id, _selectedAlwaysOnPlanId, StringComparison.Ordinal))
@@ -7069,12 +7079,7 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(AlwaysOnContentHeader());
         if (_alwaysOnToolTab == AlwaysOnToolTab.Dashboard)
         {
-            panel.Children.Add(MetricGrid(
-                MetricRow("Folder", L("Enabled Projects", "\u542f\u7528\u9879\u76ee"), $"{enabledProjects}/{totalProjects}", L("participating", "\u5df2\u53c2\u4e0e")),
-                MetricRow("ListChecks", L("Ready Plans", "\u5c31\u7eea\u8ba1\u5212"), readyPlans.ToString(), L("manual runnable", "\u53ef\u624b\u52a8\u8fd0\u884c")),
-                MetricRow("Radio", L("Running", "\u8fd0\u884c\u4e2d"), runningPlans.ToString(), L("background sessions", "\u540e\u53f0\u4f1a\u8bdd")),
-                MetricRow("Calendar", L("Today", "\u4eca\u5929"), todayPlans.ToString(), L("activity events", "\u6d3b\u52a8\u4e8b\u4ef6"))));
-            panel.Children.Add(AlwaysOnItemsSection(State.AlwaysOnPlans, State.AlwaysOnCronJobs));
+            panel.Children.Add(AlwaysOnDashboardContent(enabledProjects, totalProjects, readyPlans, runningPlans, todayPlans, isProjectContext));
         }
         else if (_alwaysOnToolTab == AlwaysOnToolTab.Items)
         {
@@ -7135,6 +7140,7 @@ public sealed partial class MainWindow : Window
                 },
             },
         });
+        var isProjectContext = State.SelectedProject is { } selected && !V2SidebarProjection.IsGeneralProject(selected);
         var actions = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -7143,9 +7149,12 @@ public sealed partial class MainWindow : Window
             Children =
             {
                 ToolbarButton("Refresh", T("common.refresh"), (Action)(() => { RefreshNativeStores(); RenderAll(); })),
-                ToolbarButton("Search", L("Discover", "\u53d1\u73b0"), (Action)(async () => await StartAlwaysOnDiscoveryAsync()), isProminent: true),
             },
         };
+        if (isProjectContext)
+        {
+            actions.Children.Add(ToolbarButton("Search", L("Discover", "\u53d1\u73b0"), (Action)(async () => await StartAlwaysOnDiscoveryAsync()), isProminent: true));
+        }
         Grid.SetColumn(actions, 1);
         header.Children.Add(actions);
         return header;
@@ -8185,6 +8194,415 @@ public sealed partial class MainWindow : Window
         };
     }
 
+    private readonly record struct AlwaysOnTimelineItem(
+        string Title,
+        string Kind,
+        AlwaysOnStatus Status,
+        DateTimeOffset CreatedAt,
+        string Detail);
+
+    private FrameworkElement AlwaysOnDashboardContent(
+        int enabledProjects,
+        int totalProjects,
+        int readyPlans,
+        int runningPlans,
+        int todayEvents,
+        bool isProjectContext)
+    {
+        var stack = new StackPanel { Spacing = 18 };
+        stack.Children.Add(MetricGrid(
+            MetricRow("Folder", L("Enabled Projects", "\u542f\u7528\u9879\u76ee"), $"{enabledProjects}/{totalProjects}", L("participating", "\u5df2\u53c2\u4e0e")),
+            MetricRow("ListChecks", L("Ready Plans", "\u5c31\u7eea\u8ba1\u5212"), readyPlans.ToString(), L("manual runnable", "\u53ef\u624b\u52a8\u8fd0\u884c")),
+            MetricRow("Radio", L("Running", "\u8fd0\u884c\u4e2d"), runningPlans.ToString(), L("background sessions", "\u540e\u53f0\u4f1a\u8bdd")),
+            MetricRow("Calendar", L("Today", "\u4eca\u5929"), todayEvents.ToString(), L("activity events", "\u6d3b\u52a8\u4e8b\u4ef6"))));
+
+        if (!isProjectContext && AlwaysOnProjectRows().Count > 1)
+        {
+            stack.Children.Add(AlwaysOnProjectsSection());
+        }
+
+        var split = new Grid
+        {
+            ColumnSpacing = 14,
+        };
+        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(340) });
+        var timeline = ToolBoardGroup(L("Timeline", "\u65f6\u95f4\u7ebf"), null, AlwaysOnTimelineRows());
+        split.Children.Add(timeline);
+        var runs = ToolBoardGroup(L("Runs", "\u8fd0\u884c"), null, AlwaysOnRecentRunRows());
+        Grid.SetColumn(runs, 1);
+        split.Children.Add(runs);
+        stack.Children.Add(split);
+
+        return stack;
+    }
+
+    private List<WorkspaceProject> AlwaysOnProjectRows() =>
+        State.Projects
+            .Where(project => !V2SidebarProjection.IsGeneralProject(project))
+            .OrderByDescending(project => project.LatestActivity)
+            .ThenBy(project => project.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private FrameworkElement AlwaysOnProjectsSection()
+    {
+        var rows = new StackPanel { Spacing = 8 };
+        foreach (var project in AlwaysOnProjectRows())
+        {
+            rows.Children.Add(AlwaysOnProjectDashboardRow(project));
+        }
+
+        return ToolBoardGroup(L("Projects", "\u9879\u76ee"), null, rows);
+    }
+
+    private FrameworkElement AlwaysOnProjectDashboardRow(WorkspaceProject project)
+    {
+        var enabled = IsAlwaysOnProjectEnabled(project);
+        var readyPlans = State.AlwaysOnPlans.Count(plan => AlwaysOnPlanMatchesProject(plan, project)
+            && plan.Status is AlwaysOnStatus.Ready or AlwaysOnStatus.Scheduled);
+        var cronCount = State.AlwaysOnCronJobs.Count(job => AlwaysOnCronMatchesProject(job, project));
+        var lastGate = enabled ? L("enabled", "\u5df2\u542f\u7528") : L("off", "\u5173\u95ed");
+        var grid = new Grid
+        {
+            MinHeight = 58,
+            Padding = new Thickness(12, 10, 12, 10),
+            ColumnSpacing = 12,
+        };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.Children.Add(new Border
+        {
+            Width = 7,
+            Height = 7,
+            CornerRadius = new CornerRadius(999),
+            Background = enabled ? Brush("V2GreenBrush") : Brush("V2MutedForegroundBrush"),
+            Opacity = enabled ? 1 : 0.45,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        var text = new StackPanel { Spacing = 3 };
+        text.Children.Add(new TextBlock
+        {
+            Text = project.DisplayName,
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Brush("V2ForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 1,
+        });
+        text.Children.Add(new TextBlock
+        {
+            Text = project.RootPath,
+            FontSize = 11,
+            FontFamily = new FontFamily("Consolas"),
+            Foreground = Brush("V2MutedForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 1,
+        });
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+
+        var metrics = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                AlwaysOnCompactMetric(readyPlans.ToString(), L("plans", "\u8ba1\u5212")),
+                AlwaysOnCompactMetric(cronCount.ToString(), "cron"),
+                AlwaysOnCompactMetric(lastGate, L("gate", "\u95e8\u63a7")),
+                SmallIconActionButton("Sparkles", L("Discover", "\u53d1\u73b0"), async () => await StartAlwaysOnDiscoveryAsync(project), isEnabled: enabled),
+            },
+        };
+        Grid.SetColumn(metrics, 2);
+        grid.Children.Add(metrics);
+
+        return new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(1),
+            Background = Brush("V2CardSurfaceSubtleBrush"),
+            Child = grid,
+        };
+    }
+
+    private FrameworkElement AlwaysOnCompactMetric(string value, string label) => new StackPanel
+    {
+        MinWidth = 42,
+        Spacing = 1,
+        Children =
+        {
+            new TextBlock
+            {
+                Text = value,
+                FontSize = 12,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = Brush("V2ForegroundBrush"),
+                TextAlignment = TextAlignment.Right,
+            },
+            new TextBlock
+            {
+                Text = label,
+                FontSize = 10,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                TextAlignment = TextAlignment.Right,
+            },
+        },
+    };
+
+    private FrameworkElement AlwaysOnTimelineRows()
+    {
+        var rows = AlwaysOnTimelineItems().Take(18).ToList();
+        var stack = new StackPanel { Spacing = 0 };
+        if (rows.Count == 0)
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = L("No Always-On activity yet.", "\u6682\u65e0 Always-On \u6d3b\u52a8\u3002"),
+                FontSize = 13,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                Padding = new Thickness(0, 8, 0, 8),
+            });
+            return stack;
+        }
+
+        foreach (var item in rows)
+        {
+            stack.Children.Add(AlwaysOnTimelineRow(item));
+        }
+
+        return stack;
+    }
+
+    private FrameworkElement AlwaysOnTimelineRow(AlwaysOnTimelineItem item)
+    {
+        var grid = new Grid
+        {
+            Padding = new Thickness(0, 9, 0, 9),
+            ColumnSpacing = 10,
+        };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.Children.Add(new Border
+        {
+            Width = 7,
+            Height = 7,
+            CornerRadius = new CornerRadius(999),
+            Background = AlwaysOnStatusBrush(item.Status),
+            Margin = new Thickness(0, 6, 0, 0),
+            VerticalAlignment = VerticalAlignment.Top,
+        });
+
+        var body = new StackPanel { Spacing = 4 };
+        var title = new Grid { ColumnSpacing = 8 };
+        title.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        title.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        title.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        title.Children.Add(new TextBlock
+        {
+            Text = item.Title,
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+            Foreground = Brush("V2ForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 1,
+        });
+        var kind = new TextBlock
+        {
+            Text = item.Kind,
+            FontSize = 10,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = AlwaysOnStatusBrush(item.Status),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(kind, 1);
+        title.Children.Add(kind);
+        var time = new TextBlock
+        {
+            Text = RelativeLabel(item.CreatedAt),
+            FontSize = 11,
+            Foreground = Brush("V2MutedForegroundBrush"),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(time, 2);
+        title.Children.Add(time);
+        body.Children.Add(title);
+        body.Children.Add(new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(item.Detail) ? item.Kind : item.Detail,
+            FontSize = 12,
+            Foreground = Brush("V2MutedForegroundBrush"),
+            TextWrapping = TextWrapping.Wrap,
+            MaxLines = 2,
+        });
+        Grid.SetColumn(body, 1);
+        grid.Children.Add(body);
+
+        return new Border
+        {
+            BorderBrush = Brush("V2BorderBrush"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = grid,
+        };
+    }
+
+    private List<AlwaysOnTimelineItem> AlwaysOnTimelineItems()
+    {
+        var items = new List<AlwaysOnTimelineItem>();
+        foreach (var plan in State.AlwaysOnPlans)
+        {
+            items.Add(new AlwaysOnTimelineItem(
+                plan.Title,
+                L("plan", "\u8ba1\u5212"),
+                plan.ExecutionStatus ?? plan.Status,
+                plan.UpdatedAt,
+                string.IsNullOrWhiteSpace(plan.Summary) ? plan.Content : plan.Summary));
+        }
+
+        foreach (var job in State.AlwaysOnCronJobs)
+        {
+            items.Add(new AlwaysOnTimelineItem(
+                AlwaysOnCronTitle(job),
+                "cron",
+                job.Status,
+                job.LastFiredAt ?? job.CreatedAt ?? DateTimeOffset.MinValue,
+                string.IsNullOrWhiteSpace(job.Prompt) ? job.Cron : job.Prompt));
+        }
+
+        foreach (var run in State.AlwaysOnRunHistory)
+        {
+            items.Add(new AlwaysOnTimelineItem(
+                run.Title,
+                run.Kind,
+                run.Status,
+                run.StartedAt,
+                AlwaysOnRunMetaLine(run)));
+        }
+
+        return items.OrderByDescending(item => item.CreatedAt).ToList();
+    }
+
+    private FrameworkElement AlwaysOnRecentRunRows()
+    {
+        var rows = State.AlwaysOnRunHistory.OrderByDescending(run => run.StartedAt).Take(8).ToList();
+        var stack = new StackPanel { Spacing = 8 };
+        if (rows.Count == 0)
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = L("No Always-On runs yet.", "\u6682\u65e0 Always-On \u8fd0\u884c\u8bb0\u5f55\u3002"),
+                FontSize = 13,
+                Foreground = Brush("V2MutedForegroundBrush"),
+                Padding = new Thickness(0, 8, 0, 8),
+            });
+            return stack;
+        }
+
+        foreach (var run in rows)
+        {
+            stack.Children.Add(AlwaysOnRecentRunRow(run));
+        }
+
+        return stack;
+    }
+
+    private FrameworkElement AlwaysOnRecentRunRow(AlwaysOnRunHistory run)
+    {
+        var grid = new Grid
+        {
+            Padding = new Thickness(9),
+            ColumnSpacing = 10,
+        };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.Children.Add(Icon(string.Equals(run.Kind, "cron", StringComparison.OrdinalIgnoreCase) ? "Calendar" : "ListChecks", 13, AlwaysOnStatusBrush(run.Status)));
+        var text = new StackPanel { Spacing = 3 };
+        text.Children.Add(new TextBlock
+        {
+            Text = run.Title,
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+            Foreground = Brush("V2ForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 1,
+        });
+        text.Children.Add(new TextBlock
+        {
+            Text = $"{AlwaysOnStatusLabel(run.Status)} / {RelativeLabel(run.StartedAt)}",
+            FontSize = 11,
+            Foreground = Brush("V2MutedForegroundBrush"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 1,
+        });
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+
+        var button = new Button
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(0),
+            Background = Transparent,
+            BorderBrush = Transparent,
+            Content = new Border
+            {
+                CornerRadius = new CornerRadius(8),
+                Background = Brush("V2CardSurfaceSubtleBrush"),
+                Child = grid,
+            },
+        };
+        button.Click += (_, _) =>
+        {
+            _selectedAlwaysOnRunId = run.Id;
+            RenderAll();
+        };
+        return button;
+    }
+
+    private bool IsAlwaysOnProjectEnabled(WorkspaceProject project) =>
+        State.Settings.AlwaysOnSettings?.ProjectEnabled.TryGetValue(project.RootPath, out var enabled) == true && enabled;
+
+    private bool AlwaysOnPlanMatchesProject(AlwaysOnPlan plan, WorkspaceProject project) =>
+        PathLooksUnderRoot(plan.PlanFilePath, project.RootPath)
+        || TextMentionsProject(plan.Content, project)
+        || TextMentionsProject(plan.Summary, project);
+
+    private bool AlwaysOnCronMatchesProject(AlwaysOnCronJob job, WorkspaceProject project) =>
+        TextMentionsProject(job.Prompt, project)
+        || TextMentionsProject(job.TranscriptKey, project)
+        || TextMentionsProject(job.LatestSessionId, project);
+
+    private bool AlwaysOnRunMatchesProject(AlwaysOnRunHistory run, WorkspaceProject project) =>
+        TextMentionsProject(run.SourceId, project)
+        || TextMentionsProject(run.RelativeTranscriptPath, project)
+        || TextMentionsProject(run.TranscriptKey, project)
+        || (run.Metadata?.Values.Any(value => TextMentionsProject(value, project)) ?? false);
+
+    private static bool TextMentionsProject(string? text, WorkspaceProject project) =>
+        !string.IsNullOrWhiteSpace(text)
+        && (!string.IsNullOrWhiteSpace(project.RootPath) && text.Contains(project.RootPath, StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrWhiteSpace(project.DisplayName) && text.Contains(project.DisplayName, StringComparison.OrdinalIgnoreCase));
+
+    private static bool PathLooksUnderRoot(string? path, string root)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(root)) return false;
+        try
+        {
+            var normalizedPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return normalizedPath.Equals(normalizedRoot, StringComparison.OrdinalIgnoreCase)
+                || normalizedPath.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                || normalizedPath.StartsWith(normalizedRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return path.Contains(root, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     private FrameworkElement AlwaysOnItemsSection(IEnumerable<AlwaysOnPlan> plans, IEnumerable<AlwaysOnCronJob> cronJobs)
     {
         var planRows = plans.OrderByDescending(plan => plan.UpdatedAt).ToList();
@@ -8276,8 +8694,8 @@ public sealed partial class MainWindow : Window
         };
         grid.Children.Add(open);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        actions.Children.Add(SmallActionButton(L("Run", "\u8fd0\u884c"), async () => await RunAlwaysOnPlanAsync(plan)));
-        actions.Children.Add(SmallActionButton(L("Delete", "\u5220\u9664"), async () => await DeleteAlwaysOnPlanAsync(plan)));
+        actions.Children.Add(SmallIconActionButton("Play", L("Run", "\u8fd0\u884c"), async () => await RunAlwaysOnPlanAsync(plan), isProminent: true));
+        actions.Children.Add(SmallIconActionButton("Trash", L("Delete", "\u5220\u9664"), async () => await DeleteAlwaysOnPlanAsync(plan)));
         Grid.SetColumn(actions, 2);
         grid.Children.Add(actions);
         return new Border
@@ -8359,18 +8777,18 @@ public sealed partial class MainWindow : Window
         grid.Children.Add(open);
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        actions.Children.Add(SmallActionButton(L("View", "\u67e5\u770b"), async () =>
+        actions.Children.Add(SmallIconActionButton("Eye", L("View", "\u67e5\u770b"), async () =>
         {
             _selectedAlwaysOnCronJobId = job.Id;
             await Task.CompletedTask;
             RenderAll();
         }));
-        actions.Children.Add(SmallActionButton(L("Run", "\u8fd0\u884c"), async () =>
+        actions.Children.Add(SmallIconActionButton("Play", L("Run", "\u8fd0\u884c"), async () =>
         {
             _toolStatus = L("Cron job execution is not wired to the Windows native runtime yet.", "Cron \u4efb\u52a1\u5c1a\u672a\u63a5\u5165 Windows \u539f\u751f\u8fd0\u884c\u65f6\u3002");
             await Task.CompletedTask;
             RenderAll();
-        }));
+        }, isProminent: true));
         Grid.SetColumn(actions, 2);
         grid.Children.Add(actions);
 
@@ -8687,7 +9105,7 @@ public sealed partial class MainWindow : Window
         };
         grid.Children.Add(open);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        actions.Children.Add(SmallActionButton(L("View", "\u67e5\u770b"), async () =>
+        actions.Children.Add(SmallIconActionButton("Eye", L("View", "\u67e5\u770b"), async () =>
         {
             _selectedAlwaysOnRunId = run.Id;
             await Task.CompletedTask;
@@ -8947,16 +9365,19 @@ public sealed partial class MainWindow : Window
         },
     };
 
-    private Button SmallActionButton(string label, Func<Task> action)
+    private Button SmallIconActionButton(string iconKey, string label, Func<Task> action, bool isProminent = false, bool isEnabled = true)
     {
         var button = new Button
         {
-            Content = label,
+            Content = Icon(iconKey, 14, Brush(isProminent ? "V2InverseForegroundBrush" : "V2SecondaryForegroundBrush")),
             Height = 28,
+            Width = 32,
             MinWidth = 0,
-            Padding = new Thickness(10, 0, 10, 0),
-            Style = (Style)Application.Current.Resources["V2ToolbarButtonStyle"],
+            Padding = new Thickness(0),
+            Style = (Style)Application.Current.Resources[isProminent ? "V2PrimaryButtonStyle" : "V2ToolbarButtonStyle"],
+            IsEnabled = isEnabled,
         };
+        ToolTipService.SetToolTip(button, label);
         button.Click += async (_, _) => await action();
         return button;
     }
@@ -9221,9 +9642,10 @@ public sealed partial class MainWindow : Window
         RenderAll();
     }
 
-    private async Task StartAlwaysOnDiscoveryAsync()
+    private async Task StartAlwaysOnDiscoveryAsync(WorkspaceProject? targetProject = null)
     {
-        if (State.SelectedProject is not { } project || V2SidebarProjection.IsGeneralProject(project))
+        var project = targetProject ?? State.SelectedProject;
+        if (project is null || V2SidebarProjection.IsGeneralProject(project))
         {
             await CreateAlwaysOnPlanAsync();
             return;
