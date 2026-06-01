@@ -4675,7 +4675,7 @@ public sealed partial class MainWindow : Window
 
             if (files.Count == 0)
             {
-                list.Children.Add(EmptyState(T("files.noFiles"), T("files.noFilesDetail"), "Folder"));
+                list.Children.Add(FilesTreeEmptyState(listing));
             }
             else
             {
@@ -4791,6 +4791,33 @@ public sealed partial class MainWindow : Window
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = header,
         };
+    }
+
+    private FrameworkElement FilesTreeEmptyState(WorkspaceFileListing? listing)
+    {
+        if (!string.IsNullOrWhiteSpace(_fileSearchText))
+        {
+            return EmptyState(
+                L("No matching files", "\u6ca1\u6709\u5339\u914d\u7684\u6587\u4ef6"),
+                L("Try another filename or clear the search.", "\u6362\u4e2a\u6587\u4ef6\u540d\u641c\u7d22\uff0c\u6216\u6e05\u7a7a\u641c\u7d22\u6761\u4ef6\u3002"),
+                "Search");
+        }
+
+        if (listing?.IsRootHiddenOnly == true)
+        {
+            var count = listing.SkippedRootItemCount;
+            return EmptyState(
+                L("Only hidden files here", "\u8fd9\u91cc\u6682\u65f6\u53ea\u6709\u9690\u85cf\u6587\u4ef6"),
+                IsChineseUi()
+                    ? $"\u5df2\u7701\u7565 {count} \u4e2a\u9690\u85cf\u6216\u751f\u6210\u9879\uff0c\u907f\u514d\u6587\u4ef6\u6811\u88ab\u5185\u90e8\u6570\u636e\u5360\u6ee1\u3002"
+                    : $"{count} hidden or generated item{(count == 1 ? "" : "s")} are omitted from the project browser.",
+                "Eye");
+        }
+
+        return EmptyState(
+            L("No files found", "\u6ca1\u6709\u6587\u4ef6"),
+            L("Create a file, upload project assets, or refresh after changing the workspace.", "\u4f60\u53ef\u4ee5\u65b0\u5efa\u6587\u4ef6\u3001\u4e0a\u4f20\u9879\u76ee\u8d44\u6e90\uff0c\u6216\u5728\u5916\u90e8\u4fee\u6539\u540e\u5237\u65b0\u3002"),
+            "Document");
     }
 
     private FrameworkElement? FilePaneStatusLine(WorkspaceFileListing? listing, string? listingError)
