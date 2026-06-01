@@ -125,6 +125,7 @@ public sealed class ParityLogicTests
             [AppTab.Chat, AppTab.Files, AppTab.Skills, AppTab.Dashboard, AppTab.Memory, AppTab.AlwaysOn],
             AppTabCatalog.PrimaryTabs);
         Assert.Equal(["Agent", "Files", "Skills", "Routing", "Memory", "Always-on"], AppTabCatalog.PrimaryTabDescriptors.Select(tab => tab.Label));
+        Assert.Equal(["Message", "Folder", "Sparkles", "ChartBar", "ExternalDrive", "DotRadiowaves"], AppTabCatalog.PrimaryTabDescriptors.Select(tab => tab.IconKey));
         Assert.DoesNotContain(AppTab.Shell, AppTabCatalog.PrimaryTabs);
         Assert.DoesNotContain(AppTab.Git, AppTabCatalog.PrimaryTabs);
         Assert.DoesNotContain(AppTab.Tasks, AppTabCatalog.PrimaryTabs);
@@ -6210,7 +6211,7 @@ router:
     {
         var required = new[]
         {
-            "Bot", "Folder", "Sparkles", "BarChart3", "Database", "Radio",
+            "Bot", "Message", "Folder", "Sparkles", "BarChart3", "ChartBar", "Database", "ExternalDrive", "Radio", "DotRadiowaves",
             "PanelLeftClose", "PanelLeftOpen", "Settings", "MessageSquarePlus",
             "Palette", "Shield", "Hand", "FileCog", "LayoutList", "Code", "Save",
             "Paperclip", "Copy", "Calendar", "Clock", "Search", "ChevronLeft",

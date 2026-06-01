@@ -57,12 +57,12 @@ public static class AppTabCatalog
 
     public static readonly IReadOnlyList<V2TabDescriptor> PrimaryTabDescriptors =
     [
-        new(AppTab.Chat, "chat", "Agent", "Bot"),
+        new(AppTab.Chat, "chat", "Agent", "Message"),
         new(AppTab.Files, "files", "Files", "Folder"),
         new(AppTab.Skills, "skills", "Skills", "Sparkles"),
-        new(AppTab.Dashboard, "dashboard", "Routing", "BarChart3"),
-        new(AppTab.Memory, "memory", "Memory", "Database"),
-        new(AppTab.AlwaysOn, "always-on", "Always-on", "Radio"),
+        new(AppTab.Dashboard, "dashboard", "Routing", "ChartBar"),
+        new(AppTab.Memory, "memory", "Memory", "ExternalDrive"),
+        new(AppTab.AlwaysOn, "always-on", "Always-on", "DotRadiowaves"),
     ];
 
     public static V2TabDescriptor Descriptor(AppTab tab) => tab switch
