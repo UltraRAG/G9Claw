@@ -4946,6 +4946,7 @@ public sealed partial class MainWindow : Window
             CornerRadius = new CornerRadius(6),
             Content = new Grid { ColumnSpacing = 8 },
         };
+        row.ContextFlyout = FileRowContextFlyout(file);
         row.Click += (_, _) =>
         {
             if (file.IsDirectory)
@@ -5018,6 +5019,73 @@ public sealed partial class MainWindow : Window
         };
         ToolTipService.SetToolTip(button, label);
         return button;
+    }
+
+    private MenuFlyout FileRowContextFlyout(WorkspaceFile file)
+    {
+        var flyout = new MenuFlyout();
+        void SelectFileForAction()
+        {
+            _selectedFilePath = file.RelativePath;
+            _previewDraftText = null;
+            _isMarkdownPreviewing = false;
+            _isCodePreviewing = false;
+        }
+
+        if (file.IsDirectory)
+        {
+            var newFile = new MenuFlyoutItem { Text = T("files.newFile") };
+            newFile.Click += async (_, _) =>
+            {
+                SelectFileForAction();
+                await CreateWorkspaceItemAsync(false);
+            };
+            flyout.Items.Add(newFile);
+
+            var newFolder = new MenuFlyoutItem { Text = T("files.newFolder") };
+            newFolder.Click += async (_, _) =>
+            {
+                SelectFileForAction();
+                await CreateWorkspaceItemAsync(true);
+            };
+            flyout.Items.Add(newFolder);
+            flyout.Items.Add(new MenuFlyoutSeparator());
+        }
+        else
+        {
+            var download = new MenuFlyoutItem { Text = L("Download", "\u4e0b\u8f7d") };
+            download.Click += async (_, _) => await DownloadWorkspaceFileAsync(file.Path);
+            flyout.Items.Add(download);
+            if (file.IsHtml)
+            {
+                var openHtml = new MenuFlyoutItem { Text = L("Open HTML", "\u6253\u5f00 HTML") };
+                openHtml.Click += async (_, _) => await OpenWorkspacePreviewAsync(file.Path);
+                flyout.Items.Add(openHtml);
+            }
+            flyout.Items.Add(new MenuFlyoutSeparator());
+        }
+
+        var copyPath = new MenuFlyoutItem { Text = L("Copy Path", "\u590d\u5236\u8def\u5f84") };
+        copyPath.Click += (_, _) => CopyTextToClipboard(file.Path, IsChineseUi() ? $"\u5df2\u590d\u5236 {file.Name}" : $"Copied {file.Name}");
+        flyout.Items.Add(copyPath);
+
+        var rename = new MenuFlyoutItem { Text = T("common.rename") };
+        rename.Click += async (_, _) =>
+        {
+            SelectFileForAction();
+            await RenameWorkspaceItemAsync();
+        };
+        flyout.Items.Add(rename);
+        flyout.Items.Add(new MenuFlyoutSeparator());
+
+        var delete = new MenuFlyoutItem { Text = T("common.delete") };
+        delete.Click += async (_, _) =>
+        {
+            SelectFileForAction();
+            await DeleteWorkspaceItemAsync();
+        };
+        flyout.Items.Add(delete);
+        return flyout;
     }
 
     private string FileTreeIcon(WorkspaceFile file)
