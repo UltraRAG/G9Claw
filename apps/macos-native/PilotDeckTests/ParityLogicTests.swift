@@ -22,6 +22,85 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(inside.resolvedPath, "/Users/tester/project")
     }
 
+    func testPilotDeckWebHistoryStoreDiscoversProjectSessionsAndMessages() throws {
+        let pilotHome = temporaryDirectory("pilotdeck-web-home")
+        let projectRoot = temporaryDirectory("pilotdeck-web-project")
+        defer {
+            try? FileManager.default.removeItem(at: pilotHome)
+            try? FileManager.default.removeItem(at: projectRoot)
+        }
+
+        let projectID = PilotDeckWebHistoryStore.projectID(for: projectRoot.path)
+        let projectDir = pilotHome
+            .appendingPathComponent("projects", isDirectory: true)
+            .appendingPathComponent(projectID, isDirectory: true)
+        let chatDir = projectDir.appendingPathComponent("chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+        try projectRoot.path.write(to: projectDir.appendingPathComponent(".cwd"), atomically: true, encoding: .utf8)
+
+        let sessionID = "web:s_history"
+        let transcript = """
+        {"type":"accepted_input","sessionId":"web:s_history","turnId":"turn-1","sequence":1,"createdAt":"2026-06-01T02:00:00.000Z","messages":[{"role":"user","content":[{"type":"text","text":"你好，帮我做一个小网站"}]}]}
+        {"type":"assistant_message","sessionId":"web:s_history","turnId":"turn-1","sequence":2,"createdAt":"2026-06-01T02:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"好的，我会创建一个小网站。"}]}}
+        {"type":"turn_result","sessionId":"web:s_history","turnId":"turn-1","sequence":3,"createdAt":"2026-06-01T02:00:02.000Z","result":{"type":"success","stopReason":"completed","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"permissionDenials":[]}}
+        """
+        try transcript.write(
+            to: chatDir.appendingPathComponent("\(sessionID).jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let histories = PilotDeckWebHistoryStore.loadProjects(pilotHome: pilotHome)
+        XCTAssertEqual(histories.count, 1)
+        XCTAssertEqual(histories.first?.rootPath, projectRoot.path)
+        XCTAssertEqual(histories.first?.sessions.first?.id, sessionID)
+        XCTAssertEqual(histories.first?.sessions.first?.summary, "你好，帮我做一个小网站")
+
+        let messages = try XCTUnwrap(PilotDeckWebHistoryStore.loadMessages(
+            sessionID: sessionID,
+            projectRoot: projectRoot.path,
+            pilotHome: pilotHome
+        ))
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages.first?.role, .user)
+        XCTAssertEqual(messages.first?.plainText, "你好，帮我做一个小网站")
+        XCTAssertEqual(messages.last?.role, .assistant)
+        XCTAssertEqual(messages.last?.plainText, "好的，我会创建一个小网站。")
+    }
+
+    func testPilotDeckWebHistoryStoreDiscoversGeneralSessions() throws {
+        let pilotHome = temporaryDirectory("pilotdeck-web-general-home")
+        defer { try? FileManager.default.removeItem(at: pilotHome) }
+
+        let projectID = PilotDeckWebHistoryStore.projectID(for: pilotHome.path)
+        let chatDir = pilotHome
+            .appendingPathComponent("projects", isDirectory: true)
+            .appendingPathComponent(projectID, isDirectory: true)
+            .appendingPathComponent("chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+
+        let sessionID = "web:s_general"
+        let transcriptURL = chatDir.appendingPathComponent("\(sessionID).jsonl")
+        let transcript = """
+        {"type":"accepted_input","sessionId":"web:s_general","turnId":"turn-1","sequence":1,"createdAt":"2026-06-01T10:00:00.000Z","messages":[{"role":"user","content":[{"type":"text","text":"你好啊"}]}]}
+        {"type":"assistant_message","sessionId":"web:s_general","turnId":"turn-1","sequence":2,"createdAt":"2026-06-01T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"你好！"}]}}
+        """
+        try transcript.write(to: transcriptURL, atomically: true, encoding: .utf8)
+
+        let history = try XCTUnwrap(PilotDeckWebHistoryStore.loadGeneralHistory(pilotHome: pilotHome))
+        XCTAssertEqual(history.rootPath, pilotHome.path)
+        XCTAssertEqual(history.sessions.map(\.id), [sessionID])
+        XCTAssertEqual(history.sessions.first?.summary, "你好啊")
+        XCTAssertEqual(history.sessions.first?.relativeTranscriptPath, transcriptURL.path)
+        XCTAssertEqual(history.sessions.first?.transcriptKey, "pilotdeck-web")
+
+        let messages = try XCTUnwrap(PilotDeckWebHistoryStore.loadMessages(
+            sessionID: sessionID,
+            transcriptURL: transcriptURL
+        ))
+        XCTAssertEqual(messages.map(\.plainText), ["你好啊", "你好！"])
+    }
+
     func testProjectNameMatchesWebManualProjectSlugPolicy() {
         XCTAssertEqual(WorkspaceService.projectName(for: "/Users/tester/My_Project"), "-Users-tester-My-Project")
     }

@@ -961,7 +961,7 @@ struct LocalizationService {
         .queue: "队列",
         .receivingResponse: "正在接收响应",
         .refresh: "刷新",
-        .refreshProjects: "刷新项目",
+        .refreshProjects: "刷新",
         .rename: "重命名",
         .review: "确认",
         .reviewAttachedFiles: "检查附件文件。",

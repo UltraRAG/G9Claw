@@ -165,7 +165,11 @@ final class AppState: ObservableObject {
             try bootstrapLocalDebugConfigIfNeeded()
             loadPilotDeckConfigText()
             applyNativeConfigFromCurrentText()
+            let restoredSelection = loadPersistedWorkspaceState()
             loadManualProjectsFromPilotDeckConfig()
+            mergePilotDeckWebHistory()
+            restoreWorkspaceSelection(restoredSelection)
+            persistWorkspaceState()
             refreshNativeToolData()
             restartMemoryAutomationLoop()
             restartAlwaysOnAutomationLoop()
@@ -177,7 +181,9 @@ final class AppState: ObservableObject {
     }
 
     func refreshProjects() async {
+        mergePilotDeckWebHistory()
         projects = WorkspaceService.sortedProjects(projects, order: settings.projectSortOrder)
+        persistWorkspaceState()
         statusLine = t(.projectsRefreshed)
     }
 
@@ -190,6 +196,7 @@ final class AppState: ObservableObject {
         selectedSessionID = nil
         isDraftSessionVisible = false
         activeTab = .chat
+        persistWorkspaceState()
         refreshNativeToolData()
         kickMemoryAutomationCheck()
     }
@@ -209,6 +216,7 @@ final class AppState: ObservableObject {
         } else {
             markSession(session.id, state: .idle)
         }
+        persistWorkspaceState()
         refreshNativeToolData()
     }
 
@@ -250,6 +258,7 @@ final class AppState: ObservableObject {
         restoreComposerPermissionMode(for: nil)
         isDraftSessionVisible = true
         activeTab = .chat
+        persistWorkspaceState()
         refreshNativeToolData()
     }
 
@@ -347,6 +356,7 @@ final class AppState: ObservableObject {
         isDraftSessionVisible = false
         messagesBySession[session.id] = []
         activeTab = .chat
+        persistWorkspaceState()
         return session
     }
 
@@ -376,6 +386,7 @@ final class AppState: ObservableObject {
         projects.insert(project, at: 0)
         do {
             try persistManualProject(project)
+            persistWorkspaceState()
         } catch {
             errorBanner = error.localizedDescription
         }
@@ -483,6 +494,7 @@ final class AppState: ObservableObject {
         )
         append(assistantMessage)
         markSession(sessionID, state: .processing)
+        persistSessionMessages(sessionID: sessionID)
 
         let workspacePath: String
         do {
@@ -966,6 +978,7 @@ final class AppState: ObservableObject {
         projects[index].lastActivity = Date()
         do {
             try persistManualProject(projects[index])
+            persistWorkspaceState()
             statusLine = "\(t(.rename)) \(nextName)"
         } catch {
             errorBanner = error.localizedDescription
@@ -987,6 +1000,7 @@ final class AppState: ObservableObject {
             selectedProjectID = projects.first?.id
             selectedSessionID = nil
         }
+        persistWorkspaceState()
         statusLine = "\(t(.delete)) \(removed.displayName)"
         refreshNativeToolData()
     }
@@ -999,6 +1013,7 @@ final class AppState: ObservableObject {
         renameSession(in: &projects[projectIndex].codexSessions, sessionID: session.id, title: nextTitle)
         renameSession(in: &projects[projectIndex].cursorSessions, sessionID: session.id, title: nextTitle)
         renameSession(in: &projects[projectIndex].geminiSessions, sessionID: session.id, title: nextTitle)
+        persistWorkspaceState()
         statusLine = "\(t(.rename)) \(nextTitle)"
     }
 
@@ -1012,6 +1027,7 @@ final class AppState: ObservableObject {
         if selectedSessionID == session.id {
             selectedSessionID = nil
         }
+        persistWorkspaceState()
         statusLine = "\(t(.delete)) \(session.displayTitle)"
         refreshNativeToolData()
     }
@@ -1021,6 +1037,7 @@ final class AppState: ObservableObject {
             try savePilotDeckConfigTextIfChanged()
             applyNativeConfigFromCurrentText()
             try settingsStore.save(settings)
+            persistWorkspaceState()
             refreshNativeToolData()
             restartMemoryAutomationLoop()
             restartAlwaysOnAutomationLoop()
@@ -2236,6 +2253,179 @@ final class AppState: ObservableObject {
         return projects.firstIndex(where: { $0.id == selectedProjectID })
     }
 
+    private func loadPersistedWorkspaceState() -> WorkspaceStatePersistence.Selection? {
+        guard let snapshot = WorkspaceStatePersistence.load() else {
+            ensureGeneralProject()
+            return nil
+        }
+        let restored = snapshot.projects
+            .map(Self.restoredProject)
+            .filter { project in
+                isGeneralProject(project) || FileManager.default.fileExists(atPath: project.rootPath)
+            }
+        if !restored.isEmpty {
+            projects = restored
+        }
+        ensureGeneralProject()
+        return snapshot.selection
+    }
+
+    private func restoreWorkspaceSelection(_ selection: WorkspaceStatePersistence.Selection?) {
+        let normalizedProjectRoot = selection?.projectRoot.map(normalizedPath)
+        if let normalizedProjectRoot,
+           let project = projects.first(where: { normalizedPath(effectiveWorkspacePath(for: $0)) == normalizedProjectRoot }) {
+            selectedProjectID = project.id
+        } else if let selectedProjectID,
+                  projects.contains(where: { $0.id == selectedProjectID }) {
+            // Keep the currently selected project from the in-memory bootstrap.
+        } else {
+            selectedProjectID = projects.first?.id
+        }
+
+        if let sessionID = selection?.sessionID,
+           selectedProject?.allSessions.contains(where: { $0.id == sessionID }) == true {
+            selectedSessionID = sessionID
+            loadPersistedMessagesIfNeeded(sessionID: sessionID)
+        } else {
+            selectedSessionID = nil
+        }
+        restoreComposerPermissionMode(for: selectedSessionID)
+    }
+
+    private func persistWorkspaceState() {
+        WorkspaceStatePersistence.save(
+            projects: projects.map(Self.projectForPersistence),
+            selection: WorkspaceStatePersistence.Selection(
+                projectRoot: selectedProject.map { effectiveWorkspacePath(for: $0) },
+                sessionID: selectedSessionID
+            )
+        )
+    }
+
+    private func ensureGeneralProject() {
+        guard !projects.contains(where: isGeneralProject) else { return }
+        projects.insert(
+            WorkspaceProject(
+                id: UUID(),
+                name: "general",
+                displayName: "general",
+                rootPath: Self.normalizedGeneralWorkspacePath(settings.generalWorkspacePath),
+                sessions: [],
+                codexSessions: [],
+                cursorSessions: [],
+                geminiSessions: [],
+                createdAt: Date(),
+                lastActivity: Date()
+            ),
+            at: 0
+        )
+    }
+
+    private func mergePilotDeckWebHistory() {
+        ensureGeneralProject()
+        if let generalHistory = PilotDeckWebHistoryStore.loadGeneralHistory(),
+           let generalIndex = projects.firstIndex(where: isGeneralProject) {
+            for session in generalHistory.sessions {
+                mergeImportedSession(session, into: &projects[generalIndex].sessions)
+            }
+            projects[generalIndex].sessions.sort { $0.activityDate > $1.activityDate }
+            projects[generalIndex].lastActivity = projects[generalIndex].latestActivity
+        }
+
+        let histories = PilotDeckWebHistoryStore.loadProjects()
+
+        for history in histories {
+            let normalizedRoot = normalizedPath(history.rootPath)
+            let index: Int
+            if let existing = projects.firstIndex(where: { normalizedPath(effectiveWorkspacePath(for: $0)) == normalizedRoot }) {
+                index = existing
+            } else {
+                projects.append(
+                    WorkspaceProject(
+                        id: UUID(),
+                        name: WorkspaceService.projectName(for: history.rootPath),
+                        displayName: URL(fileURLWithPath: history.rootPath).lastPathComponent,
+                        rootPath: history.rootPath,
+                        sessions: [],
+                        codexSessions: [],
+                        cursorSessions: [],
+                        geminiSessions: [],
+                        createdAt: history.sessions.map(\.createdAt).min() ?? Date(),
+                        lastActivity: history.sessions.map(\.activityDate).max()
+                    )
+                )
+                index = projects.count - 1
+            }
+
+            for session in history.sessions {
+                mergeImportedSession(session, into: &projects[index].sessions)
+            }
+            projects[index].sessions.sort { $0.activityDate > $1.activityDate }
+            projects[index].lastActivity = projects[index].latestActivity
+        }
+        projects = WorkspaceService.sortedProjects(projects, order: settings.projectSortOrder)
+    }
+
+    private func mergeImportedSession(_ session: ProjectSession, into sessions: inout [ProjectSession]) {
+        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+            sessions[index].title = session.title
+            sessions[index].summary = session.summary
+            sessions[index].updatedAt = maxDate(sessions[index].updatedAt, session.updatedAt)
+            sessions[index].lastActivity = maxDate(sessions[index].lastActivity, session.lastActivity)
+            sessions[index].lastConversationAt = maxDate(sessions[index].lastConversationAt, session.lastConversationAt)
+            sessions[index].messageCount = session.messageCount ?? sessions[index].messageCount
+            sessions[index].relativeTranscriptPath = session.relativeTranscriptPath ?? sessions[index].relativeTranscriptPath
+            sessions[index].transcriptKey = session.transcriptKey ?? sessions[index].transcriptKey
+        } else {
+            sessions.append(session)
+        }
+    }
+
+    private static func restoredProject(_ project: WorkspaceProject) -> WorkspaceProject {
+        var restored = project
+        restored.sessions = restored.sessions.map(restoredSession)
+        restored.codexSessions = restored.codexSessions.map(restoredSession)
+        restored.cursorSessions = restored.cursorSessions.map(restoredSession)
+        restored.geminiSessions = restored.geminiSessions.map(restoredSession)
+        return restored
+    }
+
+    private static func restoredSession(_ session: ProjectSession) -> ProjectSession {
+        var restored = session
+        if restored.state == .processing {
+            restored.state = .idle
+        }
+        return restored
+    }
+
+    private static func projectForPersistence(_ project: WorkspaceProject) -> WorkspaceProject {
+        var persisted = project
+        persisted.sessions = persisted.sessions.map(restoredSession)
+        persisted.codexSessions = persisted.codexSessions.map(restoredSession)
+        persisted.cursorSessions = persisted.cursorSessions.map(restoredSession)
+        persisted.geminiSessions = persisted.geminiSessions.map(restoredSession)
+        return persisted
+    }
+
+    private func normalizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+    }
+
+    private func maxDate(_ left: Date?, _ right: Date?) -> Date? {
+        switch (left, right) {
+        case (.some(let left), .some(let right)):
+            return max(left, right)
+        case (.some(let left), .none):
+            return left
+        case (.none, .some(let right)):
+            return right
+        case (.none, .none):
+            return nil
+        }
+    }
+
     private func runGitOperation(label: String, operation: @escaping @Sendable (GitService, URL) async throws -> String) {
         guard let selectedProject else {
             gitOutput = "No project selected."
@@ -2645,6 +2835,7 @@ final class AppState: ObservableObject {
             updateSessionState(in: &projects[projectIndex].cursorSessions, sessionId: sessionId, state: state)
             updateSessionState(in: &projects[projectIndex].geminiSessions, sessionId: sessionId, state: state)
         }
+        persistWorkspaceState()
     }
 
     private func updateSessionState(in sessions: inout [ProjectSession], sessionId: String, state: SessionState) {
@@ -2659,6 +2850,7 @@ final class AppState: ObservableObject {
             touchSessionConversation(in: &projects[projectIndex].cursorSessions, sessionID: sessionID)
             touchSessionConversation(in: &projects[projectIndex].geminiSessions, sessionID: sessionID)
         }
+        persistWorkspaceState()
     }
 
     private func touchSessionConversation(in sessions: inout [ProjectSession], sessionID: String) {
@@ -2852,7 +3044,16 @@ final class AppState: ObservableObject {
         let url = paths.sessions.appendingPathComponent("\(sessionID).json")
         guard FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url) else {
-            messagesBySession[sessionID] = []
+            if let transcriptURL = importedWebTranscriptURL(forSessionID: sessionID),
+               let messages = PilotDeckWebHistoryStore.loadMessages(sessionID: sessionID, transcriptURL: transcriptURL) {
+                messagesBySession[sessionID] = messages
+            } else if let projectRoot = projectRoot(forSessionID: sessionID),
+               let messages = PilotDeckWebHistoryStore.loadMessages(sessionID: sessionID, projectRoot: projectRoot) {
+                messagesBySession[sessionID] = messages
+            } else {
+                messagesBySession[sessionID] = []
+            }
+            streamRenderRevision += 1
             return
         }
         do {
@@ -2866,6 +3067,19 @@ final class AppState: ObservableObject {
             AppLog.write("session load error for \(sessionID): \(error.localizedDescription)")
             messagesBySession[sessionID] = []
         }
+    }
+
+    private func importedWebTranscriptURL(forSessionID sessionID: String) -> URL? {
+        for project in projects {
+            guard let session = project.allSessions.first(where: { $0.id == sessionID }),
+                  session.transcriptKey == "pilotdeck-web",
+                  let transcriptPath = session.relativeTranscriptPath?.nilIfBlank else {
+                continue
+            }
+            return URL(fileURLWithPath: NSString(string: transcriptPath).expandingTildeInPath)
+                .standardizedFileURL
+        }
+        return nil
     }
 
     private func loadBackgroundTaskMessagesIfNeeded(session: ProjectSession, project: WorkspaceProject) {
@@ -2883,6 +3097,7 @@ final class AppState: ObservableObject {
         projects[projectIndex].cursorSessions.removeAll { $0.id == session.id }
         projects[projectIndex].geminiSessions.removeAll { $0.id == session.id }
         projects[projectIndex].sessions.insert(session, at: 0)
+        persistWorkspaceState()
     }
 
     private func sessionTitle(for sessionID: String) -> String {
@@ -3100,6 +3315,470 @@ final class AppState: ObservableObject {
             return "status-\(assistantID.uuidString)-reconnecting"
         }
         return "status-\(assistantID.uuidString)-\(UUID().uuidString)"
+    }
+}
+
+enum WorkspaceStatePersistence {
+    struct Selection: Codable, Hashable {
+        var projectRoot: String?
+        var sessionID: String?
+    }
+
+    struct Snapshot: Codable, Hashable {
+        var version: Int
+        var projects: [WorkspaceProject]
+        var selection: Selection?
+    }
+
+    private static let version = 1
+    private static let fileName = "workspace-state.json"
+
+    static func load() -> Snapshot? {
+        guard let url = stateURL(),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        do {
+            return try JSONDecoder().decode(Snapshot.self, from: data)
+        } catch {
+            AppLog.write("workspace state load error: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    static func save(projects: [WorkspaceProject], selection: Selection) {
+        guard let url = stateURL() else { return }
+        do {
+            let snapshot = Snapshot(version: version, projects: projects, selection: selection)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(snapshot)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            AppLog.write("workspace state save error: \(error.localizedDescription)")
+        }
+    }
+
+    private static func stateURL() -> URL? {
+        guard let paths = try? AppPaths.current() else { return nil }
+        return paths.applicationSupport.appendingPathComponent(fileName)
+    }
+}
+
+enum PilotDeckWebHistoryStore {
+    struct ProjectHistory: Hashable {
+        var rootPath: String
+        var sessions: [ProjectSession]
+    }
+
+    private static let readBytes = 65_536
+    private static let internalSessionPrefixes = [
+        "always-on-discovery:",
+        "always-on-workspace:",
+        "always-on-report:",
+    ]
+
+    static func loadProjects(pilotHome: URL = defaultPilotHome()) -> [ProjectHistory] {
+        let projectsDir = pilotHome.appendingPathComponent("projects", isDirectory: true)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: projectsDir.path) else {
+            return []
+        }
+        return names.compactMap { name -> ProjectHistory? in
+            let projectDir = projectsDir.appendingPathComponent(name, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: projectDir.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                return nil
+            }
+            guard let rootPath = markerProjectRoot(from: projectDir),
+                  FileManager.default.fileExists(atPath: rootPath) else {
+                return nil
+            }
+            guard URL(fileURLWithPath: rootPath).standardizedFileURL.path != pilotHome.standardizedFileURL.path else {
+                return nil
+            }
+            let sessions = loadSessions(projectRoot: rootPath, pilotHome: pilotHome)
+            guard !sessions.isEmpty else { return nil }
+            return ProjectHistory(rootPath: rootPath, sessions: sessions)
+        }
+        .sorted { left, right in
+            (left.sessions.map(\.activityDate).max() ?? .distantPast) >
+                (right.sessions.map(\.activityDate).max() ?? .distantPast)
+        }
+    }
+
+    static func loadGeneralHistory(pilotHome: URL = defaultPilotHome()) -> ProjectHistory? {
+        let rootPath = pilotHome.standardizedFileURL.path
+        let sessions = loadSessions(projectRoot: rootPath, pilotHome: pilotHome)
+        guard !sessions.isEmpty else { return nil }
+        return ProjectHistory(rootPath: rootPath, sessions: sessions)
+    }
+
+    static func loadSessions(projectRoot: String, pilotHome: URL = defaultPilotHome()) -> [ProjectSession] {
+        let chatDir = projectChatDir(projectRoot: projectRoot, pilotHome: pilotHome)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: chatDir.path) else {
+            return []
+        }
+        return names
+            .filter { $0.hasSuffix(".jsonl") }
+            .compactMap { name -> ProjectSession? in
+                let sessionID = String(name.dropLast(".jsonl".count))
+                guard !isInternalSession(sessionID) else { return nil }
+                let url = chatDir.appendingPathComponent(name)
+                return sessionInfo(sessionID: sessionID, transcriptURL: url)
+            }
+            .sorted { $0.activityDate > $1.activityDate }
+    }
+
+    static func loadMessages(sessionID: String, projectRoot: String, pilotHome: URL = defaultPilotHome()) -> [ChatMessage]? {
+        let transcriptURL = projectChatDir(projectRoot: projectRoot, pilotHome: pilotHome)
+            .appendingPathComponent("\(sanitizeSessionID(sessionID)).jsonl")
+        return loadMessages(sessionID: sessionID, transcriptURL: transcriptURL)
+    }
+
+    static func loadMessages(sessionID: String, transcriptURL: URL) -> [ChatMessage]? {
+        guard let text = try? String(contentsOf: transcriptURL, encoding: .utf8) else {
+            return nil
+        }
+        let entries = transcriptEntries(from: text)
+        guard !entries.isEmpty else { return [] }
+        let startIndex = lastCompactBoundaryIndex(in: entries).map { $0 + 1 } ?? 0
+        var messages: [ChatMessage] = []
+        for entry in entries.dropFirst(startIndex) {
+            let createdAt = date(from: entry["createdAt"] as? String) ?? Date()
+            switch entry["type"] as? String {
+            case "accepted_input":
+                let canonicalMessages = entry["messages"] as? [[String: Any]] ?? []
+                messages.append(contentsOf: canonicalMessages.compactMap {
+                    chatMessage(from: $0, sessionID: sessionID, createdAt: createdAt)
+                })
+            case "assistant_message", "tool_result_message", "durable_message":
+                if let message = entry["message"] as? [String: Any],
+                   let chat = chatMessage(from: message, sessionID: sessionID, createdAt: createdAt) {
+                    messages.append(chat)
+                }
+            case "control_boundary":
+                if isCompactBoundary(entry) {
+                    messages.append(
+                        ChatMessage(
+                            id: UUID(),
+                            sessionId: sessionID,
+                            provider: .pilotDeck,
+                            role: .system,
+                            blocks: [.text("Context compacted")],
+                            createdAt: createdAt,
+                            isStreaming: false,
+                            tokenBudget: nil
+                        )
+                    )
+                }
+            default:
+                continue
+            }
+        }
+        return messages
+    }
+
+    static func projectID(for projectRoot: String) -> String {
+        let normalizedRoot = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+            .replacingOccurrences(of: "\\", with: "/")
+            .replacingOccurrences(of: #"^[A-Za-z]:"#, with: "", options: .regularExpression)
+        let slug = normalizedRoot
+            .replacingOccurrences(of: #"[^A-Za-z0-9._-]+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return slug.isEmpty ? "project" : slug
+    }
+
+    static func projectChatDir(projectRoot: String, pilotHome: URL = defaultPilotHome()) -> URL {
+        let projectsDir = pilotHome.appendingPathComponent("projects", isDirectory: true)
+        let storedID = storedProjectID(projectRoot: projectRoot, projectsDir: projectsDir)
+        return projectsDir
+            .appendingPathComponent(storedID ?? projectID(for: projectRoot), isDirectory: true)
+            .appendingPathComponent("chats", isDirectory: true)
+    }
+
+    static func sanitizeSessionID(_ sessionID: String) -> String {
+        sessionID
+            .replacingOccurrences(of: #"[\\/]+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+            .nilIfBlank ?? "session"
+    }
+
+    private static func defaultPilotHome() -> URL {
+        let raw = ProcessInfo.processInfo.environment["PILOT_HOME"] ?? "~/.pilotdeck"
+        let expanded = NSString(string: raw).expandingTildeInPath
+        return URL(fileURLWithPath: expanded).standardizedFileURL
+    }
+
+    private static func markerProjectRoot(from projectDir: URL) -> String? {
+        let marker = projectDir.appendingPathComponent(".cwd")
+        guard let raw = try? String(contentsOf: marker, encoding: .utf8) else {
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(fileURLWithPath: NSString(string: trimmed).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+    }
+
+    private static func storedProjectID(projectRoot: String, projectsDir: URL) -> String? {
+        let target = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: projectsDir.path) else {
+            return nil
+        }
+        for entry in entries {
+            let dir = projectsDir.appendingPathComponent(entry, isDirectory: true)
+            guard let markerRoot = markerProjectRoot(from: dir),
+                  markerRoot == target else {
+                continue
+            }
+            return entry
+        }
+        return nil
+    }
+
+    private static func sessionInfo(sessionID: String, transcriptURL: URL) -> ProjectSession? {
+        guard let lite = readLite(transcriptURL) else { return nil }
+        let source = "\(lite.head)\n\(lite.tail)"
+        let title = lastMetadataStringField(source, "title")
+            ?? lastMetadataStringField(source, "aiTitle")
+        let firstPrompt = firstAcceptedInputText(lite.head)
+        let lastPrompt = lastAcceptedInputText(lite.tail) ?? firstPrompt
+        let summary = title ?? lastPrompt
+        guard let summary, !summary.isEmpty else { return nil }
+
+        let createdAt = firstEntryDate(lite.head) ?? lite.modifiedAt
+        return ProjectSession(
+            id: sessionID,
+            provider: .pilotDeck,
+            title: title ?? summary,
+            summary: summary,
+            createdAt: createdAt,
+            updatedAt: lite.modifiedAt,
+            lastActivity: lite.modifiedAt,
+            lastConversationAt: lite.modifiedAt,
+            state: .idle,
+            messageCount: nil,
+            relativeTranscriptPath: transcriptURL.path,
+            transcriptKey: "pilotdeck-web"
+        )
+    }
+
+    private struct LiteTranscript {
+        var modifiedAt: Date
+        var head: String
+        var tail: String
+    }
+
+    private static func readLite(_ url: URL) -> LiteTranscript? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let sizeNumber = attributes[.size] as? NSNumber,
+              sizeNumber.intValue > 0 else {
+            return nil
+        }
+        let modifiedAt = (attributes[.modificationDate] as? Date) ?? Date()
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        let size = sizeNumber.intValue
+        let headData = handle.readData(ofLength: min(readBytes, size))
+        let head = String(data: headData, encoding: .utf8) ?? ""
+        var tail = head
+        if size > readBytes {
+            try? handle.seek(toOffset: UInt64(max(0, size - readBytes)))
+            let tailData = handle.readData(ofLength: readBytes)
+            tail = String(data: tailData, encoding: .utf8) ?? ""
+        }
+        return LiteTranscript(modifiedAt: modifiedAt, head: head, tail: tail)
+    }
+
+    private static func firstEntryDate(_ text: String) -> Date? {
+        for object in transcriptEntries(from: text) {
+            if let raw = object["createdAt"] as? String,
+               let parsed = date(from: raw) {
+                return parsed
+            }
+        }
+        return nil
+    }
+
+    private static func firstAcceptedInputText(_ text: String) -> String? {
+        for object in transcriptEntries(from: text) where object["type"] as? String == "accepted_input" {
+            if let messages = object["messages"] as? [[String: Any]],
+               let found = messages.compactMap(canonicalTextMessage).first(where: { !$0.isEmpty }) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    private static func lastAcceptedInputText(_ text: String) -> String? {
+        for object in transcriptEntries(from: text).reversed() where object["type"] as? String == "accepted_input" {
+            if let messages = object["messages"] as? [[String: Any]],
+               let found = messages.compactMap(canonicalTextMessage).last(where: { !$0.isEmpty }) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    private static func canonicalTextMessage(_ object: [String: Any]) -> String? {
+        guard (object["role"] as? String) == "user",
+              let content = object["content"] as? [[String: Any]] else {
+            return nil
+        }
+        let text = content.compactMap { block -> String? in
+            guard block["type"] as? String == "text" else { return nil }
+            return block["text"] as? String
+        }
+        .joined(separator: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    private static func lastMetadataStringField(_ text: String, _ key: String) -> String? {
+        for object in transcriptEntries(from: text).reversed() where object["type"] as? String == "session_metadata" {
+            guard let metadata = object["metadata"] as? [String: Any],
+                  let value = metadata[key] as? String else {
+                continue
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return nil
+    }
+
+    private static func transcriptEntries(from text: String) -> [[String: Any]] {
+        text.split(whereSeparator: \.isNewline).compactMap { line -> [String: Any]? in
+            guard let data = String(line).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            return object
+        }
+    }
+
+    private static func lastCompactBoundaryIndex(in entries: [[String: Any]]) -> Int? {
+        for index in entries.indices.reversed() where isCompactBoundary(entries[index]) {
+            return index
+        }
+        return nil
+    }
+
+    private static func isCompactBoundary(_ entry: [String: Any]) -> Bool {
+        guard entry["type"] as? String == "control_boundary",
+              let boundary = entry["boundary"] as? [String: Any],
+              boundary["kind"] as? String == "compact" else {
+            return false
+        }
+        return boundary["subtype"] as? String == "compact_boundary"
+    }
+
+    private static func chatMessage(from object: [String: Any], sessionID: String, createdAt: Date) -> ChatMessage? {
+        guard let content = object["content"] as? [[String: Any]] else { return nil }
+        let containsToolResult = content.contains { $0["type"] as? String == "tool_result" }
+        let rawRole = object["role"] as? String
+        let role: ChatRole
+        if containsToolResult {
+            role = .assistant
+        } else {
+            role = ChatRole(rawValue: rawRole ?? "") ?? .assistant
+        }
+        let blocks = content.compactMap(chatBlock)
+        guard !blocks.isEmpty else { return nil }
+        return ChatMessage(
+            id: UUID(),
+            sessionId: sessionID,
+            provider: .pilotDeck,
+            role: role,
+            blocks: blocks,
+            createdAt: createdAt,
+            isStreaming: false,
+            tokenBudget: nil
+        )
+    }
+
+    private static func chatBlock(from object: [String: Any]) -> ChatBlock? {
+        switch object["type"] as? String {
+        case "text":
+            return (object["text"] as? String).map(ChatBlock.text)
+        case "reasoning":
+            return (object["text"] as? String).map(ChatBlock.reasoning)
+        case "tool_call":
+            let id = object["id"] as? String ?? UUID().uuidString
+            let name = object["name"] as? String ?? "Tool"
+            let input = object["input"].map(jsonString) ?? "{}"
+            return .toolCall(ToolCall(id: id, name: name, inputJSON: input, status: .completed))
+        case "tool_result":
+            let id = object["toolCallId"] as? String ?? object["tool_call_id"] as? String ?? UUID().uuidString
+            let output = toolResultText(object)
+            let raw = object["raw"] as? [String: Any]
+            let isError = (raw?["type"] as? String) == "error" || raw?["error"] != nil
+            return .toolResult(ToolResult(toolCallId: id, output: output, isError: isError))
+        case "image":
+            return .text("[image]")
+        default:
+            return nil
+        }
+    }
+
+    private static func toolResultText(_ object: [String: Any]) -> String {
+        if let content = object["content"] as? [[String: Any]] {
+            let text = content.compactMap { block -> String? in
+                if block["type"] as? String == "text" {
+                    return block["text"] as? String
+                }
+                return nil
+            }.joined(separator: "\n")
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
+            }
+        }
+        if let raw = object["raw"] as? [String: Any] {
+            if let data = raw["data"] as? [String: Any] {
+                let stdout = data["stdout"] as? String ?? ""
+                let stderr = data["stderr"] as? String ?? ""
+                let combined = [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n")
+                if !combined.isEmpty {
+                    return combined
+                }
+            }
+            return jsonString(raw)
+        }
+        return jsonString(object)
+    }
+
+    private static func jsonString(_ value: Any) -> String {
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              let string = String(data: data, encoding: .utf8) else {
+            return String(describing: value)
+        }
+        return string
+    }
+
+    private static func date(from raw: String?) -> Date? {
+        guard let raw else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let parsed = fractional.date(from: raw) {
+            return parsed
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+            .date(from: raw)
+    }
+
+    private static func isInternalSession(_ sessionID: String) -> Bool {
+        internalSessionPrefixes.contains { sessionID.hasPrefix($0) }
     }
 }
 
