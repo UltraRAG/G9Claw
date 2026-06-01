@@ -1325,12 +1325,6 @@ private struct MessageRow: View {
                 ForEach(Array(assistantSegments.enumerated()), id: \.offset) { _, segment in
                     assistantSegmentView(segment)
                 }
-                if message.isStreaming && message.plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(DesignTokens.neutral400)
-                        .frame(width: 8, height: 16)
-                        .opacity(0.8)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -2823,7 +2817,9 @@ private struct InlineProcessToolGroupRow: View {
     var items: [(ToolCall, ToolResult?)]
 
     private var isRunning: Bool { items.contains { $0.1 == nil } }
-    private var hasFailure: Bool { items.contains { $0.1?.isError == true } }
+    private var allFailed: Bool {
+        !items.isEmpty && items.allSatisfy { $0.1?.isError == true }
+    }
     private var expansionKey: String {
         "tool-group:" + items.map { $0.0.id }.joined(separator: ",")
     }
@@ -2844,7 +2840,7 @@ private struct InlineProcessToolGroupRow: View {
                     } else {
                         Text(summaryText)
                             .font(CodexProcessStyle.rowFont)
-                            .foregroundStyle(hasFailure ? DesignTokens.danger.opacity(0.78) : CodexProcessStyle.title)
+                            .foregroundStyle(allFailed ? DesignTokens.danger.opacity(0.78) : CodexProcessStyle.title)
                             .lineLimit(1)
                     }
                     if isRunning {
@@ -2889,12 +2885,12 @@ private struct InlineProcessToolGroupRow: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .topLeading)))
             }
         }
-        .padding(.vertical, hasFailure ? 4 : 5)
+        .padding(.vertical, allFailed ? 4 : 5)
     }
 
     private var groupState: AgentActivityState {
         if isRunning { return .running }
-        if hasFailure { return .failed }
+        if allFailed { return .failed }
         return .completed
     }
 
