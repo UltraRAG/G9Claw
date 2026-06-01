@@ -6520,10 +6520,11 @@ public sealed partial class MainWindow : Window
         var memoryDashboard = State.MemoryDashboard;
         var latestIndexed = memoryDashboard.EffectiveOverview.LastIndexedAt ?? (latest == default ? null : latest);
         var memoryAuto = memoryDashboard.EffectiveScheduler.Enabled || State.Settings.MemorySettings?.Enabled == true;
+        var isGeneralMemoryContext = State.SelectedProject is null || IsGeneralProject(State.SelectedProject);
         shell.Children.Add(ToolTabbedTopbar(
             new[]
             {
-                (L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), _memoryToolTab == MemoryToolTab.ProjectMemory, (Action)(() => { _memoryToolTab = MemoryToolTab.ProjectMemory; _selectedMemoryRecordId = null; RenderAll(); })),
+                (isGeneralMemoryContext ? L("General Memory", "\u901a\u7528\u8bb0\u5fc6") : L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), _memoryToolTab == MemoryToolTab.ProjectMemory, (Action)(() => { _memoryToolTab = MemoryToolTab.ProjectMemory; _selectedMemoryRecordId = null; RenderAll(); })),
                 (L("User Profile", "\u7528\u6237\u753b\u50cf"), _memoryToolTab == MemoryToolTab.Profile, (Action)(() => { _memoryToolTab = MemoryToolTab.Profile; _selectedMemoryRecordId = null; RenderAll(); })),
                 (L("Memory Trace", "\u8bb0\u5fc6\u8ffd\u8e2a"), _memoryToolTab == MemoryToolTab.Trace, (Action)(() => { _memoryToolTab = MemoryToolTab.Trace; _selectedMemoryRecordId = null; RenderAll(); })),
             },
@@ -6582,6 +6583,7 @@ public sealed partial class MainWindow : Window
                     ColumnDefinitions =
                     {
                         new ColumnDefinition { Width = new GridLength(360) },
+                        new ColumnDefinition { Width = GridLength.Auto },
                         new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
                         new ColumnDefinition { Width = GridLength.Auto },
                     },
@@ -6593,6 +6595,9 @@ public sealed partial class MainWindow : Window
             };
             if (memoryToolbar.Child is Grid memoryToolbarGrid)
             {
+                var searchAction = ToolbarButton("Search", L("Search", "\u641c\u7d22"), RenderAll);
+                Grid.SetColumn(searchAction, 1);
+                memoryToolbarGrid.Children.Add(searchAction);
                 var memoryActions = new StackPanel
                 {
                     Orientation = Orientation.Horizontal,
@@ -6606,7 +6611,7 @@ public sealed partial class MainWindow : Window
                         MemoryMoreButton(),
                     },
                 };
-                Grid.SetColumn(memoryActions, 2);
+                Grid.SetColumn(memoryActions, 3);
                 memoryToolbarGrid.Children.Add(memoryActions);
             }
             Grid.SetRow(memoryToolbar, 1);
@@ -6623,12 +6628,32 @@ public sealed partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(_toolStatus)) panel.Children.Add(StatusText(_toolStatus));
         if (_memoryToolTab == MemoryToolTab.ProjectMemory)
         {
-            if (State.SelectedProject is { } selectedProject && !IsGeneralProject(selectedProject))
+            if (isGeneralMemoryContext)
+            {
+                panel.Children.Add(MemoryRecordSection(
+                    L("General Topics", "\u901a\u7528\u4e3b\u9898"),
+                    L("Topic records formed from general conversations.", "\u4ece\u901a\u7528\u5bf9\u8bdd\u4e2d\u5f62\u6210\u7684\u4e3b\u9898\u8bb0\u5f55\u3002"),
+                    FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.GeneralProjectMeta && !record.Deprecated)),
+                    SelectMemoryRecord));
+            }
+            else if (State.SelectedProject is { } selectedProject)
             {
                 panel.Children.Add(MemoryProjectContextCard(selectedProject, projectRecords, feedbackRecords, latest));
             }
-            panel.Children.Add(MemoryRecordSection(L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"), L("Progress, facts, and state records for the current project.", "\u5f53\u524d\u9879\u76ee\u7684\u8fdb\u5c55\u3001\u4e8b\u5b9e\u548c\u72b6\u6001\u8bb0\u5f55\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Project && !record.Deprecated)), SelectMemoryRecord));
-            panel.Children.Add(MemoryRecordSection(L("Collaboration Feedback", "\u534f\u4f5c\u53cd\u9988"), L("User preferences, constraints, and delivery rules.", "\u7528\u6237\u504f\u597d\u3001\u7ea6\u675f\u548c\u4ea4\u4ed8\u89c4\u5219\u3002"), FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated)), SelectMemoryRecord));
+            panel.Children.Add(MemoryRecordSection(
+                isGeneralMemoryContext ? L("General Memory", "\u901a\u7528\u8bb0\u5fc6") : L("Project Memory", "\u9879\u76ee\u8bb0\u5fc6"),
+                isGeneralMemoryContext
+                    ? L("Facts, preferences, and context from general conversations.", "\u901a\u7528\u5bf9\u8bdd\u4e2d\u7684\u4e8b\u5b9e\u3001\u504f\u597d\u548c\u4e0a\u4e0b\u6587\u8bb0\u5f55\u3002")
+                    : L("Progress, facts, and state records for the current project.", "\u5f53\u524d\u9879\u76ee\u7684\u8fdb\u5c55\u3001\u4e8b\u5b9e\u548c\u72b6\u6001\u8bb0\u5f55\u3002"),
+                FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Project && !record.Deprecated)),
+                SelectMemoryRecord));
+            panel.Children.Add(MemoryRecordSection(
+                L("Collaboration Feedback", "\u534f\u4f5c\u53cd\u9988"),
+                isGeneralMemoryContext
+                    ? L("Preferences, constraints, and delivery rules from general conversations.", "\u901a\u7528\u5bf9\u8bdd\u4e2d\u7684\u504f\u597d\u3001\u7ea6\u675f\u548c\u4ea4\u4ed8\u89c4\u5219\u3002")
+                    : L("User preferences, constraints, and delivery rules.", "\u7528\u6237\u504f\u597d\u3001\u7ea6\u675f\u548c\u4ea4\u4ed8\u89c4\u5219\u3002"),
+                FilterMemory(State.MemoryRecords.Where(record => record.Type == MemoryRecordType.Feedback && !record.Deprecated)),
+                SelectMemoryRecord));
             var deprecated = FilterMemory(State.MemoryRecords.Where(record => record.Deprecated)).ToList();
             if (deprecated.Count > 0)
             {
