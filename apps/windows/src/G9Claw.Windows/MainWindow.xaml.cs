@@ -5163,15 +5163,7 @@ public sealed partial class MainWindow : Window
             actionPanel.Children.Add(expand);
 
             var close = PreviewHeaderButton("X", L("Close", "\u5173\u95ed"));
-            close.Click += (_, _) =>
-            {
-                _selectedFilePath = null;
-                _previewDraftText = null;
-                _isMarkdownPreviewing = false;
-                _isCodePreviewing = false;
-                _isFileEditorExpanded = false;
-                RenderContent();
-            };
+            close.Click += async (_, _) => await ClosePreviewAsync(preview);
             actionPanel.Children.Add(close);
 
             Grid.SetColumn(actionPanel, 2);
@@ -5214,6 +5206,37 @@ public sealed partial class MainWindow : Window
                 Children = { ErrorState(ex.Message) },
             };
         }
+    }
+
+    private bool PreviewHasUnsavedChanges(WorkspacePreview preview) =>
+        preview.Text is not null
+        && _previewDraftText is not null
+        && !string.Equals(_previewDraftText, preview.Text, StringComparison.Ordinal);
+
+    private async Task ClosePreviewAsync(WorkspacePreview preview)
+    {
+        if (PreviewHasUnsavedChanges(preview))
+        {
+            var dialog = Dialog(
+                L($"Close without saving {Path.GetFileName(preview.Path)}?", $"\u4e0d\u4fdd\u5b58\u5e76\u5173\u95ed {Path.GetFileName(preview.Path)}\uff1f"),
+                new TextBlock
+                {
+                    Text = L("Unsaved changes will be lost.", "\u672a\u4fdd\u5b58\u7684\u66f4\u6539\u4f1a\u4e22\u5931\u3002"),
+                    TextWrapping = TextWrapping.Wrap,
+                },
+                L("Close", "\u5173\u95ed"));
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return;
+            }
+        }
+
+        _selectedFilePath = null;
+        _previewDraftText = null;
+        _isMarkdownPreviewing = false;
+        _isCodePreviewing = false;
+        _isFileEditorExpanded = false;
+        RenderContent();
     }
 
     private FrameworkElement FileEmptyEditor() => new Grid
