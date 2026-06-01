@@ -165,6 +165,7 @@ public sealed partial class MainWindow : Window
     private string? _previewDraftText;
     private bool _isMarkdownPreviewing;
     private bool _isCodePreviewing;
+    private bool _isFileEditorExpanded;
     private bool _isSidebarVisible = true;
     private bool _isDraggingSidebar;
     private double _dragStartX;
@@ -4650,11 +4651,13 @@ public sealed partial class MainWindow : Window
         }
 
         var root = new Grid { Background = Brush("V2BackgroundBrush") };
-        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.46, GridUnitType.Star) });
-        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        var isFileEditorExpanded = _isFileEditorExpanded && !string.IsNullOrWhiteSpace(_selectedFilePath);
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = isFileEditorExpanded ? new GridLength(0) : new GridLength(0.46, GridUnitType.Star) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = isFileEditorExpanded ? new GridLength(0) : new GridLength(12) });
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.54, GridUnitType.Star) });
 
         var left = new Grid { Background = Brush("V2BackgroundBrush") };
+        left.Visibility = isFileEditorExpanded ? Visibility.Collapsed : Visibility.Visible;
         left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
@@ -4698,6 +4701,7 @@ public sealed partial class MainWindow : Window
         root.Children.Add(left);
 
         var divider = SplitDivider();
+        divider.Visibility = isFileEditorExpanded ? Visibility.Collapsed : Visibility.Visible;
         Grid.SetColumn(divider, 1);
         root.Children.Add(divider);
 
@@ -5133,6 +5137,14 @@ public sealed partial class MainWindow : Window
                 actionPanel.Children.Add(save);
             }
 
+            var expand = PreviewHeaderButton(_isFileEditorExpanded ? "Shrink" : "Expand", _isFileEditorExpanded ? L("Restore", "\u8fd8\u539f") : L("Expand", "\u5c55\u5f00"));
+            expand.Click += (_, _) =>
+            {
+                _isFileEditorExpanded = !_isFileEditorExpanded;
+                RenderAll();
+            };
+            actionPanel.Children.Add(expand);
+
             var close = PreviewHeaderButton("X", L("Close", "\u5173\u95ed"));
             close.Click += (_, _) =>
             {
@@ -5140,6 +5152,7 @@ public sealed partial class MainWindow : Window
                 _previewDraftText = null;
                 _isMarkdownPreviewing = false;
                 _isCodePreviewing = false;
+                _isFileEditorExpanded = false;
                 RenderContent();
             };
             actionPanel.Children.Add(close);
