@@ -7159,12 +7159,30 @@ public sealed partial class MainWindow : Window
         shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        var enabledProjects = State.Settings.AlwaysOnSettings?.ProjectEnabled.Count(pair => pair.Value) ?? 0;
-        var totalProjects = Math.Max(enabledProjects, State.Projects.Count(project => !V2SidebarProjection.IsGeneralProject(project)));
-        var readyPlans = State.AlwaysOnPlans.Count(plan => plan.Status == AlwaysOnStatus.Ready || plan.Status == AlwaysOnStatus.Scheduled);
-        var runningPlans = State.AlwaysOnPlans.Count(plan => plan.Status == AlwaysOnStatus.Running || plan.ExecutionStatus == AlwaysOnStatus.Running);
-        var todayPlans = State.AlwaysOnPlans.Count(plan => plan.UpdatedAt.LocalDateTime.Date == DateTime.Today);
-        var isProjectContext = State.SelectedProject is { } selectedAlwaysOnProject && !V2SidebarProjection.IsGeneralProject(selectedAlwaysOnProject);
+        var projectContext = State.SelectedProject is { } selectedAlwaysOnProject && !V2SidebarProjection.IsGeneralProject(selectedAlwaysOnProject)
+            ? selectedAlwaysOnProject
+            : null;
+        var isProjectContext = projectContext is not null;
+        var scopedPlans = isProjectContext
+            ? State.AlwaysOnPlans.Where(plan => AlwaysOnPlanMatchesProject(plan, projectContext!)).ToList()
+            : State.AlwaysOnPlans.ToList();
+        var scopedCronJobs = isProjectContext
+            ? State.AlwaysOnCronJobs.Where(job => AlwaysOnCronMatchesProject(job, projectContext!)).ToList()
+            : State.AlwaysOnCronJobs.ToList();
+        var scopedRunHistory = isProjectContext
+            ? State.AlwaysOnRunHistory.Where(run => AlwaysOnRunMatchesProject(run, projectContext!)).ToList()
+            : State.AlwaysOnRunHistory.ToList();
+        var enabledProjects = isProjectContext
+            ? (IsAlwaysOnProjectEnabled(projectContext!) ? 1 : 0)
+            : State.Settings.AlwaysOnSettings?.ProjectEnabled.Count(pair => pair.Value) ?? 0;
+        var totalProjects = isProjectContext
+            ? 1
+            : Math.Max(enabledProjects, State.Projects.Count(project => !V2SidebarProjection.IsGeneralProject(project)));
+        var readyPlans = scopedPlans.Count(plan => plan.Status == AlwaysOnStatus.Ready || plan.Status == AlwaysOnStatus.Scheduled);
+        var runningPlans = scopedPlans.Count(plan => plan.Status == AlwaysOnStatus.Running || plan.ExecutionStatus == AlwaysOnStatus.Running);
+        var todayEvents = scopedPlans.Count(plan => plan.UpdatedAt.LocalDateTime.Date == DateTime.Today)
+            + scopedCronJobs.Count(job => (job.LastFiredAt ?? job.CreatedAt)?.LocalDateTime.Date == DateTime.Today)
+            + scopedRunHistory.Count(run => run.StartedAt.LocalDateTime.Date == DateTime.Today);
         if (!isProjectContext && _alwaysOnToolTab == AlwaysOnToolTab.History)
         {
             _alwaysOnToolTab = AlwaysOnToolTab.Dashboard;
@@ -7182,7 +7200,7 @@ public sealed partial class MainWindow : Window
         shell.Children.Add(ToolTabbedTopbar(tabs));
 
         var selectedPlan = !string.IsNullOrWhiteSpace(_selectedAlwaysOnPlanId)
-            ? State.AlwaysOnPlans.FirstOrDefault(plan => string.Equals(plan.Id, _selectedAlwaysOnPlanId, StringComparison.Ordinal))
+            ? scopedPlans.FirstOrDefault(plan => string.Equals(plan.Id, _selectedAlwaysOnPlanId, StringComparison.Ordinal))
             : null;
         if (selectedPlan is not null)
         {
@@ -7192,7 +7210,7 @@ public sealed partial class MainWindow : Window
             return shell;
         }
         var selectedCronJob = !string.IsNullOrWhiteSpace(_selectedAlwaysOnCronJobId)
-            ? State.AlwaysOnCronJobs.FirstOrDefault(job => string.Equals(job.Id, _selectedAlwaysOnCronJobId, StringComparison.Ordinal))
+            ? scopedCronJobs.FirstOrDefault(job => string.Equals(job.Id, _selectedAlwaysOnCronJobId, StringComparison.Ordinal))
             : null;
         if (selectedCronJob is not null)
         {
@@ -7202,7 +7220,7 @@ public sealed partial class MainWindow : Window
             return shell;
         }
         var selectedRun = !string.IsNullOrWhiteSpace(_selectedAlwaysOnRunId)
-            ? State.AlwaysOnRunHistory.FirstOrDefault(run => string.Equals(run.Id, _selectedAlwaysOnRunId, StringComparison.Ordinal))
+            ? scopedRunHistory.FirstOrDefault(run => string.Equals(run.Id, _selectedAlwaysOnRunId, StringComparison.Ordinal))
             : null;
         if (selectedRun is not null)
         {
@@ -7226,15 +7244,15 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(AlwaysOnContentHeader());
         if (_alwaysOnToolTab == AlwaysOnToolTab.Dashboard)
         {
-            panel.Children.Add(AlwaysOnDashboardContent(enabledProjects, totalProjects, readyPlans, runningPlans, todayPlans, isProjectContext));
+            panel.Children.Add(AlwaysOnDashboardContent(enabledProjects, totalProjects, readyPlans, runningPlans, todayEvents, isProjectContext, scopedPlans, scopedCronJobs, scopedRunHistory));
         }
         else if (_alwaysOnToolTab == AlwaysOnToolTab.Items)
         {
-            panel.Children.Add(AlwaysOnItemsSection(State.AlwaysOnPlans, State.AlwaysOnCronJobs));
+            panel.Children.Add(AlwaysOnItemsSection(scopedPlans, scopedCronJobs));
         }
         else
         {
-            panel.Children.Add(AlwaysOnRunHistorySection(State.AlwaysOnRunHistory));
+            panel.Children.Add(AlwaysOnRunHistorySection(scopedRunHistory));
         }
 
         var scroll = new ScrollViewer
@@ -8354,7 +8372,10 @@ public sealed partial class MainWindow : Window
         int readyPlans,
         int runningPlans,
         int todayEvents,
-        bool isProjectContext)
+        bool isProjectContext,
+        IReadOnlyList<AlwaysOnPlan> plans,
+        IReadOnlyList<AlwaysOnCronJob> cronJobs,
+        IReadOnlyList<AlwaysOnRunHistory> runs)
     {
         var stack = new StackPanel { Spacing = 18 };
         stack.Children.Add(MetricGrid(
@@ -8374,11 +8395,11 @@ public sealed partial class MainWindow : Window
         };
         split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(340) });
-        var timeline = ToolBoardGroup(L("Timeline", "\u65f6\u95f4\u7ebf"), null, AlwaysOnTimelineRows());
+        var timeline = ToolBoardGroup(L("Timeline", "\u65f6\u95f4\u7ebf"), null, AlwaysOnTimelineRows(plans, cronJobs, runs));
         split.Children.Add(timeline);
-        var runs = ToolBoardGroup(L("Runs", "\u8fd0\u884c"), null, AlwaysOnRecentRunRows());
-        Grid.SetColumn(runs, 1);
-        split.Children.Add(runs);
+        var runRows = ToolBoardGroup(L("Runs", "\u8fd0\u884c"), null, AlwaysOnRecentRunRows(runs));
+        Grid.SetColumn(runRows, 1);
+        split.Children.Add(runRows);
         stack.Children.Add(split);
 
         return stack;
@@ -8500,9 +8521,12 @@ public sealed partial class MainWindow : Window
         },
     };
 
-    private FrameworkElement AlwaysOnTimelineRows()
+    private FrameworkElement AlwaysOnTimelineRows(
+        IReadOnlyList<AlwaysOnPlan> plans,
+        IReadOnlyList<AlwaysOnCronJob> cronJobs,
+        IReadOnlyList<AlwaysOnRunHistory> runs)
     {
-        var rows = AlwaysOnTimelineItems().Take(18).ToList();
+        var rows = AlwaysOnTimelineItems(plans, cronJobs, runs).Take(18).ToList();
         var stack = new StackPanel { Spacing = 0 };
         if (rows.Count == 0)
         {
@@ -8596,10 +8620,13 @@ public sealed partial class MainWindow : Window
         };
     }
 
-    private List<AlwaysOnTimelineItem> AlwaysOnTimelineItems()
+    private List<AlwaysOnTimelineItem> AlwaysOnTimelineItems(
+        IReadOnlyList<AlwaysOnPlan> plans,
+        IReadOnlyList<AlwaysOnCronJob> cronJobs,
+        IReadOnlyList<AlwaysOnRunHistory> runs)
     {
         var items = new List<AlwaysOnTimelineItem>();
-        foreach (var plan in State.AlwaysOnPlans)
+        foreach (var plan in plans)
         {
             items.Add(new AlwaysOnTimelineItem(
                 plan.Title,
@@ -8609,7 +8636,7 @@ public sealed partial class MainWindow : Window
                 string.IsNullOrWhiteSpace(plan.Summary) ? plan.Content : plan.Summary));
         }
 
-        foreach (var job in State.AlwaysOnCronJobs)
+        foreach (var job in cronJobs)
         {
             items.Add(new AlwaysOnTimelineItem(
                 AlwaysOnCronTitle(job),
@@ -8619,7 +8646,7 @@ public sealed partial class MainWindow : Window
                 string.IsNullOrWhiteSpace(job.Prompt) ? job.Cron : job.Prompt));
         }
 
-        foreach (var run in State.AlwaysOnRunHistory)
+        foreach (var run in runs)
         {
             items.Add(new AlwaysOnTimelineItem(
                 run.Title,
@@ -8632,9 +8659,9 @@ public sealed partial class MainWindow : Window
         return items.OrderByDescending(item => item.CreatedAt).ToList();
     }
 
-    private FrameworkElement AlwaysOnRecentRunRows()
+    private FrameworkElement AlwaysOnRecentRunRows(IReadOnlyList<AlwaysOnRunHistory> runHistory)
     {
-        var rows = State.AlwaysOnRunHistory.OrderByDescending(run => run.StartedAt).Take(8).ToList();
+        var rows = runHistory.OrderByDescending(run => run.StartedAt).Take(8).ToList();
         var stack = new StackPanel { Spacing = 8 };
         if (rows.Count == 0)
         {
