@@ -43,6 +43,8 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(context.contains("current_date: 2026-06-01"))
         XCTAssertTrue(context.contains("current_weekday: Monday"))
         XCTAssertTrue(context.contains("timezone: Asia/Shanghai (UTC+08:00)"))
+        XCTAssertTrue(context.contains("<system-reminder>"))
+        XCTAssertTrue(context.contains("<environment>"))
         XCTAssertFalse(context.contains("current_date: 2026-05-31"))
     }
 
@@ -2168,6 +2170,45 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(notebook.output.contains("print(1)"))
     }
 
+    func testAgentToolExecutorPersistsLargeToolOutputForLaterRead() async throws {
+        let root = try makeAgentWorkspace("pilotdeck-agent-large-output")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lines = (1...1_200).map { "line-\($0) " + String(repeating: "x", count: 40) }
+        try lines.joined(separator: "\n").write(to: root.appendingPathComponent("large.txt"), atomically: true, encoding: .utf8)
+        let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
+
+        let result = await NativeToolRouter.execute(
+            call: AgentToolCall(
+                id: "call:large/read?",
+                name: "Read",
+                inputJSON: #"{"file_path":"large.txt","limit":1200}"#
+            ),
+            context: context
+        )
+
+        XCTAssertFalse(result.isError, result.output)
+        XCTAssertTrue(result.output.contains("<persisted-output>"))
+        XCTAssertTrue(result.output.contains("Full output saved to: .pilotdeck/tool-results/test-session/Read-call-large-read.txt"))
+        XCTAssertTrue(result.output.contains("Use Read with file_path"))
+        let persisted = root.appendingPathComponent(".pilotdeck/tool-results/test-session/Read-call-large-read.txt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: persisted.path))
+        let persistedText = try String(contentsOf: persisted, encoding: .utf8)
+        XCTAssertTrue(persistedText.contains("1: line-1"))
+        XCTAssertTrue(persistedText.contains("1200: line-1200"))
+
+        let reread = await NativeToolRouter.execute(
+            call: AgentToolCall(
+                id: "read-persisted-tail",
+                name: "Read",
+                inputJSON: #"{"file_path":".pilotdeck/tool-results/test-session/Read-call-large-read.txt","offset":1198,"limit":3}"#
+            ),
+            context: context
+        )
+
+        XCTAssertFalse(reread.isError, reread.output)
+        XCTAssertTrue(reread.output.contains("1200: 1200: line-1200"))
+    }
+
     func testAgentToolExecutorEditsDeletesAndNotebookCells() async throws {
         let root = try makeAgentWorkspace("pilotdeck-agent-edit")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2308,6 +2349,139 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(lints.output.contains("lint warning"))
     }
 
+    func testShellAutoBackgroundsLongForegroundCommands() async throws {
+        let root = try makeAgentWorkspace("pilotdeck-shell-auto-background")
+        defer {
+            AgentBackgroundTaskStore.shared.terminate()
+            try? FileManager.default.removeItem(at: root)
+        }
+        let context = AgentRunContext(request: agentRequest(
+            projectPath: root.path,
+            permissionMode: .bypassPermissions,
+            nativeConfigValues: ["runtime.shellAutoBackgroundAfterMs": "100"]
+        ))
+
+        let result = await NativeToolRouter.execute(
+            call: AgentToolCall(
+                id: "shell-auto-bg",
+                name: "Shell",
+                inputJSON: #"{"command":"sleep 1; printf auto-bg-ok","timeout":5000}"#
+            ),
+            context: context
+        )
+
+        XCTAssertFalse(result.isError, result.output)
+        let payload = try jsonObject(from: result.output)
+        XCTAssertEqual(payload["status"] as? String, "running")
+        XCTAssertEqual(payload["auto_backgrounded"] as? Bool, true)
+        let taskID = try XCTUnwrap(payload["task_id"] as? String)
+
+        let awaited = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "await-auto-bg", name: "Await", inputJSON: toolJSON(["task_id": taskID, "block": true, "timeout": 3_000])),
+            context: context
+        )
+        XCTAssertFalse(awaited.isError, awaited.output)
+        XCTAssertTrue(awaited.output.contains("auto-bg-ok"))
+    }
+
+    func testBackgroundTaskTerminationIsScopedBySession() async throws {
+        let root = try makeAgentWorkspace("pilotdeck-bg-scope")
+        defer {
+            AgentBackgroundTaskStore.shared.terminate()
+            try? FileManager.default.removeItem(at: root)
+        }
+        let environment = ProcessInfo.processInfo.environment
+        let first = try AgentBackgroundTaskStore.shared.startShell(
+            sessionId: "session-a",
+            command: "sleep 1; printf session-a",
+            cwd: root.path,
+            environment: environment,
+            timeoutMs: 5_000,
+            description: "session a"
+        )
+        let second = try AgentBackgroundTaskStore.shared.startShell(
+            sessionId: "session-b",
+            command: "sleep 0.2; printf session-b",
+            cwd: root.path,
+            environment: environment,
+            timeoutMs: 5_000,
+            description: "session b"
+        )
+
+        AgentBackgroundTaskStore.shared.terminate(sessionId: "session-a")
+
+        let firstOutput = try await AgentBackgroundTaskStore.shared.output(taskId: first, block: false, timeoutMs: 0)
+        let firstPayload = try jsonObject(from: firstOutput)
+        XCTAssertEqual(firstPayload["status"] as? String, "cancelled")
+        XCTAssertEqual(firstPayload["session_id"] as? String, "session-a")
+
+        let secondOutput = try await AgentBackgroundTaskStore.shared.output(taskId: second, block: true, timeoutMs: 3_000)
+        let secondPayload = try jsonObject(from: secondOutput)
+        XCTAssertEqual(secondPayload["status"] as? String, "completed")
+        XCTAssertEqual(secondPayload["session_id"] as? String, "session-b")
+        XCTAssertTrue(secondOutput.contains("session-b"))
+    }
+
+    func testShellExitCodeSemanticsDriveToolErrorState() async throws {
+        let root = try makeAgentWorkspace("pilotdeck-shell-exit-semantics")
+        defer {
+            AgentBackgroundTaskStore.shared.terminate()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try "alpha\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "beta\n".write(to: root.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
+
+        let failing = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "shell-fail", name: "Shell", inputJSON: #"{"command":"printf shell-failed >&2; exit 7","timeout":5000}"#),
+            context: context
+        )
+        XCTAssertTrue(failing.isError, failing.output)
+        XCTAssertTrue(failing.output.contains("exit code: 7"))
+
+        let grepNoMatch = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "grep-no-match", name: "Shell", inputJSON: #"{"command":"grep missing a.txt","timeout":5000}"#),
+            context: context
+        )
+        XCTAssertFalse(grepNoMatch.isError, grepNoMatch.output)
+        XCTAssertTrue(grepNoMatch.output.contains("exit code: 1"))
+
+        let pipedGrepNoMatch = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "grep-pipe-no-match", name: "Shell", inputJSON: #"{"command":"printf alpha | grep missing","timeout":5000}"#),
+            context: context
+        )
+        XCTAssertFalse(pipedGrepNoMatch.isError, pipedGrepNoMatch.output)
+        XCTAssertTrue(pipedGrepNoMatch.output.contains("exit code: 1"))
+
+        let grepBad = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "grep-bad", name: "Shell", inputJSON: #"{"command":"grep missing no-such-file.txt","timeout":5000}"#),
+            context: context
+        )
+        XCTAssertTrue(grepBad.isError, grepBad.output)
+
+        let diffDifferent = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "diff-different", name: "Shell", inputJSON: #"{"command":"diff a.txt b.txt","timeout":5000}"#),
+            context: context
+        )
+        XCTAssertFalse(diffDifferent.isError, diffDifferent.output)
+        XCTAssertTrue(diffDifferent.output.contains("exit code: 1"))
+
+        let background = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "shell-bg-fail", name: "Shell", inputJSON: #"{"command":"printf bg-failed; exit 4","run_in_background":true,"timeout":5000}"#),
+            context: context
+        )
+        XCTAssertFalse(background.isError, background.output)
+        let backgroundObject = try jsonObject(from: background.output)
+        let taskID = try XCTUnwrap(backgroundObject["task_id"] as? String)
+        let awaited = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "await-bg-fail", name: "Await", inputJSON: toolJSON(["task_id": taskID, "block": true, "timeout": 10_000])),
+            context: context
+        )
+        XCTAssertTrue(awaited.isError, awaited.output)
+        XCTAssertTrue(awaited.output.contains("bg-failed"))
+        XCTAssertTrue(awaited.output.contains("\"exitCode\" : 4"))
+    }
+
     func testLegacySearchAndWeatherExecutionsNormalizeToWebSearchWhileWebFetchIsDisabled() async throws {
         let root = try makeAgentWorkspace("pilotdeck-agent-disabled-search")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2380,6 +2554,46 @@ final class ParityLogicTests: XCTestCase {
         )
         XCTAssertFalse(task.isError, task.output)
         XCTAssertTrue(task.output.contains(root.appendingPathComponent("subdir").path))
+    }
+
+    func testAgentRunContextRestoresTodoStateFromPriorMessages() async throws {
+        let prior = ChatMessage(
+            id: UUID(),
+            sessionId: "test-session",
+            provider: .pilotDeck,
+            role: .assistant,
+            blocks: [
+                .toolCall(ToolCall(
+                    id: "todo-restore",
+                    name: "TodoWrite",
+                    inputJSON: #"{"todos":[{"content":"finish the native task bridge","status":"in_progress"},{"content":"verify build","status":"pending"}]}"#,
+                    status: .completed
+                )),
+                .toolResult(ToolResult(
+                    toolCallId: "todo-restore",
+                    output: "Todos have been modified successfully.",
+                    isError: false
+                )),
+            ],
+            createdAt: Date(),
+            isStreaming: false
+        )
+        let context = AgentRunContext(request: agentRequest(priorMessages: [prior]))
+
+        XCTAssertTrue(context.todosJSON.contains("finish the native task bridge"))
+        XCTAssertTrue(context.hasIncompleteTodos)
+
+        let reminder = try XCTUnwrap(NativeAgentRuntime.nativeAgentTodoReminderContext(context: context))
+        XCTAssertTrue(reminder.contains("<system-reminder>"))
+        XCTAssertTrue(reminder.contains("<todo-list>"))
+        XCTAssertTrue(reminder.contains("verify build"))
+
+        let read = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "todo-read", name: "TodoRead", inputJSON: "{}"),
+            context: context
+        )
+        XCTAssertFalse(read.isError, read.output)
+        XCTAssertTrue(read.output.contains("finish the native task bridge"))
     }
 
     func testAgentPermissionPolicyClassifiesCanonicalTools() {
@@ -5153,6 +5367,67 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue((payload["executionHint"] as? String)?.contains("skillDir") == true)
     }
 
+    func testPostCompactionSkillContextRestoresInvokedSkillInstructions() throws {
+        let projectRoot = temporaryDirectory("pilotdeck-skill-post-compact")
+        defer { try? FileManager.default.removeItem(at: projectRoot) }
+        let skillDir = try writeProjectSkill(
+            projectRoot: projectRoot,
+            slug: "planner",
+            name: "planner",
+            description: "Keeps planning conventions stable after context compaction."
+        )
+        let context = AgentRunContext(request: agentRequest(projectPath: projectRoot.path))
+        _ = try SkillRuntimeService.load(inputJSON: #"{"skill":"planner"}"#, context: context)
+
+        let refresh = try XCTUnwrap(SkillRuntimeService.postCompactSkillContext(context: context))
+
+        XCTAssertTrue(refresh.contains("Post-compaction skill refresh"))
+        XCTAssertTrue(refresh.contains("planner"))
+        XCTAssertTrue(refresh.contains(skillDir.path))
+        XCTAssertTrue(refresh.contains("The CLI is at `scripts/planner`"))
+    }
+
+    func testPostCompactionRuntimeContextRefreshesDynamicState() throws {
+        let projectRoot = temporaryDirectory("pilotdeck-runtime-post-compact")
+        defer { try? FileManager.default.removeItem(at: projectRoot) }
+        _ = try writeProjectSkill(
+            projectRoot: projectRoot,
+            slug: "planner",
+            name: "planner",
+            description: "Keeps planning conventions stable after context compaction."
+        )
+        let prior = ChatMessage(
+            id: UUID(),
+            sessionId: "test-session",
+            provider: .pilotDeck,
+            role: .assistant,
+            blocks: [
+                .toolCall(ToolCall(
+                    id: "todo-post-compact",
+                    name: "TodoWrite",
+                    inputJSON: #"{"todos":[{"content":"carry the todo through compaction","status":"in_progress"}]}"#,
+                    status: .completed
+                )),
+            ],
+            createdAt: Date(),
+            isStreaming: false
+        )
+        let context = AgentRunContext(request: agentRequest(projectPath: projectRoot.path, priorMessages: [prior]))
+        _ = try SkillRuntimeService.load(inputJSON: #"{"skill":"planner"}"#, context: context)
+
+        let messages = NativeAgentRuntime.appendPostCompactionRuntimeContext(
+            to: [["role": "system", "content": "system"], ["role": "user", "content": "[Context compacted]"]],
+            context: context
+        )
+        let serialized = String(describing: messages)
+
+        XCTAssertTrue(serialized.contains("Runtime context for this session"))
+        XCTAssertTrue(serialized.contains("Current Todo List from earlier work"))
+        XCTAssertTrue(serialized.contains("carry the todo through compaction"))
+        XCTAssertTrue(serialized.contains("Post-compaction skill refresh"))
+        XCTAssertTrue(serialized.contains("planner"))
+    }
+
     func testGeneralSkillContextExcludesProjectScopedSkills() throws {
         let projectRoot = temporaryDirectory("pilotdeck-general-skill-scope")
         defer { try? FileManager.default.removeItem(at: projectRoot) }
@@ -5759,6 +6034,27 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(result.output.contains("subagent_depth_exceeded"))
     }
 
+    func testSubagentToolSetIsReadOnlyAndSearchCapable() {
+        let tools = NativeAgentRuntime.subagentReadOnlyOpenAITools()
+        let names = Set(tools.compactMap { tool -> String? in
+            (tool["function"] as? [String: Any])?["name"] as? String
+        })
+
+        XCTAssertTrue(names.contains("Read"))
+        XCTAssertTrue(names.contains("Grep"))
+        XCTAssertTrue(names.contains("Glob"))
+        XCTAssertTrue(names.contains("SemanticSearch"))
+        XCTAssertTrue(names.contains("WebSearch"))
+        XCTAssertFalse(names.contains("TodoRead"))
+        XCTAssertFalse(names.contains("Write"))
+        XCTAssertFalse(names.contains("StrReplace"))
+        XCTAssertFalse(names.contains("Shell"))
+        XCTAssertFalse(names.contains("Task"))
+        XCTAssertTrue(NativeAgentRuntime.isSubagentReadOnlyTool(AgentToolCall(id: "read", name: "read", inputJSON: "{}")))
+        XCTAssertFalse(NativeAgentRuntime.isSubagentReadOnlyTool(AgentToolCall(id: "write", name: "write", inputJSON: "{}")))
+        XCTAssertFalse(NativeAgentRuntime.isSubagentReadOnlyTool(AgentToolCall(id: "task", name: "subagent", inputJSON: "{}")))
+    }
+
     func testNativeAttachmentResolverBuildsMultimodalContentParts() throws {
         let root = try makeAgentWorkspace("attachments")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -5808,6 +6104,45 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertNotNil(compaction)
         XCTAssertLessThan(compaction?.postTokens ?? Int.max, compaction?.preTokens ?? 0)
         XCTAssertTrue(String(describing: compaction?.messages ?? []).contains("microcompacted"))
+    }
+
+    func testNativeContextBudgetSnipSummaryKeepsDroppedIntentAndTools() {
+        var messages: [[String: Any]] = [
+            ["role": "system", "content": "system"],
+            ["role": "user", "content": "Build the calendar import workflow and preserve timezone conversion rules."],
+            ["role": "assistant", "content": NSNull(), "tool_calls": [
+                [
+                    "id": "read-calendar",
+                    "type": "function",
+                    "function": [
+                        "name": "Read",
+                        "arguments": #"{"path":"Sources/CalendarImporter.swift"}"#,
+                    ],
+                ],
+            ]],
+            [
+                "role": "tool",
+                "tool_call_id": "read-calendar",
+                "content": String(repeating: "CalendarImporter.swift maps event timezone conversion before saving.\n", count: 180),
+            ],
+            ["role": "assistant", "content": "I found the timezone conversion path and will keep it intact."],
+        ]
+        for index in 0..<18 {
+            messages.append([
+                "role": index.isMultiple(of: 2) ? "user" : "assistant",
+                "content": "filler turn \(index) " + String(repeating: "z", count: 700),
+            ])
+        }
+
+        let compaction = NativeContextBudget.compactIfNeeded(messages: messages, contextWindow: 1_800)
+        let serialized = String(describing: compaction?.messages ?? [])
+
+        XCTAssertNotNil(compaction)
+        XCTAssertTrue(serialized.contains("[Context compacted]"))
+        XCTAssertTrue(serialized.contains("Build the calendar import workflow"))
+        XCTAssertTrue(serialized.contains("CalendarImporter.swift"))
+        XCTAssertTrue(serialized.contains("Read"))
+        XCTAssertTrue(serialized.contains("timezone conversion"))
     }
 
     func testToolInvocationPresentationRendersShellRawFallbackAndCommonFields() {
@@ -6081,6 +6416,39 @@ final class ParityLogicTests: XCTestCase {
         )
         XCTAssertTrue(context.todoRequiresRefresh)
         XCTAssertEqual(PlanTodoExecutionGate.blockingResult(for: write, context: context)?.isPolicyBlock, true)
+    }
+
+    func testParallelSafeToolInvocationOnlyAllowsPureReadTools() {
+        let context = AgentRunContext(request: agentRequest(permissionMode: .bypassPermissions))
+        let read = ToolArgumentNormalizer.normalize(
+            AgentToolCall(id: "read", name: "Read", inputJSON: #"{"file_path":"README.md"}"#)
+        )
+        let grep = ToolArgumentNormalizer.normalize(
+            AgentToolCall(id: "grep", name: "Grep", inputJSON: #"{"pattern":"PilotDeck"}"#)
+        )
+        let todoRead = ToolArgumentNormalizer.normalize(
+            AgentToolCall(id: "todo-read", name: "TodoRead", inputJSON: #"{}"#)
+        )
+        let glob = ToolArgumentNormalizer.normalize(
+            AgentToolCall(id: "glob", name: "Glob", inputJSON: #"{"pattern":"**/*","path":"."}"#)
+        )
+        let skill = ToolArgumentNormalizer.normalize(
+            AgentToolCall(id: "skill", name: "Skill", inputJSON: #"{"skill":"research"}"#)
+        )
+        let shell = ToolArgumentNormalizer.normalize(
+            AgentToolCall(id: "shell", name: "Shell", inputJSON: #"{"command":"pwd"}"#)
+        )
+        let write = ToolArgumentNormalizer.normalize(
+            AgentToolCall(id: "write", name: "Write", inputJSON: #"{"file_path":"index.html","content":"hi"}"#)
+        )
+
+        XCTAssertTrue(NativeAgentRuntime.isParallelSafeToolInvocation(read, context: context))
+        XCTAssertTrue(NativeAgentRuntime.isParallelSafeToolInvocation(grep, context: context))
+        XCTAssertTrue(NativeAgentRuntime.isParallelSafeToolInvocation(todoRead, context: context))
+        XCTAssertFalse(NativeAgentRuntime.isParallelSafeToolInvocation(glob, context: context))
+        XCTAssertFalse(NativeAgentRuntime.isParallelSafeToolInvocation(skill, context: context))
+        XCTAssertFalse(NativeAgentRuntime.isParallelSafeToolInvocation(shell, context: context))
+        XCTAssertFalse(NativeAgentRuntime.isParallelSafeToolInvocation(write, context: context))
     }
 
     func testRootGlobExecutionPolicyCachesRepeatedRootDiscovery() {
@@ -7300,6 +7668,7 @@ final class ParityLogicTests: XCTestCase {
     private func agentRequest(
         projectPath: String = NSTemporaryDirectory(),
         prompt: String = "test",
+        priorMessages: [ChatMessage] = [],
         runMode: ChatRunMode = .agent,
         permissionMode: ComposerPermissionMode = .default,
         toolSettings: ToolPermissionSettings = .defaults,
@@ -7318,7 +7687,7 @@ final class ParityLogicTests: XCTestCase {
                 headers: [:]
             ),
             apiKey: "test-key",
-            priorMessages: [],
+            priorMessages: priorMessages,
             timeoutMs: 1_000,
             contextWindow: 160_000,
             permissionMode: permissionMode,
