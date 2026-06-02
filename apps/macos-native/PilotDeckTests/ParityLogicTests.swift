@@ -101,6 +101,145 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(messages.map(\.plainText), ["你好啊", "你好！"])
     }
 
+    func testPilotDeckWebHistoryStoreDiscoversKnownProjectWithoutChats() throws {
+        let pilotHome = temporaryDirectory("pilotdeck-web-known-home")
+        let projectRoot = temporaryDirectory("pilotdeck-web-known-project")
+        let configuredRoot = temporaryDirectory("pilotdeck-web-configured-project")
+        defer {
+            try? FileManager.default.removeItem(at: pilotHome)
+            try? FileManager.default.removeItem(at: projectRoot)
+            try? FileManager.default.removeItem(at: configuredRoot)
+        }
+
+        let projectID = PilotDeckWebHistoryStore.projectID(for: projectRoot.path)
+        let projectDir = pilotHome
+            .appendingPathComponent("projects", isDirectory: true)
+            .appendingPathComponent(projectID, isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        try projectRoot.path.write(to: projectDir.appendingPathComponent(".cwd"), atomically: true, encoding: .utf8)
+
+        let config: [String: Any] = [
+            "projects": [
+                "configured-project": [
+                    "originalPath": configuredRoot.path,
+                    "displayName": "Configured Project",
+                ],
+            ],
+        ]
+        let configData = try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys])
+        try configData.write(to: pilotHome.appendingPathComponent("project-config.json"), options: .atomic)
+
+        let known = PilotDeckWebHistoryStore.loadKnownProjects(pilotHome: pilotHome)
+        let roots = Set(known.map(\.rootPath))
+
+        XCTAssertTrue(roots.contains(projectRoot.standardizedFileURL.path))
+        XCTAssertTrue(roots.contains(configuredRoot.standardizedFileURL.path))
+        XCTAssertEqual(
+            known.first(where: { $0.rootPath == configuredRoot.standardizedFileURL.path })?.displayName,
+            "Configured Project"
+        )
+    }
+
+    func testSharedProjectPathIndexPreservesTombstoneUntilReopened() throws {
+        let root = temporaryDirectory("pilotdeck-shared-project-index")
+        let projectRoot = temporaryDirectory("pilotdeck-shared-project")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: projectRoot)
+        }
+
+        let indexURL = root.appendingPathComponent(".pilotdeck/project-index.json")
+        let createdAt = Date(timeIntervalSince1970: 100)
+        SharedProjectPathIndexStore.upsert([
+            SharedProjectPathIndexStore.Entry(
+                rootPath: projectRoot.path,
+                projectName: "native-project",
+                displayName: "Native Project",
+                isGeneral: false,
+                sources: ["mac-native"],
+                createdAt: createdAt,
+                updatedAt: createdAt,
+                deletedAt: nil
+            ),
+        ], url: indexURL)
+
+        XCTAssertEqual(SharedProjectPathIndexStore.loadActiveEntries(url: indexURL).map(\.rootPath), [
+            projectRoot.standardizedFileURL.path,
+        ])
+
+        let deletedAt = Date(timeIntervalSince1970: 200)
+        SharedProjectPathIndexStore.markDeleted(rootPath: projectRoot.path, url: indexURL, now: deletedAt)
+
+        XCTAssertTrue(SharedProjectPathIndexStore.loadActiveEntries(url: indexURL).isEmpty)
+        XCTAssertEqual(SharedProjectPathIndexStore.load(url: indexURL).projects.first?.deletedAt, deletedAt)
+
+        let reopenedAt = Date(timeIntervalSince1970: 300)
+        SharedProjectPathIndexStore.upsert([
+            SharedProjectPathIndexStore.Entry(
+                rootPath: projectRoot.path,
+                projectName: "web-project",
+                displayName: "Web Project",
+                isGeneral: false,
+                sources: ["web"],
+                createdAt: reopenedAt,
+                updatedAt: reopenedAt,
+                deletedAt: nil
+            ),
+        ], url: indexURL)
+
+        let reopened = try XCTUnwrap(SharedProjectPathIndexStore.loadActiveEntries(url: indexURL).first)
+        XCTAssertNil(reopened.deletedAt)
+        XCTAssertEqual(reopened.projectName, "web-project")
+        XCTAssertEqual(Set(reopened.sources), ["mac-native", "web"])
+    }
+
+    func testSharedSessionIndexRequiresReadableNativeTranscript() throws {
+        let root = temporaryDirectory("pilotdeck-shared-session-index")
+        let projectRoot = temporaryDirectory("pilotdeck-shared-session-project")
+        let sessionsDirectory = root.appendingPathComponent("Sessions", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: projectRoot)
+        }
+        try FileManager.default.createDirectory(at: sessionsDirectory, withIntermediateDirectories: true)
+
+        let indexURL = root.appendingPathComponent(".pilotdeck/session-index.json")
+        let session = ProjectSession(
+            id: "native-session",
+            provider: .pilotDeck,
+            title: "Build a local app",
+            summary: "Build a local app",
+            createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 110),
+            lastActivity: Date(timeIntervalSince1970: 120),
+            lastConversationAt: Date(timeIntervalSince1970: 130),
+            state: .processing,
+            messageCount: 3
+        )
+
+        SharedSessionIndexStore.save(entries: [
+            SharedSessionIndexStore.Entry(
+                projectRoot: projectRoot.path,
+                session: session,
+                source: "mac-native",
+                updatedAt: session.activityDate
+            ),
+        ], url: indexURL)
+
+        let loadedBeforeTranscript = try XCTUnwrap(SharedSessionIndexStore.loadEntries(url: indexURL).first)
+        XCTAssertEqual(loadedBeforeTranscript.session.state, .idle)
+        XCTAssertFalse(loadedBeforeTranscript.hasReadableTranscript(nativeSessionsDirectory: sessionsDirectory))
+
+        try "[]".write(
+            to: sessionsDirectory.appendingPathComponent("\(session.id).json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let loadedAfterTranscript = try XCTUnwrap(SharedSessionIndexStore.loadEntries(url: indexURL).first)
+        XCTAssertTrue(loadedAfterTranscript.hasReadableTranscript(nativeSessionsDirectory: sessionsDirectory))
+    }
+
     func testLocalSessionIndexRecoveryRestoresProjectSessionFromMessagePath() throws {
         let sessionsDirectory = temporaryDirectory("pilotdeck-local-sessions")
         defer { try? FileManager.default.removeItem(at: sessionsDirectory) }

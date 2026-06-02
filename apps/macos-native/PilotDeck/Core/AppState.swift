@@ -204,7 +204,9 @@ final class AppState: ObservableObject {
             applyNativeConfigFromCurrentText()
             let restoredSelection = loadPersistedWorkspaceState()
             loadManualProjectsFromPilotDeckConfig()
+            mergeSharedProjectPathIndex()
             mergePilotDeckWebHistory()
+            mergeSharedSessionIndex()
             recoverLocalSessionIndex()
             restoreWorkspaceSelection(restoredSelection)
             persistWorkspaceState()
@@ -1044,9 +1046,12 @@ final class AppState: ObservableObject {
     func deleteProject(_ project: WorkspaceProject) {
         guard let index = projects.firstIndex(where: { $0.id == project.id }) else { return }
         let removed = projects.remove(at: index)
+        let removedRoot = normalizedPath(effectiveWorkspacePath(for: removed))
         for session in removed.allSessions {
             removeSessionArtifacts(session.id)
         }
+        SharedProjectPathIndexStore.markDeleted(rootPath: removedRoot)
+        SharedSessionIndexStore.removeProject(rootPath: removedRoot)
         do {
             try removeManualProjectFromConfig(removed)
         } catch {
@@ -1080,6 +1085,7 @@ final class AppState: ObservableObject {
         removeSession(from: &projects[projectIndex].cursorSessions, sessionID: session.id)
         removeSession(from: &projects[projectIndex].geminiSessions, sessionID: session.id)
         removeSessionArtifacts(session.id)
+        SharedSessionIndexStore.removeSession(sessionID: session.id)
         if selectedSessionID == session.id {
             selectedSessionID = nil
         }
@@ -2356,13 +2362,15 @@ final class AppState: ObservableObject {
     }
 
     private func persistWorkspaceState() {
+        let persistedProjects = projects.map(Self.projectForPersistence)
         WorkspaceStatePersistence.save(
-            projects: projects.map(Self.projectForPersistence),
+            projects: persistedProjects,
             selection: WorkspaceStatePersistence.Selection(
                 projectRoot: selectedProject.map { effectiveWorkspacePath(for: $0) },
                 sessionID: selectedSessionID
             )
         )
+        persistSharedIndexes(projects: persistedProjects)
     }
 
     private func ensureGeneralProject() {
@@ -2382,6 +2390,51 @@ final class AppState: ObservableObject {
             ),
             at: 0
         )
+    }
+
+    private func mergeSharedProjectPathIndex() {
+        ensureGeneralProject()
+        let snapshot = SharedProjectPathIndexStore.load()
+        let deletedRoots = Set(snapshot.projects.compactMap { entry -> String? in
+            entry.deletedAt == nil ? nil : normalizedPath(entry.rootPath)
+        })
+        var indexedProjects = snapshot.projects.filter { $0.deletedAt == nil }
+        let webProjects = PilotDeckWebHistoryStore.loadKnownProjects()
+            .filter { !deletedRoots.contains(normalizedPath($0.rootPath)) }
+            .map {
+                SharedProjectPathIndexStore.Entry(
+                    rootPath: $0.rootPath,
+                    projectName: $0.projectName,
+                    displayName: $0.displayName,
+                    isGeneral: false,
+                    sources: ["web"],
+                    createdAt: Date(),
+                    updatedAt: Date(),
+                    deletedAt: nil
+                )
+            }
+        indexedProjects.append(contentsOf: webProjects)
+
+        for entry in indexedProjects where !entry.isGeneral {
+            let rootPath = normalizedPath(entry.rootPath)
+            guard FileManager.default.fileExists(atPath: rootPath) else { continue }
+            guard !projects.contains(where: { normalizedPath(effectiveWorkspacePath(for: $0)) == rootPath }) else { continue }
+            projects.append(
+                WorkspaceProject(
+                    id: UUID(),
+                    name: entry.projectName.nilIfBlank ?? WorkspaceService.projectName(for: rootPath),
+                    displayName: entry.displayName.nilIfBlank ?? URL(fileURLWithPath: rootPath).lastPathComponent,
+                    rootPath: rootPath,
+                    sessions: [],
+                    codexSessions: [],
+                    cursorSessions: [],
+                    geminiSessions: [],
+                    createdAt: entry.createdAt,
+                    lastActivity: entry.updatedAt
+                )
+            )
+        }
+        projects = WorkspaceService.sortedProjects(projects, order: settings.projectSortOrder)
     }
 
     private func mergePilotDeckWebHistory() {
@@ -2427,6 +2480,32 @@ final class AppState: ObservableObject {
             projects[index].lastActivity = projects[index].latestActivity
         }
         projects = WorkspaceService.sortedProjects(projects, order: settings.projectSortOrder)
+    }
+
+    private func mergeSharedSessionIndex() {
+        guard let paths = try? AppPaths.current() else { return }
+        let entries = SharedSessionIndexStore.loadEntries()
+        guard !entries.isEmpty else { return }
+
+        var mergedCount = 0
+        for entry in entries {
+            let normalizedRoot = normalizedPath(entry.projectRoot)
+            guard let projectIndex = projects.firstIndex(where: {
+                normalizedPath(effectiveWorkspacePath(for: $0)) == normalizedRoot
+            }) else { continue }
+            guard entry.hasReadableTranscript(nativeSessionsDirectory: paths.sessions) else { continue }
+            guard !projects[projectIndex].allSessions.contains(where: { $0.id == entry.session.id }) else { continue }
+
+            mergeImportedSession(entry.session, into: &projects[projectIndex].sessions)
+            projects[projectIndex].sessions.sort { $0.activityDate > $1.activityDate }
+            projects[projectIndex].lastActivity = projects[projectIndex].latestActivity
+            mergedCount += 1
+        }
+
+        if mergedCount > 0 {
+            projects = WorkspaceService.sortedProjects(projects, order: settings.projectSortOrder)
+            AppLog.write("merged \(mergedCount) session index entr\(mergedCount == 1 ? "y" : "ies") from shared session index")
+        }
     }
 
     private func mergeImportedSession(_ session: ProjectSession, into sessions: inout [ProjectSession]) {
@@ -2484,6 +2563,40 @@ final class AppState: ObservableObject {
             }
         }
         return roots
+    }
+
+    private func persistSharedIndexes(projects persistedProjects: [WorkspaceProject]) {
+        guard !persistedProjects.isEmpty else { return }
+        let projectEntries = persistedProjects.map { project in
+            SharedProjectPathIndexStore.Entry(
+                rootPath: normalizedPath(effectiveWorkspacePath(for: project)),
+                projectName: project.name,
+                displayName: project.displayName,
+                isGeneral: isGeneralProject(project),
+                sources: ["mac-native"],
+                createdAt: project.createdAt,
+                updatedAt: project.latestActivity,
+                deletedAt: nil
+            )
+        }
+        SharedProjectPathIndexStore.upsert(projectEntries)
+
+        let sessionEntries = persistedProjects.flatMap { project in
+            let rootPath = normalizedPath(effectiveWorkspacePath(for: project))
+            return project.allSessions.map { session in
+                SharedSessionIndexStore.Entry(
+                    projectRoot: rootPath,
+                    session: Self.projectSessionForIndex(session),
+                    source: session.transcriptKey == "pilotdeck-web" ? "web" : "mac-native",
+                    updatedAt: session.activityDate
+                )
+            }
+        }
+        SharedSessionIndexStore.save(entries: sessionEntries)
+    }
+
+    fileprivate static func projectSessionForIndex(_ session: ProjectSession) -> ProjectSession {
+        restoredSession(session)
     }
 
     private static func restoredProject(_ project: WorkspaceProject) -> WorkspaceProject {
@@ -3510,6 +3623,256 @@ enum WorkspaceStatePersistence {
     }
 }
 
+enum SharedProjectPathIndexStore {
+    struct Entry: Codable, Hashable {
+        var rootPath: String
+        var projectName: String
+        var displayName: String
+        var isGeneral: Bool
+        var sources: [String]
+        var createdAt: Date
+        var updatedAt: Date
+        var deletedAt: Date?
+
+        var normalized: Entry {
+            var entry = self
+            entry.rootPath = SharedProjectPathIndexStore.normalizedPath(rootPath)
+            entry.sources = SharedProjectPathIndexStore.uniqued(sources.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter { !$0.isEmpty })
+            return entry
+        }
+    }
+
+    struct Snapshot: Codable, Hashable {
+        var version: Int
+        var projects: [Entry]
+    }
+
+    private static let version = 1
+    private static let fileName = "project-index.json"
+
+    static func loadActiveEntries(url: URL = defaultURL()) -> [Entry] {
+        load(url: url).projects.filter { $0.deletedAt == nil }
+    }
+
+    static func upsert(_ incoming: [Entry], url: URL = defaultURL()) {
+        guard !incoming.isEmpty else { return }
+        var existing = load(url: url).projects.reduce(into: [String: Entry]()) { result, entry in
+            result[normalizedPath(entry.rootPath)] = entry.normalized
+        }
+
+        for rawEntry in incoming {
+            let entry = rawEntry.normalized
+            let key = normalizedPath(entry.rootPath)
+            if var current = existing[key] {
+                current.projectName = entry.projectName.nilIfBlank ?? current.projectName
+                current.displayName = entry.displayName.nilIfBlank ?? current.displayName
+                current.isGeneral = current.isGeneral || entry.isGeneral
+                current.sources = uniqued(current.sources + entry.sources)
+                current.createdAt = min(current.createdAt, entry.createdAt)
+                current.updatedAt = max(current.updatedAt, entry.updatedAt)
+                current.deletedAt = nil
+                existing[key] = current
+            } else {
+                existing[key] = entry
+            }
+        }
+
+        save(Array(existing.values), url: url)
+    }
+
+    static func markDeleted(rootPath: String, url: URL = defaultURL(), now: Date = Date()) {
+        let key = normalizedPath(rootPath)
+        var entries = load(url: url).projects.reduce(into: [String: Entry]()) { result, entry in
+            result[normalizedPath(entry.rootPath)] = entry.normalized
+        }
+        if var entry = entries[key] {
+            entry.deletedAt = now
+            entry.updatedAt = now
+            entries[key] = entry
+        } else {
+            entries[key] = Entry(
+                rootPath: key,
+                projectName: WorkspaceService.projectName(for: key),
+                displayName: URL(fileURLWithPath: key).lastPathComponent,
+                isGeneral: false,
+                sources: ["mac-native"],
+                createdAt: now,
+                updatedAt: now,
+                deletedAt: now
+            )
+        }
+        save(Array(entries.values), url: url)
+    }
+
+    static func load(url: URL = defaultURL()) -> Snapshot {
+        guard let data = try? Data(contentsOf: url) else {
+            return Snapshot(version: version, projects: [])
+        }
+        do {
+            let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
+            return Snapshot(version: snapshot.version, projects: snapshot.projects.map(\.normalized))
+        } catch {
+            AppLog.write("shared project index load error: \(error.localizedDescription)")
+            return Snapshot(version: version, projects: [])
+        }
+    }
+
+    private static func save(_ entries: [Entry], url: URL) {
+        let snapshot = Snapshot(
+            version: version,
+            projects: entries
+                .map(\.normalized)
+                .sorted { left, right in
+                    if left.isGeneral != right.isGeneral { return left.isGeneral && !right.isGeneral }
+                    return left.updatedAt > right.updatedAt
+                }
+        )
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(snapshot)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            AppLog.write("shared project index save error: \(error.localizedDescription)")
+        }
+    }
+
+    static func defaultURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        home
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
+            .appendingPathComponent(fileName)
+    }
+
+    private static func normalizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+    }
+
+    private static func uniqued(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for value in values where seen.insert(value).inserted {
+            result.append(value)
+        }
+        return result
+    }
+}
+
+enum SharedSessionIndexStore {
+    struct Entry: Codable, Hashable {
+        var projectRoot: String
+        var session: ProjectSession
+        var source: String
+        var updatedAt: Date
+
+        var normalized: Entry {
+            var entry = self
+            entry.projectRoot = SharedSessionIndexStore.normalizedPath(projectRoot)
+            entry.source = source.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank ?? "mac-native"
+            entry.session = SharedSessionIndexStore.sessionForIndex(session)
+            entry.updatedAt = session.activityDate
+            return entry
+        }
+
+        func hasReadableTranscript(nativeSessionsDirectory: URL, fileManager: FileManager = .default) -> Bool {
+            if session.isBackgroundTaskSession {
+                return true
+            }
+            if session.transcriptKey == "pilotdeck-web" || source == "web" {
+                guard let transcriptPath = session.relativeTranscriptPath?.nilIfBlank else { return false }
+                return fileManager.fileExists(atPath: URL(fileURLWithPath: transcriptPath).standardizedFileURL.path)
+            }
+            return fileManager.fileExists(
+                atPath: nativeSessionsDirectory
+                    .appendingPathComponent("\(session.id).json")
+                    .standardizedFileURL
+                    .path
+            )
+        }
+    }
+
+    struct Snapshot: Codable, Hashable {
+        var version: Int
+        var sessions: [Entry]
+    }
+
+    private static let version = 1
+    private static let fileName = "session-index.json"
+
+    static func loadEntries(url: URL = defaultURL()) -> [Entry] {
+        load(url: url).sessions.map(\.normalized)
+    }
+
+    static func save(entries: [Entry], url: URL = defaultURL()) {
+        var unique: [String: Entry] = [:]
+        for rawEntry in entries {
+            let entry = rawEntry.normalized
+            unique[entry.session.id] = entry
+        }
+        let snapshot = Snapshot(
+            version: version,
+            sessions: Array(unique.values).sorted { $0.updatedAt > $1.updatedAt }
+        )
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(snapshot)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            AppLog.write("shared session index save error: \(error.localizedDescription)")
+        }
+    }
+
+    static func removeProject(rootPath: String, url: URL = defaultURL()) {
+        let normalizedRoot = normalizedPath(rootPath)
+        let entries = loadEntries(url: url).filter { normalizedPath($0.projectRoot) != normalizedRoot }
+        save(entries: entries, url: url)
+    }
+
+    static func removeSession(sessionID: String, url: URL = defaultURL()) {
+        let entries = loadEntries(url: url).filter { $0.session.id != sessionID }
+        save(entries: entries, url: url)
+    }
+
+    static func load(url: URL = defaultURL()) -> Snapshot {
+        guard let data = try? Data(contentsOf: url) else {
+            return Snapshot(version: version, sessions: [])
+        }
+        do {
+            let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
+            return Snapshot(version: snapshot.version, sessions: snapshot.sessions.map(\.normalized))
+        } catch {
+            AppLog.write("shared session index load error: \(error.localizedDescription)")
+            return Snapshot(version: version, sessions: [])
+        }
+    }
+
+    static func defaultURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        home
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
+            .appendingPathComponent(fileName)
+    }
+
+    private static func normalizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+    }
+
+    private static func sessionForIndex(_ session: ProjectSession) -> ProjectSession {
+        var persisted = session
+        if persisted.state == .processing {
+            persisted.state = .idle
+        }
+        return persisted
+    }
+}
+
 enum LocalSessionIndexRecovery {
     struct RecoveredSession: Hashable {
         var projectRoot: String
@@ -3695,6 +4058,12 @@ enum PilotDeckWebHistoryStore {
         var sessions: [ProjectSession]
     }
 
+    struct KnownProject: Hashable {
+        var rootPath: String
+        var projectName: String
+        var displayName: String
+    }
+
     private static let readBytes = 65_536
     private static let internalSessionPrefixes = [
         "always-on-discovery:",
@@ -3728,6 +4097,36 @@ enum PilotDeckWebHistoryStore {
         .sorted { left, right in
             (left.sessions.map(\.activityDate).max() ?? .distantPast) >
                 (right.sessions.map(\.activityDate).max() ?? .distantPast)
+        }
+    }
+
+    static func loadKnownProjects(pilotHome: URL = defaultPilotHome()) -> [KnownProject] {
+        var projects: [String: KnownProject] = [:]
+
+        for project in loadConfiguredProjects(pilotHome: pilotHome) {
+            projects[normalizedPath(project.rootPath)] = project
+        }
+
+        let projectsDir = pilotHome.appendingPathComponent("projects", isDirectory: true)
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: projectsDir.path) {
+            for name in names {
+                let projectDir = projectsDir.appendingPathComponent(name, isDirectory: true)
+                guard let rootPath = markerProjectRoot(from: projectDir),
+                      FileManager.default.fileExists(atPath: rootPath),
+                      normalizedPath(rootPath) != normalizedPath(pilotHome.path) else {
+                    continue
+                }
+                let root = normalizedPath(rootPath)
+                projects[root] = projects[root] ?? KnownProject(
+                    rootPath: root,
+                    projectName: WorkspaceService.projectName(for: root),
+                    displayName: URL(fileURLWithPath: root).lastPathComponent
+                )
+            }
+        }
+
+        return projects.values.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
     }
 
@@ -3830,6 +4229,12 @@ enum PilotDeckWebHistoryStore {
             .nilIfBlank ?? "session"
     }
 
+    private static func normalizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+    }
+
     private static func defaultPilotHome() -> URL {
         let raw = ProcessInfo.processInfo.environment["PILOT_HOME"] ?? "~/.pilotdeck"
         let expanded = NSString(string: raw).expandingTildeInPath
@@ -3929,6 +4334,34 @@ enum PilotDeckWebHistoryStore {
             }
         }
         return nil
+    }
+
+    private static func loadConfiguredProjects(pilotHome: URL) -> [KnownProject] {
+        let url = pilotHome.appendingPathComponent("project-config.json")
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rawProjects = json["projects"] as? [String: Any] else {
+            return []
+        }
+
+        return rawProjects.compactMap { projectName, value -> KnownProject? in
+            guard let object = value as? [String: Any],
+                  let originalPath = object["originalPath"] as? String else {
+                return nil
+            }
+            let rootPath = normalizedPath(NSString(string: originalPath).expandingTildeInPath)
+            guard FileManager.default.fileExists(atPath: rootPath),
+                  rootPath != normalizedPath(pilotHome.path) else {
+                return nil
+            }
+            let displayName = (object["displayName"] as? String)?.nilIfBlank
+                ?? URL(fileURLWithPath: rootPath).lastPathComponent
+            return KnownProject(
+                rootPath: rootPath,
+                projectName: projectName,
+                displayName: displayName
+            )
+        }
     }
 
     private static func firstAcceptedInputText(_ text: String) -> String? {
