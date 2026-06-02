@@ -3058,6 +3058,51 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(awaited.output.contains("auto-bg-ok"))
     }
 
+    func testShellDrainsLargeOutputWithoutTimeout() async throws {
+        let root = try makeAgentWorkspace("pilotdeck-shell-large-output")
+        defer {
+            AgentBackgroundTaskStore.shared.terminate()
+            try? FileManager.default.removeItem(at: root)
+        }
+        let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
+        let command = #"for i in {1..6000}; do printf 'line-%04d abcdefghijklmnopqrstuvwxyz\n' "$i"; done"#
+
+        let result = await NativeToolRouter.execute(
+            call: AgentToolCall(
+                id: "shell-large-output",
+                name: "Shell",
+                inputJSON: toolJSON(["command": command, "timeout": 5_000])
+            ),
+            context: context
+        )
+
+        XCTAssertFalse(result.isError, result.output)
+        XCTAssertTrue(result.output.contains("exit code: 0"), result.output)
+        XCTAssertFalse(result.output.contains("timed out"), result.output)
+    }
+
+    func testReadTextHonorsOffsetAndLimit() async throws {
+        let root = try makeAgentWorkspace("pilotdeck-read-offset-limit")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lines = (1...5_000).map { "line-\($0)" }.joined(separator: "\n")
+        try lines.write(to: root.appendingPathComponent("large.txt"), atomically: true, encoding: .utf8)
+        let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
+
+        let result = await NativeToolRouter.execute(
+            call: AgentToolCall(
+                id: "read-large-text",
+                name: "Read",
+                inputJSON: toolJSON(["file_path": "large.txt", "offset": 4_200, "limit": 3])
+            ),
+            context: context
+        )
+
+        XCTAssertFalse(result.isError, result.output)
+        XCTAssertTrue(result.output.contains("4200: line-4200"), result.output)
+        XCTAssertTrue(result.output.contains("4202: line-4202"), result.output)
+        XCTAssertFalse(result.output.contains("4203: line-4203"), result.output)
+    }
+
     func testBackgroundTaskTerminationIsScopedBySession() async throws {
         let root = try makeAgentWorkspace("pilotdeck-bg-scope")
         defer {

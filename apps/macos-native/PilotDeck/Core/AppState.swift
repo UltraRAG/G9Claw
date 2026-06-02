@@ -2781,6 +2781,7 @@ final class AppState: ObservableObject {
                     warningBanner = notice
                 }
             }
+            guard !isInlineToolProgressStatus(status) else { return }
             upsertActivity(
                 id: statusActivityID(status, assistantID: assistantID),
                 title: statusTitle(status),
@@ -3438,7 +3439,8 @@ final class AppState: ObservableObject {
         switch status.lowercased() {
         case "connecting": return t(.connecting)
         case "streaming": return t(.receivingResponse)
-        case "thinking", "processing": return t(.working)
+        case "thinking": return t(.working)
+        case "processing": return settings.language.resolved() == .chineseSimplified ? "等待模型继续" : "Waiting for model"
         case "continuing": return settings.language.resolved() == .chineseSimplified ? "正在继续" : "Continuing"
         case "needs continuation": return settings.language.resolved() == .chineseSimplified ? "需要继续" : "Needs continuation"
         case "tool error loop paused": return settings.language.resolved() == .chineseSimplified ? "自动诊断已暂停" : "Automatic diagnostics paused"
@@ -3472,7 +3474,8 @@ final class AppState: ObservableObject {
         switch status.lowercased() {
         case "connecting": return t(.openingRemoteModelStream)
         case "streaming": return t(.streamingAssistantOutput)
-        case "thinking", "processing": return t(.agentStatusUpdate)
+        case "thinking": return t(.agentStatusUpdate)
+        case "processing": return settings.language.resolved() == .chineseSimplified ? "工具结果已返回，正在生成下一步。" : "Tool results returned; generating the next step."
         case "continuing": return settings.language.resolved() == .chineseSimplified ? "模型还没有完成任务，正在推进下一步。" : "The model has not completed the task yet, continuing the next step."
         case "needs continuation": return settings.language.resolved() == .chineseSimplified ? "自动续跑已暂停。你可以输入“继续”或补充更具体的要求。" : "Automatic continuation paused. Type continue or add more specific instructions to resume."
         case "tool error loop paused": return settings.language.resolved() == .chineseSimplified ? "连续几次工具检查失败，已停止自动重试，避免无意义循环。" : "Repeated tool checks failed, so automatic retries stopped to avoid an unproductive loop."
@@ -3555,6 +3558,13 @@ final class AppState: ObservableObject {
 
     private func activityPhase(for toolName: String) -> AgentActivityPhase {
         AgentToolPresentationClassifier.phase(forToolName: toolName)
+    }
+
+    private func isInlineToolProgressStatus(_ status: String) -> Bool {
+        let normalized = status
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.hasPrefix("running ") || normalized.hasPrefix("recovering ")
     }
 
     private func statusActivityID(_ status: String, assistantID: UUID) -> String {

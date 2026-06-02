@@ -3275,15 +3275,14 @@ struct NativeAgentRuntime: Sendable {
                     let call = invocation.call
                     if Task.isCancelled { throw CancellationError() }
                     indexedCalls.append((index, call))
-                    let runningItem = await turnController.recordStatus("running \(call.name)")
-                    continuation.yield(.turnItemStarted(runningItem))
-                    continuation.yield(.status("running \(call.name)"))
                     let toolItem = await turnController.recordToolCall(call)
                     continuation.yield(.turnItemStarted(toolItem))
                     continuation.yield(.toolUse(id: call.id, name: call.name, inputJSON: call.inputJSON))
                 }
 
-                let indexedResults = await withTaskGroup(of: (Int, AgentToolCall, AgentToolResult).self) { group in
+                var indexedResults: [(Int, AgentToolCall, AgentToolResult)] = []
+                var watchdogPauseMessage: String?
+                await withTaskGroup(of: (Int, AgentToolCall, AgentToolResult).self) { group in
                     for item in indexedCalls {
                         group.addTask {
                             let result = await executeToolWithPolicy(
@@ -3295,28 +3294,29 @@ struct NativeAgentRuntime: Sendable {
                             return (item.index, item.call, result)
                         }
                     }
-                    var collected: [(Int, AgentToolCall, AgentToolResult)] = []
-                    for await item in group {
-                        collected.append(item)
+                    for await (index, call, result) in group {
+                        indexedResults.append((index, call, result))
+                        let recorded = await turnController.recordToolResult(result)
+                        if let callItem = recorded.callItem {
+                            continuation.yield(.turnItemUpdated(callItem))
+                        }
+                        continuation.yield(.turnItemCompleted(recorded.resultItem))
+                        continuation.yield(.toolResult(id: call.id, output: result.output, isError: result.isError))
+                        context.recordToolResult(result, call: call)
+                        if watchdogPauseMessage == nil {
+                            watchdogPauseMessage = loopWatchdog.recordToolResult(result)
+                        }
                     }
-                    return collected.sorted { $0.0 < $1.0 }
                 }
 
-                for (_, call, result) in indexedResults {
-                    let recorded = await turnController.recordToolResult(result)
-                    if let callItem = recorded.callItem {
-                        continuation.yield(.turnItemUpdated(callItem))
-                    }
-                    continuation.yield(.turnItemCompleted(recorded.resultItem))
-                    continuation.yield(.toolResult(id: call.id, output: result.output, isError: result.isError))
-                    context.recordToolResult(result, call: call)
+                for (_, _, result) in indexedResults.sorted(by: { $0.0 < $1.0 }) {
                     messages.append(openAIToolResultMessage(result))
-                    if let watchdogMessage = loopWatchdog.recordToolResult(result) {
-                        let pauseItem = await turnController.recordStatus("tool error loop paused", text: watchdogMessage)
-                        continuation.yield(.turnItemStarted(pauseItem))
-                        continuation.yield(.status("tool error loop paused"))
-                        return
-                    }
+                }
+                if let watchdogPauseMessage {
+                    let pauseItem = await turnController.recordStatus("tool error loop paused", text: watchdogPauseMessage)
+                    continuation.yield(.turnItemStarted(pauseItem))
+                    continuation.yield(.status("tool error loop paused"))
+                    return
                 }
                 continue
             }
@@ -3324,9 +3324,6 @@ struct NativeAgentRuntime: Sendable {
             for invocation in toolInvocations {
                 let call = invocation.call
                 if Task.isCancelled { throw CancellationError() }
-                let runningItem = await turnController.recordStatus(invocation.recoveryResult == nil ? "running \(call.name)" : "recovering \(call.name)")
-                continuation.yield(.turnItemStarted(runningItem))
-                continuation.yield(.status(invocation.recoveryResult == nil ? "running \(call.name)" : "recovering \(call.name)"))
                 let toolItem = await turnController.recordToolCall(call)
                 continuation.yield(.turnItemStarted(toolItem))
                 continuation.yield(.toolUse(id: call.id, name: call.name, inputJSON: call.inputJSON))
@@ -6175,14 +6172,46 @@ enum AgentToolExecutor {
         if imageMimeType(for: url) != nil {
             return try readImage(url: url, workspacePath: workspacePath)
         }
-        let text = try String(contentsOf: url, encoding: .utf8)
-        let lines = text.components(separatedBy: .newlines)
         let offset = max((input["offset"] as? Int ?? 1) - 1, 0)
-        let limit = input["limit"] as? Int ?? min(lines.count, 2_000)
-        let selected = lines.dropFirst(offset).prefix(max(limit, 1))
-        return selected.enumerated().map { index, line in
-            "\(offset + index + 1): \(line)"
-        }.joined(separator: "\n")
+        let limit = max(input["limit"] as? Int ?? 2_000, 1)
+        return try readTextLines(url: url, offset: offset, limit: limit)
+    }
+
+    private static func readTextLines(url: URL, offset: Int, limit: Int) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        var currentLine = 0
+        var selected: [String] = []
+        var carry = ""
+        let chunkSize = 64 * 1024
+
+        func appendLine(_ rawLine: String) {
+            guard selected.count < limit else { return }
+            let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
+            if currentLine >= offset {
+                selected.append("\(currentLine + 1): \(line)")
+            }
+            currentLine += 1
+        }
+
+        while selected.count < limit {
+            let data = handle.readData(ofLength: chunkSize)
+            if data.isEmpty { break }
+            let chunk = carry + String(decoding: data, as: UTF8.self)
+            var parts = chunk.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            carry = parts.popLast() ?? ""
+            for part in parts {
+                appendLine(part)
+                if selected.count >= limit { break }
+            }
+        }
+
+        if selected.count < limit, !carry.isEmpty {
+            appendLine(carry)
+        }
+
+        return selected.joined(separator: "\n")
     }
 
     private static func write(inputJSON: String, workspacePath: String) throws -> String {
@@ -7019,8 +7048,7 @@ enum AgentToolExecutor {
     }
 
     private static func readPDF(url: URL, workspacePath: String, pages: String?) throws -> String {
-        let data = try Data(contentsOf: url)
-        guard let document = PDFDocument(data: data) else {
+        guard let document = PDFDocument(url: url) else {
             throw ProviderClientError.toolExecution("Unable to parse PDF: \(url.lastPathComponent)")
         }
         let pageNumbers = parsePDFPages(pages, total: document.pageCount)
@@ -7420,9 +7448,21 @@ enum AgentToolExecutor {
         process.environment = environment
         let stdout = Pipe()
         let stderr = Pipe()
+        let stdoutCollector = ProcessOutputCollector()
+        let stderrCollector = ProcessOutputCollector()
         process.standardOutput = stdout
         process.standardError = stderr
-        try process.run()
+        installProcessPipeDrain(stdout, collector: stdoutCollector)
+        installProcessPipeDrain(stderr, collector: stderrCollector)
+        do {
+            try process.run()
+            stdout.fileHandleForWriting.closeFile()
+            stderr.fileHandleForWriting.closeFile()
+        } catch {
+            stdout.fileHandleForReading.readabilityHandler = nil
+            stderr.fileHandleForReading.readabilityHandler = nil
+            throw error
+        }
         var timedOut = false
         let deadline = Date().addingTimeInterval(Double(max(timeoutMs, 1)) / 1_000.0)
         while process.isRunning, Date() < deadline {
@@ -7433,8 +7473,8 @@ enum AgentToolExecutor {
             process.terminate()
         }
         process.waitUntilExit()
-        let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let out = finishProcessPipeDrain(stdout, collector: stdoutCollector)
+        let err = finishProcessPipeDrain(stderr, collector: stderrCollector)
         return AgentShellRunResult(
             stdout: out,
             stderr: err,
@@ -7806,6 +7846,46 @@ struct AgentShellRunResult: Sendable, Equatable {
     var durationMs: Int
 }
 
+final class ProcessOutputCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        guard !chunk.isEmpty else { return }
+        lock.withLock {
+            data.append(chunk)
+        }
+    }
+
+    func string() -> String {
+        lock.withLock {
+            String(data: data, encoding: .utf8) ??
+                String(data: data, encoding: .isoLatin1) ??
+                ""
+        }
+    }
+}
+
+fileprivate func installProcessPipeDrain(_ pipe: Pipe, collector: ProcessOutputCollector) {
+    let handle = pipe.fileHandleForReading
+    handle.readabilityHandler = { fileHandle in
+        let data = fileHandle.availableData
+        if data.isEmpty {
+            fileHandle.readabilityHandler = nil
+        } else {
+            collector.append(data)
+        }
+    }
+}
+
+fileprivate func finishProcessPipeDrain(_ pipe: Pipe?, collector: ProcessOutputCollector?) -> String {
+    guard let pipe, let collector else { return "" }
+    let handle = pipe.fileHandleForReading
+    handle.readabilityHandler = nil
+    collector.append(handle.availableData)
+    return collector.string()
+}
+
 private struct AgentToolExecutionOutput: Sendable, Equatable {
     var output: String
     var isError: Bool
@@ -7828,6 +7908,8 @@ final class AgentBackgroundTaskRecord: @unchecked Sendable {
     var task: Task<Void, Never>?
     var stdoutPipe: Pipe?
     var stderrPipe: Pipe?
+    var stdoutCollector: ProcessOutputCollector?
+    var stderrCollector: ProcessOutputCollector?
 
     init(
         id: String,
@@ -7837,7 +7919,9 @@ final class AgentBackgroundTaskRecord: @unchecked Sendable {
         status: String = "running",
         process: Process? = nil,
         stdoutPipe: Pipe? = nil,
-        stderrPipe: Pipe? = nil
+        stderrPipe: Pipe? = nil,
+        stdoutCollector: ProcessOutputCollector? = nil,
+        stderrCollector: ProcessOutputCollector? = nil
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -7852,6 +7936,8 @@ final class AgentBackgroundTaskRecord: @unchecked Sendable {
         self.process = process
         self.stdoutPipe = stdoutPipe
         self.stderrPipe = stderrPipe
+        self.stdoutCollector = stdoutCollector
+        self.stderrCollector = stderrCollector
     }
 }
 
@@ -7869,8 +7955,12 @@ final class AgentBackgroundTaskStore: @unchecked Sendable {
         process.environment = environment
         let stdout = Pipe()
         let stderr = Pipe()
+        let stdoutCollector = ProcessOutputCollector()
+        let stderrCollector = ProcessOutputCollector()
         process.standardOutput = stdout
         process.standardError = stderr
+        installProcessPipeDrain(stdout, collector: stdoutCollector)
+        installProcessPipeDrain(stderr, collector: stderrCollector)
         let record = AgentBackgroundTaskRecord(
             id: id,
             sessionId: sessionId,
@@ -7878,10 +7968,21 @@ final class AgentBackgroundTaskStore: @unchecked Sendable {
             command: command,
             process: process,
             stdoutPipe: stdout,
-            stderrPipe: stderr
+            stderrPipe: stderr,
+            stdoutCollector: stdoutCollector,
+            stderrCollector: stderrCollector
         )
         lock.withLock { records[id] = record }
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            stdout.fileHandleForReading.readabilityHandler = nil
+            stderr.fileHandleForReading.readabilityHandler = nil
+            _ = lock.withLock {
+                records.removeValue(forKey: id)
+            }
+            throw error
+        }
         stdout.fileHandleForWriting.closeFile()
         stderr.fileHandleForWriting.closeFile()
         let task = Task.detached { [weak self] in
@@ -7947,10 +8048,16 @@ final class AgentBackgroundTaskStore: @unchecked Sendable {
             for record in records.values where record.status == "running" && (sessionId == nil || record.sessionId == sessionId) {
                 record.process?.terminate()
                 record.task?.cancel()
+                record.stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+                record.stderrPipe?.fileHandleForReading.readabilityHandler = nil
                 record.status = "cancelled"
                 record.completedAt = Date()
                 record.process = nil
                 record.task = nil
+                record.stdoutPipe = nil
+                record.stderrPipe = nil
+                record.stdoutCollector = nil
+                record.stderrCollector = nil
             }
             if sessionId == nil {
                 records.removeAll()
@@ -7974,6 +8081,8 @@ final class AgentBackgroundTaskStore: @unchecked Sendable {
             record.task = nil
             record.stdoutPipe = nil
             record.stderrPipe = nil
+            record.stdoutCollector = nil
+            record.stderrCollector = nil
         }
     }
 
@@ -7991,24 +8100,29 @@ final class AgentBackgroundTaskStore: @unchecked Sendable {
     }
 
     private func completeFinishedShellProcess(id: String, timedOut: Bool, fallbackStartedAt: Date?) {
-        let reaping: (Process, Pipe?, Pipe?, Date)?
+        let reaping: (Process, Pipe?, Pipe?, ProcessOutputCollector?, ProcessOutputCollector?, Date)?
         lock.lock()
         if let record = records[id],
            record.status == "running",
            let process = record.process {
             record.status = "reaping"
-            reaping = (process, record.stdoutPipe, record.stderrPipe, fallbackStartedAt ?? record.startedAt)
+            reaping = (
+                process,
+                record.stdoutPipe,
+                record.stderrPipe,
+                record.stdoutCollector,
+                record.stderrCollector,
+                fallbackStartedAt ?? record.startedAt
+            )
         } else {
             reaping = nil
         }
         lock.unlock()
 
-        guard let (process, stdoutPipe, stderrPipe, startedAt) = reaping else { return }
+        guard let (process, stdoutPipe, stderrPipe, stdoutCollector, stderrCollector, startedAt) = reaping else { return }
         process.waitUntilExit()
-        let out = stdoutPipe
-            .flatMap { String(data: $0.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) } ?? ""
-        let err = stderrPipe
-            .flatMap { String(data: $0.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) } ?? ""
+        let out = finishProcessPipeDrain(stdoutPipe, collector: stdoutCollector)
+        let err = finishProcessPipeDrain(stderrPipe, collector: stderrCollector)
         let result = AgentShellRunResult(
             stdout: out,
             stderr: err,
@@ -8031,9 +8145,11 @@ final class AgentBackgroundTaskStore: @unchecked Sendable {
             guard let record = records[id] else { return nil }
             let copy = AgentBackgroundTaskRecord(id: record.id, sessionId: record.sessionId, description: record.description, command: record.command)
             copy.status = record.status
+            let liveStdout = record.stdoutCollector?.string() ?? ""
+            let liveStderr = record.stderrCollector?.string() ?? ""
             copy.output = record.output
-            copy.stdout = record.stdout
-            copy.stderr = record.stderr
+            copy.stdout = record.stdout.isEmpty ? liveStdout : record.stdout
+            copy.stderr = record.stderr.isEmpty ? liveStderr : record.stderr
             copy.exitCode = record.exitCode
             copy.timedOut = record.timedOut
             copy.completedAt = record.completedAt
