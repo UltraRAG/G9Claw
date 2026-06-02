@@ -1,5 +1,5 @@
 import AppKit
-import PDFKit
+import QuickLookUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -731,21 +731,6 @@ enum FilePreviewActionPolicy {
     static func treePreviewIcon(for file: WorkspaceFile) -> String? {
         file.isHTML ? "globe" : nil
     }
-
-    static func editorShowsHTMLPreview(for file: WorkspaceFile) -> Bool {
-        false
-    }
-
-    static func editorPreviewToggleIcon(for file: WorkspaceFile, isPreviewing: Bool) -> String? {
-        if file.isMarkdown {
-            return isPreviewing ? "pencil" : "doc.richtext"
-        }
-        return nil
-    }
-
-    static func usesNativePDFPreview(for file: WorkspaceFile) -> Bool {
-        file.isPDF
-    }
 }
 
 enum FileEditorLoadState: Equatable {
@@ -758,6 +743,11 @@ enum FileEditorLoadState: Equatable {
     var canSave: Bool {
         self == .loaded
     }
+}
+
+private enum FileViewerMode {
+    case preview
+    case source
 }
 
 private struct FilePaneStatusView: View {
@@ -5120,7 +5110,7 @@ private struct FileEditorPane: View {
     var onRevert: () -> Void
     var onSave: () -> Void
     var loadState: FileEditorLoadState
-    @State private var markdownPreview = false
+    @State private var viewerMode: FileViewerMode = .preview
     @State private var saveFlash = false
 
     private var isBinaryFile: Bool {
@@ -5128,7 +5118,7 @@ private struct FileEditorPane: View {
     }
 
     private var canEditText: Bool {
-        loadState.canSave && !file.isImage && !file.isPDF && !isBinaryFile
+        loadState.canSave && !isBinaryFile
     }
 
     private var isDirty: Bool {
@@ -5159,12 +5149,19 @@ private struct FileEditorPane: View {
                                 .padding(.vertical, 2)
                                 .background(DesignTokens.warning.opacity(0.10), in: Capsule())
                         }
-                        if let previewIcon = FilePreviewActionPolicy.editorPreviewToggleIcon(for: file, isPreviewing: markdownPreview) {
-                            Button { markdownPreview.toggle() } label: {
-                                Image(systemName: previewIcon)
+                        if file.isHTML {
+                            Button { openHTMLPreview() } label: {
+                                Image(systemName: "globe")
                             }
                                 .buttonStyle(EditorHeaderIconButtonStyle())
-                                .help(markdownPreview ? "Edit Markdown" : "Preview Markdown")
+                                .help(editorText(english: "Open in Browser", chinese: "在浏览器中打开"))
+                        }
+                        if canEditText {
+                            Button { toggleViewerMode() } label: {
+                                Image(systemName: viewerMode == .preview ? "chevron.left.forwardslash.chevron.right" : "eye")
+                            }
+                                .buttonStyle(EditorHeaderIconButtonStyle(isActive: viewerMode == .source, tint: viewerMode == .source ? DesignTokens.accent : DesignTokens.secondaryText))
+                                .help(viewerMode == .preview ? editorText(english: "View Source", chinese: "查看源码") : editorText(english: "Preview", chinese: "预览"))
                         }
                         Button { download() } label: { Image(systemName: "square.and.arrow.down") }
                             .buttonStyle(EditorHeaderIconButtonStyle())
@@ -5197,15 +5194,7 @@ private struct FileEditorPane: View {
             .overlay(alignment: .bottom) { Rectangle().fill(DesignTokens.separator).frame(height: 1) }
             .zIndex(1)
 
-            if file.isImage, let image = NSImage(contentsOfFile: file.path) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(24)
-            } else if FilePreviewActionPolicy.usesNativePDFPreview(for: file) {
-                PDFDocumentPreview(url: URL(fileURLWithPath: file.path))
-            } else if case .loading = loadState {
+            if case .loading = loadState {
                 FilePaneStatusView(
                     title: editorText(english: "Loading file", chinese: "正在加载文件"),
                     detail: file.relativePath,
@@ -5213,36 +5202,21 @@ private struct FileEditorPane: View {
                     isLoading: true
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if case let .failed(message) = loadState {
+            } else if viewerMode == .source, case let .failed(message) = loadState {
                 FilePaneStatusView(
                     title: editorText(english: "Could not load file", chinese: "无法加载文件"),
                     detail: message,
                     systemImage: "exclamationmark.triangle"
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if case let .unsupported(message) = loadState {
+            } else if viewerMode == .source, case let .unsupported(message) = loadState {
                 FilePaneStatusView(
                     title: editorText(english: "Cannot edit this file", chinese: "无法编辑此文件"),
                     detail: message,
                     systemImage: "doc.badge.exclamationmark"
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if file.isMarkdown && markdownPreview {
-                ScrollView {
-                    MarkdownPreview(text: content)
-                        .padding(20)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-            } else if isBinaryFile {
-                ToolEmptyState(
-                    title: editorText(english: "Binary File", chinese: "二进制文件"),
-                    detail: editorText(
-                        english: "\(file.name) cannot be displayed in the text editor.",
-                        chinese: "\(file.name) 不能在文本编辑器中显示。"
-                    ),
-                    systemImage: "doc.zipper"
-                )
-            } else {
+            } else if viewerMode == .source, canEditText {
                 CodeEditorWithChrome(
                     text: $content,
                     fileName: file.name,
@@ -5256,12 +5230,20 @@ private struct FileEditorPane: View {
                         }
                     }
                 )
+            } else {
+                QuickLookFilePreview(url: URL(fileURLWithPath: file.path))
             }
-            CodeEditorFooterCompat(content: content, isDirty: isDirty)
+            if viewerMode == .source, canEditText {
+                CodeEditorFooterCompat(content: content, isDirty: isDirty)
+            }
         }
         .frame(width: width)
         .frame(maxWidth: isExpanded ? .infinity : nil, maxHeight: .infinity)
         .background(DesignTokens.background)
+        .onChange(of: file.path) { _, _ in
+            viewerMode = .preview
+            saveFlash = false
+        }
     }
 
     private var headerIconName: String {
@@ -5279,6 +5261,10 @@ private struct FileEditorPane: View {
     private func openHTMLPreview() {
         NSWorkspace.shared.open(URL(fileURLWithPath: file.path))
         state.statusLine = "\(state.t(.openHTML)) \(file.name)"
+    }
+
+    private func toggleViewerMode() {
+        viewerMode = viewerMode == .preview ? .source : .preview
     }
 
     private func download() {
@@ -5322,23 +5308,24 @@ private struct FileEditorPane: View {
 
 }
 
-private struct PDFDocumentPreview: NSViewRepresentable {
+private struct QuickLookFilePreview: NSViewRepresentable {
     var url: URL
 
-    func makeNSView(context: Context) -> PDFView {
-        let view = PDFView()
-        view.autoScales = true
-        view.displayMode = .singlePageContinuous
-        view.displayDirection = .vertical
-        view.backgroundColor = .clear
+    func makeNSView(context: Context) -> QLPreviewView {
+        guard let view = QLPreviewView(frame: .zero, style: .normal) else {
+            return QLPreviewView(frame: .zero)
+        }
+        view.autostarts = true
+        view.previewItem = url as NSURL
         return view
     }
 
-    func updateNSView(_ nsView: PDFView, context: Context) {
-        if nsView.document?.documentURL != url {
-            nsView.document = PDFDocument(url: url)
+    func updateNSView(_ nsView: QLPreviewView, context: Context) {
+        nsView.autostarts = true
+        if nsView.previewItem?.previewItemURL != url {
+            nsView.previewItem = url as NSURL
+            nsView.refreshPreviewItem()
         }
-        nsView.autoScales = true
     }
 }
 
