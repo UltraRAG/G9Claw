@@ -2820,21 +2820,24 @@ final class AppState: ObservableObject {
                 anchorBlockID: assistantID.uuidString,
                 sessionID: targetSessionID
             )
-        case .compactStarted(let trigger, let preTokens):
+        case .compactStarted(_, _):
             upsertActivity(
                 id: "compact-\(assistantID.uuidString)",
-                title: settings.language.resolved() == .chineseSimplified ? "正在压缩上下文" : "Compacting context",
-                detail: "trigger=\(trigger), tokens=\(preTokens.formatted())",
+                title: settings.language.resolved() == .chineseSimplified ? "正在自动压缩上下文" : "Automatically compacting context",
+                detail: "",
                 phase: .status,
                 state: .running,
                 anchorBlockID: assistantID.uuidString,
                 sessionID: targetSessionID
             )
-        case .compactCompleted(let status, let preTokens, let postTokens):
-            updateActivity(
+        case .compactCompleted(_, _, _):
+            upsertActivity(
                 id: "compact-\(assistantID.uuidString)",
+                title: settings.language.resolved() == .chineseSimplified ? "上下文压缩已完成" : "Context compaction completed",
+                detail: "",
+                phase: .status,
                 state: .completed,
-                detail: "status=\(status), \(preTokens.formatted()) -> \(postTokens.formatted()) tokens",
+                anchorBlockID: assistantID.uuidString,
                 sessionID: targetSessionID
             )
         case .subagentStatus(let id, let status, let detail):

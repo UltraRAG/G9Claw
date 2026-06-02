@@ -731,6 +731,21 @@ enum FilePreviewActionPolicy {
     static func treePreviewIcon(for file: WorkspaceFile) -> String? {
         file.isHTML ? "globe" : nil
     }
+
+    static func editorShowsHTMLPreview(for file: WorkspaceFile) -> Bool {
+        false
+    }
+
+    static func editorPreviewToggleIcon(for file: WorkspaceFile, isPreviewing: Bool) -> String {
+        if isPreviewing { return "pencil" }
+        if file.isMarkdown || file.isPDF { return "doc.richtext" }
+        if file.isHTML { return "globe" }
+        return "eye"
+    }
+
+    static func usesNativePDFPreview(for file: WorkspaceFile) -> Bool {
+        file.isPDF
+    }
 }
 
 enum FileEditorLoadState: Equatable {

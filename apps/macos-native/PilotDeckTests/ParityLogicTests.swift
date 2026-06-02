@@ -1726,7 +1726,6 @@ final class ParityLogicTests: XCTestCase {
             .reasoningDelta("thinking through it"),
             .contentDelta("hello"),
             .tokenUsage(RouterTokenUsage(inputTokens: 3, outputTokens: 4, cacheReadTokens: 0, totalTokens: 7), contextWindow: 160_000),
-            .tokenBudget(used: 7, total: 160_000),
         ])
     }
 
@@ -6814,37 +6813,37 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(diagnostics.contains { $0.message.contains("multimodal") })
     }
 
-    func testNativeContextBudgetCompactsLongToolResultsAndReportsLevels() {
-        var messages: [[String: Any]] = [
+    func testNativeContextBudgetPersistsLargeToolResultsToDisk() throws {
+        let root = temporaryDirectory("pilotdeck-tool-results")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let largeOutput = String(repeating: "large tool output\n", count: 4_000)
+        let messages: [[String: Any]] = [
             ["role": "system", "content": "system"],
-            ["role": "user", "content": "start"],
+            ["role": "assistant", "content": NSNull(), "tool_calls": [
+                ["id": "read-calendar", "type": "function", "function": ["name": "Read", "arguments": "{}"]],
+            ]],
+            ["role": "tool", "tool_call_id": "read-calendar", "content": largeOutput],
         ]
-        for toolIndex in 0..<5 {
-            let id = "tool-\(toolIndex)"
-            messages.append(["role": "assistant", "content": NSNull(), "tool_calls": [
-                ["id": id, "type": "function", "function": ["name": "Read", "arguments": "{}"]],
-            ]])
-            messages.append([
-                "role": "tool",
-                "tool_call_id": id,
-                "content": toolIndex == 0 ? String(repeating: "x", count: 24_000) : "small result \(toolIndex)",
-            ])
-        }
-        for index in 0..<8 {
-            messages.append(["role": index.isMultiple(of: 2) ? "assistant" : "user", "content": "message \(index)"])
-        }
 
-        let before = NativeContextBudget.snapshot(messages: messages, contextWindow: 3_000)
-        let compaction = NativeContextBudget.compactIfNeeded(messages: messages, contextWindow: 3_000)
+        let projected = NativeContextBudget.applyToolResultBudget(
+            messages: messages,
+            sessionId: "session/with unsafe chars",
+            workspacePath: root.path,
+            maxResultCharacters: 1_000,
+            previewCharacters: 120
+        )
+        let content = try XCTUnwrap(projected.last?["content"] as? String)
+        let pathLine = try XCTUnwrap(content.split(separator: "\n").first { $0.contains("Full output:") })
+        let path = String(pathLine).replacingOccurrences(of: "Full output:", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
 
-        XCTAssertEqual(before.level, .recovering)
-        XCTAssertNotNil(compaction)
-        XCTAssertLessThan(compaction?.postTokens ?? Int.max, compaction?.preTokens ?? 0)
-        XCTAssertTrue(String(describing: compaction?.messages ?? []).contains("microcompacted"))
+        XCTAssertTrue(content.contains("<persisted-output>"))
+        XCTAssertTrue(content.contains("Tool: Read"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), largeOutput)
     }
 
-    func testNativeContextBudgetSnipSummaryKeepsDroppedIntentAndTools() {
-        var messages: [[String: Any]] = [
+    func testNativeContextBudgetProjectsCompactionBoundaryWithoutMutatingOriginalMessages() {
+        let messages: [[String: Any]] = [
             ["role": "system", "content": "system"],
             ["role": "user", "content": "Build the calendar import workflow and preserve timezone conversion rules."],
             ["role": "assistant", "content": NSNull(), "tool_calls": [
@@ -6860,26 +6859,61 @@ final class ParityLogicTests: XCTestCase {
             [
                 "role": "tool",
                 "tool_call_id": "read-calendar",
-                "content": String(repeating: "CalendarImporter.swift maps event timezone conversion before saving.\n", count: 180),
+                "content": "CalendarImporter.swift maps event timezone conversion before saving.",
             ],
             ["role": "assistant", "content": "I found the timezone conversion path and will keep it intact."],
+            ["role": "user", "content": "Now continue with tests."],
         ]
-        for index in 0..<18 {
-            messages.append([
-                "role": index.isMultiple(of: 2) ? "user" : "assistant",
-                "content": "filler turn \(index) " + String(repeating: "z", count: 700),
-            ])
-        }
+        var state = NativeContextCompressionState()
+        state.apply(
+            summary: "Primary request: preserve calendar timezone conversion in CalendarImporter.swift.",
+            coveredMessageCount: 5
+        )
 
-        let compaction = NativeContextBudget.compactIfNeeded(messages: messages, contextWindow: 1_800)
-        let serialized = String(describing: compaction?.messages ?? [])
+        let projected = NativeContextBudget.projectedMessages(messages: messages, state: state)
+        let serialized = String(describing: projected)
+        let originalSerialized = String(describing: messages)
 
-        XCTAssertNotNil(compaction)
         XCTAssertTrue(serialized.contains("[Context compacted]"))
-        XCTAssertTrue(serialized.contains("Build the calendar import workflow"))
         XCTAssertTrue(serialized.contains("CalendarImporter.swift"))
-        XCTAssertTrue(serialized.contains("Read"))
-        XCTAssertTrue(serialized.contains("timezone conversion"))
+        XCTAssertTrue(serialized.contains("Now continue with tests."))
+        XCTAssertFalse(serialized.contains("Build the calendar import workflow and preserve timezone conversion rules."))
+        XCTAssertTrue(originalSerialized.contains("Build the calendar import workflow and preserve timezone conversion rules."))
+    }
+
+    func testNativeContextBudgetExtractsSummaryXMLAndAnchorsProviderUsage() {
+        let response = """
+        <analysis>
+        This part should not be retained.
+        </analysis>
+        <summary>
+        Keep the actual compacted state.
+        </summary>
+        """
+
+        XCTAssertEqual(
+            NativeContextBudget.extractedCompactSummary(from: response),
+            "Keep the actual compacted state."
+        )
+
+        var tracker = NativeTokenBudgetTracker()
+        tracker.anchorAfterModelResponse(
+            messageCount: 1,
+            budget: TokenBudget(used: 100, total: 1_000, level: .normal)
+        )
+        let snapshot = tracker.snapshot(
+            messages: [
+                ["role": "user", "content": "prompt"],
+                ["role": "tool", "content": String(repeating: "x", count: 400)],
+            ],
+            contextWindow: 1_000
+        )
+
+        XCTAssertGreaterThan(snapshot.used, 100)
+        XCTAssertLessThan(snapshot.used, NativeContextBudget.snapshot(
+            messages: [["role": "user", "content": String(repeating: "x", count: 1_200)]],
+            contextWindow: 1_000
+        ).used + 100)
     }
 
     func testToolInvocationPresentationRendersShellRawFallbackAndCommonFields() {

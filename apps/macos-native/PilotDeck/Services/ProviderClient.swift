@@ -1285,6 +1285,7 @@ final class AgentRunContext: @unchecked Sendable {
     var rootGlobCacheEntryCount: Int
     var partialStreamRecoveryCount: Int
     var workspaceMutationEpoch: Int
+    var recentWorkspaceFiles: [String]
     private var executedToolSignatures: Set<String>
 
     init(request: AgentRequest) {
@@ -1329,6 +1330,7 @@ final class AgentRunContext: @unchecked Sendable {
         rootGlobCacheEntryCount = 0
         partialStreamRecoveryCount = 0
         workspaceMutationEpoch = 0
+        recentWorkspaceFiles = []
         executedToolSignatures = []
     }
 
@@ -1383,6 +1385,7 @@ final class AgentRunContext: @unchecked Sendable {
     func recordToolResult(_ result: AgentToolResult, call: AgentToolCall) {
         toolExecutionCount += 1
         lastExecutedToolName = result.toolName
+        recordRecentWorkspaceFiles(from: call)
         if result.isPolicyBlock {
             lastToolResultWasBenignDeletionVerification = false
             lastToolResultWasError = false
@@ -1456,6 +1459,46 @@ final class AgentRunContext: @unchecked Sendable {
             }
         default:
             break
+        }
+    }
+
+    private func recordRecentWorkspaceFiles(from call: AgentToolCall) {
+        let canonicalName = AgentToolNameCanonicalizer.canonical(call.name)
+        switch canonicalName {
+        case "Read", "Write", "StrReplace", "Delete", "EditNotebook", "ReadLints":
+            break
+        default:
+            return
+        }
+        guard let data = call.inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
+        let candidates = [
+            object["file_path"],
+            object["path"],
+            object["target_path"],
+            object["notebook_path"],
+        ]
+        for candidate in candidates {
+            if let path = candidate as? String {
+                appendRecentWorkspaceFile(path)
+            }
+            if let paths = candidate as? [String] {
+                for path in paths {
+                    appendRecentWorkspaceFile(path)
+                }
+            }
+        }
+    }
+
+    private func appendRecentWorkspaceFile(_ path: String) {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("http://"), !trimmed.hasPrefix("https://") else { return }
+        recentWorkspaceFiles.removeAll { $0 == trimmed }
+        recentWorkspaceFiles.insert(trimmed, at: 0)
+        if recentWorkspaceFiles.count > 8 {
+            recentWorkspaceFiles = Array(recentWorkspaceFiles.prefix(8))
         }
     }
 
@@ -2078,48 +2121,232 @@ struct NativeContextCompactionResult {
     var status: String
 }
 
+struct NativeContextCompressionState {
+    var summary: String?
+    var coveredMessageCount: Int = 0
+    var compactionCount: Int = 0
+
+    var isActive: Bool {
+        summary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false && coveredMessageCount > 0
+    }
+
+    mutating func apply(summary: String, coveredMessageCount: Int) {
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        self.summary = trimmed
+        self.coveredMessageCount = max(0, coveredMessageCount)
+        compactionCount += 1
+    }
+
+    mutating func reset() {
+        summary = nil
+        coveredMessageCount = 0
+        compactionCount = 0
+    }
+}
+
+struct NativeTokenBudgetTracker {
+    private var anchorMessageCount: Int?
+    private var anchorUsedTokens: Int?
+
+    mutating func anchorAfterModelResponse(messageCount: Int, budget: TokenBudget) {
+        guard budget.used > 0 else { return }
+        anchorMessageCount = max(0, messageCount)
+        anchorUsedTokens = budget.used
+    }
+
+    mutating func reset() {
+        anchorMessageCount = nil
+        anchorUsedTokens = nil
+    }
+
+    func snapshot(messages: [[String: Any]], contextWindow: Int) -> TokenBudget {
+        guard let anchorMessageCount,
+              let anchorUsedTokens,
+              anchorMessageCount <= messages.count else {
+            return NativeContextBudget.snapshot(messages: messages, contextWindow: contextWindow)
+        }
+        let suffix = Array(messages.dropFirst(anchorMessageCount))
+        let used = max(0, anchorUsedTokens + NativeContextBudget.estimatedTokens(messages: suffix))
+        let total = max(contextWindow, 1)
+        return TokenBudget(used: used, total: total, level: ContextBudgetLevel.level(used: used, total: total))
+    }
+}
+
 enum NativeContextBudget {
     private static let perMessageOverhead = 4
     private static let multimediaTokens = 2_000
 
     static func snapshot(messages: [[String: Any]], contextWindow: Int) -> TokenBudget {
         let total = max(contextWindow, 1)
-        let used = max(0, messages.reduce(0) { $0 + estimateMessage($1) })
+        let used = max(0, estimatedTokens(messages: messages))
         return TokenBudget(used: used, total: total, level: ContextBudgetLevel.level(used: used, total: total))
+    }
+
+    static func estimatedTokens(messages: [[String: Any]]) -> Int {
+        messages.reduce(0) { $0 + estimateMessage($1) }
+    }
+
+    static func shouldAutoCompact(budget: TokenBudget) -> Bool {
+        budget.used >= autoCompactThreshold(contextWindow: budget.total)
+    }
+
+    static func autoCompactThreshold(contextWindow: Int) -> Int {
+        let total = max(contextWindow, 1)
+        let summaryReserve = min(20_000, max(512, total / 8))
+        let buffer = min(13_000, max(256, total / 12))
+        return max(1, total - summaryReserve - buffer)
+    }
+
+    static func warningThreshold(contextWindow: Int) -> Int {
+        max(1, autoCompactThreshold(contextWindow: contextWindow) - min(20_000, max(256, contextWindow / 8)))
+    }
+
+    static func projectedMessages(
+        messages: [[String: Any]],
+        state: NativeContextCompressionState
+    ) -> [[String: Any]] {
+        let compacted = microCompactToolResults(messages, keepRecent: 4)
+        guard state.isActive, let summary = state.summary else {
+            return preserveToolPairIntegrity(compacted)
+        }
+
+        let systemMessages = Array(compacted.prefix { ($0["role"] as? String) == "system" })
+        let bodyStart = systemMessages.count
+        let body = Array(compacted.dropFirst(bodyStart))
+        let coveredBodyCount = min(body.count, max(0, state.coveredMessageCount - bodyStart))
+        let tail = Array(body.dropFirst(coveredBodyCount))
+        let boundary: [String: Any] = [
+            "role": "user",
+            "content": """
+            [Context compacted]
+            Older conversation turns were summarized so the task can continue within the model context window. Treat the summary below as continuity context, and reread files when exact current content matters.
+
+            \(summary)
+            """,
+        ]
+        return preserveToolPairIntegrity(systemMessages + [boundary] + tail)
+    }
+
+    static func applyToolResultBudget(
+        messages: [[String: Any]],
+        sessionId: String,
+        workspacePath: String,
+        maxResultCharacters: Int = 50_000,
+        previewCharacters: Int = 2_000
+    ) -> [[String: Any]] {
+        guard maxResultCharacters > 0,
+              !workspacePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return messages
+        }
+        let root = URL(fileURLWithPath: workspacePath, isDirectory: true)
+        let directory = root
+            .appendingPathComponent(".pilotdeck", isDirectory: true)
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent(safeFileName(sessionId), isDirectory: true)
+            .appendingPathComponent("tool-results", isDirectory: true)
+
+        var next = messages
+        let toolNamesByID = toolNamesByCallID(in: messages)
+        for index in next.indices where (next[index]["role"] as? String) == "tool" {
+            guard let content = next[index]["content"] as? String,
+                  content.count > maxResultCharacters,
+                  !content.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<persisted-output>") else {
+                continue
+            }
+            let callID = next[index]["tool_call_id"] as? String ?? "tool-\(index)"
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let fileURL = directory.appendingPathComponent("\(safeFileName(callID)).txt")
+                try content.write(to: fileURL, atomically: true, encoding: .utf8)
+                let preview = clipped(content, maxCharacters: previewCharacters)
+                let toolName = toolNamesByID[callID] ?? "Tool"
+                next[index]["content"] = """
+                <persisted-output>
+                Tool result was too large and has been saved to disk.
+                Tool: \(toolName)
+                Full output: \(fileURL.path)
+                Original characters: \(content.count)
+
+                Preview:
+                \(preview)
+                </persisted-output>
+                """
+            } catch {
+                AppLog.write("tool result persistence failed for \(callID): \(error.localizedDescription)")
+            }
+        }
+        return preserveToolPairIntegrity(next)
+    }
+
+    static func fallbackSummary(messages: [[String: Any]]) -> String {
+        localCompactionSummary(droppedMessages: messages, keptTailCount: 0)
+    }
+
+    static func compactSummaryPrompt(messages: [[String: Any]], maxCharacters: Int) -> String {
+        var sections: [String] = [
+            "Summarize the conversation below for a coding agent that will continue the same task after context compaction.",
+            "Return two XML blocks: <analysis> for private chronological reasoning and <summary> for the retained summary.",
+            "The <summary> must preserve user requests, decisions, files touched, errors/fixes, todo state, active skills, and the immediate next step.",
+            "Do not call tools. Do not include anything outside the XML blocks.",
+            "",
+            "Conversation:",
+        ]
+        for (index, message) in messages.enumerated() {
+            let role = message["role"] as? String ?? "unknown"
+            var line = "[\(index)] \(role)"
+            if let calls = message["tool_calls"] as? [[String: Any]], !calls.isEmpty {
+                line += " tool_calls=\(calls.map(toolCallSummary).joined(separator: " | "))"
+            }
+            if let id = message["tool_call_id"] as? String {
+                line += " tool_call_id=\(id)"
+            }
+            if let text = messageText(message) {
+                line += "\n\(clipped(text, maxCharacters: 4_000))"
+            }
+            sections.append(line)
+        }
+        return clipped(sections.joined(separator: "\n\n"), maxCharacters: maxCharacters)
+    }
+
+    static func extractedCompactSummary(from text: String) -> String {
+        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let summary = firstXMLBlock(named: "summary", in: raw) {
+            return summary
+        }
+        let withoutAnalysis = raw.replacingOccurrences(
+            of: #"(?is)<analysis>.*?</analysis>"#,
+            with: "",
+            options: .regularExpression
+        )
+        return withoutAnalysis.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func truncateHeadForSummaryRetry(_ messages: [[String: Any]], attempt: Int) -> [[String: Any]] {
+        guard messages.count > 8 else { return messages }
+        let systemMessages = Array(messages.prefix { ($0["role"] as? String) == "system" })
+        let body = Array(messages.dropFirst(systemMessages.count))
+        let keepCount = max(6, body.count - max(4, body.count / max(2, attempt + 2)))
+        return preserveToolPairIntegrity(systemMessages + validTail(from: body, count: keepCount))
     }
 
     static func compactIfNeeded(messages: [[String: Any]], contextWindow: Int) -> NativeContextCompactionResult? {
         let before = snapshot(messages: messages, contextWindow: contextWindow)
-        guard (before.level ?? .normal) == .warning || (before.level ?? .normal) == .recovering else {
-            return nil
-        }
-
-        var compacted = microCompactToolResults(messages)
-        var after = snapshot(messages: compacted, contextWindow: contextWindow)
-        var status = "micro"
-        if (after.level ?? .normal) == .warning || (after.level ?? .normal) == .recovering {
-            compacted = snipMiddle(compacted, tailCount: 10)
-            after = snapshot(messages: compacted, contextWindow: contextWindow)
-            status = "snip"
-        }
-        if (after.level ?? .normal) == .warning || (after.level ?? .normal) == .recovering {
-            compacted = snipMiddle(compacted, tailCount: 6)
-            after = snapshot(messages: compacted, contextWindow: contextWindow)
-            status = "full"
-        }
-
+        guard shouldAutoCompact(budget: before) else { return nil }
+        let compacted = snipMiddle(microCompactToolResults(messages, keepRecent: 4), tailCount: 8)
+        let after = snapshot(messages: compacted, contextWindow: contextWindow)
         return NativeContextCompactionResult(
             messages: compacted,
-            trigger: (before.level ?? .normal) == .recovering ? "blocking_threshold" : "warning_threshold",
+            trigger: before.used >= contextWindow ? "blocking_threshold" : "auto_compact_threshold",
             preTokens: before.used,
             postTokens: after.used,
-            status: status
+            status: "local_fallback"
         )
     }
 
     static func forceRecover(messages: [[String: Any]], contextWindow: Int) -> NativeContextCompactionResult {
         let before = snapshot(messages: messages, contextWindow: contextWindow)
-        let compacted = snipMiddle(microCompactToolResults(messages), tailCount: 4)
+        let compacted = snipMiddle(microCompactToolResults(messages, keepRecent: 2), tailCount: 4)
         let after = snapshot(messages: compacted, contextWindow: contextWindow)
         return NativeContextCompactionResult(
             messages: compacted,
@@ -2130,13 +2357,16 @@ enum NativeContextBudget {
         )
     }
 
-    private static func microCompactToolResults(_ messages: [[String: Any]]) -> [[String: Any]] {
+    private static func microCompactToolResults(_ messages: [[String: Any]], keepRecent: Int) -> [[String: Any]] {
         var next = messages
         guard next.count > 8 else { return next }
-        let recentToolIndices = Set(next.indices.filter { (next[$0]["role"] as? String) == "tool" }.suffix(4))
+        let recentToolIndices = Set(next.indices.filter { (next[$0]["role"] as? String) == "tool" }.suffix(max(1, keepRecent)))
         for index in next.indices.dropLast(6) where (next[index]["role"] as? String) == "tool" && !recentToolIndices.contains(index) {
             guard let content = next[index]["content"] as? String, content.count > 3_000 else { continue }
-            next[index]["content"] = "\(content.prefix(1_600))\n... (microcompacted, original \(content.count) characters)"
+            if content.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<persisted-output>") {
+                continue
+            }
+            next[index]["content"] = "\(content.prefix(1_600))\n... (old tool result cleared by context microcompaction, original \(content.count) characters)"
         }
         return preserveToolPairIntegrity(next)
     }
@@ -2275,6 +2505,38 @@ enum NativeContextBudget {
             return arguments
         }
         return call["arguments"] as? String
+    }
+
+    private static func toolNamesByCallID(in messages: [[String: Any]]) -> [String: String] {
+        var values: [String: String] = [:]
+        for message in messages {
+            guard let calls = message["tool_calls"] as? [[String: Any]] else { continue }
+            for call in calls {
+                guard let id = call["id"] as? String else { continue }
+                values[id] = toolName(in: call)
+            }
+        }
+        return values
+    }
+
+    private static func safeFileName(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let scalars = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
+        let name = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+        return name.isEmpty ? UUID().uuidString : String(name.prefix(120))
+    }
+
+    private static func firstXMLBlock(named name: String, in text: String) -> String? {
+        let pattern = #"(?is)<\#(name)\b[^>]*>(.*?)</\#(name)>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        guard let match = regex.firstMatch(in: text, range: range), match.numberOfRanges >= 2 else {
+            return nil
+        }
+        return (text as NSString)
+            .substring(with: match.range(at: 1))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfBlank
     }
 
     private static func importantArgumentSummary(_ arguments: String?) -> String {
@@ -2698,7 +2960,9 @@ struct NativeAgentRuntime: Sendable {
         }
 
         let context = AgentRunContext(request: request)
-                var messages = openAIInitialMessages(request: request, context: context)
+        var messages = openAIInitialMessages(request: request, context: context)
+        var compressionState = NativeContextCompressionState()
+        var budgetTracker = NativeTokenBudgetTracker()
         var didForceWorkspaceBootstrap = false
         var didRecoverContextOverflow = false
         var loopWatchdog = AgentLoopWatchdog()
@@ -2710,16 +2974,37 @@ struct NativeAgentRuntime: Sendable {
             let statusItem = await turnController.recordStatus(iteration == 1 ? "thinking" : "processing")
             continuation.yield(.turnItemStarted(statusItem))
             continuation.yield(.status(iteration == 1 ? "thinking" : "processing"))
-            let budget = NativeContextBudget.snapshot(messages: messages, contextWindow: request.contextWindow)
+
+            messages = NativeContextBudget.applyToolResultBudget(
+                messages: messages,
+                sessionId: request.sessionId,
+                workspacePath: request.projectPath
+            )
+            var messagesForRequest = NativeContextBudget.projectedMessages(messages: messages, state: compressionState)
+            let budget = budgetTracker.snapshot(messages: messagesForRequest, contextWindow: request.contextWindow)
             continuation.yield(.contextBudget(used: budget.used, total: budget.total, level: budget.level ?? .normal))
-            if let compaction = NativeContextBudget.compactIfNeeded(messages: messages, contextWindow: request.contextWindow) {
-                continuation.yield(.compactStarted(trigger: compaction.trigger, preTokens: compaction.preTokens))
-                let compactItem = await turnController.recordStatus("context compacting", text: compaction.trigger)
+            if NativeContextBudget.shouldAutoCompact(budget: budget) {
+                continuation.yield(.compactStarted(trigger: "auto_compact_threshold", preTokens: budget.used))
+                let compactItem = await turnController.recordStatus("context compacting")
                 continuation.yield(.turnItemStarted(compactItem))
                 continuation.yield(.status("context compacting"))
-                messages = appendPostCompactionRuntimeContext(to: compaction.messages, context: context)
-                let postCompactionBudget = NativeContextBudget.snapshot(messages: messages, contextWindow: request.contextWindow)
-                continuation.yield(.compactCompleted(status: compaction.status, preTokens: compaction.preTokens, postTokens: postCompactionBudget.used))
+                let summary: String
+                do {
+                    summary = try await generateCompactSummary(
+                        request: request,
+                        messages: messagesForRequest,
+                        urgent: false
+                    )
+                } catch {
+                    AppLog.write("context compaction summary fallback: \(error.localizedDescription)")
+                    summary = NativeContextBudget.fallbackSummary(messages: messagesForRequest)
+                }
+                compressionState.apply(summary: summary, coveredMessageCount: messages.count)
+                messages = appendPostCompactionRuntimeContext(to: messages, context: context)
+                budgetTracker.reset()
+                messagesForRequest = NativeContextBudget.projectedMessages(messages: messages, state: compressionState)
+                let postCompactionBudget = NativeContextBudget.snapshot(messages: messagesForRequest, contextWindow: request.contextWindow)
+                continuation.yield(.compactCompleted(status: "completed", preTokens: budget.used, postTokens: postCompactionBudget.used))
                 continuation.yield(.contextBudget(
                     used: postCompactionBudget.used,
                     total: request.contextWindow,
@@ -2731,7 +3016,7 @@ struct NativeAgentRuntime: Sendable {
             do {
                 turn = try await performOpenAIChatTurnWithRetry(
                     request: request,
-                    messages: messages,
+                    messages: messagesForRequest,
                     continuation: continuation,
                     runMode: context.runMode,
                     policy: ProviderRetryPolicy.fromConfig(request.nativeConfigValues)
@@ -2754,13 +3039,27 @@ struct NativeAgentRuntime: Sendable {
                 }
                 if !didRecoverContextOverflow, isPromptTooLongError(error) {
                     didRecoverContextOverflow = true
-                    let recovery = NativeContextBudget.forceRecover(messages: messages, contextWindow: request.contextWindow)
-                    continuation.yield(.compactStarted(trigger: recovery.trigger, preTokens: recovery.preTokens))
-                    messages = appendPostCompactionRuntimeContext(to: recovery.messages, context: context)
-                    let postRecoveryBudget = NativeContextBudget.snapshot(messages: messages, contextWindow: request.contextWindow)
-                    continuation.yield(.compactCompleted(status: recovery.status, preTokens: recovery.preTokens, postTokens: postRecoveryBudget.used))
+                    let preRecoveryBudget = NativeContextBudget.snapshot(messages: messagesForRequest, contextWindow: request.contextWindow)
+                    continuation.yield(.compactStarted(trigger: "prompt_too_long", preTokens: preRecoveryBudget.used))
+                    let summary: String
+                    do {
+                        summary = try await generateCompactSummary(
+                            request: request,
+                            messages: messagesForRequest,
+                            urgent: true
+                        )
+                    } catch {
+                        AppLog.write("context recovery summary fallback: \(error.localizedDescription)")
+                        summary = NativeContextBudget.fallbackSummary(messages: messagesForRequest)
+                    }
+                    compressionState.apply(summary: summary, coveredMessageCount: messages.count)
+                    messages = appendPostCompactionRuntimeContext(to: messages, context: context)
+                    budgetTracker.reset()
+                    messagesForRequest = NativeContextBudget.projectedMessages(messages: messages, state: compressionState)
+                    let postRecoveryBudget = NativeContextBudget.snapshot(messages: messagesForRequest, contextWindow: request.contextWindow)
+                    continuation.yield(.compactCompleted(status: "recovering", preTokens: preRecoveryBudget.used, postTokens: postRecoveryBudget.used))
                     continuation.yield(.contextBudget(used: postRecoveryBudget.used, total: request.contextWindow, level: postRecoveryBudget.level ?? .recovering))
-                    let recoveryItem = await turnController.recordStatus("context recovering", text: "prompt_too_long")
+                    let recoveryItem = await turnController.recordStatus("context recovering")
                     continuation.yield(.turnItemStarted(recoveryItem))
                     continuation.yield(.status("context recovering"))
                     continue
@@ -2768,6 +3067,13 @@ struct NativeAgentRuntime: Sendable {
                 throw error
             }
             context.partialStreamRecoveryCount = 0
+            if let tokenBudget = turn.tokenBudget {
+                continuation.yield(.contextBudget(
+                    used: tokenBudget.used,
+                    total: tokenBudget.total,
+                    level: tokenBudget.level ?? .normal
+                ))
+            }
             var rawToolCalls = turn.toolCalls
             if rawToolCalls.isEmpty {
                 rawToolCalls = fallbackToolCalls(in: turn.assistantContent)
@@ -2957,6 +3263,10 @@ struct NativeAgentRuntime: Sendable {
             let assistantToolContent = isHiddenToolProtocol(turn.assistantContent) ? "" : turn.assistantContent
             let toolCalls = toolInvocations.map(\.call)
             messages.append(openAIAssistantToolMessage(content: assistantToolContent, toolCalls: toolCalls))
+            if let tokenBudget = turn.tokenBudget {
+                let projectedAfterAssistant = NativeContextBudget.projectedMessages(messages: messages, state: compressionState)
+                budgetTracker.anchorAfterModelResponse(messageCount: projectedAfterAssistant.count, budget: tokenBudget)
+            }
 
             if toolInvocations.count > 1,
                toolInvocations.allSatisfy({ isParallelSafeToolInvocation($0, context: context) }) {
@@ -3089,6 +3399,12 @@ struct NativeAgentRuntime: Sendable {
                 "content": skillContext,
             ])
         }
+        if let fileContext = nativeAgentRecentFilesContext(context: context) {
+            next.append([
+                "role": "user",
+                "content": fileContext,
+            ])
+        }
         return next
     }
 
@@ -3129,6 +3445,94 @@ struct NativeAgentRuntime: Sendable {
             return interactiveContent.visibleIntro ?? ""
         }
         return assistantContent.nilIfBlank ?? ""
+    }
+
+    private static func generateCompactSummary(
+        request: AgentRequest,
+        messages: [[String: Any]],
+        urgent: Bool
+    ) async throws -> String {
+        var sourceMessages = messages
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: "chat/completions")
+                var urlRequest = URLRequest(url: endpoint)
+                urlRequest.httpMethod = "POST"
+                urlRequest.timeoutInterval = urgent
+                    ? max(30, modelStreamTimeoutInterval(from: request.timeoutMs) / 2)
+                    : modelStreamTimeoutInterval(from: request.timeoutMs)
+                try applyHeaders(to: &urlRequest, request: request)
+                urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+
+                let maxPromptCharacters = max(16_000, min(480_000, request.contextWindow * max(1, 3 - attempt)))
+                let prompt = NativeContextBudget.compactSummaryPrompt(
+                    messages: sourceMessages,
+                    maxCharacters: maxPromptCharacters
+                )
+                let body: [String: Any] = [
+                    "model": request.providerConfig.model,
+                    "stream": false,
+                    "messages": [
+                        [
+                            "role": "system",
+                            "content": """
+                            CRITICAL: Respond with TEXT ONLY. Do NOT call tools. Tool calls are unavailable and would fail the context compaction task.
+                            Produce <analysis> and <summary> XML blocks. The caller will discard <analysis> and retain only <summary>.
+                            """,
+                        ],
+                        [
+                            "role": "user",
+                            "content": prompt,
+                        ],
+                    ],
+                ]
+                urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+                let data: Data
+                let response: URLResponse
+                do {
+                    (data, response) = try await URLSession.shared.data(for: urlRequest)
+                } catch {
+                    throw mapTransportError(error)
+                }
+                guard let statusCode = (response as? HTTPURLResponse)?.statusCode else {
+                    throw ProviderClientError.invalidResponse
+                }
+                guard 200..<300 ~= statusCode else {
+                    let body = String(data: data, encoding: .utf8) ?? ""
+                    throw ProviderClientError.httpError(statusCode: statusCode, body: body)
+                }
+                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let choices = object["choices"] as? [[String: Any]],
+                      let message = choices.first?["message"] as? [String: Any] else {
+                    throw ProviderClientError.invalidResponse
+                }
+                let content = chatMessageText(message)
+                let summary = NativeContextBudget.extractedCompactSummary(from: content)
+                guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw ProviderClientError.transport("Context compaction summary was empty.")
+                }
+                return summary
+            } catch {
+                lastError = error
+                guard isPromptTooLongError(error), sourceMessages.count > 8 else {
+                    throw error
+                }
+                sourceMessages = NativeContextBudget.truncateHeadForSummaryRetry(sourceMessages, attempt: attempt + 1)
+            }
+        }
+        throw lastError ?? ProviderClientError.transport("Context compaction summary failed.")
+    }
+
+    private static func chatMessageText(_ message: [String: Any]) -> String {
+        if let text = message["content"] as? String {
+            return text
+        }
+        if let parts = message["content"] as? [[String: Any]] {
+            return parts.compactMap { $0["text"] as? String }.joined(separator: "\n")
+        }
+        return ""
     }
 
     private static func performOpenAIChatTurnWithRetry(
@@ -3261,6 +3665,7 @@ struct NativeAgentRuntime: Sendable {
         var shouldStreamContent = false
         var didYieldVisibleContent = false
         var sawTokenUsage = false
+        var lastTokenBudget: TokenBudget?
         var accumulators: [Int: OpenAIToolCallAccumulator] = [:]
         continuation.yield(.status("streaming"))
 
@@ -3283,6 +3688,10 @@ struct NativeAgentRuntime: Sendable {
                         accumulator.apply(delta: rawCall)
                         accumulators[index] = accumulator
                     }
+                }
+                if let usage = object["usage"] as? [String: Any],
+                   let budget = tokenBudget(from: usage, contextWindow: request.contextWindow) {
+                    lastTokenBudget = budget
                 }
                 for event in openAIChatEvents(from: object, contextWindow: request.contextWindow) {
                     if case .tokenUsage = event {
@@ -3342,7 +3751,7 @@ struct NativeAgentRuntime: Sendable {
             }
         }
 
-        return ModelTurn(assistantContent: content, toolCalls: calls, sawTokenUsage: sawTokenUsage)
+        return ModelTurn(assistantContent: content, toolCalls: calls, sawTokenUsage: sawTokenUsage, tokenBudget: lastTokenBudget)
     }
 
     private static func performOpenAIChatTurnNonStreaming(
@@ -3384,7 +3793,8 @@ struct NativeAgentRuntime: Sendable {
         }
         let content = (message["content"] as? String) ?? ""
         let calls = toolCalls(fromJSONObject: message)
-        return ModelTurn(assistantContent: content, toolCalls: calls, sawTokenUsage: object["usage"] != nil)
+        let budget = (object["usage"] as? [String: Any]).flatMap { tokenBudget(from: $0, contextWindow: request.contextWindow) }
+        return ModelTurn(assistantContent: content, toolCalls: calls, sawTokenUsage: object["usage"] != nil, tokenBudget: budget)
     }
 
     static func endpointURL(baseURL: String, suffix: String) throws -> URL {
@@ -3420,7 +3830,6 @@ struct NativeAgentRuntime: Sendable {
         if let usage = object["usage"] as? [String: Any],
            let budget = tokenBudget(from: usage, contextWindow: contextWindow) {
             events.append(.tokenUsage(tokenUsage(from: usage), contextWindow: budget.total))
-            events.append(.tokenBudget(used: budget.used, total: budget.total))
         }
         return events
     }
@@ -3715,6 +4124,47 @@ struct NativeAgentRuntime: Sendable {
         <todo-list>
         \(context.todosJSON)
         </todo-list>
+        </system-reminder>
+        """
+    }
+
+    static func nativeAgentRecentFilesContext(context: AgentRunContext) -> String? {
+        let root = URL(fileURLWithPath: context.workspacePath, isDirectory: true)
+        var sections: [String] = []
+        for path in context.recentWorkspaceFiles.prefix(5) {
+            let fileURL: URL
+            if path.hasPrefix("/") {
+                fileURL = URL(fileURLWithPath: path)
+            } else {
+                fileURL = root.appendingPathComponent(path)
+            }
+            let relativePath = fileURL.path.hasPrefix(root.path)
+                ? String(fileURL.path.dropFirst(root.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                : path
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                sections.append("- \(relativePath): missing or deleted")
+                continue
+            }
+            guard let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]),
+                  data.count <= 256_000,
+                  let text = String(data: data, encoding: .utf8) else {
+                sections.append("- \(relativePath): exists, content omitted because it is binary or large")
+                continue
+            }
+            let preview = String(text.prefix(20_000))
+            sections.append("""
+            - \(relativePath):
+            ```
+            \(preview)
+            ```
+            """)
+        }
+        guard !sections.isEmpty else { return nil }
+        return """
+        <system-reminder>
+        Recent files touched before context compaction. Use these previews to preserve continuity, but reread files before exact edits because they may have changed.
+
+        \(sections.joined(separator: "\n"))
         </system-reminder>
         """
     }
@@ -4568,6 +5018,7 @@ private struct ModelTurn {
     var assistantContent: String
     var toolCalls: [AgentToolCall]
     var sawTokenUsage: Bool = false
+    var tokenBudget: TokenBudget?
 }
 
 private struct OpenAIToolCallAccumulator {
