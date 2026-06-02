@@ -6601,6 +6601,32 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(second?.summary(isChinese: true).contains("2 完成") == true)
     }
 
+    func testTodoListPresentationParsesCompletedBooleanChecklist() {
+        let input = """
+        {"todos":[
+          {"id":"1","content":"Create project structure","completed":true},
+          {"id":"2","content":"Write index.html","completed":false},
+          {"id":"3","content":"Smoke test","completed":false}
+        ]}
+        """
+
+        let presentation = TodoListPresentation.parse(toolName: "TodoWrite", inputJSON: input, resultOutput: nil)
+
+        XCTAssertEqual(presentation?.snapshot.completedCount, 1)
+        XCTAssertEqual(presentation?.snapshot.inProgressCount, 1)
+        XCTAssertEqual(presentation?.snapshot.pendingCount, 1)
+        XCTAssertEqual(presentation?.snapshot.items.map(\.status), [.completed, .inProgress, .pending])
+        XCTAssertTrue(presentation?.summary(isChinese: true).contains("1 完成 · 1 进行中 · 1 待办") == true)
+    }
+
+    func testTodoCompletionGateAcceptsCompletedBooleanChecklist() {
+        let completed = #"[{"content":"Ship","completed":true},{"content":"Verify","done":true}]"#
+        let incomplete = #"[{"content":"Ship","completed":true},{"content":"Verify","completed":false}]"#
+
+        XCTAssertFalse(AgentRunContext.hasIncompleteTodos(in: completed))
+        XCTAssertTrue(AgentRunContext.hasIncompleteTodos(in: incomplete))
+    }
+
     func testTodoListPresentationPreservesInputOrderAndContentKeys() {
         let previousInput = """
         {"todos":[

@@ -1583,9 +1583,17 @@ final class AgentRunContext: @unchecked Sendable {
                 return containsIncompleteTodo(todos)
             }
             if object["content"] != nil || object["title"] != nil || object["task"] != nil {
-                let rawStatus = (object["status"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    ?? (object["done"] as? Bool == true ? "completed" : "pending")
-                return rawStatus != "completed" && rawStatus != "done"
+                if let rawStatus = (object["status"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                    return rawStatus != "completed" &&
+                        rawStatus != "complete" &&
+                        rawStatus != "done" &&
+                        rawStatus != "finished" &&
+                        rawStatus != "success"
+                }
+                if let completed = boolValue(object["completed"]) ?? boolValue(object["done"]) ?? boolValue(object["isCompleted"]) {
+                    return !completed
+                }
+                return true
             }
             return object.values.contains { containsIncompleteTodo($0) }
         }
@@ -1593,6 +1601,22 @@ final class AgentRunContext: @unchecked Sendable {
             return array.contains { containsIncompleteTodo($0) }
         }
         return false
+    }
+
+    private static func boolValue(_ value: Any?) -> Bool? {
+        if let value = value as? Bool { return value }
+        if let value = value as? NSNumber { return value.boolValue }
+        if let value = value as? String {
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "yes", "1", "completed", "done":
+                return true
+            case "false", "no", "0", "pending", "todo", "incomplete":
+                return false
+            default:
+                return nil
+            }
+        }
+        return nil
     }
 
     static func isReadOnlyShell(_ inputJSON: String) -> Bool {
@@ -4706,12 +4730,23 @@ enum AgentToolRegistry {
             ),
             functionTool(
                 "TodoWrite",
-                "Replace the current session todo list.",
+                "Replace the current session todo list. Prefer status values: pending, in_progress, completed. Legacy completed/done booleans are accepted.",
                 [
                     "todos": [
                         "type": "array",
                         "items": [
                             "type": "object",
+                            "properties": [
+                                "id": stringProperty("Stable todo id."),
+                                "content": stringProperty("Todo item text."),
+                                "status": [
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"],
+                                    "description": "Current item status.",
+                                ],
+                                "completed": boolProperty("Legacy completion flag. Prefer status when possible."),
+                                "done": boolProperty("Legacy completion flag. Prefer status when possible."),
+                            ],
                             "additionalProperties": true,
                         ],
                     ],

@@ -2051,6 +2051,11 @@ struct TodoListPresentation: Equatable {
     var snapshot: TodoListSnapshot
     var diff: TodoListDiff
 
+    private struct ParsedTodoItem {
+        var item: TodoListItemPresentation
+        var hasStatusString: Bool
+    }
+
     static func parse(
         toolName: String,
         inputJSON: String,
@@ -2092,18 +2097,29 @@ struct TodoListPresentation: Equatable {
             if let markdown = object["markdown"] as? String {
                 return todoItemsFromMarkdown(markdown)
             }
-            if let todo = todoItem(from: object, fallbackIndex: 0) {
-                return [todo]
+            if let todo = parsedTodoItem(from: object, fallbackIndex: 0) {
+                return finalizedTodoItems([todo])
             }
         }
         guard let array = value as? [Any] else { return nil }
-        return array.enumerated().compactMap { index, item in
-            guard let object = item as? [String: Any] else { return nil }
-            return todoItem(from: object, fallbackIndex: index)
+        let parsedItems: [ParsedTodoItem] = array.enumerated().compactMap { pair -> ParsedTodoItem? in
+            guard let object = pair.element as? [String: Any] else { return nil }
+            return parsedTodoItem(from: object, fallbackIndex: pair.offset)
         }
+        return finalizedTodoItems(parsedItems)
     }
 
-    private static func todoItem(from object: [String: Any], fallbackIndex: Int) -> TodoListItemPresentation? {
+    private static func finalizedTodoItems(_ parsedItems: [ParsedTodoItem]) -> [TodoListItemPresentation] {
+        var items = parsedItems.map(\.item)
+        let hasStatusString = parsedItems.contains { $0.hasStatusString }
+        let hasInProgress = items.contains { $0.status == .inProgress }
+        if !hasStatusString, !hasInProgress, let firstPending = items.firstIndex(where: { $0.status == .pending }) {
+            items[firstPending].status = .inProgress
+        }
+        return items
+    }
+
+    private static func parsedTodoItem(from object: [String: Any], fallbackIndex: Int) -> ParsedTodoItem? {
         let content = stringValue(object["content"])
             ?? stringValue(object["title"])
             ?? stringValue(object["subject"])
@@ -2113,13 +2129,24 @@ struct TodoListPresentation: Equatable {
         }
         let explicitID = stringValue(object["id"])?.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawID = explicitID?.isEmpty == false ? explicitID! : "todo-\(fallbackIndex + 1)"
-        let rawStatus = stringValue(object["status"]) ?? (object["done"] as? Bool == true ? "completed" : "pending")
-        return TodoListItemPresentation(
-            id: rawID,
-            explicitID: explicitID?.isEmpty == false ? explicitID : nil,
-            content: content,
-            status: TodoPresentationStatus.normalized(rawStatus),
-            sourceIndex: fallbackIndex
+        let rawStatus = stringValue(object["status"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let status: TodoPresentationStatus
+        if let rawStatus, !rawStatus.isEmpty {
+            status = TodoPresentationStatus.normalized(rawStatus)
+        } else if boolValue(object["completed"]) == true || boolValue(object["done"]) == true || boolValue(object["isCompleted"]) == true {
+            status = .completed
+        } else {
+            status = .pending
+        }
+        return ParsedTodoItem(
+            item: TodoListItemPresentation(
+                id: rawID,
+                explicitID: explicitID?.isEmpty == false ? explicitID : nil,
+                content: content,
+                status: status,
+                sourceIndex: fallbackIndex
+            ),
+            hasStatusString: rawStatus?.isEmpty == false
         )
     }
 
@@ -2157,6 +2184,22 @@ struct TodoListPresentation: Equatable {
     private static func stringValue(_ value: Any?) -> String? {
         if let value = value as? String { return value }
         if let value = value as? NSNumber { return value.stringValue }
+        return nil
+    }
+
+    private static func boolValue(_ value: Any?) -> Bool? {
+        if let value = value as? Bool { return value }
+        if let value = value as? NSNumber { return value.boolValue }
+        if let value = value as? String {
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "yes", "1", "completed", "done":
+                return true
+            case "false", "no", "0", "pending", "todo", "incomplete":
+                return false
+            default:
+                return nil
+            }
+        }
         return nil
     }
 }
