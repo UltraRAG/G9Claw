@@ -62,7 +62,19 @@ struct PilotDeckApp: App {
                 .disabled(!state.isCurrentSessionStreaming)
             }
 
-            CommandGroup(replacing: .help) {}
+            CommandGroup(replacing: .help) {
+                Button("Home") {
+                    PilotDeckHelpLinks.open(.home)
+                }
+
+                Button("Documentation") {
+                    PilotDeckHelpLinks.open(.docs)
+                }
+
+                Button("GitHub") {
+                    PilotDeckHelpLinks.open(.github)
+                }
+            }
         }
 
         Settings {
@@ -71,6 +83,27 @@ struct PilotDeckApp: App {
                 .preferredColorScheme(state.settings.colorScheme.swiftUIColorScheme)
                 .frame(width: 920, height: 640)
         }
+    }
+}
+
+private enum PilotDeckHelpLinks {
+    case home
+    case docs
+    case github
+
+    private var url: URL {
+        switch self {
+        case .home:
+            URL(string: "https://pilotdeck.openbmb.cn/pilotdeck.github.io/")!
+        case .docs:
+            URL(string: "https://pilotdeck.openbmb.cn/pilotdeck.github.io/docs/en/introduction")!
+        case .github:
+            URL(string: "https://github.com/OpenBMB/PilotDeck")!
+        }
+    }
+
+    static func open(_ link: PilotDeckHelpLinks) {
+        NSWorkspace.shared.open(link.url)
     }
 }
 
