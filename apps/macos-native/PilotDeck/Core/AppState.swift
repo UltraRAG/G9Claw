@@ -205,6 +205,7 @@ final class AppState: ObservableObject {
             let restoredSelection = loadPersistedWorkspaceState()
             loadManualProjectsFromPilotDeckConfig()
             mergePilotDeckWebHistory()
+            recoverLocalSessionIndex()
             restoreWorkspaceSelection(restoredSelection)
             persistWorkspaceState()
             refreshNativeToolData()
@@ -2443,6 +2444,48 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func recoverLocalSessionIndex() {
+        guard let paths = try? AppPaths.current() else { return }
+        let knownProjectRoots = projectRootIndex()
+        let recovered = LocalSessionIndexRecovery.recover(
+            sessionsDirectory: paths.sessions,
+            knownProjectRoots: knownProjectRoots,
+            generalProjectRoot: projects.first(where: isGeneralProject).map { normalizedPath(effectiveWorkspacePath(for: $0)) }
+        )
+        guard !recovered.isEmpty else { return }
+
+        var recoveredCount = 0
+        for recoveredSession in recovered {
+            guard !projects.contains(where: { project in
+                project.allSessions.contains(where: { $0.id == recoveredSession.session.id })
+            }) else { continue }
+            guard let projectIndex = projects.firstIndex(where: {
+                normalizedPath(effectiveWorkspacePath(for: $0)) == recoveredSession.projectRoot
+            }) else { continue }
+
+            mergeImportedSession(recoveredSession.session, into: &projects[projectIndex].sessions)
+            projects[projectIndex].sessions.sort { $0.activityDate > $1.activityDate }
+            projects[projectIndex].lastActivity = projects[projectIndex].latestActivity
+            recoveredCount += 1
+        }
+
+        if recoveredCount > 0 {
+            projects = WorkspaceService.sortedProjects(projects, order: settings.projectSortOrder)
+            AppLog.write("recovered \(recoveredCount) local session index entr\(recoveredCount == 1 ? "y" : "ies") from persisted chat messages")
+        }
+    }
+
+    private func projectRootIndex() -> [String] {
+        var roots: [String] = []
+        for project in projects {
+            let root = normalizedPath(effectiveWorkspacePath(for: project))
+            if !roots.contains(root) {
+                roots.append(root)
+            }
+        }
+        return roots
+    }
+
     private static func restoredProject(_ project: WorkspaceProject) -> WorkspaceProject {
         var restored = project
         restored.sessions = restored.sessions.map(restoredSession)
@@ -3464,6 +3507,185 @@ enum WorkspaceStatePersistence {
     private static func stateURL() -> URL? {
         guard let paths = try? AppPaths.current() else { return nil }
         return paths.applicationSupport.appendingPathComponent(fileName)
+    }
+}
+
+enum LocalSessionIndexRecovery {
+    struct RecoveredSession: Hashable {
+        var projectRoot: String
+        var session: ProjectSession
+    }
+
+    private struct ProjectRootCandidate: Hashable {
+        var root: String
+        var aliases: [String]
+    }
+
+    static func recover(
+        sessionsDirectory: URL,
+        knownProjectRoots: [String],
+        generalProjectRoot: String?
+    ) -> [RecoveredSession] {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: sessionsDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        let roots = uniqued(knownProjectRoots.map(normalizedPath))
+        let generalRoot = generalProjectRoot.map(normalizedPath)
+        let projectRoots = roots
+            .filter { $0 != generalRoot }
+            .sorted { $0.count > $1.count }
+        let projectCandidates = projectRoots.map {
+            ProjectRootCandidate(root: $0, aliases: aliases(forProjectRoot: $0))
+        }
+        let decoder = JSONDecoder()
+
+        return files
+            .filter { $0.pathExtension.lowercased() == "json" }
+            .compactMap { url in
+                let sessionID = url.deletingPathExtension().lastPathComponent
+                guard !sessionID.hasPrefix("always-on-") else { return nil }
+                guard let data = try? Data(contentsOf: url),
+                      let messages = try? decoder.decode([ChatMessage].self, from: data),
+                      !messages.isEmpty else { return nil }
+
+                let searchText = searchableTranscriptText(messages)
+                let normalizedSearchText = searchText.lowercased()
+                let matchedRoot = projectCandidates.first { searchText.contains($0.root) }?.root
+                    ?? projectCandidates.first { candidate in
+                        candidate.aliases.contains { containsStandalone($0, in: normalizedSearchText) }
+                    }?.root
+                let targetRoot = matchedRoot ?? generalRoot
+                guard let targetRoot else { return nil }
+
+                let metadata = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                return RecoveredSession(
+                    projectRoot: targetRoot,
+                    session: makeSession(id: sessionID, messages: messages, fileModifiedAt: metadata)
+                )
+            }
+    }
+
+    private static func makeSession(id: String, messages: [ChatMessage], fileModifiedAt: Date?) -> ProjectSession {
+        let createdAt = messages.map(\.createdAt).min() ?? fileModifiedAt ?? Date()
+        let lastActivity = messages.map(\.createdAt).max() ?? fileModifiedAt ?? createdAt
+        let title = sessionTitle(from: messages, fallback: id)
+        return ProjectSession(
+            id: id,
+            provider: messages.last?.provider ?? messages.first?.provider ?? .pilotDeck,
+            title: title,
+            summary: title,
+            createdAt: createdAt,
+            updatedAt: fileModifiedAt,
+            lastActivity: lastActivity,
+            lastConversationAt: lastActivity,
+            state: .idle,
+            messageCount: messages.count
+        )
+    }
+
+    private static func sessionTitle(from messages: [ChatMessage], fallback: String) -> String {
+        let userText = messages.first(where: { $0.role == .user })?.plainText
+        let anyText = messages.first(where: { !$0.plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.plainText
+        let title = (userText ?? anyText ?? fallback)
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return truncated(title.isEmpty ? fallback : title, limit: 80)
+    }
+
+    private static func searchableTranscriptText(_ messages: [ChatMessage]) -> String {
+        let text = messages
+            .flatMap { message in
+                message.blocks.flatMap(searchableText)
+            }
+            .joined(separator: "\n")
+        return text.replacingOccurrences(of: "\\/", with: "/")
+    }
+
+    private static func searchableText(_ block: ChatBlock) -> [String] {
+        switch block {
+        case .text(let text), .reasoning(let text):
+            return [text]
+        case .toolCall(let call):
+            return [call.name, call.inputJSON]
+        case .toolResult(let result):
+            return [result.output]
+        case .attachment(let attachment):
+            return [attachment.fileName, attachment.path]
+        }
+    }
+
+    private static func normalizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+    }
+
+    private static func uniqued(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for value in values where seen.insert(value).inserted {
+            result.append(value)
+        }
+        return result
+    }
+
+    private static func aliases(forProjectRoot root: String) -> [String] {
+        let leaf = URL(fileURLWithPath: root).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard leaf.count >= 3,
+              !genericProjectAliases.contains(leaf) else { return [] }
+        let spaced = leaf
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+        return uniqued([leaf, spaced].filter { !$0.isEmpty && $0.count >= 3 })
+    }
+
+    private static let genericProjectAliases: Set<String> = [
+        "default",
+        "demo",
+        "general",
+        "new",
+        "project",
+        "sample",
+        "temp",
+        "test",
+        "tmp",
+        "untitled",
+        "workspace",
+    ]
+
+    private static func containsStandalone(_ alias: String, in text: String) -> Bool {
+        var searchStart = text.startIndex
+        while let range = text.range(of: alias, range: searchStart..<text.endIndex) {
+            let hasLeadingBoundary = range.lowerBound == text.startIndex
+                || isAliasBoundary(text[text.index(before: range.lowerBound)])
+            let hasTrailingBoundary = range.upperBound == text.endIndex
+                || isAliasBoundary(text[range.upperBound])
+            if hasLeadingBoundary && hasTrailingBoundary {
+                return true
+            }
+            searchStart = range.upperBound
+        }
+        return false
+    }
+
+    private static func isAliasBoundary(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            !(scalar.properties.isAlphabetic
+                || scalar.properties.numericType != nil
+                || scalar == UnicodeScalar("_")
+                || scalar == UnicodeScalar("-"))
+        }
+    }
+
+    private static func truncated(_ value: String, limit: Int) -> String {
+        guard value.count > limit else { return value }
+        let index = value.index(value.startIndex, offsetBy: max(0, limit - 1))
+        return String(value[..<index]) + "…"
     }
 }
 

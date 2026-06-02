@@ -101,6 +101,119 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(messages.map(\.plainText), ["你好啊", "你好！"])
     }
 
+    func testLocalSessionIndexRecoveryRestoresProjectSessionFromMessagePath() throws {
+        let sessionsDirectory = temporaryDirectory("pilotdeck-local-sessions")
+        defer { try? FileManager.default.removeItem(at: sessionsDirectory) }
+
+        let projectRoot = "/Users/meisen/workspace/9gclaw_projects/football"
+        let sessionID = "native-football-session"
+        let messages = [
+            ChatMessage(
+                id: UUID(),
+                sessionId: sessionID,
+                provider: .pilotDeck,
+                role: .user,
+                blocks: [.text("帮我做一款 html 的足球游戏")],
+                createdAt: Date(timeIntervalSince1970: 100),
+                isStreaming: false,
+                tokenBudget: nil
+            ),
+            ChatMessage(
+                id: UUID(),
+                sessionId: sessionID,
+                provider: .pilotDeck,
+                role: .assistant,
+                blocks: [
+                    .toolCall(ToolCall(
+                        id: "write-football",
+                        name: "Write",
+                        inputJSON: #"{"file_path":"\/Users\/meisen\/workspace\/9gclaw_projects\/football\/index.html","content":"<html></html>"}"#,
+                        status: .completed
+                    )),
+                ],
+                createdAt: Date(timeIntervalSince1970: 120),
+                isStreaming: false,
+                tokenBudget: nil
+            ),
+        ]
+        let data = try JSONEncoder().encode(messages)
+        try data.write(to: sessionsDirectory.appendingPathComponent("\(sessionID).json"), options: .atomic)
+
+        let recovered = LocalSessionIndexRecovery.recover(
+            sessionsDirectory: sessionsDirectory,
+            knownProjectRoots: ["/Users/meisen", projectRoot],
+            generalProjectRoot: "/Users/meisen"
+        )
+
+        XCTAssertEqual(recovered.count, 1)
+        XCTAssertEqual(recovered.first?.projectRoot, projectRoot)
+        XCTAssertEqual(recovered.first?.session.id, sessionID)
+        XCTAssertEqual(recovered.first?.session.title, "帮我做一款 html 的足球游戏")
+        XCTAssertEqual(recovered.first?.session.messageCount, 2)
+        XCTAssertEqual(recovered.first?.session.lastConversationAt, Date(timeIntervalSince1970: 120))
+    }
+
+    func testLocalSessionIndexRecoveryCanUseSpecificProjectSlugWhenPathIsAbsent() throws {
+        let sessionsDirectory = temporaryDirectory("pilotdeck-local-slug-sessions")
+        defer { try? FileManager.default.removeItem(at: sessionsDirectory) }
+
+        let projectRoot = "/Users/meisen/workspace/9gclaw_projects/tanchishe"
+        let sessionID = "native-tanchishe-session"
+        let messages = [
+            ChatMessage(
+                id: UUID(),
+                sessionId: sessionID,
+                provider: .pilotDeck,
+                role: .assistant,
+                blocks: [.text("Created the tanchishe HTML game and opened index.html.")],
+                createdAt: Date(timeIntervalSince1970: 200),
+                isStreaming: false,
+                tokenBudget: nil
+            ),
+        ]
+        let data = try JSONEncoder().encode(messages)
+        try data.write(to: sessionsDirectory.appendingPathComponent("\(sessionID).json"), options: .atomic)
+
+        let recovered = LocalSessionIndexRecovery.recover(
+            sessionsDirectory: sessionsDirectory,
+            knownProjectRoots: ["/Users/meisen", projectRoot],
+            generalProjectRoot: "/Users/meisen"
+        )
+
+        XCTAssertEqual(recovered.count, 1)
+        XCTAssertEqual(recovered.first?.projectRoot, projectRoot)
+    }
+
+    func testLocalSessionIndexRecoveryDoesNotUseGenericProjectSlug() throws {
+        let sessionsDirectory = temporaryDirectory("pilotdeck-local-generic-sessions")
+        defer { try? FileManager.default.removeItem(at: sessionsDirectory) }
+
+        let sessionID = "native-generic-session"
+        let messages = [
+            ChatMessage(
+                id: UUID(),
+                sessionId: sessionID,
+                provider: .pilotDeck,
+                role: .user,
+                blocks: [.text("Run one more test for the weather answer.")],
+                createdAt: Date(timeIntervalSince1970: 300),
+                isStreaming: false,
+                tokenBudget: nil
+            ),
+        ]
+        let data = try JSONEncoder().encode(messages)
+        try data.write(to: sessionsDirectory.appendingPathComponent("\(sessionID).json"), options: .atomic)
+
+        let recovered = LocalSessionIndexRecovery.recover(
+            sessionsDirectory: sessionsDirectory,
+            knownProjectRoots: ["/Users/meisen", "/Users/meisen/workspace/9gclaw_projects/test"],
+            generalProjectRoot: "/Users/meisen"
+        )
+
+        XCTAssertEqual(recovered.count, 1)
+        XCTAssertEqual(recovered.first?.projectRoot, "/Users/meisen")
+    }
+
     func testProjectNameMatchesWebManualProjectSlugPolicy() {
         XCTAssertEqual(WorkspaceService.projectName(for: "/Users/tester/My_Project"), "-Users-tester-My-Project")
     }
