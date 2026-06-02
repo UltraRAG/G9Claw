@@ -17,6 +17,7 @@ struct FilesView: View {
     @State private var editorExpanded = false
     @State private var searchText = ""
     @State private var inlineEdit: FileInlineEdit?
+    @State private var isFileDropTarget = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -103,13 +104,13 @@ struct FilesView: View {
                         )
                         .padding(.top, 56)
                     } else {
-                        if let inlineEdit, inlineEdit.parentPath == nil {
+                        if let inlineEdit, inlineEdit.isCreate, inlineEdit.parentPath == nil {
                             FileInlineEditRow(edit: inlineEdit, onCommit: commitInlineEdit, onCancel: cancelInlineEdit)
                         }
                         ForEach(filteredFiles) { file in
                             FileTreeRow(
                                 file: file,
-                                isSelected: state.selectedFile == file,
+                                isSelected: state.selectedFile?.path == file.path,
                                 isEditing: inlineEdit?.targetPath == file.path,
                                 editText: inlineEdit?.targetPath == file.path ? inlineEdit?.text : nil,
                                 onOpen: { open(file) },
@@ -123,7 +124,7 @@ struct FilesView: View {
                                 onCommitEdit: commitInlineEdit,
                                 onCancelEdit: cancelInlineEdit
                             )
-                            if let inlineEdit, inlineEdit.parentPath == file.path {
+                            if let inlineEdit, inlineEdit.isCreate, inlineEdit.parentPath == file.path {
                                 FileInlineEditRow(edit: inlineEdit, onCommit: commitInlineEdit, onCancel: cancelInlineEdit)
                             }
                         }
@@ -131,6 +132,29 @@ struct FilesView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
+            }
+            .background(
+                DesignTokens.background
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        cancelInlineEdit()
+                    }
+            )
+            .contextMenu {
+                filePaneContextMenu
+            }
+            .dropDestination(for: URL.self) { urls, _ in
+                handleFileDrop(urls)
+            } isTargeted: { isTargeted in
+                isFileDropTarget = isTargeted
+            }
+            .overlay {
+                if isFileDropTarget {
+                    RoundedRectangle(cornerRadius: DesignTokens.radius, style: .continuous)
+                        .stroke(DesignTokens.accent.opacity(0.58), lineWidth: 1.5)
+                        .padding(8)
+                        .allowsHitTesting(false)
+                }
             }
         }
         .background(DesignTokens.background)
@@ -233,6 +257,21 @@ struct FilesView: View {
         }
     }
 
+    @ViewBuilder
+    private var filePaneContextMenu: some View {
+        Button(state.t(.newFile)) { beginCreate(parentPath: nil, depth: 0, isDirectory: false) }
+            .disabled(!hasWorkspace)
+        Button(state.t(.newFolder)) { beginCreate(parentPath: nil, depth: 0, isDirectory: true) }
+            .disabled(!hasWorkspace)
+        Divider()
+        Button(state.t(.uploadFiles)) { upload(allowDirectories: false) }
+            .disabled(!hasWorkspace)
+        Button(state.t(.uploadFolder)) { upload(allowDirectories: true) }
+            .disabled(!hasWorkspace)
+        Button(state.t(.refresh)) { loadFiles() }
+            .disabled(!hasWorkspace || isLoadingFiles)
+    }
+
     private func fileToolbarButton(
         _ systemImage: String,
         help: String,
@@ -286,6 +325,15 @@ struct FilesView: View {
     private var selectedFileInListing: WorkspaceFile? {
         guard let selected = state.selectedFile else { return nil }
         return files.first { $0.path == selected.path }
+    }
+
+    private var uploadTargetDirectoryPath: String? {
+        guard let context = state.selectedWorkspaceContext else { return nil }
+        guard let selected = selectedFileInListing else { return context.rootPath }
+        if selected.isDirectory {
+            return selected.path
+        }
+        return URL(fileURLWithPath: selected.path).deletingLastPathComponent().path
     }
 
     private var emptyFilesTitle: String {
@@ -373,9 +421,14 @@ struct FilesView: View {
             )
             fileListing = listing
             files = listing.files
+            if let selected = state.selectedFile, let updated = files.first(where: { $0.path == selected.path }) {
+                state.selectedFile = updated
+            }
             if let editorFile, let updated = files.first(where: { $0.path == editorFile.path }) {
                 self.editorFile = updated
-                state.selectedFile = updated
+                if state.selectedFile?.path == editorFile.path {
+                    state.selectedFile = updated
+                }
             }
         } catch {
             fileListing = nil
@@ -386,7 +439,9 @@ struct FilesView: View {
     }
 
     private func open(_ file: WorkspaceFile) {
+        cancelInlineEdit()
         if file.isDirectory {
+            state.selectedFile = file
             toggle(file)
             return
         }
@@ -473,6 +528,7 @@ struct FilesView: View {
     }
 
     private func beginCreate(parentPath: String?, depth: Int, isDirectory: Bool) {
+        cancelInlineEdit()
         inlineEdit = FileInlineEdit(
             kind: isDirectory ? .createFolder : .createFile,
             targetPath: nil,
@@ -483,6 +539,7 @@ struct FilesView: View {
     }
 
     private func beginRename(_ file: WorkspaceFile) {
+        cancelInlineEdit()
         inlineEdit = FileInlineEdit(kind: .rename, targetPath: file.path, parentPath: nil, depth: file.depth, text: file.name)
     }
 
@@ -543,7 +600,7 @@ struct FilesView: View {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             try state.workspaceService.delete(path: file.path)
-            if state.selectedFile == file {
+            if state.selectedFile?.path == file.path {
                 editorFile = nil
                 state.selectedFile = nil
                 state.selectedFileContent = ""
@@ -559,7 +616,7 @@ struct FilesView: View {
     private func copyPath(_ file: WorkspaceFile) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(file.path, forType: .string)
-        state.statusLine = "Copied \(file.name)"
+        state.statusLine = "\(state.t(.copyPath)) \(file.name)"
     }
 
     private func downloadFile(_ file: WorkspaceFile) {
@@ -579,15 +636,48 @@ struct FilesView: View {
     }
 
     private func upload(allowDirectories: Bool) {
-        guard let context = state.selectedWorkspaceContext else { return }
+        guard let targetDirectory = uploadTargetDirectoryPath else { return }
+        cancelInlineEdit()
         let panel = NSOpenPanel()
         panel.canChooseFiles = !allowDirectories
         panel.canChooseDirectories = allowDirectories
         panel.allowsMultipleSelection = true
         guard panel.runModal() == .OK else { return }
         do {
-            try state.workspaceService.copyItems(panel.urls, into: context.rootPath)
+            try state.workspaceService.copyItems(panel.urls, into: targetDirectory)
             loadFiles()
+        } catch {
+            state.errorBanner = error.localizedDescription
+        }
+    }
+
+    private func handleFileDrop(_ urls: [URL]) -> Bool {
+        guard let targetDirectory = uploadTargetDirectoryPath else { return false }
+        let fileURLs = urls.filter(\.isFileURL)
+        guard !fileURLs.isEmpty else { return false }
+        cancelInlineEdit()
+        copyDroppedItems(fileURLs, into: targetDirectory)
+        return true
+    }
+
+    private func copyDroppedItems(_ urls: [URL], into targetDirectory: String) {
+        let uniqueURLs = urls.reduce(into: [URL]()) { result, url in
+            let standardized = url.standardizedFileURL
+            if !result.contains(where: { $0.path == standardized.path }) {
+                result.append(standardized)
+            }
+        }
+        guard !uniqueURLs.isEmpty else {
+            state.errorBanner = filesText(english: "No files were found in the drop.", chinese: "拖拽内容中没有可用文件。")
+            return
+        }
+        do {
+            try state.workspaceService.copyItems(uniqueURLs, into: targetDirectory)
+            loadFiles()
+            state.statusLine = filesText(
+                english: "Uploaded \(uniqueURLs.count) item\(uniqueURLs.count == 1 ? "" : "s")",
+                chinese: "已上传 \(uniqueURLs.count) 个项目"
+            )
         } catch {
             state.errorBanner = error.localizedDescription
         }
@@ -718,6 +808,10 @@ private struct FileInlineEdit: Equatable, Identifiable {
     var parentPath: String?
     var depth: Int
     var text: String
+
+    var isCreate: Bool {
+        kind == .createFile || kind == .createFolder
+    }
 
     var iconName: String {
         switch kind {
@@ -5286,7 +5380,7 @@ private struct FileTreeRow: View {
                     Button(state.t(.openHTML), action: onPreviewHTML)
                 }
             }
-            Button("Copy Path", action: onCopyPath)
+            Button(state.t(.copyPath), action: onCopyPath)
             Button(state.t(.rename), action: onRename)
             Divider()
             Button(state.t(.delete), role: .destructive, action: onDelete)

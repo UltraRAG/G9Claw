@@ -61,6 +61,7 @@ enum L10nKey: String, CaseIterable {
     case contextUsage
     case contextUsageDetail
     case continueAction
+    case copyPath
     case create
     case createNew
     case createNewDetail
@@ -487,6 +488,7 @@ struct LocalizationService {
         .contextUsage: "Context usage: 0%",
         .contextUsageDetail: "No token budget has been reported for this session yet.",
         .continueAction: "Continue",
+        .copyPath: "Copy Path",
         .create: "Create",
         .createNew: "Create New",
         .createNewDetail: "Create a new project folder.",
@@ -881,6 +883,7 @@ struct LocalizationService {
         .contextUsage: "上下文使用率：0%",
         .contextUsageDetail: "当前会话尚未返回 token 预算。",
         .continueAction: "继续",
+        .copyPath: "复制路径",
         .create: "创建",
         .createNew: "新建",
         .createNewDetail: "创建新的项目文件夹。",

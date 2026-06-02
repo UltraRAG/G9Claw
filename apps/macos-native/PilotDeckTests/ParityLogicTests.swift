@@ -424,6 +424,27 @@ final class ParityLogicTests: XCTestCase {
         }
     }
 
+    func testWorkspaceCopyItemsSkipsSourceAlreadyInDestination() throws {
+        let root = temporaryDirectory("pilotdeck-copy-items")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = WorkspaceService(workspaceRoot: root)
+
+        let existingFile = root.appendingPathComponent("asset.txt")
+        try "original".write(to: existingFile, atomically: true, encoding: .utf8)
+        try service.copyItems([existingFile], into: root.path)
+        XCTAssertEqual(try String(contentsOf: existingFile, encoding: .utf8), "original")
+
+        let nestedDirectory = root.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedDirectory, withIntermediateDirectories: true)
+        let sourceFile = root.appendingPathComponent("source.txt")
+        try "copied".write(to: sourceFile, atomically: true, encoding: .utf8)
+        try service.copyItems([sourceFile], into: nestedDirectory.path)
+        XCTAssertEqual(
+            try String(contentsOf: nestedDirectory.appendingPathComponent("source.txt"), encoding: .utf8),
+            "copied"
+        )
+    }
+
     func testProjectSortingByNameMatchesSidebarPolicy() {
         let now = Date()
         let projects = [

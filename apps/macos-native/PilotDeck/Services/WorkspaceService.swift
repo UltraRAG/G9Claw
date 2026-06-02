@@ -303,6 +303,9 @@ final class WorkspaceService {
         try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
         for source in urls {
             let target = destination.appendingPathComponent(source.lastPathComponent)
+            if source.standardizedFileURL.path == target.standardizedFileURL.path {
+                continue
+            }
             if fileManager.fileExists(atPath: target.path) {
                 try fileManager.removeItem(at: target)
             }
