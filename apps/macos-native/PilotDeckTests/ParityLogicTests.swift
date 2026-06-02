@@ -262,6 +262,60 @@ final class ParityLogicTests: XCTestCase {
             AppState.normalizedGeneralWorkspacePath("/Users/tester/Projects/demo", home: home),
             "/Users/tester/Projects/demo"
         )
+        XCTAssertEqual(
+            AppState.normalizedGeneralWorkspacePath("null", home: home),
+            "/Users/tester/PilotDeck/general"
+        )
+        XCTAssertEqual(
+            AppState.normalizedGeneralWorkspacePath("/null", home: home),
+            "/Users/tester/PilotDeck/general"
+        )
+    }
+
+    func testWorkspaceRootFallsBackWhenConfigIsNullOrRelative() {
+        let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+
+        XCTAssertEqual(AppState.normalizedWorkspacesRoot("null", home: home), "/Users/tester")
+        XCTAssertEqual(AppState.normalizedWorkspacesRoot("/null", home: home), "/Users/tester")
+        XCTAssertEqual(AppState.normalizedWorkspacesRoot("workspace", home: home), "/Users/tester")
+        XCTAssertEqual(AppState.normalizedWorkspacesRoot("~/Workspace", home: home), "/Users/tester/Workspace")
+    }
+
+    func testSettingsNormalizationUsesNativePilotDeckProvider() {
+        var settings = AppSettings.defaults
+        settings.providerConfig.provider = .codex
+        settings.providerConfig.apiType = .openAIResponses
+        settings.providerConfig.secretAccount = "custom-secret-account"
+        settings.workspacesRoot = "/null"
+        settings.generalWorkspacePath = "general"
+
+        let normalized = AppState.normalizedSettings(settings)
+
+        XCTAssertEqual(normalized.providerConfig.provider, .pilotDeck)
+        XCTAssertEqual(normalized.providerConfig.apiType, .openAIChat)
+        XCTAssertEqual(normalized.providerConfig.secretAccount, ProviderConfig.empty.secretAccount)
+        XCTAssertNotEqual(normalized.workspacesRoot, "/null")
+        XCTAssertTrue(normalized.generalWorkspacePath.hasSuffix("/PilotDeck/general"))
+    }
+
+    func testSettingsStoreLoadsUnknownSessionProviderWithoutBlockingBootstrap() throws {
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pilotdeck-settings-provider-\(UUID().uuidString).json")
+        var settings = AppSettings.defaults
+        settings.providerConfig.secretAccount = "custom-secret-account"
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        var json = try XCTUnwrap(String(data: encoder.encode(settings), encoding: .utf8))
+        json = json.replacingOccurrences(of: #""provider" : "pilotdeck""#, with: #""provider" : "custom-session-source""#)
+        try json.write(to: tempURL, atomically: true, encoding: String.Encoding.utf8)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let loaded = try XCTUnwrap(try AppSettingsStore(url: tempURL).load())
+        XCTAssertEqual(loaded.providerConfig.provider, .pilotDeck)
+
+        let normalized = AppState.normalizedSettings(loaded)
+        XCTAssertEqual(normalized.providerConfig.secretAccount, ProviderConfig.empty.secretAccount)
     }
 
     func testNativeConfigPathUsesPilotDeckConfigLocationAndOverride() {
@@ -276,14 +330,13 @@ final class ParityLogicTests: XCTestCase {
             "/Users/tester/pilotdeck-dev.yaml"
         )
         XCTAssertEqual(
-            PilotDeckConfigPath.configURL(environment: ["G9CLAW_CONFIG_PATH": "~/legacy-dev.yaml"], home: home).path,
-            "/Users/tester/legacy-dev.yaml"
-        )
-        XCTAssertEqual(
             PilotDeckConfigPath.legacyConfigURL(home: home).path,
             "/Users/tester/.pilotdeck/config.yaml"
         )
-        XCTAssertTrue(PilotDeckConfigPath.legacyConfigURLs(home: home).map(\.path).contains("/Users/tester/.g9claw/config.yaml"))
+        XCTAssertEqual(
+            PilotDeckConfigPath.legacyConfigURLs(home: home).map(\.path),
+            ["/Users/tester/.pilotdeck/config.yaml"]
+        )
     }
 
     func testNativeDefaultConfigUsesWebSchemaAndSearchDefaults() {
@@ -293,7 +346,6 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(values["schemaVersion"], "1")
         XCTAssertEqual(values["agent.model"], "")
         XCTAssertEqual(values["model.providers"], "{}")
-        XCTAssertEqual(values["models.providers.g9claw.type"], nil)
         XCTAssertNil(values["memory.model"])
         XCTAssertEqual(values["memory.autoIndexIntervalMinutes"], "30")
         XCTAssertEqual(values["memory.autoDreamIntervalMinutes"], "60")
@@ -469,6 +521,61 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(snapshot?.providerConfig.model, "test-model")
         XCTAssertEqual(snapshot?.providerConfig.secretAccount, ProviderConfig.empty.secretAccount)
         XCTAssertEqual(snapshot?.apiKey, "test-secret")
+    }
+
+    func testNativeConfigSnapshotTreatsRuntimeNullPathsAsUnset() throws {
+        let yaml = """
+        schemaVersion: 1
+        agent:
+          model: pilotdeck/qwen3
+        model:
+          providers:
+            pilotdeck:
+              protocol: openai
+              url: http://pilotdeck.local/v1
+              apiKey: test-secret
+              models:
+                qwen3: {}
+        webui:
+          runtime:
+            workspacesRoot: null
+        gateway:
+          runtimePaths:
+            generalCwd: null
+        """
+
+        let snapshot = try XCTUnwrap(NativeConfigService.snapshot(from: yaml))
+
+        XCTAssertNil(snapshot.workspacesRoot)
+        XCTAssertNil(snapshot.generalWorkspacePath)
+    }
+
+    func testLegacyConfigMigrationDoesNotPreserveNullWorkspaceRoot() {
+        let legacy = """
+        runtime:
+          workspacesRoot: null
+        gateway:
+          runtimePaths:
+            generalCwd: null
+        models:
+          providers:
+            pilotdeck:
+              type: openai-chat
+              baseUrl: http://pilotdeck.local/v1
+          entries:
+            default:
+              provider: pilotdeck
+              name: qwen3
+        agents:
+          main:
+            model: default
+        """
+
+        let migrated = NativeConfigService.webSchemaConfigTextIfNeeded(from: legacy, homePath: "/Users/tester", userName: "tester")
+        let values = NativeConfigService.scalarMap(from: migrated)
+
+        XCTAssertEqual(values["webui.runtime.workspacesRoot"], "/Users/tester")
+        XCTAssertEqual(values["gateway.runtimePaths.generalCwd"], "~/PilotDeck/general")
     }
 
     func testNativeConfigScalarMapMigratesLegacyAlwaysOnTriggerLikeWeb() {
@@ -4152,7 +4259,6 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(discoveryHistory.outputLog, "No plan needed.")
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".pilotdeck/always-on", isDirectory: true).path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".claude", isDirectory: true).path))
     }
 
     func testAlwaysOnServiceReadsWebPilotDeckAlwaysOnAndCronTaskFiles() throws {
@@ -7905,6 +8011,56 @@ final class ParityLogicTests: XCTestCase {
 
         let mixedPhases = ["Task", "Shell"].map(AgentToolPresentationClassifier.phase(forToolName:))
         XCTAssertFalse(mixedPhases.contains(.search))
+    }
+
+    @MainActor
+    func testPendingPermissionsAreScopedToSelectedSession() {
+        let state = makeTestAppState()
+        state.selectedSessionID = "current-session"
+        state.pendingPermissions = [
+            PermissionRequest(
+                id: UUID(),
+                sessionId: "other-session",
+                toolName: "AskQuestion",
+                inputJSON: "{}",
+                reason: "Other session question",
+                scope: .session,
+                createdAt: Date(),
+                kind: .askUserQuestion
+            ),
+            PermissionRequest(
+                id: UUID(),
+                sessionId: "current-session",
+                toolName: "AskQuestion",
+                inputJSON: "{}",
+                reason: "Current session question",
+                scope: .session,
+                createdAt: Date(),
+                kind: .askUserQuestion
+            ),
+        ]
+
+        XCTAssertEqual(state.currentPendingPermissions.map(\.reason), ["Current session question"])
+    }
+
+    @MainActor
+    func testStartingDraftSessionClearsVisibleErrorBanner() {
+        let state = makeTestAppState()
+        let project = project(name: "demo", displayName: "Demo", date: Date())
+        state.projects = [project]
+        state.selectedProjectID = project.id
+        state.errorBanner = "Provider failed in another conversation."
+
+        state.startDraftSession(project: project)
+
+        XCTAssertNil(state.errorBanner)
+    }
+
+    func testUnsupportedAPITypeMessageDoesNotSayPilotDeckIsUnimplemented() {
+        let message = ProviderClientError.unsupportedAPIType(.anthropicMessages).errorDescription ?? ""
+
+        XCTAssertTrue(message.contains("OpenAI-compatible chat"))
+        XCTAssertFalse(message.contains("not implemented yet in native AgentCore"))
     }
 
     @MainActor

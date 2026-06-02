@@ -78,14 +78,6 @@ struct PilotDeckApp: App {
 private enum MenuBarSanitizer {
     private static var installed = false
     private static var observers: [NSObjectProtocol] = []
-    private static let removedMenuTitles: Set<String> = [
-        "Help",
-        "帮助",
-        "Format",
-        "格式",
-        "View",
-        "显示",
-    ]
     private static let fileMenuTitles: Set<String> = [
         "File",
         "文件",
@@ -97,10 +89,7 @@ private enum MenuBarSanitizer {
         let notificationNames: [Notification.Name] = [
             NSApplication.didFinishLaunchingNotification,
             NSApplication.didBecomeActiveNotification,
-            NSApplication.didUpdateNotification,
             NSMenu.didAddItemNotification,
-            NSMenu.didBeginTrackingNotification,
-            NSMenu.didChangeItemNotification,
         ]
         observers = notificationNames.map { name in
             NotificationCenter.default.addObserver(
@@ -140,9 +129,6 @@ private enum MenuBarSanitizer {
 
     private static func prune() {
         guard let menu = NSApp.mainMenu else { return }
-        for item in menu.items where removedMenuTitles.contains(item.title) {
-            menu.removeItem(item)
-        }
         for item in menu.items {
             if let submenu = item.submenu {
                 pruneSeparators(in: submenu)

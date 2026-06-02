@@ -108,6 +108,15 @@ private struct SettingsContentView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private func configPathValue(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty,
+              trimmed.lowercased() != "null" else {
+            return nil
+        }
+        return trimmed
+    }
+
     private func routerModelDetail(_ id: String) -> String {
         switch id {
         case "default":
@@ -2605,10 +2614,10 @@ private struct SettingsContentView: View {
 
     private func applyRuntimeFieldsFromConfig() {
         let values = LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText)
-        if let root = values["runtime.workspacesRoot"], !root.isEmpty {
-            state.settings.workspacesRoot = NSString(string: root).expandingTildeInPath
+        if let root = configPathValue(values["runtime.workspacesRoot"]) {
+            state.settings.workspacesRoot = AppState.normalizedWorkspacesRoot(root)
         }
-        if let general = values["gateway.runtimePaths.generalCwd"], !general.isEmpty {
+        if let general = configPathValue(values["gateway.runtimePaths.generalCwd"]) {
             state.settings.generalWorkspacePath = AppState.normalizedGeneralWorkspacePath(general)
         }
         if let timeout = values["runtime.apiTimeoutMs"].flatMap(Int.init) {
@@ -2639,10 +2648,10 @@ private struct SettingsContentView: View {
         } else {
             warnings.append("agent.model is empty; pick a model from the model pool.")
         }
-        if (values["runtime.workspacesRoot"] ?? "").isEmpty {
+        if configPathValue(values["runtime.workspacesRoot"]) == nil {
             warnings.append("webui.runtime.workspacesRoot is empty; project creation will use the home directory fallback.")
         }
-        if (values["gateway.runtimePaths.generalCwd"] ?? "").isEmpty {
+        if configPathValue(values["gateway.runtimePaths.generalCwd"]) == nil {
             warnings.append("gateway.runtimePaths.generalCwd is empty; Chat will use the default workspace.")
         }
         if state.pilotDeckConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

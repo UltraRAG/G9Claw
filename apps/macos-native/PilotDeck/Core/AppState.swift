@@ -102,15 +102,41 @@ final class AppState: ObservableObject {
 
     nonisolated static func normalizedGeneralWorkspacePath(_ rawPath: String, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
         let fallback = defaultGeneralWorkspacePath(home: home)
-        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return fallback }
-        let expanded = NSString(string: trimmed).expandingTildeInPath
+        guard let trimmed = rawPath.nilIfBlankOrConfigNull else { return fallback }
+        let expanded = expandUserPath(trimmed, home: home)
         guard expanded.hasPrefix("/") else { return fallback }
-        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+        let normalized = URL(fileURLWithPath: expanded).standardizedFileURL.path
+        if normalized == "/null" {
+            return fallback
+        }
+        return normalized
+    }
+
+    nonisolated static func normalizedWorkspacesRoot(_ rawPath: String, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
+        let fallback = home.standardizedFileURL.path
+        guard let trimmed = rawPath.nilIfBlankOrConfigNull else { return fallback }
+        let expanded = expandUserPath(trimmed, home: home)
+        guard expanded.hasPrefix("/") else { return fallback }
+        let normalized = URL(fileURLWithPath: expanded).standardizedFileURL.path
+        return normalized == "/null" ? fallback : normalized
+    }
+
+    nonisolated private static func expandUserPath(_ path: String, home: URL) -> String {
+        if path == "~" {
+            return home.standardizedFileURL.path
+        }
+        if path.hasPrefix("~/") {
+            return home.appendingPathComponent(String(path.dropFirst(2))).standardizedFileURL.path
+        }
+        return NSString(string: path).expandingTildeInPath
     }
 
     nonisolated static func normalizedSettings(_ settings: AppSettings) -> AppSettings {
         var normalized = settings
+        normalized.providerConfig.provider = .pilotDeck
+        normalized.providerConfig.apiType = .openAIChat
+        normalized.providerConfig.secretAccount = ProviderConfig.empty.secretAccount
+        normalized.workspacesRoot = normalizedWorkspacesRoot(settings.workspacesRoot)
         normalized.generalWorkspacePath = normalizedGeneralWorkspacePath(settings.generalWorkspacePath)
         normalized.permissions.disallowedTools.removeAll(where: isWebSearchPermissionRule)
         return normalized
@@ -140,6 +166,11 @@ final class AppState: ObservableObject {
         return activitiesBySession[selectedSessionID] ?? []
     }
 
+    var currentPendingPermissions: [PermissionRequest] {
+        guard let selectedSessionID else { return [] }
+        return pendingPermissions.filter { $0.sessionId == selectedSessionID }
+    }
+
     var currentTurnItems: [AgentTurnItem] {
         guard let selectedSessionID else { return [] }
         return (turnItemsBySession[selectedSessionID] ?? []).sorted { $0.sequence < $1.sequence }
@@ -154,12 +185,16 @@ final class AppState: ObservableObject {
         hasBootstrapped = true
         do {
             _ = try AppPaths.current()
-            if let storedSettings = try settingsStore.load() {
-                let normalizedSettings = Self.normalizedSettings(storedSettings)
-                settings = normalizedSettings
-                if normalizedSettings != storedSettings {
-                    try? settingsStore.save(normalizedSettings)
+            do {
+                if let storedSettings = try settingsStore.load() {
+                    let normalizedSettings = Self.normalizedSettings(storedSettings)
+                    settings = normalizedSettings
+                    if normalizedSettings != storedSettings {
+                        try? settingsStore.save(normalizedSettings)
+                    }
                 }
+            } catch {
+                AppLog.write("settings load error: \(error.localizedDescription)")
             }
             logBundleNetworkPolicy()
             try bootstrapLocalDebugConfigIfNeeded()
@@ -194,6 +229,7 @@ final class AppState: ObservableObject {
     func selectProject(_ project: WorkspaceProject) {
         selectedProjectID = project.id
         selectedSessionID = nil
+        errorBanner = nil
         isDraftSessionVisible = false
         activeTab = .chat
         persistWorkspaceState()
@@ -216,6 +252,7 @@ final class AppState: ObservableObject {
         } else {
             markSession(session.id, state: .idle)
         }
+        refreshVisibleErrorBanner()
         persistWorkspaceState()
         refreshNativeToolData()
     }
@@ -255,11 +292,20 @@ final class AppState: ObservableObject {
             selectedProjectID = projects.first?.id
         }
         selectedSessionID = nil
+        errorBanner = nil
         restoreComposerPermissionMode(for: nil)
         isDraftSessionVisible = true
         activeTab = .chat
         persistWorkspaceState()
         refreshNativeToolData()
+    }
+
+    private func refreshVisibleErrorBanner() {
+        guard let selectedSessionID else {
+            errorBanner = nil
+            return
+        }
+        errorBanner = lastErrorBySession[selectedSessionID]
     }
 
     func toggleComposerRunMode() {
@@ -463,6 +509,10 @@ final class AppState: ObservableObject {
         )
         append(userMessage)
         touchSessionConversation(sessionID)
+        lastErrorBySession.removeValue(forKey: sessionID)
+        if selectedSessionID == sessionID {
+            errorBanner = nil
+        }
         var activities = activitiesBySession[sessionID] ?? []
         activities.removeAll { $0.anchorBlockID == assistantID.uuidString }
         activities.append(
@@ -2035,12 +2085,10 @@ final class AppState: ObservableObject {
         updated.providerConfig = native.providerConfig
         updated.apiTimeoutMs = native.apiTimeoutMs
         updated.contextWindow = native.contextWindow
-        if let workspacesRoot = native.workspacesRoot,
-           !workspacesRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            updated.workspacesRoot = NSString(string: workspacesRoot).expandingTildeInPath
+        if let workspacesRoot = native.workspacesRoot?.nilIfBlankOrConfigNull {
+            updated.workspacesRoot = Self.normalizedWorkspacesRoot(workspacesRoot)
         }
-        if let generalWorkspacePath = native.generalWorkspacePath,
-           !generalWorkspacePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let generalWorkspacePath = native.generalWorkspacePath?.nilIfBlankOrConfigNull {
             updated.generalWorkspacePath = Self.normalizedGeneralWorkspacePath(generalWorkspacePath)
         }
         settings = Self.normalizedSettings(updated)
@@ -2190,11 +2238,7 @@ final class AppState: ObservableObject {
     }
 
     private static func pilotDeckProjectConfigURLs() -> [URL] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return [
-            pilotDeckProjectConfigURL(),
-            home.appendingPathComponent(".g9claw", isDirectory: true).appendingPathComponent("project-config.json"),
-        ]
+        [pilotDeckProjectConfigURL()]
     }
 
     private static func defaultPilotDeckConfigText() -> String {
@@ -2643,6 +2687,10 @@ final class AppState: ObservableObject {
         case .complete(let sessionId):
             flushPendingAssistantDelta(assistantID: assistantID)
             finishStreamingMessage(sessionID: sessionId)
+            lastErrorBySession.removeValue(forKey: sessionId)
+            if selectedSessionID == sessionId {
+                errorBanner = nil
+            }
             markSession(sessionId, state: .idle)
             touchSessionConversation(sessionId)
             completeRunningActivities(sessionID: sessionId, anchorBlockID: assistantID.uuidString)
@@ -2652,6 +2700,9 @@ final class AppState: ObservableObject {
         case .aborted(let sessionId):
             flushPendingAssistantDelta(assistantID: assistantID)
             finishStreamingMessage(sessionID: sessionId)
+            if selectedSessionID == sessionId {
+                refreshVisibleErrorBanner()
+            }
             markSession(sessionId, state: .idle)
             cancelRunningActivities(sessionID: sessionId, anchorBlockID: assistantID.uuidString)
             captureMemoryTurn(sessionID: sessionId, errored: false, interrupted: true)
@@ -2668,7 +2719,9 @@ final class AppState: ObservableObject {
                 failRunningActivities(sessionID: targetSessionID, message: message, anchorBlockID: assistantID.uuidString)
                 captureMemoryTurn(sessionID: targetSessionID, errored: true, interrupted: false)
             }
-            errorBanner = message
+            if let targetSessionID, selectedSessionID == targetSessionID {
+                errorBanner = message
+            }
             finalizeAgentRun(runToken: runToken)
         }
     }
@@ -3817,7 +3870,6 @@ struct NativeConfigSnapshot: Equatable {
 
 enum PilotDeckConfigPath {
     private static let configDirectoryName = ".pilotdeck"
-    private static let legacyConfigDirectoryNames = [".g9claw", ".edgeclaw"]
     private static let configFileName = "pilotdeck.yaml"
     private static let legacyConfigFileName = "config.yaml"
 
@@ -3825,9 +3877,7 @@ enum PilotDeckConfigPath {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
-        if let override = environment["PILOTDECK_CONFIG_PATH"]?.nilIfBlank
-            ?? environment["G9CLAW_CONFIG_PATH"]?.nilIfBlank
-            ?? environment["EDGECLAW_CONFIG_PATH"]?.nilIfBlank {
+        if let override = environment["PILOTDECK_CONFIG_PATH"]?.nilIfBlank {
             if override == "~" {
                 return home
             }
@@ -3845,11 +3895,7 @@ enum PilotDeckConfigPath {
         let oldPilotDeckConfig = home
             .appendingPathComponent(configDirectoryName, isDirectory: true)
             .appendingPathComponent(legacyConfigFileName)
-        return [oldPilotDeckConfig] + legacyConfigDirectoryNames.map { directory in
-            home
-                .appendingPathComponent(directory, isDirectory: true)
-                .appendingPathComponent(legacyConfigFileName)
-        }
+        return [oldPilotDeckConfig]
     }
 
     static func legacyConfigURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
@@ -4309,7 +4355,7 @@ enum NativeConfigService {
             "    apiTimeoutMs: \(values["runtime.apiTimeoutMs"] ?? "120000")",
             "    httpsProxy: \(yamlScalar(values["runtime.httpsProxy"] ?? ""))",
             "    databasePath: \(yamlScalar(values["runtime.databasePath"] ?? "\(homePath)/.pilotdeck/auth.db"))",
-            "    workspacesRoot: \(yamlScalar(values["runtime.workspacesRoot"] ?? homePath))",
+            "    workspacesRoot: \(yamlScalar(values["runtime.workspacesRoot"]?.nilIfBlankOrConfigNull ?? homePath))",
             "alwaysOn:",
             "  enabled: \(values["alwaysOn.enabled"] ?? "false")",
             "  trigger:",
@@ -4349,7 +4395,7 @@ enum NativeConfigService {
             "  enabled: \(values["gateway.enabled"] ?? "false")",
             "  home: \(yamlScalar(values["gateway.home"] ?? "\(homePath)/.pilotdeck/gateway"))",
             "  runtimePaths:",
-            "    generalCwd: \(yamlScalar(values["gateway.runtimePaths.generalCwd"] ?? "~/PilotDeck/general"))",
+            "    generalCwd: \(yamlScalar(values["gateway.runtimePaths.generalCwd"]?.nilIfBlankOrConfigNull ?? "~/PilotDeck/general"))",
             "    generalJsonl: \(yamlScalar(values["gateway.runtimePaths.generalJsonl"] ?? "~/.pilotdeck/projects/-Users-\(userName)-PilotDeck-general/*.jsonl"))",
             "customEnv: {}",
         ])
@@ -4379,8 +4425,8 @@ enum NativeConfigService {
         let mainProviderID = providerID(entryID: mainEntryID, values: values)
         let apiKey = values["model.providers.\(mainProviderID).apiKey"]
             ?? values["models.providers.\(mainProviderID).apiKey"]
-        let workspacesRoot = values["webui.runtime.workspacesRoot"] ?? values["runtime.workspacesRoot"]
-        let generalWorkspacePath = values["gateway.runtimePaths.generalCwd"]
+        let workspacesRoot = (values["webui.runtime.workspacesRoot"] ?? values["runtime.workspacesRoot"])?.nilIfBlankOrConfigNull
+        let generalWorkspacePath = values["gateway.runtimePaths.generalCwd"]?.nilIfBlankOrConfigNull
         let apiTimeoutMs = values["webui.runtime.apiTimeoutMs"].flatMap(Int.init)
             ?? values["runtime.apiTimeoutMs"].flatMap(Int.init)
             ?? values["router.apiTimeoutMs"].flatMap(Int.init)
@@ -4740,7 +4786,7 @@ enum NativeConfigService {
 
     private static func isPilotDeckProviderID(_ providerID: String) -> Bool {
         switch providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "pilotdeck", "g9claw", "9gclaw", "edgeclaw":
+        case "pilotdeck":
             return true
         default:
             return false
@@ -5297,7 +5343,7 @@ enum AlwaysOnBackgroundTranscriptLoader {
         let relative = relativeTranscriptPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !projectName.isEmpty, !parent.isEmpty, !relative.isEmpty else { return nil }
 
-        let projectDirs = [".pilotdeck", ".g9claw", ".claude"].map { directory in
+        let projectDirs = [".pilotdeck"].map { directory in
             home
                 .appendingPathComponent(directory, isDirectory: true)
                 .appendingPathComponent("projects", isDirectory: true)
@@ -5578,5 +5624,10 @@ private extension String {
     var nilIfBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var nilIfBlankOrConfigNull: String? {
+        guard let trimmed = nilIfBlank else { return nil }
+        return trimmed.lowercased() == "null" ? nil : trimmed
     }
 }

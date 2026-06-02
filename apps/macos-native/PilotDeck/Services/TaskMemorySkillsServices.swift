@@ -142,12 +142,10 @@ final class MemoryService {
         guard let projectRoot else { return }
         let projectURL = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
         let projectLocalMemoryRoot = projectLocalWorkspaceMemoryRoot(for: projectURL.path)
-        let legacyMemoryRoot = legacyWorkspaceMemoryRoot(for: projectURL.path)
         let nativeWorkspaceMemoryRoot = nativeWorkspaceMemoryRoot(for: projectURL.path)
         let globalMemoryRoot = globalMemoryRoot()
         let roots = uniqueMemoryRoots([
             (root: projectLocalMemoryRoot, relativeRoot: projectURL, projectName: projectName, exposedPrefix: ""),
-            (root: legacyMemoryRoot, relativeRoot: projectURL, projectName: projectName, exposedPrefix: ""),
             (root: nativeWorkspaceMemoryRoot, relativeRoot: nativeWorkspaceMemoryRoot, projectName: projectName, exposedPrefix: ""),
             (root: globalMemoryRoot, relativeRoot: globalMemoryRoot, projectName: nil, exposedPrefix: "global/")
         ])
@@ -637,7 +635,6 @@ final class MemoryService {
     func clear(projectName: String?, projectRoot: String? = nil) {
         if let projectRoot {
             try? FileManager.default.removeItem(at: nativeWorkspaceMemoryRoot(for: projectRoot))
-            try? FileManager.default.removeItem(at: legacyWorkspaceMemoryRoot(for: projectRoot))
         } else if projectName == nil {
             try? FileManager.default.removeItem(at: memoryRoot.appendingPathComponent("workspaces", isDirectory: true))
             try? FileManager.default.removeItem(at: globalMemoryRoot())
@@ -2499,9 +2496,8 @@ final class MemoryService {
 
     private func currentProjectSnapshotFiles(projectName: String, projectRoot: String?) throws -> [MemorySnapshotFile] {
         if let projectRoot {
-            let legacy = try snapshotFiles(in: legacyWorkspaceMemoryRoot(for: projectRoot))
             let native = try snapshotFiles(in: nativeWorkspaceMemoryRoot(for: projectRoot))
-            let files = mergeSnapshotFiles(legacy + native)
+            let files = mergeSnapshotFiles(native)
             if !files.isEmpty {
                 return try files
                     .filter { !Self.isDerivedMemoryFile($0.relativePath) && !$0.relativePath.hasPrefix("global/") }
@@ -2620,12 +2616,6 @@ final class MemoryService {
             .appendingPathComponent("memory", isDirectory: true)
     }
 
-    private func legacyWorkspaceMemoryRoot(for projectRoot: String) -> URL {
-        URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
-            .appendingPathComponent(".g9claw", isDirectory: true)
-            .appendingPathComponent("memory", isDirectory: true)
-    }
-
     private func globalMemoryRoot() -> URL {
         memoryRoot.appendingPathComponent("global", isDirectory: true)
     }
@@ -2741,14 +2731,9 @@ final class MemoryService {
 
     private func manifestContent(projectRoot: String?, records: [MemoryRecord]) -> String {
         if let projectRoot {
-            let candidates = [
-                nativeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("MEMORY.md"),
-                legacyWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("MEMORY.md")
-            ]
-            for url in candidates {
-                if let content = try? String(contentsOf: url, encoding: .utf8), !content.isEmpty {
-                    return content
-                }
+            let url = nativeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("MEMORY.md")
+            if let content = try? String(contentsOf: url, encoding: .utf8), !content.isEmpty {
+                return content
             }
         }
         return records.map { "- \($0.name): \($0.summary)" }.joined(separator: "\n")
@@ -2756,29 +2741,23 @@ final class MemoryService {
 
     private func projectMetaFromFile(projectRoot: String?, fallbackProjectName: String?, isGeneral: Bool) -> MemoryProjectMeta? {
         guard let projectRoot else { return nil }
-        let candidates = [
-            nativeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("project.meta.md"),
-            legacyWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("project.meta.md")
-        ]
-        for url in candidates {
-            guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            let values = Self.frontmatterValues(from: Self.frontmatterHeader(content) ?? "")
-            let projectName = values["project_name"]?.nilIfBlank ?? values["name"]?.nilIfBlank ?? fallbackProjectName
-            guard let projectName else { continue }
-            let updatedAt = Self.date(values["updated_at"])
-            return MemoryProjectMeta(
-                projectId: values["project_id"]?.nilIfBlank ?? "current_project",
-                projectName: projectName,
-                description: values["description"]?.nilIfBlank ?? projectName,
-                status: values["status"]?.nilIfBlank ?? "in_progress",
-                workspacePath: projectRoot,
-                relativePath: "project.meta.md",
-                sourceType: isGeneral ? "general_local" : "workspace",
-                readOnly: false,
-                updatedAt: updatedAt
-            )
-        }
-        return nil
+        let url = nativeWorkspaceMemoryRoot(for: projectRoot).appendingPathComponent("project.meta.md")
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let values = Self.frontmatterValues(from: Self.frontmatterHeader(content) ?? "")
+        let projectName = values["project_name"]?.nilIfBlank ?? values["name"]?.nilIfBlank ?? fallbackProjectName
+        guard let projectName else { return nil }
+        let updatedAt = Self.date(values["updated_at"])
+        return MemoryProjectMeta(
+            projectId: values["project_id"]?.nilIfBlank ?? "current_project",
+            projectName: projectName,
+            description: values["description"]?.nilIfBlank ?? projectName,
+            status: values["status"]?.nilIfBlank ?? "in_progress",
+            workspacePath: projectRoot,
+            relativePath: "project.meta.md",
+            sourceType: isGeneral ? "general_local" : "workspace",
+            readOnly: false,
+            updatedAt: updatedAt
+        )
     }
 
     private static func isDerivedMemoryFile(_ relativePath: String) -> Bool {
@@ -3111,7 +3090,7 @@ final class MemoryService {
     }
 
     private static func indexableFiles(in root: URL) -> [URL] {
-        let skipped = Set([".git", "node_modules", "dist", "build", ".pilotdeck", ".g9claw", ".claude", ".next", ".turbo"])
+        let skipped = Set(["node_modules", "dist", "build", ".next", ".turbo"])
         let allowedExtensions = Set(["md", "txt", "swift", "js", "ts", "tsx", "jsx", "json", "yaml", "yml", "py", "rb", "go", "rs", "html", "css"])
         guard let enumerator = FileManager.default.enumerator(
             at: root,
@@ -3121,7 +3100,7 @@ final class MemoryService {
         var urls: [URL] = []
         for case let url as URL in enumerator {
             let name = url.lastPathComponent
-            if skipped.contains(name) {
+            if name.hasPrefix(".") || skipped.contains(name) {
                 enumerator.skipDescendants()
                 continue
             }
@@ -5901,24 +5880,10 @@ final class AlwaysOnService: @unchecked Sendable {
             .appendingPathComponent("always-on", isDirectory: true)
     }
 
-    private func legacyProjectLocalAlwaysOnRoot(_ projectRoot: String) -> URL {
-        URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
-            .appendingPathComponent(".g9claw", isDirectory: true)
-            .appendingPathComponent("always-on", isDirectory: true)
-    }
-
-    private func legacyClaudeAlwaysOnRoot(_ projectRoot: String) -> URL {
-        URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath)
-            .appendingPathComponent(".claude", isDirectory: true)
-            .appendingPathComponent("always-on", isDirectory: true)
-    }
-
     private func alwaysOnRoots(_ projectRoot: String) -> [URL] {
         [
             alwaysOnRoot(projectRoot),
             projectLocalAlwaysOnRoot(projectRoot),
-            legacyProjectLocalAlwaysOnRoot(projectRoot),
-            legacyClaudeAlwaysOnRoot(projectRoot),
         ]
     }
 
@@ -6013,9 +5978,10 @@ final class AlwaysOnService: @unchecked Sendable {
             includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return false }
-        let ignoredNames: Set<String> = [".git", "node_modules", ".pilotdeck", ".g9claw", ".claude", ".DS_Store"]
+        let ignoredNames: Set<String> = ["node_modules", "dist", "build", ".next", ".turbo"]
         for case let url as URL in enumerator {
-            if ignoredNames.contains(url.lastPathComponent) {
+            let name = url.lastPathComponent
+            if name.hasPrefix(".") || ignoredNames.contains(name) {
                 enumerator.skipDescendants()
                 continue
             }
@@ -6090,7 +6056,7 @@ final class AlwaysOnService: @unchecked Sendable {
     }
 
     private func copyDirectorySnapshot(from source: URL, to destination: URL, maxBytes: Int) throws {
-        let ignoredNames: Set<String> = [".git", "node_modules", ".pilotdeck", ".g9claw", ".claude", ".DS_Store"]
+        let ignoredNames: Set<String> = ["node_modules", "dist", "build", ".next", ".turbo"]
         var copiedBytes = 0
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
@@ -6102,7 +6068,8 @@ final class AlwaysOnService: @unchecked Sendable {
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return }
         for case let url as URL in enumerator {
-            if ignoredNames.contains(url.lastPathComponent) {
+            let name = url.lastPathComponent
+            if name.hasPrefix(".") || ignoredNames.contains(name) {
                 enumerator.skipDescendants()
                 continue
             }
@@ -6139,7 +6106,7 @@ final class AlwaysOnService: @unchecked Sendable {
         for case let url as URL in enumerator {
             let relative = url.path.replacingOccurrences(of: source.path + "/", with: "")
             guard !relative.isEmpty else { continue }
-            if relative == ".git" || relative.hasPrefix(".git/") || relative == ".pilotdeck" || relative.hasPrefix(".pilotdeck/") || relative == ".g9claw" || relative.hasPrefix(".g9claw/") {
+            if relative == ".git" || relative.hasPrefix(".git/") || relative == ".pilotdeck" || relative.hasPrefix(".pilotdeck/") {
                 enumerator.skipDescendants()
                 continue
             }
@@ -6249,13 +6216,6 @@ final class AlwaysOnService: @unchecked Sendable {
             (root.appendingPathComponent(".pilotdeck").appendingPathComponent("session_scheduled_tasks.json"), false),
             (root.appendingPathComponent(".pilotdeck").appendingPathComponent("cron-jobs.json"), nil),
             (root.appendingPathComponent(".pilotdeck").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
-            (root.appendingPathComponent(".g9claw").appendingPathComponent("scheduled_tasks.json"), true),
-            (root.appendingPathComponent(".g9claw").appendingPathComponent("session_scheduled_tasks.json"), false),
-            (root.appendingPathComponent(".g9claw").appendingPathComponent("cron-jobs.json"), nil),
-            (root.appendingPathComponent(".g9claw").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
-            (root.appendingPathComponent(".claude").appendingPathComponent("scheduled_tasks.json"), true),
-            (root.appendingPathComponent(".claude").appendingPathComponent("session_scheduled_tasks.json"), false),
-            (root.appendingPathComponent(".claude").appendingPathComponent("always-on").appendingPathComponent("cron-jobs.json"), nil),
         ]
     }
 

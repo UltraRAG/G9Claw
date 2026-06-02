@@ -2422,6 +2422,7 @@ enum ProviderClientError: Error, LocalizedError {
     case invalidURL(String)
     case httpError(statusCode: Int, body: String)
     case unsupportedProvider(SessionProvider)
+    case unsupportedAPIType(ProviderAPIType)
     case invalidResponse
     case transport(String)
     case streamInterruptedAfterPartialOutput(String)
@@ -2439,7 +2440,8 @@ enum ProviderClientError: Error, LocalizedError {
             } else {
                 "Provider request failed with HTTP \(statusCode): \(body)"
             }
-        case .unsupportedProvider(let provider): "\(provider.displayName) is not implemented yet in native AgentCore."
+        case .unsupportedProvider(let provider): "\(provider.displayName) sessions are not available in the native PilotDeck runtime. Use the PilotDeck agent with a configured model pool."
+        case .unsupportedAPIType(let apiType): "Native PilotDeck currently supports OpenAI-compatible chat providers. Change this model provider from \(apiType.rawValue) to OpenAI Chat in Settings."
         case .invalidResponse: "Provider returned an invalid response."
         case .transport(let message): message
         case .streamInterruptedAfterPartialOutput(let message):
@@ -2587,7 +2589,7 @@ struct NativeAgentRuntime: Sendable {
             throw ProviderClientError.missingModel
         }
         guard config.apiType == .openAIChat else {
-            throw ProviderClientError.unsupportedProvider(config.provider)
+            throw ProviderClientError.unsupportedAPIType(config.apiType)
         }
 
         let context = AgentRunContext(request: request)

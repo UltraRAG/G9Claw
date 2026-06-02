@@ -128,7 +128,7 @@ struct ChatView: View {
 
     private var shouldShowInlineLiveStatus: Bool {
         if !tracedAssistantHasToolBlocks { return true }
-        guard state.isCurrentSessionStreaming, state.pendingPermissions.isEmpty else { return false }
+        guard state.isCurrentSessionStreaming, state.currentPendingPermissions.isEmpty else { return false }
         return traceActivities.contains { $0.state == .running }
     }
 
@@ -348,6 +348,7 @@ private struct ComposerFooter: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
+        let pendingPermissions = state.currentPendingPermissions
         VStack(spacing: 0) {
             if let runningActivity {
                 ComposerRunningStatusRow(activity: runningActivity)
@@ -355,17 +356,17 @@ private struct ComposerFooter: View {
                     .padding(.horizontal, 24)
                     .padding(.bottom, 4)
             }
-            if !state.pendingPermissions.isEmpty {
+            if !pendingPermissions.isEmpty {
                 Group {
-                    if state.pendingPermissions.count > 1 {
+                    if pendingPermissions.count > 1 {
                         ScrollView(.vertical, showsIndicators: true) {
-                            PermissionBanner()
+                            PermissionBanner(requests: pendingPermissions)
                                 .environmentObject(state)
                                 .padding(.vertical, 2)
                         }
                         .frame(maxHeight: 132)
                     } else {
-                        PermissionBanner()
+                        PermissionBanner(requests: pendingPermissions)
                             .environmentObject(state)
                     }
                 }
@@ -3780,10 +3781,11 @@ private final class SubmitTextView: NSTextView {
 
 private struct PermissionBanner: View {
     @EnvironmentObject private var state: AppState
+    var requests: [PermissionRequest]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(state.pendingPermissions) { request in
+            ForEach(requests) { request in
                 if request.kind == .askUserQuestion, let payload = request.interactivePayload {
                     AskUserQuestionPanel(request: request, payload: payload)
                         .environmentObject(state)
