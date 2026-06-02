@@ -12,7 +12,12 @@ struct MainAreaView: View {
         }
         .overlay(alignment: .top) {
             if let error = state.errorBanner {
-                errorBanner(error)
+                noticeBanner(error, tint: DesignTokens.danger, icon: "exclamationmark.triangle")
+                    .padding(.top, DesignTokens.headerHeight)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(10)
+            } else if let warning = state.warningBanner {
+                noticeBanner(warning, tint: DesignTokens.warning, icon: "info.circle")
                     .padding(.top, DesignTokens.headerHeight)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(10)
@@ -258,9 +263,9 @@ struct MainAreaView: View {
         }
     }
 
-    private func errorBanner(_ message: String) -> some View {
+    private func noticeBanner(_ message: String, tint: Color, icon: String) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle")
+            Image(systemName: icon)
                 .font(.system(size: 13))
             Text(message)
                 .font(.system(size: 12))
@@ -268,14 +273,15 @@ struct MainAreaView: View {
             Spacer()
             Button(state.t(.dismiss)) {
                 state.errorBanner = nil
+                state.warningBanner = nil
             }
             .buttonStyle(.plain)
             .font(.system(size: 12, weight: .medium))
         }
-        .foregroundStyle(DesignTokens.danger)
+        .foregroundStyle(tint)
         .padding(.horizontal, 12)
         .frame(height: 40)
-        .background(DesignTokens.danger.opacity(0.10))
+        .background(tint.opacity(0.10))
     }
 }
 

@@ -26,6 +26,7 @@ final class AppState: ObservableObject {
     @Published var selectedFileContent = ""
     @Published var statusLine = "Ready"
     @Published var errorBanner: String?
+    @Published var warningBanner: String?
     @Published var showSettings = false
     @Published var showProjectCreationWizard = false
     @Published var settingsInitialTab: SettingsMainTab = .appearance
@@ -68,6 +69,7 @@ final class AppState: ObservableObject {
     private var memoryProjectRootBySession: [String: String] = [:]
     private var memoryAutomationTask: Task<Void, Never>?
     private var lastErrorBySession: [String: String] = [:]
+    private var lastWarningBySession: [String: String] = [:]
     private var hasBootstrapped = false
 
     init(settingsStore: AppSettingsStore = AppSettingsStore()) {
@@ -293,6 +295,7 @@ final class AppState: ObservableObject {
         }
         selectedSessionID = nil
         errorBanner = nil
+        warningBanner = nil
         restoreComposerPermissionMode(for: nil)
         isDraftSessionVisible = true
         activeTab = .chat
@@ -303,9 +306,11 @@ final class AppState: ObservableObject {
     private func refreshVisibleErrorBanner() {
         guard let selectedSessionID else {
             errorBanner = nil
+            warningBanner = nil
             return
         }
         errorBanner = lastErrorBySession[selectedSessionID]
+        warningBanner = lastWarningBySession[selectedSessionID]
     }
 
     func toggleComposerRunMode() {
@@ -2519,6 +2524,7 @@ final class AppState: ObservableObject {
         turnsBySession.removeValue(forKey: sessionID)
         turnItemsBySession.removeValue(forKey: sessionID)
         lastErrorBySession.removeValue(forKey: sessionID)
+        lastWarningBySession.removeValue(forKey: sessionID)
         memoryProjectNameBySession.removeValue(forKey: sessionID)
         memoryProjectRootBySession.removeValue(forKey: sessionID)
         guard let paths = try? AppPaths.current() else { return }
@@ -2541,6 +2547,10 @@ final class AppState: ObservableObject {
         let targetSessionID = explicitSessionID ?? assistantSessionByID[assistantID] ?? selectedSessionID
         switch event {
         case .turnStarted(let turn):
+            lastWarningBySession.removeValue(forKey: turn.sessionId)
+            if selectedSessionID == turn.sessionId {
+                warningBanner = nil
+            }
             upsertTurn(turn)
         case .turnItemStarted(let item), .turnItemUpdated(let item), .turnItemCompleted(let item):
             upsertTurnItem(item)
@@ -2609,6 +2619,12 @@ final class AppState: ObservableObject {
             )
         case .status(let status):
             statusLine = status
+            if let targetSessionID, let notice = automaticPauseNotice(for: status) {
+                lastWarningBySession[targetSessionID] = notice
+                if selectedSessionID == targetSessionID {
+                    warningBanner = notice
+                }
+            }
             upsertActivity(
                 id: statusActivityID(status, assistantID: assistantID),
                 title: statusTitle(status),
@@ -2712,6 +2728,7 @@ final class AppState: ObservableObject {
             flushPendingAssistantDelta(assistantID: assistantID)
             appendAssistantDelta("\n\(message)", assistantID: assistantID, sessionID: targetSessionID)
             if let targetSessionID {
+                lastWarningBySession.removeValue(forKey: targetSessionID)
                 lastErrorBySession[targetSessionID] = message
                 markSession(targetSessionID, state: .failed)
                 touchSessionConversation(targetSessionID)
@@ -2720,6 +2737,7 @@ final class AppState: ObservableObject {
                 captureMemoryTurn(sessionID: targetSessionID, errored: true, interrupted: false)
             }
             if let targetSessionID, selectedSessionID == targetSessionID {
+                warningBanner = nil
                 errorBanner = message
             }
             finalizeAgentRun(runToken: runToken)
@@ -3230,6 +3248,22 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func automaticPauseNotice(for status: String) -> String? {
+        let zh = settings.language.resolved() == .chineseSimplified
+        switch status.lowercased() {
+        case "tool error loop paused":
+            return zh
+                ? "自动诊断已暂停：连续几次工具检查失败。当前回复可能仍然有效，你可以继续提问，或要求换一种方式检查。"
+                : "Automatic diagnostics paused after repeated tool-check failures. The current response may still be useful; continue the chat or ask PilotDeck to check another way."
+        case "needs continuation":
+            return zh
+                ? "自动续跑已暂停。你可以输入“继续”，或补充更具体的要求。"
+                : "Automatic continuation paused. Type “continue” or add more specific instructions to resume."
+        default:
+            return nil
+        }
+    }
+
     private func activityState(forSubagentStatus status: String) -> AgentActivityState {
         switch status.lowercased() {
         case "completed":
@@ -3248,6 +3282,7 @@ final class AppState: ObservableObject {
         case "thinking", "processing": return t(.working)
         case "continuing": return settings.language.resolved() == .chineseSimplified ? "正在继续" : "Continuing"
         case "needs continuation": return settings.language.resolved() == .chineseSimplified ? "需要继续" : "Needs continuation"
+        case "tool error loop paused": return settings.language.resolved() == .chineseSimplified ? "自动诊断已暂停" : "Automatic diagnostics paused"
         case "executing plan": return settings.language.resolved() == .chineseSimplified ? "正在执行计划" : "Executing plan"
         case PlanWorkflowPresentation.generatingQuestionStatus:
             return settings.language.resolved() == .chineseSimplified ? "正在生成问题" : "Generating questions"
@@ -3281,6 +3316,7 @@ final class AppState: ObservableObject {
         case "thinking", "processing": return t(.agentStatusUpdate)
         case "continuing": return settings.language.resolved() == .chineseSimplified ? "模型还没有完成任务，正在推进下一步。" : "The model has not completed the task yet, continuing the next step."
         case "needs continuation": return settings.language.resolved() == .chineseSimplified ? "自动续跑已暂停。你可以输入“继续”或补充更具体的要求。" : "Automatic continuation paused. Type continue or add more specific instructions to resume."
+        case "tool error loop paused": return settings.language.resolved() == .chineseSimplified ? "连续几次工具检查失败，已停止自动重试，避免无意义循环。" : "Repeated tool checks failed, so automatic retries stopped to avoid an unproductive loop."
         case "executing plan": return settings.language.resolved() == .chineseSimplified ? "计划已确认，正在切换到执行。" : "The plan was approved; switching to implementation."
         case PlanWorkflowPresentation.generatingQuestionStatus:
             return settings.language.resolved() == .chineseSimplified ? "正在准备需要你选择的问题。" : "Preparing the questions for your input."

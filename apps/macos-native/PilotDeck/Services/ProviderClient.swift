@@ -1951,7 +1951,7 @@ struct AgentLoopWatchdog: Equatable {
             repeatedErrorResults = 1
         }
         guard repeatedErrorResults >= Self.maxRepeatedErrorResults else { return nil }
-        return "Agent encountered the same tool error repeatedly and paused to avoid an unproductive loop: \(compact(result.output, limit: 180))"
+        return "Repeated tool error; automatic diagnostics paused to avoid an unproductive loop. Last result: \(compact(result.output, limit: 180))"
     }
 
     private func compact(_ value: String, limit: Int) -> String {
@@ -2761,8 +2761,8 @@ struct NativeAgentRuntime: Sendable {
                     continuation.yield(.turnItemStarted(nudgeItem))
                     continuation.yield(.status("continuing"))
                     continue
-                case .pauseNeedsUser:
-                    let pauseItem = await turnController.recordStatus("needs continuation")
+                case .pauseNeedsUser(let message):
+                    let pauseItem = await turnController.recordStatus("needs continuation", text: message)
                     continuation.yield(.turnItemStarted(pauseItem))
                     continuation.yield(.status("needs continuation"))
                     return
@@ -2840,8 +2840,8 @@ struct NativeAgentRuntime: Sendable {
                     continuation.yield(.turnItemStarted(nudgeItem))
                     continuation.yield(.status("continuing"))
                     continue
-                case .pauseNeedsUser:
-                    let pauseItem = await turnController.recordStatus("needs continuation")
+                case .pauseNeedsUser(let message):
+                    let pauseItem = await turnController.recordStatus("needs continuation", text: message)
                     continuation.yield(.turnItemStarted(pauseItem))
                     continuation.yield(.status("needs continuation"))
                     return
@@ -2895,10 +2895,13 @@ struct NativeAgentRuntime: Sendable {
                     continuation.yield(.turnItemCompleted(recorded.resultItem))
                     continuation.yield(.toolResult(id: call.id, output: result.output, isError: result.isError))
                     context.recordToolResult(result, call: call)
-                    if let watchdogMessage = loopWatchdog.recordToolResult(result) {
-                        throw ProviderClientError.transport(watchdogMessage)
-                    }
                     messages.append(openAIToolResultMessage(result))
+                    if let watchdogMessage = loopWatchdog.recordToolResult(result) {
+                        let pauseItem = await turnController.recordStatus("tool error loop paused", text: watchdogMessage)
+                        continuation.yield(.turnItemStarted(pauseItem))
+                        continuation.yield(.status("tool error loop paused"))
+                        return
+                    }
                 }
                 continue
             }
@@ -2933,8 +2936,12 @@ struct NativeAgentRuntime: Sendable {
                 continuation.yield(.turnItemCompleted(recorded.resultItem))
                 continuation.yield(.toolResult(id: call.id, output: result.output, isError: result.isError))
                 context.recordToolResult(result, call: call)
+                messages.append(openAIToolResultMessage(result))
                 if let watchdogMessage = loopWatchdog.recordToolResult(result) {
-                    throw ProviderClientError.transport(watchdogMessage)
+                    let pauseItem = await turnController.recordStatus("tool error loop paused", text: watchdogMessage)
+                    continuation.yield(.turnItemStarted(pauseItem))
+                    continuation.yield(.status("tool error loop paused"))
+                    return
                 }
                 if result.toolName == "Task" {
                     continuation.yield(.subagentStatus(id: call.id, status: result.isError ? "failed" : "completed", detail: result.output))
@@ -2946,7 +2953,6 @@ struct NativeAgentRuntime: Sendable {
                     continuation.yield(.turnItemStarted(executeItem))
                     continuation.yield(.status("executing plan"))
                 }
-                messages.append(openAIToolResultMessage(result))
                 if didApprovePlanExecution {
                     messages.append([
                         "role": "user",
