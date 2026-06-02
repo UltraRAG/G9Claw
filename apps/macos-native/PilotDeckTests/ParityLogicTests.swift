@@ -3302,6 +3302,36 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertNil(ComposerPasteboardReader.textPayload(from: pasteboard, attachments: attachments))
     }
 
+    func testComposerPasteboardReaderDetectsAttachmentPayloadForDrops() throws {
+        let textPasteboard = NSPasteboard(name: NSPasteboard.Name("pilotdeck-drop-text-\(UUID().uuidString)"))
+        textPasteboard.clearContents()
+        textPasteboard.setString("Just drag this text into the composer.", forType: .string)
+        XCTAssertFalse(ComposerPasteboardReader.hasAttachmentPayload(from: textPasteboard))
+
+        let root = repoRootURL()
+            .appendingPathComponent("pilotdeck-drop-file-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fileURL = root.appendingPathComponent("drop-notes.md")
+        try "# Drop notes".write(to: fileURL, atomically: true, encoding: .utf8)
+        let filePasteboard = NSPasteboard(name: NSPasteboard.Name("pilotdeck-drop-file-\(UUID().uuidString)"))
+        filePasteboard.clearContents()
+        filePasteboard.writeObjects([fileURL as NSURL])
+
+        XCTAssertTrue(ComposerPasteboardReader.hasAttachmentPayload(from: filePasteboard))
+
+        let image = NSImage(size: NSSize(width: 8, height: 8))
+        image.lockFocus()
+        NSColor.green.setFill()
+        NSRect(x: 0, y: 0, width: 8, height: 8).fill()
+        image.unlockFocus()
+        let imagePasteboard = NSPasteboard(name: NSPasteboard.Name("pilotdeck-drop-image-\(UUID().uuidString)"))
+        imagePasteboard.clearContents()
+        imagePasteboard.writeObjects([image])
+
+        XCTAssertTrue(ComposerPasteboardReader.hasAttachmentPayload(from: imagePasteboard))
+    }
+
     func testComposerPasteboardReaderParsesClipboardImage() throws {
         let image = NSImage(size: NSSize(width: 8, height: 8))
         image.lockFocus()

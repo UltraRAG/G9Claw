@@ -1120,6 +1120,10 @@ enum ComposerPasteboardReader {
         heifType,
     ]
 
+    static func hasAttachmentPayload(from pasteboard: NSPasteboard) -> Bool {
+        !orderedUniqueFileURLs(from: pasteboard).isEmpty || image(from: pasteboard) != nil
+    }
+
     static func attachments(from pasteboard: NSPasteboard, saveImage: (NSImage) -> URL?) -> [FileAttachment] {
         let fileURLs = orderedUniqueFileURLs(from: pasteboard)
         if !fileURLs.isEmpty {
@@ -3642,6 +3646,9 @@ private struct ComposerTextEditor: NSViewRepresentable {
         textView.onPaste = { pasteboard in
             context.coordinator.handlePaste(pasteboard)
         }
+        textView.onDrop = { pasteboard in
+            context.coordinator.handleDrop(pasteboard)
+        }
         textView.onSubmit = {
             Task { @MainActor in
                 context.coordinator.submit()
@@ -3671,6 +3678,9 @@ private struct ComposerTextEditor: NSViewRepresentable {
         textView.sendByCtrlEnter = sendByCtrlEnter
         textView.onPaste = { pasteboard in
             context.coordinator.handlePaste(pasteboard)
+        }
+        textView.onDrop = { pasteboard in
+            context.coordinator.handleDrop(pasteboard)
         }
         textView.onSubmit = {
             Task { @MainActor in
@@ -3739,6 +3749,14 @@ private struct ComposerTextEditor: NSViewRepresentable {
         }
 
         @MainActor
+        func handleDrop(_ pasteboard: NSPasteboard) -> Bool {
+            let attachments = parent.pasteboardAttachments(pasteboard)
+            guard !attachments.isEmpty else { return false }
+            parent.onPasteAttachments(attachments)
+            return true
+        }
+
+        @MainActor
         func submit() {
             guard canSubmit, !hasMarkedText else { return }
             parent.onSubmit()
@@ -3765,8 +3783,37 @@ private final class SubmitTextView: NSTextView {
     var hasActiveMarkedText: () -> Bool = { false }
     var sendByCtrlEnter = false
     var onPaste: (NSPasteboard) -> Bool = { _ in false }
+    var onDrop: (NSPasteboard) -> Bool = { _ in false }
     var onSubmit: () -> Void = {}
     var onToggleRunMode: () -> Void = {}
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if ComposerPasteboardReader.hasAttachmentPayload(from: sender.draggingPasteboard) {
+            return .copy
+        }
+        return super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if ComposerPasteboardReader.hasAttachmentPayload(from: sender.draggingPasteboard) {
+            return .copy
+        }
+        return super.draggingUpdated(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if ComposerPasteboardReader.hasAttachmentPayload(from: sender.draggingPasteboard) {
+            return true
+        }
+        return super.prepareForDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if ComposerPasteboardReader.hasAttachmentPayload(from: sender.draggingPasteboard) {
+            return onDrop(sender.draggingPasteboard)
+        }
+        return super.performDragOperation(sender)
+    }
 
     override func paste(_ sender: Any?) {
         if onPaste(NSPasteboard.general) {
