@@ -1779,6 +1779,37 @@ enum RootGlobExecutionPolicy {
 }
 
 enum DestructiveToolClassifier {
+    private static let protectedFileNames = Set([
+        ".env",
+        ".gitignore",
+        "Cargo.lock",
+        "Cargo.toml",
+        "Dockerfile",
+        "Gemfile",
+        "Gemfile.lock",
+        "Info.plist",
+        "Makefile",
+        "Package.swift",
+        "Podfile",
+        "Podfile.lock",
+        "bun.lockb",
+        "docker-compose.yml",
+        "go.mod",
+        "go.sum",
+        "package-lock.json",
+        "package.json",
+        "pilotdeck.yaml",
+        "pilotdeck.yml",
+        "pnpm-lock.yaml",
+        "project.pbxproj",
+        "pyproject.toml",
+        "requirements.txt",
+        "tsconfig.json",
+        "vite.config.js",
+        "vite.config.ts",
+        "yarn.lock",
+    ])
+
     static func isDestructive(call: AgentToolCall) -> Bool {
         let toolName = AgentToolNameCanonicalizer.canonical(call.name)
         if toolName == "Delete" { return true }
@@ -1802,7 +1833,7 @@ enum DestructiveToolClassifier {
     static func planJSON(call: AgentToolCall, isChinese: Bool = true) -> String {
         let toolName = AgentToolNameCanonicalizer.canonical(call.name)
         let target = targetDescription(call: call)
-        let title = isChinese ? "删除计划确认" : "Destructive change approval"
+        let title = isChinese ? "删除确认" : "Deletion approval"
         let impact = isChinese
             ? "即将执行会删除文件或目录的操作：\(toolName)。目标：\(target)。"
             : "The agent is about to run a deletion-capable \(toolName) operation. Target: \(target)."
@@ -1816,6 +1847,34 @@ enum DestructiveToolClassifier {
             "destructiveTool": toolName,
             "target": target,
         ], pretty: true)
+    }
+
+    static func isLowRiskWorkspaceFileDelete(call: AgentToolCall, context: AgentRunContext) -> Bool {
+        guard AgentToolNameCanonicalizer.canonical(call.name) == "Delete",
+              let input = object(in: call.inputJSON),
+              let rawPath = (input["path"] as? String)?.nilIfBlank,
+              !requestsRecursiveDelete(input),
+              isSingleLiteralPath(rawPath),
+              let url = try? AgentPathResolver.resolve(rawPath, workspacePath: context.workspacePath, mustExist: true),
+              !isProtectedPath(url, workspacePath: context.workspacePath) else {
+            return false
+        }
+
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true,
+              values.isSymbolicLink != true else {
+            return false
+        }
+        return true
+    }
+
+    private static func requestsRecursiveDelete(_ input: [String: Any]) -> Bool {
+        guard let recursive = input["recursive"] else { return false }
+        guard let boolValue = recursive as? Bool else { return true }
+        return boolValue
     }
 
     private static func isDestructiveShellCommand(_ command: String) -> Bool {
@@ -1832,12 +1891,34 @@ enum DestructiveToolClassifier {
             }
     }
 
-    private static func stringValue(_ key: String, in inputJSON: String) -> String? {
-        guard let data = inputJSON.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
+    private static func isSingleLiteralPath(_ path: String) -> Bool {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != ".", trimmed != "./", !trimmed.hasSuffix("/") else {
+            return false
         }
-        return (object[key] as? String)?.nilIfBlank
+        return trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: "*?[]{}")) == nil
+    }
+
+    private static func isProtectedPath(_ url: URL, workspacePath: String) -> Bool {
+        let relative = AgentPathResolver.relativePath(url, workspacePath: workspacePath)
+        let components = relative
+            .split(separator: "/")
+            .map(String.init)
+            .filter { !$0.isEmpty && $0 != "." }
+        guard !components.isEmpty else { return true }
+        if components.contains(where: { $0.hasPrefix(".") }) {
+            return true
+        }
+        return protectedFileNames.contains(url.lastPathComponent)
+    }
+
+    private static func stringValue(_ key: String, in inputJSON: String) -> String? {
+        (object(in: inputJSON)?[key] as? String)?.nilIfBlank
+    }
+
+    private static func object(in inputJSON: String) -> [String: Any]? {
+        guard let data = inputJSON.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     private static func compact(_ value: String, limit: Int) -> String {
@@ -5031,6 +5112,10 @@ enum AgentPermissionPolicy {
         }
         if DestructiveToolClassifier.isDestructive(call: call) {
             if context.planExecutionApproved {
+                return .allow
+            }
+            if context.permissionMode == .bypassPermissions,
+               DestructiveToolClassifier.isLowRiskWorkspaceFileDelete(call: call, context: context) {
                 return .allow
             }
             return .ask("Destructive action plan approval is required before deleting workspace files.")

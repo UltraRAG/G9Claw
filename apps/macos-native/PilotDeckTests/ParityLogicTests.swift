@@ -2363,6 +2363,59 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(AgentPermissionPolicy.policy(for: call, context: context), .allow)
     }
 
+    func testBypassAllowsLowRiskWorkspaceFileDeleteOnly() throws {
+        let root = try makeAgentWorkspace("pilotdeck-low-risk-delete")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let file = root.appendingPathComponent("chrome_game.png")
+        try "debug screenshot".write(to: file, atomically: true, encoding: .utf8)
+        let call = AgentToolCall(
+            id: "delete-file",
+            name: "Delete",
+            inputJSON: #"{"path":"chrome_game.png"}"#
+        )
+
+        let bypassContext = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
+        XCTAssertEqual(AgentPermissionPolicy.policy(for: call, context: bypassContext), .allow)
+
+        let defaultContext = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .default))
+        if case .ask(let reason) = AgentPermissionPolicy.policy(for: call, context: defaultContext) {
+            XCTAssertTrue(reason.lowercased().contains("destructive"))
+        } else {
+            XCTFail("Default permission mode should still ask before deleting workspace files.")
+        }
+    }
+
+    func testBypassStillAsksForUnsafeDeletionTargets() throws {
+        let root = try makeAgentWorkspace("pilotdeck-unsafe-delete")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let directory = root.appendingPathComponent("screenshots", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let protectedFile = root.appendingPathComponent(".env")
+        try "TOKEN=secret".write(to: protectedFile, atomically: true, encoding: .utf8)
+        let outsideFile = root.deletingLastPathComponent().appendingPathComponent("outside-\(UUID().uuidString).txt")
+        try "outside".write(to: outsideFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: outsideFile) }
+
+        let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
+        let unsafeDeletes = [
+            AgentToolCall(id: "delete-directory", name: "Delete", inputJSON: #"{"path":"screenshots"}"#),
+            AgentToolCall(id: "delete-protected", name: "Delete", inputJSON: #"{"path":".env"}"#),
+            AgentToolCall(id: "delete-outside", name: "Delete", inputJSON: #"{"path":"\#(outsideFile.path)"}"#),
+            AgentToolCall(id: "delete-recursive", name: "Delete", inputJSON: #"{"path":"chrome_game.png","recursive":true}"#),
+            AgentToolCall(id: "delete-recursive-string", name: "Delete", inputJSON: #"{"path":"chrome_game.png","recursive":"true"}"#),
+        ]
+
+        for call in unsafeDeletes {
+            if case .ask(let reason) = AgentPermissionPolicy.policy(for: call, context: context) {
+                XCTAssertTrue(reason.lowercased().contains("destructive"))
+            } else {
+                XCTFail("\(call.id) should still require deletion approval in bypass mode.")
+            }
+        }
+    }
+
     func testDestructiveShellRequiresPlanApprovalInAgentMode() {
         let context = AgentRunContext(request: agentRequest(permissionMode: .bypassPermissions))
         let call = AgentToolCall(

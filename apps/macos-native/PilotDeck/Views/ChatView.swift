@@ -4617,7 +4617,7 @@ private struct DestructivePlanPermissionCard: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(isChinese ? "确认删除计划" : "Confirm deletion plan")
+                    Text(isChinese ? "确认删除" : "Confirm deletion")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(DesignTokens.text)
                     Text("\(toolName) · \(target)")
@@ -4670,7 +4670,7 @@ private struct DestructivePlanPermissionCard: View {
                 Button {
                     state.approvePermission(request.id)
                 } label: {
-                    Label(isChinese ? "执行计划" : "Execute plan", systemImage: "checkmark.circle.fill")
+                    Label(isChinese ? "确认删除" : "Confirm delete", systemImage: "checkmark.circle.fill")
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 12, weight: .semibold))
