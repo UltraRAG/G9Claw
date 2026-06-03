@@ -6506,6 +6506,132 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(updated.contains("router:"))
     }
 
+    func testYAMLScalarEditorInsertsMissingScalarIntoExistingParentBlock() {
+        let yaml = """
+        gateway:
+          port: 18789
+        router:
+          scenarios:
+            default: edgeclaw/qwen3.6-27b
+          stats:
+            enabled: true
+        tools:
+          webSearch:
+            provider: glm
+        """
+
+        let updated = YAMLScalarEditor.set(path: "router.enabled", value: "true", in: yaml)
+        let topLevelRouterCount = updated
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { $0 == "router:" }
+            .count
+
+        XCTAssertEqual(topLevelRouterCount, 1)
+        XCTAssertTrue(updated.contains("router:\n  scenarios:"))
+        XCTAssertTrue(updated.contains("  enabled: true"))
+        XCTAssertFalse(updated.contains("# Added by native Settings\nrouter:"))
+    }
+
+    func testYAMLScalarEditorWritesWebStringArraysAndScalarMapReadsThem() {
+        let yaml = """
+        router:
+          tokenSaver:
+            rules: old scalar rule
+        """
+
+        let updated = YAMLScalarEditor.setStringArray(
+            path: "router.tokenSaver.rules",
+            values: ["Short prompts -> SIMPLE", "Multi-file tasks -> COMPLEX"],
+            in: yaml
+        )
+        let values = NativeConfigService.scalarMap(from: updated)
+
+        XCTAssertTrue(updated.contains("    rules:\n      - Short prompts -> SIMPLE"))
+        XCTAssertFalse(updated.contains("old scalar rule"))
+        XCTAssertTrue(YAMLScalarEditor.isStringArray(path: "router.tokenSaver.rules", in: updated))
+        XCTAssertEqual(
+            YAMLScalarEditor.stringArray(path: "router.tokenSaver.rules", in: updated),
+            ["Short prompts -> SIMPLE", "Multi-file tasks -> COMPLEX"]
+        )
+        XCTAssertEqual(values["router.tokenSaver.rules"], "Short prompts -> SIMPLE\nMulti-file tasks -> COMPLEX")
+    }
+
+    func testSharedConfigCompatibilityRejectsWebFatalShapes() {
+        let yaml = """
+        model:
+          providers:
+            bad/id:
+              protocol: openai
+              url: http://example.local/v1
+              apiKey: secret
+              models:
+                qwen3.6-27b: {}
+        tools:
+          webSearch:
+            provider: glm
+            apiKey: ""
+        router:
+          tokenSaver:
+            rules: scalar rule
+        """
+
+        let errors = NativeConfigCompatibility.validationErrors(
+            yaml: yaml,
+            values: NativeConfigService.scalarMap(from: yaml)
+        )
+
+        XCTAssertTrue(errors.contains { $0.contains("model provider id 'bad/id'") })
+        XCTAssertTrue(errors.contains { $0.contains("tools.webSearch.apiKey") })
+        XCTAssertTrue(errors.contains { $0.contains("router.tokenSaver.rules") })
+    }
+
+    func testSharedConfigCompatibilityAcceptsWebSafeArraysAndDottedModelIDs() {
+        let yaml = """
+        model:
+          providers:
+            edgeclaw:
+              protocol: openai
+              url: http://example.local/v1
+              apiKey: secret
+              models:
+                qwen3.6-27b: {}
+        tools:
+          webSearch:
+            provider: glm
+        alwaysOn:
+          dormancy:
+            ignoreGlobs: []
+        router:
+          fallback:
+            default: []
+            background:
+              - edgeclaw/qwen3.6-27b
+          tokenSaver:
+            rules:
+              - Short prompts -> SIMPLE
+          autoOrchestrate:
+            triggerTiers: [COMPLEX, REASONING]
+        """
+
+        let errors = NativeConfigCompatibility.validationErrors(
+            yaml: yaml,
+            values: NativeConfigService.scalarMap(from: yaml)
+        )
+
+        XCTAssertTrue(errors.isEmpty, errors.joined(separator: "\n"))
+        XCTAssertTrue(NativeConfigCompatibility.isValidModelID("qwen3.6-27b"))
+        XCTAssertFalse(NativeConfigCompatibility.isValidProviderID("provider.one"))
+        XCTAssertFalse(NativeConfigCompatibility.isValidModelID("edgeclaw/qwen3.6-27b"))
+    }
+
+    func testPilotDeckDefaultsAvoidEmptyOptionalWebSearchFields() {
+        let defaults = PilotDeckConfigDefaults.configText(homePath: "/Users/tester", userName: "tester")
+
+        XCTAssertFalse(defaults.contains("apiKey: \"\""))
+        XCTAssertFalse(defaults.contains("resultsPath: \"\""))
+        XCTAssertFalse(defaults.contains("customEnv: {}"))
+    }
+
     func testYAMLScalarEditorRemovesWholeModelProviderSubtree() {
         let yaml = """
         model:

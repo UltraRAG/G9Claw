@@ -899,7 +899,7 @@ private struct SettingsContentView: View {
                             .lineLimit(1)
                     }
                     .buttonStyle(WebToolbarButtonStyle(isProminent: true))
-                    .disabled(!isConfigDirty && validation.valid)
+                    .disabled(!validation.valid || !isConfigDirty)
                     Button {
                         showConfigDetails.toggle()
                     } label: {
@@ -1267,9 +1267,9 @@ private struct SettingsContentView: View {
                                     local(chinese: "防抖（毫秒）", english: "Debounce (ms)"),
                                     text: configBinding("alwaysOn.dormancy.debounceMs")
                                 )
-                                SettingsTextField(
-                                    local(chinese: "忽略规则", english: "Ignore globs"),
-                                    text: configBinding("alwaysOn.dormancy.ignoreGlobs")
+                                SettingsTextArea(
+                                    local(chinese: "忽略规则（每行一个）", english: "Ignore globs (one per line)"),
+                                    text: configArrayTextBinding("alwaysOn.dormancy.ignoreGlobs")
                                 )
                             }
                             .padding(14)
@@ -1661,9 +1661,12 @@ private struct SettingsContentView: View {
                         SettingsCardBlock {
                             ConfigGrid {
                                 ForEach(NativeRouterConfigFormFields.fallbackFields) { field in
-                                    SettingsTextField(
-                                        local(chinese: field.chineseLabel, english: field.englishLabel),
-                                        text: configBinding(field.path)
+                                    SettingsTextArea(
+                                        local(
+                                            chinese: "\(field.chineseLabel)（每行一个模型）",
+                                            english: "\(field.englishLabel) (one model per line)"
+                                        ),
+                                        text: configArrayTextBinding(field.path)
                                     )
                                 }
                             }
@@ -1732,9 +1735,9 @@ private struct SettingsContentView: View {
                                             text: configBinding(field.path)
                                         )
                                     }
-                                    SettingsTextField(
-                                        local(chinese: "规则", english: "Rules"),
-                                        text: configBinding("router.tokenSaver.rules")
+                                    SettingsTextArea(
+                                        local(chinese: "规则（每行一条）", english: "Rules (one per line)"),
+                                        text: configArrayTextBinding("router.tokenSaver.rules")
                                     )
                                 }
                                 .padding(14)
@@ -1756,9 +1759,9 @@ private struct SettingsContentView: View {
                             if configBool("router.autoOrchestrate.enabled", defaultValue: true) {
                                 SettingsCardDivider()
                                 ConfigGrid {
-                                    SettingsTextField(
-                                        local(chinese: "触发档位", english: "Trigger tiers"),
-                                        text: configBinding("router.autoOrchestrate.triggerTiers")
+                                    SettingsTextArea(
+                                        local(chinese: "触发档位（每行一个）", english: "Trigger tiers (one per line)"),
+                                        text: configArrayTextBinding("router.autoOrchestrate.triggerTiers")
                                     )
                                     webSettingsToggleRow(
                                         title: local(chinese: "精简系统提示", english: "Slim system prompt"),
@@ -2389,6 +2392,29 @@ private struct SettingsContentView: View {
         )
     }
 
+    private func configArrayTextBinding(_ path: String) -> Binding<String> {
+        Binding(
+            get: {
+                YAMLScalarEditor.stringArray(
+                    path: canonicalConfigPath(path),
+                    in: state.pilotDeckConfigText
+                )
+                .joined(separator: "\n")
+            },
+            set: { value in
+                let values = value
+                    .components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                state.pilotDeckConfigText = YAMLScalarEditor.setStringArray(
+                    path: canonicalConfigPath(path),
+                    values: values,
+                    in: state.pilotDeckConfigText
+                )
+            }
+        )
+    }
+
     private func configBoolBinding(_ path: String, defaultValue: Bool = false) -> Binding<Bool> {
         Binding(
             get: {
@@ -2473,7 +2499,12 @@ private struct SettingsContentView: View {
 
     private func setConfigValue(_ path: String, _ value: String) {
         guard !shouldIgnoreRecentlyRemovedProviderWrite(path) else { return }
-        state.pilotDeckConfigText = YAMLScalarEditor.set(path: canonicalConfigPath(path), value: value, in: state.pilotDeckConfigText)
+        let canonical = canonicalConfigPath(path)
+        if NativeConfigCompatibility.shouldDeleteWhenEmpty(path: canonical, value: value) {
+            state.pilotDeckConfigText = YAMLScalarEditor.removeObject(path: canonical, in: state.pilotDeckConfigText)
+            return
+        }
+        state.pilotDeckConfigText = YAMLScalarEditor.set(path: canonical, value: value, in: state.pilotDeckConfigText)
     }
 
     private func shouldIgnoreRecentlyRemovedProviderWrite(_ path: String) -> Bool {
@@ -2617,6 +2648,12 @@ private struct SettingsContentView: View {
     }
 
     private func saveConfigAndReload() {
+        let validation = validateConfig()
+        guard validation.valid else {
+            configMessage = nil
+            configError = validation.errors.first ?? state.t(.configInvalid)
+            return
+        }
         state.saveSettings()
         savedConfigText = state.pilotDeckConfigText
         configError = nil
@@ -2672,6 +2709,10 @@ private struct SettingsContentView: View {
         if state.pilotDeckConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             errors.append("Config YAML is empty.")
         }
+        errors.append(contentsOf: NativeConfigCompatibility.validationErrors(
+            yaml: state.pilotDeckConfigText,
+            values: values
+        ))
         return NativeConfigValidation(errors: errors, warnings: warnings)
     }
 
@@ -2851,7 +2892,17 @@ private struct SettingsContentView: View {
         yaml = YAMLScalarEditor.set(path: "model.providers.\(provider.id).protocol", value: provider.protocolValue, in: yaml)
         yaml = YAMLScalarEditor.set(path: "model.providers.\(provider.id).url", value: provider.defaultURL, in: yaml)
         yaml = YAMLScalarEditor.set(path: "model.providers.\(provider.id).apiKey", value: "", in: yaml)
-        yaml = YAMLScalarEditor.set(components: ["model", "providers", provider.id, "models"], value: "{}", in: yaml)
+        if provider.models.isEmpty {
+            yaml = YAMLScalarEditor.set(components: ["model", "providers", provider.id, "models"], value: "{}", in: yaml)
+        } else {
+            for model in provider.models {
+                yaml = YAMLScalarEditor.set(
+                    components: ["model", "providers", provider.id, "models", model.id],
+                    value: "{}",
+                    in: yaml
+                )
+            }
+        }
         state.pilotDeckConfigText = yaml
     }
 
@@ -2873,7 +2924,7 @@ private struct SettingsContentView: View {
 
     private func addWebModel(provider: String, model: String) {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard NativeConfigCompatibility.isValidModelID(trimmed) else { return }
         recentlyRemovedWebProviderIDs.remove(provider)
         state.pilotDeckConfigText = YAMLScalarEditor.set(
             components: ["model", "providers", provider, "models", trimmed],
@@ -2978,7 +3029,7 @@ private struct SettingsContentView: View {
 
     private func renameWebModel(provider: String, oldID: String, newID rawNewID: String) {
         let newID = rawNewID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newID.isEmpty, newID != oldID else { return }
+        guard NativeConfigCompatibility.isValidModelID(newID), newID != oldID else { return }
         let oldRef = NativeConfigService.modelRef(providerID: provider, modelID: oldID)
         let newRef = NativeConfigService.modelRef(providerID: provider, modelID: newID)
         guard !modelPoolEntryIDs.contains(newRef) else { return }
@@ -2995,7 +3046,7 @@ private struct SettingsContentView: View {
 
     private func renameWebProvider(oldID: String, newID rawNewID: String) {
         let newID = rawNewID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newID.isEmpty, newID != oldID else { return }
+        guard NativeConfigCompatibility.isValidProviderID(newID), newID != oldID else { return }
         guard configValue("model.providers.\(newID).protocol").isEmpty else { return }
         var yaml = YAMLScalarEditor.renameObject(
             parentComponents: ["model", "providers"],
@@ -4354,6 +4405,103 @@ enum NativeGatewayConfigFormFields {
     static let visiblePaths: [String] = []
 }
 
+enum NativeConfigCompatibility {
+    static let webArrayPaths: Set<String> = [
+        "alwaysOn.dormancy.ignoreGlobs",
+        "router.fallback.default",
+        "router.fallback.background",
+        "router.tokenSaver.rules",
+        "router.autoOrchestrate.triggerTiers",
+    ]
+
+    static let optionalNonEmptyStringPaths: Set<String> = [
+        "tools.webSearch.apiKey",
+        "tools.webSearch.endpoint",
+        "tools.webSearch.customProvider.name",
+        "tools.webSearch.customProvider.auth",
+        "tools.webSearch.customProvider.method",
+        "tools.webSearch.customProvider.queryParam",
+        "tools.webSearch.customProvider.apiKeyParam",
+        "tools.webSearch.customProvider.resultsPath",
+        "tools.webSearch.customProvider.titleField",
+        "tools.webSearch.customProvider.urlField",
+        "tools.webSearch.customProvider.snippetField",
+        "tools.webSearch.customProvider.sourceField",
+        "tools.webSearch.customProvider.publishedAtField",
+    ]
+
+    static func shouldDeleteWhenEmpty(path: String, value: String) -> Bool {
+        optionalNonEmptyStringPaths.contains(path)
+            && value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func isValidProviderID(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == value, !trimmed.isEmpty else { return false }
+        return trimmed.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil
+    }
+
+    static func isValidModelID(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == value, !trimmed.isEmpty else { return false }
+        return trimmed.range(of: #"^[^\s/\\]+$"#, options: .regularExpression) != nil
+    }
+
+    static func validationErrors(yaml: String, values: [String: String]) -> [String] {
+        var errors: [String] = []
+
+        for path in webArrayPaths.sorted() where YAMLScalarEditor.containsPath(path, in: yaml) {
+            if !YAMLScalarEditor.isStringArray(path: path, in: yaml) {
+                errors.append("\(path) must be a YAML string array, not a scalar value.")
+            }
+        }
+
+        for path in optionalNonEmptyStringPaths.sorted() where YAMLScalarEditor.containsPath(path, in: yaml) {
+            if (values[path] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                errors.append("\(path) cannot be saved as an empty string. Clear it from YAML or enter a value.")
+            }
+        }
+
+        let searchProvider = values["tools.webSearch.provider"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let searchProvider,
+           !searchProvider.isEmpty,
+           !NativeSearchConfigFormFields.providerOptions.contains(searchProvider) {
+            errors.append("tools.webSearch.provider must be glm, tavily, or custom.")
+        }
+
+        if let bindAddress = values["gateway.bindAddress"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !bindAddress.isEmpty,
+           bindAddress != "127.0.0.1",
+           bindAddress != "localhost" {
+            errors.append("gateway.bindAddress must stay on 127.0.0.1/localhost for web compatibility.")
+        }
+
+        for providerID in YAMLScalarEditor.directChildKeys(parentPath: "model.providers", in: yaml) {
+            if !isValidProviderID(providerID) {
+                errors.append("model provider id '\(providerID)' must use only letters, numbers, '_' or '-'.")
+                continue
+            }
+
+            let prefix = "model.providers.\(providerID)"
+            for requiredPath in ["\(prefix).protocol", "\(prefix).url", "\(prefix).apiKey"] {
+                if (values[requiredPath] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    errors.append("\(requiredPath) is required for the shared web config.")
+                }
+            }
+
+            let modelIDs = YAMLScalarEditor.directChildKeys(parentPath: "\(prefix).models", in: yaml)
+            if modelIDs.isEmpty {
+                errors.append("\(prefix).models must contain at least one enabled model.")
+            }
+            for modelID in modelIDs where !isValidModelID(modelID) {
+                errors.append("model id '\(modelID)' under provider '\(providerID)' cannot contain whitespace or '/'.")
+            }
+        }
+
+        return errors
+    }
+}
+
 private struct NativeConfigValidation {
     var errors: [String]
     var warnings: [String]
@@ -4528,6 +4676,95 @@ enum YAMLScalarEditor {
         set(components: path.split(separator: ".").map(String.init), value: value, in: yaml)
     }
 
+    static func setStringArray(path: String, values: [String], in yaml: String) -> String {
+        setStringArray(components: path.split(separator: ".").map(String.init), values: values, in: yaml)
+    }
+
+    static func setStringArray(components: [String], values: [String], in yaml: String) -> String {
+        guard !components.isEmpty, let key = components.last else { return yaml }
+        let normalizedValues = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let cleaned = removeObject(components: components, in: yaml)
+        let placeholder = set(components: components, value: "[]", in: cleaned)
+        guard !normalizedValues.isEmpty else { return placeholder }
+
+        var lines = placeholder.components(separatedBy: "\n")
+        guard let index = lineIndex(forComponents: components, in: lines) else { return placeholder }
+        let currentIndent = indent(of: lines[index])
+        let prefix = String(repeating: " ", count: currentIndent)
+        let itemPrefix = String(repeating: " ", count: currentIndent + 2)
+        let block = ["\(prefix)\(key):"] + normalizedValues.map { "\(itemPrefix)- \(format($0))" }
+        lines.replaceSubrange(index...index, with: block)
+        return lines.joined(separator: "\n")
+    }
+
+    static func stringArray(path: String, in yaml: String) -> [String] {
+        stringArray(components: path.split(separator: ".").map(String.init), in: yaml)
+    }
+
+    static func stringArray(components: [String], in yaml: String) -> [String] {
+        let lines = yaml.components(separatedBy: "\n")
+        guard let index = lineIndex(forComponents: components, in: lines),
+              let rawValue = rawValue(at: index, in: lines)
+        else { return [] }
+        if rawValue == "[]" { return [] }
+        if rawValue.hasPrefix("["), rawValue.hasSuffix("]") {
+            return parseInlineArray(rawValue)
+        }
+        if !rawValue.isEmpty {
+            return [normalizeScalar(rawValue)]
+        }
+        return sequenceValues(after: index, in: lines, parentIndent: indent(of: lines[index])) ?? []
+    }
+
+    static func isStringArray(path: String, in yaml: String) -> Bool {
+        isStringArray(components: path.split(separator: ".").map(String.init), in: yaml)
+    }
+
+    static func isStringArray(components: [String], in yaml: String) -> Bool {
+        let lines = yaml.components(separatedBy: "\n")
+        guard let index = lineIndex(forComponents: components, in: lines),
+              let rawValue = rawValue(at: index, in: lines)
+        else { return true }
+        if rawValue == "[]" { return true }
+        if rawValue.hasPrefix("["), rawValue.hasSuffix("]") { return true }
+        if !rawValue.isEmpty { return false }
+        return sequenceValues(after: index, in: lines, parentIndent: indent(of: lines[index])) != nil
+    }
+
+    static func containsPath(_ path: String, in yaml: String) -> Bool {
+        let lines = yaml.components(separatedBy: "\n")
+        return lineIndex(for: path, in: lines) != nil
+    }
+
+    static func directChildKeys(parentPath: String, in yaml: String) -> [String] {
+        let lines = yaml.components(separatedBy: "\n")
+        guard let parentIndex = lineIndex(for: parentPath, in: lines) else { return [] }
+        let parentIndent = indent(of: lines[parentIndex])
+        var keys: [String] = []
+        var index = parentIndex + 1
+        while index < lines.count {
+            let line = lines[index]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") {
+                index += 1
+                continue
+            }
+            let currentIndent = indent(of: line)
+            if currentIndent <= parentIndent { break }
+            if currentIndent == parentIndent + 2,
+               let colon = trimmed.firstIndex(of: ":") {
+                let key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespaces)
+                if !key.isEmpty, !key.hasPrefix("- ") {
+                    keys.append(key)
+                }
+            }
+            index += 1
+        }
+        return keys
+    }
+
     static func set(components: [String], value: String, in yaml: String) -> String {
         var lines = yaml.components(separatedBy: "\n")
         var stack: [(indent: Int, key: String)] = []
@@ -4560,6 +4797,10 @@ enum YAMLScalarEditor {
                 }
                 stack.append((indent, key))
             }
+        }
+
+        if let updated = insertMissingPath(components: components, value: value, into: lines) {
+            return updated
         }
 
         return append(components: components, value: value, to: yaml)
@@ -4690,6 +4931,58 @@ enum YAMLScalarEditor {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    private static func insertMissingPath(components parts: [String], value: String, into sourceLines: [String]) -> String? {
+        guard parts.count > 1 else { return nil }
+        var lines = sourceLines
+
+        for parentLength in stride(from: parts.count - 1, through: 1, by: -1) {
+            let parentComponents = Array(parts.prefix(parentLength))
+            guard let parentIndex = lineIndex(forComponents: parentComponents, in: lines) else { continue }
+
+            let parentLine = lines[parentIndex]
+            let parentIndent = indent(of: parentLine)
+            let trimmed = parentLine.trimmingCharacters(in: .whitespaces)
+            let rawValue: String
+            if let colon = trimmed.firstIndex(of: ":") {
+                rawValue = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            } else {
+                rawValue = ""
+            }
+            guard rawValue.isEmpty || rawValue == "{}" else { continue }
+
+            if rawValue == "{}" {
+                let key = parentComponents.last ?? ""
+                lines[parentIndex] = "\(String(repeating: " ", count: parentIndent))\(key):"
+            }
+
+            var insertIndex = parentIndex + 1
+            while insertIndex < lines.count {
+                let candidate = lines[insertIndex]
+                let candidateTrimmed = candidate.trimmingCharacters(in: .whitespaces)
+                if !candidateTrimmed.isEmpty, indent(of: candidate) <= parentIndent {
+                    break
+                }
+                insertIndex += 1
+            }
+
+            let remainder = Array(parts.dropFirst(parentLength))
+            var block: [String] = []
+            for offset in remainder.indices {
+                let currentIndent = String(repeating: " ", count: parentIndent + 2 + offset * 2)
+                let key = remainder[offset]
+                if offset == remainder.count - 1 {
+                    block.append("\(currentIndent)\(key): \(format(value))")
+                } else {
+                    block.append("\(currentIndent)\(key):")
+                }
+            }
+            lines.insert(contentsOf: block, at: insertIndex)
+            return lines.joined(separator: "\n")
+        }
+
+        return nil
+    }
+
     private static func lineIndex(for path: String, in lines: [String]) -> Int? {
         lineIndex(forComponents: path.split(separator: ".").map(String.init), in: lines)
     }
@@ -4716,6 +5009,47 @@ enum YAMLScalarEditor {
             }
         }
         return nil
+    }
+
+    private static func rawValue(at index: Int, in lines: [String]) -> String? {
+        guard lines.indices.contains(index) else { return nil }
+        let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+        guard let colon = trimmed.firstIndex(of: ":") else { return nil }
+        return String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func sequenceValues(after index: Int, in lines: [String], parentIndent: Int) -> [String]? {
+        var values: [String] = []
+        var sawChild = false
+        var current = index + 1
+        while current < lines.count {
+            let line = lines[current]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") {
+                current += 1
+                continue
+            }
+            let currentIndent = indent(of: line)
+            if currentIndent <= parentIndent { break }
+            sawChild = true
+            guard trimmed.hasPrefix("- ") else { return nil }
+            let raw = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            values.append(normalizeScalar(raw))
+            current += 1
+        }
+        return sawChild ? values : nil
+    }
+
+    private static func parseInlineArray(_ rawValue: String) -> [String] {
+        let body = rawValue
+            .dropFirst()
+            .dropLast()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return [] }
+        return body
+            .split(separator: ",")
+            .map { normalizeScalar(String($0).trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { !$0.isEmpty }
     }
 
     private static func removeLooseEntries(components: [String], from lines: [String]) -> [String] {
@@ -4751,6 +5085,24 @@ enum YAMLScalarEditor {
 
     private static func indent(of line: String) -> Int {
         line.prefix { $0 == " " }.count
+    }
+
+    private static func normalizeScalar(_ rawValue: String) -> String {
+        var value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
+            value.removeFirst()
+            value.removeLast()
+            return value.replacingOccurrences(of: "\\\"", with: "\"")
+        }
+        if value.hasPrefix("'"), value.hasSuffix("'"), value.count >= 2 {
+            value.removeFirst()
+            value.removeLast()
+            return value.replacingOccurrences(of: "''", with: "'")
+        }
+        if let hash = value.firstIndex(of: "#") {
+            value = String(value[..<hash]).trimmingCharacters(in: .whitespaces)
+        }
+        return value
     }
 
     private static func format(_ value: String) -> String {

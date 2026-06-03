@@ -4832,7 +4832,6 @@ enum PilotDeckConfigDefaults {
         tools:
           webSearch:
             provider: glm
-            apiKey: ""
             endpoint: https://api.z.ai/api/paas/v4/web_search
             timeoutMs: 30000
             organicLimit: 8
@@ -4842,7 +4841,6 @@ enum PilotDeckConfigDefaults {
               method: POST
               queryParam: query
               apiKeyParam: api_key
-              resultsPath: ""
               titleField: title
               urlField: url
               snippetField: snippet
@@ -5237,7 +5235,6 @@ enum NativeConfigService {
             "tools:",
             "  webSearch:",
             "    provider: \(yamlScalar(values["tools.webSearch.provider"] ?? "glm"))",
-            "    apiKey: \(yamlScalar(values["tools.webSearch.apiKey"] ?? ""))",
             "    endpoint: \(yamlScalar(values["tools.webSearch.endpoint"] ?? "https://api.z.ai/api/paas/v4/web_search"))",
             "router:",
             "  enabled: \(values["router.enabled"] ?? "false")",
@@ -5267,8 +5264,12 @@ enum NativeConfigService {
             "  runtimePaths:",
             "    generalCwd: \(yamlScalar(values["gateway.runtimePaths.generalCwd"]?.nilIfBlankOrConfigNull ?? "~/PilotDeck/general"))",
             "    generalJsonl: \(yamlScalar(values["gateway.runtimePaths.generalJsonl"] ?? "~/.pilotdeck/projects/-Users-\(userName)-PilotDeck-general/*.jsonl"))",
-            "customEnv: {}",
         ])
+
+        if let webSearchAPIKey = values["tools.webSearch.apiKey"]?.nilIfBlank {
+            let insertIndex = lines.firstIndex(of: "    endpoint: \(yamlScalar(values["tools.webSearch.endpoint"] ?? "https://api.z.ai/api/paas/v4/web_search"))") ?? lines.count
+            lines.insert("    apiKey: \(yamlScalar(webSearchAPIKey))", at: insertIndex)
+        }
 
         return lines.joined(separator: "\n") + "\n"
     }
@@ -5333,9 +5334,12 @@ enum NativeConfigService {
     static func scalarMap(from yaml: String) -> [String: String] {
         var result: [String: String] = [:]
         var stack: [(indent: Int, key: String)] = []
+        let lines = yaml
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
 
-        for rawLine in yaml.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(rawLine)
+        for index in lines.indices {
+            let line = lines[index]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#"), !trimmed.hasPrefix("- ") else { continue }
             let indent = line.prefix { $0 == " " }.count
@@ -5346,15 +5350,59 @@ enum NativeConfigService {
             let key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespaces)
             let rawValue = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty else { continue }
+            let path = (stack.map(\.key) + [key]).joined(separator: ".")
             if rawValue.isEmpty {
+                if let sequence = stringSequenceValue(after: index, in: lines, parentIndent: indent) {
+                    result[path] = sequence.joined(separator: "\n")
+                    continue
+                }
                 stack.append((indent, key))
                 continue
             }
-            let path = (stack.map(\.key) + [key]).joined(separator: ".")
-            result[path] = normalizeScalar(rawValue)
+            if rawValue == "[]" {
+                result[path] = ""
+            } else if rawValue.hasPrefix("["), rawValue.hasSuffix("]") {
+                result[path] = parseInlineStringArray(rawValue).joined(separator: "\n")
+            } else {
+                result[path] = normalizeScalar(rawValue)
+            }
         }
 
         return normalizedScalarMap(result)
+    }
+
+    private static func stringSequenceValue(after index: Int, in lines: [String], parentIndent: Int) -> [String]? {
+        var values: [String] = []
+        var sawChild = false
+        var current = index + 1
+        while current < lines.count {
+            let line = lines[current]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") {
+                current += 1
+                continue
+            }
+            let indent = line.prefix { $0 == " " }.count
+            if indent <= parentIndent { break }
+            sawChild = true
+            guard trimmed.hasPrefix("- ") else { return nil }
+            let rawValue = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            values.append(normalizeScalar(rawValue))
+            current += 1
+        }
+        return sawChild ? values : nil
+    }
+
+    private static func parseInlineStringArray(_ rawValue: String) -> [String] {
+        let body = rawValue
+            .dropFirst()
+            .dropLast()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return [] }
+        return body
+            .split(separator: ",")
+            .map { normalizeScalar(String($0).trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { !$0.isEmpty }
     }
 
     private static func normalizedScalarMap(_ values: [String: String]) -> [String: String] {
