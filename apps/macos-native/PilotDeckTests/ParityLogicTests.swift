@@ -1211,6 +1211,11 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(NativeMemoryConfigFormFields.visiblePaths.contains("memory.heartbeatBatchSize"))
     }
 
+    func testNativeMemorySettingsTransferActionsIncludeClear() {
+        XCTAssertEqual(NativeMemorySettingsTransferActions.currentProject, ["import", "export", "clear"])
+        XCTAssertEqual(NativeMemorySettingsTransferActions.allMemory, ["import", "export", "clear"])
+    }
+
     func testNativeAlwaysOnConfigFormFieldsMatchWebSettingsTab() {
         XCTAssertEqual(NativeAlwaysOnConfigFormFields.visiblePaths, [
             "alwaysOn.enabled",
@@ -4164,6 +4169,17 @@ final class ParityLogicTests: XCTestCase {
         """.write(to: projectMemoryRoot.appendingPathComponent("Dream/memory-dream-20260529-120000.md"), atomically: true, encoding: .utf8)
         try """
         ---
+        name: Project Dream 20260529-120001
+        description: Old native synthetic dream artifact.
+        type: project
+        scope: project
+        updated_at: 2026-05-23T07:31:00Z
+        ---
+
+        Legacy project-dream artifacts should be ignored by the native loader.
+        """.write(to: projectMemoryRoot.appendingPathComponent("Dream/project-dream-20260529-120001.md"), atomically: true, encoding: .utf8)
+        try """
+        ---
         name: User Profile
         description: User prefers concise engineering updates.
         type: user
@@ -4319,6 +4335,76 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(snapshot.workspace.manifestContent.contains("Project/imported-memory.md"))
     }
 
+    func testMemoryClearCurrentProjectRemovesNativeAndProjectLocalFiles() throws {
+        let root = repoRootURL()
+            .appendingPathComponent("pilotdeck-memory-clear-current-\(UUID().uuidString)", isDirectory: true)
+        let projectRoot = root.appendingPathComponent("project", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("pilotdeck-memory", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspaceHash = MemoryService.pilotDeckWorkspaceHash(for: projectRoot.standardizedFileURL.path)
+        let nativeFile = memoryRoot
+            .appendingPathComponent("workspaces", isDirectory: true)
+            .appendingPathComponent(workspaceHash, isDirectory: true)
+            .appendingPathComponent("memory/Project/native.md")
+        let localFile = projectRoot
+            .appendingPathComponent(".pilotdeck/memory/Project/local.md")
+        let globalFile = memoryRoot
+            .appendingPathComponent("global/UserIdentity/profile.md")
+        for file in [nativeFile, localFile, globalFile] {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "memory".write(to: file, atomically: true, encoding: .utf8)
+        }
+
+        let service = MemoryService(memoryRoot: memoryRoot)
+        service.loadWorkspaceRecords(projectRoot: projectRoot.path, projectName: "Native")
+        service.clear(projectName: "Native", projectRoot: projectRoot.path)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: nativeFile.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: globalFile.path))
+    }
+
+    func testMemoryClearAllRemovesGlobalNativeAndKnownProjectLocalFiles() throws {
+        let root = repoRootURL()
+            .appendingPathComponent("pilotdeck-memory-clear-all-\(UUID().uuidString)", isDirectory: true)
+        let projectRoot = root.appendingPathComponent("project", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("pilotdeck-memory", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspaceHash = MemoryService.pilotDeckWorkspaceHash(for: projectRoot.standardizedFileURL.path)
+        let nativeFile = memoryRoot
+            .appendingPathComponent("workspaces", isDirectory: true)
+            .appendingPathComponent(workspaceHash, isDirectory: true)
+            .appendingPathComponent("memory/Project/native.md")
+        let localFile = projectRoot
+            .appendingPathComponent(".pilotdeck/memory/Project/local.md")
+        let globalFile = memoryRoot
+            .appendingPathComponent("global/UserIdentity/profile.md")
+        for file in [nativeFile, localFile, globalFile] {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "memory".write(to: file, atomically: true, encoding: .utf8)
+        }
+
+        let service = MemoryService(memoryRoot: memoryRoot)
+        service.updateWorkspaceCatalog([
+            MemoryWorkspaceCatalogEntry(
+                projectName: "Native",
+                displayName: "Native",
+                rootPath: projectRoot.path,
+                isGeneral: false
+            )
+        ])
+        service.loadWorkspaceRecords(projectRoot: projectRoot.path, projectName: "Native")
+        service.clear(projectName: nil, projectRoot: nil)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: nativeFile.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localFile.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: globalFile.path))
+    }
+
     func testMemoryImportRejectsUnsafeSnapshotPaths() throws {
         let root = repoRootURL()
             .appendingPathComponent("pilotdeck-memory-unsafe-\(UUID().uuidString)", isDirectory: true)
@@ -4360,16 +4446,18 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertEqual(snapshot.dreamTraceRecords.count, 1)
         XCTAssertEqual(snapshot.lastDreamSnapshot?.rollbackReady, true)
-        let dreamRecord = try XCTUnwrap(snapshot.records.first { $0.name.hasPrefix("Project Dream") })
-        XCTAssertTrue(dreamRecord.relativePath.hasPrefix("Project/Dream/"))
-        let files = try FileManager.default.subpathsOfDirectory(atPath: memoryRoot.path)
-        XCTAssertTrue(files.contains { $0.hasSuffix(dreamRecord.relativePath) })
+        let files = FileManager.default.fileExists(atPath: memoryRoot.path)
+            ? (try FileManager.default.subpathsOfDirectory(atPath: memoryRoot.path))
+            : []
+        XCTAssertFalse(snapshot.records.contains { $0.name.hasPrefix("Project Dream") })
+        XCTAssertFalse(snapshot.records.contains { $0.relativePath.hasPrefix("Project/Dream/") })
+        XCTAssertFalse(files.contains { $0.contains("project-dream-") })
 
         snapshot = try service.rollbackLastDream(projectName: "Native", projectRoot: projectRoot.path)
 
         XCTAssertEqual(snapshot.dreamTraceRecords.count, 2)
         XCTAssertEqual(snapshot.lastDreamSnapshot?.rollbackReady, false)
-        XCTAssertFalse(snapshot.records.contains { $0.relativePath == dreamRecord.relativePath })
+        XCTAssertFalse(snapshot.records.contains { $0.name.hasPrefix("Project Dream") })
 
         let exported = try service.exportBundle(projectName: "Native")
         let imported = MemoryService()
@@ -4476,6 +4564,351 @@ final class ParityLogicTests: XCTestCase {
         files = try FileManager.default.subpathsOfDirectory(atPath: memoryRoot.path)
         XCTAssertTrue(files.contains { $0.hasSuffix(record.relativePath) })
         XCTAssertEqual(indexed.indexTraceRecords.first?.reply, "Indexed 1 memory records.")
+    }
+
+    @MainActor
+    func testMemoryGeneralRecallCombinesExternalProjectAndGeneralOverlay() async throws {
+        let root = repoRootURL()
+            .appendingPathComponent("pilotdeck-memory-general-overlay-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
+        let generalRoot = root.appendingPathComponent("general", isDirectory: true)
+        let projectRoot = root.appendingPathComponent("saas-pricing", isDirectory: true)
+        try FileManager.default.createDirectory(at: generalRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let service = MemoryService(memoryRoot: memoryRoot)
+        service.updateWorkspaceCatalog([
+            MemoryWorkspaceCatalogEntry(projectName: "general", displayName: "general", rootPath: generalRoot.path, isGeneral: true),
+            MemoryWorkspaceCatalogEntry(projectName: "SaaS Pricing Rewrite", displayName: "SaaS Pricing Rewrite", rootPath: projectRoot.path, isGeneral: false)
+        ])
+
+        let projectSession = "saas-project-session"
+        let projectUser = ChatMessage(
+            id: UUID(),
+            sessionId: projectSession,
+            provider: .pilotDeck,
+            role: .user,
+            blocks: [.text("记住 SaaS Pricing Rewrite 项目：CTA 不要用 立即购买，优先写 draft.md，不要编辑 .gitignore。")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+        let projectAssistant = ChatMessage(
+            id: UUID(),
+            sessionId: projectSession,
+            provider: .pilotDeck,
+            role: .assistant,
+            blocks: [.text("已记录 SaaS Pricing Rewrite 的项目约束。")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+        _ = service.captureTurn(
+            messages: [projectUser, projectAssistant],
+            sessionID: projectSession,
+            projectName: "SaaS Pricing Rewrite",
+            projectRoot: projectRoot.path
+        )
+        _ = try await service.runIndexJob(projectRoot: projectRoot.path, projectName: "SaaS Pricing Rewrite")
+
+        let overlaySession = "general-overlay-session"
+        let overlayUser = ChatMessage(
+            id: UUID(),
+            sessionId: overlaySession,
+            provider: .pilotDeck,
+            role: .user,
+            blocks: [.text("对于 SaaS Pricing Rewrite 这个项目，默认先强调年付节省，不要提永久免费方案。")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+        let overlayAssistant = ChatMessage(
+            id: UUID(),
+            sessionId: overlaySession,
+            provider: .pilotDeck,
+            role: .assistant,
+            blocks: [.text("已把这条 General 覆盖规则挂到 SaaS Pricing Rewrite。")],
+            createdAt: Date(),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+        _ = service.captureTurn(
+            messages: [overlayUser, overlayAssistant],
+            sessionID: overlaySession,
+            projectName: nil,
+            projectRoot: generalRoot.path
+        )
+        let generalIndexed = try await service.runIndexJob(projectRoot: generalRoot.path, projectName: nil)
+        XCTAssertTrue(generalIndexed.workspace.generalProjects.contains { $0.projectName == "SaaS Pricing Rewrite" })
+
+        let recalled = await service.retrieveContextForTurn(
+            query: "请回忆一下 SaaS Pricing Rewrite 的要求",
+            recentMessages: [],
+            sessionID: "general-recall-saas",
+            projectName: nil,
+            projectRoot: generalRoot.path
+        )
+
+        XCTAssertTrue(recalled.injected)
+        XCTAssertTrue(recalled.systemContext.contains("draft.md"))
+        XCTAssertTrue(recalled.systemContext.contains("立即购买"))
+        XCTAssertTrue(recalled.systemContext.contains("年付节省"))
+        XCTAssertTrue(recalled.systemContext.contains("永久免费"))
+        let recallTrace = try XCTUnwrap(service.caseTraces(limit: 1).first)
+        XCTAssertTrue(recallTrace.steps.map(\.id).contains("project_shortlist_built"))
+        XCTAssertTrue(recallTrace.steps.map(\.id).contains("project_selected"))
+
+        service.updateWorkspaceCatalog([
+            MemoryWorkspaceCatalogEntry(projectName: "general", displayName: "general", rootPath: generalRoot.path, isGeneral: true)
+        ])
+        service.loadWorkspaceRecords(projectRoot: generalRoot.path, projectName: nil)
+        let removedProjectDashboard = service.dashboard(projectName: nil, projectRoot: generalRoot.path, isGeneral: true)
+        let localOverlayOnly = try XCTUnwrap(removedProjectDashboard.workspace.generalProjects.first { $0.projectName == "SaaS Pricing Rewrite" })
+        XCTAssertNotEqual(localOverlayOnly.sourceType, "workspace_external")
+        let recalledAfterRemoval = await service.retrieveContextForTurn(
+            query: "请回忆一下 SaaS Pricing Rewrite 的要求",
+            recentMessages: [],
+            sessionID: "general-recall-saas-after-removal",
+            projectName: nil,
+            projectRoot: generalRoot.path
+        )
+        XCTAssertTrue(recalledAfterRemoval.systemContext.contains("年付节省"))
+        XCTAssertFalse(recalledAfterRemoval.systemContext.contains("draft.md"))
+        XCTAssertFalse(recalledAfterRemoval.systemContext.contains("立即购买"))
+    }
+
+    @MainActor
+    func testMemoryFeedbackSpecEndToEndNativeFlow() async throws {
+        let root = repoRootURL()
+            .appendingPathComponent("pilotdeck-memory-feedback-spec-\(UUID().uuidString)", isDirectory: true)
+        let memoryRoot = root.appendingPathComponent("memory-root", isDirectory: true)
+        let generalRoot = root.appendingPathComponent("general", isDirectory: true)
+        let workspaceA = root.appendingPathComponent("memory-test-a", isDirectory: true)
+        let workspaceB = root.appendingPathComponent("memory-test-b", isDirectory: true)
+        try FileManager.default.createDirectory(at: generalRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceB, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let service = MemoryService(memoryRoot: memoryRoot)
+        service.updateWorkspaceCatalog([
+            MemoryWorkspaceCatalogEntry(projectName: "general", displayName: "general", rootPath: generalRoot.path, isGeneral: true),
+            MemoryWorkspaceCatalogEntry(projectName: "Wedding Launch Copy", displayName: "Wedding Launch Copy", rootPath: workspaceA.path, isGeneral: false),
+            MemoryWorkspaceCatalogEntry(projectName: "SaaS Pricing Rewrite", displayName: "SaaS Pricing Rewrite", rootPath: workspaceB.path, isGeneral: false)
+        ])
+
+        func capture(_ text: String, sessionID: String, projectName: String?, projectRoot: URL) {
+            let user = ChatMessage(
+                id: UUID(),
+                sessionId: sessionID,
+                provider: .pilotDeck,
+                role: .user,
+                blocks: [.text(text)],
+                createdAt: Date(),
+                isStreaming: false,
+                tokenBudget: nil
+            )
+            let assistant = ChatMessage(
+                id: UUID(),
+                sessionId: sessionID,
+                provider: .pilotDeck,
+                role: .assistant,
+                blocks: [.text("已记录。")],
+                createdAt: Date(),
+                isStreaming: false,
+                tokenBudget: nil
+            )
+            _ = service.captureTurn(
+                messages: [user, assistant],
+                sessionID: sessionID,
+                projectName: projectName,
+                projectRoot: projectRoot.path
+            )
+        }
+
+        func recall(_ query: String, sessionID: String, projectName: String?, projectRoot: URL) async -> String {
+            let result = await service.retrieveContextForTurn(
+                query: query,
+                recentMessages: [],
+                sessionID: sessionID,
+                projectName: projectName,
+                projectRoot: projectRoot.path
+            )
+            XCTAssertTrue(result.injected, "Expected memory context for query: \(query)")
+            return result.systemContext
+        }
+
+        func assertContainsAll(_ haystack: String, _ needles: [String], file: StaticString = #filePath, line: UInt = #line) {
+            for needle in needles {
+                XCTAssertTrue(haystack.contains(needle), "Expected memory context to contain \(needle). Context:\n\(haystack)", file: file, line: line)
+            }
+        }
+
+        func assertContainsNone(_ haystack: String, _ needles: [String], file: StaticString = #filePath, line: UInt = #line) {
+            for needle in needles {
+                XCTAssertFalse(haystack.contains(needle), "Expected memory context not to contain \(needle). Context:\n\(haystack)", file: file, line: line)
+            }
+        }
+
+        capture(
+            "我叫张三，是婚礼策划师，长期在英国生活，主要服务伦敦和曼城的华人婚礼客户。",
+            sessionID: "global-user-identity",
+            projectName: nil,
+            projectRoot: generalRoot
+        )
+        capture(
+            "我还有一个长期副业，是帮中小商家做小红书获客咨询，平时更关注转化率、标题点击率和内容自然感。",
+            sessionID: "global-user-side-business",
+            projectName: nil,
+            projectRoot: generalRoot
+        )
+        _ = try await service.runIndexJob(projectRoot: generalRoot.path, projectName: nil)
+        _ = await service.runDreamJob(projectName: nil, projectRoot: generalRoot.path)
+
+        var context = await recall(
+            "我是谁，长期在哪里生活，主要服务谁？",
+            sessionID: "recall-global-identity",
+            projectName: nil,
+            projectRoot: generalRoot
+        )
+        assertContainsAll(context, ["张三", "英国", "伦敦", "曼城", "华人婚礼客户"])
+
+        context = await recall(
+            "我还有什么长期副业，平时最关注哪些指标？",
+            sessionID: "recall-global-side-business",
+            projectName: nil,
+            projectRoot: generalRoot
+        )
+        assertContainsAll(context, ["小红书获客咨询", "转化率", "标题点击率", "内容自然感"])
+
+        capture(
+            "这个项目叫 Wedding Launch Copy，目标是给英国华人婚礼客户写小红书获客文案。一期先产出 10 篇模板。当前最大风险是文案太像硬广、缺少真实分享感。",
+            sessionID: "workspace-a-project",
+            projectName: "Wedding Launch Copy",
+            projectRoot: workspaceA
+        )
+        capture(
+            "这个项目里封面标题不要超过 14 个字，语气要像真实新娘分享，避免销售腔。",
+            sessionID: "workspace-a-rules",
+            projectName: "Wedding Launch Copy",
+            projectRoot: workspaceA
+        )
+        _ = try await service.runIndexJob(projectRoot: workspaceA.path, projectName: "Wedding Launch Copy")
+
+        capture(
+            "这个项目叫 SaaS Pricing Rewrite，目标是给 B2B SaaS 官网改写定价页文案。一期先完成 3 个定价方案对比模块。当前最大风险是卖点太泛、没有差异化。",
+            sessionID: "workspace-b-project",
+            projectName: "SaaS Pricing Rewrite",
+            projectRoot: workspaceB
+        )
+        capture(
+            "这个项目里 CTA 不要出现“立即购买”，默认用简洁商务中文；如果要写文件，优先新建 draft.md，不要改动 .gitignore。",
+            sessionID: "workspace-b-rules",
+            projectName: "SaaS Pricing Rewrite",
+            projectRoot: workspaceB
+        )
+        _ = try await service.runIndexJob(projectRoot: workspaceB.path, projectName: "SaaS Pricing Rewrite")
+
+        context = await recall(
+            "这个项目的一期目标、主要风险和标题限制分别是什么？",
+            sessionID: "recall-workspace-a",
+            projectName: "Wedding Launch Copy",
+            projectRoot: workspaceA
+        )
+        assertContainsAll(context, ["10 篇模板", "硬广", "真实分享感", "14 个字"])
+        assertContainsNone(context, ["draft.md", "立即购买"])
+
+        context = await recall(
+            "这个项目的一期目标、主要风险、CTA 限制和文件规范分别是什么？",
+            sessionID: "recall-workspace-b",
+            projectName: "SaaS Pricing Rewrite",
+            projectRoot: workspaceB
+        )
+        assertContainsAll(context, ["3 个定价方案", "卖点太泛", "没有差异化", "立即购买", "draft.md", ".gitignore"])
+        assertContainsNone(context, ["14 个字"])
+
+        context = await recall(
+            "结合我的长期背景和当前项目，给我一句这个项目更适合什么写法。",
+            sessionID: "recall-workspace-a-mix",
+            projectName: "Wedding Launch Copy",
+            projectRoot: workspaceA
+        )
+        assertContainsAll(context, ["婚礼策划师", "英国", "华人婚礼客户", "小红书获客文案", "真实分享", "硬广"])
+
+        context = await recall(
+            "关于 Wedding Launch Copy，这个项目的一期目标、风险和标题限制分别是什么？",
+            sessionID: "recall-general-a",
+            projectName: nil,
+            projectRoot: generalRoot
+        )
+        assertContainsAll(context, ["10 篇模板", "硬广", "14 个字"])
+        assertContainsNone(context, ["draft.md", "立即购买"])
+
+        context = await recall(
+            "关于 SaaS Pricing Rewrite，这个项目的一期目标、CTA 限制和文件操作规范分别是什么？",
+            sessionID: "recall-general-b",
+            projectName: nil,
+            projectRoot: generalRoot
+        )
+        assertContainsAll(context, ["3 个定价方案", "立即购买", "draft.md", ".gitignore"])
+        assertContainsNone(context, ["14 个字"])
+
+        capture(
+            "补充一条长期项目规则：在 SaaS Pricing Rewrite 里，默认先强调年付节省，不要提永久免费方案。记住这条规则。",
+            sessionID: "general-b-overlay",
+            projectName: nil,
+            projectRoot: generalRoot
+        )
+        _ = try await service.runIndexJob(projectRoot: generalRoot.path, projectName: nil)
+
+        context = await recall(
+            "在 SaaS Pricing Rewrite 里默认应该强调什么、不该提什么、CTA 怎么写？",
+            sessionID: "recall-general-b-overlay",
+            projectName: nil,
+            projectRoot: generalRoot
+        )
+        assertContainsAll(context, ["年付节省", "永久免费", "立即购买"])
+        let generalDashboard = service.dashboard(projectName: nil, projectRoot: generalRoot.path, isGeneral: true)
+        let saasProject = try XCTUnwrap(generalDashboard.workspace.generalProjects.first { $0.projectName == "SaaS Pricing Rewrite" })
+        XCTAssertEqual(saasProject.sourceType, "workspace_external")
+
+        context = await recall(
+            "这个项目的一期目标、CTA 限制和文件规范分别是什么？",
+            sessionID: "recall-workspace-b-after-overlay",
+            projectName: "SaaS Pricing Rewrite",
+            projectRoot: workspaceB
+        )
+        assertContainsAll(context, ["3 个定价方案", "立即购买", "draft.md", ".gitignore"])
+        assertContainsNone(context, ["年付节省", "永久免费"])
+
+        capture(
+            "我现在在 General Chat 里开一个新项目，项目名叫 GBX-A 20260423 HoneydewPulse。这个项目目标是给英国奶茶店写小红书获客文案，一期先做 6 篇内容模板。当前最大风险是文案太像广告，缺少真实顾客体验感。",
+            sessionID: "general-local-project",
+            projectName: nil,
+            projectRoot: generalRoot
+        )
+        capture(
+            "GBX-A 20260423 HoneydewPulse 这个项目里，标题不要超过 16 个字，语气要像真实顾客种草，禁止出现“全网最低价”。",
+            sessionID: "general-local-project-rules",
+            projectName: nil,
+            projectRoot: generalRoot
+        )
+        _ = try await service.runIndexJob(projectRoot: generalRoot.path, projectName: nil)
+
+        context = await recall(
+            "关于 GBX-A 20260423 HoneydewPulse，这个项目的一期目标、主要风险和标题限制是什么？",
+            sessionID: "recall-general-local-project",
+            projectName: nil,
+            projectRoot: generalRoot
+        )
+        assertContainsAll(context, ["6 篇内容模板", "太像广告", "真实顾客体验感", "16 个字", "全网最低价"])
+        XCTAssertTrue(
+            service.dashboard(projectName: nil, projectRoot: generalRoot.path, isGeneral: true)
+                .workspace
+                .generalProjects
+                .contains { $0.projectName == "GBX-A 20260423 HoneydewPulse" }
+        )
     }
 
     @MainActor
@@ -4631,7 +5064,9 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(first.jobStates[.dream]?.phase, .completed)
         XCTAssertEqual(first.indexTraceRecords.first?.trigger, "auto")
         XCTAssertEqual(first.dreamTraceRecords.first?.trigger, "auto")
-        XCTAssertTrue(first.records.contains { $0.name.hasPrefix("Project Dream") })
+        XCTAssertFalse(first.records.contains { $0.name.hasPrefix("Project Dream") })
+        XCTAssertFalse(first.records.contains { $0.relativePath.hasPrefix("Project/Dream/") })
+        XCTAssertGreaterThanOrEqual(first.records.count, 2)
 
         let second = await service.runAutomaticJobsIfDue(projectRoot: root.path, projectName: "Native")
         XCTAssertEqual(second.indexTraceRecords.count, first.indexTraceRecords.count)

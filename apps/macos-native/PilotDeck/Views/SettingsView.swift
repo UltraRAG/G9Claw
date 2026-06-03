@@ -1387,6 +1387,14 @@ private struct SettingsContentView: View {
                                 }
                                 .buttonStyle(WebToolbarButtonStyle(isProminent: true))
                                 .disabled(selectedMemoryProjectTarget() == nil)
+
+                                Button(role: .destructive) {
+                                    clearMemory(scope: .currentProject)
+                                } label: {
+                                    Label(local(chinese: "清除", english: "Clear"), systemImage: "trash")
+                                }
+                                .buttonStyle(WebToolbarButtonStyle(tint: DesignTokens.danger))
+                                .disabled(selectedMemoryProjectTarget() == nil)
                             }
                         }
                         SettingsCardDivider()
@@ -1408,6 +1416,13 @@ private struct SettingsContentView: View {
                                     Label(state.t(.exportAction), systemImage: "square.and.arrow.up")
                                 }
                                 .buttonStyle(WebToolbarButtonStyle(isProminent: true))
+
+                                Button(role: .destructive) {
+                                    clearMemory(scope: .allMemory)
+                                } label: {
+                                    Label(local(chinese: "清除", english: "Clear"), systemImage: "trash")
+                                }
+                                .buttonStyle(WebToolbarButtonStyle(tint: DesignTokens.danger))
                             }
                         }
                     }
@@ -3103,6 +3118,50 @@ private struct SettingsContentView: View {
         }
     }
 
+    private func clearMemory(scope: MemorySettingsTransferScope) {
+        guard confirmClearMemory(scope: scope) else { return }
+        switch scope {
+        case .currentProject:
+            guard let target = selectedMemoryProjectTarget() else {
+                state.errorBanner = state.t(.noProjectSelected)
+                return
+            }
+            state.memoryService.clear(projectName: target.projectName, projectRoot: target.rootPath)
+            state.memoryService.loadWorkspaceRecords(projectRoot: target.rootPath, projectName: target.projectName)
+            state.settingsSaveNotice = local(chinese: "当前项目记忆已清除。", english: "Current project memory cleared.")
+        case .allMemory:
+            state.memoryService.clear(projectName: nil, projectRoot: nil)
+            if let target = selectedMemoryProjectTarget() {
+                state.memoryService.loadWorkspaceRecords(projectRoot: target.rootPath, projectName: target.projectName)
+            }
+            state.settingsSaveNotice = local(chinese: "所有记忆已清除。", english: "All memory cleared.")
+        }
+        state.bumpToolRefresh()
+    }
+
+    private func confirmClearMemory(scope: MemorySettingsTransferScope) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        switch scope {
+        case .currentProject:
+            let targetName = selectedMemoryProjectTarget()?.displayName ?? local(chinese: "当前项目", english: "Current Project")
+            alert.messageText = local(chinese: "清除当前项目记忆？", english: "Clear current project memory?")
+            alert.informativeText = local(
+                chinese: "这会删除“\(targetName)”的记忆文件。此操作不能撤销。",
+                english: "This will delete memory files for “\(targetName)”. This action cannot be undone."
+            )
+        case .allMemory:
+            alert.messageText = local(chinese: "清除所有记忆？", english: "Clear all memory?")
+            alert.informativeText = local(
+                chinese: "这会删除用户/全局记忆，以及 PilotDeck 当前已知项目的记忆文件。此操作不能撤销。",
+                english: "This will delete user/global memory and memory files for projects currently known to PilotDeck. This action cannot be undone."
+            )
+        }
+        alert.addButton(withTitle: local(chinese: "清除", english: "Clear"))
+        alert.addButton(withTitle: state.t(.cancel))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     private func memoryBundleScope(from data: Data) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
@@ -3142,6 +3201,11 @@ private struct SettingsContentView: View {
 private enum MemorySettingsTransferScope {
     case currentProject
     case allMemory
+}
+
+enum NativeMemorySettingsTransferActions {
+    static let currentProject = ["import", "export", "clear"]
+    static let allMemory = ["import", "export", "clear"]
 }
 
 private struct MemorySettingsTransferTarget {

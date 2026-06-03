@@ -957,10 +957,14 @@ struct MemoryView: View {
     private var currentSnapshot: MemoryDashboardSnapshot {
         state.memoryService.dashboard(
             query: query,
-            projectName: state.selectedProject?.name,
+            projectName: memoryProjectName,
             projectRoot: state.selectedWorkspaceContext?.rootPath,
             isGeneral: state.selectedWorkspaceContext?.isGeneral == true
         )
+    }
+
+    private var memoryProjectName: String? {
+        state.selectedWorkspaceContext?.isGeneral == true ? nil : state.selectedProject?.name
     }
 
     private var memoryLanguage: ResolvedAppLanguage {
@@ -1050,8 +1054,8 @@ struct MemoryView: View {
             }
             .buttonStyle(MemoryToolbarButtonStyle())
 
-            MemoryJobButton(title: memory("Index", "索引"), systemImage: "arrow.triangle.2.circlepath", state: jobs[.index] ?? .idle(.index), isProminent: false, minWidth: 70) { indexMemory() }
-            MemoryJobButton(title: "Dream", systemImage: "sparkles", state: jobs[.dream] ?? .idle(.dream), isProminent: false, minWidth: 76) { dreamMemory() }
+            MemoryJobButton(title: memory("Index Sync", "同步索引"), systemImage: "arrow.triangle.2.circlepath", state: jobs[.index] ?? .idle(.index), isProminent: false, minWidth: 78) { indexMemory() }
+            MemoryJobButton(title: memory("Memory Dream", "整理记忆"), systemImage: "sparkles", state: jobs[.dream] ?? .idle(.dream), isProminent: false, minWidth: 86) { dreamMemory() }
 
             Menu {
                 Button {
@@ -1297,7 +1301,7 @@ struct MemoryView: View {
         selectedRecord = nil
         let service = state.memoryService
         let projectRoot = state.selectedWorkspaceContext?.rootPath
-        let projectName = state.selectedProject?.name
+        let projectName = memoryProjectName
         Task { @MainActor in
             do {
                 let snapshot = try await service.runIndexJob(projectRoot: projectRoot, projectName: projectName)
@@ -1306,7 +1310,7 @@ struct MemoryView: View {
                 selectedTraceID = traceID
                 traceSubtab = .index
                 subtab = .trace
-                state.statusLine = "Memory index updated"
+                state.statusLine = memory("Memory index updated", "记忆索引已更新")
             } catch {
                 setJob(.index, phase: .failed, message: error.localizedDescription)
                 state.errorBanner = error.localizedDescription
@@ -1322,16 +1326,16 @@ struct MemoryView: View {
 
     private func dreamMemory() {
         guard job(.dream).phase != .running else { return }
-        setJob(.dream, phase: .running, message: memory("Running Memory Dream", "正在运行 Memory Dream"))
+        setJob(.dream, phase: .running, message: memory("Running Memory Dream", "正在整理记忆"))
         let service = state.memoryService
-        let projectName = state.selectedProject?.name
+        let projectName = memoryProjectName
         let projectRoot = state.selectedWorkspaceContext?.rootPath
         Task { @MainActor in
             let snapshot = await service.runDreamJob(projectName: projectName, projectRoot: projectRoot)
             let traceID = snapshot.dreamTraceRecords.first?.id
-            setJob(.dream, phase: .completed, message: "Memory Dream complete", traceID: traceID)
+            setJob(.dream, phase: .completed, message: memory("Memory Dream complete", "记忆整理完成"), traceID: traceID)
             selectedTraceID = traceID
-            state.statusLine = "Memory Dream complete"
+            state.statusLine = memory("Memory Dream complete", "记忆整理完成")
             traceSubtab = .dream
             subtab = .trace
             state.bumpToolRefresh()
@@ -1346,17 +1350,17 @@ struct MemoryView: View {
         ) else { return }
         setJob(.rollback, phase: .running, message: memory("Rolling back Dream", "正在回滚 Dream"))
         let service = state.memoryService
-        let projectName = state.selectedProject?.name
+        let projectName = memoryProjectName
         let projectRoot = state.selectedWorkspaceContext?.rootPath
         Task { @MainActor in
             do {
                 let snapshot = try await service.rollbackDreamJob(projectName: projectName, projectRoot: projectRoot)
                 let traceID = snapshot.dreamTraceRecords.first?.id
-                setJob(.rollback, phase: .completed, message: "Dream rollback complete", traceID: traceID)
+                setJob(.rollback, phase: .completed, message: memory("Dream rollback complete", "Dream 回滚完成"), traceID: traceID)
                 selectedTraceID = traceID
                 traceSubtab = .dream
                 subtab = .trace
-                state.statusLine = "Rolled back the last Dream"
+                state.statusLine = memory("Rolled back the last Dream", "已回滚上一次 Dream")
             } catch {
                 setJob(.rollback, phase: .failed, message: error.localizedDescription)
                 state.errorBanner = error.localizedDescription
@@ -7756,11 +7760,12 @@ private struct RoutingStatCard: View {
 struct WebToolbarButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     var isProminent = false
+    var tint: Color? = nil
 
     func makeBody(configuration: Configuration) -> some View {
         let foreground = isProminent
             ? (isEnabled ? DesignTokens.prominentButtonForeground : DesignTokens.prominentButtonDisabledForeground)
-            : (isEnabled ? DesignTokens.secondaryText : DesignTokens.tertiaryText.opacity(0.72))
+            : (isEnabled ? (tint ?? DesignTokens.secondaryText) : DesignTokens.tertiaryText.opacity(0.72))
 
         configuration.label
             .font(.system(size: 12, weight: .medium))

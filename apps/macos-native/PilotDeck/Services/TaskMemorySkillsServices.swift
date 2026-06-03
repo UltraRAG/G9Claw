@@ -32,6 +32,13 @@ struct MemoryRetrieveResult: Hashable, Codable {
     }
 }
 
+struct MemoryWorkspaceCatalogEntry: Hashable, Codable {
+    var projectName: String
+    var displayName: String
+    var rootPath: String
+    var isGeneral: Bool
+}
+
 final class MemoryService {
     private(set) var records: [MemoryRecord] = []
     private let memoryRoot: URL
@@ -46,6 +53,7 @@ final class MemoryService {
     private var lastIndexedAtByContext: [String: Date] = [:]
     private var lastDreamAtByContext: [String: Date] = [:]
     private var settings = MemorySettingsSnapshot.defaults
+    private var knownWorkspaces: [MemoryWorkspaceCatalogEntry] = []
     private var jobStates: [MemoryJobKind: MemoryJobState] = Dictionary(
         uniqueKeysWithValues: MemoryJobKind.allCases.map { ($0, .idle($0)) }
     )
@@ -83,6 +91,7 @@ final class MemoryService {
         var candidateName: String? = nil
         var candidateDescription: String? = nil
         var candidateBody: String? = nil
+        var targetProjectName: String? = nil
     }
 
     private struct UserIdentityFacts: Hashable {
@@ -104,6 +113,18 @@ final class MemoryService {
         var route: String
         var source: String
         var reason: String
+    }
+
+    struct MemoryDreamCluster: Hashable {
+        var memberRelativePaths: [String]
+        var reason: String
+    }
+
+    struct MemoryDreamRefinement: Hashable {
+        var kind: MemoryRecordType
+        var record: MemoryRecord
+        var sourceRelativePaths: [String]
+        var summary: String
     }
 
     private var extractionRuntime: MemoryExtractionRuntime?
@@ -138,17 +159,35 @@ final class MemoryService {
         return record
     }
 
+    func updateWorkspaceCatalog(_ entries: [MemoryWorkspaceCatalogEntry]) {
+        var seen: Set<String> = []
+        knownWorkspaces = entries.compactMap { entry in
+            let normalizedRoot = URL(fileURLWithPath: NSString(string: entry.rootPath).expandingTildeInPath)
+                .standardizedFileURL
+                .path
+            guard !normalizedRoot.isEmpty, seen.insert(normalizedRoot).inserted else { return nil }
+            return MemoryWorkspaceCatalogEntry(
+                projectName: entry.projectName,
+                displayName: entry.displayName,
+                rootPath: normalizedRoot,
+                isGeneral: entry.isGeneral
+            )
+        }
+    }
+
     func loadWorkspaceRecords(projectRoot: String?, projectName: String?) {
         guard let projectRoot else { return }
         let projectURL = URL(fileURLWithPath: NSString(string: projectRoot).expandingTildeInPath).standardizedFileURL
         let projectLocalMemoryRoot = projectLocalWorkspaceMemoryRoot(for: projectURL.path)
         let nativeWorkspaceMemoryRoot = nativeWorkspaceMemoryRoot(for: projectURL.path)
         let globalMemoryRoot = globalMemoryRoot()
+        let isGeneralContext = projectName == nil
+        let externalRoots = isGeneralContext ? generalReadableMemoryRoots(excluding: projectURL.path) : []
         let roots = uniqueMemoryRoots([
             (root: projectLocalMemoryRoot, relativeRoot: projectURL, projectName: projectName, exposedPrefix: ""),
             (root: nativeWorkspaceMemoryRoot, relativeRoot: nativeWorkspaceMemoryRoot, projectName: projectName, exposedPrefix: ""),
             (root: globalMemoryRoot, relativeRoot: globalMemoryRoot, projectName: nil, exposedPrefix: "global/")
-        ])
+        ] + externalRoots)
         var loaded: [MemoryRecord] = []
         for root in roots {
             guard let enumerator = FileManager.default.enumerator(
@@ -165,11 +204,12 @@ final class MemoryService {
                 let parsed = Self.memoryFile(from: content)
                 let fallbackRelativePath = url.path.replacingOccurrences(of: projectURL.path + "/", with: "")
                 let relativePath = exposedRelativePath(for: url, relativeRoot: root.relativeRoot, fallback: fallbackRelativePath, prefix: root.exposedPrefix)
+                let resolvedProjectName = parsed?.scope == "global" ? nil : (root.projectName ?? parsed?.projectId?.nilIfBlank)
                 var record = MemoryRecord(
                     id: UUID(),
                     name: parsed?.name.nilIfBlank ?? url.deletingPathExtension().lastPathComponent,
                     summary: parsed?.description.nilIfBlank ?? Self.preview(content),
-                    projectName: parsed?.scope == "global" ? nil : root.projectName,
+                    projectName: resolvedProjectName,
                     updatedAt: parsed?.updatedAt ?? values?.contentModificationDate ?? Date(),
                     type: parsed?.type ?? Self.recordType(from: content, fallbackPath: url.path),
                     relativePath: relativePath,
@@ -187,7 +227,13 @@ final class MemoryService {
                 recordFileURLs[recordStorageKey(record)] = url
             }
         }
-        records.removeAll { $0.projectName == projectName || $0.relativePath.hasPrefix("global/") }
+        if isGeneralContext {
+            records.removeAll { record in
+                record.type != .user || record.relativePath.hasPrefix("global/")
+            }
+        } else {
+            records.removeAll { $0.projectName == projectName || $0.relativePath.hasPrefix("global/") }
+        }
         records = merge(loaded, into: records)
     }
 
@@ -201,6 +247,34 @@ final class MemoryService {
         return roots.filter { entry in
             seen.insert(entry.root.standardizedFileURL.path).inserted
         }
+    }
+
+    private func generalReadableMemoryRoots(excluding currentRoot: String) -> [(root: URL, relativeRoot: URL, projectName: String?, exposedPrefix: String)] {
+        let normalizedCurrentRoot = URL(fileURLWithPath: NSString(string: currentRoot).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+        return knownWorkspaces
+            .filter { !$0.isGeneral }
+            .filter { $0.rootPath != normalizedCurrentRoot }
+            .flatMap { entry -> [(root: URL, relativeRoot: URL, projectName: String?, exposedPrefix: String)] in
+                let rootURL = URL(fileURLWithPath: entry.rootPath).standardizedFileURL
+                let projectName = entry.displayName.nilIfBlank ?? entry.projectName
+                let safePrefix = "external/\(Self.memoryFileSlug(projectName))/"
+                return [
+                    (
+                        root: projectLocalWorkspaceMemoryRoot(for: rootURL.path),
+                        relativeRoot: rootURL,
+                        projectName: projectName,
+                        exposedPrefix: safePrefix
+                    ),
+                    (
+                        root: nativeWorkspaceMemoryRoot(for: rootURL.path),
+                        relativeRoot: nativeWorkspaceMemoryRoot(for: rootURL.path),
+                        projectName: projectName,
+                        exposedPrefix: safePrefix
+                    )
+                ]
+            }
     }
 
     private func exposedRelativePath(for url: URL, relativeRoot: URL, fallback: String, prefix: String) -> String {
@@ -283,6 +357,9 @@ final class MemoryService {
             try markPendingTurnIndexed(turn, indexedAt: now)
         }
         if !storedRecords.isEmpty {
+            if let projectName {
+                try? writeProjectMeta(projectRoot: root.path, projectName: projectName, updatedAt: now, records: storedRecords)
+            }
             try? repairManifest(at: nativeWorkspaceMemoryRoot(for: root.path))
         }
         loadWorkspaceRecords(projectRoot: root.path, projectName: projectName)
@@ -517,7 +594,17 @@ final class MemoryService {
         routeDecision: MemoryRecallRouteDecision
     ) -> MemoryRetrieveResult {
         let route = routeDecision.route
-        let scopedRecords = scopedMemoryRecords(route: route, projectName: projectName)
+        var scopedRecords = scopedMemoryRecords(route: route, projectName: projectName)
+        let explicitGeneralProjectName = projectName == nil && (route == "project" || route == "mix")
+            ? explicitGeneralProjectName(in: normalizedQuery, records: scopedRecords)
+            : nil
+        if let explicitGeneralProjectName {
+            scopedRecords = filterGeneralRecords(
+                scopedRecords,
+                forProjectName: explicitGeneralProjectName,
+                route: route
+            )
+        }
         let userProfile = userProfileRecord(in: scopedRecords)
         let selected = selectedMemoryRecords(
             query: normalizedQuery,
@@ -532,6 +619,31 @@ final class MemoryService {
             projectRoot: projectRoot
         )
         let reply = systemContext.isEmpty ? "PilotDeck memory returned no relevant context." : systemContext
+        var steps: [(String, String, String)] = [
+            ("recall_start", "Recall Started", "query=\(String(normalizedQuery.prefix(240))), mode=auto"),
+            ("memory_gate", "Memory Gate", "route=\(route), source=\(routeDecision.source), reason=\(routeDecision.reason), recentMessages=\(recentMessages.count)"),
+            ("user_base_loaded", "User Base Loaded", userBaseTraceDetail(route: route, userProfile: userProfile)),
+            ("manifest_scanned", "Manifest Scanned", "candidates=\(scopedRecords.count), scope=\(recallScopeDescription(route: route, projectName: projectName))")
+        ]
+        if projectName == nil && (route == "project" || route == "mix") {
+            let candidates = generalProjectMetas(from: scopedRecords)
+            let selectedProjects = Set(selected.compactMap { $0.projectName ?? $0.projectId })
+            steps.append((
+                "project_shortlist_built",
+                "Project Shortlist Built",
+                "candidates=\(candidates.map(\.projectName).prefix(12).joined(separator: ", "))"
+            ))
+            steps.append((
+                "project_selected",
+                "Project Selected",
+                explicitGeneralProjectName ?? (selectedProjects.isEmpty ? "none" : selectedProjects.sorted().joined(separator: ", "))
+            ))
+        }
+        steps.append(contentsOf: [
+            ("manifest_selected", "Manifest Selected", "selected=\(selected.count), ids=\(selected.map(\.relativePath).joined(separator: ", "))"),
+            ("files_loaded", "Files Loaded", "requested=\(selected.count), loaded=\(selected.count)"),
+            ("context_rendered", "Context Rendered", contextRenderedTraceDetail(route: route, systemContext: systemContext, selected: selected, userProfile: userProfile))
+        ])
         let trace = makeTrace(
             kind: "recall",
             title: normalizedQuery.isEmpty ? "Memory Recall" : "Recall: \(String(normalizedQuery.prefix(80)))",
@@ -539,15 +651,7 @@ final class MemoryService {
             trigger: "turn_start",
             context: projectRoot ?? projectName ?? "general",
             reply: reply,
-            steps: [
-                ("recall_start", "Recall Started", "query=\(String(normalizedQuery.prefix(240))), mode=auto"),
-                ("memory_gate", "Memory Gate", "route=\(route), source=\(routeDecision.source), reason=\(routeDecision.reason), recentMessages=\(recentMessages.count)"),
-                ("user_base_loaded", "User Base Loaded", userBaseTraceDetail(route: route, userProfile: userProfile)),
-                ("manifest_scanned", "Manifest Scanned", "candidates=\(scopedRecords.count), scope=\(recallScopeDescription(route: route, projectName: projectName))"),
-                ("manifest_selected", "Manifest Selected", "selected=\(selected.count), ids=\(selected.map(\.relativePath).joined(separator: ", "))"),
-                ("files_loaded", "Files Loaded", "requested=\(selected.count), loaded=\(selected.count)"),
-                ("context_rendered", "Context Rendered", contextRenderedTraceDetail(route: route, systemContext: systemContext, selected: selected, userProfile: userProfile))
-            ]
+            steps: steps
         )
         caseTraceRecords.insert(trace, at: 0)
         pendingRetrievals[sessionID] = PendingRetrieval(
@@ -635,9 +739,13 @@ final class MemoryService {
     func clear(projectName: String?, projectRoot: String? = nil) {
         if let projectRoot {
             try? FileManager.default.removeItem(at: nativeWorkspaceMemoryRoot(for: projectRoot))
+            try? FileManager.default.removeItem(at: projectLocalWorkspaceMemoryRoot(for: projectRoot))
         } else if projectName == nil {
             try? FileManager.default.removeItem(at: memoryRoot.appendingPathComponent("workspaces", isDirectory: true))
             try? FileManager.default.removeItem(at: globalMemoryRoot())
+            for workspace in knownWorkspaces {
+                try? FileManager.default.removeItem(at: projectLocalWorkspaceMemoryRoot(for: workspace.rootPath))
+            }
         }
         records.removeAll { projectName == nil || $0.projectName == projectName }
         if projectName == nil {
@@ -708,7 +816,8 @@ final class MemoryService {
         projectName: String?,
         projectRoot: String?,
         trigger: String = "manual",
-        userProfileOverride: MemoryRecord? = nil
+        userProfileOverride: MemoryRecord? = nil,
+        dreamRefinementsOverride: [MemoryDreamRefinement] = []
     ) -> MemoryDashboardSnapshot {
         let scoped = records.filter { projectName == nil || $0.projectName == projectName || $0.projectName == nil }
         let now = Date()
@@ -731,13 +840,6 @@ final class MemoryService {
             rollbackReady: true,
             summary: "Dream prepared from \(projectSources.count) project records and \(userNotes.count) user notes."
         )
-        let summary = projectSources.prefix(12).map { "- \($0.name): \($0.summary)" }.joined(separator: "\n")
-        let dreamRecord = projectSources.count >= 2 ? makeDreamRecord(
-            summary: summary,
-            projectName: projectName,
-            capturedAt: now,
-            sourceCount: projectSources.count
-        ) : nil
         let userProfile = userProfileOverride ?? makeUserProfileRecord(
             existingProfiles: existingProfiles,
             userNotes: userNotes,
@@ -757,9 +859,7 @@ final class MemoryService {
         steps.append((
             "project_cluster_plan",
             "Project Cluster Plan",
-            projectEntries.count >= 2
-                ? "1 project cluster selected for Dream rewrite."
-                : "No project cluster was large enough to rewrite."
+            "\(dreamRefinementsOverride.filter { $0.kind == .project || $0.kind == .generalProjectMeta }.count) project cluster(s) refined; \(projectEntries.count) project header(s) reviewed."
         ))
         steps.append((
             "feedback_header_scan",
@@ -769,10 +869,15 @@ final class MemoryService {
         steps.append((
             "feedback_cluster_plan",
             "Feedback Cluster Plan",
-            feedbackEntries.count >= 2
-                ? "Feedback memories are available for future collaboration-rule consolidation."
-                : "No feedback cluster was large enough to rewrite."
+            "\(dreamRefinementsOverride.filter { $0.kind == .feedback }.count) feedback cluster(s) refined; \(feedbackEntries.count) feedback header(s) reviewed."
         ))
+        for refinement in dreamRefinementsOverride {
+            steps.append((
+                refinement.kind == .feedback ? "feedback_cluster_refine" : "project_cluster_refine",
+                refinement.kind == .feedback ? "Feedback Cluster Refine" : "Project Cluster Refine",
+                "\(refinement.record.relativePath): \(refinement.summary)"
+            ))
+        }
         steps.append((
             "project_meta_review",
             "Project Meta Review",
@@ -792,11 +897,6 @@ final class MemoryService {
             ))
         }
         steps.append((
-            "project_dream",
-                "Project Dream",
-                dreamRecord?.relativePath ?? "No project dream cluster was large enough to rewrite."
-            ))
-        steps.append((
             "manifests_repaired",
             "Manifests Repaired",
             "Memory manifests repaired after Dream mutations."
@@ -804,15 +904,15 @@ final class MemoryService {
         let reply: String
         if let userProfile {
             reply = "Updated \(userProfile.name)."
-        } else if let dreamRecord {
-            reply = dreamRecord.summary
+        } else if !dreamRefinementsOverride.isEmpty {
+            reply = "Dream refined \(dreamRefinementsOverride.count) memory cluster(s)."
         } else {
             reply = "No source records needed Dream rewriting."
         }
         steps.append((
             "dream_finished",
             "Dream Finished",
-            "profileUpdated=\(userProfile == nil ? "no" : "yes"), projectDream=\(dreamRecord == nil ? "no" : "yes")"
+            "profileUpdated=\(userProfile == nil ? "no" : "yes"), refinedClusters=\(dreamRefinementsOverride.count)"
         ))
         let trace = makeTrace(
                 kind: "dream",
@@ -844,17 +944,36 @@ final class MemoryService {
                 AppLog.write("failed to write memory user profile: \(error.localizedDescription)", file: "memory.log")
             }
         }
-        if let dreamRecord {
+        if !dreamRefinementsOverride.isEmpty {
             do {
-                try writeRecordIfPossible(dreamRecord, projectRoot: projectRoot)
-                records.removeAll { $0.relativePath == dreamRecord.relativePath && $0.projectName == dreamRecord.projectName }
-                records.insert(dreamRecord, at: 0)
-                if let url = recordURL(for: dreamRecord, projectRoot: projectRoot) {
-                    recordFileURLs[recordStorageKey(dreamRecord)] = url
-                    try? repairManifest(at: url.deletingLastPathComponent().deletingLastPathComponent())
+                let sourcePaths = Set(dreamRefinementsOverride.flatMap(\.sourceRelativePaths))
+                let sourceRecords = records.filter { record in
+                    sourcePaths.contains(record.relativePath) &&
+                        (projectName == nil || record.projectName == projectName || record.projectName == nil)
+                }
+                for record in sourceRecords {
+                    if let url = recordURL(for: record, projectRoot: projectRoot), FileManager.default.fileExists(atPath: url.path) {
+                        try? FileManager.default.removeItem(at: url)
+                    }
+                    recordFileURLs.removeValue(forKey: recordStorageKey(record))
+                }
+                records.removeAll { record in
+                    sourcePaths.contains(record.relativePath) &&
+                        (projectName == nil || record.projectName == projectName || record.projectName == nil)
+                }
+                for refinement in dreamRefinementsOverride {
+                    try writeRecordIfPossible(refinement.record, projectRoot: projectRoot)
+                    records.removeAll { $0.relativePath == refinement.record.relativePath && $0.projectName == refinement.record.projectName }
+                    records.insert(refinement.record, at: 0)
+                    if let url = recordURL(for: refinement.record, projectRoot: projectRoot) {
+                        recordFileURLs[recordStorageKey(refinement.record)] = url
+                    }
+                }
+                if let projectRoot {
+                    try? repairManifest(at: nativeWorkspaceMemoryRoot(for: projectRoot))
                 }
             } catch {
-                AppLog.write("failed to write memory dream record: \(error.localizedDescription)", file: "memory.log")
+                AppLog.write("failed to write memory dream refinements: \(error.localizedDescription)", file: "memory.log")
             }
         }
         return dashboard(projectName: projectName, projectRoot: projectRoot)
@@ -889,11 +1008,17 @@ final class MemoryService {
             projectName: projectName,
             rewrittenAt: Date()
         )
+        let dreamRefinementsOverride = await makeDreamRefinementsWithModelIfPossible(
+            projectName: projectName,
+            projectRoot: projectRoot,
+            rewrittenAt: Date()
+        )
         let snapshot = runDream(
             projectName: projectName,
             projectRoot: projectRoot,
             trigger: trigger,
-            userProfileOverride: userProfileOverride
+            userProfileOverride: userProfileOverride,
+            dreamRefinementsOverride: dreamRefinementsOverride
         )
         finishJob(.dream, phase: .completed, message: "Memory Dream 完成", traceID: snapshot.dreamTraceRecords.first?.id)
         return dashboard(projectName: projectName, projectRoot: projectRoot, isGeneral: projectName == nil)
@@ -1146,7 +1271,7 @@ final class MemoryService {
         guard let extractionRuntime else { return nil }
         let systemPrompt = [
             "You decide whether the current query should trigger long-term memory recall.",
-            "Return JSON only with fields route and reason.",
+            "Return JSON only with a single field route.",
             "Valid route values: none, user, project, mix.",
             "Use none unless the query clearly needs long-term memory.",
             "Use user only when the query is asking about stable personal identity/background facts about who the user is, such as name, profession, long-term role context, life background, or durable relationships.",
@@ -1157,7 +1282,6 @@ final class MemoryService {
         ].joined(separator: "\n")
         let userPayload: [String: Any] = [
             "query": query,
-            "project": projectName ?? "",
             "recent_messages": recentMessages.suffix(4).map { message in
                 [
                     "role": message.role.rawValue,
@@ -1165,8 +1289,7 @@ final class MemoryService {
                 ]
             }
         ]
-        let payloadData = try JSONSerialization.data(withJSONObject: userPayload, options: [.prettyPrinted, .sortedKeys])
-        let userPrompt = String(data: payloadData, encoding: .utf8) ?? query
+        let userPrompt = try Self.jsonPrompt(userPayload)
         let raw = try await callMemoryModel(runtime: extractionRuntime, systemPrompt: systemPrompt, userPrompt: userPrompt)
         guard let data = Self.extractJSONObject(from: raw).data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1186,16 +1309,21 @@ final class MemoryService {
         }
         let userHints = [
             "profile", "personal background", "who am i", "my name", "i am ", "i'm ",
-            "我是谁", "我叫什么", "我的名字", "我叫", "我是", "姓名", "职业", "身份", "背景"
+            "我是谁", "我叫什么", "我的名字", "我叫", "我是", "姓名", "职业", "身份", "背景",
+            "长期", "副业", "生活", "服务谁", "客户", "关注哪些", "关注什么", "指标"
         ]
         let projectHints = [
             "workspace", "project", "code", "file", "implement", "fix", "debug", "build", "test",
-            "remember", "preference", "prefer", "always", "never", "style", "format",
+            "remember", "recall", "previously", "before", "preference", "prefer", "always", "never", "style", "format",
+            "default", "should", "requirement", "constraint", "cta",
             "工作区", "项目", "代码", "文件", "实现", "修复", "调试", "测试",
-            "记住", "偏好", "习惯", "风格", "回复", "格式", "以后", "不要", "别再"
+            "记住", "回忆", "想起", "之前", "上次", "偏好", "习惯", "风格", "回复", "格式", "以后", "不要", "别再",
+            "默认", "应该", "限制", "规范", "要求"
         ]
         let needsUser = userHints.contains { haystack.contains($0) }
-        let needsProject = projectName != nil && (projectHints.contains { haystack.contains($0) } || !needsUser)
+        let hasProjectHint = projectHints.contains { haystack.contains($0) }
+        let hasExplicitGeneralProject = projectName == nil && inferredTargetProjectName(from: "\(query)\n\(recentText)") != nil
+        let needsProject = projectName != nil ? (hasProjectHint || !needsUser) : (hasProjectHint || hasExplicitGeneralProject)
         if needsUser && needsProject { return "mix" }
         if needsUser { return "user" }
         if needsProject { return "project" }
@@ -1220,6 +1348,62 @@ final class MemoryService {
                 }
             }
             .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func explicitGeneralProjectName(in query: String, records: [MemoryRecord]) -> String? {
+        if let inferred = inferredTargetProjectName(from: query) {
+            return inferred
+        }
+        let normalizedQuery = Self.normalizedProjectMatchKey(query)
+        guard !normalizedQuery.isEmpty else { return nil }
+        return generalProjectMetas(from: records)
+            .map(\.projectName)
+            .sorted { $0.count > $1.count }
+            .first { projectName in
+                let key = Self.normalizedProjectMatchKey(projectName)
+                return !key.isEmpty && normalizedQuery.contains(key)
+            }
+    }
+
+    private func filterGeneralRecords(
+        _ records: [MemoryRecord],
+        forProjectName projectName: String,
+        route: String
+    ) -> [MemoryRecord] {
+        records.filter { record in
+            if record.type == .user || isGlobalMemoryRecord(record) {
+                return route == "mix"
+            }
+            return Self.memoryRecord(record, matchesProjectName: projectName)
+        }
+    }
+
+    private static func memoryRecord(_ record: MemoryRecord, matchesProjectName projectName: String) -> Bool {
+        let target = normalizedProjectMatchKey(projectName)
+        guard !target.isEmpty else { return false }
+        let slug = memoryFileSlug(projectName).lowercased()
+        let candidates = [
+            record.projectName,
+            record.projectId,
+            record.name,
+            record.summary,
+            record.relativePath
+        ].compactMap(\.self)
+        if candidates.contains(where: { normalizedProjectMatchKey($0).contains(target) }) {
+            return true
+        }
+        return !slug.isEmpty && record.relativePath.lowercased().hasPrefix("external/\(slug)/")
+    }
+
+    private static func normalizedProjectMatchKey(_ value: String) -> String {
+        let asciiFolded = value
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .lowercased()
+        let compact = asciiFolded
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return compact.nilIfBlank ?? asciiFolded.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func selectedMemoryRecords(query: String, route: String, records: [MemoryRecord]) -> [MemoryRecord] {
@@ -1342,7 +1526,7 @@ final class MemoryService {
     }
 
     private func isGlobalMemoryRecord(_ record: MemoryRecord) -> Bool {
-        record.scope == "global" || record.projectName == nil || record.relativePath.hasPrefix("global/")
+        record.type == .user || record.scope == "global" || record.relativePath.hasPrefix("global/")
     }
 
     private func capturedMessages(from messages: [ChatMessage]) -> [CapturedMemoryMessage] {
@@ -1436,13 +1620,27 @@ final class MemoryService {
         let normalized = userText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return [] }
         let lower = normalized.lowercased()
+        let targetProjectName = inferredTargetProjectName(from: normalized)
         let identity = extractUserIdentityFacts(from: normalized)
-        if !identity.isEmpty {
+        if !identity.isEmpty || looksLikeUserBackgroundMemory(normalized) {
             return [
                 MemoryClassificationLabel(
                     type: .user,
                     reason: "The user stated durable identity/background facts.",
                     evidence: normalized
+                )
+            ]
+        }
+        if projectName == nil, let targetProjectName, Self.containsAny(lower, [
+            "项目", "工作区", "主题", "规则", "目标", "风险", "限制", "要求", "记住", "记录",
+            "project", "workspace", "topic", "rule", "target", "risk", "requirement", "remember"
+        ]) {
+            return [
+                MemoryClassificationLabel(
+                    type: .generalProjectMeta,
+                    reason: "The user stated a durable General project/topic fact for a named project.",
+                    evidence: normalized,
+                    targetProjectName: targetProjectName
                 )
             ]
         }
@@ -1454,20 +1652,23 @@ final class MemoryService {
                 MemoryClassificationLabel(
                     type: .feedback,
                     reason: "The user gave a durable collaboration preference or delivery rule.",
-                    evidence: normalized
+                    evidence: normalized,
+                    targetProjectName: projectName == nil ? targetProjectName : nil
                 )
             ]
         }
-        if projectName != nil,
-           Self.containsAny(lower, [
-               "记住", "记录", "项目", "工作区", "代码", "需求", "实现", "修复", "测试",
-               "remember", "project", "workspace", "code", "requirement", "implement", "fix", "test"
-           ]) {
+        if Self.containsAny(lower, [
+            "记住", "记录", "项目", "工作区", "代码", "需求", "实现", "修复", "测试",
+            "remember", "project", "workspace", "code", "requirement", "implement", "fix", "test"
+        ]) {
             return [
                 MemoryClassificationLabel(
-                    type: .project,
-                    reason: "The user stated a durable project fact or project-scoped requirement.",
-                    evidence: normalized
+                    type: projectName == nil ? .generalProjectMeta : .project,
+                    reason: projectName == nil
+                        ? "The user stated a durable General project/topic fact."
+                        : "The user stated a durable project fact or project-scoped requirement.",
+                    evidence: normalized,
+                    targetProjectName: projectName == nil ? targetProjectName : nil
                 )
             ]
         }
@@ -1481,53 +1682,102 @@ final class MemoryService {
         projectName: String?
     ) async throws -> [MemoryClassificationLabel] {
         guard let extractionRuntime else { return [] }
-        let assistantMessages = assistantContext
-            .filter { $0.role == ChatRole.assistant.rawValue }
-            .map(\.content)
-            .suffix(3)
-            .joined(separator: "\n\n")
         let systemPrompt = """
-        You are the native PilotDeck memory indexer.
-        Classify exactly one focus user turn into durable memory labels.
-        Return JSON only: {"labels":[{"type":"user|project|feedback","reason":"...","evidence":"..."}]}.
-
-        Rules:
-        - user: stable cross-project identity/background facts about the user, such as name, profession, durable role, life background, or long-term personal context.
-        - project: durable facts or requirements about the current project/workspace.
-        - feedback: durable collaboration preferences, delivery rules, format/style guidance, or process feedback.
-        - Assistant text is context only. Never create memory from content that appears only in assistant text.
-        - Skip ephemeral greetings, one-off questions, and facts that are not useful later.
-        - Do not write the final memory note in this step; only classify and cite evidence from the user turn.
+        You extract long-term memory candidates for one focus conversation turn using recent session context since the last indexing cursor.
+        Return JSON only with an items array.
+        Allowed item.type values: user, feedback, project.
+        Discard anything that is too transient or not useful across future sessions.
+        Use the batch context to interpret ambiguous references in the focus turn, but only emit memories justified by the focus user turn itself.
+        known_projects contains the durable identity of the current workspace project.
+        The assistant replies in the batch context are supporting context only. Never create a memory candidate from assistant wording alone.
+        For user items only keep stable personal identity/background facts or durable relationships. Never place project state, collaboration rules, reply preferences, language choices, style rules, or file boundaries inside user memory.
+        If a first-person statement is really about how the assistant should collaborate, write, format, reply, or operate on files, it is feedback, not user.
+        Global-seeming reply preferences and personal file boundaries still belong to feedback in this runtime. Examples: '默认使用中文输出', '如果有结论先给结论再给细节', '不要改动我的 .gitignore 文件', '我更关心项目进度、风险和上线阻塞点'.
+        If the focus turn tells the assistant how to collaborate, deliver, report, format, or structure outputs, that is feedback, not project.
+        If the focus turn says how outputs should be delivered, such as title count, body order, cover copy, progress update order, or reply structure, you must classify it as feedback rather than project.
+        For feedback items always provide rule, why, and how_to_apply.
+        For feedback items: why means why the user gave this feedback, usually a past incident, strong preference, or explicit dissatisfaction. Do not invent a reason if the transcript does not contain one.
+        For feedback items: how_to_apply means when or where this guidance should be applied, such as during progress updates, reviews, or project replies. Do not restate the rule verbatim if the application context is unclear.
+        If the transcript gives a rule but not enough evidence for why or how_to_apply, return an empty string for those fields.
+        Feedback belongs to the current project workflow; if project_id is unclear you may omit it because the runtime already knows the current project.
+        If the batch context contains the current project identity, you may attach project_id to the feedback item; leaving it empty is also acceptable in current-project mode.
+        If the focus user turn explicitly asks the assistant to remember something long-term, such as '请记住', '帮我记住', or 'remember this', treat that as a stronger signal that durable memory should be extracted.
+        That stronger signal is still based on the raw user text itself. Do not rely on any hidden remember flag or external rule; decide only from the visible transcript content.
+        For project items always prefer name plus description. project_id is optional and only refers to the current project identity when supplied.
+        If you only know the project's human-readable title, put it in name and leave project_id empty.
+        Do not put a human-readable project title only inside project_id.
+        For project items provide stage, decisions, constraints, next_steps, blockers, and absolute-date timeline entries when dates are mentioned. You may omit project_id when the project identity is still unclear.
+        A project-definition turn is about project name, what the project is, its stage, goals, blockers, milestones, or timeline. A delivery rule alone is never a project item.
+        Treat explicit project-definition statements as project memory even without a remember command. Examples: '这个项目先叫 Boreal', '它是一个本地知识库整理工具', '目前还在设计阶段'.
+        Natural follow-up turns can still be project memory even when they do not repeat the project name.
+        If the batch context already contains the current project identity, and the focus turn says things like '这个项目接下来最该补的是...', '这个方向还差...', '先把镜头顺序模板化', or mentions stage, priorities, blockers, constraints, target audience, or content angle, emit a project item for that current project.
+        If known_projects contains the current project identity and the focus turn states current scope, retained tools, risks, blockers, or project follow-up facts without repeating the project name, attach the memory to that current project instead of inventing a new top-level project.
+        Do not require the focus turn to repeat the project name when the batch context already makes the project identity unique.
+        Treat explicit collaboration instructions as feedback. Example: '在这个项目里，每次给我交付时都先给3个标题，再给正文，再给封面文案。'
+        When a transcript names a project, describes what the project is, or states its current stage, emit a project item unless the content is obviously too transient.
+        Do not create placeholder project names like overview, project, or memory-item.
+        Generic anchors such as '这个项目' only become project memory when the batch context provides a unique project identity.
+        If no durable memory should be saved, return {"items":[]}.
         """
         let userPayload: [String: Any] = [
-            "project": projectName ?? "",
-            "focus_user_turn": userText,
-            "assistant_context_only": assistantMessages
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "known_projects": projectName.nilIfBlank.map {
+                [[
+                    "identity_key": $0,
+                    "project_id": $0,
+                    "project_name": $0,
+                    "description": $0,
+                    "scope": "current_workspace",
+                    "updated_at": ISO8601DateFormatter().string(from: Date())
+                ]]
+            } ?? [],
+            "batch_context": assistantContext.suffix(8).map { message in
+                [
+                    "role": message.role,
+                    "content": String(message.content.prefix(260))
+                ]
+            },
+            "focus_user_turn": [
+                [
+                    "role": ChatRole.user.rawValue,
+                    "content": String(userText.prefix(320))
+                ]
+            ]
         ]
-        let payloadData = try JSONSerialization.data(withJSONObject: userPayload, options: [.prettyPrinted, .sortedKeys])
-        let userPrompt = String(data: payloadData, encoding: .utf8) ?? userText
+        let userPrompt = try Self.jsonPrompt(userPayload)
         let raw = try await callMemoryModel(runtime: extractionRuntime, systemPrompt: systemPrompt, userPrompt: userPrompt)
         guard let data = Self.extractJSONObject(from: raw).data(using: .utf8),
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let labels = object["labels"] as? [[String: Any]] else {
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return []
         }
-        return labels.compactMap { item in
+        let rawItems = (object["items"] as? [[String: Any]]) ?? (object["labels"] as? [[String: Any]]) ?? []
+        return rawItems.compactMap { item in
             guard let typeRaw = (item["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-                  let type = MemoryRecordType(rawValue: typeRaw),
-                  type == .user || type == .project || type == .feedback else {
+                  let parsedType = Self.memoryRecordType(typeRaw),
+                  parsedType == .user || parsedType == .project || parsedType == .feedback || parsedType == .generalProjectMeta else {
                 return nil
             }
-            let body = (item["body"] as? String)?.nilIfBlank
+            let type: MemoryRecordType = projectName == nil && parsedType == .project ? .generalProjectMeta : parsedType
             let name = (item["name"] as? String)?.nilIfBlank
+                ?? (item["project_name"] as? String)?.nilIfBlank
+                ?? (item["project_id"] as? String)?.nilIfBlank
             let description = (item["description"] as? String)?.nilIfBlank
+                ?? (item["summary"] as? String)?.nilIfBlank
+                ?? (item["rule"] as? String)?.nilIfBlank
+                ?? (item["profile"] as? String)?.nilIfBlank
+            let body = Self.memoryCandidateMarkdownBody(type: type, item: item, fallback: userText)
+            let targetProjectName = (item["project_name"] as? String)?.nilIfBlank
+                ?? (item["project_id"] as? String)?.nilIfBlank
+                ?? (item["target_project"] as? String)?.nilIfBlank
+                ?? (type == .generalProjectMeta ? name : nil)
             return MemoryClassificationLabel(
                 type: type,
                 reason: (item["reason"] as? String)?.nilIfBlank ?? "Model classified this turn as \(type.rawValue).",
                 evidence: (item["evidence"] as? String)?.nilIfBlank ?? userText,
                 candidateName: name,
                 candidateDescription: description,
-                candidateBody: body
+                candidateBody: body,
+                targetProjectName: targetProjectName
             )
         }
     }
@@ -1606,9 +1856,9 @@ final class MemoryService {
         case .user:
             return makeUserIdentityNote(userText: userText, turn: turn, capturedAt: capturedAt, indexedAt: indexedAt)
         case .feedback:
-            return makeFeedbackMemoryNote(userText: userText, turn: turn, projectName: projectName, capturedAt: capturedAt, indexedAt: indexedAt)
+            return makeFeedbackMemoryNote(userText: userText, turn: turn, projectName: projectName ?? label.targetProjectName, capturedAt: capturedAt, indexedAt: indexedAt)
         case .project, .generalProjectMeta:
-            return makeProjectMemoryNote(userText: userText, turn: turn, projectName: projectName, capturedAt: capturedAt, indexedAt: indexedAt)
+            return makeProjectMemoryNote(userText: userText, turn: turn, projectName: projectName ?? label.targetProjectName, type: label.type, capturedAt: capturedAt, indexedAt: indexedAt)
         }
     }
 
@@ -1628,25 +1878,30 @@ final class MemoryService {
             systemPrompt = """
             Create one durable global user identity/background memory note from the focus user turn.
             Return JSON only: {"name":"...","description":"...","body":"markdown"}.
-            Preserve stable facts such as name, profession, long-term role, life background, or durable relationships.
-            Do not include project tasks, temporary requests, collaboration style preferences, or assistant-only claims.
-            Keep the body concise Markdown; prefer bullets such as **姓名** and **职业** when available.
+            For user items only keep stable personal identity/background facts or durable relationships.
+            Never place project state, collaboration rules, reply preferences, language choices, style rules, or file boundaries inside user memory.
+            If a first-person statement is really about how the assistant should collaborate, write, format, reply, or operate on files, it is feedback, not user.
+            Keep the visible output language aligned with the focus user turn.
+            Keep the body concise Markdown; prefer bullet-list markdown when possible.
             """
         case .feedback:
             systemPrompt = """
             Create one durable collaboration feedback memory note from the focus user turn.
             Return JSON only: {"name":"...","description":"...","body":"markdown"}.
-            Preserve stable preferences about how the assistant should work, answer, format, use tools, or handle future collaboration.
+            Preserve durable collaboration rules only: delivery order, output structure, style constraints, title/body template guidance, and confirmed review preferences.
             Do not include user identity facts or one-off task content unless it is part of a durable collaboration rule.
-            Keep the body concise Markdown.
+            Prefer readable markdown headings such as ## Rule, ## Why, ## How To Apply, ## Notes when useful.
+            Keep the visible output language aligned with the focus user turn.
             """
         case .project, .generalProjectMeta:
             systemPrompt = """
             Create one durable project memory note from the focus user turn.
             Return JSON only: {"name":"...","description":"...","body":"markdown"}.
-            Preserve stable project facts, decisions, requirements, implementation notes, constraints, or current status.
+            Keep durable project facts only: what the project is, stable scope, goals, important progress, blockers, risks, and important decisions.
             Do not include global user identity/background facts unless they are explicitly project-scoped.
-            Keep the body concise Markdown.
+            Do not create placeholder project names like overview, project, or memory-item.
+            Prefer readable markdown headings such as ## Summary, ## Current Stage, ## Constraints, ## Blockers, ## Next Steps, ## Timeline, ## Notes when useful.
+            Keep the visible output language aligned with the focus user turn.
             """
         }
         let assistantContext = turn.messages
@@ -1656,14 +1911,14 @@ final class MemoryService {
             .joined(separator: "\n\n")
         let userPayload: [String: Any] = [
             "project": projectName ?? "",
+            "target_project": label.targetProjectName ?? "",
             "label": label.type.rawValue,
             "classification_reason": label.reason,
             "evidence": label.evidence,
             "focus_user_turn": userText,
             "assistant_context_only": assistantContext
         ]
-        let payloadData = try JSONSerialization.data(withJSONObject: userPayload, options: [.prettyPrinted, .sortedKeys])
-        let userPrompt = String(data: payloadData, encoding: .utf8) ?? userText
+        let userPrompt = try Self.jsonPrompt(userPayload)
         let raw = try await callMemoryModel(runtime: extractionRuntime, systemPrompt: systemPrompt, userPrompt: userPrompt)
         guard let data = Self.extractJSONObject(from: raw).data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -1679,7 +1934,8 @@ final class MemoryService {
             evidence: label.evidence,
             candidateName: name,
             candidateDescription: description,
-            candidateBody: body
+            candidateBody: body,
+            targetProjectName: label.targetProjectName
         )
         return makeModelMemoryRecord(
             label: modelLabel,
@@ -1703,21 +1959,24 @@ final class MemoryService {
         let description = label.candidateDescription.nilIfBlank ?? String(fallbackText.replacingOccurrences(of: "\n", with: " ").prefix(140))
         let body = label.candidateBody.nilIfBlank ?? fallbackText
         let scope = label.type == .user ? "global" : "project"
+        let targetProjectName = label.type == .user ? nil : (projectName ?? label.targetProjectName?.nilIfBlank ?? name)
         let relativePath: String
         switch label.type {
         case .user:
             relativePath = "global/UserIdentityNotes/\(Self.memoryFileSlug(name))-\(Self.shortHash(fallbackText + turn.sessionID)).md"
         case .feedback:
             relativePath = "Feedback/\(Self.memoryFileSlug(name))-\(Self.shortHash(fallbackText + turn.sessionID)).md"
-        case .project, .generalProjectMeta:
+        case .project:
             relativePath = "Project/\(Self.memoryFileSlug(name))-\(Self.shortHash(fallbackText + turn.sessionID)).md"
+        case .generalProjectMeta:
+            relativePath = "GeneralProjects/\(Self.memoryFileSlug(targetProjectName ?? name))-\(Self.shortHash(fallbackText + turn.sessionID)).md"
         }
         let content = renderMemoryFile(
             name: name,
             description: description,
             type: label.type,
             scope: scope,
-            projectId: label.type == .user ? nil : projectName,
+            projectId: targetProjectName,
             sourceSessionKey: turn.sessionID,
             capturedAt: capturedAt,
             updatedAt: indexedAt,
@@ -1727,14 +1986,14 @@ final class MemoryService {
             id: UUID(),
             name: name,
             summary: description,
-            projectName: label.type == .user ? nil : projectName,
+            projectName: targetProjectName,
             updatedAt: indexedAt,
             type: label.type,
             relativePath: relativePath,
             deprecated: false,
             content: content,
             scope: scope,
-            projectId: label.type == .user ? nil : projectName,
+            projectId: targetProjectName,
             sourceSessionKey: turn.sessionID,
             capturedAt: capturedAt
         )
@@ -1747,11 +2006,12 @@ final class MemoryService {
         indexedAt: Date
     ) -> MemoryRecord? {
         let facts = extractUserIdentityFacts(from: userText)
-        guard !facts.isEmpty else { return nil }
         let namePart = facts.name.nilIfBlank
         let professionPart = facts.profession.nilIfBlank
         let titleFacts = [namePart, professionPart].compactMap(\.self).joined(separator: "，")
-        let title = titleFacts.isEmpty ? "用户身份" : "用户身份：\(titleFacts)"
+        let title = titleFacts.isEmpty
+            ? Self.compactTitle(from: userText, fallback: "用户背景")
+            : "用户身份：\(titleFacts)"
         var bodyLines: [String] = ["## 基本信息", ""]
         if let namePart {
             bodyLines.append("- **姓名**：\(namePart)")
@@ -1759,13 +2019,23 @@ final class MemoryService {
         if let professionPart {
             bodyLines.append("- **职业**：\(professionPart)")
         }
+        if namePart == nil && professionPart == nil {
+            bodyLines.append("- \(userText)")
+        } else {
+            bodyLines.append("")
+            bodyLines.append("## 原始背景")
+            bodyLines.append("")
+            bodyLines.append(userText)
+        }
         let description: String
         if namePart != nil, professionPart != nil {
             description = "记录用户的姓名和职业背景。"
         } else if namePart != nil {
-            description = "记录用户的姓名。"
+            description = "记录用户的姓名与背景：\(String(userText.replacingOccurrences(of: "\n", with: " ").prefix(140)))"
+        } else if professionPart != nil {
+            description = "记录用户的职业背景：\(String(userText.replacingOccurrences(of: "\n", with: " ").prefix(140)))"
         } else {
-            description = "记录用户的职业背景。"
+            description = String(userText.replacingOccurrences(of: "\n", with: " ").prefix(180))
         }
         let content = renderMemoryFile(
             name: title,
@@ -1801,6 +2071,7 @@ final class MemoryService {
         userText: String,
         turn: PendingMemoryTurn,
         projectName: String?,
+        type: MemoryRecordType = .project,
         capturedAt: Date,
         indexedAt: Date
     ) -> MemoryRecord {
@@ -1813,7 +2084,7 @@ final class MemoryService {
         let content = renderMemoryFile(
             name: title,
             description: String(userText.replacingOccurrences(of: "\n", with: " ").prefix(140)),
-            type: .project,
+            type: type,
             scope: "project",
             projectId: projectName,
             sourceSessionKey: turn.sessionID,
@@ -1827,8 +2098,10 @@ final class MemoryService {
             summary: String(userText.replacingOccurrences(of: "\n", with: " ").prefix(180)),
             projectName: projectName,
             updatedAt: indexedAt,
-            type: .project,
-            relativePath: "Project/\(Self.memoryFileSlug(title))-\(Self.shortHash(userText + turn.sessionID)).md",
+            type: type,
+            relativePath: type == .generalProjectMeta
+                ? "GeneralProjects/\(Self.memoryFileSlug(projectName ?? title))-\(Self.shortHash(userText + turn.sessionID)).md"
+                : "Project/\(Self.memoryFileSlug(title))-\(Self.shortHash(userText + turn.sessionID)).md",
             deprecated: false,
             content: content,
             scope: "project",
@@ -1895,7 +2168,7 @@ final class MemoryService {
             "---",
             "name: \(frontmatterSafe(name))",
             "description: \(frontmatterSafe(description))",
-            "type: \(type.rawValue)",
+            "type: \(Self.memoryTypeFrontmatterValue(type))",
             "scope: \(scope)"
         ]
         if let projectId {
@@ -1979,6 +2252,47 @@ final class MemoryService {
             name: Self.cleanedIdentityFact(name),
             profession: Self.cleanedIdentityFact(profession)
         )
+    }
+
+    private func inferredTargetProjectName(from text: String) -> String? {
+        let patterns = [
+            #"项目名(?:叫|是)\s*([^，。,.!！?？\n]{2,96})"#,
+            #"对于\s*([^，。,.!！?？\n]{2,80}?)(?:[，,]\s*)?(?:这个|这一个)?\s*(?:项目|工作区|主题)"#,
+            #"关于\s*([^，。,.!！?？\n]{2,80}?)(?:[，,]\s*)?(?:这个|这一个)?\s*(?:项目|工作区|主题)"#,
+            #"在\s*([^，。,.!！?？\n]{2,80}?)\s*(?:里|中|内)"#,
+            #"^([^，。,.!！?？\n]{2,96}?)\s*(?:这个|这一个)?\s*(?:项目|工作区|主题)\s*(?:里|中|内)"#,
+            #"(?i)(?:for|about)\s+([A-Za-z0-9][A-Za-z0-9 _./:-]{1,80}?)\s+(?:project|workspace|topic)"#
+        ]
+        for pattern in patterns {
+            if let match = Self.firstMatch(pattern: pattern, in: text),
+               let cleaned = Self.cleanedProjectName(match) {
+                return cleaned
+            }
+        }
+        return nil
+    }
+
+    private func looksLikeUserBackgroundMemory(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let firstPerson = lower.contains("我") || lower.contains("my ") || lower.contains("i ")
+        guard firstPerson else { return false }
+        return Self.containsAny(lower, [
+            "长期", "副业", "生活", "服务", "客户", "关注", "指标", "职业", "背景",
+            "long-term", "side business", "live", "serve", "client", "focus", "metric", "background"
+        ])
+    }
+
+    private static func cleanedProjectName(_ value: String?) -> String? {
+        guard var cleaned = value?.trimmingCharacters(in: .whitespacesAndNewlines), !cleaned.isEmpty else {
+            return nil
+        }
+        let suffixes = ["这个", "这一个", "项目", "工作区", "主题", "project", "workspace", "topic"]
+        for suffix in suffixes where cleaned.lowercased().hasSuffix(suffix.lowercased()) {
+            cleaned = String(cleaned.dropLast(suffix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: " ，。,.!！?？；;：:\"'`"))
+        guard cleaned.count >= 2, cleaned.count <= 96 else { return nil }
+        return cleaned
     }
 
     private static func cleanedIdentityFact(_ value: String?) -> String? {
@@ -2067,6 +2381,91 @@ final class MemoryService {
         return String(trimmed[start...end])
     }
 
+    private static func jsonPrompt(_ payload: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private static func stringArray(_ value: Any?, limit: Int) -> [String] {
+        guard limit > 0 else { return [] }
+        if let array = value as? [String] {
+            return Array(array.compactMap(\.nilIfBlank).prefix(limit))
+        }
+        if let array = value as? [Any] {
+            return Array(array.compactMap { ($0 as? String)?.nilIfBlank }.prefix(limit))
+        }
+        if let string = (value as? String)?.nilIfBlank {
+            return [string]
+        }
+        return []
+    }
+
+    private static func memoryCandidateMarkdownBody(
+        type: MemoryRecordType,
+        item: [String: Any],
+        fallback: String
+    ) -> String? {
+        if let body = (item["body"] as? String)?.nilIfBlank {
+            return body
+        }
+        if let markdown = (item["markdown"] as? String)?.nilIfBlank {
+            return markdown
+        }
+        if let content = (item["content"] as? String)?.nilIfBlank {
+            return content
+        }
+        var lines: [String] = []
+        switch type {
+        case .user:
+            if let profile = (item["profile"] as? String)?.nilIfBlank ?? (item["summary"] as? String)?.nilIfBlank {
+                lines.append(contentsOf: ["## 身份背景", "", profile])
+            }
+            let relationships = stringArray(item["relationships"], limit: 10)
+            if !relationships.isEmpty {
+                lines.append(contentsOf: ["", "## Relationships", ""])
+                lines.append(contentsOf: relationships.map { "- \($0)" })
+            }
+        case .feedback:
+            if let rule = (item["rule"] as? String)?.nilIfBlank {
+                lines.append(contentsOf: ["## Rule", "", rule])
+            }
+            if let why = (item["why"] as? String)?.nilIfBlank {
+                lines.append(contentsOf: ["", "## Why", "", why])
+            }
+            if let how = (item["how_to_apply"] as? String)?.nilIfBlank ?? (item["howToApply"] as? String)?.nilIfBlank {
+                lines.append(contentsOf: ["", "## How To Apply", "", how])
+            }
+            let notes = stringArray(item["notes"], limit: 10)
+            if !notes.isEmpty {
+                lines.append(contentsOf: ["", "## Notes", ""])
+                lines.append(contentsOf: notes.map { "- \($0)" })
+            }
+        case .project, .generalProjectMeta:
+            if let stage = (item["stage"] as? String)?.nilIfBlank {
+                lines.append(contentsOf: ["## Current Stage", "", stage])
+            }
+            for (heading, key) in [
+                ("Decisions", "decisions"),
+                ("Constraints", "constraints"),
+                ("Next Steps", "next_steps"),
+                ("Blockers", "blockers"),
+                ("Timeline", "timeline"),
+                ("Notes", "notes")
+            ] {
+                let values = stringArray(item[key], limit: 10)
+                if !values.isEmpty {
+                    lines.append(contentsOf: ["", "## \(heading)", ""])
+                    lines.append(contentsOf: values.map { "- \($0)" })
+                }
+            }
+            if lines.isEmpty, let summary = (item["summary"] as? String)?.nilIfBlank {
+                lines.append(contentsOf: ["## Summary", "", summary])
+            }
+        }
+        let rendered = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return rendered.nilIfBlank ?? fallback.nilIfBlank
+    }
+
     private static func fileTimestamp(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -2133,49 +2532,319 @@ final class MemoryService {
         caseTraceRecords[index] = trace
     }
 
-    private func makeDreamRecord(
-        summary: String,
+    @MainActor
+    private func makeDreamRefinementsWithModelIfPossible(
         projectName: String?,
-        capturedAt: Date,
-        sourceCount: Int
+        projectRoot: String?,
+        rewrittenAt: Date
+    ) async -> [MemoryDreamRefinement] {
+        guard extractionRuntime != nil else { return [] }
+        if let projectRoot {
+            loadWorkspaceRecords(projectRoot: projectRoot, projectName: projectName)
+        }
+        let scoped = records.filter { projectName == nil || $0.projectName == projectName || $0.projectName == nil }
+        let sourceRecords = scoped.filter { record in
+            !record.deprecated &&
+                record.type != .user &&
+                !Self.isDerivedMemoryFile(record.relativePath)
+        }
+        let projectRecords = sourceRecords.filter { $0.type == .project || $0.type == .generalProjectMeta }
+        let feedbackRecords = sourceRecords.filter { $0.type == .feedback }
+        var refinements: [MemoryDreamRefinement] = []
+        refinements.append(contentsOf: await makeDreamRefinementsWithModel(
+            kind: .project,
+            sourceRecords: projectRecords,
+            projectName: projectName,
+            rewrittenAt: rewrittenAt
+        ))
+        refinements.append(contentsOf: await makeDreamRefinementsWithModel(
+            kind: .feedback,
+            sourceRecords: feedbackRecords,
+            projectName: projectName,
+            rewrittenAt: rewrittenAt
+        ))
+        return refinements
+    }
+
+    @MainActor
+    private func makeDreamRefinementsWithModel(
+        kind: MemoryRecordType,
+        sourceRecords: [MemoryRecord],
+        projectName: String?,
+        rewrittenAt: Date
+    ) async -> [MemoryDreamRefinement] {
+        guard sourceRecords.count >= 2 else { return [] }
+        do {
+            let clusters = try await planDreamClustersWithModel(kind: kind, records: sourceRecords)
+            let recordsByPath = Dictionary(uniqueKeysWithValues: sourceRecords.map { ($0.relativePath, $0) })
+            var usedPaths = Set<String>()
+            var refinements: [MemoryDreamRefinement] = []
+            for cluster in clusters {
+                let members = cluster.memberRelativePaths.compactMap { recordsByPath[$0] }
+                guard members.count >= 2, members.allSatisfy({ usedPaths.insert($0.relativePath).inserted }) else {
+                    continue
+                }
+                if let refinement = try await refineDreamClusterWithModel(
+                    kind: kind,
+                    records: members,
+                    reason: cluster.reason,
+                    projectName: projectName,
+                    rewrittenAt: rewrittenAt
+                ) {
+                    refinements.append(refinement)
+                }
+            }
+            return refinements
+        } catch {
+            AppLog.write("memory dream model fallback: \(error.localizedDescription)", file: "memory.log")
+            return []
+        }
+    }
+
+    @MainActor
+    private func planDreamClustersWithModel(
+        kind: MemoryRecordType,
+        records: [MemoryRecord]
+    ) async throws -> [MemoryDreamCluster] {
+        guard let extractionRuntime else { return [] }
+        let payload: [String: Any] = [
+            "headers": records.prefix(200).map { record in
+                [
+                    "relative_path": record.relativePath,
+                    "type": Self.memoryTypeFrontmatterValue(record.type),
+                    "scope": record.scope,
+                    "project_id": record.projectId ?? record.projectName ?? "",
+                    "name": record.name,
+                    "description": record.summary,
+                    "updated_at": ISO8601DateFormatter().string(from: record.updatedAt)
+                ]
+            }
+        ]
+        let raw = try await callMemoryModel(
+            runtime: extractionRuntime,
+            systemPrompt: dreamClusterPlanSystemPrompt(kind: kind),
+            userPrompt: try Self.jsonPrompt(payload)
+        )
+        guard let data = Self.extractJSONObject(from: raw).data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return []
+        }
+        let allowed = Set(records.map(\.relativePath))
+        var used = Set<String>()
+        let rawClusters = object["clusters"] as? [[String: Any]] ?? []
+        return rawClusters.compactMap { item in
+            let paths = Self.stringArray(item["member_relative_paths"], limit: 20)
+                .filter { allowed.contains($0) && used.insert($0).inserted }
+            guard paths.count >= 2 else { return nil }
+            return MemoryDreamCluster(
+                memberRelativePaths: paths,
+                reason: (item["reason"] as? String)?.nilIfBlank ?? "Model selected overlapping memory files."
+            )
+        }
+    }
+
+    @MainActor
+    private func refineDreamClusterWithModel(
+        kind: MemoryRecordType,
+        records: [MemoryRecord],
+        reason: String,
+        projectName: String?,
+        rewrittenAt: Date
+    ) async throws -> MemoryDreamRefinement? {
+        guard let extractionRuntime else { return nil }
+        let payload: [String: Any] = [
+            "cluster_reason": reason,
+            "records": records.map { record in
+                [
+                    "relative_path": record.relativePath,
+                    "type": Self.memoryTypeFrontmatterValue(record.type),
+                    "scope": record.scope,
+                    "project_id": record.projectId ?? record.projectName ?? "",
+                    "name": record.name,
+                    "description": record.summary,
+                    "content": String(Self.bodyWithoutFrontmatter(record.content).prefix(5_000))
+                ]
+            }
+        ]
+        let raw = try await callMemoryModel(
+            runtime: extractionRuntime,
+            systemPrompt: dreamClusterRefineSystemPrompt(kind: kind),
+            userPrompt: try Self.jsonPrompt(payload)
+        )
+        guard let data = Self.extractJSONObject(from: raw).data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let markdown = (object["markdown"] as? String)?.nilIfBlank else {
+            return nil
+        }
+        let description = (object["description"] as? String)?.nilIfBlank
+            ?? (object["summary"] as? String)?.nilIfBlank
+            ?? String(markdown.replacingOccurrences(of: "\n", with: " ").prefix(160))
+        let rawName = (object["name"] as? String)?.nilIfBlank
+        let name = Self.sanitizedDreamRefinementName(
+            rawName,
+            description: description,
+            markdown: markdown,
+            fallback: kind == .feedback ? "Collaboration Rule" : "Project Memory"
+        )
+        let record = makeDreamRefinementRecord(
+            kind: kind,
+            name: name,
+            description: description,
+            markdown: markdown,
+            sourceRecords: records,
+            projectName: projectName,
+            rewrittenAt: rewrittenAt
+        )
+        return MemoryDreamRefinement(
+            kind: kind,
+            record: record,
+            sourceRelativePaths: records.map(\.relativePath),
+            summary: (object["summary"] as? String)?.nilIfBlank ?? description
+        )
+    }
+
+    private func makeDreamRefinementRecord(
+        kind: MemoryRecordType,
+        name: String,
+        description: String,
+        markdown: String,
+        sourceRecords: [MemoryRecord],
+        projectName: String?,
+        rewrittenAt: Date
     ) -> MemoryRecord {
-        let timestamp = ISO8601DateFormatter().string(from: capturedAt)
-        let relativePath = "Project/Dream/project-dream-\(Self.fileTimestamp(capturedAt)).md"
-        let title = "Project Dream \(Self.fileTimestamp(capturedAt))"
-        let content = """
-        ---
-        name: \(frontmatterSafe(title))
-        description: \(frontmatterSafe("Consolidated \(sourceCount) memory records."))
-        type: project
-        scope: project
-        captured_at: \(timestamp)
-        updated_at: \(timestamp)
-        deprecated: false
-        ---
-        # Memory Dream
-
-        - Source records: \(sourceCount)
-        - Captured at: \(timestamp)
-
-        ## Consolidated Notes
-
-        \(summary)
-        """
+        let recordType: MemoryRecordType = kind == .feedback ? .feedback : .project
+        let folder = recordType == .feedback ? "Feedback" : "Project"
+        let sourceKey = sourceRecords.map(\.relativePath).sorted().joined(separator: "|")
+        let body = Self.bodyWithoutFrontmatter(markdown).trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetProjectName = projectName ?? sourceRecords.first?.projectName ?? sourceRecords.first?.projectId
+        let relativePath = "\(folder)/\(Self.memoryFileSlug(name))-\(Self.shortHash(body + sourceKey)).md"
+        let capturedAt = sourceRecords.compactMap(\.capturedAt).min() ?? sourceRecords.map(\.updatedAt).min() ?? rewrittenAt
+        let content = renderMemoryFile(
+            name: name,
+            description: description,
+            type: recordType,
+            scope: "project",
+            projectId: targetProjectName,
+            sourceSessionKey: sourceRecords.compactMap(\.sourceSessionKey).last,
+            capturedAt: capturedAt,
+            updatedAt: rewrittenAt,
+            body: body.nilIfBlank ?? markdown
+        )
         return MemoryRecord(
             id: UUID(),
-            name: title,
-            summary: "Consolidated \(sourceCount) memory records.",
-            projectName: projectName,
-            updatedAt: capturedAt,
-            type: .project,
+            name: name,
+            summary: description,
+            projectName: targetProjectName,
+            updatedAt: rewrittenAt,
+            type: recordType,
             relativePath: relativePath,
             deprecated: false,
             content: content,
             scope: "project",
-            projectId: projectName,
-            sourceSessionKey: nil,
+            projectId: targetProjectName,
+            sourceSessionKey: sourceRecords.compactMap(\.sourceSessionKey).last,
             capturedAt: capturedAt
         )
+    }
+
+    private func dreamClusterPlanSystemPrompt(kind: MemoryRecordType) -> String {
+        let kindLabel = kind == .feedback ? "Feedback" : "Project"
+        let categoryDescription = kind == .feedback
+            ? "Feedback memory files capture durable collaboration rules, delivery rules, style rules, title/body template rules, and confirmed output constraints."
+            : "Project memory files capture durable project facts such as project definition, scope, goals, blockers, risks, and important progress."
+        return """
+        You are the \(kindLabel) Dream cluster planner for a file-memory system.
+
+        Your job is to inspect lightweight header information only and decide which files should be refined together.
+
+        Rules:
+        - Use only the supplied header metadata as evidence.
+        - Do not assume full file contents beyond what the header says.
+        - \(categoryDescription)
+        - Return mutually exclusive candidate clusters only.
+        - A file may appear in at most one cluster.
+        - Only create a cluster when at least two files likely overlap, conflict, or should be merged into one cleaner memory file.
+        - If files are distinct and should remain separate, leave them out of clusters.
+        - Files belonging to the same current project is not, by itself, a merge reason.
+        - Shared workspace, shared project membership, shared domain, or shared topic is not enough unless the headers show concrete semantic overlap, fact conflict, rule duplication, or obvious consolidation value.
+        - Each cluster reason must name the specific overlap, conflict, repeated rule, repeated fact, or consolidation topic that justifies refinement.
+        - Keep reasons concise and specific.
+        - Natural-language output should follow the dominant language already visible in the supplied headers.
+        - Return valid JSON only.
+
+        Use this exact JSON shape:
+        {
+          "summary": "short planning summary",
+          "clusters": [
+            {
+              "member_relative_paths": ["Project/a.md", "Project/b.md"],
+              "reason": "why these files should be refined together"
+            }
+          ]
+        }
+        """
+    }
+
+    private func dreamClusterRefineSystemPrompt(kind: MemoryRecordType) -> String {
+        let kindLabel = kind == .feedback ? "Feedback" : "Project"
+        let categoryInstruction = kind == .feedback
+            ? """
+            Produce exactly one feedback memory file.
+            - Keep durable collaboration rules only: delivery order, output structure, style constraints, title/body template guidance, and confirmed review preferences.
+            - Prefer readable markdown headings such as ## Rule, ## Why, ## How To Apply, ## Notes when useful.
+            """
+            : """
+            Produce exactly one project memory file.
+            - Keep durable project facts only: what the project is, stable scope, goals, important progress, blockers, risks, and important decisions.
+            - Do not reduce the file to a vague status line.
+            - Prefer readable markdown headings such as ## Summary, ## Current Stage, ## Constraints, ## Blockers, ## Next Steps, ## Timeline, ## Notes when useful.
+            """
+        return """
+        You are the \(kindLabel) Dream refine engine for a file-memory system.
+
+        Your job is to merge one cluster of existing memory files into exactly one cleaner memory file.
+
+        Rules:
+        - Use only the supplied full file contents as evidence.
+        - Resolve overlap, deduplicate repeated details, and keep the most useful durable facts.
+        - Do not invent new facts.
+        - Output exactly one refined file.
+        - The visible output language must follow the dominant language already present in the supplied files. If the supplied files are mixed, prefer the dominant language of the cluster.
+        - Apply this language rule consistently to the title/name, description, markdown headings, and markdown body text.
+        - \(categoryInstruction)
+        - Return valid JSON only.
+
+        Use this exact JSON shape:
+        {
+          "summary": "short refine summary",
+          "name": "refined file title",
+          "description": "one-line description",
+          "markdown": "full markdown body"
+        }
+        """
+    }
+
+    private static func sanitizedDreamRefinementName(
+        _ rawName: String?,
+        description: String,
+        markdown: String,
+        fallback: String
+    ) -> String {
+        let candidate = rawName?.nilIfBlank ?? description.nilIfBlank ?? fallback
+        let lowered = candidate.lowercased()
+        let looksSynthetic = lowered.hasPrefix("project dream") ||
+            lowered.hasPrefix("memory dream") ||
+            lowered.range(of: #"^\d{8}-\d{6}$"#, options: .regularExpression) != nil
+        if !looksSynthetic {
+            return String(candidate.prefix(80))
+        }
+        let firstHeading = markdown
+            .split(separator: "\n")
+            .map(String.init)
+            .first { $0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }?
+            .replacingOccurrences(of: "#", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String((firstHeading.nilIfBlank ?? description.nilIfBlank ?? fallback).prefix(80))
     }
 
     private func makeUserProfileRecord(
@@ -2195,7 +2864,10 @@ final class MemoryService {
             facts = mergeIdentityFacts(facts, with: extractUserIdentityFacts(from: combined))
             facts = mergeIdentityFacts(facts, with: factsFromProfileBullets(combined))
         }
-        guard !facts.isEmpty else { return nil }
+        let rawBackgroundNotes = userNotes
+            .map { Self.bodyWithoutFrontmatter($0.content).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !facts.isEmpty || !rawBackgroundNotes.isEmpty else { return nil }
 
         var bodyLines = ["## 身份背景", ""]
         var descriptionParts: [String] = ["身份背景"]
@@ -2206,6 +2878,13 @@ final class MemoryService {
         if let profession = facts.profession.nilIfBlank {
             bodyLines.append("- **职业**：\(profession)")
             descriptionParts.append("职业：\(profession)")
+        }
+        if !rawBackgroundNotes.isEmpty {
+            bodyLines.append("")
+            bodyLines.append("## 补充背景")
+            bodyLines.append("")
+            bodyLines.append(contentsOf: rawBackgroundNotes.prefix(8).map { "- \($0.replacingOccurrences(of: "\n", with: " "))" })
+            descriptionParts.append(String(rawBackgroundNotes.joined(separator: " ").prefix(220)))
         }
         let sourceSession = userNotes.last?.sourceSessionKey
         let capturedAt = userNotes.compactMap(\.capturedAt).last ?? userNotes.last?.updatedAt ?? rewrittenAt
@@ -2253,15 +2932,25 @@ final class MemoryService {
             .filter { $0.type == .user && !$0.deprecated && ($0.relativePath == "global/UserIdentity/user-profile.md" || $0.relativePath.hasSuffix("UserIdentity/user-profile.md")) }
             .sorted { $0.updatedAt < $1.updatedAt }
         let systemPrompt = """
-        You rewrite the stable global user profile from durable user identity notes.
-        Return JSON only: {"description":"short summary","body":"markdown profile"}.
+        You rewrite the single "身份背景" section of a global user profile for a conversational memory system.
 
         Rules:
-        - Preserve durable identity/background facts about the user: name, profession, long-term role, background, stable relationships.
-        - Merge new notes into the existing profile without duplicating facts.
-        - Do not include project-specific tasks, temporary requests, style preferences, or assistant-only claims.
-        - Keep the body concise Markdown. For Chinese identity fields, prefer bullets such as **姓名** and **职业** when available.
-        - If no stable user identity/background facts exist, return {"description":"","body":""}.
+        - Return JSON only.
+        - The existing profile markdown is the previous draft. The incoming user notes are the newest evidence.
+        - Rewrite the section from scratch. Do not append blindly, and do not keep duplicate or near-duplicate facts just because they already exist.
+        - Keep only durable personal identity/background information that should persist across future sessions.
+        - If old profile content conflicts with newer, clearer incoming evidence, prefer the newer evidence and rewrite the section accordingly.
+        - If the incoming evidence only describes reply preferences, formatting habits, style choices, language choices, file/tool boundaries, or project collaboration rules, do not include them in the rewritten section.
+        - Do not include project progress, project-specific collaboration rules, deadlines, blockers, or temporary tasks.
+        - Keep the language aligned with the user's language in the incoming content.
+        - "identity_background_markdown" must contain only the markdown content that belongs under the "## 身份背景" heading.
+        - Do not include the heading itself.
+        - Prefer concise bullet-list markdown when possible.
+
+        Use this exact JSON shape:
+        {
+          "identity_background_markdown": "- ..."
+        }
         """
         let userPayload: [String: Any] = [
             "existing_profile": existingProfiles.map { record in
@@ -2280,16 +2969,20 @@ final class MemoryService {
             }
         ]
         do {
-            let payloadData = try JSONSerialization.data(withJSONObject: userPayload, options: [.prettyPrinted, .sortedKeys])
-            let userPrompt = String(data: payloadData, encoding: .utf8) ?? ""
+            let userPrompt = try Self.jsonPrompt(userPayload)
             let raw = try await callMemoryModel(runtime: extractionRuntime, systemPrompt: systemPrompt, userPrompt: userPrompt)
             guard let data = Self.extractJSONObject(from: raw).data(using: .utf8),
                   let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 return nil
             }
-            let body = (object["body"] as? String)?.nilIfBlank
-            let description = (object["description"] as? String)?.nilIfBlank ?? body.map { String($0.replacingOccurrences(of: "\n", with: " ").prefix(120)) }
-            guard let body, let description else { return nil }
+            let identityMarkdown = (object["identity_background_markdown"] as? String)?.nilIfBlank
+                ?? (object["body"] as? String)?.nilIfBlank
+            guard let identityMarkdown else { return nil }
+            let body = identityMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("## 身份背景")
+                ? identityMarkdown
+                : "## 身份背景\n\n\(identityMarkdown)"
+            let description = (object["description"] as? String)?.nilIfBlank
+                ?? String(identityMarkdown.replacingOccurrences(of: "\n", with: " ").prefix(160))
             let sourceSession = userNotes.last?.sourceSessionKey
             let capturedAt = userNotes.compactMap(\.capturedAt).last ?? userNotes.last?.updatedAt ?? rewrittenAt
             let content = renderMemoryFile(
@@ -2414,23 +3107,64 @@ final class MemoryService {
             updatedAt: active.map(\.updatedAt).max()
         )
         let meta = projectMetaFromFile(projectRoot: projectRoot, fallbackProjectName: projectName, isGeneral: isGeneral) ?? fallbackMeta
+        let generalProjects = isGeneral ? generalProjectMetas(from: workspaceActive) : []
+        let selectedMeta = isGeneral ? (generalProjects.first ?? meta) : meta
         return MemoryWorkspaceSnapshot(
             workspaceMode: isGeneral ? "general" : "project",
             projectPath: projectRoot,
-            selectedProjectId: meta.projectId,
-            selectedProject: meta,
-            generalProjects: isGeneral ? [meta] : [],
-            projectMeta: meta,
+            selectedProjectId: selectedMeta.projectId,
+            selectedProject: selectedMeta,
+            generalProjects: generalProjects,
+            projectMeta: selectedMeta,
             manifestPath: "MEMORY.md",
             manifestContent: manifestContent(projectRoot: projectRoot, records: workspaceActive),
             totalFiles: workspaceActive.count,
-            totalProjects: projectEntries.count,
+            totalProjects: isGeneral ? generalProjects.count : projectEntries.count,
             totalFeedback: feedbackEntries.count,
             projectEntries: projectEntries,
             feedbackEntries: feedbackEntries,
             deprecatedProjectEntries: deprecated.filter { $0.type == .project || $0.type == .generalProjectMeta },
             deprecatedFeedbackEntries: deprecated.filter { $0.type == .feedback }
         )
+    }
+
+    private func generalProjectMetas(from records: [MemoryRecord]) -> [MemoryProjectMeta] {
+        let grouped = Dictionary(grouping: records.filter { $0.type != .user }) { record in
+            (record.projectName ?? record.projectId ?? record.name).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return grouped.compactMap { key, records -> MemoryProjectMeta? in
+            guard !key.isEmpty else { return nil }
+            let sorted = records.sorted { $0.updatedAt > $1.updatedAt }
+            guard let primary = sorted.first else { return nil }
+            let explicitMeta = sorted.first { $0.type == .generalProjectMeta }
+            let workspace = knownWorkspaces.first { entry in
+                entry.displayName.caseInsensitiveCompare(key) == .orderedSame ||
+                    entry.projectName.caseInsensitiveCompare(key) == .orderedSame
+            }
+            let hasExternalRecord = sorted.contains { $0.relativePath.hasPrefix("external/") }
+            let sourceType: String
+            if hasExternalRecord {
+                sourceType = "workspace_external"
+            } else if explicitMeta != nil {
+                sourceType = "general_local"
+            } else {
+                sourceType = "general_topic"
+            }
+            return MemoryProjectMeta(
+                projectId: key,
+                projectName: key,
+                description: explicitMeta?.summary ?? primary.summary,
+                status: "in_progress",
+                workspacePath: workspace?.rootPath,
+                relativePath: explicitMeta?.relativePath ?? primary.relativePath,
+                sourceType: sourceType,
+                readOnly: hasExternalRecord && explicitMeta == nil,
+                updatedAt: sorted.map(\.updatedAt).max()
+            )
+        }
+        .sorted {
+            ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast)
+        }
     }
 
     private func userProfileSummary(from records: [MemoryRecord]) -> String {
@@ -2690,6 +3424,32 @@ final class MemoryService {
         )
     }
 
+    private func writeProjectMeta(projectRoot: String, projectName: String, updatedAt: Date, records: [MemoryRecord]) throws {
+        let root = nativeWorkspaceMemoryRoot(for: projectRoot)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let timestamp = ISO8601DateFormatter().string(from: updatedAt)
+        let description = records
+            .filter { $0.type == .project || $0.type == .generalProjectMeta }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .first?
+            .summary
+            .nilIfBlank ?? "Current project memory."
+        let content = """
+        ---
+        project_id: \(frontmatterSafe(projectName))
+        project_name: \(frontmatterSafe(projectName))
+        description: \(frontmatterSafe(description))
+        status: in_progress
+        workspace_path: \(frontmatterSafe(projectRoot))
+        updated_at: \(timestamp)
+        ---
+
+        ## Summary
+        \(description)
+        """
+        try content.write(to: root.appendingPathComponent("project.meta.md"), atomically: true, encoding: .utf8)
+    }
+
     private func normalizedSnapshotFile(_ file: MemorySnapshotFile, index: Int) throws -> MemorySnapshotFile {
         let raw = file.relativePath.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\\", with: "/")
         if raw.isEmpty || raw.hasPrefix("/") || raw.range(of: #"^[A-Za-z]:"#, options: .regularExpression) != nil {
@@ -2754,7 +3514,7 @@ final class MemoryService {
             projectName: projectName,
             description: values["description"]?.nilIfBlank ?? projectName,
             status: values["status"]?.nilIfBlank ?? "in_progress",
-            workspacePath: projectRoot,
+            workspacePath: values["workspace_path"]?.nilIfBlank ?? projectRoot,
             relativePath: "project.meta.md",
             sourceType: isGeneral ? "general_local" : "workspace",
             readOnly: false,
@@ -2767,7 +3527,8 @@ final class MemoryService {
         return name == "MEMORY.md" ||
             name == "project.meta.md" ||
             name.hasPrefix("turn-") ||
-            name.hasPrefix("memory-dream-")
+            name.hasPrefix("memory-dream-") ||
+            name.hasPrefix("project-dream-")
     }
 
     private static func hasLegacyMultiProjectPath(_ relativePath: String) -> Bool {
@@ -2956,7 +3717,7 @@ final class MemoryService {
         if lower.contains("type: project") { return .project }
         if lower.contains("type: feedback") { return .feedback }
         if lower.contains("type: user") || lower.contains("/user") { return .user }
-        if lower.contains("general_project_meta") { return .generalProjectMeta }
+        if lower.contains("general_project_meta") || lower.contains("generalprojectmeta") { return .generalProjectMeta }
         if lower.contains("feedback") { return .feedback }
         return .project
     }
@@ -3011,12 +3772,21 @@ final class MemoryService {
     }
 
     private static func memoryRecordType(_ raw: String?) -> MemoryRecordType? {
-        switch raw {
+        switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "project": return .project
         case "feedback": return .feedback
         case "user": return .user
-        case "general_project_meta": return .generalProjectMeta
+        case "general_project_meta", "generalprojectmeta": return .generalProjectMeta
         default: return nil
+        }
+    }
+
+    private static func memoryTypeFrontmatterValue(_ type: MemoryRecordType) -> String {
+        switch type {
+        case .project: return "project"
+        case .feedback: return "feedback"
+        case .user: return "user"
+        case .generalProjectMeta: return "general_project_meta"
         }
     }
 

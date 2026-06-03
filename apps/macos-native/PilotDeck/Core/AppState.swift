@@ -562,7 +562,8 @@ final class AppState: ObservableObject {
             return
         }
         lastUserMessageAtByProjectRoot[AlwaysOnService.normalizedProjectRoot(workspacePath)] = Date()
-        memoryProjectNameBySession[sessionID] = selectedProject?.name
+        syncMemoryWorkspaceCatalog()
+        memoryProjectNameBySession[sessionID] = selectedProject.flatMap(memoryProjectName)
         memoryProjectRootBySession[sessionID] = workspacePath
         let nativeConfig = currentNativeConfigSnapshot()
         let basePrompt = agentPrompt(prompt: prompt, attachments: attachments)
@@ -1930,11 +1931,29 @@ final class AppState: ObservableObject {
         project.name == "general" || project.displayName == "general"
     }
 
+    private func memoryProjectName(_ project: WorkspaceProject) -> String? {
+        isGeneralProject(project) ? nil : project.name
+    }
+
+    private func syncMemoryWorkspaceCatalog() {
+        memoryService.updateWorkspaceCatalog(
+            projects.map { project in
+                MemoryWorkspaceCatalogEntry(
+                    projectName: project.name,
+                    displayName: project.displayName,
+                    rootPath: effectiveWorkspacePath(for: project),
+                    isGeneral: isGeneralProject(project)
+                )
+            }
+        )
+    }
+
     func refreshNativeToolData() {
         guard let selectedProject else { return }
         let workspacePath = effectiveWorkspacePath(for: selectedProject)
+        syncMemoryWorkspaceCatalog()
         skillsService.refresh(projectPath: workspacePath, isGeneral: isGeneralProject(selectedProject))
-        memoryService.loadWorkspaceRecords(projectRoot: workspacePath, projectName: selectedProject.name)
+        memoryService.loadWorkspaceRecords(projectRoot: workspacePath, projectName: memoryProjectName(selectedProject))
     }
 
     private func restartMemoryAutomationLoop() {
@@ -1958,11 +1977,12 @@ final class AppState: ObservableObject {
     private func runDueMemoryAutomation() async {
         guard let selectedProject else { return }
         let projectRoot = effectiveWorkspacePath(for: selectedProject)
-        let before = memoryService.automaticJobKindsDue(projectRoot: projectRoot, projectName: selectedProject.name)
+        let projectName = memoryProjectName(selectedProject)
+        let before = memoryService.automaticJobKindsDue(projectRoot: projectRoot, projectName: projectName)
         guard !before.isEmpty else { return }
         let snapshot = await memoryService.runAutomaticJobsIfDue(
             projectRoot: projectRoot,
-            projectName: selectedProject.name
+            projectName: projectName
         )
         if !snapshot.indexTraceRecords.isEmpty || !snapshot.dreamTraceRecords.isEmpty {
             statusLine = t(.memory)
@@ -3461,9 +3481,9 @@ final class AppState: ObservableObject {
 
     private func projectName(forSessionID sessionID: String) -> String? {
         for project in projects where project.allSessions.contains(where: { $0.id == sessionID }) {
-            return project.name
+            return memoryProjectName(project)
         }
-        return selectedProject?.name
+        return selectedProject.flatMap(memoryProjectName)
     }
 
     private func projectRoot(forSessionID sessionID: String) -> String? {
