@@ -1,8 +1,10 @@
+@preconcurrency import AppKit
 import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var state: AppState
     @AppStorage("sidebar-v2-width") private var sidebarWidth = Double(DesignTokens.sidebarDefaultWidth)
+    @State private var isWindowFullScreen = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -15,6 +17,9 @@ struct RootView: View {
         .background {
             AppGlassWindowBackground()
                 .ignoresSafeArea()
+        }
+        .background {
+            WindowFullScreenStateReader(isFullScreen: $isWindowFullScreen)
         }
         .overlay(alignment: .topLeading) {
             if !state.showProjectCreationWizard && !state.showSettings {
@@ -82,7 +87,82 @@ struct RootView: View {
     }
 
     private var sidebarToggleLeadingOffset: CGFloat {
-        DesignTokens.titlebarSidebarButtonLeading
+        isWindowFullScreen
+            ? DesignTokens.titlebarSidebarButtonFullscreenLeading
+            : DesignTokens.titlebarSidebarButtonLeading
+    }
+}
+
+private struct WindowFullScreenStateReader: NSViewRepresentable {
+    @Binding var isFullScreen: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isFullScreen: $isFullScreen)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            context.coordinator.attach(to: view.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            context.coordinator.attach(to: nsView.window)
+        }
+    }
+
+    @MainActor
+    final class Coordinator: @unchecked Sendable {
+        private var isFullScreen: Binding<Bool>
+        private weak var window: NSWindow?
+        private var observers: [NSObjectProtocol] = []
+
+        init(isFullScreen: Binding<Bool>) {
+            self.isFullScreen = isFullScreen
+        }
+
+        deinit {
+            observers.forEach(NotificationCenter.default.removeObserver)
+        }
+
+        func attach(to window: NSWindow?) {
+            guard self.window !== window else {
+                sync()
+                return
+            }
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers.removeAll()
+            self.window = window
+            guard let window else {
+                isFullScreen.wrappedValue = false
+                return
+            }
+
+            let names: [Notification.Name] = [
+                NSWindow.didEnterFullScreenNotification,
+                NSWindow.didExitFullScreenNotification,
+                NSWindow.didResizeNotification,
+            ]
+            observers = names.map { name in
+                NotificationCenter.default.addObserver(
+                    forName: name,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor in
+                        self?.sync()
+                    }
+                }
+            }
+            sync()
+        }
+
+        private func sync() {
+            isFullScreen.wrappedValue = window?.styleMask.contains(.fullScreen) == true
+        }
     }
 }
 

@@ -72,10 +72,12 @@ enum DesignTokens {
     static let sidebarProjectRowHeight: CGFloat = 32
     static let sidebarFooterHeight: CGFloat = 54
     static let titlebarSidebarButtonLeading: CGFloat = 78
+    static let titlebarSidebarButtonFullscreenLeading: CGFloat = 12
     static let titlebarControlSize: CGFloat = 32
     static let titlebarSidebarGlyphSize: CGFloat = 14
     static let titlebarContentReserveWhenSidebarHidden: CGFloat = 120
     static let titlebarControlTop: CGFloat = 4
+    static let trafficLightVerticalAdjustment: CGFloat = 7
 
     static let composerMaxWidth: CGFloat = 688
     static let composerTextMinHeight: CGFloat = 56

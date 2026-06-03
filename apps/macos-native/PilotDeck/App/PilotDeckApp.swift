@@ -331,7 +331,7 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
             guard let button = window.standardWindowButton(buttonType),
                   button.tag != adjustedTag else { continue }
             var frame = button.frame
-            frame.origin.y = max(0, frame.origin.y - DesignTokens.titlebarControlTop)
+            frame.origin.y = max(0, frame.origin.y - DesignTokens.trafficLightVerticalAdjustment)
             button.frame = frame
             button.tag = adjustedTag
         }
