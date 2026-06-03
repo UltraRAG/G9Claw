@@ -1404,10 +1404,9 @@ private struct MessageRow: View {
         guard processSegments.contains(where: \.isProcessSegment) else {
             return AssistantMessagePresentation(processSegments: [], visibleSegments: segments)
         }
-        let visiblePrefix = processSegments.filter(\.isInlineStatusSegment)
         return AssistantMessagePresentation(
             processSegments: processSegments.filter(\.isProcessSegment),
-            visibleSegments: visiblePrefix + Array(segments[finalTextIndex...])
+            visibleSegments: Array(segments[finalTextIndex...])
         )
     }
 
@@ -1715,13 +1714,8 @@ private extension AssistantBlockSegment {
         return false
     }
 
-    var isInlineStatusSegment: Bool {
-        if case .processStatus = self { return true }
-        return false
-    }
-
     var isProcessSegment: Bool {
-        !isTextSegment && !isInlineStatusSegment
+        !isTextSegment
     }
 }
 

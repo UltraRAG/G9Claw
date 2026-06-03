@@ -2823,10 +2823,17 @@ final class AppState: ObservableObject {
                 anchorBlockID: assistantID.uuidString,
                 sessionID: targetSessionID
             )
-        case .compactStarted(_, _):
+        case .compactStarted(let trigger, _):
+            flushPendingAssistantDelta(assistantID: assistantID)
+            upsertContextCompactionStatusBlock(
+                title: contextCompactionStartedTitle(trigger: trigger),
+                kind: contextCompactionStatusKind(trigger: trigger),
+                assistantID: assistantID,
+                sessionID: targetSessionID
+            )
             upsertActivity(
                 id: "compact-\(assistantID.uuidString)",
-                title: settings.language.resolved() == .chineseSimplified ? "正在自动压缩上下文" : "Automatically compacting context",
+                title: contextCompactionStartedTitle(trigger: trigger),
                 detail: "",
                 phase: .status,
                 state: .running,
@@ -2834,11 +2841,16 @@ final class AppState: ObservableObject {
                 sessionID: targetSessionID
             )
         case .compactCompleted(let status, _, let postTokens):
+            flushPendingAssistantDelta(assistantID: assistantID)
+            upsertContextCompactionStatusBlock(
+                title: contextCompactionCompletedTitle(status: status),
+                kind: contextCompactionStatusKind(status: status),
+                assistantID: assistantID,
+                sessionID: targetSessionID
+            )
             guard isContextCompactionFinished(postTokens: postTokens, sessionID: targetSessionID) else {
                 return
             }
-            flushPendingAssistantDelta(assistantID: assistantID)
-            appendContextCompactionStatusBlock(status: status, assistantID: assistantID, sessionID: targetSessionID)
             if let targetSessionID {
                 completeContextCompactionActivities(
                     sessionID: targetSessionID,
@@ -3056,24 +3068,37 @@ final class AppState: ObservableObject {
         streamRenderRevision += 1
     }
 
-    private func appendContextCompactionStatusBlock(status: String, assistantID: UUID, sessionID explicitSessionID: String? = nil) {
+    private func upsertContextCompactionStatusBlock(
+        title: String,
+        kind: ProcessStatusKind,
+        detail: String? = nil,
+        assistantID: UUID,
+        sessionID explicitSessionID: String? = nil
+    ) {
         let sessionID = explicitSessionID ?? assistantSessionByID[assistantID] ?? selectedSessionID
-        let title = contextCompactionCompletedTitle(status: status)
-        let kind = contextCompactionStatusKind(status: status)
         guard let sessionID,
               var messages = messagesBySession[sessionID],
               let index = messages.firstIndex(where: { $0.id == assistantID }) else { return }
-        if case .processStatus(let existing)? = messages[index].blocks.last,
-           existing.kind == kind,
-           existing.title == title {
-            return
+        if let existingIndex = messages[index].blocks.lastIndex(where: { block in
+            if case .processStatus(let existing) = block {
+                return existing.kind == kind
+            }
+            return false
+        }) {
+            if case .processStatus(var existing) = messages[index].blocks[existingIndex] {
+                guard existing.title != title || existing.detail != detail else { return }
+                existing.title = title
+                existing.detail = detail
+                messages[index].blocks[existingIndex] = .processStatus(existing)
+            }
+        } else {
+            messages[index].blocks.append(.processStatus(ProcessStatusBlock(
+                id: "context-\(kind.rawValue)-\(UUID().uuidString)",
+                title: title,
+                detail: detail,
+                kind: kind
+            )))
         }
-        messages[index].blocks.append(.processStatus(ProcessStatusBlock(
-            id: "context-\(kind.rawValue)-\(UUID().uuidString)",
-            title: title,
-            detail: nil,
-            kind: kind
-        )))
         messagesBySession[sessionID] = messages
         streamRenderRevision += 1
     }
@@ -3481,9 +3506,25 @@ final class AppState: ObservableObject {
         return zh ? "上下文压缩已完成" : "Context compaction completed"
     }
 
+    private func contextCompactionStartedTitle(trigger: String) -> String {
+        let zh = settings.language.resolved() == .chineseSimplified
+        if contextCompactionStatusKind(trigger: trigger) == .contextRecovery {
+            return zh ? "正在恢复上下文" : "Recovering context"
+        }
+        return zh ? "正在自动压缩上下文" : "Automatically compacting context"
+    }
+
     private func contextCompactionStatusKind(status: String) -> ProcessStatusKind {
         let normalized = status.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         if normalized.contains("recover") || normalized.contains("恢复") {
+            return .contextRecovery
+        }
+        return .contextCompaction
+    }
+
+    private func contextCompactionStatusKind(trigger: String) -> ProcessStatusKind {
+        let normalized = trigger.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.contains("prompt_too_long") || normalized.contains("recover") || normalized.contains("恢复") {
             return .contextRecovery
         }
         return .contextCompaction
