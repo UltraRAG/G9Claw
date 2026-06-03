@@ -2346,13 +2346,34 @@ enum NativeContextBudget {
 
     static func forceRecover(messages: [[String: Any]], contextWindow: Int) -> NativeContextCompactionResult {
         let before = snapshot(messages: messages, contextWindow: contextWindow)
-        let compacted = snipMiddle(microCompactToolResults(messages, keepRecent: 2), tailCount: 4)
-        let after = snapshot(messages: compacted, contextWindow: contextWindow)
+        let candidates = [
+            (tailCount: 4, summaryCharacters: min(8_000, max(2_000, contextWindow * 2))),
+            (tailCount: 2, summaryCharacters: min(4_000, max(1_200, contextWindow))),
+            (tailCount: 1, summaryCharacters: min(2_000, max(800, contextWindow / 2))),
+            (tailCount: 0, summaryCharacters: min(1_200, max(500, contextWindow / 4))),
+        ]
+        var bestMessages = messages
+        var bestBudget = before
+        for candidate in candidates {
+            let compacted = snipMiddle(
+                microCompactToolResults(messages, keepRecent: max(1, candidate.tailCount)),
+                tailCount: candidate.tailCount,
+                summaryMaxCharacters: candidate.summaryCharacters
+            )
+            let after = snapshot(messages: compacted, contextWindow: contextWindow)
+            if after.used < bestBudget.used {
+                bestMessages = compacted
+                bestBudget = after
+            }
+            if after.used < contextWindow {
+                break
+            }
+        }
         return NativeContextCompactionResult(
-            messages: compacted,
+            messages: bestMessages,
             trigger: "prompt_too_long",
             preTokens: before.used,
-            postTokens: after.used,
+            postTokens: bestBudget.used,
             status: "recovering"
         )
     }
@@ -2371,21 +2392,33 @@ enum NativeContextBudget {
         return preserveToolPairIntegrity(next)
     }
 
-    private static func snipMiddle(_ messages: [[String: Any]], tailCount: Int) -> [[String: Any]] {
+    private static func snipMiddle(
+        _ messages: [[String: Any]],
+        tailCount: Int,
+        summaryMaxCharacters: Int = 10_000
+    ) -> [[String: Any]] {
         guard messages.count > tailCount + 3 else { return messages }
         let systemMessages = messages.prefix { ($0["role"] as? String) == "system" }
         let bodyStart = systemMessages.count
         let body = Array(messages.dropFirst(bodyStart))
-        let tail = validTail(from: body, count: tailCount)
+        let tail = tailCount <= 0 ? [] : validTail(from: body, count: tailCount)
         let droppedMessages = Array(body.prefix(max(0, body.count - tail.count)))
         let summary = [
             "role": "user",
-            "content": localCompactionSummary(droppedMessages: droppedMessages, keptTailCount: tail.count),
+            "content": localCompactionSummary(
+                droppedMessages: droppedMessages,
+                keptTailCount: tail.count,
+                maxCharacters: summaryMaxCharacters
+            ),
         ]
         return Array(systemMessages) + [summary] + tail
     }
 
-    private static func localCompactionSummary(droppedMessages: [[String: Any]], keptTailCount: Int) -> String {
+    private static func localCompactionSummary(
+        droppedMessages: [[String: Any]],
+        keptTailCount: Int,
+        maxCharacters: Int = 10_000
+    ) -> String {
         var toolNamesByID: [String: String] = [:]
         var priorSummaries: [String] = []
         var userRequests: [String] = []
@@ -2437,7 +2470,7 @@ enum NativeContextBudget {
         appendSection(title: "Important tool results and errors", items: toolResults, to: &sections)
         appendSection(title: "Assistant progress and decisions", items: assistantProgress, to: &sections)
         appendSection(title: "Prior compacted context", items: priorSummaries, to: &sections)
-        return clipped(sections.joined(separator: "\n"), maxCharacters: 10_000)
+        return clipped(sections.joined(separator: "\n"), maxCharacters: maxCharacters)
     }
 
     private static func appendSection(title: String, items: [String], to sections: inout [String]) {
@@ -3010,6 +3043,26 @@ struct NativeAgentRuntime: Sendable {
                     total: request.contextWindow,
                     level: postCompactionBudget.level ?? .normal
                 ))
+                if postCompactionBudget.used >= request.contextWindow {
+                    let recoveryItem = await turnController.recordStatus("context recovering")
+                    continuation.yield(.turnItemStarted(recoveryItem))
+                    continuation.yield(.status("context recovering"))
+                    let recovered = NativeContextBudget.forceRecover(messages: messagesForRequest, contextWindow: request.contextWindow)
+                    messages = recovered.messages
+                    compressionState.reset()
+                    budgetTracker.reset()
+                    messagesForRequest = recovered.messages
+                    let recoveredBudget = NativeContextBudget.snapshot(messages: messagesForRequest, contextWindow: request.contextWindow)
+                    continuation.yield(.compactCompleted(status: "recovering", preTokens: postCompactionBudget.used, postTokens: recoveredBudget.used))
+                    continuation.yield(.contextBudget(
+                        used: recoveredBudget.used,
+                        total: request.contextWindow,
+                        level: recoveredBudget.level ?? .recovering
+                    ))
+                    if recoveredBudget.used >= request.contextWindow {
+                        throw ProviderClientError.transport(contextStillTooLargeMessage(request: request, used: recoveredBudget.used, total: request.contextWindow))
+                    }
+                }
             }
 
             let turn: ModelTurn
@@ -3062,6 +3115,19 @@ struct NativeAgentRuntime: Sendable {
                     let recoveryItem = await turnController.recordStatus("context recovering")
                     continuation.yield(.turnItemStarted(recoveryItem))
                     continuation.yield(.status("context recovering"))
+                    if postRecoveryBudget.used >= request.contextWindow {
+                        let recovered = NativeContextBudget.forceRecover(messages: messagesForRequest, contextWindow: request.contextWindow)
+                        messages = recovered.messages
+                        compressionState.reset()
+                        budgetTracker.reset()
+                        messagesForRequest = recovered.messages
+                        let recoveredBudget = NativeContextBudget.snapshot(messages: messagesForRequest, contextWindow: request.contextWindow)
+                        continuation.yield(.compactCompleted(status: "recovering", preTokens: postRecoveryBudget.used, postTokens: recoveredBudget.used))
+                        continuation.yield(.contextBudget(used: recoveredBudget.used, total: request.contextWindow, level: recoveredBudget.level ?? .recovering))
+                        if recoveredBudget.used >= request.contextWindow {
+                            throw ProviderClientError.transport(contextStillTooLargeMessage(request: request, used: recoveredBudget.used, total: request.contextWindow))
+                        }
+                    }
                     continue
                 }
                 throw error
@@ -3456,9 +3522,8 @@ struct NativeAgentRuntime: Sendable {
                 let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: "chat/completions")
                 var urlRequest = URLRequest(url: endpoint)
                 urlRequest.httpMethod = "POST"
-                urlRequest.timeoutInterval = urgent
-                    ? max(30, modelStreamTimeoutInterval(from: request.timeoutMs) / 2)
-                    : modelStreamTimeoutInterval(from: request.timeoutMs)
+                let timeout = compactSummaryTimeoutInterval(from: request.timeoutMs, urgent: urgent)
+                urlRequest.timeoutInterval = timeout
                 try applyHeaders(to: &urlRequest, request: request)
                 urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
 
@@ -3488,8 +3553,13 @@ struct NativeAgentRuntime: Sendable {
 
                 let data: Data
                 let response: URLResponse
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.timeoutIntervalForRequest = timeout
+                configuration.timeoutIntervalForResource = timeout + 5
+                let session = URLSession(configuration: configuration)
+                defer { session.finishTasksAndInvalidate() }
                 do {
-                    (data, response) = try await URLSession.shared.data(for: urlRequest)
+                    (data, response) = try await session.data(for: urlRequest)
                 } catch {
                     throw mapTransportError(error)
                 }
@@ -3520,6 +3590,20 @@ struct NativeAgentRuntime: Sendable {
             }
         }
         throw lastError ?? ProviderClientError.transport("Context compaction summary failed.")
+    }
+
+    private static func compactSummaryTimeoutInterval(from milliseconds: Int, urgent: Bool) -> TimeInterval {
+        let configured = TimeInterval(max(milliseconds, 1_000)) / 1_000.0
+        let cap: TimeInterval = urgent ? 30 : 45
+        return max(12, min(configured, cap))
+    }
+
+    private static func contextStillTooLargeMessage(request: AgentRequest, used: Int, total: Int) -> String {
+        let language = request.nativeConfigValues["app.language"]?.lowercased() ?? ""
+        if language.hasPrefix("zh") {
+            return "自动压缩后上下文仍然过长（\(used)/\(total) tokens）。请调大最大上下文 Tokens、切换到更大上下文模型，或开启新对话继续下一步。"
+        }
+        return "Context is still too large after automatic compaction (\(used)/\(total) tokens). Increase the max context token setting, switch to a larger-context model, or start a new chat for the next step."
     }
 
     private static func chatMessageText(_ message: [String: Any]) -> String {
@@ -4564,7 +4648,7 @@ struct NativeAgentRuntime: Sendable {
         let output = usage["output_tokens"] as? Int ?? usage["completion_tokens"] as? Int ?? 0
         let total = usage["total_tokens"] as? Int ?? input + output
         guard total > 0 else { return nil }
-        let budgetTotal = max(contextWindow, total)
+        let budgetTotal = max(contextWindow, 1)
         return TokenBudget(used: total, total: budgetTotal, level: ContextBudgetLevel.level(used: total, total: budgetTotal))
     }
 

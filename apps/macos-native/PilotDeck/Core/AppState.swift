@@ -566,7 +566,8 @@ final class AppState: ObservableObject {
         memoryProjectRootBySession[sessionID] = workspacePath
         let nativeConfig = currentNativeConfigSnapshot()
         let basePrompt = agentPrompt(prompt: prompt, attachments: attachments)
-        let nativeConfigValues = nativeConfig?.rawValues ?? [:]
+        var nativeConfigValues = nativeConfig?.rawValues ?? [:]
+        nativeConfigValues["app.language"] = settings.language.resolved() == .chineseSimplified ? "zh-CN" : "en"
         let runToken = UUID()
         activeRunToken = runToken
         activeAgentTask = Task { @MainActor [weak self] in
@@ -1701,6 +1702,7 @@ final class AppState: ObservableObject {
         values["alwaysOn.execution.maxTurns"] = String(config.execution.maxTurns)
         values["alwaysOn.execution.maxToolCalls"] = String(config.execution.maxToolCalls)
         values["alwaysOn.execution.timeoutMinutes"] = String(config.execution.timeoutMinutes)
+        values["app.language"] = settings.language.resolved() == .chineseSimplified ? "zh-CN" : "en"
         for (key, value) in extraValues {
             values[key] = value
         }
@@ -2831,10 +2833,22 @@ final class AppState: ObservableObject {
                 anchorBlockID: assistantID.uuidString,
                 sessionID: targetSessionID
             )
-        case .compactCompleted(_, _, _):
+        case .compactCompleted(let status, _, let postTokens):
+            guard isContextCompactionFinished(postTokens: postTokens, sessionID: targetSessionID) else {
+                return
+            }
+            flushPendingAssistantDelta(assistantID: assistantID)
+            appendContextCompactionStatusBlock(status: status, assistantID: assistantID, sessionID: targetSessionID)
+            if let targetSessionID {
+                completeContextCompactionActivities(
+                    sessionID: targetSessionID,
+                    anchorBlockID: assistantID.uuidString,
+                    completedTitle: contextCompactionCompletedTitle(status: status)
+                )
+            }
             upsertActivity(
                 id: "compact-\(assistantID.uuidString)",
-                title: settings.language.resolved() == .chineseSimplified ? "上下文压缩已完成" : "Context compaction completed",
+                title: contextCompactionCompletedTitle(status: status),
                 detail: "",
                 phase: .status,
                 state: .completed,
@@ -3042,6 +3056,37 @@ final class AppState: ObservableObject {
         streamRenderRevision += 1
     }
 
+    private func appendContextCompactionStatusBlock(status: String, assistantID: UUID, sessionID explicitSessionID: String? = nil) {
+        let sessionID = explicitSessionID ?? assistantSessionByID[assistantID] ?? selectedSessionID
+        let title = contextCompactionCompletedTitle(status: status)
+        let kind = contextCompactionStatusKind(status: status)
+        guard let sessionID,
+              var messages = messagesBySession[sessionID],
+              let index = messages.firstIndex(where: { $0.id == assistantID }) else { return }
+        if case .processStatus(let existing)? = messages[index].blocks.last,
+           existing.kind == kind,
+           existing.title == title {
+            return
+        }
+        messages[index].blocks.append(.processStatus(ProcessStatusBlock(
+            id: "context-\(kind.rawValue)-\(UUID().uuidString)",
+            title: title,
+            detail: nil,
+            kind: kind
+        )))
+        messagesBySession[sessionID] = messages
+        streamRenderRevision += 1
+    }
+
+    private func isContextCompactionFinished(postTokens: Int, sessionID: String?) -> Bool {
+        guard let sessionID,
+              let total = tokenBudgetBySession[sessionID]?.total,
+              total > 0 else {
+            return true
+        }
+        return postTokens < total
+    }
+
     private func updateTokenBudget(_ budget: TokenBudget, assistantID: UUID, sessionID explicitSessionID: String? = nil) {
         let sessionID = explicitSessionID ?? assistantSessionByID[assistantID] ?? selectedSessionID
         guard let sessionID else { return }
@@ -3217,6 +3262,23 @@ final class AppState: ObservableObject {
         streamRenderRevision += 1
     }
 
+    private func completeContextCompactionActivities(sessionID: String, anchorBlockID: String?, completedTitle: String) {
+        guard var activities = activitiesBySession[sessionID] else { return }
+        var didUpdate = false
+        for index in activities.indices where activities[index].state == .running && activityMatchesAnchor(activities[index], anchorBlockID: anchorBlockID) {
+            guard isContextCompactionStatusActivity(activities[index]) else { continue }
+            activities[index].title = completedTitle
+            activities[index].detail = ""
+            activities[index].state = .completed
+            activities[index].endedAt = Date()
+            activities[index].updatedAt = Date()
+            didUpdate = true
+        }
+        guard didUpdate else { return }
+        activitiesBySession[sessionID] = activities
+        streamRenderRevision += 1
+    }
+
     private func cancelRunningActivities(sessionID: String, anchorBlockID: String? = nil) {
         guard var activities = activitiesBySession[sessionID] else { return }
         for index in activities.indices where activities[index].state == .running && activityMatchesAnchor(activities[index], anchorBlockID: anchorBlockID) {
@@ -3259,6 +3321,25 @@ final class AppState: ObservableObject {
     private func activityMatchesAnchor(_ activity: AgentActivity, anchorBlockID: String?) -> Bool {
         guard let anchorBlockID else { return true }
         return activity.anchorBlockID == anchorBlockID
+    }
+
+    private func isContextCompactionStatusActivity(_ activity: AgentActivity) -> Bool {
+        guard activity.phase == .status, activity.toolName == nil else { return false }
+        let haystack = "\(activity.id) \(activity.title) \(activity.detail)"
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return haystack.contains("context-compacting") ||
+            haystack.contains("context-recovering") ||
+            haystack.contains("context compacting") ||
+            haystack.contains("context recovering") ||
+            haystack.contains("context compaction") ||
+            haystack.contains("context recovery") ||
+            haystack.contains("automatically compacting context") ||
+            haystack.contains("recovering context") ||
+            haystack.contains("正在自动压缩上下文") ||
+            haystack.contains("正在恢复上下文") ||
+            haystack.contains("上下文压缩中") ||
+            haystack.contains("上下文恢复中")
     }
 
     private func resolveAllPendingPermissions(decision: AgentPermissionDecision) {
@@ -3392,6 +3473,22 @@ final class AppState: ObservableObject {
         return "\(contextBudgetTitle(level)): \(used.formatted()) / \(total.formatted()) tokens (\(percent)%)"
     }
 
+    private func contextCompactionCompletedTitle(status: String) -> String {
+        let zh = settings.language.resolved() == .chineseSimplified
+        if contextCompactionStatusKind(status: status) == .contextRecovery {
+            return zh ? "上下文恢复已完成" : "Context recovery completed"
+        }
+        return zh ? "上下文压缩已完成" : "Context compaction completed"
+    }
+
+    private func contextCompactionStatusKind(status: String) -> ProcessStatusKind {
+        let normalized = status.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.contains("recover") || normalized.contains("恢复") {
+            return .contextRecovery
+        }
+        return .contextCompaction
+    }
+
     private func subagentStatusTitle(_ status: String) -> String {
         let zh = settings.language.resolved() == .chineseSimplified
         switch status.lowercased() {
@@ -3445,6 +3542,8 @@ final class AppState: ObservableObject {
         case "needs continuation": return settings.language.resolved() == .chineseSimplified ? "需要继续" : "Needs continuation"
         case "tool error loop paused": return settings.language.resolved() == .chineseSimplified ? "自动诊断已暂停" : "Automatic diagnostics paused"
         case "executing plan": return settings.language.resolved() == .chineseSimplified ? "正在执行计划" : "Executing plan"
+        case "context compacting": return settings.language.resolved() == .chineseSimplified ? "正在自动压缩上下文" : "Automatically compacting context"
+        case "context recovering": return settings.language.resolved() == .chineseSimplified ? "正在恢复上下文" : "Recovering context"
         case PlanWorkflowPresentation.generatingQuestionStatus:
             return settings.language.resolved() == .chineseSimplified ? "正在生成问题" : "Generating questions"
         case PlanWorkflowPresentation.collectingContextStatus:
@@ -3480,6 +3579,8 @@ final class AppState: ObservableObject {
         case "needs continuation": return settings.language.resolved() == .chineseSimplified ? "自动续跑已暂停。你可以输入“继续”或补充更具体的要求。" : "Automatic continuation paused. Type continue or add more specific instructions to resume."
         case "tool error loop paused": return settings.language.resolved() == .chineseSimplified ? "连续几次工具检查失败，已停止自动重试，避免无意义循环。" : "Repeated tool checks failed, so automatic retries stopped to avoid an unproductive loop."
         case "executing plan": return settings.language.resolved() == .chineseSimplified ? "计划已确认，正在切换到执行。" : "The plan was approved; switching to implementation."
+        case "context compacting": return settings.language.resolved() == .chineseSimplified ? "接近配置上限，正在生成上下文摘要。" : "Near the configured limit; generating a context summary."
+        case "context recovering": return settings.language.resolved() == .chineseSimplified ? "请求过长，正在压缩上下文后重试。" : "The request was too long; compacting context before retrying."
         case PlanWorkflowPresentation.generatingQuestionStatus:
             return settings.language.resolved() == .chineseSimplified ? "正在准备需要你选择的问题。" : "Preparing the questions for your input."
         case PlanWorkflowPresentation.collectingContextStatus:
@@ -3578,6 +3679,8 @@ final class AppState: ObservableObject {
             normalized == "streaming" ||
             normalized == "thinking" ||
             normalized == "processing" ||
+            normalized == "context compacting" ||
+            normalized == "context recovering" ||
             normalized == "waiting for permission" ||
             normalized.hasPrefix("plan ") {
             return "status-\(assistantID.uuidString)-\(normalized.replacingOccurrences(of: " ", with: "-"))"
@@ -3990,6 +4093,8 @@ enum LocalSessionIndexRecovery {
             return [result.output]
         case .attachment(let attachment):
             return [attachment.fileName, attachment.path]
+        case .processStatus(let status):
+            return [status.title, status.detail ?? ""]
         }
     }
 
@@ -5151,11 +5256,17 @@ enum NativeConfigService {
     }
 
     static func contextWindow(entryID: String, values: [String: String]) -> Int? {
-        positiveInt(values["models.entries.\(entryID).contextWindow"])
+        let configuredWindow = positiveInt(values["models.entries.\(entryID).contextWindow"])
             ?? webModelContextWindow(entryID: entryID, values: values)
-            ?? positiveInt(values["agent.maxContextTokens"])
             ?? positiveInt(values["webui.runtime.contextWindow"])
             ?? positiveInt(values["runtime.contextWindow"])
+        guard let agentMax = agentMaxContextTokens(values: values) else {
+            return configuredWindow
+        }
+        guard let configuredWindow else {
+            return agentMax
+        }
+        return min(configuredWindow, agentMax)
     }
 
     static func scalarMap(from yaml: String) -> [String: String] {
@@ -5442,6 +5553,11 @@ enum NativeConfigService {
     private static func positiveInt(_ rawValue: String?) -> Int? {
         guard let value = rawValue.flatMap(Int.init), value > 0 else { return nil }
         return value
+    }
+
+    private static func agentMaxContextTokens(values: [String: String]) -> Int? {
+        positiveInt(values["agent.maxContextTokens"])
+            ?? positiveInt(values["agents.main.maxContextTokens"])
     }
 
     static func providerConfig(entryID: String, values: [String: String]) -> ProviderConfig? {

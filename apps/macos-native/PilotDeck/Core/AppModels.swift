@@ -406,6 +406,7 @@ enum ChatBlock: Hashable, Codable {
     case toolCall(ToolCall)
     case toolResult(ToolResult)
     case attachment(FileAttachment)
+    case processStatus(ProcessStatusBlock)
 }
 
 enum ChatBlockVisibilityPolicy {
@@ -413,10 +414,22 @@ enum ChatBlockVisibilityPolicy {
         switch block {
         case .reasoning:
             return showThinking
-        case .text, .toolCall, .toolResult, .attachment:
+        case .text, .toolCall, .toolResult, .attachment, .processStatus:
             return true
         }
     }
+}
+
+enum ProcessStatusKind: String, Hashable, Codable {
+    case contextCompaction
+    case contextRecovery
+}
+
+struct ProcessStatusBlock: Hashable, Codable {
+    var id: String
+    var title: String
+    var detail: String?
+    var kind: ProcessStatusKind
 }
 
 struct ChatMessage: Identifiable, Hashable, Codable {
@@ -465,7 +478,9 @@ extension AgentActivity {
         if state == .failed || state == .cancelled { return true }
         let haystack = "\(title) \(detail)".lowercased()
         return haystack.contains("compact") ||
+            haystack.contains("recover") ||
             haystack.contains("压缩") ||
+            haystack.contains("恢复") ||
             haystack.contains("permission") ||
             haystack.contains("权限")
     }

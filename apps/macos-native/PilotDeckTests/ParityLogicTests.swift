@@ -1585,6 +1585,34 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(NativeConfigService.contextWindow(entryID: snapshot.defaultEntryID, values: snapshot.rawValues), 64_000)
     }
 
+    func testNativeConfigServiceCapsModelCapabilityContextWithAgentMaxTokens() throws {
+        let yaml = """
+        schemaVersion: 1
+        agent:
+          model: edgeclaw/qwen3.6-27b
+          maxContextTokens: 8000
+        model:
+          providers:
+            edgeclaw:
+              protocol: openai
+              url: http://example.local/v1
+              models:
+                qwen3.6-27b:
+                  capabilities:
+                    maxContextTokens: 160000
+                    maxOutputTokens: 16384
+        router:
+          scenarios:
+            default: edgeclaw/qwen3.6-27b
+        """
+
+        let snapshot = try XCTUnwrap(NativeConfigService.snapshot(from: yaml))
+
+        XCTAssertEqual(snapshot.contextWindow, 8_000)
+        XCTAssertEqual(NativeConfigService.contextWindow(entryID: snapshot.mainEntryID, values: snapshot.rawValues), 8_000)
+        XCTAssertEqual(NativeConfigService.contextWindow(entryID: snapshot.defaultEntryID, values: snapshot.rawValues), 8_000)
+    }
+
     func testNativeConfigServiceAcceptsDirectRouterDefaultField() throws {
         let yaml = """
         models:
@@ -1729,6 +1757,23 @@ final class ParityLogicTests: XCTestCase {
         ])
     }
 
+    func testNativeAgentRuntimeTokenUsageKeepsConfiguredContextWindowWhenOverBudget() {
+        let object: [String: Any] = [
+            "choices": [],
+            "usage": [
+                "prompt_tokens": 47_000,
+                "completion_tokens": 588,
+                "total_tokens": 47_588,
+            ],
+        ]
+
+        let events = NativeAgentRuntime.openAIChatEvents(from: object, contextWindow: 8_000)
+
+        XCTAssertEqual(events, [
+            .tokenUsage(RouterTokenUsage(inputTokens: 47_000, outputTokens: 588, cacheReadTokens: 0, totalTokens: 47_588), contextWindow: 8_000),
+        ])
+    }
+
     func testNativeAgentRuntimeNormalizesCCRThinkingObjectDeltas() {
         let thinkingObject: [String: Any] = [
             "choices": [
@@ -1769,6 +1814,42 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(ChatBlockVisibilityPolicy.isVisible(.reasoning("thinking"), showThinking: false))
         XCTAssertTrue(ChatBlockVisibilityPolicy.isVisible(.text("answer"), showThinking: false))
         XCTAssertTrue(ChatBlockVisibilityPolicy.isVisible(.toolResult(ToolResult(toolCallId: "tool", output: "ok", isError: false)), showThinking: false))
+        XCTAssertTrue(ChatBlockVisibilityPolicy.isVisible(.processStatus(ProcessStatusBlock(
+            id: "context-compact",
+            title: "上下文压缩已完成",
+            detail: nil,
+            kind: .contextCompaction
+        )), showThinking: false))
+    }
+
+    func testProcessStatusBlockPersistsWithoutAffectingPlainText() throws {
+        let message = ChatMessage(
+            id: UUID(),
+            sessionId: "session",
+            provider: .pilotDeck,
+            role: .assistant,
+            blocks: [
+                .text("before"),
+                .processStatus(ProcessStatusBlock(
+                    id: "context-compact",
+                    title: "上下文压缩已完成",
+                    detail: nil,
+                    kind: .contextCompaction
+                )),
+                .text("after"),
+            ],
+            createdAt: Date(timeIntervalSince1970: 1),
+            isStreaming: false,
+            tokenBudget: nil
+        )
+
+        XCTAssertEqual(message.plainText, "beforeafter")
+
+        let data = try JSONEncoder().encode(message)
+        let decoded = try JSONDecoder().decode(ChatMessage.self, from: data)
+
+        XCTAssertEqual(decoded.blocks, message.blocks)
+        XCTAssertEqual(decoded.plainText, "beforeafter")
     }
 
     func testProviderRetryPolicyMatchesCodexTransientDefaults() {
@@ -3818,6 +3899,53 @@ final class ParityLogicTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.iconName, "pencil")
+    }
+
+    func testProcessTraceCompactionCompletionDoesNotStayRunning() {
+        let date = Date()
+        let completedCompaction = AgentActivity(
+            id: "compact-assistant",
+            sessionId: "session",
+            title: "上下文压缩已完成",
+            detail: "",
+            phase: .status,
+            state: .completed,
+            createdAt: date,
+            updatedAt: date
+        )
+
+        let completedPresentation = ProcessTracePresentation.make(
+            activities: [completedCompaction],
+            isChinese: true
+        )
+
+        XCTAssertTrue(completedPresentation.shouldRender)
+        XCTAssertEqual(completedPresentation.summaryText, "上下文压缩已完成")
+        XCTAssertFalse(completedPresentation.shouldShimmer)
+        XCTAssertNil(completedPresentation.compactionBannerText)
+
+        let runningRead = AgentActivity(
+            id: "read",
+            sessionId: "session",
+            title: "Running Read",
+            detail: #"{"file_path":"config/config.yaml"}"#,
+            phase: .tool,
+            state: .running,
+            createdAt: date.addingTimeInterval(1),
+            updatedAt: date.addingTimeInterval(1),
+            toolName: "Read"
+        )
+
+        let continuedPresentation = ProcessTracePresentation.make(
+            activities: [completedCompaction, runningRead],
+            isChinese: true
+        )
+
+        XCTAssertTrue(continuedPresentation.shouldRender)
+        XCTAssertTrue(continuedPresentation.summaryText.contains("正在读取"))
+        XCTAssertTrue(continuedPresentation.summaryText.contains("config.yaml"))
+        XCTAssertTrue(continuedPresentation.shouldShimmer)
+        XCTAssertNil(continuedPresentation.compactionBannerText)
     }
 
     func testWriteToolInputPreviewDoesNotCarryFullContentIntoActivityTrace() throws {
@@ -6959,6 +7087,37 @@ final class ParityLogicTests: XCTestCase {
             messages: [["role": "user", "content": String(repeating: "x", count: 1_200)]],
             contextWindow: 1_000
         ).used + 100)
+    }
+
+    func testNativeContextBudgetForceRecoverAggressivelyReducesOverBudgetMessages() {
+        let largeText = String(repeating: "large generated file content and verification notes\n", count: 1_200)
+        var messages: [[String: Any]] = [
+            ["role": "system", "content": "system prompt"],
+        ]
+        for index in 0..<12 {
+            messages.append(["role": "user", "content": "Create large test artifact \(index). \(largeText)"])
+            messages.append(["role": "assistant", "content": "I will create artifact \(index).", "tool_calls": [
+                [
+                    "id": "edit-\(index)",
+                    "type": "function",
+                    "function": [
+                        "name": "Edit",
+                        "arguments": #"{"file_path":"docs/file.md","old_string":"","new_string":"large"}"#,
+                    ],
+                ],
+            ]])
+            messages.append(["role": "tool", "tool_call_id": "edit-\(index)", "content": largeText])
+        }
+
+        let before = NativeContextBudget.snapshot(messages: messages, contextWindow: 8_000)
+        let recovered = NativeContextBudget.forceRecover(messages: messages, contextWindow: 8_000)
+        let after = NativeContextBudget.snapshot(messages: recovered.messages, contextWindow: 8_000)
+        let serialized = String(describing: recovered.messages)
+
+        XCTAssertGreaterThan(before.used, 8_000)
+        XCTAssertLessThan(after.used, before.used)
+        XCTAssertLessThan(after.used, 8_000)
+        XCTAssertTrue(serialized.contains("[Context compacted]"))
     }
 
     func testToolInvocationPresentationRendersShellRawFallbackAndCommonFields() {

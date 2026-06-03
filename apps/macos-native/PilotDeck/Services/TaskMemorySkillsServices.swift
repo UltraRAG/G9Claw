@@ -1380,6 +1380,8 @@ final class MemoryService {
                 return nil
             case .attachment(let attachment):
                 return "[Attachment: \(attachment.fileName) \(attachment.path)]"
+            case .processStatus:
+                return nil
             case .toolCall(let call):
                 let input = call.inputJSON.trimmingCharacters(in: .whitespacesAndNewlines)
                 return "[Tool call: \(call.name)] \(String(input.prefix(800)))"

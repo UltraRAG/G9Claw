@@ -964,17 +964,33 @@ private struct ComposerCard: View {
     }
 
     private var contextRecentStageText: String? {
-        let compactActivity = state.currentActivities.last { activity in
-            let text = "\(activity.title) \(activity.detail)".lowercased()
-            return text.contains("compact") || text.contains("压缩") || text.contains("recover")
-        }
+        let compactActivity = state.currentActivities
+            .sorted { $0.updatedAt < $1.updatedAt }
+            .last { activity in
+                isContextCompactionActivity(activity)
+            }
         guard let compactActivity else { return nil }
-        let detail = compactActivity.detail.trimmingCharacters(in: .whitespacesAndNewlines)
         let isChinese = state.settings.language.resolved() == .chineseSimplified
+        if compactActivity.state == .completed {
+            return isChinese ? "最近压缩阶段：\(compactActivity.title)" : "Recent compaction stage: \(compactActivity.title)"
+        }
+        let detail = compactActivity.detail.trimmingCharacters(in: .whitespacesAndNewlines)
         if detail.isEmpty {
             return isChinese ? "最近压缩阶段：\(compactActivity.title)" : "Recent compaction stage: \(compactActivity.title)"
         }
         return isChinese ? "最近压缩阶段：\(detail)" : "Recent compaction stage: \(detail)"
+    }
+
+    private func isContextCompactionActivity(_ activity: AgentActivity) -> Bool {
+        let haystack = "\(activity.id) \(activity.title) \(activity.detail)"
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return haystack.contains("compact") ||
+            haystack.contains("recovering context") ||
+            haystack.contains("context recovery") ||
+            haystack.contains("压缩") ||
+            haystack.contains("恢复上下文") ||
+            haystack.contains("上下文恢复")
     }
 
     private var contextTone: Color {
@@ -1388,9 +1404,10 @@ private struct MessageRow: View {
         guard processSegments.contains(where: \.isProcessSegment) else {
             return AssistantMessagePresentation(processSegments: [], visibleSegments: segments)
         }
+        let visiblePrefix = processSegments.filter(\.isInlineStatusSegment)
         return AssistantMessagePresentation(
-            processSegments: processSegments,
-            visibleSegments: Array(segments[finalTextIndex...])
+            processSegments: processSegments.filter(\.isProcessSegment),
+            visibleSegments: visiblePrefix + Array(segments[finalTextIndex...])
         )
     }
 
@@ -1472,6 +1489,9 @@ private struct MessageRow: View {
                 guard !cleaned.isEmpty,
                       ChatBlockVisibilityPolicy.isVisible(block, showThinking: state.uiPreferences.showThinking) else { continue }
                 segments.append(.reasoning(text))
+            case .processStatus(let status):
+                flushToolGroup()
+                segments.append(.processStatus(status))
             case .attachment(let attachment):
                 flushToolGroup()
                 segments.append(.attachment(attachment))
@@ -1575,6 +1595,8 @@ private struct MessageRow: View {
                 ReasoningDisclosure(text: text, compact: compact)
                     .environmentObject(state)
             }
+        case .processStatus(let status):
+            ProcessStatusInlineRow(status: status)
         case .toolCall(let call):
             ToolBlock(title: call.name, detail: call.inputJSON, systemImage: "hammer", tint: DesignTokens.warning)
         case .toolResult(let result):
@@ -1599,6 +1621,8 @@ private struct MessageRow: View {
                 .environmentObject(state)
         case .attachment(let attachment):
             AttachmentChip(attachment: attachment)
+        case .processStatus(let status):
+            ProcessStatusInlineRow(status: status)
         case .tool(let call, let result, let todoDiff):
             InlineProcessToolRow(call: call, result: result, todoDiff: todoDiff)
                 .environmentObject(state)
@@ -1624,6 +1648,8 @@ private struct MessageRow: View {
             AttachmentChip(attachment: attachment)
         case .reasoning:
             EmptyView()
+        case .processStatus:
+            EmptyView()
         case .toolCall, .toolResult:
             blockView(block, compact: true)
         }
@@ -1634,6 +1660,7 @@ private enum AssistantBlockSegment {
     case text(String)
     case reasoning(String)
     case attachment(FileAttachment)
+    case processStatus(ProcessStatusBlock)
     case tool(ToolCall, ToolResult?, TodoListDiff?)
     case toolGroup([(ToolCall, ToolResult?)])
     case orphanToolResult(ToolResult)
@@ -1655,6 +1682,8 @@ extension ChatMessage {
                 return canonicalName != "SwitchMode" && canonicalName != "AskQuestion"
             case .toolResult:
                 return true
+            case .processStatus:
+                return true
             case .text, .attachment:
                 return false
             }
@@ -1671,6 +1700,8 @@ extension ChatMessage {
                 return canonicalName != "SwitchMode" && canonicalName != "AskQuestion"
             case .toolResult(let result):
                 return !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .processStatus(let status):
+                return !status.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             case .attachment:
                 return true
             }
@@ -1684,8 +1715,47 @@ private extension AssistantBlockSegment {
         return false
     }
 
+    var isInlineStatusSegment: Bool {
+        if case .processStatus = self { return true }
+        return false
+    }
+
     var isProcessSegment: Bool {
-        !isTextSegment
+        !isTextSegment && !isInlineStatusSegment
+    }
+}
+
+private struct ProcessStatusInlineRow: View {
+    var status: ProcessStatusBlock
+
+    private var iconName: String {
+        switch status.kind {
+        case .contextCompaction:
+            return "checkmark.circle"
+        case .contextRecovery:
+            return "arrow.triangle.2.circlepath.circle"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: iconName)
+                .font(.system(size: 13, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(status.title)
+                    .font(CodexProcessStyle.rowFont)
+                if let detail = status.detail?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !detail.isEmpty {
+                    Text(detail)
+                        .font(CodexProcessStyle.detailFont)
+                        .foregroundStyle(CodexProcessStyle.detail)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(CodexProcessStyle.detailStrong)
+        .padding(.vertical, 2)
     }
 }
 
@@ -5268,7 +5338,7 @@ struct ProcessTracePresentation: Equatable {
     var shouldShimmer: Bool
     var iconName: String
     var detailRows: [CodexTraceDetailRow]
-    var compacting: Bool
+    var compactionBannerText: String?
 
     var canExpand: Bool {
         !detailRows.isEmpty
@@ -5282,20 +5352,47 @@ struct ProcessTracePresentation: Equatable {
                     activity.toolName != nil
             }
             .sorted { $0.createdAt < $1.createdAt }
-        let summary = ProcessTraceSummary.make(activities: visible, isChinese: isChinese)
-        let current = visible.last(where: { $0.state == .running })
-        let compacting = visible.contains {
-            let haystack = "\($0.title) \($0.detail) \($0.toolName ?? "")".lowercased()
-            return haystack.contains("compact") || haystack.contains("压缩")
+        let activeCompaction = visible.last { activity in
+            activity.state == .running && isContextCompactionActivity(activity)
         }
+        let completedCompaction = visible.last { activity in
+            activity.state == .completed && isContextCompactionActivity(activity)
+        }
+        let current = visible.last { activity in
+            activity.state == .running && !isContextCompactionActivity(activity)
+        } ?? activeCompaction ?? visible.last(where: { $0.state == .running })
+        let summary = ProcessTraceSummary.make(activities: current.map { [$0] } ?? visible, isChinese: isChinese)
+        let summaryText: String
+        if current == nil, let completedCompaction {
+            summaryText = completedCompaction.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? (isChinese ? "上下文压缩已完成" : "Context compaction completed")
+                : completedCompaction.title
+        } else {
+            summaryText = summary.text
+        }
+        let compactionBannerText = activeCompaction != nil && current?.id == activeCompaction?.id
+            ? (isChinese ? "正在自动压缩上下文" : "Automatically compacting context")
+            : nil
         return ProcessTracePresentation(
-            shouldRender: current != nil || compacting,
-            summaryText: summary.text,
+            shouldRender: current != nil || completedCompaction != nil,
+            summaryText: summaryText,
             shouldShimmer: summary.shouldShimmer,
-            iconName: iconName(for: current, fallbackActivities: visible),
+            iconName: iconName(for: current ?? completedCompaction, fallbackActivities: visible),
             detailRows: current.map { currentDetailRows(for: $0, isChinese: isChinese) } ?? [],
-            compacting: compacting
+            compactionBannerText: compactionBannerText
         )
+    }
+
+    private static func isContextCompactionActivity(_ activity: AgentActivity) -> Bool {
+        let haystack = "\(activity.id) \(activity.title) \(activity.detail) \(activity.toolName ?? "")"
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return haystack.contains("compact") ||
+            haystack.contains("recovering context") ||
+            haystack.contains("context recovery") ||
+            haystack.contains("压缩") ||
+            haystack.contains("恢复上下文") ||
+            haystack.contains("上下文恢复")
     }
 
     private static func currentDetailRows(for activity: AgentActivity, isChinese: Bool) -> [CodexTraceDetailRow] {
@@ -5507,13 +5604,6 @@ private struct ProcessLiveStatusRow: View {
         presentation.detailRows
     }
 
-    private var compacting: Bool {
-        visibleActivities.contains {
-            let haystack = "\($0.title) \($0.detail) \($0.toolName ?? "")".lowercased()
-            return haystack.contains("compact") || haystack.contains("压缩")
-        }
-    }
-
     private var isThinkingOnly: Bool {
         hasRunningActivity &&
             visibleActivities.allSatisfy { activity in
@@ -5585,10 +5675,10 @@ private struct ProcessLiveStatusRow: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.985, anchor: .topLeading)))
             }
 
-            if presentation.compacting {
+            if let compactionBannerText = presentation.compactionBannerText {
                 HStack(spacing: 16) {
                     Rectangle().fill(DesignTokens.separator).frame(height: 1)
-                    Text(isChinese ? "正在自动压缩上下文" : "Automatically compacting context")
+                    Text(compactionBannerText)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CodexProcessStyle.detail)
                         .fixedSize()
