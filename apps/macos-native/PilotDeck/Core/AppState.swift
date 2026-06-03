@@ -1832,6 +1832,12 @@ final class AppState: ObservableObject {
 
     func openSettings(_ tab: SettingsMainTab = .appearance) {
         settingsInitialTab = tab
+        showProjectCreationWizard = false
+        showSettings = true
+    }
+
+    func closeSettings() {
+        showSettings = false
     }
 
     func t(_ key: L10nKey, _ args: CVarArg...) -> String {

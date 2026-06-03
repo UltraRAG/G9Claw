@@ -4,15 +4,22 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
+    var isEmbeddedInMainWindow = false
+    var onReturnToApp: (() -> Void)?
 
     var body: some View {
-        SettingsContentView()
+        SettingsContentView(
+            isEmbeddedInMainWindow: isEmbeddedInMainWindow,
+            onReturnToApp: onReturnToApp
+        )
             .environmentObject(state)
     }
 }
 
 private struct SettingsContentView: View {
     @EnvironmentObject private var state: AppState
+    var isEmbeddedInMainWindow = false
+    var onReturnToApp: (() -> Void)?
     @State private var currentPage: SettingsPage = .main
     @State private var configSection: PilotDeckConfigSection?
     @State private var savedConfigText = ""
@@ -39,25 +46,45 @@ private struct SettingsContentView: View {
     @State private var newCustomEnvValue = ""
 
     var body: some View {
-        ScrollView {
-            SettingsPageContainer(
-                title: settingsPageTitle(currentPage),
-                backLabel: currentPage == .main ? nil : state.t(.back),
-                onBack: currentPage == .main ? nil : { currentPage = .main }
-            ) {
-                if let notice = state.settingsSaveNotice {
-                    Text(notice)
-                        .font(.caption)
-                        .foregroundStyle(DesignTokens.success)
+        VStack(spacing: 0) {
+            if isEmbeddedInMainWindow {
+                settingsReturnBar
+            }
+
+            ScrollView {
+                SettingsPageContainer(
+                    title: settingsPageTitle(currentPage),
+                    backLabel: currentPage == .main ? nil : state.t(.back),
+                    onBack: currentPage == .main ? nil : { currentPage = .main }
+                ) {
+                    if let notice = state.settingsSaveNotice {
+                        Text(notice)
+                            .font(.caption)
+                            .foregroundStyle(DesignTokens.success)
+                    }
+                    currentPageContent
+                        .transition(.opacity.combined(with: .offset(y: 4)))
+                        .id(currentPage)
                 }
-                currentPageContent
-                    .transition(.opacity.combined(with: .offset(y: 4)))
-                    .id(currentPage)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .background(SettingsWindowConfigurator(title: state.t(.settings)))
-        .frame(minWidth: 760, minHeight: 620)
+        .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
+        .background {
+            if !isEmbeddedInMainWindow {
+                SettingsWindowConfigurator(title: state.t(.settings))
+            }
+        }
+        .frame(
+            minWidth: isEmbeddedInMainWindow ? 0 : 760,
+            maxWidth: isEmbeddedInMainWindow ? .infinity : nil,
+            minHeight: isEmbeddedInMainWindow ? 0 : 620,
+            maxHeight: isEmbeddedInMainWindow ? .infinity : nil
+        )
+        .onExitCommand {
+            if isEmbeddedInMainWindow {
+                onReturnToApp?()
+            }
+        }
         .onAppear {
             currentPage = settingsPage(for: state.settingsInitialTab)
             if savedConfigText.isEmpty {
@@ -67,6 +94,30 @@ private struct SettingsContentView: View {
         .onChange(of: state.settingsInitialTab) { _, newValue in
             currentPage = settingsPage(for: newValue)
         }
+    }
+
+    private var settingsReturnBar: some View {
+        HStack {
+            Button {
+                onReturnToApp?()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.left")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(local(chinese: "返回应用", english: "Back to App"))
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .foregroundStyle(DesignTokens.secondaryText)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+        }
+        .padding(.top, DesignTokens.sidebarContentTopPadding)
+        .padding(.horizontal, 40)
+        .padding(.bottom, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func settingsPage(for tab: SettingsMainTab) -> SettingsPage {

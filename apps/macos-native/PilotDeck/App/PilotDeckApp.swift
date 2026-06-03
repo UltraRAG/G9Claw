@@ -41,6 +41,15 @@ struct PilotDeckApp: App {
                 .keyboardShortcut("n", modifiers: [.command])
             }
 
+            CommandGroup(replacing: .appSettings) {
+                Button {
+                    state.openSettings(.appearance)
+                } label: {
+                    Text(state.t(.settings))
+                }
+                .keyboardShortcut(",", modifiers: [.command])
+            }
+
             CommandGroup(replacing: .saveItem) {}
             CommandGroup(replacing: .importExport) {}
             CommandGroup(replacing: .printItem) {}

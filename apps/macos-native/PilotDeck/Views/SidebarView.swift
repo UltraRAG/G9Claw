@@ -3,7 +3,6 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject private var state: AppState
-    @Environment(\.openSettings) private var openSettings
     @Binding var width: Double
     @AppStorage("sidebar-v2-active-section") private var activeSectionRaw = SidebarSection.projects.rawValue
     @AppStorage("sidebar-v2-last-project-id") private var lastProjectIDRaw = ""
@@ -430,8 +429,6 @@ struct SidebarView: View {
                 .frame(height: 1)
             Button {
                 state.openSettings(.appearance)
-                openSettings()
-                SettingsWindowPresenter.bringToFront()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "gearshape")

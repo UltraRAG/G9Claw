@@ -17,7 +17,7 @@ struct RootView: View {
                 .ignoresSafeArea()
         }
         .overlay(alignment: .topLeading) {
-            if !state.showProjectCreationWizard {
+            if !state.showProjectCreationWizard && !state.showSettings {
                 SidebarTitlebarToggleButton()
                     .environmentObject(state)
                     .padding(.leading, sidebarToggleLeadingOffset)
@@ -35,7 +35,21 @@ struct RootView: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.985)))
             }
         }
+        .overlay {
+            if state.showSettings {
+                SettingsView(isEmbeddedInMainWindow: true) {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        state.closeSettings()
+                    }
+                }
+                .environmentObject(state)
+                .preferredColorScheme(state.settings.colorScheme.swiftUIColorScheme)
+                .transition(.opacity)
+                .zIndex(50)
+            }
+        }
         .animation(.easeInOut(duration: 0.20), value: state.showProjectCreationWizard)
+        .animation(.easeInOut(duration: 0.18), value: state.showSettings)
         .animation(.snappy(duration: 0.28, extraBounce: 0.02), value: state.isSidebarVisible)
         .task {
             await state.bootstrap()
