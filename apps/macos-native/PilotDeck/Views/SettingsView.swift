@@ -471,9 +471,6 @@ private struct SettingsContentView: View {
                         Label(state.t(.importAction), systemImage: "square.and.arrow.up")
                     }
                     .buttonStyle(WebToolbarButtonStyle())
-                    Text(state.t(.permissionsShareDetail))
-                        .font(.system(size: 12))
-                        .foregroundStyle(DesignTokens.tertiaryText)
                 }
             }
 
