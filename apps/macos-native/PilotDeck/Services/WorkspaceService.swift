@@ -76,6 +76,11 @@ final class WorkspaceService {
         "C:\\System Volume Information",
         "C:\\$Recycle.Bin",
     ]
+    static let containerOnlyWorkspaceRoots: [String] = [
+        "/Volumes",
+        "/mnt",
+        "/media",
+    ]
 
     let workspaceRoot: URL
     private let fileManager: FileManager
@@ -87,10 +92,18 @@ final class WorkspaceService {
 
     func validateWorkspacePath(_ requestedPath: String) -> WorkspaceValidationResult {
         let expanded = NSString(string: requestedPath).expandingTildeInPath
-        let requestedURL = URL(fileURLWithPath: expanded).standardizedFileURL
+        let trimmed = expanded.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return WorkspaceValidationResult(
+                valid: false,
+                resolvedPath: nil,
+                error: "Workspace path cannot be empty"
+            )
+        }
+        let requestedURL = URL(fileURLWithPath: trimmed).standardizedFileURL
         let normalized = requestedURL.path
 
-        if Self.forbiddenPaths.contains(normalized) || normalized == "/" {
+        if Self.isForbiddenWorkspaceContainer(normalized) || Self.forbiddenPaths.contains(normalized) || normalized == "/" {
             return WorkspaceValidationResult(
                 valid: false,
                 resolvedPath: nil,
@@ -98,30 +111,30 @@ final class WorkspaceService {
             )
         }
 
-        for forbidden in Self.forbiddenPaths {
-            if normalized == forbidden || normalized.hasPrefix(forbidden + "/") {
-                if forbidden == "/var" &&
-                    (normalized.hasPrefix("/var/tmp") || normalized.hasPrefix("/var/folders")) {
-                    continue
-                }
-                return WorkspaceValidationResult(
-                    valid: false,
-                    resolvedPath: nil,
-                    error: "Cannot create workspace in system directory: \(forbidden)"
-                )
-            }
-        }
-
-        let rootPath = workspaceRoot.path
-        guard normalized == rootPath || normalized.hasPrefix(rootPath + "/") else {
+        if let forbidden = Self.matchedForbiddenWorkspacePath(normalized) {
             return WorkspaceValidationResult(
                 valid: false,
                 resolvedPath: nil,
-                error: "Workspace path must be within the allowed workspace root: \(rootPath)"
+                error: "Cannot create workspace in system directory: \(forbidden)"
             )
         }
 
         return WorkspaceValidationResult(valid: true, resolvedPath: normalized, error: nil)
+    }
+
+    static func isForbiddenWorkspaceContainer(_ normalizedPath: String) -> Bool {
+        containerOnlyWorkspaceRoots.contains(normalizedPath)
+    }
+
+    static func matchedForbiddenWorkspacePath(_ normalizedPath: String) -> String? {
+        for forbidden in forbiddenPaths where normalizedPath == forbidden || normalizedPath.hasPrefix(forbidden + "/") {
+            if forbidden == "/var" &&
+                (normalizedPath.hasPrefix("/var/tmp") || normalizedPath.hasPrefix("/var/folders")) {
+                continue
+            }
+            return forbidden
+        }
+        return nil
     }
 
     func listFiles(project: WorkspaceProject) throws -> [WorkspaceFile] {

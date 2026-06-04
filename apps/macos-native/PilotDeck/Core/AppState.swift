@@ -248,7 +248,12 @@ final class AppState: ObservableObject {
     func selectProject(_ project: WorkspaceProject) {
         selectedProjectID = project.id
         selectedSessionID = nil
-        errorBanner = nil
+        let workspacePath = effectiveWorkspacePath(for: project)
+        if !isGeneralProject(project), !FileManager.default.fileExists(atPath: workspacePath) {
+            errorBanner = "\(t(.workspacePathDoesNotExist)) \(workspacePath)"
+        } else {
+            errorBanner = nil
+        }
         isDraftSessionVisible = false
         activeTab = .chat
         persistWorkspaceState()
@@ -479,7 +484,7 @@ final class AppState: ObservableObject {
                 throw NSError(
                     domain: "WorkspaceService",
                     code: 404,
-                    userInfo: [NSLocalizedDescriptionKey: "Existing workspace path does not exist."]
+                    userInfo: [NSLocalizedDescriptionKey: "\(t(.workspacePathDoesNotExist)) \(resolved)"]
                 )
             }
             if let githubURL, !githubURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1941,7 +1946,7 @@ final class AppState: ObservableObject {
             throw NSError(
                 domain: "PilotDeckWorkspace",
                 code: 404,
-                userInfo: [NSLocalizedDescriptionKey: "Workspace path does not exist: \(workspacePath). Check PilotDeck general workspace settings."]
+                userInfo: [NSLocalizedDescriptionKey: "\(t(.workspacePathDoesNotExist)) \(workspacePath)"]
             )
         }
         return workspacePath
@@ -2223,7 +2228,6 @@ final class AppState: ObservableObject {
                   object["manuallyAdded"] as? Bool == true,
                   let originalPath = object["originalPath"] as? String else { continue }
             let resolved = NSString(string: originalPath).expandingTildeInPath
-            guard FileManager.default.fileExists(atPath: resolved) else { continue }
             let displayName = object["displayName"] as? String
             loaded.append(
                 WorkspaceProject(
@@ -2371,14 +2375,65 @@ final class AppState: ObservableObject {
         }
         let restored = snapshot.projects
             .map(Self.restoredProject)
-            .filter { project in
-                isGeneralProject(project) || FileManager.default.fileExists(atPath: project.rootPath)
-            }
-        if !restored.isEmpty {
-            projects = restored
+        let selectedRoot = snapshot.selection?.projectRoot.map(normalizedPath)
+        let cleaned = deduplicatedProjects(
+            restored.filter { shouldRestorePersistedProject($0, selectedRoot: selectedRoot) }
+        )
+        if !cleaned.isEmpty {
+            projects = cleaned
         }
         ensureGeneralProject()
         return snapshot.selection
+    }
+
+    private func shouldRestorePersistedProject(_ project: WorkspaceProject, selectedRoot: String?) -> Bool {
+        let rootPath = normalizedPath(effectiveWorkspacePath(for: project))
+        if isGeneralProject(project) { return true }
+        if FileManager.default.fileExists(atPath: rootPath) { return true }
+        if !project.allSessions.isEmpty { return true }
+        if selectedRoot == rootPath, !isTemporaryWorkspacePath(rootPath) { return true }
+        return !isTemporaryWorkspacePath(rootPath)
+    }
+
+    private func shouldImportIndexedProject(rootPath: String) -> Bool {
+        if FileManager.default.fileExists(atPath: rootPath) { return true }
+        return !isTemporaryWorkspacePath(rootPath)
+    }
+
+    private func shouldPersistSharedProjectIndexEntry(_ project: WorkspaceProject) -> Bool {
+        let rootPath = normalizedPath(effectiveWorkspacePath(for: project))
+        if FileManager.default.fileExists(atPath: rootPath) { return true }
+        if !project.allSessions.isEmpty { return true }
+        return !isTemporaryWorkspacePath(rootPath)
+    }
+
+    private func deduplicatedProjects(_ input: [WorkspaceProject]) -> [WorkspaceProject] {
+        var seenRoots: Set<String> = []
+        var output: [WorkspaceProject] = []
+        for project in input {
+            let rootPath = normalizedPath(effectiveWorkspacePath(for: project))
+            guard seenRoots.insert(rootPath).inserted else { continue }
+            output.append(project)
+        }
+        return output
+    }
+
+    private func isTemporaryWorkspacePath(_ path: String) -> Bool {
+        let rootPath = normalizedPath(path)
+        let tempRoots = [
+            FileManager.default.temporaryDirectory.path,
+            NSTemporaryDirectory(),
+            "/tmp",
+            "/private/tmp",
+            "/var/tmp",
+            "/private/var/tmp",
+            "/var/folders",
+            "/private/var/folders",
+        ].map(normalizedPath)
+
+        return tempRoots.contains { tempRoot in
+            rootPath == tempRoot || rootPath.hasPrefix(tempRoot + "/")
+        }
     }
 
     private func restoreWorkspaceSelection(_ selection: WorkspaceStatePersistence.Selection?) {
@@ -2459,7 +2514,7 @@ final class AppState: ObservableObject {
 
         for entry in indexedProjects where !entry.isGeneral {
             let rootPath = normalizedPath(entry.rootPath)
-            guard FileManager.default.fileExists(atPath: rootPath) else { continue }
+            guard shouldImportIndexedProject(rootPath: rootPath) else { continue }
             guard !projects.contains(where: { normalizedPath(effectiveWorkspacePath(for: $0)) == rootPath }) else { continue }
             projects.append(
                 WorkspaceProject(
@@ -2609,18 +2664,20 @@ final class AppState: ObservableObject {
 
     private func persistSharedIndexes(projects persistedProjects: [WorkspaceProject]) {
         guard !persistedProjects.isEmpty else { return }
-        let projectEntries = persistedProjects.map { project in
-            SharedProjectPathIndexStore.Entry(
-                rootPath: normalizedPath(effectiveWorkspacePath(for: project)),
-                projectName: project.name,
-                displayName: project.displayName,
-                isGeneral: isGeneralProject(project),
-                sources: ["mac-native"],
-                createdAt: project.createdAt,
-                updatedAt: project.latestActivity,
-                deletedAt: nil
-            )
-        }
+        let projectEntries = deduplicatedProjects(persistedProjects)
+            .filter(shouldPersistSharedProjectIndexEntry)
+            .map { project in
+                SharedProjectPathIndexStore.Entry(
+                    rootPath: normalizedPath(effectiveWorkspacePath(for: project)),
+                    projectName: project.name,
+                    displayName: project.displayName,
+                    isGeneral: isGeneralProject(project),
+                    sources: ["mac-native"],
+                    createdAt: project.createdAt,
+                    updatedAt: project.latestActivity,
+                    deletedAt: nil
+                )
+            }
         SharedProjectPathIndexStore.upsert(projectEntries)
 
         let sessionEntries = persistedProjects.flatMap { project in

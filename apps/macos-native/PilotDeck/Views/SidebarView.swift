@@ -221,6 +221,8 @@ struct SidebarView: View {
     private func projectGroup(_ project: WorkspaceProject) -> some View {
         let isExpanded = expandedProjectIDs.contains(project.id)
         let isSelected = state.selectedProjectID == project.id
+        let isUnavailable = !state.isGeneralProject(project)
+            && !FileManager.default.fileExists(atPath: state.effectiveWorkspacePath(for: project))
 
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 0) {
@@ -240,6 +242,16 @@ struct SidebarView: View {
                         Text(project.displayName)
                             .font(.system(size: 13))
                             .lineLimit(1)
+                        if isUnavailable {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(.orange)
+                                .help(state.t(.workspacePathDoesNotExist))
+                            Text(state.t(.missing))
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(DesignTokens.tertiaryText)
+                                .lineLimit(1)
+                        }
                         Spacer(minLength: 4)
                     }
                     .foregroundStyle(isSelected ? DesignTokens.text : DesignTokens.secondaryText)

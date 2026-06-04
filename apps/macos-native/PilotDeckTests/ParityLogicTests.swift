@@ -10,12 +10,17 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertFalse(service.validateWorkspacePath("/usr/bin").valid)
         XCTAssertFalse(service.validateWorkspacePath("/opt/homebrew").valid)
         XCTAssertFalse(service.validateWorkspacePath("/tmp/work").valid)
+        XCTAssertFalse(service.validateWorkspacePath("/Volumes").valid)
 
         let workspaceService = WorkspaceService(workspaceRoot: URL(fileURLWithPath: "/Users/tester/Workspace"))
         let outside = workspaceService.validateWorkspacePath("/Users/tester/Downloads/project")
 
-        XCTAssertFalse(outside.valid)
-        XCTAssertEqual(outside.error, "Workspace path must be within the allowed workspace root: /Users/tester/Workspace")
+        XCTAssertTrue(outside.valid)
+        XCTAssertEqual(outside.resolvedPath, "/Users/tester/Downloads/project")
+
+        let external = workspaceService.validateWorkspacePath("/Volumes/PilotDisk/project")
+        XCTAssertTrue(external.valid)
+        XCTAssertEqual(external.resolvedPath, "/Volumes/PilotDisk/project")
 
         let inside = service.validateWorkspacePath("/Users/tester/project")
         XCTAssertTrue(inside.valid)
@@ -2323,6 +2328,22 @@ final class ParityLogicTests: XCTestCase {
 
         XCTAssertThrowsError(
             try AgentPathResolver.resolve("../escape.txt", workspacePath: root.path, mustExist: false)
+        )
+    }
+
+    func testAgentPathResolverAllowsExternalVolumeWorkspace() throws {
+        let resolved = try AgentPathResolver.resolve(
+            "notes.txt",
+            workspacePath: "/Volumes/PilotDisk/project",
+            mustExist: false
+        )
+
+        XCTAssertEqual(resolved.path, "/Volumes/PilotDisk/project/notes.txt")
+    }
+
+    func testAgentPathResolverRejectsExternalVolumeContainerAsWorkspace() throws {
+        XCTAssertThrowsError(
+            try AgentPathResolver.resolve("PilotDisk/project/notes.txt", workspacePath: "/Volumes", mustExist: false)
         )
     }
 

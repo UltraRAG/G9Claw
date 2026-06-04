@@ -9203,13 +9203,19 @@ enum AgentPathResolver {
         }
         let rootPath = root.path
         let path = candidate.path
+        if WorkspaceService.isForbiddenWorkspaceContainer(rootPath) {
+            throw ProviderClientError.toolExecution("Refusing to use system path as workspace: \(rootPath)")
+        }
+        if let forbiddenRoot = WorkspaceService.matchedForbiddenWorkspacePath(rootPath) {
+            throw ProviderClientError.toolExecution("Refusing to use system path as workspace: \(forbiddenRoot)")
+        }
         guard path == rootPath || path.hasPrefix(rootPath + "/") else {
             throw ProviderClientError.toolExecution("Path escapes workspace: \(rawPath)")
         }
         if mustExist, !FileManager.default.fileExists(atPath: path) {
             throw ProviderClientError.toolExecution("Path does not exist: \(rawPath)")
         }
-        for forbidden in WorkspaceService.forbiddenPaths where path == forbidden || path.hasPrefix(forbidden + "/") {
+        if let forbidden = WorkspaceService.matchedForbiddenWorkspacePath(path) {
             throw ProviderClientError.toolExecution("Refusing to access system path: \(forbidden)")
         }
         return candidate
