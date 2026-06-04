@@ -30,7 +30,7 @@ private struct SettingsContentView: View {
     @State private var selectedModelPoolEntry: String?
     @State private var recentlyRemovedWebProviderIDs = Set<String>()
     @State private var showCatalogProviderPicker = false
-    @State private var newModelID = ""
+    @State private var newModelDraftsByProvider: [String: String] = [:]
     @State private var showAdvancedAgents = false
     @State private var showAdvancedRouter = false
     @State private var showAdvancedRuntime = false
@@ -2217,7 +2217,7 @@ private struct SettingsContentView: View {
                     }
 
                     HStack(spacing: 8) {
-                        TextField(local(chinese: "自定义模型 ID", english: "Custom model ID"), text: $newModelID)
+                        TextField(local(chinese: "自定义模型 ID", english: "Custom model ID"), text: newModelDraftBinding(for: provider))
                             .textFieldStyle(.roundedBorder)
                             .font(.system(size: 12, design: .monospaced))
                             .onSubmit {
@@ -2229,7 +2229,7 @@ private struct SettingsContentView: View {
                             Label(state.t(.add), systemImage: "plus")
                         }
                         .buttonStyle(WebToolbarButtonStyle())
-                        .disabled(newModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(newModelDraft(for: provider).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
             }
@@ -2984,11 +2984,22 @@ private struct SettingsContentView: View {
         )
     }
 
+    private func newModelDraft(for provider: String) -> String {
+        newModelDraftsByProvider[provider] ?? ""
+    }
+
+    private func newModelDraftBinding(for provider: String) -> Binding<String> {
+        Binding(
+            get: { newModelDraft(for: provider) },
+            set: { newModelDraftsByProvider[provider] = $0 }
+        )
+    }
+
     private func addPendingCustomModel(provider: String) {
-        let model = newModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = newModelDraft(for: provider).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else { return }
         addWebModel(provider: provider, model: model)
-        newModelID = ""
+        newModelDraftsByProvider[provider] = ""
     }
 
     private func removeWebModel(provider: String, model: String) {
