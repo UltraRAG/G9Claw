@@ -1,4 +1,6 @@
 import AppKit
+@preconcurrency import AVFoundation
+@preconcurrency import Speech
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -671,9 +673,12 @@ private struct ShimmeringProcessText: View {
 
 private struct ComposerCard: View {
     @EnvironmentObject private var state: AppState
+    @StateObject private var speechRecognizer = ComposerSpeechRecognizer()
     @State private var focused = false
     @State private var showContextPopover = false
     @State private var isComposingMarkedText = false
+    @State private var voiceInsertionBase = ""
+    @State private var voiceError: String?
     var chromeless: Bool
 
     private var canSend: Bool {
@@ -722,18 +727,15 @@ private struct ComposerCard: View {
                     .frame(height: DesignTokens.composerTextMinHeight)
             }
 
-            HStack(spacing: 4) {
-                iconControl("paperclip", help: state.t(.attachHelp)) {
-                    openAttachmentPanel()
-                }
-                runModeButton
-                    .padding(.leading, 2)
-                    .padding(.trailing, 4)
-                permissionModeButton
-                Spacer(minLength: 8)
-                contextGauge
-                sendOrStopButton
+            if let voiceError {
+                Text(voiceError)
+                    .font(.system(size: 12))
+                    .foregroundStyle(DesignTokens.danger)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 6)
             }
+
+            composerControlRow
             .padding(.top, 8)
         }
         .padding(.horizontal, 12)
@@ -750,6 +752,12 @@ private struct ComposerCard: View {
         .contentShape(Rectangle())
         .onTapGesture {
             focused = true
+        }
+        .onChange(of: speechRecognizer.transcript) { _, transcript in
+            applyVoiceTranscript(transcript)
+        }
+        .onDisappear {
+            speechRecognizer.stop()
         }
     }
 
@@ -912,6 +920,81 @@ private struct ComposerCard: View {
         .fixedSize(horizontal: true, vertical: false)
     }
 
+    private var voiceInputButton: some View {
+        Button {
+            toggleVoiceInput()
+        } label: {
+            Image(systemName: speechRecognizer.isRecording ? "mic.fill" : "mic")
+                .font(.system(size: 15, weight: speechRecognizer.isRecording ? .semibold : .regular))
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(
+            ComposerControlButtonStyle(
+                foreground: speechRecognizer.isRecording ? DesignTokens.danger : DesignTokens.secondaryText,
+                idleBackground: speechRecognizer.isRecording ? DesignTokens.danger.opacity(0.10) : .clear,
+                pressedBackground: speechRecognizer.isRecording ? DesignTokens.danger.opacity(0.16) : DesignTokens.composerControlSurface
+            )
+        )
+        .disabled(state.isCurrentSessionStreaming)
+        .help(speechRecognizer.isRecording ? localized("停止语音输入", "Stop voice input") : localized("语音输入", "Voice input"))
+    }
+
+    @ViewBuilder
+    private var composerControlRow: some View {
+        if speechRecognizer.isRecording {
+            HStack(spacing: 8) {
+                voiceRecordingStrip
+                    .frame(maxWidth: .infinity)
+                sendOrStopButton
+            }
+            .transition(.opacity)
+        } else {
+            HStack(spacing: 4) {
+                iconControl("paperclip", help: state.t(.attachHelp)) {
+                    openAttachmentPanel()
+                }
+                runModeButton
+                    .padding(.leading, 2)
+                    .padding(.trailing, 4)
+                permissionModeButton
+                Spacer(minLength: 8)
+                contextGauge
+                voiceInputButton
+                sendOrStopButton
+            }
+            .transition(.opacity)
+        }
+    }
+
+    private var voiceRecordingStrip: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "mic.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(DesignTokens.secondaryText)
+            VoiceWaveformView(level: speechRecognizer.audioLevel)
+                .frame(height: 22)
+            Text(speechRecognizer.elapsedText)
+                .font(.system(size: 12, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(DesignTokens.secondaryText)
+                .frame(minWidth: 36, alignment: .trailing)
+            Button {
+                speechRecognizer.stop()
+            } label: {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(DesignTokens.text)
+                    .frame(width: 28, height: 28)
+                    .background(DesignTokens.composerControlSurface, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help(localized("停止语音输入", "Stop voice input"))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(DesignTokens.composerControlSurface.opacity(0.58), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
     private var latestTokenBudget: TokenBudget? {
         if let sessionID = state.selectedSessionID,
            let budget = state.tokenBudgetBySession[sessionID] {
@@ -1018,11 +1101,74 @@ private struct ComposerCard: View {
         .help(help)
     }
 
+    private func toggleVoiceInput() {
+        voiceError = nil
+        if speechRecognizer.isRecording {
+            speechRecognizer.stop()
+            return
+        }
+        focused = true
+        voiceInsertionBase = state.composerText
+        Task { @MainActor in
+            do {
+                try await speechRecognizer.start(locale: voiceLocale)
+            } catch {
+                voiceError = voiceErrorMessage(error)
+            }
+        }
+    }
+
+    private var voiceLocale: Locale {
+        if state.settings.language.resolved() == .chineseSimplified {
+            return Locale(identifier: "zh-CN")
+        }
+        return Locale(identifier: "en-US")
+    }
+
+    private func applyVoiceTranscript(_ transcript: String) {
+        guard speechRecognizer.isRecording else { return }
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            state.composerText = voiceInsertionBase
+            return
+        }
+        if voiceInsertionBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            state.composerText = trimmed
+        } else if voiceInsertionBase.last?.isWhitespace == true {
+            state.composerText = voiceInsertionBase + trimmed
+        } else {
+            state.composerText = voiceInsertionBase + "\n" + trimmed
+        }
+    }
+
+    private func voiceErrorMessage(_ error: Error) -> String {
+        if let error = error as? ComposerSpeechRecognizer.SpeechError {
+            switch error {
+            case .recognizerUnavailable:
+                return localized("当前系统语音识别不可用。", "Speech recognition is not available right now.")
+            case .speechPermissionDenied:
+                return localized("需要在系统设置中允许语音识别权限。", "Allow Speech Recognition in System Settings.")
+            case .microphonePermissionDenied:
+                return localized("需要在系统设置中允许麦克风权限。", "Allow Microphone access in System Settings.")
+            case .inputUnavailable:
+                return localized("无法启动麦克风输入。", "Could not start microphone input.")
+            }
+        }
+        return error.localizedDescription
+    }
+
+    private func localized(_ zh: String, _ en: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? zh : en
+    }
+
     private var sendOrStopButton: some View {
         Button {
             if state.isCurrentSessionStreaming {
                 state.abortActiveRun()
             } else {
+                if speechRecognizer.isRecording {
+                    speechRecognizer.stop()
+                }
                 state.sendComposerMessage()
             }
         } label: {
@@ -1120,6 +1266,259 @@ private struct ComposerCard: View {
             state.errorBanner = error.localizedDescription
             return nil
         }
+    }
+}
+
+private final class ComposerSpeechRecognizer: ObservableObject, @unchecked Sendable {
+    enum SpeechError: LocalizedError {
+        case recognizerUnavailable
+        case speechPermissionDenied
+        case microphonePermissionDenied
+        case inputUnavailable
+    }
+
+    @Published private(set) var isRecording = false
+    @Published private(set) var transcript = ""
+    @Published private(set) var audioLevel: Double = 0
+    @Published private(set) var elapsedText = "0:00"
+
+    private let speechQueue = DispatchQueue(label: "com.pilotdeck.voice-input.audio", qos: .userInitiated)
+    private let audioEngine = AVAudioEngine()
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private var startDate: Date?
+    private var timer: Timer?
+    private var hasInputTap = false
+    private var acceptingAudio = false
+
+    @MainActor
+    func start(locale: Locale) async throws {
+        stop()
+        guard await Self.requestSpeechPermission() else {
+            throw SpeechError.speechPermissionDenied
+        }
+        guard await Self.requestMicrophonePermission() else {
+            throw SpeechError.microphonePermissionDenied
+        }
+        guard let recognizer = SFSpeechRecognizer(locale: locale),
+              recognizer.isAvailable else {
+            throw SpeechError.recognizerUnavailable
+        }
+        recognizer.queue = .main
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        recognitionRequest = request
+        transcript = ""
+        audioLevel = 0
+        elapsedText = "0:00"
+
+        recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let result {
+                    self.transcript = result.bestTranscription.formattedString
+                }
+                if error != nil || result?.isFinal == true {
+                    self.finishRecording(endAudio: false, cancelTask: false)
+                }
+            }
+        }
+
+        do {
+            try await startAudioEngine(with: request)
+        } catch {
+            recognitionTask?.cancel()
+            recognitionTask = nil
+            recognitionRequest = nil
+            throw SpeechError.inputUnavailable
+        }
+
+        startDate = Date()
+        isRecording = true
+        startTimer()
+    }
+
+    @MainActor
+    func stop() {
+        finishRecording(endAudio: true, cancelTask: false)
+    }
+
+    @MainActor
+    private func startTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateElapsedText()
+            }
+        }
+    }
+
+    @MainActor
+    private func updateElapsedText() {
+        guard let startDate else {
+            elapsedText = "0:00"
+            return
+        }
+        let elapsed = max(0, Int(Date().timeIntervalSince(startDate).rounded(.down)))
+        elapsedText = "\(elapsed / 60):" + String(format: "%02d", elapsed % 60)
+    }
+
+    @MainActor
+    private func finishRecording(endAudio: Bool, cancelTask: Bool) {
+        timer?.invalidate()
+        timer = nil
+        let request = recognitionRequest
+        let task = recognitionTask
+        recognitionRequest = nil
+        recognitionTask = nil
+        if cancelTask {
+            task?.cancel()
+        }
+        stopAudioEngine(request: request, endAudio: endAudio)
+        startDate = nil
+        isRecording = false
+        audioLevel = 0
+    }
+
+    private func startAudioEngine(with request: SFSpeechAudioBufferRecognitionRequest) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            speechQueue.async { [weak self, weak request] in
+                guard let self, let request else {
+                    continuation.resume(throwing: SpeechError.inputUnavailable)
+                    return
+                }
+
+                let inputNode = self.audioEngine.inputNode
+                let format = inputNode.outputFormat(forBus: 0)
+                guard format.sampleRate > 0, format.channelCount > 0 else {
+                    continuation.resume(throwing: SpeechError.inputUnavailable)
+                    return
+                }
+
+                if self.hasInputTap {
+                    inputNode.removeTap(onBus: 0)
+                    self.hasInputTap = false
+                }
+                self.acceptingAudio = true
+                inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self, weak request] buffer, _ in
+                    guard let self, let request else { return }
+                    let level = Self.audioLevel(from: buffer)
+                    self.speechQueue.async { [weak self, weak request] in
+                        guard let self, self.acceptingAudio, let request else { return }
+                        request.append(buffer)
+                    }
+                    Task { @MainActor in
+                        self.audioLevel = level
+                    }
+                }
+                self.hasInputTap = true
+                self.audioEngine.prepare()
+
+                do {
+                    try self.audioEngine.start()
+                    continuation.resume()
+                } catch {
+                    self.acceptingAudio = false
+                    if self.hasInputTap {
+                        inputNode.removeTap(onBus: 0)
+                        self.hasInputTap = false
+                    }
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func stopAudioEngine(request: SFSpeechAudioBufferRecognitionRequest?, endAudio: Bool) {
+        speechQueue.async { [weak self, weak request] in
+            guard let self else { return }
+            self.acceptingAudio = false
+            if self.audioEngine.isRunning {
+                self.audioEngine.stop()
+            }
+            if self.hasInputTap {
+                self.audioEngine.inputNode.removeTap(onBus: 0)
+                self.hasInputTap = false
+            }
+            if endAudio {
+                request?.endAudio()
+            }
+        }
+    }
+
+    private static func requestSpeechPermission() async -> Bool {
+        await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                DispatchQueue.main.async {
+                    continuation.resume(returning: status == .authorized)
+                }
+            }
+        }
+    }
+
+    private static func requestMicrophonePermission() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await withCheckedContinuation { continuation in
+                AVCaptureDevice.requestAccess(for: .audio) { allowed in
+                    DispatchQueue.main.async {
+                        continuation.resume(returning: allowed)
+                    }
+                }
+            }
+        case .denied, .restricted:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    nonisolated private static func audioLevel(from buffer: AVAudioPCMBuffer) -> Double {
+        guard let channels = buffer.floatChannelData else { return 0 }
+        let channelCount = max(1, Int(buffer.format.channelCount))
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else { return 0 }
+
+        var sum: Float = 0
+        var sampleCount = 0
+        for channel in 0..<min(channelCount, 2) {
+            let data = channels[channel]
+            for frame in 0..<frameLength {
+                let sample = data[frame]
+                sum += sample * sample
+                sampleCount += 1
+            }
+        }
+        guard sampleCount > 0 else { return 0 }
+        let rms = sqrt(sum / Float(sampleCount))
+        return min(1, max(0, Double(rms) * 14))
+    }
+}
+
+private struct VoiceWaveformView: View {
+    var level: Double
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            GeometryReader { proxy in
+                let barCount = max(20, Int(proxy.size.width / 8))
+                let phase = timeline.date.timeIntervalSinceReferenceDate * 7
+                HStack(alignment: .center, spacing: 3) {
+                    ForEach(0..<barCount, id: \.self) { index in
+                        let wave = (sin(Double(index) * 0.72 + phase) + 1) / 2
+                        let amplitude = 0.14 + min(1, max(level, 0.08)) * (0.25 + wave * 0.72)
+                        Capsule(style: .continuous)
+                            .fill(DesignTokens.secondaryText.opacity(0.42 + min(level, 1) * 0.34))
+                            .frame(width: 2, height: max(2, proxy.size.height * CGFloat(amplitude)))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 

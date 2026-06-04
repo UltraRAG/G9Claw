@@ -468,6 +468,8 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PilotDeck/App/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "PilotDeck uses the microphone to turn your speech into chat input.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "PilotDeck uses speech recognition to transcribe your voice into chat input.";
 				LM_FILTER_WARNINGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.3;
@@ -497,6 +499,8 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PilotDeck/App/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "PilotDeck uses the microphone to turn your speech into chat input.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "PilotDeck uses speech recognition to transcribe your voice into chat input.";
 				LM_FILTER_WARNINGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.3;

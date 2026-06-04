@@ -26,6 +26,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>PilotDeck uses the microphone to turn your speech into chat input.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>PilotDeck uses speech recognition to transcribe your voice into chat input.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
