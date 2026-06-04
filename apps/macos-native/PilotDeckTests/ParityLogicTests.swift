@@ -2105,6 +2105,30 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(object["offset"] as? Int, 0)
     }
 
+    func testToolArgumentNormalizerCanonicalizesCommonToolAliases() throws {
+        let write = ToolArgumentNormalizer.normalize(
+            AgentToolCall(id: "write", name: "Write", inputJSON: #"{"path":"index.html","contents":"hello"}"#)
+        )
+        let writeObject = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(write.call.inputJSON.utf8)) as? [String: Any])
+        XCTAssertNil(write.recoveryResult)
+        XCTAssertEqual(writeObject["file_path"] as? String, "index.html")
+        XCTAssertEqual(writeObject["content"] as? String, "hello")
+        XCTAssertNil(writeObject["contents"])
+
+        let delete = ToolArgumentNormalizer.normalize(
+            AgentToolCall(id: "delete", name: "Delete", inputJSON: #"{"filePath":"tmp.txt"}"#)
+        )
+        let deleteObject = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(delete.call.inputJSON.utf8)) as? [String: Any])
+        XCTAssertEqual(deleteObject["path"] as? String, "tmp.txt")
+
+        let notebook = ToolArgumentNormalizer.normalize(
+            AgentToolCall(id: "notebook", name: "EditNotebook", inputJSON: #"{"path":"lab.ipynb","source":""}"#)
+        )
+        let notebookObject = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(notebook.call.inputJSON.utf8)) as? [String: Any])
+        XCTAssertEqual(notebookObject["notebook_path"] as? String, "lab.ipynb")
+        XCTAssertEqual(notebookObject["new_source"] as? String, "")
+    }
+
     func testToolArgumentNormalizerTurnsMalformedArgumentsIntoRecoverableToolResult() {
         let invocation = ToolArgumentNormalizer.normalize(
             AgentToolCall(id: "call-bad", name: "Edit", inputJSON: #"{file_path:"index.html"}"#)
@@ -2884,6 +2908,42 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(written, "<h1>Hello</h1>")
     }
 
+    func testAgentToolExecutorValidatesWriteInputsAndProtectsUnknownOverwrites() async throws {
+        let root = try makeAgentWorkspace("pilotdeck-agent-write-validation")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let existing = root.appendingPathComponent("existing.txt")
+        try "original".write(to: existing, atomically: true, encoding: .utf8)
+        let context = AgentRunContext(request: agentRequest(projectPath: root.path, permissionMode: .bypassPermissions))
+
+        let missingContent = await AgentToolExecutor.execute(
+            call: AgentToolCall(id: "missing-content", name: "Write", inputJSON: #"{"file_path":"new.txt"}"#),
+            context: context
+        )
+        XCTAssertTrue(missingContent.isError)
+        XCTAssertTrue(missingContent.output.contains("content is required"))
+
+        let overwriteWithoutRead = await AgentToolExecutor.execute(
+            call: AgentToolCall(id: "overwrite", name: "Write", inputJSON: #"{"file_path":"existing.txt","content":"changed"}"#),
+            context: context
+        )
+        XCTAssertTrue(overwriteWithoutRead.isError)
+        XCTAssertTrue(overwriteWithoutRead.output.contains("Refusing to overwrite existing file"))
+        XCTAssertEqual(try String(contentsOf: existing, encoding: .utf8), "original")
+
+        let read = await AgentToolExecutor.execute(
+            call: AgentToolCall(id: "read-existing", name: "Read", inputJSON: #"{"file_path":"existing.txt"}"#),
+            context: context
+        )
+        XCTAssertFalse(read.isError, read.output)
+
+        let overwriteAfterRead = await AgentToolExecutor.execute(
+            call: AgentToolCall(id: "overwrite-after-read", name: "Write", inputJSON: #"{"file_path":"existing.txt","content":""}"#),
+            context: context
+        )
+        XCTAssertFalse(overwriteAfterRead.isError, overwriteAfterRead.output)
+        XCTAssertEqual(try String(contentsOf: existing, encoding: .utf8), "")
+    }
+
     func testAgentToolExecutorReadsTextImagePDFAndNotebook() async throws {
         let root = try makeAgentWorkspace("pilotdeck-agent-read")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2996,6 +3056,14 @@ final class ParityLogicTests: XCTestCase {
         let batchReplaced = try String(contentsOf: root.appendingPathComponent("story.txt"), encoding: .utf8)
         XCTAssertEqual(batchReplaced, "red fish blue fish")
 
+        let removeText = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "remove-text", name: "StrReplace", inputJSON: #"{"file_path":"story.txt","old_string":"blue ","new_string":""}"#),
+            context: context
+        )
+        XCTAssertFalse(removeText.isError, removeText.output)
+        let removedText = try String(contentsOf: root.appendingPathComponent("story.txt"), encoding: .utf8)
+        XCTAssertEqual(removedText, "red fish fish")
+
         let notebookReplace = await NativeToolRouter.execute(
             call: AgentToolCall(
                 id: "nb-replace",
@@ -3010,6 +3078,11 @@ final class ParityLogicTests: XCTestCase {
             context: context
         )
         XCTAssertFalse(notebookReplace.isError, notebookReplace.output)
+        let notebookEmptyReplace = await NativeToolRouter.execute(
+            call: AgentToolCall(id: "nb-empty", name: "EditNotebook", inputJSON: #"{"notebook_path":"lab.ipynb","cell_id":"intro","new_source":"","cell_type":"markdown"}"#),
+            context: context
+        )
+        XCTAssertFalse(notebookEmptyReplace.isError, notebookEmptyReplace.output)
         let notebookInsert = await NativeToolRouter.execute(
             call: AgentToolCall(id: "nb-insert", name: "NotebookEdit", inputJSON: #"{"notebook_path":"lab.ipynb","cell_number":1,"edit_mode":"insert","cell_type":"code","new_source":"print(2)\n"}"#),
             context: context
@@ -3086,6 +3159,21 @@ final class ParityLogicTests: XCTestCase {
         )
         XCTAssertFalse(shell.isError, shell.output)
         XCTAssertTrue(shell.output.contains("shell-ok"))
+
+        let largeShell = await NativeToolRouter.execute(
+            call: AgentToolCall(
+                id: "shell-large-output",
+                name: "Shell",
+                inputJSON: #"{"command":"yes x | head -c 1200000","timeout":5000}"#
+            ),
+            context: context
+        )
+        XCTAssertFalse(largeShell.isError, largeShell.output)
+        XCTAssertTrue(largeShell.output.contains("<persisted-output>"))
+        let shellPersisted = root.appendingPathComponent(".pilotdeck/tool-results/test-session/Shell-shell-large-output.txt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: shellPersisted.path))
+        let shellPersistedText = try String(contentsOf: shellPersisted, encoding: .utf8)
+        XCTAssertTrue(shellPersistedText.contains("output truncated after"))
 
         let background = await NativeToolRouter.execute(
             call: AgentToolCall(id: "shell-bg", name: "Shell", inputJSON: #"{"command":"printf bg-ok","run_in_background":true,"timeout":5000}"#),

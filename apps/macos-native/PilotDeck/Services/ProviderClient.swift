@@ -1,5 +1,8 @@
 import Foundation
 import PDFKit
+#if canImport(Darwin)
+import Darwin
+#endif
 
 struct AgentPermissionRequest: Sendable, Equatable {
     var id: UUID
@@ -1123,6 +1126,11 @@ struct ToolArgumentNormalizer {
             return inputJSON
         }
         switch toolName {
+        case "Read", "Write":
+            canonicalizeFilePathInput(&object)
+            if toolName == "Write" {
+                canonicalizeWriteInput(&object)
+            }
         case "Shell":
             canonicalizeShellInput(&object)
         case "Skill":
@@ -1130,7 +1138,12 @@ struct ToolArgumentNormalizer {
         case "Task":
             canonicalizeTaskInput(&object)
         case "StrReplace":
+            canonicalizeFilePathInput(&object)
             canonicalizeStrReplaceInput(&object)
+        case "Delete":
+            canonicalizeDeleteInput(&object)
+        case "EditNotebook":
+            canonicalizeEditNotebookInput(&object)
         case "Await":
             canonicalizeAwaitInput(&object)
         default:
@@ -1142,6 +1155,21 @@ struct ToolArgumentNormalizer {
             return inputJSON
         }
         return canonical
+    }
+
+    private static func canonicalizeFilePathInput(_ object: inout [String: Any]) {
+        if object["file_path"] == nil {
+            object["file_path"] = object["path"] ?? object["filePath"]
+        }
+        object.removeValue(forKey: "filePath")
+    }
+
+    private static func canonicalizeWriteInput(_ object: inout [String: Any]) {
+        if object["content"] == nil {
+            object["content"] = object["contents"] ?? object["text"]
+        }
+        object.removeValue(forKey: "contents")
+        object.removeValue(forKey: "text")
     }
 
     private static func canonicalizeShellInput(_ object: inout [String: Any]) {
@@ -1199,6 +1227,29 @@ struct ToolArgumentNormalizer {
         object.removeValue(forKey: "newString")
     }
 
+    private static func canonicalizeDeleteInput(_ object: inout [String: Any]) {
+        if object["path"] == nil {
+            object["path"] = object["file_path"] ?? object["filePath"]
+        }
+        object.removeValue(forKey: "file_path")
+        object.removeValue(forKey: "filePath")
+    }
+
+    private static func canonicalizeEditNotebookInput(_ object: inout [String: Any]) {
+        if object["notebook_path"] == nil {
+            object["notebook_path"] = object["path"] ?? object["file_path"] ?? object["filePath"]
+        }
+        if object["new_source"] == nil {
+            object["new_source"] = object["source"] ?? object["content"] ?? object["text"]
+        }
+        object.removeValue(forKey: "path")
+        object.removeValue(forKey: "file_path")
+        object.removeValue(forKey: "filePath")
+        object.removeValue(forKey: "source")
+        object.removeValue(forKey: "content")
+        object.removeValue(forKey: "text")
+    }
+
     private static func canonicalizeAwaitInput(_ object: inout [String: Any]) {
         if object["task_id"] == nil {
             object["task_id"] = object["id"] ?? object["taskId"]
@@ -1226,12 +1277,275 @@ struct ToolArgumentNormalizer {
     }
 }
 
+enum AgentToolInputValidator {
+    private static let maxToolInputJSONCharacters = 1_000_000
+    private static let maxWriteContentCharacters = 300_000
+    private static let maxEditStringCharacters = 200_000
+    private static let maxShellCommandCharacters = 100_000
+    private static let maxTaskPromptCharacters = 120_000
+
+    static func validationResult(for call: AgentToolCall) -> AgentToolResult? {
+        let toolName = AgentToolNameCanonicalizer.canonical(call.name)
+        if call.inputJSON.count > maxToolInputJSONCharacters {
+            return error(
+                call: call,
+                toolName: toolName,
+                "Tool input is too large to execute safely. Split the work into smaller tool calls and retry."
+            )
+        }
+        guard let input = object(from: call.inputJSON) else {
+            return error(call: call, toolName: toolName, "Tool input must be a JSON object.")
+        }
+        if let message = validate(toolName: toolName, input: input) {
+            return error(call: call, toolName: toolName, message)
+        }
+        return nil
+    }
+
+    private static func object(from json: String) -> [String: Any]? {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object
+    }
+
+    private static func error(call: AgentToolCall, toolName: String, _ message: String) -> AgentToolResult {
+        AgentToolResult(
+            callId: call.id,
+            toolName: toolName,
+            output: "InputValidationError: \(message)",
+            isError: true
+        )
+    }
+
+    private static func validate(toolName: String, input: [String: Any]) -> String? {
+        switch toolName {
+        case "Read":
+            return requireString("file_path", in: input)
+                ?? requireIntegerIfPresent("offset", in: input)
+                ?? requireIntegerIfPresent("limit", in: input)
+                ?? requireStringIfPresent("pages", in: input)
+        case "Write":
+            return requireString("file_path", in: input)
+                ?? requireString("content", in: input, allowEmpty: true, maxCharacters: maxWriteContentCharacters)
+        case "StrReplace":
+            if let edits = input["edits"] {
+                guard let editObjects = edits as? [[String: Any]], !editObjects.isEmpty else {
+                    return "StrReplace.edits must be a non-empty array of edit objects."
+                }
+                if editObjects.count > 100 {
+                    return "StrReplace.edits contains too many edits; split the changes into smaller batches."
+                }
+                for (index, edit) in editObjects.enumerated() {
+                    if let message = requireString("old_string", in: edit, fieldName: "edits[\(index)].old_string", maxCharacters: maxEditStringCharacters)
+                        ?? requireString("new_string", in: edit, fieldName: "edits[\(index)].new_string", allowEmpty: true, maxCharacters: maxEditStringCharacters)
+                        ?? requireBoolIfPresent("replace_all", in: edit, fieldName: "edits[\(index)].replace_all") {
+                        return message
+                    }
+                }
+                return requireString("file_path", in: input)
+            }
+            return requireString("file_path", in: input)
+                ?? requireString("old_string", in: input, maxCharacters: maxEditStringCharacters)
+                ?? requireString("new_string", in: input, allowEmpty: true, maxCharacters: maxEditStringCharacters)
+                ?? requireBoolIfPresent("replace_all", in: input)
+        case "Delete":
+            return requireString("path", in: input)
+                ?? requireBoolIfPresent("recursive", in: input)
+        case "EditNotebook":
+            let mode = ((input["edit_mode"] as? String) ?? "replace").trimmingCharacters(in: .whitespacesAndNewlines)
+            return requireString("notebook_path", in: input)
+                ?? requireEnumIfPresent("edit_mode", in: input, allowed: ["replace", "insert", "delete"])
+                ?? requireIntegerIfPresent("cell_number", in: input)
+                ?? ((mode == "replace" || mode == "insert") ? requireString("new_source", in: input, allowEmpty: true, maxCharacters: maxEditStringCharacters) : nil)
+        case "Grep":
+            return requireString("pattern", in: input)
+                ?? requireStringIfPresent("path", in: input)
+                ?? requireStringIfPresent("glob", in: input)
+                ?? requireStringIfPresent("include", in: input)
+                ?? requireEnumIfPresent("output_mode", in: input, allowed: ["content", "files_with_matches", "count"])
+                ?? requireIntegerIfPresent("head_limit", in: input)
+                ?? requireIntegerIfPresent("offset", in: input)
+                ?? requireIntegerIfPresent("context", in: input)
+                ?? requireBoolIfPresent("-i", in: input)
+                ?? requireBoolIfPresent("multiline", in: input)
+        case "Glob":
+            return requireString("pattern", in: input)
+                ?? requireStringIfPresent("path", in: input)
+        case "SemanticSearch":
+            return requireString("query", in: input)
+                ?? requireIntegerIfPresent("limit", in: input)
+        case "WebSearch":
+            return requireString("query", in: input)
+                ?? requireStringIfPresent("gl", in: input)
+        case "Shell":
+            return requireString("command", in: input, maxCharacters: maxShellCommandCharacters)
+                ?? requireStringIfPresent("description", in: input)
+                ?? requireIntegerIfPresent("timeout", in: input)
+                ?? requireIntegerIfPresent("timeout_seconds", in: input)
+                ?? requireBoolIfPresent("run_in_background", in: input)
+                ?? requireBoolIfPresent("disable_auto_background", in: input)
+        case "Await":
+            return requireString("task_id", in: input)
+                ?? requireBoolIfPresent("block", in: input)
+                ?? requireIntegerIfPresent("timeout", in: input)
+        case "ReadLints":
+            return requireStringIfPresent("path", in: input)
+                ?? requireStringIfPresent("severity", in: input)
+                ?? requireIntegerIfPresent("limit", in: input)
+        case "Skill":
+            return requireString("skill", in: input)
+                ?? requireStringIfPresent("args", in: input)
+        case "TodoWrite":
+            return validateTodos(input["todos"])
+        case "AskQuestion":
+            return validateQuestionInput(input)
+        case "SwitchMode":
+            return requireEnum("mode", in: input, allowed: ["plan", "agent"])
+                ?? requireStringIfPresent("plan", in: input)
+        case "Task":
+            return requireString("prompt", in: input, maxCharacters: maxTaskPromptCharacters)
+                ?? requireEnumIfPresent("type", in: input, allowed: ["generalPurpose", "generalpurpose", "general-purpose", "general_purpose", "explore", "shell", "cursor-guide", "ci-investigator", "best-of-n-runner"])
+                ?? requireBoolIfPresent("run_in_background", in: input)
+                ?? requireIntegerIfPresent("n", in: input)
+                ?? requireIntegerIfPresent("timeout", in: input)
+                ?? requireStringIfPresent("cwd", in: input)
+                ?? requireEnumIfPresent("isolation", in: input, allowed: ["worktree"])
+        case "AlwaysOnDiscoveryPlan":
+            return requireString("title", in: input)
+                ?? requireString("summary", in: input)
+                ?? requireString("content", in: input, maxCharacters: maxWriteContentCharacters)
+        case "AlwaysOnPrepareWorkspace":
+            return requireStringIfPresent("planId", in: input)
+                ?? requireStringIfPresent("title", in: input)
+        case "AlwaysOnReadChatHistory":
+            return requireIntegerIfPresent("limit", in: input)
+        case "AlwaysOnReport":
+            return requireString("summary", in: input)
+                ?? requireString("content", in: input, maxCharacters: maxWriteContentCharacters)
+        default:
+            return nil
+        }
+    }
+
+    private static func validateTodos(_ value: Any?) -> String? {
+        guard let todos = value as? [[String: Any]], !todos.isEmpty else {
+            return "TodoWrite.todos must be a non-empty array."
+        }
+        if todos.count > 100 {
+            return "TodoWrite.todos contains too many items; keep the active todo list focused."
+        }
+        for (index, todo) in todos.enumerated() {
+            if let message = requireStringIfPresent("content", in: todo, fieldName: "todos[\(index)].content")
+                ?? requireEnumIfPresent("status", in: todo, fieldName: "todos[\(index)].status", allowed: ["pending", "in_progress", "completed"])
+                ?? requireBoolIfPresent("completed", in: todo, fieldName: "todos[\(index)].completed")
+                ?? requireBoolIfPresent("done", in: todo, fieldName: "todos[\(index)].done") {
+                return message
+            }
+        }
+        return nil
+    }
+
+    private static func validateQuestionInput(_ input: [String: Any]) -> String? {
+        if let questions = input["questions"] {
+            guard let array = questions as? [[String: Any]], !array.isEmpty else {
+                return "AskQuestion.questions must be a non-empty array when provided."
+            }
+            for (index, question) in array.enumerated() {
+                if let message = requireString("question", in: question, fieldName: "questions[\(index)].question")
+                    ?? requireStringIfPresent("header", in: question, fieldName: "questions[\(index)].header")
+                    ?? requireBoolIfPresent("multiSelect", in: question, fieldName: "questions[\(index)].multiSelect") {
+                    return message
+                }
+            }
+            return nil
+        }
+        return requireStringIfPresent("question", in: input)
+    }
+
+    private static func requireString(
+        _ key: String,
+        in input: [String: Any],
+        fieldName: String? = nil,
+        allowEmpty: Bool = false,
+        maxCharacters: Int? = nil
+    ) -> String? {
+        let label = fieldName ?? key
+        guard let value = input[key] else { return "\(label) is required." }
+        guard let string = value as? String else { return "\(label) must be a string." }
+        if !allowEmpty, string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "\(label) must not be empty."
+        }
+        if let maxCharacters, string.count > maxCharacters {
+            return "\(label) is too large (\(string.count) characters). Split the work into smaller tool calls."
+        }
+        return nil
+    }
+
+    private static func requireStringIfPresent(
+        _ key: String,
+        in input: [String: Any],
+        fieldName: String? = nil,
+        maxCharacters: Int? = nil
+    ) -> String? {
+        guard input[key] != nil else { return nil }
+        return requireString(key, in: input, fieldName: fieldName, allowEmpty: true, maxCharacters: maxCharacters)
+    }
+
+    private static func requireEnum(_ key: String, in input: [String: Any], allowed: Set<String>) -> String? {
+        guard let value = input[key] else { return "\(key) is required." }
+        guard let string = value as? String else { return "\(key) must be a string." }
+        guard allowed.contains(string) else { return "\(key) must be one of: \(allowed.sorted().joined(separator: ", "))." }
+        return nil
+    }
+
+    private static func requireEnumIfPresent(
+        _ key: String,
+        in input: [String: Any],
+        fieldName: String? = nil,
+        allowed: Set<String>
+    ) -> String? {
+        guard input[key] != nil else { return nil }
+        let label = fieldName ?? key
+        guard let string = input[key] as? String else { return "\(label) must be a string." }
+        guard allowed.contains(string) else { return "\(label) must be one of: \(allowed.sorted().joined(separator: ", "))." }
+        return nil
+    }
+
+    private static func requireIntegerIfPresent(_ key: String, in input: [String: Any]) -> String? {
+        guard let value = input[key] else { return nil }
+        if value is Int { return nil }
+        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            return number.doubleValue.rounded(.towardZero) == number.doubleValue ? nil : "\(key) must be an integer."
+        }
+        return "\(key) must be an integer."
+    }
+
+    private static func requireBoolIfPresent(
+        _ key: String,
+        in input: [String: Any],
+        fieldName: String? = nil
+    ) -> String? {
+        guard let value = input[key] else { return nil }
+        let label = fieldName ?? key
+        guard value is Bool else { return "\(label) must be a boolean." }
+        return nil
+    }
+}
+
 struct AgentToolResult: Sendable, Equatable {
     var callId: String
     var toolName: String
     var output: String
     var isError: Bool
     var isPolicyBlock: Bool = false
+}
+
+struct AgentKnownFileState: Sendable, Equatable {
+    var path: String
+    var modificationDate: Date?
+    var fileSize: UInt64?
 }
 
 enum PlanWorkflowStage: String, Sendable {
@@ -1286,6 +1600,7 @@ final class AgentRunContext: @unchecked Sendable {
     var partialStreamRecoveryCount: Int
     var workspaceMutationEpoch: Int
     var recentWorkspaceFiles: [String]
+    var knownWorkspaceFileStates: [String: AgentKnownFileState]
     private var executedToolSignatures: Set<String>
 
     init(request: AgentRequest) {
@@ -1331,6 +1646,7 @@ final class AgentRunContext: @unchecked Sendable {
         partialStreamRecoveryCount = 0
         workspaceMutationEpoch = 0
         recentWorkspaceFiles = []
+        knownWorkspaceFileStates = [:]
         executedToolSignatures = []
     }
 
@@ -1338,6 +1654,49 @@ final class AgentRunContext: @unchecked Sendable {
         let trimmed = skill.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !invokedSkills.contains(trimmed) else { return }
         invokedSkills.append(trimmed)
+    }
+
+    func recordKnownWorkspaceFile(rawPath: String, mustExist: Bool = true) {
+        guard let url = try? AgentPathResolver.resolve(rawPath, workspacePath: workspacePath, mustExist: mustExist) else {
+            return
+        }
+        recordKnownWorkspaceFile(url: url)
+    }
+
+    func recordKnownWorkspaceFile(url: URL) {
+        let path = url.standardizedFileURL.path
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        let modificationDate = attributes?[.modificationDate] as? Date
+        let fileSize: UInt64?
+        if let number = attributes?[.size] as? NSNumber {
+            fileSize = number.uint64Value
+        } else {
+            fileSize = nil
+        }
+        knownWorkspaceFileStates[path] = AgentKnownFileState(
+            path: path,
+            modificationDate: modificationDate,
+            fileSize: fileSize
+        )
+    }
+
+    func validateKnownBeforeOverwrite(url: URL, rawPath: String) throws {
+        let path = url.standardizedFileURL.path
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        guard let known = knownWorkspaceFileStates[path] else {
+            throw ProviderClientError.toolExecution("Refusing to overwrite existing file without reading it first: \(rawPath). Use Read before Write when replacing an existing file.")
+        }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        let currentModificationDate = attributes?[.modificationDate] as? Date
+        let currentSize = (attributes?[.size] as? NSNumber)?.uint64Value
+        if let knownDate = known.modificationDate,
+           let currentModificationDate,
+           currentModificationDate > knownDate.addingTimeInterval(0.001) {
+            throw ProviderClientError.toolExecution("File changed after it was last read: \(rawPath). Read it again before overwriting.")
+        }
+        if known.fileSize != nil, currentSize != known.fileSize, currentModificationDate != known.modificationDate {
+            throw ProviderClientError.toolExecution("File changed after it was last read: \(rawPath). Read it again before overwriting.")
+        }
     }
 
     var hasIncompleteTodos: Bool {
@@ -3477,6 +3836,7 @@ struct NativeAgentRuntime: Sendable {
     ) -> Bool {
         guard invocation.recoveryResult == nil else { return false }
         let call = invocation.call
+        guard AgentToolInputValidator.validationResult(for: call) == nil else { return false }
         guard PlanTodoExecutionGate.blockingResult(for: call, context: context) == nil else { return false }
         guard case .allow = NativeToolRouter.permissionPolicy(for: call, context: context) else { return false }
         switch AgentToolNameCanonicalizer.canonical(call.name) {
@@ -4551,6 +4911,9 @@ struct NativeAgentRuntime: Sendable {
         request: AgentRequest,
         continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     ) async -> AgentToolResult {
+        if let validationResult = AgentToolInputValidator.validationResult(for: call) {
+            return validationResult
+        }
         if let todoBlock = PlanTodoExecutionGate.blockingResult(for: call, context: context) {
             return todoBlock
         }
@@ -4598,8 +4961,12 @@ struct NativeAgentRuntime: Sendable {
                     )
                 }
                 if let updatedInputJSON {
+                    let updatedCall = AgentToolCall(id: call.id, name: call.name, inputJSON: updatedInputJSON)
+                    if let validationResult = AgentToolInputValidator.validationResult(for: updatedCall) {
+                        return validationResult
+                    }
                     return await NativeToolRouter.execute(
-                        call: AgentToolCall(id: call.id, name: call.name, inputJSON: updatedInputJSON),
+                        call: updatedCall,
                         context: context
                     )
                 }
@@ -5171,7 +5538,7 @@ enum AgentToolRegistry {
         var tools: [[String: Any]] = [
             functionTool(
                 "Read",
-                "Read text, image, PDF, or Jupyter notebook content from the workspace.",
+                "Read text, image, PDF, or Jupyter notebook content from the workspace. For large text files, use offset and limit instead of reading the entire file at once.",
                 [
                     "file_path": stringProperty("Workspace-relative or absolute file path."),
                     "offset": integerProperty("Optional 1-based line offset."),
@@ -5182,20 +5549,20 @@ enum AgentToolRegistry {
             ),
             functionTool(
                 "Write",
-                "Create or overwrite a UTF-8 file in the workspace.",
+                "Create or overwrite a UTF-8 file in the workspace. content is required. Before overwriting an existing file, read it first in this session; for edits to existing files, prefer StrReplace. Keep content under 300k characters and split very large generated files.",
                 [
                     "file_path": stringProperty("Workspace-relative or absolute file path."),
-                    "content": stringProperty("Complete file contents to write."),
+                    "content": stringProperty("Complete file contents to write. Must be present, even when intentionally writing an empty file."),
                 ],
                 required: ["file_path", "content"]
             ),
             functionTool(
                 "StrReplace",
-                "Replace exact strings in a workspace file. Supports one replacement or an edits array.",
+                "Replace exact strings in a workspace file. Supports one replacement or an edits array. Use this instead of Write when modifying an existing file; old_string must match the current file content exactly.",
                 [
                     "file_path": stringProperty("Workspace-relative or absolute file path."),
                     "old_string": stringProperty("Exact text to replace."),
-                    "new_string": stringProperty("Replacement text."),
+                    "new_string": stringProperty("Replacement text. May be empty to delete the matched text."),
                     "replace_all": boolProperty("Replace every match instead of requiring one unique match."),
                     "edits": [
                         "type": "array",
@@ -5303,7 +5670,7 @@ enum AgentToolRegistry {
         tools.append(contentsOf: [
             functionTool(
                 "Shell",
-                "Run a shell command in the workspace.",
+                "Run a non-interactive shell command in the workspace. Avoid commands that wait for input or run forever; use run_in_background for servers/watchers and set a timeout for potentially slow commands.",
                 [
                     "command": stringProperty("Command to run with /bin/zsh -lc."),
                     "description": stringProperty("Short reason for running the command."),
@@ -6054,6 +6421,9 @@ enum AgentToolExecutor {
         }
         let executionCall = invocation.call
         let toolName = AgentToolNameCanonicalizer.canonical(executionCall.name)
+        if let validationResult = AgentToolInputValidator.validationResult(for: executionCall) {
+            return validationResult
+        }
         if let cachedGlob = RootGlobExecutionPolicy.cachedResultIfAvailable(call: executionCall, context: context) {
             return cachedGlob
         }
@@ -6062,15 +6432,15 @@ enum AgentToolExecutor {
             var toolReportedError = false
             switch toolName {
             case "Read":
-                output = try read(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
+                output = try read(inputJSON: executionCall.inputJSON, context: context)
             case "Write":
-                output = try write(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
+                output = try write(inputJSON: executionCall.inputJSON, context: context)
             case "StrReplace":
-                output = try strReplace(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
+                output = try strReplace(inputJSON: executionCall.inputJSON, context: context)
             case "Delete":
                 output = try delete(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "EditNotebook":
-                output = try editNotebook(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
+                output = try editNotebook(inputJSON: executionCall.inputJSON, context: context)
             case "Grep":
                 output = try grep(inputJSON: executionCall.inputJSON, workspacePath: context.workspacePath)
             case "Glob":
@@ -6242,23 +6612,45 @@ enum AgentToolExecutor {
         return updated
     }
 
-    private static func read(inputJSON: String, workspacePath: String) throws -> String {
+    private static let maxWriteContentCharacters = 300_000
+    private static let maxEditableFileBytes: UInt64 = 5 * 1_024 * 1_024
+    private static let maxImageReadBytes: UInt64 = 4 * 1_024 * 1_024
+    private static let maxPDFReadBytes: UInt64 = 25 * 1_024 * 1_024
+
+    private static func fileSize(_ url: URL) throws -> UInt64 {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+    }
+
+    private static func ensureFileSize(_ url: URL, maxBytes: UInt64, purpose: String) throws {
+        let size = try fileSize(url)
+        guard size <= maxBytes else {
+            throw ProviderClientError.toolExecution("\(purpose) refused \(url.lastPathComponent) because it is \(size) bytes, above the \(maxBytes) byte safety limit.")
+        }
+    }
+
+    private static func read(inputJSON: String, context: AgentRunContext) throws -> String {
         let input = try inputObject(from: inputJSON)
         let file = try requiredString("file_path", input: input)
-        let url = try AgentPathResolver.resolve(file, workspacePath: workspacePath, mustExist: true)
+        let url = try AgentPathResolver.resolve(file, workspacePath: context.workspacePath, mustExist: true)
         let ext = url.pathExtension.lowercased()
+        let output: String
         if ext == "ipynb" {
-            return try readNotebook(url: url, workspacePath: workspacePath)
+            try ensureFileSize(url, maxBytes: maxEditableFileBytes, purpose: "Notebook Read")
+            output = try readNotebook(url: url, workspacePath: context.workspacePath)
+        } else if ext == "pdf" {
+            try ensureFileSize(url, maxBytes: maxPDFReadBytes, purpose: "PDF Read")
+            output = try readPDF(url: url, workspacePath: context.workspacePath, pages: (input["pages"] as? String).nilIfBlank)
+        } else if imageMimeType(for: url) != nil {
+            try ensureFileSize(url, maxBytes: maxImageReadBytes, purpose: "Image Read")
+            output = try readImage(url: url, workspacePath: context.workspacePath)
+        } else {
+            let offset = max((input["offset"] as? Int ?? 1) - 1, 0)
+            let limit = max(input["limit"] as? Int ?? 2_000, 1)
+            output = try readTextLines(url: url, offset: offset, limit: limit)
         }
-        if ext == "pdf" {
-            return try readPDF(url: url, workspacePath: workspacePath, pages: (input["pages"] as? String).nilIfBlank)
-        }
-        if imageMimeType(for: url) != nil {
-            return try readImage(url: url, workspacePath: workspacePath)
-        }
-        let offset = max((input["offset"] as? Int ?? 1) - 1, 0)
-        let limit = max(input["limit"] as? Int ?? 2_000, 1)
-        return try readTextLines(url: url, offset: offset, limit: limit)
+        context.recordKnownWorkspaceFile(url: url)
+        return output
     }
 
     private static func readTextLines(url: URL, offset: Int, limit: Int) throws -> String {
@@ -6298,20 +6690,26 @@ enum AgentToolExecutor {
         return selected.joined(separator: "\n")
     }
 
-    private static func write(inputJSON: String, workspacePath: String) throws -> String {
+    private static func write(inputJSON: String, context: AgentRunContext) throws -> String {
         let input = try inputObject(from: inputJSON)
         let file = try requiredString("file_path", input: input)
-        let content = try requiredString("content", input: input)
-        let url = try AgentPathResolver.resolve(file, workspacePath: workspacePath, mustExist: false)
+        let content = try requiredString("content", input: input, allowEmpty: true)
+        guard content.count <= maxWriteContentCharacters else {
+            throw ProviderClientError.toolExecution("Write content is too large (\(content.count) characters). Split the file into smaller files or reduce generated content before retrying.")
+        }
+        let url = try AgentPathResolver.resolve(file, workspacePath: context.workspacePath, mustExist: false)
+        try context.validateKnownBeforeOverwrite(url: url, rawPath: file)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try content.write(to: url, atomically: true, encoding: .utf8)
-        return "Wrote \(content.utf8.count) bytes to \(AgentPathResolver.relativePath(url, workspacePath: workspacePath))."
+        context.recordKnownWorkspaceFile(url: url)
+        return "Wrote \(content.utf8.count) bytes to \(AgentPathResolver.relativePath(url, workspacePath: context.workspacePath))."
     }
 
-    private static func strReplace(inputJSON: String, workspacePath: String) throws -> String {
+    private static func strReplace(inputJSON: String, context: AgentRunContext) throws -> String {
         let input = try inputObject(from: inputJSON)
         let file = try requiredString("file_path", input: input)
-        let url = try AgentPathResolver.resolve(file, workspacePath: workspacePath, mustExist: true)
+        let url = try AgentPathResolver.resolve(file, workspacePath: context.workspacePath, mustExist: true)
+        try ensureFileSize(url, maxBytes: maxEditableFileBytes, purpose: "StrReplace")
         var content = try String(contentsOf: url, encoding: .utf8)
         let edits: [[String: Any]]
         if let batch = input["edits"] as? [[String: Any]], !batch.isEmpty {
@@ -6321,12 +6719,13 @@ enum AgentToolExecutor {
         }
         for editInput in edits {
             let oldString = try requiredString("old_string", input: editInput)
-            let newString = try requiredString("new_string", input: editInput)
+            let newString = try requiredString("new_string", input: editInput, allowEmpty: true)
             let replaceAll = editInput["replace_all"] as? Bool ?? false
             content = try applyEdit(content: content, oldString: oldString, newString: newString, replaceAll: replaceAll)
         }
         try content.write(to: url, atomically: true, encoding: .utf8)
-        let target = AgentPathResolver.relativePath(url, workspacePath: workspacePath)
+        context.recordKnownWorkspaceFile(url: url)
+        let target = AgentPathResolver.relativePath(url, workspacePath: context.workspacePath)
         return edits.count == 1 ? "Edited \(target)." : "Applied \(edits.count) edits to \(target)."
     }
 
@@ -6346,13 +6745,14 @@ enum AgentToolExecutor {
         return "Deleted \(AgentPathResolver.relativePath(url, workspacePath: workspacePath))."
     }
 
-    private static func editNotebook(inputJSON: String, workspacePath: String) throws -> String {
+    private static func editNotebook(inputJSON: String, context: AgentRunContext) throws -> String {
         let input = try inputObject(from: inputJSON)
         let notebookPath = try requiredString("notebook_path", input: input)
-        let url = try AgentPathResolver.resolve(notebookPath, workspacePath: workspacePath, mustExist: true)
+        let url = try AgentPathResolver.resolve(notebookPath, workspacePath: context.workspacePath, mustExist: true)
         guard url.pathExtension.lowercased() == "ipynb" else {
             throw ProviderClientError.toolExecution("EditNotebook requires a .ipynb file.")
         }
+        try ensureFileSize(url, maxBytes: maxEditableFileBytes, purpose: "EditNotebook")
         let data = try Data(contentsOf: url)
         guard var object = try JSONSerialization.jsonObject(with: data, options: [.mutableContainers]) as? [String: Any],
               var cells = object["cells"] as? [[String: Any]] else {
@@ -6383,7 +6783,7 @@ enum AgentToolExecutor {
             guard cells.indices.contains(index) else {
                 throw ProviderClientError.toolExecution("Notebook cell index out of range: \(index)")
             }
-            let source = try requiredString("new_source", input: input)
+            let source = try requiredString("new_source", input: input, allowEmpty: true)
             cells[index]["source"] = notebookSourceArray(source)
             if let cellType = (input["cell_type"] as? String).nilIfBlank {
                 cells[index]["cell_type"] = cellType
@@ -6394,7 +6794,8 @@ enum AgentToolExecutor {
         object["cells"] = cells
         let updated = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
         try updated.write(to: url, options: .atomic)
-        return "Notebook \(mode) applied to \(AgentPathResolver.relativePath(url, workspacePath: workspacePath)) at cell \(index)."
+        context.recordKnownWorkspaceFile(url: url)
+        return "Notebook \(mode) applied to \(AgentPathResolver.relativePath(url, workspacePath: context.workspacePath)) at cell \(index)."
     }
 
     private static func glob(inputJSON: String, workspacePath: String) throws -> String {
@@ -6445,7 +6846,8 @@ enum AgentToolExecutor {
                includeRegex.firstMatch(in: relative, range: NSRange(location: 0, length: (relative as NSString).length)) == nil {
                 continue
             }
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            guard (try? fileSize(url)).map({ $0 <= maxEditableFileBytes }) ?? false,
+                  let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
             let lines = text.components(separatedBy: .newlines)
             for (index, line) in lines.enumerated() {
                 let nsLine = line as NSString
@@ -6483,7 +6885,9 @@ enum AgentToolExecutor {
         }
         var hits: [[String: Any]] = []
         for url in AgentPathResolver.walk(root) {
-            guard let text = try? String(contentsOf: url, encoding: .utf8), text.count <= 300_000 else { continue }
+            guard (try? fileSize(url)).map({ $0 <= maxEditableFileBytes }) ?? false,
+                  let text = try? String(contentsOf: url, encoding: .utf8),
+                  text.count <= 300_000 else { continue }
             let relative = AgentPathResolver.relativePath(url, workspacePath: workspacePath)
             var bestScore = score(relative.lowercased(), terms: terms) * 4
             var bestLine = 1
@@ -7554,7 +7958,7 @@ enum AgentToolExecutor {
         }
         if process.isRunning {
             timedOut = true
-            process.terminate()
+            terminateProcessWithEscalation(process)
         }
         process.waitUntilExit()
         let out = finishProcessPipeDrain(stdout, collector: stdoutCollector)
@@ -7815,9 +8219,11 @@ enum AgentToolExecutor {
         return "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable."
     }
 
-    static func requiredString(_ key: String, input: [String: Any]) throws -> String {
-        guard let value = input[key] as? String,
-              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    static func requiredString(_ key: String, input: [String: Any], allowEmpty: Bool = false) throws -> String {
+        guard let value = input[key] as? String else {
+            throw ProviderClientError.toolExecution("Missing required string: \(key)")
+        }
+        if !allowEmpty, value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw ProviderClientError.toolExecution("Missing required string: \(key)")
         }
         return value
@@ -7931,23 +8337,49 @@ struct AgentShellRunResult: Sendable, Equatable {
 }
 
 final class ProcessOutputCollector: @unchecked Sendable {
+    private static let maxBufferedBytes = 1_000_000
     private let lock = NSLock()
     private var data = Data()
+    private var truncatedBytes = 0
 
     func append(_ chunk: Data) {
         guard !chunk.isEmpty else { return }
         lock.withLock {
-            data.append(chunk)
+            let remaining = max(0, Self.maxBufferedBytes - data.count)
+            if remaining > 0 {
+                data.append(chunk.prefix(remaining))
+            }
+            if chunk.count > remaining {
+                truncatedBytes += chunk.count - remaining
+            }
         }
     }
 
     func string() -> String {
         lock.withLock {
-            String(data: data, encoding: .utf8) ??
+            var output = String(data: data, encoding: .utf8) ??
                 String(data: data, encoding: .isoLatin1) ??
                 ""
+            if truncatedBytes > 0 {
+                output += "\n\n... output truncated after \(Self.maxBufferedBytes) bytes; \(truncatedBytes) additional bytes omitted ..."
+            }
+            return output
         }
     }
+}
+
+fileprivate func terminateProcessWithEscalation(_ process: Process, graceSeconds: TimeInterval = 1.0) {
+    guard process.isRunning else { return }
+    process.terminate()
+    let deadline = Date().addingTimeInterval(graceSeconds)
+    while process.isRunning, Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+#if canImport(Darwin)
+    if process.isRunning {
+        kill(process.processIdentifier, SIGKILL)
+    }
+#endif
 }
 
 fileprivate func installProcessPipeDrain(_ pipe: Pipe, collector: ProcessOutputCollector) {
@@ -8078,7 +8510,7 @@ final class AgentBackgroundTaskStore: @unchecked Sendable {
             }
             if process.isRunning {
                 timedOut = true
-                process.terminate()
+                terminateProcessWithEscalation(process)
             }
             process.waitUntilExit()
             self?.completeFinishedShellProcess(id: id, timedOut: timedOut, fallbackStartedAt: started)
@@ -8128,9 +8560,12 @@ final class AgentBackgroundTaskStore: @unchecked Sendable {
     }
 
     func terminate(sessionId: String? = nil) {
+        var processesToTerminate: [Process] = []
         lock.withLock {
             for record in records.values where record.status == "running" && (sessionId == nil || record.sessionId == sessionId) {
-                record.process?.terminate()
+                if let process = record.process {
+                    processesToTerminate.append(process)
+                }
                 record.task?.cancel()
                 record.stdoutPipe?.fileHandleForReading.readabilityHandler = nil
                 record.stderrPipe?.fileHandleForReading.readabilityHandler = nil
@@ -8146,6 +8581,9 @@ final class AgentBackgroundTaskStore: @unchecked Sendable {
             if sessionId == nil {
                 records.removeAll()
             }
+        }
+        for process in processesToTerminate {
+            terminateProcessWithEscalation(process)
         }
     }
 
