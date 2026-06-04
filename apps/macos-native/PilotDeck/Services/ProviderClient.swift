@@ -1590,6 +1590,7 @@ final class AgentRunContext: @unchecked Sendable {
     var maxSubagentDepth: Int
     var lastExecutedToolName: String?
     var lastToolResultWasError: Bool
+    var lastToolResultWasExpectedTimeout: Bool
     var planExecutionApproved: Bool
     var hasSuccessfulDeletion: Bool
     var lastToolResultWasBenignDeletionVerification: Bool
@@ -1636,6 +1637,7 @@ final class AgentRunContext: @unchecked Sendable {
         maxSubagentDepth = max(0, Int(request.nativeConfigValues["runtime.maxSubagentDepth"] ?? "") ?? 1)
         lastExecutedToolName = nil
         lastToolResultWasError = false
+        lastToolResultWasExpectedTimeout = false
         planExecutionApproved = false
         hasSuccessfulDeletion = false
         lastToolResultWasBenignDeletionVerification = false
@@ -1747,6 +1749,7 @@ final class AgentRunContext: @unchecked Sendable {
         recordRecentWorkspaceFiles(from: call)
         if result.isPolicyBlock {
             lastToolResultWasBenignDeletionVerification = false
+            lastToolResultWasExpectedTimeout = false
             lastToolResultWasError = false
             return
         }
@@ -1755,8 +1758,10 @@ final class AgentRunContext: @unchecked Sendable {
             call: call,
             hasSuccessfulDeletion: hasSuccessfulDeletion
         )
+        let expectedTimeout = Self.isExpectedShellTimeout(result: result, call: call)
         lastToolResultWasBenignDeletionVerification = benignDeletionVerification
-        lastToolResultWasError = result.isError && !benignDeletionVerification
+        lastToolResultWasExpectedTimeout = expectedTimeout
+        lastToolResultWasError = result.isError && !benignDeletionVerification && !expectedTimeout
         if !result.isError {
             successfulToolExecutionCount += 1
             continuationNudgeCount = 0
@@ -1849,6 +1854,32 @@ final class AgentRunContext: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    private static func isExpectedShellTimeout(result: AgentToolResult, call: AgentToolCall) -> Bool {
+        guard result.toolName == "Shell",
+              result.isError,
+              result.output.range(of: "timed out", options: [.caseInsensitive, .diacriticInsensitive]) != nil,
+              let data = call.inputJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+
+        let timeoutMilliseconds: Int?
+        if let timeout = object["timeout"] as? Int {
+            timeoutMilliseconds = timeout
+        } else if let timeout = object["timeout"] as? NSNumber {
+            timeoutMilliseconds = timeout.intValue
+        } else if let timeoutSeconds = object["timeout_seconds"] as? Int {
+            timeoutMilliseconds = timeoutSeconds * 1_000
+        } else if let timeoutSeconds = object["timeout_seconds"] as? NSNumber {
+            timeoutMilliseconds = timeoutSeconds.intValue * 1_000
+        } else {
+            timeoutMilliseconds = nil
+        }
+
+        guard let timeoutMilliseconds else { return false }
+        return timeoutMilliseconds > 0 && timeoutMilliseconds <= 10_000
     }
 
     private func appendRecentWorkspaceFile(_ path: String) {

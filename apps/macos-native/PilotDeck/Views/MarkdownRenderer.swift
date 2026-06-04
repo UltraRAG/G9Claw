@@ -6,7 +6,7 @@ struct NativeMarkdownView: View {
     var lineSpacing: CGFloat = 7
 
     private var blocks: [NativeMarkdownBlock] {
-        NativeMarkdownParser.parse(text)
+        NativeMarkdownRenderCache.blocks(for: text)
     }
 
     var body: some View {
@@ -142,7 +142,7 @@ struct MarkdownInlineText: View {
 
     var body: some View {
         Group {
-            if let attributed = try? AttributedString(markdown: value) {
+            if let attributed = NativeMarkdownRenderCache.attributedString(for: value) {
                 Text(attributed)
             } else {
                 Text(value)
@@ -168,6 +168,63 @@ enum NativeMarkdownBlock: Hashable {
 struct NativeMarkdownListItem: Hashable {
     var text: String
     var checked: Bool?
+}
+
+private enum NativeMarkdownRenderCache {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var parsedBlocks: [String: [NativeMarkdownBlock]] = [:]
+    nonisolated(unsafe) private static var attributedStrings: [String: AttributedString] = [:]
+    nonisolated(unsafe) private static var parsedBlockOrder: [String] = []
+    nonisolated(unsafe) private static var attributedOrder: [String] = []
+    private static let parsedBlockLimit = 160
+    private static let attributedLimit = 320
+
+    static func blocks(for text: String) -> [NativeMarkdownBlock] {
+        lock.lock()
+        if let cached = parsedBlocks[text] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        let parsed = NativeMarkdownParser.parse(text)
+
+        lock.lock()
+        parsedBlocks[text] = parsed
+        parsedBlockOrder.append(text)
+        trim(&parsedBlocks, order: &parsedBlockOrder, limit: parsedBlockLimit)
+        lock.unlock()
+        return parsed
+    }
+
+    static func attributedString(for text: String) -> AttributedString? {
+        lock.lock()
+        if let cached = attributedStrings[text] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        guard let parsed = try? AttributedString(markdown: text) else {
+            return nil
+        }
+
+        lock.lock()
+        attributedStrings[text] = parsed
+        attributedOrder.append(text)
+        trim(&attributedStrings, order: &attributedOrder, limit: attributedLimit)
+        lock.unlock()
+        return parsed
+    }
+
+    private static func trim<Value>(_ cache: inout [String: Value], order: inout [String], limit: Int) {
+        while order.count > limit {
+            let key = order.removeFirst()
+            if !order.contains(key) {
+                cache.removeValue(forKey: key)
+            }
+        }
+    }
 }
 
 enum NativeMarkdownParser {

@@ -2,6 +2,19 @@ import Combine
 import Foundation
 import SwiftUI
 
+private actor SessionMessagePersistenceWriter {
+    func write(messages: [ChatMessage], sessionID: String, sessionsDirectory: URL) {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(messages)
+            try data.write(to: sessionsDirectory.appendingPathComponent("\(sessionID).json"), options: .atomic)
+        } catch {
+            AppLog.write("session persist error for \(sessionID): \(error.localizedDescription)")
+        }
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var projects: [WorkspaceProject] = WorkspaceProject.sample()
@@ -51,6 +64,7 @@ final class AppState: ObservableObject {
     let routingService = RoutingService()
     let alwaysOnService = AlwaysOnService()
     let alwaysOnManager = NativeAlwaysOnManager()
+    private let sessionPersistenceWriter = SessionMessagePersistenceWriter()
 
     private var activeAgentTask: Task<Void, Never>?
     private var activeRunToken: UUID?
@@ -3404,13 +3418,13 @@ final class AppState: ObservableObject {
     private func persistSessionMessages(sessionID: String) {
         guard let messages = messagesBySession[sessionID],
               let paths = try? AppPaths.current() else { return }
-        do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(messages)
-            try data.write(to: paths.sessions.appendingPathComponent("\(sessionID).json"), options: .atomic)
-        } catch {
-            AppLog.write("session persist error for \(sessionID): \(error.localizedDescription)")
+        let sessionsDirectory = paths.sessions
+        Task { [sessionPersistenceWriter] in
+            await sessionPersistenceWriter.write(
+                messages: messages,
+                sessionID: sessionID,
+                sessionsDirectory: sessionsDirectory
+            )
         }
     }
 

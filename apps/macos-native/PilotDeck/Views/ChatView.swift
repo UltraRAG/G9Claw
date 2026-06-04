@@ -22,7 +22,7 @@ struct ChatView: View {
                     ScrollViewReader { proxy in
                         GeometryReader { geometry in
                             ScrollView {
-                                VStack(alignment: .leading, spacing: 18) {
+                                LazyVStack(alignment: .leading, spacing: 18) {
                                     ForEach(state.currentMessages) { message in
                                         let headerActivities = runHeaderActivities(for: message)
                                         if shouldShowRunHeader(for: message, activities: headerActivities) {
@@ -1460,6 +1460,13 @@ private struct MessageRow: View {
             guard case .toolCall(let call) = block else { return nil }
             return call.id
         })
+        let toolResultsByCallID = Dictionary(
+            message.blocks.compactMap { block -> (String, ToolResult)? in
+                guard case .toolResult(let result) = block else { return nil }
+                return (result.toolCallId, result)
+            },
+            uniquingKeysWith: { _, latest in latest }
+        )
         var consumedResultIDs = Set<String>()
         var toolGroup: [(ToolCall, ToolResult?)] = []
         var sawSuccessfulDeletion = false
@@ -1495,10 +1502,7 @@ private struct MessageRow: View {
                 flushToolGroup()
                 segments.append(.attachment(attachment))
             case .toolCall(let call):
-                let result = message.blocks.compactMap { candidate -> ToolResult? in
-                    guard case .toolResult(let result) = candidate, result.toolCallId == call.id else { return nil }
-                    return result
-                }.last
+                let result = toolResultsByCallID[call.id]
                 if result != nil {
                     consumedResultIDs.insert(call.id)
                 }

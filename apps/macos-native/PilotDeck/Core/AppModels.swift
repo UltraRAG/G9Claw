@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-enum SessionProvider: String, CaseIterable, Codable, Identifiable {
+enum SessionProvider: String, CaseIterable, Codable, Identifiable, Sendable {
     case pilotDeck = "pilotdeck"
     case cursor
     case codex
@@ -393,14 +393,14 @@ struct ProjectSession: Identifiable, Hashable, Codable {
     }
 }
 
-enum ChatRole: String, Codable {
+enum ChatRole: String, Codable, Sendable {
     case user
     case assistant
     case system
     case tool
 }
 
-enum ChatBlock: Hashable, Codable {
+enum ChatBlock: Hashable, Codable, Sendable {
     case text(String)
     case reasoning(String)
     case toolCall(ToolCall)
@@ -420,19 +420,19 @@ enum ChatBlockVisibilityPolicy {
     }
 }
 
-enum ProcessStatusKind: String, Hashable, Codable {
+enum ProcessStatusKind: String, Hashable, Codable, Sendable {
     case contextCompaction
     case contextRecovery
 }
 
-struct ProcessStatusBlock: Hashable, Codable {
+struct ProcessStatusBlock: Hashable, Codable, Sendable {
     var id: String
     var title: String
     var detail: String?
     var kind: ProcessStatusKind
 }
 
-struct ChatMessage: Identifiable, Hashable, Codable {
+struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
     var id: UUID
     var sessionId: String
     var provider: SessionProvider
@@ -607,14 +607,14 @@ enum AgentActivityState: String, Codable {
     case cancelled
 }
 
-struct ToolCall: Identifiable, Hashable, Codable {
+struct ToolCall: Identifiable, Hashable, Codable, Sendable {
     var id: String
     var name: String
     var inputJSON: String
     var status: ToolCallStatus
 }
 
-enum ToolCallStatus: String, Codable {
+enum ToolCallStatus: String, Codable, Sendable {
     case pending
     case running
     case approved
@@ -623,7 +623,7 @@ enum ToolCallStatus: String, Codable {
     case failed
 }
 
-struct ToolResult: Hashable, Codable {
+struct ToolResult: Hashable, Codable, Sendable {
     var toolCallId: String
     var output: String
     var isError: Bool
@@ -836,7 +836,7 @@ struct AgentInteractivePayload: Hashable, Codable, Sendable {
     }
 }
 
-struct FileAttachment: Identifiable, Hashable, Codable {
+struct FileAttachment: Identifiable, Hashable, Codable, Sendable {
     var id: UUID
     var fileName: String
     var path: String
@@ -1102,7 +1102,7 @@ struct WorkspaceContext: Hashable, Codable {
     var isGeneral: Bool
 }
 
-struct TokenBudget: Hashable, Codable {
+struct TokenBudget: Hashable, Codable, Sendable {
     var used: Int
     var total: Int
     var level: ContextBudgetLevel? = nil

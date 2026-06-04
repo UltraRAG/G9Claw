@@ -2728,6 +2728,49 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertTrue(CompletionGate.canFinish(request: request, context: context, assistantContent: "确认删除完成，目录不存在。"))
     }
 
+    func testExpectedShortShellTimeoutDoesNotBlockCompletion() {
+        let request = agentRequest(
+            prompt: "尝试运行一个可能卡住的非交互命令，并设置很短 timeout。",
+            permissionMode: .bypassPermissions
+        )
+        let context = AgentRunContext(request: request)
+        let call = AgentToolCall(id: "shell-timeout", name: "Shell", inputJSON: #"{"command":"sleep 10","timeout":2000}"#)
+
+        context.recordToolResult(
+            AgentToolResult(callId: "shell-timeout", toolName: "Shell", output: "exit code: 15\ntimed out", isError: true),
+            call: call
+        )
+
+        XCTAssertTrue(context.lastToolResultWasExpectedTimeout)
+        XCTAssertFalse(context.lastToolResultWasError)
+        XCTAssertTrue(
+            CompletionGate.canFinish(
+                request: request,
+                context: context,
+                assistantContent: "命令按预期超时并已终止。"
+            )
+        )
+    }
+
+    func testDefaultShellTimeoutStillBlocksCompletion() {
+        let request = agentRequest(prompt: "运行测试命令", permissionMode: .bypassPermissions)
+        let context = AgentRunContext(request: request)
+        let call = AgentToolCall(id: "shell-timeout", name: "Shell", inputJSON: #"{"command":"npm test"}"#)
+
+        context.recordToolResult(
+            AgentToolResult(callId: "shell-timeout", toolName: "Shell", output: "exit code: 15\ntimed out", isError: true),
+            call: call
+        )
+
+        XCTAssertFalse(context.lastToolResultWasExpectedTimeout)
+        XCTAssertTrue(context.lastToolResultWasError)
+        if case .realError = CompletionGate.decision(request: request, context: context, assistantContent: "") {
+            XCTAssertTrue(true)
+        } else {
+            XCTFail("Default shell timeout should still be treated as an unrecovered tool error.")
+        }
+    }
+
     func testDeletionVerificationRootGlobCanBeSuppressedInTranscript() {
         let deleteCall = ToolCall(id: "delete", name: "Delete", inputJSON: #"{"path":".","recursive":true}"#, status: .completed)
         let deleteResult = ToolResult(toolCallId: "delete", output: "Deleted .", isError: false)
