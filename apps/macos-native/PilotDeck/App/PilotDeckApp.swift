@@ -86,12 +86,6 @@ struct PilotDeckApp: App {
             }
         }
 
-        Settings {
-            SettingsView()
-                .environmentObject(state)
-                .preferredColorScheme(state.settings.colorScheme.swiftUIColorScheme)
-                .frame(width: 920, height: 640)
-        }
     }
 }
 
@@ -209,56 +203,6 @@ private enum MenuBarSanitizer {
     private static func pruneFileMenu(_ menu: NSMenu) {
         while menu.items.count > 3 {
             menu.removeItem(at: 3)
-        }
-    }
-}
-
-@MainActor
-enum SettingsWindowPresenter {
-    static let identifier = NSUserInterfaceItemIdentifier("PilotDeckSettingsWindow")
-
-    static func configure(window: NSWindow?, title: String = "Settings") {
-        guard let window else { return }
-        window.identifier = identifier
-        window.title = title
-        window.titleVisibility = .hidden
-        window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 860, height: 620)
-    }
-
-    static func openAndBringToFront() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-        bringToFront()
-    }
-
-    static func bringToFront() {
-        NSApp.activate(ignoringOtherApps: true)
-        settingsWindow(in: NSApp.windows)?.makeKeyAndOrderFront(nil)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            NSApp.activate(ignoringOtherApps: true)
-            settingsWindow(in: NSApp.windows)?.makeKeyAndOrderFront(nil)
-        }
-    }
-
-    static func settingsWindow(in windows: [NSWindow]) -> NSWindow? {
-        windows.first { $0.identifier == identifier }
-    }
-}
-
-struct SettingsWindowConfigurator: NSViewRepresentable {
-    var title = "Settings"
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        DispatchQueue.main.async {
-            SettingsWindowPresenter.configure(window: view.window, title: title)
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async {
-            SettingsWindowPresenter.configure(window: nsView.window, title: title)
         }
     }
 }

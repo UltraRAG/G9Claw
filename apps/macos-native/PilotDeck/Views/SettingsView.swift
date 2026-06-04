@@ -69,11 +69,6 @@ private struct SettingsContentView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
-        .background {
-            if !isEmbeddedInMainWindow {
-                SettingsWindowConfigurator(title: state.t(.settings))
-            }
-        }
         .frame(
             minWidth: isEmbeddedInMainWindow ? 0 : 760,
             maxWidth: isEmbeddedInMainWindow ? .infinity : nil,

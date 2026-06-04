@@ -9491,14 +9491,14 @@ final class ParityLogicTests: XCTestCase {
     }
 
     @MainActor
-    func testOpenSettingsStoresInitialTabWithoutShowingOverlay() {
+    func testOpenSettingsStoresInitialTabAndShowsEmbeddedSettingsPage() {
         let state = makeTestAppState()
 
         state.showSettings = false
         state.openSettings(.config)
 
         XCTAssertEqual(state.settingsInitialTab, .config)
-        XCTAssertFalse(state.showSettings)
+        XCTAssertTrue(state.showSettings)
     }
 
     @MainActor

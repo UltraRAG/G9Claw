@@ -1847,8 +1847,7 @@ final class AppState: ObservableObject {
     func openSettings(_ tab: SettingsMainTab = .appearance) {
         settingsInitialTab = tab
         showProjectCreationWizard = false
-        showSettings = false
-        SettingsWindowPresenter.openAndBringToFront()
+        showSettings = true
     }
 
     func closeSettings() {
