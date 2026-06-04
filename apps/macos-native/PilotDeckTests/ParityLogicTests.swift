@@ -732,6 +732,44 @@ final class ParityLogicTests: XCTestCase {
         XCTAssertEqual(NativeRouterRuntime.decision(forTier: "simple", values: values, isBackgroundRequest: true).entryID, "zai/glm-4.5-air")
     }
 
+    func testWebSchemaModelIDsPreserveDotsAndHyphens() throws {
+        let yaml = """
+        schemaVersion: 1
+        agent:
+          model: edgeclaw/qwen3.6-35b-a3b
+        model:
+          providers:
+            edgeclaw:
+              protocol: openai
+              url: http://example.local/v1
+              apiKey: web-secret
+              models:
+                qwen3.6-35b-a3b:
+                  capabilities:
+                    maxContextTokens: 160000
+                qwen3.6-27b: {}
+                minimax-m2.7:
+                  capabilities:
+                    maxContextTokens: 128000
+        """
+
+        let values = NativeConfigService.scalarMap(from: yaml)
+        let snapshot = try XCTUnwrap(NativeConfigService.snapshot(from: yaml))
+        let directModelKeys = YAMLScalarEditor.directChildKeys(parentPath: "model.providers.edgeclaw.models", in: yaml)
+        let modelIDs = NativeConfigService.webModelIDs(providerID: "edgeclaw", values: values)
+        let entryIDs = NativeConfigService.modelEntryIDs(values: values)
+
+        XCTAssertEqual(directModelKeys, ["qwen3.6-35b-a3b", "qwen3.6-27b", "minimax-m2.7"])
+        XCTAssertEqual(modelIDs, ["minimax-m2.7", "qwen3.6-27b", "qwen3.6-35b-a3b"])
+        XCTAssertTrue(entryIDs.contains("edgeclaw/qwen3.6-35b-a3b"))
+        XCTAssertTrue(entryIDs.contains("edgeclaw/qwen3.6-27b"))
+        XCTAssertTrue(entryIDs.contains("edgeclaw/minimax-m2.7"))
+        XCTAssertFalse(entryIDs.contains("edgeclaw/qwen3"))
+        XCTAssertFalse(entryIDs.contains("edgeclaw/minimax-m2"))
+        XCTAssertEqual(snapshot.providerConfig.model, "qwen3.6-35b-a3b")
+        XCTAssertEqual(NativeConfigService.contextWindow(entryID: "edgeclaw/minimax-m2.7", values: values), 128_000)
+    }
+
     func testLegacyNativeConfigCanBeMigratedToWebSchema() throws {
         let legacy = """
         runtime:

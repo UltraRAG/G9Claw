@@ -2778,6 +2778,11 @@ private struct SettingsContentView: View {
     }
 
     private func configChildIDs(parentPath: String) -> [String] {
+        let direct = YAMLScalarEditor.directChildKeys(parentPath: parentPath, in: state.pilotDeckConfigText)
+        if !direct.isEmpty {
+            return direct.sorted()
+        }
+
         let prefix = parentPath + "."
         var ids = Set<String>()
         for key in LegacyConfigLoader.scalarMap(from: state.pilotDeckConfigText).keys where key.hasPrefix(prefix) {
