@@ -134,7 +134,7 @@ struct MainAreaView: View {
             return [.chat]
         }
         if state.isGeneralProject(selectedProject) {
-            return [.chat, .skills]
+            return [.chat, .skills, .dashboard]
         }
         return AppTab.primaryTabs
     }
