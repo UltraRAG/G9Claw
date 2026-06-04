@@ -9407,10 +9407,87 @@ final class ParityLogicTests: XCTestCase {
     }
 
     func testUnsupportedAPITypeMessageDoesNotSayPilotDeckIsUnimplemented() {
-        let message = ProviderClientError.unsupportedAPIType(.anthropicMessages).errorDescription ?? ""
+        let message = ProviderClientError.unsupportedAPIType(.openAIResponses).errorDescription ?? ""
 
-        XCTAssertTrue(message.contains("OpenAI-compatible chat"))
+        XCTAssertTrue(message.contains("OpenAI Chat-compatible"))
+        XCTAssertTrue(message.contains("Anthropic Messages"))
         XCTAssertFalse(message.contains("not implemented yet in native AgentCore"))
+    }
+
+    func testAnthropicMessageConversionPreservesToolUseAndResultPairing() throws {
+        let messages: [[String: Any]] = [
+            [
+                "role": "system",
+                "content": "You are PilotDeck.",
+            ],
+            [
+                "role": "user",
+                "content": "Read the README.",
+            ],
+            [
+                "role": "assistant",
+                "content": "I'll inspect it.",
+                "tool_calls": [
+                    [
+                        "id": "call-read",
+                        "type": "function",
+                        "function": [
+                            "name": "Read",
+                            "arguments": #"{"file_path":"README.md"}"#,
+                        ],
+                    ],
+                ],
+            ],
+            [
+                "role": "tool",
+                "tool_call_id": "call-read",
+                "content": "README contents",
+            ],
+        ]
+
+        let converted = NativeAgentRuntime.anthropicMessages(fromOpenAI: messages)
+
+        XCTAssertEqual(converted.system, "You are PilotDeck.")
+        XCTAssertEqual(converted.messages.count, 3)
+        XCTAssertEqual(converted.messages[1]["role"] as? String, "assistant")
+        let assistantContent = try XCTUnwrap(converted.messages[1]["content"] as? [[String: Any]])
+        let toolUse = try XCTUnwrap(assistantContent.first(where: { $0["type"] as? String == "tool_use" }))
+        XCTAssertEqual(toolUse["id"] as? String, "call-read")
+        XCTAssertEqual(toolUse["name"] as? String, "Read")
+        XCTAssertEqual((toolUse["input"] as? [String: Any])?["file_path"] as? String, "README.md")
+
+        XCTAssertEqual(converted.messages[2]["role"] as? String, "user")
+        let resultContent = try XCTUnwrap(converted.messages[2]["content"] as? [[String: Any]])
+        let toolResult = try XCTUnwrap(resultContent.first)
+        XCTAssertEqual(toolResult["type"] as? String, "tool_result")
+        XCTAssertEqual(toolResult["tool_use_id"] as? String, "call-read")
+    }
+
+    func testAnthropicMessageConversionPreservesImageDataURL() throws {
+        let converted = NativeAgentRuntime.anthropicMessages(fromOpenAI: [
+            [
+                "role": "user",
+                "content": [
+                    [
+                        "type": "text",
+                        "text": "Describe this image.",
+                    ],
+                    [
+                        "type": "image_url",
+                        "image_url": [
+                            "url": "data:image/png;base64,abc123",
+                        ],
+                    ],
+                ],
+            ],
+        ])
+
+        let content = try XCTUnwrap(converted.messages.first?["content"] as? [[String: Any]])
+        let image = try XCTUnwrap(content.first(where: { $0["type"] as? String == "image" }))
+        let source = try XCTUnwrap(image["source"] as? [String: Any])
+        XCTAssertEqual(source["type"] as? String, "base64")
+        XCTAssertEqual(source["media_type"] as? String, "image/png")
+        XCTAssertEqual(source["data"] as? String, "abc123")
     }
 
     @MainActor

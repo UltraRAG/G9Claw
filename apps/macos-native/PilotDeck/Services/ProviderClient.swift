@@ -3231,7 +3231,7 @@ enum ProviderClientError: Error, LocalizedError {
                 "Provider request failed with HTTP \(statusCode): \(body)"
             }
         case .unsupportedProvider(let provider): "\(provider.displayName) sessions are not available in the native PilotDeck runtime. Use the PilotDeck agent with a configured model pool."
-        case .unsupportedAPIType(let apiType): "Native PilotDeck currently supports OpenAI-compatible chat providers. Change this model provider from \(apiType.rawValue) to OpenAI Chat in Settings."
+        case .unsupportedAPIType(let apiType): "Native PilotDeck does not support \(apiType.rawValue) for this request yet. Use an OpenAI Chat-compatible or Anthropic Messages provider."
         case .invalidResponse: "Provider returned an invalid response."
         case .transport(let message): message
         case .streamInterruptedAfterPartialOutput(let message):
@@ -3378,7 +3378,7 @@ struct NativeAgentRuntime: Sendable {
         guard !config.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ProviderClientError.missingModel
         }
-        guard config.apiType == .openAIChat else {
+        guard isSupportedModelAPIType(config.apiType) else {
             throw ProviderClientError.unsupportedAPIType(config.apiType)
         }
 
@@ -3457,7 +3457,7 @@ struct NativeAgentRuntime: Sendable {
 
             let turn: ModelTurn
             do {
-                turn = try await performOpenAIChatTurnWithRetry(
+                turn = try await performModelTurnWithRetry(
                     request: request,
                     messages: messagesForRequest,
                     continuation: continuation,
@@ -3901,6 +3901,451 @@ struct NativeAgentRuntime: Sendable {
         return assistantContent.nilIfBlank ?? ""
     }
 
+    private static func isSupportedModelAPIType(_ apiType: ProviderAPIType) -> Bool {
+        switch apiType {
+        case .openAIChat, .anthropicMessages:
+            return true
+        case .openAIResponses:
+            return false
+        }
+    }
+
+    private static func endpointSuffix(for apiType: ProviderAPIType) -> String {
+        switch apiType {
+        case .openAIChat, .openAIResponses:
+            return "chat/completions"
+        case .anthropicMessages:
+            return "v1/messages"
+        }
+    }
+
+    private static func modelRequestBody(
+        request: AgentRequest,
+        messages: [[String: Any]],
+        stream: Bool,
+        tools openAITools: [[String: Any]]
+    ) throws -> [String: Any] {
+        switch request.providerConfig.apiType {
+        case .openAIChat:
+            var body: [String: Any] = [
+                "model": request.providerConfig.model,
+                "messages": messages,
+                "stream": stream,
+            ]
+            if stream {
+                body["stream_options"] = [
+                    "include_usage": true,
+                ]
+            }
+            if !openAITools.isEmpty {
+                body["tools"] = openAITools
+                body["tool_choice"] = "auto"
+            }
+            return body
+        case .anthropicMessages:
+            let converted = anthropicMessages(fromOpenAI: messages)
+            var body: [String: Any] = [
+                "model": request.providerConfig.model,
+                "max_tokens": maxOutputTokens(for: request),
+                "messages": converted.messages,
+                "stream": stream,
+            ]
+            if let system = converted.system?.nilIfBlank {
+                body["system"] = system
+            }
+            let tools = anthropicTools(fromOpenAITools: openAITools)
+            if !tools.isEmpty {
+                body["tools"] = tools
+                body["tool_choice"] = [
+                    "type": "auto",
+                ]
+            }
+            return body
+        case .openAIResponses:
+            throw ProviderClientError.unsupportedAPIType(request.providerConfig.apiType)
+        }
+    }
+
+    private static func compactSummaryRequestBody(request: AgentRequest, prompt: String) throws -> [String: Any] {
+        try modelRequestBody(
+            request: request,
+            messages: [
+                [
+                    "role": "system",
+                    "content": """
+                    CRITICAL: Respond with TEXT ONLY. Do NOT call tools. Tool calls are unavailable and would fail the context compaction task.
+                    Produce <analysis> and <summary> XML blocks. The caller will discard <analysis> and retain only <summary>.
+                    """,
+                ],
+                [
+                    "role": "user",
+                    "content": prompt,
+                ],
+            ],
+            stream: false,
+            tools: []
+        )
+    }
+
+    private static func maxOutputTokens(for request: AgentRequest) -> Int {
+        let values = request.nativeConfigValues
+        let directCandidates = [
+            values["agent.maxOutputTokens"],
+            values["agents.main.maxOutputTokens"],
+        ]
+        for candidate in directCandidates {
+            if let value = positiveInt(candidate) {
+                return value
+            }
+        }
+
+        let modelRefs = [
+            values["agent.model"],
+            values["agents.main.model"],
+        ].compactMap { $0?.nilIfBlank }
+        for ref in modelRefs {
+            guard let parsed = NativeConfigService.splitModelRef(ref),
+                  parsed.modelID == request.providerConfig.model else {
+                continue
+            }
+            let prefix = "model.providers.\(parsed.providerID).models.\(parsed.modelID)"
+            let candidates = [
+                values["\(prefix).capabilities.maxOutputTokens"],
+                values["\(prefix).maxOutputTokens"],
+            ]
+            for candidate in candidates {
+                if let value = positiveInt(candidate) {
+                    return value
+                }
+            }
+        }
+
+        return 16_384
+    }
+
+    private static func positiveInt(_ rawValue: String?) -> Int? {
+        guard let rawValue else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Int(trimmed), value > 0 else { return nil }
+        return value
+    }
+
+    static func anthropicMessages(fromOpenAI messages: [[String: Any]]) -> (system: String?, messages: [[String: Any]]) {
+        var systemParts: [String] = []
+        var output: [[String: Any]] = []
+        var pendingToolResults: [[String: Any]] = []
+
+        func flushToolResults() {
+            guard !pendingToolResults.isEmpty else { return }
+            appendAnthropicMessage(role: "user", content: pendingToolResults, to: &output)
+            pendingToolResults.removeAll()
+        }
+
+        for message in messages {
+            let role = (message["role"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            switch role {
+            case "system":
+                if let text = chatMessageText(message).nilIfBlank {
+                    systemParts.append(text)
+                }
+            case "tool":
+                let toolCallID = (message["tool_call_id"] as? String)?.nilIfBlank ?? "tool-\(UUID().uuidString)"
+                let content = chatMessageText(message)
+                pendingToolResults.append([
+                    "type": "tool_result",
+                    "tool_use_id": toolCallID,
+                    "content": [
+                        [
+                            "type": "text",
+                            "text": content,
+                        ],
+                    ],
+                    "is_error": false,
+                ])
+            case "assistant":
+                flushToolResults()
+                var content = anthropicContentBlocks(fromOpenAIContent: message["content"])
+                content.append(contentsOf: anthropicToolUseBlocks(fromOpenAIToolCalls: message["tool_calls"]))
+                appendAnthropicMessage(role: "assistant", content: content, to: &output)
+            case "user":
+                flushToolResults()
+                appendAnthropicMessage(
+                    role: "user",
+                    content: anthropicContentBlocks(fromOpenAIContent: message["content"]),
+                    to: &output
+                )
+            default:
+                flushToolResults()
+                let text = chatMessageText(message)
+                appendAnthropicMessage(
+                    role: "user",
+                    content: text.isEmpty ? [] : [["type": "text", "text": text]],
+                    to: &output
+                )
+            }
+        }
+        flushToolResults()
+
+        return (
+            system: systemParts.joined(separator: "\n\n").nilIfBlank,
+            messages: output.isEmpty ? [["role": "user", "content": [["type": "text", "text": "Continue."]]]] : output
+        )
+    }
+
+    private static func appendAnthropicMessage(role: String, content: [[String: Any]], to messages: inout [[String: Any]]) {
+        guard !content.isEmpty else { return }
+        if let lastIndex = messages.indices.last,
+           messages[lastIndex]["role"] as? String == role,
+           var existing = messages[lastIndex]["content"] as? [[String: Any]] {
+            existing.append(contentsOf: content)
+            messages[lastIndex]["content"] = existing
+            return
+        }
+        messages.append([
+            "role": role,
+            "content": content,
+        ])
+    }
+
+    private static func anthropicContentBlocks(fromOpenAIContent rawContent: Any?) -> [[String: Any]] {
+        if rawContent == nil || rawContent is NSNull {
+            return []
+        }
+        if let text = rawContent as? String {
+            return text.isEmpty ? [] : [["type": "text", "text": text]]
+        }
+        guard let parts = rawContent as? [[String: Any]] else {
+            let text = String(describing: rawContent ?? "")
+            return text.isEmpty ? [] : [["type": "text", "text": text]]
+        }
+
+        var blocks: [[String: Any]] = []
+        for part in parts {
+            let type = part["type"] as? String
+            switch type {
+            case "text", "input_text":
+                if let text = (part["text"] as? String)?.nilIfBlank {
+                    blocks.append(["type": "text", "text": text])
+                }
+            case "image_url":
+                guard let image = part["image_url"] as? [String: Any],
+                      let url = (image["url"] as? String)?.nilIfBlank else {
+                    continue
+                }
+                if let dataSource = anthropicImageSource(fromOpenAIImageURL: url) {
+                    blocks.append([
+                        "type": "image",
+                        "source": dataSource,
+                    ])
+                }
+            default:
+                if let text = (part["text"] as? String)?.nilIfBlank {
+                    blocks.append(["type": "text", "text": text])
+                }
+            }
+        }
+        return blocks
+    }
+
+    private static func anthropicImageSource(fromOpenAIImageURL url: String) -> [String: Any]? {
+        guard url.hasPrefix("data:") else {
+            return [
+                "type": "url",
+                "url": url,
+            ]
+        }
+        let payload = String(url.dropFirst("data:".count))
+        guard let comma = payload.firstIndex(of: ",") else { return nil }
+        let header = String(payload[..<comma])
+        let data = String(payload[payload.index(after: comma)...])
+        let mediaType = header
+            .replacingOccurrences(of: ";base64", with: "")
+            .nilIfBlank ?? "image/png"
+        return [
+            "type": "base64",
+            "media_type": mediaType,
+            "data": data,
+        ]
+    }
+
+    private static func anthropicToolUseBlocks(fromOpenAIToolCalls rawToolCalls: Any?) -> [[String: Any]] {
+        guard let rawToolCalls = rawToolCalls as? [[String: Any]] else { return [] }
+        return rawToolCalls.compactMap { rawCall in
+            guard let function = rawCall["function"] as? [String: Any],
+                  let name = (function["name"] as? String)?.nilIfBlank else {
+                return nil
+            }
+            let id = (rawCall["id"] as? String)?.nilIfBlank ?? "call-\(UUID().uuidString)"
+            let arguments = (function["arguments"] as? String) ?? "{}"
+            let input = jsonObject(from: arguments) ?? [:]
+            return [
+                "type": "tool_use",
+                "id": id,
+                "name": name,
+                "input": input,
+            ]
+        }
+    }
+
+    private static func anthropicTools(fromOpenAITools tools: [[String: Any]]) -> [[String: Any]] {
+        tools.compactMap { tool in
+            guard let function = tool["function"] as? [String: Any],
+                  let name = (function["name"] as? String)?.nilIfBlank else {
+                return nil
+            }
+            var output: [String: Any] = [
+                "name": name,
+                "input_schema": function["parameters"] as? [String: Any] ?? [:],
+            ]
+            if let description = (function["description"] as? String)?.nilIfBlank {
+                output["description"] = description
+            }
+            return output
+        }
+    }
+
+    private static func jsonObject(from json: String) -> [String: Any]? {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object
+    }
+
+    private static func parseModelTurnResponse(_ object: [String: Any], request: AgentRequest) throws -> ModelTurn {
+        switch request.providerConfig.apiType {
+        case .openAIChat:
+            guard let choices = object["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any] else {
+                throw ProviderClientError.invalidResponse
+            }
+            let content = chatMessageText(message)
+            let calls = toolCalls(fromJSONObject: message)
+            let budget = (object["usage"] as? [String: Any]).flatMap { tokenBudget(from: $0, contextWindow: request.contextWindow) }
+            return ModelTurn(assistantContent: content, toolCalls: calls, sawTokenUsage: object["usage"] != nil, tokenBudget: budget)
+        case .anthropicMessages:
+            guard let blocks = object["content"] as? [[String: Any]] else {
+                throw ProviderClientError.invalidResponse
+            }
+            let content = blocks.compactMap { block -> String? in
+                guard block["type"] as? String == "text" else { return nil }
+                return block["text"] as? String
+            }.joined()
+            let calls = blocks.compactMap(anthropicToolCall(fromContentBlock:))
+            let budget = (object["usage"] as? [String: Any]).flatMap { tokenBudget(from: $0, contextWindow: request.contextWindow) }
+            return ModelTurn(assistantContent: content, toolCalls: calls, sawTokenUsage: object["usage"] != nil, tokenBudget: budget)
+        case .openAIResponses:
+            throw ProviderClientError.unsupportedAPIType(request.providerConfig.apiType)
+        }
+    }
+
+    private static func anthropicToolCall(fromContentBlock block: [String: Any]) -> AgentToolCall? {
+        guard block["type"] as? String == "tool_use",
+              let name = (block["name"] as? String)?.nilIfBlank else {
+            return nil
+        }
+        let id = (block["id"] as? String)?.nilIfBlank ?? "call-\(UUID().uuidString)"
+        let input = block["input"] as? [String: Any] ?? [:]
+        return AgentToolCall(id: id, name: name, inputJSON: jsonString(input))
+    }
+
+    private static func providerStreamEvents(
+        from object: [String: Any],
+        request: AgentRequest,
+        state: inout ProviderStreamState
+    ) throws -> ParsedProviderStreamEvents {
+        switch request.providerConfig.apiType {
+        case .openAIChat:
+            if let choices = object["choices"] as? [[String: Any]],
+               let delta = choices.first?["delta"] as? [String: Any],
+               let rawCalls = delta["tool_calls"] as? [[String: Any]] {
+                for rawCall in rawCalls {
+                    let index = rawCall["index"] as? Int ?? 0
+                    var accumulator = state.openAIAccumulators[index] ?? OpenAIToolCallAccumulator(index: index)
+                    accumulator.apply(delta: rawCall)
+                    state.openAIAccumulators[index] = accumulator
+                }
+            }
+            let budget = (object["usage"] as? [String: Any]).flatMap {
+                tokenBudget(from: $0, contextWindow: request.contextWindow)
+            }
+            return ParsedProviderStreamEvents(
+                events: openAIChatEvents(from: object, contextWindow: request.contextWindow),
+                tokenBudget: budget
+            )
+        case .anthropicMessages:
+            return try anthropicStreamEvents(from: object, contextWindow: request.contextWindow, state: &state)
+        case .openAIResponses:
+            throw ProviderClientError.unsupportedAPIType(request.providerConfig.apiType)
+        }
+    }
+
+    private static func anthropicStreamEvents(
+        from object: [String: Any],
+        contextWindow: Int,
+        state: inout ProviderStreamState
+    ) throws -> ParsedProviderStreamEvents {
+        guard let type = object["type"] as? String else {
+            return ParsedProviderStreamEvents(events: [], tokenBudget: nil)
+        }
+        switch type {
+        case "content_block_start":
+            let index = object["index"] as? Int ?? state.anthropicAccumulators.count
+            guard let block = object["content_block"] as? [String: Any],
+                  block["type"] as? String == "tool_use" else {
+                return ParsedProviderStreamEvents(events: [], tokenBudget: nil)
+            }
+            var accumulator = state.anthropicAccumulators[index] ?? AnthropicToolCallAccumulator(index: index)
+            accumulator.applyStart(block)
+            state.anthropicAccumulators[index] = accumulator
+            return ParsedProviderStreamEvents(events: [], tokenBudget: nil)
+        case "content_block_delta":
+            guard let delta = object["delta"] as? [String: Any] else {
+                return ParsedProviderStreamEvents(events: [], tokenBudget: nil)
+            }
+            switch delta["type"] as? String {
+            case "text_delta":
+                return ParsedProviderStreamEvents(
+                    events: [.contentDelta(delta["text"] as? String ?? "")],
+                    tokenBudget: nil
+                )
+            case "thinking_delta":
+                return ParsedProviderStreamEvents(
+                    events: [.reasoningDelta(delta["thinking"] as? String ?? "")],
+                    tokenBudget: nil
+                )
+            case "input_json_delta":
+                let index = object["index"] as? Int ?? 0
+                var accumulator = state.anthropicAccumulators[index] ?? AnthropicToolCallAccumulator(index: index)
+                accumulator.inputJSON += delta["partial_json"] as? String ?? ""
+                state.anthropicAccumulators[index] = accumulator
+                return ParsedProviderStreamEvents(events: [], tokenBudget: nil)
+            default:
+                return ParsedProviderStreamEvents(events: [], tokenBudget: nil)
+            }
+        case "message_delta":
+            let budget = (object["usage"] as? [String: Any]).flatMap {
+                tokenBudget(from: $0, contextWindow: contextWindow)
+            }
+            let events = budget.map { budget in
+                [
+                    AgentEvent.tokenUsage(
+                        tokenUsage(from: object["usage"] as? [String: Any] ?? [:]),
+                        contextWindow: budget.total
+                    ),
+                ]
+            } ?? []
+            return ParsedProviderStreamEvents(events: events, tokenBudget: budget)
+        case "error":
+            let error = object["error"] as? [String: Any] ?? [:]
+            let message = (error["message"] as? String)?.nilIfBlank
+                ?? "Anthropic stream error."
+            throw ProviderClientError.transport(message)
+        default:
+            return ParsedProviderStreamEvents(events: [], tokenBudget: nil)
+        }
+    }
+
     private static func generateCompactSummary(
         request: AgentRequest,
         messages: [[String: Any]],
@@ -3910,7 +4355,7 @@ struct NativeAgentRuntime: Sendable {
         var lastError: Error?
         for attempt in 0..<3 {
             do {
-                let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: "chat/completions")
+                let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: endpointSuffix(for: request.providerConfig.apiType))
                 var urlRequest = URLRequest(url: endpoint)
                 urlRequest.httpMethod = "POST"
                 let timeout = compactSummaryTimeoutInterval(from: request.timeoutMs, urgent: urgent)
@@ -3923,23 +4368,7 @@ struct NativeAgentRuntime: Sendable {
                     messages: sourceMessages,
                     maxCharacters: maxPromptCharacters
                 )
-                let body: [String: Any] = [
-                    "model": request.providerConfig.model,
-                    "stream": false,
-                    "messages": [
-                        [
-                            "role": "system",
-                            "content": """
-                            CRITICAL: Respond with TEXT ONLY. Do NOT call tools. Tool calls are unavailable and would fail the context compaction task.
-                            Produce <analysis> and <summary> XML blocks. The caller will discard <analysis> and retain only <summary>.
-                            """,
-                        ],
-                        [
-                            "role": "user",
-                            "content": prompt,
-                        ],
-                    ],
-                ]
+                let body = try compactSummaryRequestBody(request: request, prompt: prompt)
                 urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                 let data: Data
@@ -3961,12 +4390,10 @@ struct NativeAgentRuntime: Sendable {
                     let body = String(data: data, encoding: .utf8) ?? ""
                     throw ProviderClientError.httpError(statusCode: statusCode, body: body)
                 }
-                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let choices = object["choices"] as? [[String: Any]],
-                      let message = choices.first?["message"] as? [String: Any] else {
+                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     throw ProviderClientError.invalidResponse
                 }
-                let content = chatMessageText(message)
+                let content = try parseModelTurnResponse(object, request: request).assistantContent
                 let summary = NativeContextBudget.extractedCompactSummary(from: content)
                 guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw ProviderClientError.transport("Context compaction summary was empty.")
@@ -4007,7 +4434,7 @@ struct NativeAgentRuntime: Sendable {
         return ""
     }
 
-    private static func performOpenAIChatTurnWithRetry(
+    private static func performModelTurnWithRetry(
         request: AgentRequest,
         messages: [[String: Any]],
         continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation,
@@ -4019,7 +4446,7 @@ struct NativeAgentRuntime: Sendable {
         var failedAttempts = 0
         while true {
             do {
-                let turn = try await performOpenAIChatTurn(
+                let turn = try await performModelTurn(
                     request: activeRequest,
                     messages: messages,
                     continuation: continuation,
@@ -4095,27 +4522,23 @@ struct NativeAgentRuntime: Sendable {
         }
     }
 
-    private static func performOpenAIChatTurn(
+    private static func performModelTurn(
         request: AgentRequest,
         messages: [[String: Any]],
         continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation,
         runMode: ChatRunMode
     ) async throws -> ModelTurn {
-        let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: "chat/completions")
+        let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: endpointSuffix(for: request.providerConfig.apiType))
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
         urlRequest.timeoutInterval = modelStreamTimeoutInterval(from: request.timeoutMs)
         try applyHeaders(to: &urlRequest, request: request)
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": request.providerConfig.model,
-            "messages": messages,
-            "stream": true,
-            "stream_options": [
-                "include_usage": true,
-            ],
-            "tools": NativeToolRouter.openAITools(configValues: request.nativeConfigValues),
-            "tool_choice": "auto",
-        ])
+        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: modelRequestBody(
+            request: request,
+            messages: messages,
+            stream: true,
+            tools: NativeToolRouter.openAITools(configValues: request.nativeConfigValues)
+        ))
 
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
@@ -4138,7 +4561,7 @@ struct NativeAgentRuntime: Sendable {
         var didYieldVisibleContent = false
         var sawTokenUsage = false
         var lastTokenBudget: TokenBudget?
-        var accumulators: [Int: OpenAIToolCallAccumulator] = [:]
+        var streamState = ProviderStreamState()
         continuation.yield(.status("streaming"))
 
         do {
@@ -4151,21 +4574,15 @@ struct NativeAgentRuntime: Sendable {
                       let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     continue
                 }
-                if let choices = object["choices"] as? [[String: Any]],
-                   let delta = choices.first?["delta"] as? [String: Any],
-                   let rawCalls = delta["tool_calls"] as? [[String: Any]] {
-                    for rawCall in rawCalls {
-                        let index = rawCall["index"] as? Int ?? 0
-                        var accumulator = accumulators[index] ?? OpenAIToolCallAccumulator(index: index)
-                        accumulator.apply(delta: rawCall)
-                        accumulators[index] = accumulator
-                    }
-                }
-                if let usage = object["usage"] as? [String: Any],
-                   let budget = tokenBudget(from: usage, contextWindow: request.contextWindow) {
+                let parsed = try providerStreamEvents(
+                    from: object,
+                    request: request,
+                    state: &streamState
+                )
+                if let budget = parsed.tokenBudget {
                     lastTokenBudget = budget
                 }
-                for event in openAIChatEvents(from: object, contextWindow: request.contextWindow) {
+                for event in parsed.events {
                     if case .tokenUsage = event {
                         sawTokenUsage = true
                     }
@@ -4182,7 +4599,7 @@ struct NativeAgentRuntime: Sendable {
                                !InteractivePlanContentDeferrer.shouldHoldStreamingContent(
                                    sample,
                                    runMode: runMode,
-                                   hasToolCallAccumulator: !accumulators.isEmpty
+                                   hasToolCallAccumulator: streamState.hasToolCallAccumulator(apiType: request.providerConfig.apiType)
                                ) {
                                 shouldStreamContent = true
                                 continuation.yield(.contentDelta(heldContent))
@@ -4205,7 +4622,7 @@ struct NativeAgentRuntime: Sendable {
             throw mapped
         }
 
-        let calls = accumulators.keys.sorted().compactMap { accumulators[$0]?.toolCall }
+        let calls = streamState.toolCalls(apiType: request.providerConfig.apiType)
         let interactiveContent = InteractivePlanContentDeferrer.prepare(
             assistantContent: content,
             toolCalls: calls,
@@ -4226,23 +4643,22 @@ struct NativeAgentRuntime: Sendable {
         return ModelTurn(assistantContent: content, toolCalls: calls, sawTokenUsage: sawTokenUsage, tokenBudget: lastTokenBudget)
     }
 
-    private static func performOpenAIChatTurnNonStreaming(
+    private static func performModelTurnNonStreaming(
         request: AgentRequest,
         messages: [[String: Any]]
     ) async throws -> ModelTurn {
-        let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: "chat/completions")
+        let endpoint = try endpointURL(baseURL: request.providerConfig.baseURL, suffix: endpointSuffix(for: request.providerConfig.apiType))
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
         urlRequest.timeoutInterval = modelStreamTimeoutInterval(from: request.timeoutMs)
         try applyHeaders(to: &urlRequest, request: request)
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": request.providerConfig.model,
-            "messages": messages,
-            "stream": false,
-            "tools": subagentReadOnlyOpenAITools(configValues: request.nativeConfigValues),
-            "tool_choice": "auto",
-        ])
+        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: modelRequestBody(
+            request: request,
+            messages: messages,
+            stream: false,
+            tools: subagentReadOnlyOpenAITools(configValues: request.nativeConfigValues)
+        ))
 
         let data: Data
         let response: URLResponse
@@ -4258,15 +4674,10 @@ struct NativeAgentRuntime: Sendable {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw ProviderClientError.httpError(statusCode: statusCode, body: body)
         }
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = object["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any] else {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ProviderClientError.invalidResponse
         }
-        let content = (message["content"] as? String) ?? ""
-        let calls = toolCalls(fromJSONObject: message)
-        let budget = (object["usage"] as? [String: Any]).flatMap { tokenBudget(from: $0, contextWindow: request.contextWindow) }
-        return ModelTurn(assistantContent: content, toolCalls: calls, sawTokenUsage: object["usage"] != nil, tokenBudget: budget)
+        return try parseModelTurnResponse(object, request: request)
     }
 
     static func endpointURL(baseURL: String, suffix: String) throws -> URL {
@@ -4427,7 +4838,7 @@ struct NativeAgentRuntime: Sendable {
         ]
         var lastAssistantContent = ""
         for iteration in 1...6 {
-            let turn = try await performOpenAIChatTurnNonStreaming(request: request, messages: messages)
+            let turn = try await performModelTurnNonStreaming(request: request, messages: messages)
             var toolCalls = turn.toolCalls
             if toolCalls.isEmpty {
                 toolCalls = fallbackToolCalls(in: turn.assistantContent).map(canonicalToolCall)
@@ -5035,9 +5446,19 @@ struct NativeAgentRuntime: Sendable {
         guard !apiKey.isEmpty else {
             throw ProviderClientError.missingAPIKey
         }
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         for (key, value) in agentRequest.providerConfig.headers {
             request.setValue(value, forHTTPHeaderField: key)
+        }
+        switch agentRequest.providerConfig.apiType {
+        case .openAIChat, .openAIResponses:
+            if request.value(forHTTPHeaderField: "Authorization") == nil {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+        case .anthropicMessages:
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            if request.value(forHTTPHeaderField: "anthropic-version") == nil {
+                request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            }
         }
     }
 
@@ -5500,6 +5921,34 @@ private struct ModelTurn {
     var tokenBudget: TokenBudget?
 }
 
+private struct ParsedProviderStreamEvents {
+    var events: [AgentEvent]
+    var tokenBudget: TokenBudget?
+}
+
+private struct ProviderStreamState {
+    var openAIAccumulators: [Int: OpenAIToolCallAccumulator] = [:]
+    var anthropicAccumulators: [Int: AnthropicToolCallAccumulator] = [:]
+
+    func hasToolCallAccumulator(apiType: ProviderAPIType) -> Bool {
+        switch apiType {
+        case .openAIChat, .openAIResponses:
+            return !openAIAccumulators.isEmpty
+        case .anthropicMessages:
+            return !anthropicAccumulators.isEmpty
+        }
+    }
+
+    func toolCalls(apiType: ProviderAPIType) -> [AgentToolCall] {
+        switch apiType {
+        case .openAIChat, .openAIResponses:
+            return openAIAccumulators.keys.sorted().compactMap { openAIAccumulators[$0]?.toolCall }
+        case .anthropicMessages:
+            return anthropicAccumulators.keys.sorted().compactMap { anthropicAccumulators[$0]?.toolCall }
+        }
+    }
+}
+
 private struct OpenAIToolCallAccumulator {
     var index: Int
     var id = ""
@@ -5526,6 +5975,35 @@ private struct OpenAIToolCallAccumulator {
             id: id.isEmpty ? "call-\(UUID().uuidString)" : id,
             name: name,
             inputJSON: arguments.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "{}" : arguments
+        )
+    }
+}
+
+private struct AnthropicToolCallAccumulator {
+    var index: Int
+    var id = ""
+    var name = ""
+    var inputJSON = ""
+
+    mutating func applyStart(_ block: [String: Any]) {
+        if let id = block["id"] as? String {
+            self.id = id
+        }
+        if let name = block["name"] as? String {
+            self.name = name
+        }
+        if let input = block["input"] as? [String: Any], !input.isEmpty {
+            self.inputJSON = jsonString(input)
+        }
+    }
+
+    var toolCall: AgentToolCall? {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let input = inputJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AgentToolCall(
+            id: id.isEmpty ? "call-\(UUID().uuidString)" : id,
+            name: name,
+            inputJSON: input.isEmpty ? "{}" : input
         )
     }
 }
