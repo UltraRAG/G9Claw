@@ -4,9 +4,19 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum ChatPresentation {
+    case standard
+    case inspector
+
+    var isInspector: Bool {
+        self == .inspector
+    }
+}
+
 struct ChatView: View {
     @EnvironmentObject private var state: AppState
     @State private var scrollPinning = ChatScrollPinningState()
+    var presentation: ChatPresentation = .standard
 
     var body: some View {
         conversationBody
@@ -20,7 +30,11 @@ struct ChatView: View {
             } else if state.currentMessages.isEmpty, state.isCurrentSessionLoadingMessages {
                 loadingConversation
             } else if state.currentMessages.isEmpty {
-                emptyLanding
+                if presentation.isInspector {
+                    inspectorEmptyLanding
+                } else {
+                    emptyLanding
+                }
             } else {
                 VStack(spacing: 0) {
                     ScrollViewReader { proxy in
@@ -67,9 +81,9 @@ struct ChatView: View {
                                             }
                                         )
                                 }
-                                .padding(.horizontal, DesignTokens.transcriptPaddingH)
-                                .padding(.vertical, DesignTokens.transcriptPaddingV)
-                                .frame(maxWidth: DesignTokens.transcriptMaxWidth)
+                                .padding(.horizontal, presentation.isInspector ? 16 : DesignTokens.transcriptPaddingH)
+                                .padding(.vertical, presentation.isInspector ? 18 : DesignTokens.transcriptPaddingV)
+                                .frame(maxWidth: presentation.isInspector ? .infinity : DesignTokens.transcriptMaxWidth)
                                 .frame(maxWidth: .infinity)
                                 .transaction { transaction in
                                     transaction.animation = nil
@@ -102,7 +116,7 @@ struct ChatView: View {
                         ReadOnlyBackgroundFooter()
                             .environmentObject(state)
                     } else {
-                        ComposerFooter()
+                        ComposerFooter(compact: presentation.isInspector)
                             .environmentObject(state)
                     }
                 }
@@ -196,6 +210,35 @@ struct ChatView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var inspectorEmptyLanding: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 24, weight: .regular))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                Text(localizedChatChrome(chinese: "选择会话或开始新对话", english: "Select or start a chat"))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                Text(localizedChatChrome(
+                    chinese: "在文件旁继续项目会话，方便对照当前文件推进工作。",
+                    english: "Keep the project chat beside the files you are reviewing."
+                ))
+                    .font(.system(size: 12))
+                    .lineSpacing(3)
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 260)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if !isReadOnlyBackgroundSession {
+                ComposerFooter(compact: true)
+                    .environmentObject(state)
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -395,6 +438,7 @@ private struct ChatScrollIntentObserver: NSViewRepresentable {
 
 private struct ComposerFooter: View {
     @EnvironmentObject private var state: AppState
+    var compact = false
 
     var body: some View {
         let pendingPermissions = state.currentPendingPermissions
@@ -402,7 +446,7 @@ private struct ComposerFooter: View {
             if let runningActivity {
                 ComposerRunningStatusRow(activity: runningActivity)
                     .environmentObject(state)
-                    .padding(.horizontal, 24)
+                    .padding(.horizontal, compact ? 12 : 24)
                     .padding(.bottom, 4)
             }
             if !pendingPermissions.isEmpty {
@@ -419,17 +463,17 @@ private struct ComposerFooter: View {
                             .environmentObject(state)
                     }
                 }
-                .frame(maxWidth: DesignTokens.composerMaxWidth)
+                .frame(maxWidth: compact ? .infinity : DesignTokens.composerMaxWidth)
                 .padding(.bottom, 8)
             }
 
             ComposerCard(chromeless: false)
                 .environmentObject(state)
-                .frame(maxWidth: DesignTokens.composerMaxWidth)
+                .frame(maxWidth: compact ? .infinity : DesignTokens.composerMaxWidth)
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, compact ? 12 : 24)
         .padding(.top, 6)
-        .padding(.bottom, 16)
+        .padding(.bottom, compact ? 12 : 16)
         .frame(maxWidth: .infinity)
         .background(
             LinearGradient(

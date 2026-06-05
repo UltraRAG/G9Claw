@@ -18,11 +18,14 @@ struct FilesView: View {
     @State private var searchText = ""
     @State private var inlineEdit: FileInlineEdit?
     @State private var isFileDropTarget = false
+    @State private var chatInspectorWidth = FileWorkspaceLayoutMetrics.chatInspectorDefaultWidth
 
     var body: some View {
         GeometryReader { proxy in
             let browserMax = min(FileWorkspaceLayoutMetrics.browserMaxWidth, proxy.size.width * 0.52)
             let clampedBrowserWidth = min(max(browserWidth, FileWorkspaceLayoutMetrics.browserMinWidth), browserMax)
+            let inspectorMax = min(FileWorkspaceLayoutMetrics.chatInspectorMaxWidth, max(FileWorkspaceLayoutMetrics.chatInspectorMinWidth, proxy.size.width * 0.46))
+            let clampedInspectorWidth = min(max(chatInspectorWidth, FileWorkspaceLayoutMetrics.chatInspectorMinWidth), inspectorMax)
             HStack(spacing: 0) {
                 filePane
                     .frame(width: editorExpanded ? 0 : clampedBrowserWidth)
@@ -37,36 +40,24 @@ struct FilesView: View {
                     )
                 }
 
-                if let editorFile {
-                    FileEditorPane(
-                        file: editorFile,
-                        content: $state.selectedFileContent,
-                        originalContent: editorOriginalContent,
-                        width: nil,
-                        isExpanded: editorExpanded,
-                        onClose: {
-                            self.editorFile = nil
-                            editorOriginalContent = ""
-                            editorLoadState = .idle
-                            state.selectedFile = nil
-                            state.selectedFileContent = ""
-                            editorExpanded = false
-                        },
-                        onToggleExpand: { editorExpanded.toggle() },
-                        onRevert: {
-                            state.selectedFileContent = editorOriginalContent
-                        },
-                        onSave: {
-                            save(editorFile)
-                        },
-                        loadState: editorLoadState
-                    )
-                    .environmentObject(state)
+                editorContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
-                } else {
-                    fileEmptyEditor
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if state.isFilesChatInspectorVisible {
+                    SplitDivider(
+                        width: $chatInspectorWidth,
+                        minWidth: FileWorkspaceLayoutMetrics.chatInspectorMinWidth,
+                        maxWidth: inspectorMax,
+                        reverse: true
+                    )
+                    FileChatInspectorPane {
+                        state.closeFilesChatInspector()
+                    }
+                    .environmentObject(state)
+                    .frame(width: clampedInspectorWidth)
+                    .frame(maxHeight: .infinity)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .leading)
@@ -74,6 +65,43 @@ struct FilesView: View {
         }
         .background(DesignTokens.background)
         .task(id: state.selectedProjectID) { loadFiles() }
+        .onChange(of: state.isFilesChatInspectorVisible) { _, isVisible in
+            if isVisible {
+                editorExpanded = false
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var editorContent: some View {
+        if let editorFile {
+            FileEditorPane(
+                file: editorFile,
+                content: $state.selectedFileContent,
+                originalContent: editorOriginalContent,
+                width: nil,
+                isExpanded: editorExpanded,
+                onClose: {
+                    self.editorFile = nil
+                    editorOriginalContent = ""
+                    editorLoadState = .idle
+                    state.selectedFile = nil
+                    state.selectedFileContent = ""
+                    editorExpanded = false
+                },
+                onToggleExpand: { editorExpanded.toggle() },
+                onRevert: {
+                    state.selectedFileContent = editorOriginalContent
+                },
+                onSave: {
+                    save(editorFile)
+                },
+                loadState: editorLoadState
+            )
+            .environmentObject(state)
+        } else {
+            fileEmptyEditor
+        }
     }
 
     private var filePane: some View {
@@ -179,6 +207,15 @@ struct FilesView: View {
                     fileToolbarButton("folder.badge.plus", help: state.t(.newFolder), isDisabled: !hasWorkspace) { beginCreateAtSelection(isDirectory: true) }
                     fileToolbarButton("square.and.arrow.up", help: state.t(.uploadFiles), isDisabled: !hasWorkspace) { upload(allowDirectories: false) }
                     fileToolbarButton("arrow.clockwise", help: state.t(.refresh), isDisabled: !hasWorkspace || isLoadingFiles) { loadFiles() }
+                    fileToolbarButton(
+                        "bubble.left.and.bubble.right",
+                        help: state.isFilesChatInspectorVisible
+                            ? filesText(english: "Hide chat", chinese: "隐藏会话")
+                            : filesText(english: "Show chat", chinese: "显示会话"),
+                        isDisabled: state.selectedProject == nil
+                    ) {
+                        state.toggleFilesChatInspector()
+                    }
                 }
             }
 
@@ -718,10 +755,93 @@ struct FilesView: View {
     }
 }
 
+private struct FileChatInspectorPane: View {
+    @EnvironmentObject private var state: AppState
+    var onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            ChatView(presentation: .inspector)
+                .environmentObject(state)
+        }
+        .background(DesignTokens.background)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(DesignTokens.separator.opacity(0.92))
+                .frame(width: 1)
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bubble.left.and.bubble.right")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(DesignTokens.tertiaryText)
+                .frame(width: 20, height: 20)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(DesignTokens.text)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(WebToolbarButtonStyle())
+            .help(localized(english: "Close chat", chinese: "关闭会话"))
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 54)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(DesignTokens.separator)
+                .frame(height: 1)
+        }
+    }
+
+    private var title: String {
+        if let session = state.selectedSession {
+            return session.displayTitle
+        }
+        if state.isDraftSessionVisible {
+            return state.t(.newSession)
+        }
+        return localized(english: "Project Chat", chinese: "项目会话")
+    }
+
+    private var subtitle: String {
+        if let file = state.selectedFile, !file.isDirectory {
+            return file.name
+        }
+        if let project = state.selectedProject {
+            return project.displayName
+        }
+        return localized(english: "Files", chinese: "文件")
+    }
+
+    private func localized(english: String, chinese: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
+    }
+}
+
 enum FileWorkspaceLayoutMetrics {
     static let browserDefaultWidth: CGFloat = 330
     static let browserMinWidth: CGFloat = 260
     static let browserMaxWidth: CGFloat = 430
+    static let chatInspectorDefaultWidth: CGFloat = 420
+    static let chatInspectorMinWidth: CGFloat = 340
+    static let chatInspectorMaxWidth: CGFloat = 560
     static let treeRowHeight: CGFloat = 28
     static let treeSpacing: CGFloat = 2
     static let inlineFieldHeight: CGFloat = 24

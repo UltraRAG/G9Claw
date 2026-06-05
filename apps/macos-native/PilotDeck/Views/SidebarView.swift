@@ -301,7 +301,8 @@ struct SidebarView: View {
         let isExpanded = expandedSessionProjectIDs.contains(project.id)
         let sessionCount = project.sessionCount
         let visibleSessions = isExpanded ? project.allSessions : project.recentSessions(limit: 5)
-        let showDraftSession = state.isDraftSessionVisible && state.selectedProjectID == project.id && state.activeTab == .chat && state.selectedSessionID == nil
+        let isChatSurfaceActive = state.activeTab == .chat || (state.activeTab == .files && state.isFilesChatInspectorVisible)
+        let showDraftSession = state.isDraftSessionVisible && state.selectedProjectID == project.id && isChatSurfaceActive && state.selectedSessionID == nil
 
         return VStack(alignment: .leading, spacing: 2) {
             if showDraftSession {
@@ -364,11 +365,11 @@ struct SidebarView: View {
     }
 
     private func sessionRow(project: WorkspaceProject, session: ProjectSession) -> some View {
-        let isSelected = state.selectedProjectID == project.id && state.selectedSessionID == session.id && state.activeTab == .chat
+        let isChatSurfaceActive = state.activeTab == .chat || (state.activeTab == .files && state.isFilesChatInspectorVisible)
+        let isSelected = state.selectedProjectID == project.id && state.selectedSessionID == session.id && isChatSurfaceActive
 
         return Button {
-            state.selectProject(project)
-            state.selectSession(session)
+            state.selectSession(session, in: project, revealInFiles: state.activeTab == .files)
         } label: {
             HStack(alignment: .top, spacing: 8) {
                 SessionDot(state: session.state)

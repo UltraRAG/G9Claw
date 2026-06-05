@@ -48,6 +48,7 @@ final class AppState: ObservableObject {
     @Published var toolRefreshRevision = 0
     @Published var streamRenderRevision = 0
     @Published var isDraftSessionVisible = false
+    @Published var isFilesChatInspectorVisible = false
     @Published var expandedAssistantProcessIDs: Set<String> = []
     @Published var expandedToolRowIDs: Set<String> = []
     @Published var collapsedToolRowIDs: Set<String> = []
@@ -297,17 +298,30 @@ final class AppState: ObservableObject {
             errorBanner = nil
         }
         isDraftSessionVisible = false
+        isFilesChatInspectorVisible = false
         activeTab = .chat
         persistWorkspaceState()
         refreshNativeToolData()
         kickMemoryAutomationCheck()
     }
 
-    func selectSession(_ session: ProjectSession) {
+    func selectSession(_ session: ProjectSession, in project: WorkspaceProject, revealInFiles: Bool = false) {
+        selectedProjectID = project.id
+        selectSession(session, revealInFiles: revealInFiles)
+    }
+
+    func selectSession(_ session: ProjectSession, revealInFiles: Bool = false) {
+        let shouldRevealInFiles = revealInFiles || activeTab == .files
         isDraftSessionVisible = false
         selectedSessionID = session.id
         restoreComposerPermissionMode(for: session.id)
-        activeTab = .chat
+        if shouldRevealInFiles {
+            activeTab = .files
+            isFilesChatInspectorVisible = true
+        } else {
+            activeTab = .chat
+            isFilesChatInspectorVisible = false
+        }
         if session.isBackgroundTaskSession, let selectedProject {
             loadBackgroundTaskMessagesIfNeeded(session: session, project: selectedProject)
         } else {
@@ -352,6 +366,7 @@ final class AppState: ObservableObject {
     }
 
     func startDraftSession(project: WorkspaceProject?) {
+        let shouldRevealInFiles = activeTab == .files
         if let project {
             selectedProjectID = project.id
         } else if selectedProjectID == nil {
@@ -362,9 +377,27 @@ final class AppState: ObservableObject {
         warningBanner = nil
         restoreComposerPermissionMode(for: nil)
         isDraftSessionVisible = true
-        activeTab = .chat
+        if shouldRevealInFiles {
+            activeTab = .files
+            isFilesChatInspectorVisible = true
+        } else {
+            activeTab = .chat
+            isFilesChatInspectorVisible = false
+        }
         persistWorkspaceState()
         refreshNativeToolData()
+    }
+
+    func toggleFilesChatInspector() {
+        guard activeTab == .files else { return }
+        isFilesChatInspectorVisible.toggle()
+        if isFilesChatInspectorVisible, selectedProjectID == nil {
+            selectedProjectID = projects.first?.id
+        }
+    }
+
+    func closeFilesChatInspector() {
+        isFilesChatInspectorVisible = false
     }
 
     private func refreshVisibleErrorBanner() {
@@ -470,7 +503,12 @@ final class AppState: ObservableObject {
         selectedSessionID = session.id
         isDraftSessionVisible = false
         messagesBySession[session.id] = []
-        activeTab = .chat
+        if activeTab == .files {
+            isFilesChatInspectorVisible = true
+        } else {
+            activeTab = .chat
+            isFilesChatInspectorVisible = false
+        }
         persistWorkspaceState()
         return session
     }
