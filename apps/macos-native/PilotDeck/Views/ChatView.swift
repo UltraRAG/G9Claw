@@ -17,6 +17,8 @@ struct ChatView: View {
         Group {
             if state.currentMessages.isEmpty, isReadOnlyBackgroundSession {
                 readOnlyBackgroundEmpty
+            } else if state.currentMessages.isEmpty, state.isCurrentSessionLoadingMessages {
+                loadingConversation
             } else if state.currentMessages.isEmpty {
                 emptyLanding
             } else {
@@ -25,7 +27,11 @@ struct ChatView: View {
                         GeometryReader { geometry in
                             ScrollView {
                                 LazyVStack(alignment: .leading, spacing: 18) {
-                                    ForEach(state.currentMessages) { message in
+                                    if state.currentHasOlderMessages {
+                                        loadOlderMessagesButton
+                                            .id("load-older-messages")
+                                    }
+                                    ForEach(state.currentVisibleMessages) { message in
                                         let headerActivities = runHeaderActivities(for: message)
                                         if shouldShowRunHeader(for: message, activities: headerActivities) {
                                             ProcessRunHeader(
@@ -79,7 +85,7 @@ struct ChatView: View {
                             .onPreferenceChange(ChatBottomOffsetPreferenceKey.self) { bottom in
                                 scrollPinning.update(bottomY: bottom, viewportHeight: geometry.size.height)
                             }
-                            .onChange(of: state.currentMessages.count) { _, _ in
+                            .onChange(of: state.currentVisibleMessages.count) { _, _ in
                                 followBottomIfPinned(proxy)
                             }
                             .onChange(of: state.currentActivities.count) { _, _ in
@@ -198,6 +204,47 @@ struct ChatView: View {
             return state.t(.welcomePrompt)
         }
         return state.t(.projectWelcomePrompt, selectedProject.displayName)
+    }
+
+    private var loadingConversation: some View {
+        VStack(spacing: 10) {
+            Spacer(minLength: 0)
+            ProgressView()
+                .controlSize(.small)
+            Text(localizedChatChrome(chinese: "正在加载会话", english: "Loading conversation"))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(DesignTokens.secondaryText)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var loadOlderMessagesButton: some View {
+        HStack {
+            Spacer(minLength: 0)
+            Button {
+                state.loadOlderMessagesForCurrentSession()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.up.circle")
+                    Text(localizedChatChrome(chinese: "加载更早消息", english: "Load earlier messages"))
+                }
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(
+                    Capsule()
+                        .fill(DesignTokens.neutral100.opacity(0.72))
+                )
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func localizedChatChrome(chinese: String, english: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
     }
 
     private var readOnlyBackgroundEmpty: some View {

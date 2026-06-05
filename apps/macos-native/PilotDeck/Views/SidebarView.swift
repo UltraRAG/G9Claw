@@ -7,7 +7,7 @@ struct SidebarView: View {
     @AppStorage("sidebar-v2-active-section") private var activeSectionRaw = SidebarSection.projects.rawValue
     @AppStorage("sidebar-v2-last-project-id") private var lastProjectIDRaw = ""
     @State private var expandedProjectIDs: Set<UUID> = []
-    @State private var collapsedSessionProjectIDs: Set<UUID> = []
+    @State private var expandedSessionProjectIDs: Set<UUID> = []
     @State private var isResizing = false
     @State private var isResizeHovering = false
     @State private var resizeStartWidth = Double(DesignTokens.sidebarDefaultWidth)
@@ -298,9 +298,9 @@ struct SidebarView: View {
     }
 
     private func sessionRows(for project: WorkspaceProject, flat: Bool) -> some View {
-        let allSessions = project.allSessions
-        let isCollapsed = collapsedSessionProjectIDs.contains(project.id)
-        let visibleSessions = isCollapsed ? Array(allSessions.prefix(5)) : allSessions
+        let isExpanded = expandedSessionProjectIDs.contains(project.id)
+        let sessionCount = project.sessionCount
+        let visibleSessions = isExpanded ? project.allSessions : project.recentSessions(limit: 5)
         let showDraftSession = state.isDraftSessionVisible && state.selectedProjectID == project.id && state.activeTab == .chat && state.selectedSessionID == nil
 
         return VStack(alignment: .leading, spacing: 2) {
@@ -341,15 +341,15 @@ struct SidebarView: View {
                 }
             }
 
-            if allSessions.count > 5 {
+            if sessionCount > 5 {
                 Button {
-                    if isCollapsed {
-                        collapsedSessionProjectIDs.remove(project.id)
+                    if isExpanded {
+                        expandedSessionProjectIDs.remove(project.id)
                     } else {
-                        collapsedSessionProjectIDs.insert(project.id)
+                        expandedSessionProjectIDs.insert(project.id)
                     }
                 } label: {
-                    Text(isCollapsed ? state.t(.showMoreFormat, allSessions.count - 5) : state.t(.showLess))
+                    Text(isExpanded ? state.t(.showLess) : state.t(.showMoreFormat, sessionCount - 5))
                         .font(.system(size: 11))
                         .foregroundStyle(DesignTokens.tertiaryText)
                         .padding(.horizontal, 8)

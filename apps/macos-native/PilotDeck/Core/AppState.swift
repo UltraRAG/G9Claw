@@ -52,6 +52,8 @@ final class AppState: ObservableObject {
     @Published var expandedToolRowIDs: Set<String> = []
     @Published var collapsedToolRowIDs: Set<String> = []
     @Published var tokenBudgetBySession: [String: TokenBudget] = [:]
+    @Published var visibleMessageCountBySession: [String: Int] = [:]
+    @Published var loadingMessageSessionIDs: Set<String> = []
 
     let settingsStore: AppSettingsStore
     let providerClient = NativeAgentRuntime()
@@ -85,6 +87,13 @@ final class AppState: ObservableObject {
     private var lastErrorBySession: [String: String] = [:]
     private var lastWarningBySession: [String: String] = [:]
     private var hasBootstrapped = false
+    private var workspacePersistTask: Task<Void, Never>?
+    private var historySyncTask: Task<Void, Never>?
+    private var historySyncGeneration = UUID()
+    private let initialVisibleMessageCount = 80
+    private let olderMessagePageSize = 80
+    private let historySyncProjectBatchSize = 24
+    private let historySyncSessionBatchSize = 160
 
     init(settingsStore: AppSettingsStore = AppSettingsStore()) {
         self.settingsStore = settingsStore
@@ -169,12 +178,46 @@ final class AppState: ObservableObject {
 
     var selectedSession: ProjectSession? {
         guard let selectedProject, let selectedSessionID else { return nil }
-        return selectedProject.allSessions.first(where: { $0.id == selectedSessionID })
+        return selectedProject.session(withID: selectedSessionID)
     }
 
     var currentMessages: [ChatMessage] {
         guard let selectedSessionID else { return [] }
         return messagesBySession[selectedSessionID] ?? []
+    }
+
+    var currentVisibleMessages: [ChatMessage] {
+        guard let selectedSessionID else { return [] }
+        return visibleMessages(for: selectedSessionID)
+    }
+
+    var currentHasOlderMessages: Bool {
+        guard let selectedSessionID else { return false }
+        return visibleMessages(for: selectedSessionID).count < currentMessages.count
+    }
+
+    var isCurrentSessionLoadingMessages: Bool {
+        guard let selectedSessionID else { return false }
+        return loadingMessageSessionIDs.contains(selectedSessionID)
+    }
+
+    func loadOlderMessagesForCurrentSession() {
+        guard let selectedSessionID else { return }
+        let total = messagesBySession[selectedSessionID]?.count ?? 0
+        guard total > 0 else { return }
+        let current = visibleMessageCountBySession[selectedSessionID] ?? min(initialVisibleMessageCount, total)
+        visibleMessageCountBySession[selectedSessionID] = min(total, current + olderMessagePageSize)
+    }
+
+    private func visibleMessages(for sessionID: String) -> [ChatMessage] {
+        let messages = messagesBySession[sessionID] ?? []
+        guard !messages.isEmpty else { return [] }
+        let count = min(
+            visibleMessageCountBySession[sessionID] ?? min(initialVisibleMessageCount, messages.count),
+            messages.count
+        )
+        guard count < messages.count else { return messages }
+        return Array(messages.suffix(count))
     }
 
     var currentActivities: [AgentActivity] {
@@ -218,13 +261,11 @@ final class AppState: ObservableObject {
             applyNativeConfigFromCurrentText()
             let restoredSelection = loadPersistedWorkspaceState()
             loadManualProjectsFromPilotDeckConfig()
-            mergeSharedProjectPathIndex()
-            mergePilotDeckWebHistory()
-            mergeSharedSessionIndex()
-            recoverLocalSessionIndex()
+            mergeSharedProjectPathIndex(snapshot: SharedProjectPathIndexStore.load(), webProjects: [])
             restoreWorkspaceSelection(restoredSelection)
             persistWorkspaceState()
             refreshNativeToolData()
+            scheduleBackgroundHistorySync()
             restartMemoryAutomationLoop()
             restartAlwaysOnAutomationLoop()
             statusLine = t(.nativeInitialized)
@@ -235,7 +276,8 @@ final class AppState: ObservableObject {
     }
 
     func refreshProjects() async {
-        mergePilotDeckWebHistory()
+        mergeSharedProjectPathIndex()
+        scheduleBackgroundHistorySync()
         projects = WorkspaceService.sortedProjects(projects, order: settings.projectSortOrder)
         persistWorkspaceState()
         statusLine = t(.projectsRefreshed)
@@ -2458,16 +2500,194 @@ final class AppState: ObservableObject {
         restoreComposerPermissionMode(for: selectedSessionID)
     }
 
-    private func persistWorkspaceState() {
+    private struct WorkspacePersistencePayload: Sendable {
+        var projects: [WorkspaceProject]
+        var selection: WorkspaceStatePersistence.Selection
+        var projectEntries: [SharedProjectPathIndexStore.Entry]
+        var sessionEntries: [SharedSessionIndexStore.Entry]
+    }
+
+    private func persistWorkspaceState(immediate: Bool = false) {
+        workspacePersistTask?.cancel()
+        if immediate {
+            guard let payload = makeWorkspacePersistencePayload() else { return }
+            Task.detached(priority: .utility) {
+                Self.writeWorkspacePersistence(payload)
+            }
+            return
+        }
+
+        workspacePersistTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            guard !Task.isCancelled else { return }
+            let payload = await MainActor.run { self?.makeWorkspacePersistencePayload() }
+            guard let payload, !Task.isCancelled else { return }
+            await Task.detached(priority: .utility) {
+                Self.writeWorkspacePersistence(payload)
+            }.value
+        }
+    }
+
+    private func makeWorkspacePersistencePayload() -> WorkspacePersistencePayload? {
         let persistedProjects = projects.map(Self.projectForPersistence)
-        WorkspaceStatePersistence.save(
-            projects: persistedProjects,
-            selection: WorkspaceStatePersistence.Selection(
+        let selection = WorkspaceStatePersistence.Selection(
                 projectRoot: selectedProject.map { effectiveWorkspacePath(for: $0) },
                 sessionID: selectedSessionID
-            )
         )
-        persistSharedIndexes(projects: persistedProjects)
+        return WorkspacePersistencePayload(
+            projects: persistedProjects,
+            selection: selection,
+            projectEntries: sharedProjectIndexEntries(projects: persistedProjects),
+            sessionEntries: sharedSessionIndexEntries(projects: persistedProjects)
+        )
+    }
+
+    nonisolated private static func writeWorkspacePersistence(_ payload: WorkspacePersistencePayload) {
+        WorkspaceStatePersistence.save(
+            projects: payload.projects,
+            selection: payload.selection
+        )
+        SharedProjectPathIndexStore.upsert(payload.projectEntries)
+        SharedSessionIndexStore.save(entries: payload.sessionEntries)
+    }
+
+    private struct BackgroundHistoryPayload: Sendable {
+        var sharedProjectSnapshot: SharedProjectPathIndexStore.Snapshot
+        var webKnownProjects: [PilotDeckWebHistoryStore.KnownProject]
+        var generalHistory: PilotDeckWebHistoryStore.ProjectHistory?
+        var webHistories: [PilotDeckWebHistoryStore.ProjectHistory]
+        var sharedSessionEntries: [SharedSessionIndexStore.Entry]
+        var recoveredSessions: [LocalSessionIndexRecovery.RecoveredSession]
+        var nativeSessionsDirectory: URL
+    }
+
+    private func scheduleBackgroundHistorySync() {
+        guard let paths = try? AppPaths.current() else { return }
+        let nativeSessionsDirectory = paths.sessions
+        let recoveryCacheURL = paths.applicationSupport.appendingPathComponent("session-recovery-index.json")
+        let seedRoots = projectRootIndex()
+        let generalRoot = projects.first(where: isGeneralProject).map {
+            normalizedPath(effectiveWorkspacePath(for: $0))
+        }
+        let generation = UUID()
+        historySyncGeneration = generation
+        historySyncTask?.cancel()
+        historySyncTask = Task.detached(priority: .utility) { [
+            generation,
+            generalRoot,
+            nativeSessionsDirectory,
+            recoveryCacheURL,
+            seedRoots,
+        ] in
+            let sharedProjectSnapshot = SharedProjectPathIndexStore.load()
+            let webKnownProjects = PilotDeckWebHistoryStore.loadKnownProjects()
+            let generalHistory = PilotDeckWebHistoryStore.loadGeneralHistory()
+            let webHistories = PilotDeckWebHistoryStore.loadProjects()
+            let sharedSessionEntries = SharedSessionIndexStore.loadEntries()
+            let activeSharedRoots = sharedProjectSnapshot.projects.compactMap { entry in
+                entry.deletedAt == nil ? entry.rootPath : nil
+            }
+            let knownRoots = Self.uniquedPaths(
+                seedRoots +
+                    activeSharedRoots +
+                    webKnownProjects.map(\.rootPath) +
+                    webHistories.map(\.rootPath) +
+                    [generalHistory?.rootPath].compactMap { $0 }
+            )
+            let recoveredSessions = LocalSessionIndexRecovery.recover(
+                sessionsDirectory: nativeSessionsDirectory,
+                knownProjectRoots: knownRoots,
+                generalProjectRoot: generalRoot,
+                cacheURL: recoveryCacheURL
+            )
+            let payload = BackgroundHistoryPayload(
+                sharedProjectSnapshot: sharedProjectSnapshot,
+                webKnownProjects: webKnownProjects,
+                generalHistory: generalHistory,
+                webHistories: webHistories,
+                sharedSessionEntries: sharedSessionEntries,
+                recoveredSessions: recoveredSessions,
+                nativeSessionsDirectory: nativeSessionsDirectory
+            )
+            await MainActor.run { [weak self] in
+                guard let self, self.historySyncGeneration == generation else { return }
+                self.applyBackgroundHistoryPayload(payload)
+            }
+        }
+    }
+
+    private func applyBackgroundHistoryPayload(_ payload: BackgroundHistoryPayload) {
+        let generation = historySyncGeneration
+        let webHistoryBatches = Self.chunked(payload.webHistories, size: historySyncProjectBatchSize)
+        let sharedSessionBatches = Self.chunked(payload.sharedSessionEntries, size: historySyncSessionBatchSize)
+        let recoveredSessionBatches = Self.chunked(payload.recoveredSessions, size: historySyncSessionBatchSize)
+
+        Task { @MainActor [weak self] in
+            guard let self, self.historySyncGeneration == generation else { return }
+            self.mergeSharedProjectPathIndex(
+                snapshot: payload.sharedProjectSnapshot,
+                webProjects: payload.webKnownProjects
+            )
+            self.mergePilotDeckWebHistory(
+                generalHistory: payload.generalHistory,
+                histories: []
+            )
+            await Task.yield()
+
+            for batch in webHistoryBatches {
+                guard self.historySyncGeneration == generation else { return }
+                self.mergePilotDeckWebHistory(generalHistory: nil, histories: batch)
+                await Task.yield()
+            }
+
+            for batch in sharedSessionBatches {
+                guard self.historySyncGeneration == generation else { return }
+                self.mergeSharedSessionIndex(
+                    entries: batch,
+                    nativeSessionsDirectory: payload.nativeSessionsDirectory
+                )
+                await Task.yield()
+            }
+
+            for batch in recoveredSessionBatches {
+                guard self.historySyncGeneration == generation else { return }
+                self.applyRecoveredLocalSessions(batch)
+                await Task.yield()
+            }
+
+            self.projects = WorkspaceService.sortedProjects(self.projects, order: self.settings.projectSortOrder)
+            if self.selectedProjectID == nil {
+                self.selectedProjectID = self.projects.first?.id
+            }
+            self.persistWorkspaceState()
+            self.refreshNativeToolData()
+        }
+    }
+
+    nonisolated private static func uniquedPaths(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for value in values {
+            let normalized = URL(fileURLWithPath: NSString(string: value).expandingTildeInPath)
+                .standardizedFileURL
+                .path
+            guard seen.insert(normalized).inserted else { continue }
+            result.append(normalized)
+        }
+        return result
+    }
+
+    nonisolated private static func chunked<T>(_ values: [T], size: Int) -> [[T]] {
+        guard size > 0, !values.isEmpty else { return [] }
+        var result: [[T]] = []
+        result.reserveCapacity((values.count + size - 1) / size)
+        var start = 0
+        while start < values.count {
+            let end = min(start + size, values.count)
+            result.append(Array(values[start..<end]))
+            start = end
+        }
+        return result
     }
 
     private func ensureGeneralProject() {
@@ -2490,13 +2710,22 @@ final class AppState: ObservableObject {
     }
 
     private func mergeSharedProjectPathIndex() {
+        mergeSharedProjectPathIndex(
+            snapshot: SharedProjectPathIndexStore.load(),
+            webProjects: PilotDeckWebHistoryStore.loadKnownProjects()
+        )
+    }
+
+    private func mergeSharedProjectPathIndex(
+        snapshot: SharedProjectPathIndexStore.Snapshot,
+        webProjects: [PilotDeckWebHistoryStore.KnownProject]
+    ) {
         ensureGeneralProject()
-        let snapshot = SharedProjectPathIndexStore.load()
         let deletedRoots = Set(snapshot.projects.compactMap { entry -> String? in
             entry.deletedAt == nil ? nil : normalizedPath(entry.rootPath)
         })
         var indexedProjects = snapshot.projects.filter { $0.deletedAt == nil }
-        let webProjects = PilotDeckWebHistoryStore.loadKnownProjects()
+        let webProjectEntries = webProjects
             .filter { !deletedRoots.contains(normalizedPath($0.rootPath)) }
             .map {
                 SharedProjectPathIndexStore.Entry(
@@ -2510,7 +2739,7 @@ final class AppState: ObservableObject {
                     deletedAt: nil
                 )
             }
-        indexedProjects.append(contentsOf: webProjects)
+        indexedProjects.append(contentsOf: webProjectEntries)
 
         for entry in indexedProjects where !entry.isGeneral {
             let rootPath = normalizedPath(entry.rootPath)
@@ -2535,8 +2764,18 @@ final class AppState: ObservableObject {
     }
 
     private func mergePilotDeckWebHistory() {
+        mergePilotDeckWebHistory(
+            generalHistory: PilotDeckWebHistoryStore.loadGeneralHistory(),
+            histories: PilotDeckWebHistoryStore.loadProjects()
+        )
+    }
+
+    private func mergePilotDeckWebHistory(
+        generalHistory: PilotDeckWebHistoryStore.ProjectHistory?,
+        histories: [PilotDeckWebHistoryStore.ProjectHistory]
+    ) {
         ensureGeneralProject()
-        if let generalHistory = PilotDeckWebHistoryStore.loadGeneralHistory(),
+        if let generalHistory,
            let generalIndex = projects.firstIndex(where: isGeneralProject) {
             for session in generalHistory.sessions {
                 mergeImportedSession(session, into: &projects[generalIndex].sessions)
@@ -2544,8 +2783,6 @@ final class AppState: ObservableObject {
             projects[generalIndex].sessions.sort { $0.activityDate > $1.activityDate }
             projects[generalIndex].lastActivity = projects[generalIndex].latestActivity
         }
-
-        let histories = PilotDeckWebHistoryStore.loadProjects()
 
         for history in histories {
             let normalizedRoot = normalizedPath(history.rootPath)
@@ -2581,25 +2818,45 @@ final class AppState: ObservableObject {
 
     private func mergeSharedSessionIndex() {
         guard let paths = try? AppPaths.current() else { return }
-        let entries = SharedSessionIndexStore.loadEntries()
+        mergeSharedSessionIndex(
+            entries: SharedSessionIndexStore.loadEntries(),
+            nativeSessionsDirectory: paths.sessions
+        )
+    }
+
+    private func mergeSharedSessionIndex(
+        entries: [SharedSessionIndexStore.Entry],
+        nativeSessionsDirectory: URL
+    ) {
         guard !entries.isEmpty else { return }
 
         var mergedCount = 0
+        var projectIndexByRoot: [String: Int] = [:]
+        var existingSessionIDsByProject: [Int: Set<String>] = [:]
+        for projectIndex in projects.indices {
+            projectIndexByRoot[normalizedPath(effectiveWorkspacePath(for: projects[projectIndex]))] = projectIndex
+            existingSessionIDsByProject[projectIndex] = Set(projects[projectIndex].allSessions.map(\.id))
+        }
+        var touchedProjectIndexes: Set<Int> = []
+
         for entry in entries {
             let normalizedRoot = normalizedPath(entry.projectRoot)
-            guard let projectIndex = projects.firstIndex(where: {
-                normalizedPath(effectiveWorkspacePath(for: $0)) == normalizedRoot
-            }) else { continue }
-            guard entry.hasReadableTranscript(nativeSessionsDirectory: paths.sessions) else { continue }
-            guard !projects[projectIndex].allSessions.contains(where: { $0.id == entry.session.id }) else { continue }
+            guard let projectIndex = projectIndexByRoot[normalizedRoot] else { continue }
+            guard entry.hasReadableTranscript(nativeSessionsDirectory: nativeSessionsDirectory) else { continue }
+            var existingSessionIDs = existingSessionIDsByProject[projectIndex, default: []]
+            guard existingSessionIDs.insert(entry.session.id).inserted else { continue }
+            existingSessionIDsByProject[projectIndex] = existingSessionIDs
 
             mergeImportedSession(entry.session, into: &projects[projectIndex].sessions)
-            projects[projectIndex].sessions.sort { $0.activityDate > $1.activityDate }
-            projects[projectIndex].lastActivity = projects[projectIndex].latestActivity
+            touchedProjectIndexes.insert(projectIndex)
             mergedCount += 1
         }
 
         if mergedCount > 0 {
+            for projectIndex in touchedProjectIndexes {
+                projects[projectIndex].sessions.sort { $0.activityDate > $1.activityDate }
+                projects[projectIndex].lastActivity = projects[projectIndex].latestActivity
+            }
             projects = WorkspaceService.sortedProjects(projects, order: settings.projectSortOrder)
             AppLog.write("merged \(mergedCount) session index entr\(mergedCount == 1 ? "y" : "ies") from shared session index")
         }
@@ -2626,26 +2883,38 @@ final class AppState: ObservableObject {
         let recovered = LocalSessionIndexRecovery.recover(
             sessionsDirectory: paths.sessions,
             knownProjectRoots: knownProjectRoots,
-            generalProjectRoot: projects.first(where: isGeneralProject).map { normalizedPath(effectiveWorkspacePath(for: $0)) }
+            generalProjectRoot: projects.first(where: isGeneralProject).map { normalizedPath(effectiveWorkspacePath(for: $0)) },
+            cacheURL: paths.applicationSupport.appendingPathComponent("session-recovery-index.json")
         )
         guard !recovered.isEmpty else { return }
 
+        applyRecoveredLocalSessions(recovered)
+    }
+
+    private func applyRecoveredLocalSessions(_ recovered: [LocalSessionIndexRecovery.RecoveredSession]) {
+        guard !recovered.isEmpty else { return }
         var recoveredCount = 0
+        var existingSessionIDs = Set(projects.flatMap { $0.allSessions.map(\.id) })
+        var projectIndexByRoot: [String: Int] = [:]
+        for projectIndex in projects.indices {
+            projectIndexByRoot[normalizedPath(effectiveWorkspacePath(for: projects[projectIndex]))] = projectIndex
+        }
+        var touchedProjectIndexes: Set<Int> = []
+
         for recoveredSession in recovered {
-            guard !projects.contains(where: { project in
-                project.allSessions.contains(where: { $0.id == recoveredSession.session.id })
-            }) else { continue }
-            guard let projectIndex = projects.firstIndex(where: {
-                normalizedPath(effectiveWorkspacePath(for: $0)) == recoveredSession.projectRoot
-            }) else { continue }
+            guard existingSessionIDs.insert(recoveredSession.session.id).inserted else { continue }
+            guard let projectIndex = projectIndexByRoot[recoveredSession.projectRoot] else { continue }
 
             mergeImportedSession(recoveredSession.session, into: &projects[projectIndex].sessions)
-            projects[projectIndex].sessions.sort { $0.activityDate > $1.activityDate }
-            projects[projectIndex].lastActivity = projects[projectIndex].latestActivity
+            touchedProjectIndexes.insert(projectIndex)
             recoveredCount += 1
         }
 
         if recoveredCount > 0 {
+            for projectIndex in touchedProjectIndexes {
+                projects[projectIndex].sessions.sort { $0.activityDate > $1.activityDate }
+                projects[projectIndex].lastActivity = projects[projectIndex].latestActivity
+            }
             projects = WorkspaceService.sortedProjects(projects, order: settings.projectSortOrder)
             AppLog.write("recovered \(recoveredCount) local session index entr\(recoveredCount == 1 ? "y" : "ies") from persisted chat messages")
         }
@@ -2664,7 +2933,12 @@ final class AppState: ObservableObject {
 
     private func persistSharedIndexes(projects persistedProjects: [WorkspaceProject]) {
         guard !persistedProjects.isEmpty else { return }
-        let projectEntries = deduplicatedProjects(persistedProjects)
+        SharedProjectPathIndexStore.upsert(sharedProjectIndexEntries(projects: persistedProjects))
+        SharedSessionIndexStore.save(entries: sharedSessionIndexEntries(projects: persistedProjects))
+    }
+
+    private func sharedProjectIndexEntries(projects persistedProjects: [WorkspaceProject]) -> [SharedProjectPathIndexStore.Entry] {
+        deduplicatedProjects(persistedProjects)
             .filter(shouldPersistSharedProjectIndexEntry)
             .map { project in
                 SharedProjectPathIndexStore.Entry(
@@ -2678,9 +2952,10 @@ final class AppState: ObservableObject {
                     deletedAt: nil
                 )
             }
-        SharedProjectPathIndexStore.upsert(projectEntries)
+    }
 
-        let sessionEntries = persistedProjects.flatMap { project in
+    private func sharedSessionIndexEntries(projects persistedProjects: [WorkspaceProject]) -> [SharedSessionIndexStore.Entry] {
+        persistedProjects.flatMap { project in
             let rootPath = normalizedPath(effectiveWorkspacePath(for: project))
             return project.allSessions.map { session in
                 SharedSessionIndexStore.Entry(
@@ -2691,7 +2966,6 @@ final class AppState: ObservableObject {
                 )
             }
         }
-        SharedSessionIndexStore.save(entries: sessionEntries)
     }
 
     fileprivate static func projectSessionForIndex(_ session: ProjectSession) -> ProjectSession {
@@ -2700,10 +2974,10 @@ final class AppState: ObservableObject {
 
     private static func restoredProject(_ project: WorkspaceProject) -> WorkspaceProject {
         var restored = project
-        restored.sessions = restored.sessions.map(restoredSession)
-        restored.codexSessions = restored.codexSessions.map(restoredSession)
-        restored.cursorSessions = restored.cursorSessions.map(restoredSession)
-        restored.geminiSessions = restored.geminiSessions.map(restoredSession)
+        restored.sessions = sortedSessions(restored.sessions.map(restoredSession))
+        restored.codexSessions = sortedSessions(restored.codexSessions.map(restoredSession))
+        restored.cursorSessions = sortedSessions(restored.cursorSessions.map(restoredSession))
+        restored.geminiSessions = sortedSessions(restored.geminiSessions.map(restoredSession))
         return restored
     }
 
@@ -2717,11 +2991,15 @@ final class AppState: ObservableObject {
 
     private static func projectForPersistence(_ project: WorkspaceProject) -> WorkspaceProject {
         var persisted = project
-        persisted.sessions = persisted.sessions.map(restoredSession)
-        persisted.codexSessions = persisted.codexSessions.map(restoredSession)
-        persisted.cursorSessions = persisted.cursorSessions.map(restoredSession)
-        persisted.geminiSessions = persisted.geminiSessions.map(restoredSession)
+        persisted.sessions = sortedSessions(persisted.sessions.map(restoredSession))
+        persisted.codexSessions = sortedSessions(persisted.codexSessions.map(restoredSession))
+        persisted.cursorSessions = sortedSessions(persisted.cursorSessions.map(restoredSession))
+        persisted.geminiSessions = sortedSessions(persisted.geminiSessions.map(restoredSession))
         return persisted
+    }
+
+    private static func sortedSessions(_ sessions: [ProjectSession]) -> [ProjectSession] {
+        sessions.sorted { $0.activityDate > $1.activityDate }
     }
 
     private func normalizedPath(_ path: String) -> String {
@@ -3487,32 +3765,45 @@ final class AppState: ObservableObject {
 
     private func loadPersistedMessagesIfNeeded(sessionID: String) {
         guard messagesBySession[sessionID] == nil,
+              !loadingMessageSessionIDs.contains(sessionID),
               let paths = try? AppPaths.current() else { return }
-        let url = paths.sessions.appendingPathComponent("\(sessionID).json")
-        guard FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url) else {
-            if let transcriptURL = importedWebTranscriptURL(forSessionID: sessionID),
-               let messages = PilotDeckWebHistoryStore.loadMessages(sessionID: sessionID, transcriptURL: transcriptURL) {
-                messagesBySession[sessionID] = messages
-            } else if let projectRoot = projectRoot(forSessionID: sessionID),
-               let messages = PilotDeckWebHistoryStore.loadMessages(sessionID: sessionID, projectRoot: projectRoot) {
-                messagesBySession[sessionID] = messages
+
+        let nativeURL = paths.sessions.appendingPathComponent("\(sessionID).json")
+        let transcriptURL = importedWebTranscriptURL(forSessionID: sessionID)
+        let projectRoot = transcriptURL == nil ? projectRoot(forSessionID: sessionID) : nil
+        loadingMessageSessionIDs.insert(sessionID)
+
+        Task.detached(priority: .utility) { [nativeURL, projectRoot, sessionID, transcriptURL] in
+            let loadedMessages: [ChatMessage]
+            if FileManager.default.fileExists(atPath: nativeURL.path),
+               let data = try? Data(contentsOf: nativeURL) {
+                do {
+                    var messages = try JSONDecoder().decode([ChatMessage].self, from: data)
+                    for index in messages.indices {
+                        messages[index].isStreaming = false
+                    }
+                    loadedMessages = messages
+                } catch {
+                    AppLog.write("session load error for \(sessionID): \(error.localizedDescription)")
+                    loadedMessages = []
+                }
+            } else if let transcriptURL,
+                      let messages = PilotDeckWebHistoryStore.loadMessages(sessionID: sessionID, transcriptURL: transcriptURL) {
+                loadedMessages = messages
+            } else if let projectRoot,
+                      let messages = PilotDeckWebHistoryStore.loadMessages(sessionID: sessionID, projectRoot: projectRoot) {
+                loadedMessages = messages
             } else {
-                messagesBySession[sessionID] = []
+                loadedMessages = []
             }
-            streamRenderRevision += 1
-            return
-        }
-        do {
-            var messages = try JSONDecoder().decode([ChatMessage].self, from: data)
-            for index in messages.indices {
-                messages[index].isStreaming = false
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.messagesBySession[sessionID] = loadedMessages
+                self.visibleMessageCountBySession[sessionID] = min(self.initialVisibleMessageCount, loadedMessages.count)
+                self.loadingMessageSessionIDs.remove(sessionID)
+                self.streamRenderRevision += 1
             }
-            messagesBySession[sessionID] = messages
-            streamRenderRevision += 1
-        } catch {
-            AppLog.write("session load error for \(sessionID): \(error.localizedDescription)")
-            messagesBySession[sessionID] = []
         }
     }
 
@@ -3831,12 +4122,12 @@ final class AppState: ObservableObject {
 }
 
 enum WorkspaceStatePersistence {
-    struct Selection: Codable, Hashable {
+    struct Selection: Codable, Hashable, Sendable {
         var projectRoot: String?
         var sessionID: String?
     }
 
-    struct Snapshot: Codable, Hashable {
+    struct Snapshot: Codable, Hashable, Sendable {
         var version: Int
         var projects: [WorkspaceProject]
         var selection: Selection?
@@ -3878,7 +4169,7 @@ enum WorkspaceStatePersistence {
 }
 
 enum SharedProjectPathIndexStore {
-    struct Entry: Codable, Hashable {
+    struct Entry: Codable, Hashable, Sendable {
         var rootPath: String
         var projectName: String
         var displayName: String
@@ -3898,7 +4189,7 @@ enum SharedProjectPathIndexStore {
         }
     }
 
-    struct Snapshot: Codable, Hashable {
+    struct Snapshot: Codable, Hashable, Sendable {
         var version: Int
         var projects: [Entry]
     }
@@ -4017,7 +4308,7 @@ enum SharedProjectPathIndexStore {
 }
 
 enum SharedSessionIndexStore {
-    struct Entry: Codable, Hashable {
+    struct Entry: Codable, Hashable, Sendable {
         var projectRoot: String
         var session: ProjectSession
         var source: String
@@ -4049,7 +4340,7 @@ enum SharedSessionIndexStore {
         }
     }
 
-    struct Snapshot: Codable, Hashable {
+    struct Snapshot: Codable, Hashable, Sendable {
         var version: Int
         var sessions: [Entry]
     }
@@ -4128,7 +4419,21 @@ enum SharedSessionIndexStore {
 }
 
 enum LocalSessionIndexRecovery {
-    struct RecoveredSession: Hashable {
+    struct RecoveredSession: Hashable, Sendable {
+        var projectRoot: String
+        var session: ProjectSession
+    }
+
+    private struct CacheSnapshot: Codable, Sendable {
+        var version: Int
+        var rootsFingerprint: String
+        var entries: [String: CacheEntry]
+    }
+
+    private struct CacheEntry: Codable, Sendable {
+        var path: String
+        var modifiedAt: Date
+        var size: Int64
         var projectRoot: String
         var session: ProjectSession
     }
@@ -4138,19 +4443,25 @@ enum LocalSessionIndexRecovery {
         var aliases: [String]
     }
 
+    private static let cacheVersion = 1
+
     static func recover(
         sessionsDirectory: URL,
         knownProjectRoots: [String],
-        generalProjectRoot: String?
+        generalProjectRoot: String?,
+        cacheURL: URL? = nil
     ) -> [RecoveredSession] {
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: sessionsDirectory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
             options: [.skipsHiddenFiles]
         ) else { return [] }
 
         let roots = uniqued(knownProjectRoots.map(normalizedPath))
         let generalRoot = generalProjectRoot.map(normalizedPath)
+        let rootsFingerprint = (roots + [generalRoot].compactMap { $0 }).joined(separator: "\n")
+        let cachedEntries = loadCache(url: cacheURL, rootsFingerprint: rootsFingerprint).entries
+        var nextCacheEntries: [String: CacheEntry] = [:]
         let projectRoots = roots
             .filter { $0 != generalRoot }
             .sorted { $0.count > $1.count }
@@ -4159,30 +4470,82 @@ enum LocalSessionIndexRecovery {
         }
         let decoder = JSONDecoder()
 
-        return files
-            .filter { $0.pathExtension.lowercased() == "json" }
-            .compactMap { url in
-                let sessionID = url.deletingPathExtension().lastPathComponent
-                guard !sessionID.hasPrefix("always-on-") else { return nil }
-                guard let data = try? Data(contentsOf: url),
-                      let messages = try? decoder.decode([ChatMessage].self, from: data),
-                      !messages.isEmpty else { return nil }
+        var recoveredSessions: [RecoveredSession] = []
+        for url in files where url.pathExtension.lowercased() == "json" {
+            let sessionID = url.deletingPathExtension().lastPathComponent
+            guard !sessionID.hasPrefix("always-on-") else { continue }
+            let path = url.standardizedFileURL.path
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            let modifiedAt = values?.contentModificationDate ?? .distantPast
+            let size = Int64(values?.fileSize ?? -1)
 
-                let searchText = searchableTranscriptText(messages)
-                let normalizedSearchText = searchText.lowercased()
-                let matchedRoot = projectCandidates.first { searchText.contains($0.root) }?.root
-                    ?? projectCandidates.first { candidate in
-                        candidate.aliases.contains { containsStandalone($0, in: normalizedSearchText) }
-                    }?.root
-                let targetRoot = matchedRoot ?? generalRoot
-                guard let targetRoot else { return nil }
-
-                let metadata = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-                return RecoveredSession(
-                    projectRoot: targetRoot,
-                    session: makeSession(id: sessionID, messages: messages, fileModifiedAt: metadata)
+            if let cached = cachedEntries[path],
+               cached.modifiedAt == modifiedAt,
+               cached.size == size {
+                nextCacheEntries[path] = cached
+                recoveredSessions.append(
+                    RecoveredSession(projectRoot: cached.projectRoot, session: cached.session)
                 )
+                continue
             }
+
+            guard let data = try? Data(contentsOf: url),
+                  let messages = try? decoder.decode([ChatMessage].self, from: data),
+                  !messages.isEmpty else { continue }
+
+            let searchText = searchableTranscriptText(messages)
+            let normalizedSearchText = searchText.lowercased()
+            let matchedRoot = projectCandidates.first { searchText.contains($0.root) }?.root
+                ?? projectCandidates.first { candidate in
+                    candidate.aliases.contains { containsStandalone($0, in: normalizedSearchText) }
+                }?.root
+            let targetRoot = matchedRoot ?? generalRoot
+            guard let targetRoot else { continue }
+
+            let session = makeSession(id: sessionID, messages: messages, fileModifiedAt: modifiedAt)
+            nextCacheEntries[path] = CacheEntry(
+                path: path,
+                modifiedAt: modifiedAt,
+                size: size,
+                projectRoot: targetRoot,
+                session: session
+            )
+            recoveredSessions.append(RecoveredSession(projectRoot: targetRoot, session: session))
+        }
+
+        saveCache(
+            url: cacheURL,
+            snapshot: CacheSnapshot(
+                version: cacheVersion,
+                rootsFingerprint: rootsFingerprint,
+                entries: nextCacheEntries
+            )
+        )
+        return recoveredSessions
+    }
+
+    private static func loadCache(url: URL?, rootsFingerprint: String) -> CacheSnapshot {
+        guard let url,
+              let data = try? Data(contentsOf: url),
+              let snapshot = try? JSONDecoder().decode(CacheSnapshot.self, from: data),
+              snapshot.version == cacheVersion,
+              snapshot.rootsFingerprint == rootsFingerprint else {
+            return CacheSnapshot(version: cacheVersion, rootsFingerprint: rootsFingerprint, entries: [:])
+        }
+        return snapshot
+    }
+
+    private static func saveCache(url: URL?, snapshot: CacheSnapshot) {
+        guard let url else { return }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(snapshot)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            AppLog.write("local session recovery cache save error: \(error.localizedDescription)")
+        }
     }
 
     private static func makeSession(id: String, messages: [ChatMessage], fileModifiedAt: Date?) -> ProjectSession {
@@ -4309,12 +4672,12 @@ enum LocalSessionIndexRecovery {
 }
 
 enum PilotDeckWebHistoryStore {
-    struct ProjectHistory: Hashable {
+    struct ProjectHistory: Hashable, Sendable {
         var rootPath: String
         var sessions: [ProjectSession]
     }
 
-    struct KnownProject: Hashable {
+    struct KnownProject: Hashable, Sendable {
         var rootPath: String
         var projectName: String
         var displayName: String

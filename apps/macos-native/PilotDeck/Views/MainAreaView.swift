@@ -178,7 +178,7 @@ struct MainAreaView: View {
 
     private func toolButton(_ tab: AppTab, iconOnly: Bool) -> some View {
         let isActive = state.activeTab == tab
-        let hasUnread = tab == .alwaysOn && state.projects.flatMap(\.allSessions).contains { $0.state == .unread }
+        let hasUnread = tab == .alwaysOn && state.projects.contains { $0.hasUnreadSession }
 
         return Button {
             withAnimation(.snappy(duration: 0.22)) {

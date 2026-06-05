@@ -37,7 +37,7 @@ enum SessionProvider: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
-enum ProjectSessionKind: String, Codable {
+enum ProjectSessionKind: String, Codable, Sendable {
     case backgroundTask = "background_task"
 }
 
@@ -310,14 +310,14 @@ enum AppTab: Hashable, Identifiable {
     ]
 }
 
-enum SessionState: String, Codable {
+enum SessionState: String, Codable, Sendable {
     case idle
     case processing
     case unread
     case failed
 }
 
-struct WorkspaceProject: Identifiable, Hashable, Codable {
+struct WorkspaceProject: Identifiable, Hashable, Codable, Sendable {
     var id: UUID
     var name: String
     var displayName: String
@@ -330,12 +330,76 @@ struct WorkspaceProject: Identifiable, Hashable, Codable {
     var lastActivity: Date?
 
     var allSessions: [ProjectSession] {
-        (sessions + codexSessions + cursorSessions + geminiSessions)
-            .sorted { $0.activityDate > $1.activityDate }
+        Self.mergeSessionsByActivity([sessions, codexSessions, cursorSessions, geminiSessions])
+    }
+
+    var sessionCount: Int {
+        sessions.count + codexSessions.count + cursorSessions.count + geminiSessions.count
+    }
+
+    var hasUnreadSession: Bool {
+        [sessions, codexSessions, cursorSessions, geminiSessions].contains { group in
+            group.contains { $0.state == .unread }
+        }
     }
 
     var latestActivity: Date {
-        allSessions.map(\.activityDate).max() ?? lastActivity ?? createdAt
+        [
+            sessions.first?.activityDate,
+            codexSessions.first?.activityDate,
+            cursorSessions.first?.activityDate,
+            geminiSessions.first?.activityDate,
+            lastActivity,
+        ]
+        .compactMap { $0 }
+        .max() ?? createdAt
+    }
+
+    func recentSessions(limit: Int) -> [ProjectSession] {
+        Self.mergeSessionsByActivity(
+            [sessions, codexSessions, cursorSessions, geminiSessions],
+            limit: limit
+        )
+    }
+
+    func session(withID id: String) -> ProjectSession? {
+        for group in [sessions, codexSessions, cursorSessions, geminiSessions] {
+            if let session = group.first(where: { $0.id == id }) {
+                return session
+            }
+        }
+        return nil
+    }
+
+    private static func mergeSessionsByActivity(_ groups: [[ProjectSession]], limit: Int? = nil) -> [ProjectSession] {
+        var indexes = Array(repeating: 0, count: groups.count)
+        var merged: [ProjectSession] = []
+        let totalCount = groups.reduce(0) { $0 + $1.count }
+        merged.reserveCapacity(min(limit ?? totalCount, totalCount))
+
+        while true {
+            if let limit, merged.count >= limit {
+                break
+            }
+            var nextGroup: Int?
+            var nextDate = Date.distantPast
+
+            for groupIndex in groups.indices {
+                let itemIndex = indexes[groupIndex]
+                guard itemIndex < groups[groupIndex].count else { continue }
+                let date = groups[groupIndex][itemIndex].activityDate
+                if nextGroup == nil || date > nextDate {
+                    nextGroup = groupIndex
+                    nextDate = date
+                }
+            }
+
+            guard let groupIndex = nextGroup else { break }
+            merged.append(groups[groupIndex][indexes[groupIndex]])
+            indexes[groupIndex] += 1
+        }
+
+        return merged
     }
 
     static func sample() -> [WorkspaceProject] {
@@ -357,7 +421,7 @@ struct WorkspaceProject: Identifiable, Hashable, Codable {
     }
 }
 
-struct ProjectSession: Identifiable, Hashable, Codable {
+struct ProjectSession: Identifiable, Hashable, Codable, Sendable {
     var id: String
     var provider: SessionProvider
     var title: String
