@@ -2,6 +2,7 @@ import AppKit
 import QuickLookUI
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 struct FilesView: View {
     @EnvironmentObject private var state: AppState
@@ -14,11 +15,15 @@ struct FilesView: View {
     @State private var editorFile: WorkspaceFile?
     @State private var editorOriginalContent = ""
     @State private var editorLoadState: FileEditorLoadState = .idle
+    @State private var editorInitialViewerMode: FileViewerMode = .preview
     @State private var editorExpanded = false
     @State private var searchText = ""
     @State private var inlineEdit: FileInlineEdit?
     @State private var isFileDropTarget = false
     @State private var chatInspectorWidth = FileWorkspaceLayoutMetrics.chatInspectorDefaultWidth
+    @StateObject private var webPreviewStore = FileWebPreviewStore()
+    @State private var webPreviewTarget: FileWebPreviewTarget?
+    @State private var isBrowserStartVisible = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -65,6 +70,16 @@ struct FilesView: View {
         }
         .background(DesignTokens.background)
         .task(id: state.selectedProjectID) { loadFiles() }
+        .onChange(of: state.selectedProjectID) { _, _ in
+            editorFile = nil
+            editorOriginalContent = ""
+            editorLoadState = .idle
+            editorInitialViewerMode = .preview
+            webPreviewTarget = nil
+            isBrowserStartVisible = false
+            state.selectedFileContent = ""
+            webPreviewStore.clearLoadedTarget()
+        }
         .onChange(of: state.isFilesChatInspectorVisible) { _, isVisible in
             if isVisible {
                 editorExpanded = false
@@ -74,20 +89,52 @@ struct FilesView: View {
 
     @ViewBuilder
     private var editorContent: some View {
-        if let editorFile {
+        if let webPreviewTarget {
+            FileWebPreviewPane(
+                store: webPreviewStore,
+                target: webPreviewTarget,
+                htmlFiles: htmlFiles,
+                onOpenTarget: { openWebPreview($0) },
+                onOpenSource: { path in
+                    if let file = files.first(where: { $0.path == path }) {
+                        openSource(file)
+                    }
+                },
+                onOpenExternal: { url in
+                    NSWorkspace.shared.open(url)
+                },
+                onClose: {
+                    self.webPreviewTarget = nil
+                }
+            )
+            .environmentObject(state)
+        } else if isBrowserStartVisible {
+            FileWebBrowserStartPane(
+                htmlFiles: htmlFiles,
+                onOpenAddress: { openWebAddress($0) },
+                onOpenFile: { openHTML($0) },
+                onClose: { isBrowserStartVisible = false }
+            )
+            .environmentObject(state)
+        } else if let editorFile {
             FileEditorPane(
                 file: editorFile,
                 content: $state.selectedFileContent,
                 originalContent: editorOriginalContent,
                 width: nil,
+                initialViewerMode: editorInitialViewerMode,
                 isExpanded: editorExpanded,
                 onClose: {
                     self.editorFile = nil
                     editorOriginalContent = ""
                     editorLoadState = .idle
+                    editorInitialViewerMode = .preview
                     state.selectedFile = nil
                     state.selectedFileContent = ""
                     editorExpanded = false
+                },
+                onOpenHTMLPreview: {
+                    openHTML(editorFile)
                 },
                 onToggleExpand: { editorExpanded.toggle() },
                 onRevert: {
@@ -99,6 +146,7 @@ struct FilesView: View {
                 loadState: editorLoadState
             )
             .environmentObject(state)
+            .id("\(editorFile.path)-\(editorInitialViewerMode)")
         } else {
             fileEmptyEditor
         }
@@ -207,6 +255,13 @@ struct FilesView: View {
                     fileToolbarButton("folder.badge.plus", help: state.t(.newFolder), isDisabled: !hasWorkspace) { beginCreateAtSelection(isDirectory: true) }
                     fileToolbarButton("square.and.arrow.up", help: state.t(.uploadFiles), isDisabled: !hasWorkspace) { upload(allowDirectories: false) }
                     fileToolbarButton("arrow.clockwise", help: state.t(.refresh), isDisabled: !hasWorkspace || isLoadingFiles) { loadFiles() }
+                    fileToolbarButton(
+                        "globe",
+                        help: filesText(english: "Open browser preview", chinese: "打开浏览器预览"),
+                        isDisabled: !hasWorkspace
+                    ) {
+                        openDefaultBrowserPreview()
+                    }
                     fileToolbarButton(
                         "bubble.left.and.bubble.right",
                         help: state.isFilesChatInspectorVisible
@@ -343,13 +398,20 @@ struct FilesView: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(DesignTokens.text)
             Text(filesText(
-                english: "Browse the project tree, then open a source file, image, or Markdown preview.",
-                chinese: "在左侧浏览项目文件，打开源码、图片或 Markdown 预览。"
+                english: "Browse the project tree, open a source file, or launch a browser preview.",
+                chinese: "在左侧浏览项目文件，打开源码，或启动浏览器预览。"
             ))
                 .font(.system(size: 12))
                 .foregroundStyle(DesignTokens.secondaryText)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 300)
+            Button {
+                openDefaultBrowserPreview()
+            } label: {
+                Label(filesText(english: "Open Browser Preview", chinese: "打开浏览器预览"), systemImage: "globe")
+            }
+            .buttonStyle(WebToolbarButtonStyle())
+            .disabled(!hasWorkspace)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DesignTokens.contentSurface.opacity(0.30))
@@ -441,6 +503,15 @@ struct FilesView: View {
         }
     }
 
+    private var htmlFiles: [WorkspaceFile] {
+        files.filter { !$0.isDirectory && $0.isHTML }
+            .sorted { lhs, rhs in
+                if lhs.name.lowercased() == "index.html" { return true }
+                if rhs.name.lowercased() == "index.html" { return false }
+                return lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedAscending
+            }
+    }
+
     private func loadFiles() {
         guard let context = state.selectedWorkspaceContext else {
             files = []
@@ -478,17 +549,36 @@ struct FilesView: View {
     private func open(_ file: WorkspaceFile) {
         cancelInlineEdit()
         if file.isDirectory {
+            webPreviewTarget = nil
+            isBrowserStartVisible = false
             state.selectedFile = file
             toggle(file)
             return
         }
+        if file.isHTML {
+            openHTML(file)
+            return
+        }
+        openEditor(file, initialMode: .preview)
+    }
+
+    private func openSource(_ file: WorkspaceFile) {
+        openEditor(file, initialMode: .source)
+    }
+
+    private func openEditor(_ file: WorkspaceFile, initialMode: FileViewerMode) {
+        cancelInlineEdit()
+        webPreviewTarget = nil
+        isBrowserStartVisible = false
         state.selectedFile = file
         editorFile = file
+        editorInitialViewerMode = initialMode
         editorLoadState = .loading
         do {
             if file.isImage || file.isPDF || WorkspaceService.isProbablyBinaryFile(path: file.path) {
                 state.selectedFileContent = ""
                 editorOriginalContent = ""
+                editorInitialViewerMode = .preview
                 editorLoadState = .loaded
                 return
             }
@@ -539,7 +629,60 @@ struct FilesView: View {
     }
 
     private func openHTML(_ file: WorkspaceFile) {
-        NSWorkspace.shared.open(URL(fileURLWithPath: file.path))
+        guard let target = webPreviewTarget(for: file) else { return }
+        state.selectedFile = file
+        editorFile = nil
+        editorOriginalContent = ""
+        editorLoadState = .idle
+        state.selectedFileContent = ""
+        editorInitialViewerMode = .preview
+        openWebPreview(target)
+    }
+
+    private func openWebPreview(_ target: FileWebPreviewTarget) {
+        cancelInlineEdit()
+        isBrowserStartVisible = false
+        editorExpanded = false
+        webPreviewTarget = target
+        webPreviewStore.load(target)
+        state.statusLine = "\(filesText(english: "Preview", chinese: "预览")) \(target.title)"
+    }
+
+    private func openDefaultBrowserPreview() {
+        cancelInlineEdit()
+        if let file = htmlFiles.first {
+            openHTML(file)
+            return
+        }
+        webPreviewTarget = nil
+        editorFile = nil
+        editorOriginalContent = ""
+        editorLoadState = .idle
+        state.selectedFileContent = ""
+        editorExpanded = false
+        isBrowserStartVisible = true
+    }
+
+    private func openWebAddress(_ rawAddress: String) {
+        guard let target = FileWebPreviewTarget.external(from: rawAddress, localized: filesText) else {
+            state.errorBanner = filesText(english: "Enter a valid URL.", chinese: "请输入有效的网址。")
+            return
+        }
+        openWebPreview(target)
+    }
+
+    private func webPreviewTarget(for file: WorkspaceFile) -> FileWebPreviewTarget? {
+        guard file.isHTML, let context = state.selectedWorkspaceContext else { return nil }
+        let fileURL = URL(fileURLWithPath: file.path).standardizedFileURL
+        let rootURL = URL(fileURLWithPath: context.rootPath).standardizedFileURL
+        return FileWebPreviewTarget(
+            url: fileURL,
+            readAccessURL: rootURL,
+            title: file.name,
+            subtitle: file.relativePath,
+            isLocalFile: true,
+            sourcePath: file.path
+        )
     }
 
     private func beginCreateAtSelection(isDirectory: Bool) {
@@ -593,6 +736,10 @@ struct FilesView: View {
                 guard let targetPath = edit.targetPath else { return }
                 let newPath = try state.workspaceService.rename(path: targetPath, newName: value)
                 inlineEdit = nil
+                if webPreviewTarget?.sourcePath == targetPath {
+                    webPreviewTarget = nil
+                    webPreviewStore.clearLoadedTarget()
+                }
                 loadFiles()
                 if editorFile?.path == targetPath {
                     if let updated = files.first(where: { $0.path == newPath }) {
@@ -643,6 +790,11 @@ struct FilesView: View {
                 state.selectedFileContent = ""
                 editorOriginalContent = ""
                 editorLoadState = .idle
+            }
+            if let sourcePath = webPreviewTarget?.sourcePath,
+               sourcePath == file.path || sourcePath.hasPrefix(file.path + "/") {
+                webPreviewTarget = nil
+                webPreviewStore.clearLoadedTarget()
             }
             loadFiles()
         } catch {
@@ -752,6 +904,428 @@ struct FilesView: View {
                 chinese: "这个文件不是有效的 UTF-8 文本。"
             )
         }
+    }
+}
+
+private struct FileWebPreviewTarget: Equatable, Identifiable {
+    var id: String { "\(url.absoluteString)|\(readAccessURL?.path ?? "")" }
+    var url: URL
+    var readAccessURL: URL?
+    var title: String
+    var subtitle: String
+    var isLocalFile: Bool
+    var sourcePath: String?
+
+    static func external(from rawValue: String, localized: (String, String) -> String) -> FileWebPreviewTarget? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let normalized: String
+        if trimmed.contains("://") {
+            normalized = trimmed
+        } else if trimmed.hasPrefix("localhost")
+            || trimmed.hasPrefix("127.0.0.1")
+            || trimmed.hasPrefix("[::1]")
+            || trimmed.hasPrefix("0.0.0.0") {
+            normalized = "http://\(trimmed)"
+        } else {
+            normalized = "https://\(trimmed)"
+        }
+        guard let url = URL(string: normalized), let scheme = url.scheme?.lowercased(), ["http", "https", "file"].contains(scheme) else {
+            return nil
+        }
+        return FileWebPreviewTarget(
+            url: url,
+            readAccessURL: nil,
+            title: url.host ?? localized("Browser", "浏览器"),
+            subtitle: url.absoluteString,
+            isLocalFile: false,
+            sourcePath: nil
+        )
+    }
+}
+
+private final class FileWebPreviewStore: NSObject, ObservableObject, WKNavigationDelegate {
+    let webView: WKWebView
+    @Published var addressText = ""
+    @Published var pageTitle = ""
+    @Published var canGoBack = false
+    @Published var canGoForward = false
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+
+    private var loadedTargetID: String?
+
+    override init() {
+        let configuration = WKWebViewConfiguration()
+        configuration.allowsAirPlayForMediaPlayback = true
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.allowsBackForwardNavigationGestures = true
+        super.init()
+        webView.navigationDelegate = self
+    }
+
+    func load(_ target: FileWebPreviewTarget) {
+        guard loadedTargetID != target.id else {
+            refreshState()
+            return
+        }
+        loadedTargetID = target.id
+        errorMessage = nil
+        pageTitle = target.title
+        addressText = target.url.isFileURL ? target.url.lastPathComponent : target.url.absoluteString
+        if target.isLocalFile, let readAccessURL = target.readAccessURL {
+            webView.loadFileURL(target.url, allowingReadAccessTo: readAccessURL)
+        } else {
+            webView.load(URLRequest(url: target.url))
+        }
+        refreshState()
+    }
+
+    func loadAddress(_ rawAddress: String, localized: (String, String) -> String) -> FileWebPreviewTarget? {
+        guard let target = FileWebPreviewTarget.external(from: rawAddress, localized: localized) else {
+            return nil
+        }
+        load(target)
+        return target
+    }
+
+    func goBack() {
+        guard webView.canGoBack else { return }
+        webView.goBack()
+        refreshState()
+    }
+
+    func goForward() {
+        guard webView.canGoForward else { return }
+        webView.goForward()
+        refreshState()
+    }
+
+    func reload() {
+        webView.reload()
+        refreshState()
+    }
+
+    func clearLoadedTarget() {
+        loadedTargetID = nil
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        errorMessage = nil
+        isLoading = true
+        refreshState()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        isLoading = false
+        refreshState()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        isLoading = false
+        errorMessage = error.localizedDescription
+        refreshState()
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        isLoading = false
+        errorMessage = error.localizedDescription
+        refreshState()
+    }
+
+    private func refreshState() {
+        canGoBack = webView.canGoBack
+        canGoForward = webView.canGoForward
+        if let title = webView.title, !title.isEmpty {
+            pageTitle = title
+        }
+        if let url = webView.url, !url.isFileURL {
+            addressText = url.absoluteString
+        }
+    }
+}
+
+private struct FileWebPreviewPane: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var store: FileWebPreviewStore
+    var target: FileWebPreviewTarget
+    var htmlFiles: [WorkspaceFile]
+    var onOpenTarget: (FileWebPreviewTarget) -> Void
+    var onOpenSource: (String) -> Void
+    var onOpenExternal: (URL) -> Void
+    var onClose: () -> Void
+    @State private var addressDraft = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            if let error = store.errorMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text(error)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(DesignTokens.danger)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(DesignTokens.danger.opacity(0.08))
+            }
+            FileWebPreviewRepresentable(store: store)
+                .background(Color.white)
+        }
+        .background(DesignTokens.background)
+        .onAppear {
+            store.load(target)
+            addressDraft = store.addressText.isEmpty ? target.url.absoluteString : store.addressText
+        }
+        .onChange(of: target.id) { _, _ in
+            store.load(target)
+            addressDraft = store.addressText.isEmpty ? target.url.absoluteString : store.addressText
+        }
+        .onChange(of: store.addressText) { _, value in
+            if !value.isEmpty {
+                addressDraft = value
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: target.isLocalFile ? "chevron.left.forwardslash.chevron.right" : "globe")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(DesignTokens.tertiaryText)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(store.pageTitle.isEmpty ? target.title : store.pageTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(DesignTokens.text)
+                        .lineLimit(1)
+                    Text(target.subtitle)
+                        .font(.system(size: 10.5, design: target.isLocalFile ? .monospaced : .default))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                if store.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.62)
+                        .frame(width: 28, height: 28)
+                }
+                Menu {
+                    if htmlFiles.isEmpty {
+                        Text(localized("No HTML files in this view", "当前视图没有 HTML 文件"))
+                    } else {
+                        ForEach(htmlFiles.prefix(12)) { file in
+                            Button(file.relativePath) {
+                                if let preview = FileWebPreviewTarget(
+                                    file: file,
+                                    rootPath: state.selectedWorkspaceContext?.rootPath
+                                ) {
+                                    onOpenTarget(preview)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "list.bullet")
+                }
+                .buttonStyle(EditorHeaderIconButtonStyle())
+                .help(localized("HTML files", "HTML 文件"))
+                Button { onOpenExternal(target.url) } label: { Image(systemName: "arrow.up.forward") }
+                    .buttonStyle(EditorHeaderIconButtonStyle())
+                    .help(localized("Open externally", "在外部打开"))
+                if let sourcePath = target.sourcePath {
+                    Button { onOpenSource(sourcePath) } label: {
+                        Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    }
+                    .buttonStyle(EditorHeaderIconButtonStyle())
+                    .help(localized("View source", "查看源码"))
+                }
+                Button { onClose() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(EditorHeaderIconButtonStyle())
+                    .help(localized("Close preview", "关闭预览"))
+            }
+
+            HStack(spacing: 6) {
+                Button { store.goBack() } label: { Image(systemName: "chevron.left") }
+                    .buttonStyle(EditorHeaderIconButtonStyle())
+                    .disabled(!store.canGoBack)
+                Button { store.goForward() } label: { Image(systemName: "chevron.right") }
+                    .buttonStyle(EditorHeaderIconButtonStyle())
+                    .disabled(!store.canGoForward)
+                Button { store.reload() } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(EditorHeaderIconButtonStyle())
+                HStack(spacing: 7) {
+                    Image(systemName: target.isLocalFile ? "doc" : "globe")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                    TextField(localized("Enter URL", "输入网址"), text: $addressDraft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                        .onSubmit { openAddressDraft() }
+                    Button { openAddressDraft() } label: {
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .disabled(addressDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(.horizontal, 9)
+                .frame(height: 30)
+                .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(DesignTokens.separator.opacity(0.72), lineWidth: 1)
+                )
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(DesignTokens.background)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(DesignTokens.separator).frame(height: 1)
+        }
+    }
+
+    private func openAddressDraft() {
+        if let target = store.loadAddress(addressDraft, localized: localized) {
+            onOpenTarget(target)
+        } else {
+            state.errorBanner = localized("Enter a valid URL.", "请输入有效的网址。")
+        }
+    }
+
+    private func localized(_ english: String, _ chinese: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
+    }
+}
+
+private struct FileWebPreviewRepresentable: NSViewRepresentable {
+    @ObservedObject var store: FileWebPreviewStore
+
+    func makeNSView(context: Context) -> WKWebView {
+        store.webView
+    }
+
+    func updateNSView(_ nsView: WKWebView, context: Context) {}
+}
+
+private struct FileWebBrowserStartPane: View {
+    @EnvironmentObject private var state: AppState
+    var htmlFiles: [WorkspaceFile]
+    var onOpenAddress: (String) -> Void
+    var onOpenFile: (WorkspaceFile) -> Void
+    var onClose: () -> Void
+    @State private var address = ""
+
+    var body: some View {
+        VStack(spacing: 18) {
+            HStack {
+                Spacer()
+                Button { onClose() } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(EditorHeaderIconButtonStyle())
+                .help(localized("Close", "关闭"))
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "globe")
+                .font(.system(size: 26, weight: .regular))
+                .foregroundStyle(DesignTokens.tertiaryText)
+            Text(localized("Browser Preview", "浏览器预览"))
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(DesignTokens.text)
+            Text(localized(
+                "Open a local HTML file or enter a URL to preview it inside PilotDeck.",
+                "打开本地 HTML 文件，或输入网址在 PilotDeck 内预览。"
+            ))
+            .font(.system(size: 12.5))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 360)
+            HStack(spacing: 8) {
+                TextField(localized("https://example.com or localhost:5173", "https://example.com 或 localhost:5173"), text: $address)
+                    .textFieldStyle(WebFieldStyle())
+                    .onSubmit { submitAddress() }
+                Button { submitAddress() } label: {
+                    Image(systemName: "arrow.right")
+                }
+                .buttonStyle(WebToolbarButtonStyle(isProminent: true))
+                .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .frame(maxWidth: 520)
+
+            if !htmlFiles.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(localized("Local HTML", "本地 HTML"))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DesignTokens.tertiaryText)
+                    ForEach(htmlFiles.prefix(5)) { file in
+                        Button { onOpenFile(file) } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                                    .foregroundStyle(DesignTokens.tertiaryText)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(file.name)
+                                        .font(.system(size: 12.5, weight: .medium))
+                                        .foregroundStyle(DesignTokens.text)
+                                    Text(file.relativePath)
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .foregroundStyle(DesignTokens.tertiaryText)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                Spacer()
+                                Image(systemName: "arrow.right")
+                                    .foregroundStyle(DesignTokens.tertiaryText)
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 42)
+                            .background(DesignTokens.contentSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(DesignTokens.separator.opacity(0.72), lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .frame(maxWidth: 520, alignment: .leading)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(DesignTokens.contentSurface.opacity(0.30))
+    }
+
+    private func submitAddress() {
+        onOpenAddress(address)
+    }
+
+    private func localized(_ english: String, _ chinese: String) -> String {
+        state.settings.language.resolved() == .chineseSimplified ? chinese : english
+    }
+}
+
+private extension FileWebPreviewTarget {
+    init?(file: WorkspaceFile, rootPath: String?) {
+        guard file.isHTML, let rootPath else { return nil }
+        self.init(
+            url: URL(fileURLWithPath: file.path).standardizedFileURL,
+            readAccessURL: URL(fileURLWithPath: rootPath).standardizedFileURL,
+            title: file.name,
+            subtitle: file.relativePath,
+            isLocalFile: true,
+            sourcePath: file.path
+        )
     }
 }
 
@@ -5243,8 +5817,10 @@ private struct FileEditorPane: View {
     @Binding var content: String
     var originalContent: String
     var width: CGFloat?
+    var initialViewerMode: FileViewerMode = .preview
     var isExpanded: Bool
     var onClose: () -> Void
+    var onOpenHTMLPreview: (() -> Void)? = nil
     var onToggleExpand: () -> Void
     var onRevert: () -> Void
     var onSave: () -> Void
@@ -5379,8 +5955,11 @@ private struct FileEditorPane: View {
         .frame(width: width)
         .frame(maxWidth: isExpanded ? .infinity : nil, maxHeight: .infinity)
         .background(DesignTokens.background)
+        .onAppear {
+            viewerMode = initialViewerMode
+        }
         .onChange(of: file.path) { _, _ in
-            viewerMode = .preview
+            viewerMode = initialViewerMode
             saveFlash = false
         }
     }
@@ -5398,7 +5977,11 @@ private struct FileEditorPane: View {
     }
 
     private func openHTMLPreview() {
-        NSWorkspace.shared.open(URL(fileURLWithPath: file.path))
+        if let onOpenHTMLPreview {
+            onOpenHTMLPreview()
+        } else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: file.path))
+        }
         state.statusLine = "\(state.t(.openHTML)) \(file.name)"
     }
 
