@@ -21,6 +21,9 @@ struct RootView: View {
         .background {
             WindowFullScreenStateReader(isFullScreen: $isWindowFullScreen)
         }
+        .background {
+            TitlebarDoubleClickZoomReader()
+        }
         .overlay(alignment: .topLeading) {
             if !state.showProjectCreationWizard && !state.showSettings {
                 SidebarTitlebarToggleButton()
@@ -90,6 +93,102 @@ struct RootView: View {
         isWindowFullScreen
             ? DesignTokens.titlebarSidebarButtonFullscreenLeading
             : DesignTokens.titlebarSidebarButtonLeading
+    }
+}
+
+private struct TitlebarDoubleClickZoomReader: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            context.coordinator.attach(to: view)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            context.coordinator.attach(to: nsView)
+        }
+    }
+
+    @MainActor
+    final class Coordinator: @unchecked Sendable {
+        private weak var view: NSView?
+        private var eventMonitor: EventMonitorBox?
+
+        func attach(to view: NSView) {
+            self.view = view
+            guard eventMonitor == nil else { return }
+
+            guard let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown], handler: { [weak self] event in
+                self?.handle(event) ?? event
+            }) else { return }
+            eventMonitor = EventMonitorBox(monitor)
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard event.clickCount == 2,
+                  let view,
+                  let window = view.window,
+                  event.window === window,
+                  shouldHandle(event, in: window)
+            else {
+                return event
+            }
+
+            performTitlebarDoubleClickAction(in: window)
+            return nil
+        }
+
+        private func shouldHandle(_ event: NSEvent, in window: NSWindow) -> Bool {
+            guard !window.styleMask.contains(.fullScreen) else { return false }
+
+            let point = event.locationInWindow
+            let titlebarHeight = DesignTokens.headerHeight + 6
+            guard point.y >= window.frame.height - titlebarHeight else { return false }
+
+            // Leave the traffic lights and custom sidebar toggle alone. Double-clicking
+            // the rest of our hidden-titlebar strip should behave like a native titlebar.
+            let protectedLeadingWidth = DesignTokens.titlebarSidebarButtonLeading
+                + DesignTokens.titlebarControlSize
+                + 18
+            return point.x > protectedLeadingWidth
+        }
+
+        private func performTitlebarDoubleClickAction(in window: NSWindow) {
+            let action = titlebarDoubleClickAction()
+            switch action {
+            case "minimize":
+                window.performMiniaturize(nil)
+            case "none":
+                break
+            default:
+                window.performZoom(nil)
+            }
+        }
+
+        private func titlebarDoubleClickAction() -> String {
+            let globalValue = UserDefaults.standard
+                .persistentDomain(forName: UserDefaults.globalDomain)?["AppleActionOnDoubleClick"] as? String
+            let value = UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") ?? globalValue
+            return value?.lowercased() ?? "maximize"
+        }
+    }
+
+    private final class EventMonitorBox: @unchecked Sendable {
+        private let monitor: Any
+
+        init(_ monitor: Any) {
+            self.monitor = monitor
+        }
+
+        deinit {
+            NSEvent.removeMonitor(monitor)
+        }
     }
 }
 
